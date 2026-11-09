@@ -163,7 +163,8 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
     });
     // The enemy's own: its rig's names in a chain, and `extra` joints more.
     let look = look();
-    let names = enemy::joint_names(&look.hand);
+    let hand = look.held.as_ref().map(|held| held.joint.as_str());
+    let names = enemy::joint_names(hand);
     let enemy_count = names.len() + extra;
     let enemy_joints: Vec<Joint> = (0..enemy_count)
         .map(|joint| Joint {
@@ -214,7 +215,11 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
             &warrior_enemy().expect("compiles").to_cooked().expect("cooked"),
         ),
         packed_with(look.mesh, AssetKind::Mesh, &warrior.to_cooked().expect("cooked"), vec![ENEMY_SKELETON]),
-        packed(look.blade, AssetKind::Mesh, &triangle(x).to_cooked().expect("cooked")),
+        packed(
+            look.held.as_ref().expect("a blade").mesh,
+            AssetKind::Mesh,
+            &triangle(x).to_cooked().expect("cooked"),
+        ),
         packed(
             ENEMY_SKELETON,
             AssetKind::Skeleton,
@@ -512,13 +517,13 @@ impl Stage {
 
     /// Stands the enemy in `pose`, whatever its graph last played.
     fn set_enemy_pose(&mut self, pose: RenderPose) {
-        let enemy = self.show.warriors[0].0;
+        let enemy = self.show.warriors[0].body;
         self.scene.world_mut().entity_mut(enemy).insert(pose);
     }
 
     /// What plays the enemy's graph.
     fn enemy_player(&self) -> &sapphire_anim::GraphPlayer {
-        self.player_of(self.show.warriors[0].0)
+        self.player_of(self.show.warriors[0].body)
     }
 
     /// How many joints the pose the character's graph plays has.
@@ -571,7 +576,8 @@ fn a_new_skeleton_under_the_enemy_plays_on() {
     stage.play_fighters();
     let mut fight = stage.start_fight();
     let joints = stage.enemy_joints();
-    assert_eq!(joints, enemy::joint_names(&look().hand).len());
+    let held = look().held.expect("it holds its blade");
+    assert_eq!(joints, enemy::joint_names(Some(&held.joint)).len());
 
     // The character's in the pack too, and while part of it has landed its pose may not fit.
     stage.recook(0.0, 1);
@@ -581,9 +587,8 @@ fn a_new_skeleton_under_the_enemy_plays_on() {
         let stats = stage.step_fight(&mut fight);
         assert_eq!(stats.ignored_poses, 0, "{stats:?}");
     }
-    let hand = stage.show.arena.as_deref_mut().expect("an arena").blade_hand();
-    let look = look();
-    assert_eq!(enemy::joint_names(&look.hand)[hand], look.hand);
+    let hand = stage.show.arena.as_deref_mut().expect("an arena").blade_hand(1).expect("a blade");
+    assert_eq!(enemy::joint_names(Some(&held.joint))[hand], held.joint);
 }
 
 /// A skeleton with a joint more, then a clip and a graph for it, with the mesh still to come, as a cook's
@@ -672,7 +677,7 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
         .expect_err("another skeleton's clip");
     assert!(error.contains("swing"), "{error}");
     let player = |scene: &Scene, show: &FightShow| {
-        scene.world().get::<GraphDriver>(show.warriors[0].0).expect("playing").player.has_replacement()
+        scene.world().get::<GraphDriver>(show.warriors[0].body).expect("playing").player.has_replacement()
     };
     assert!(!player(scene, show));
 

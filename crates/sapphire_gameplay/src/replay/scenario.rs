@@ -28,7 +28,7 @@ use sapphire_time::ScaleSource;
 use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
 use sapphire_zone::{Zone, ZoneError};
 
-use super::document::ScenarioDocument;
+use super::document::{KindOfEnemy, ScenarioDocument};
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
@@ -200,8 +200,9 @@ pub struct Scenario {
     /// nothing recorded.
     pub config: SimConfig,
     /// The documents its move sets come from, from the repository's root, in the order its setup adds
-    /// them: what live tuning goes by (M2 T2), and what `link watch` watches. A test holds them to
-    /// what the setup loads.
+    /// them, one for each set, so a document a copy is made of is listed again for the copy (M3 B3b):
+    /// what live tuning goes by (M2 T2), and what `link watch` watches. A test holds them to what the
+    /// setup loads.
     pub documents: &'static [&'static str],
     /// Loads the move sets and spawns the actors.
     pub setup: ScenarioSetup,
@@ -243,11 +244,25 @@ impl Scenario {
         }
     }
 
-    /// The set that plays the document with this file name, in this scenario's simulations.
+    /// Its kinds of enemy, and the sets their fighters play, in the simulations it sets up: what a stage draws
+    /// each as (M3 B3b). A scenario of code has none, and its fighters draw as the warrior.
+    pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
+        self.document().map_or(Ok(Vec::new()), ScenarioDocument::kinds_of_enemy)
+    }
+
+    /// The first set that plays the document with this file name, in this scenario's simulations.
     #[must_use]
     pub fn set_of(&self, file_name: &str) -> Option<MoveSetId> {
-        let index = self.documents.iter().position(|path| document_file_name(path) == file_name)?;
-        Some(MoveSetId(u32::try_from(index).ok()?))
+        self.sets_of(file_name).next()
+    }
+
+    /// Every set that plays the document with this file name, in this scenario's simulations: more than
+    /// one when a second kind of enemy plays a copy of its moves (M3 B3b). A live edit goes to each.
+    pub fn sets_of<'a>(&'a self, file_name: &'a str) -> impl Iterator<Item = MoveSetId> + 'a {
+        let named = move |(index, path): (usize, &&str)| {
+            (document_file_name(path) == file_name).then(|| u32::try_from(index).ok().map(MoveSetId))?
+        };
+        self.documents.iter().enumerate().filter_map(named)
     }
 
     /// The zone it stands in, by the stem the app's content finds it by, if it stands in one: the stage
@@ -372,8 +387,10 @@ static DOCUMENTS: LazyLock<Vec<(&'static str, ScenarioDocument)>> = LazyLock::ne
 
 /// Each document's move sets' paths, for [`Scenario::documents`].
 static DOCUMENT_PATHS: LazyLock<Vec<Vec<&'static str>>> = LazyLock::new(|| {
-    let paths = |(_, document): &'static (&str, ScenarioDocument)| {
-        document.moves.iter().map(String::as_str).collect()
+    let paths = |(name, document): &'static (&str, ScenarioDocument)| {
+        document
+            .set_documents()
+            .unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"))
     };
     DOCUMENTS.iter().map(paths).collect()
 });

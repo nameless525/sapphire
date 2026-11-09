@@ -33,12 +33,11 @@ fn arena_stage(shot: ArenaShot) -> Staged {
     let ground = ArenaGround::new(set).expect("the stage stands on it");
     let bounds = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
     let mut scene = Scene::with_character(MeshHandle::from_raw(0), bounds, false);
-    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: Some(MeshHandle::from_raw(3)) };
     let held = enemy::Held {
         pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-        blade: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-        hand: 0,
+        grip: Some(enemy::Grip { hand: 0, at: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)) }),
         sizes: enemy::Look::warrior().sizes(),
     };
     let mut show = ShownFight::default();

@@ -33,7 +33,6 @@ use sapphire_colliders::ColliderSet;
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-
 use sapphire_physics::{PhysicsWorld, WorldError};
 use sapphire_serialize::AssetId;
 use sapphire_zone::{
@@ -286,6 +285,12 @@ impl SimEncounter {
     #[must_use]
     pub fn planned(&self) -> usize {
         self.spawns.len()
+    }
+
+    /// The set each fighter it has still to bring plays, in the order they'll come, one for each: what a
+    /// stage stands by for. `None` for one that plays none.
+    pub fn sets_to_come(&self) -> impl Iterator<Item = Option<MoveSetId>> + '_ {
+        self.spawns[(self.spawned as usize).min(self.spawns.len())..].iter().map(|spawn| spawn.moves)
     }
 
     /// How many of [`Self::planned`] have been asked for: those still to come are the rest.

@@ -12,10 +12,13 @@
 //!
 //! - **What draws it** is its kind of enemy's document (`warrior.enemy.ron`'s `look`, M3 B3), cooked, which
 //!   the stage reads as a [`Look`]: its mesh, graph and blade, the joint that holds the blade, its scale
-//!   and the figure a camera frames.
+//!   and the figure a camera frames. Every kind of enemy draws the same way from its own document (M3 B3b):
+//!   the warrior is the kind a fight always has ([`KIND`]), which draws anyone whose kind nothing names.
+//! - **Another kind** has its own skinned mesh, on a skeleton with the warrior's joint names, which are what
+//!   its pose and IK find it by; it may hold nothing that isn't skinned in ([`Look::held`]).
 //! - **Scale:** its document's 0.8, which `it_stands_a_head_taller_than_the_character_at_combat_distance`
 //!   explains.
-//! - **The blade** is a mesh of its own, placed at the rig's right hand slot ([`Look::hand`]). No
+//! - **The blade** is a mesh of its own, placed at the rig's right hand slot ([`Look::held`]). No
 //!   attachment system exists: when clips play, the blade moves by `place × model_from_joint[hand slot]`
 //!   each frame (`ArenaActors::hold_blade`), and each clip's retarget keeps that slot in the clip's grip
 //!   (`follow` in the pack's sidecars), so nothing corrects it here. It draws as a character with no
@@ -33,7 +36,7 @@ use sapphire_assets::mesh::Skin;
 use sapphire_assets::rig::HumanBone;
 use sapphire_gameplay::body::{BodyGraphAssets, BodyProfile, BodyProfileOptions};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
-use sapphire_moves::EnemyLook;
+use sapphire_moves::{EnemyLook, HeldLook};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{FaceExpression, MeshHandle};
 
@@ -51,18 +54,16 @@ pub(crate) const KIND: AssetId = AssetId::from_text("0a8af012-0a05-463c-8998-333
 /// What its graph draws from, which has nothing to draw for yet: it has no blink.
 const GRAPH_SEED: u32 = 2;
 
-/// What draws the enemy, resolved from its kind's cooked [`EnemyLook`]. The stage draws one kind, which
-/// holds its weapon as a mesh of its own.
+/// What draws a kind of enemy, resolved from its cooked [`EnemyLook`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Look {
     /// Its skinned mesh, whose skin names its skeleton.
     pub mesh: AssetId,
     /// The graph it plays in a fight.
     pub graph: AssetId,
-    /// The blade it holds.
-    pub blade: AssetId,
-    /// The joint the blade grips, in the rig's own names.
-    pub hand: String,
+    /// A mesh of its own that it holds, as the warrior does its blade, and the joint that grips it, in the
+    /// rig's own names. A weapon skinned into its mesh needs none.
+    pub held: Option<HeldLook>,
     /// How much bigger than its mesh it draws.
     pub scale: f32,
     /// How far its crown stands over its feet, in metres, as drawn: what a camera frames.
@@ -76,20 +77,18 @@ pub struct Look {
 }
 
 impl Look {
-    /// The stage's copy of `look`. Fails for a kind whose weapon isn't a mesh of its own.
-    pub fn of(look: &EnemyLook) -> Result<Self, String> {
-        let held =
-            look.held.as_ref().ok_or("the stage draws an enemy holding a mesh, and this kind holds none")?;
-        Ok(Self {
+    /// The stage's copy of `look`.
+    #[must_use]
+    pub fn of(look: &EnemyLook) -> Self {
+        Self {
             mesh: look.mesh,
             graph: look.graph,
-            blade: held.mesh,
-            hand: held.joint.clone(),
+            held: look.held.clone(),
             scale: look.scale,
             crown: look.crown(),
             eyes: look.eyes(),
             framed_radius: look.framed_radius,
-        })
+        }
     }
 
     /// How big it draws.
@@ -104,7 +103,6 @@ impl Look {
     #[must_use]
     pub fn warrior() -> Self {
         Self::of(&sapphire_gameplay::replay::warrior_enemy().expect("it compiles").look)
-            .expect("it holds its blade")
     }
 }
 
@@ -182,11 +180,11 @@ const SHAPE: FigureShape = FigureShape {
     expression: FaceExpression { blush: 0.0, gloom: 0.0 },
 };
 
-/// The enemy's meshes on a renderer.
+/// A kind of enemy's meshes on a renderer: its body, and what it holds, if that's a mesh of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnemyMeshes {
     pub warrior: MeshHandle,
-    pub blade: MeshHandle,
+    pub blade: Option<MeshHandle>,
 }
 
 /// How big a kind of enemy draws, and where a camera and a foe find it: its [`Look`]'s numbers.
@@ -205,15 +203,21 @@ impl Sizes {
     }
 }
 
-/// The enemy, ready to place: its held pose, the figure it makes, and where the pose puts the blade.
+/// Where a kind's held mesh is: the joint that grips it, and where its pose has that joint, in its model
+/// space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grip {
+    pub hand: usize,
+    pub at: Mat4,
+}
+
+/// The enemy, ready to place: its held pose, the figure it makes, and where the pose puts what it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Held {
     pub pose: RenderPose,
     pub figure: Figure,
-    /// The blade's mesh in the warrior's model space.
-    pub blade: Mat4,
-    /// The joint that holds it.
-    pub hand: usize,
+    /// Where it holds its blade, if it holds a mesh of its own.
+    pub grip: Option<Grip>,
     /// How big it draws.
     pub sizes: Sizes,
 }
@@ -231,8 +235,10 @@ pub(crate) fn place(scale: f32) -> Mat4 {
 /// Fails if the rig lacks a joint the pose needs.
 pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton, look: &Look) -> Result<Held, String> {
     check_counts(skin, skeleton)?;
-    let hand = look.hand.as_str();
-    let hand_slot = skeleton.find(hand).ok_or_else(|| format!("the warrior's rig has no {hand:?}"))?;
+    let hand = look.held.as_ref().map(|held| held.joint.as_str());
+    let hand_slot = hand
+        .map(|hand| skeleton.find(hand).ok_or_else(|| format!("the warrior's rig has no {hand:?}")))
+        .transpose()?;
     let joints = rig_joints(skeleton)?;
     let head_joint = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
     let mut pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
@@ -245,11 +251,11 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton, look: &Look) -> Res
         face: Quat::IDENTITY,
         expression: SHAPE.expression,
     };
-    let blade = Mat4::from(pose.model()[hand_slot]);
+    let grip = hand_slot.map(|hand| Grip { hand, at: Mat4::from(pose.model()[hand]) });
     let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
     pose.write_palette(&mut palette);
     let pose = RenderPose { palette, morph_weights: Vec::new() };
-    Ok(Held { pose, figure, blade, hand: hand_slot, sizes: look.sizes() })
+    Ok(Held { pose, figure, grip, sizes: look.sizes() })
 }
 
 /// A driver for the warrior on `binding`, over its rest pose: what poses it in a fight
@@ -297,6 +303,8 @@ pub(crate) fn simulation_profile(
     look_height: f32,
 ) -> Result<BodyProfile, String> {
     let bones = ik_bones(assets.skeleton.view())?;
+    // The joint holding its own mesh, if it holds one, is where it touches what it hits.
+    let hand = look.held.as_ref().map(|held| held.joint.as_str());
     BodyProfile::bind_named(
         assets,
         &bones,
@@ -305,7 +313,7 @@ pub(crate) fn simulation_profile(
             floor: 0.0,
             scale: look.scale,
             morphs: &[],
-            contact_joints: &[look.hand.as_str()],
+            contact_joints: hand.as_slice(),
             seed: GRAPH_SEED,
             ground_turn: false,
             grounded_gather: false,
@@ -325,17 +333,17 @@ fn rig_joints(skeleton: &ArchivedSkeleton) -> Result<RigJoints, String> {
     Ok(RigJoints::of_bones(bones))
 }
 
-/// Every joint name the warrior's rig needs, the hand slot last: for hot reload's test rigs.
+/// Every joint name the warrior's rig needs, the hand slot last if it has one: for hot reload's test rigs.
 #[cfg(all(test, feature = "dev"))]
-pub(crate) fn joint_names(hand: &str) -> Vec<&str> {
-    BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain([hand]).collect()
+pub(crate) fn joint_names(hand: Option<&str>) -> Vec<&str> {
+    BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain(hand).collect()
 }
 
-/// The figure the blade draws as, in its own space: no body, so it adds no capsule to the character's
-/// shadow or occlusion, and its head where the warrior's is, so the light rig lights it as it does
-/// the warrior.
-pub(crate) fn blade_figure(held: &Held) -> Figure {
-    held.figure.of_item_at(held.blade)
+/// The figure the blade draws as, in its own space, if it holds one: no body, so it adds no capsule to the
+/// character's shadow or occlusion, and its head where the warrior's is, so the light rig lights it as it
+/// does the warrior.
+pub(crate) fn blade_figure(held: &Held) -> Option<Figure> {
+    held.grip.map(|grip| held.figure.of_item_at(grip.at))
 }
 
 #[cfg(test)]
@@ -378,9 +386,24 @@ mod tests {
         assert_eq!(held.figure.feet.y, 0.0);
         assert!(held.figure.head.y > 0.0);
         // The blade's figure names the warrior's head from the blade's own space.
-        let head = held.blade.transform_point3(blade_figure(&held).head);
+        let (grip, carried) = (held.grip.expect("it holds its blade"), blade_figure(&held).expect("a blade"));
+        assert_eq!(grip.hand, skeleton.len() - 1);
+        let head = grip.at.transform_point3(carried.head);
         assert!(head.distance(held.figure.head) < 1e-3);
-        assert_eq!(blade_figure(&held).body_radius, 0.0, "it adds no capsule");
+        assert_eq!(carried.body_radius, 0.0, "it adds no capsule");
+    }
+
+    /// A kind whose weapon is skinned into its mesh holds nothing else, and needs no hand slot.
+    #[test]
+    fn a_kind_that_holds_nothing_poses_without_a_hand_slot() {
+        let joints: Vec<Joint> = rig().into_iter().filter(|joint| joint.name != "handslot.r").collect();
+        let bytes = sapphire_anim::Skeleton::new(&joints).to_cooked().expect("cooked");
+        let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
+        let look = Look { held: None, ..Look::warrior() };
+        let held = held(&skin_over(skeleton.len()), skeleton, &look).expect("every joint it needs is there");
+        assert_eq!(held.grip, None);
+        assert_eq!(blade_figure(&held), None);
+        assert!(held.figure.head.y > 0.0);
     }
 
     #[test]

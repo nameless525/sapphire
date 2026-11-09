@@ -11,16 +11,17 @@
 //!
 //! **Warming.** An encounter starts to warm when the player on the field comes within [`WARM_REACH`] of its
 //! trigger's volume, or is in it, or it's running already, or no trigger here starts it. Warm means the
-//! stage holds a spare warrior for each fighter its waves have still to bring, beside the spares every other
-//! warming encounter wants, so a wave's arrival in a fixed step takes one and allocates nothing (B2). Spares
+//! stage holds a spare warrior of their kind for each fighter its waves have still to bring, beside the
+//! spares every other warming encounter wants, so a wave's arrival in a fixed step takes one of its kind and
+//! allocates nothing (B2). Spares
 //! stand one a frame or more, within what the zone's streaming leaves of its budget that frame
 //! ([`sapphire_world::streaming::StreamBudget`]): at least one, and more while time and entities are left.
 //! Before a fight's first step, what's in reach then stands all at once, as a load screen would.
 //!
 //! What a spare needs is a warrior's: its meshes and materials are in the shared pack, whose pipelines the
 //! load built (M3 K1), and its moves were in the simulation from its start. Effects are the app's, prewarmed
-//! with the fight. So an encounter brings nothing to load or build yet: when B3 gives an enemy type a look of
-//! its own, that look is what warming loads, and its pipeline keys what it prewarms, here.
+//! with the fight. Each kind of enemy (M3 B3) has its look loaded with the fight, so an encounter still brings
+//! nothing to load or build: warming stands each kind's spares from that kind's stock.
 //!
 //! **Holding the zone.** While any encounter runs, the scene's zone streams nothing (`Scene::hold_zone_streaming`);
 //! when none does, it looks again from where the camera is and catches up.
@@ -36,14 +37,14 @@ use sapphire_time::Stopwatch;
 use sapphire_world::streaming::StreamBudget;
 use sapphire_zone::CookedVolume;
 
-use super::{FightShow, draw, stand_warrior, undraw};
+use super::{FightShow, Warrior, draw, stand_warrior, undraw};
 use crate::LOG_TARGET;
 
 /// How far from an encounter's trigger the player is when its fighters start to stand by, in metres. At a
 /// run of 6 m/s that's over a second, and a wave takes a frame or a few to stand on either tier's budget.
 pub const WARM_REACH: f32 = 8.0;
 
-/// Entities a warrior costs the frame's budget: itself and its blade.
+/// Entities a warrior costs the frame's budget, at most: itself and its blade.
 const ENTITIES_A_WARRIOR: u32 = 2;
 
 /// Where one encounter stands, as the stage sees it.
@@ -163,7 +164,8 @@ impl FightShow {
             let planned = zone.planned();
             arena.reserve(planned);
             self.warriors.reserve(planned);
-            self.spares.reserve(planned);
+            // A warrior standing of another kind than who comes goes to the spares too.
+            self.spares.reserve(planned + arena.free_warriors());
         }
 
         let player = cast
@@ -212,25 +214,36 @@ impl FightShow {
             }
         }
 
-        // Spares for what every warming or warm encounter has still to bring.
-        let wanted: usize = encounters
-            .iter()
-            .zip(&volumes.warmth)
-            .filter(|(encounter, warmth)| {
-                **warmth != Warmth::Cold && encounter.phase() != EncounterPhase::Cleared
-            })
-            .map(|(encounter, _)| encounter.planned() - encounter.spawned() as usize)
-            .sum();
-        let have = arena.free_warriors() + self.spares.len();
+        // Spares for what every warming or warm encounter has still to bring, of each kind. A fighter whose
+        // set no kind here draws comes as the first kind, as the roster has them.
+        let kinds = self.stocks.len();
+        let kind_of = |set| Some(arena.kind_of_set(set)).filter(|&kind| kind < kinds).unwrap_or(0);
+        let wanted_of = |kind: usize| -> usize {
+            encounters
+                .iter()
+                .zip(&volumes.warmth)
+                .filter(|(encounter, warmth)| {
+                    **warmth != Warmth::Cold && encounter.phase() != EncounterPhase::Cleared
+                })
+                .flat_map(|(encounter, _)| encounter.sets_to_come())
+                .filter(|&set| kind_of(set) == kind)
+                .count()
+        };
+        let spares_of =
+            |spares: &[Warrior], kind: usize| spares.iter().filter(|spare| spare.kind == kind).count();
         if widened && let Some(cues) = &mut self.cues {
-            cues.stand_by(arena.fighter_count() + wanted.saturating_sub(arena.free_warriors()));
+            let short: usize =
+                (0..kinds).map(|kind| wanted_of(kind).saturating_sub(arena.free_warriors_of(kind))).sum();
+            cues.stand_by(arena.fighter_count() + short);
         }
-        if have < wanted
-            && let Some(stock) = &self.stock
-        {
-            let world = scene.world_mut();
-            let mut stood = 0;
-            while have + stood < wanted {
+        let world = scene.world_mut();
+        let mut stood = 0;
+        let mut stand = true;
+        let mut all_stand = kinds > 0;
+        for (kind, stock) in self.stocks.iter().enumerate() {
+            let wanted = wanted_of(kind);
+            let mut have = arena.free_warriors_of(kind) + spares_of(&self.spares, kind);
+            while have < wanted {
                 if stood > 0
                     && let Pace::Within { budget, spent } = pace
                 {
@@ -238,34 +251,42 @@ impl FightShow {
                     if stood * ENTITIES_A_WARRIOR as usize >= budget.entities as usize
                         || stopwatch.elapsed() >= limit
                     {
-                        break;
+                        stand = false;
                     }
                 }
-                let pair = stand_warrior(world, stock);
-                undraw(world, pair);
-                self.spares.push(pair);
+                if !stand {
+                    all_stand = false;
+                    break;
+                }
+                let warrior = stand_warrior(world, stock, kind);
+                undraw(world, warrior);
+                self.spares.push(warrior);
                 stood += 1;
+                have += 1;
             }
+        }
+        if stood > 0 {
             volumes.stats.stood_ahead += stood as u32;
             volumes.stats.warming_frames += 1;
         }
 
-        if self.spares.len() + arena.free_warriors() >= wanted
-            && volumes.warmth.contains(&Warmth::Warming)
-            && let Some(stock) = &self.stock
-        {
+        if all_stand && volumes.warmth.contains(&Warmth::Warming) {
             // All of them drawn, so that what holds drawn warriors has room for every one, then none, then
-            // the way back once, so that the world knows it: an arrival then moves nothing that grows.
-            let world = scene.world_mut();
-            for &pair in &self.spares {
-                draw(world, pair, stock.meshes);
+            // the way back once for each kind, so that the world knows it: an arrival then moves nothing that
+            // grows.
+            for &warrior in &self.spares {
+                if let Some(stock) = self.stocks.get(warrior.kind) {
+                    draw(world, warrior, stock.meshes);
+                }
             }
-            for &pair in &self.spares {
-                undraw(world, pair);
+            for &warrior in &self.spares {
+                undraw(world, warrior);
             }
-            if let Some(&pair) = self.spares.first() {
-                draw(world, pair, stock.meshes);
-                undraw(world, pair);
+            for (kind, stock) in self.stocks.iter().enumerate() {
+                if let Some(&warrior) = self.spares.iter().find(|spare| spare.kind == kind) {
+                    draw(world, warrior, stock.meshes);
+                    undraw(world, warrior);
+                }
             }
             for (index, warmth) in volumes.warmth.iter_mut().enumerate() {
                 if *warmth == Warmth::Warming {

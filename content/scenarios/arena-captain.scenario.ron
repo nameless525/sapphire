@@ -1,0 +1,16 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the arena's player against the captain and a warrior at its side (M3 B3b): two kinds of enemy on the same moves, each drawn as its own kind",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron", "content/combat/enemy/captain.enemy.ron"],
+        cast: [
+            (moves: "player", at: "player", faction: 1, soft_lock: true),
+            (moves: "captain", at: "enemy", faction: 2, brain: true),
+            (moves: "warrior", at: "crowd_0", faction: 2, brain: true),
+        ],
+    ),
+)

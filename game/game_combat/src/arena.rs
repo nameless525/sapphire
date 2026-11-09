@@ -90,7 +90,7 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
 use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
-use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, Simulation};
+use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, MoveSetId, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::{PER_MILLE, RootSample};
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
@@ -419,15 +419,16 @@ impl Root {
     }
 }
 
-/// What draws the enemy: its model and its blade, which is drawn on its own.
+/// What draws an enemy: its model, and what it holds, which is drawn on its own, if it holds a mesh of its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ArenaEnemy {
     pub(crate) warrior: Entity,
-    pub(crate) blade: Entity,
-    /// The blade's mesh in the warrior's model space, where its pose has the hand.
-    pub(crate) blade_in_model: Mat4,
-    /// The joint that holds it.
-    pub(crate) hand: usize,
+    /// Its blade, and where its held pose grips it.
+    pub(crate) blade: Option<(Entity, enemy::Grip)>,
+    /// Its kind of enemy's place among the stage's ([`ArenaActors::set_kinds`]).
+    pub(crate) kind: usize,
+    /// How big that kind draws.
+    pub(crate) sizes: enemy::Sizes,
 }
 
 /// A warrior of these sizes whose feet are at `position`, as the camera frames one.
@@ -543,9 +544,27 @@ struct StageFighter {
     root: Root,
     /// What its graph has yet to hear.
     signals: FighterSignals,
-    /// A warrior's blade, which is drawn on its own, and where that is in the warrior's model space. The
-    /// character's is `crate::blade`'s.
-    blade: Option<(Entity, Mat4)>,
+    /// A warrior's blade, which is drawn on its own, and the joint that holds it and where that is in the
+    /// warrior's model space. The character's is `crate::blade`'s.
+    blade: Option<(Entity, enemy::Grip)>,
+    /// A warrior's kind of enemy, by its place among the stage's: 0 for the character, who has none.
+    kind: usize,
+    /// How big a warrior draws. The character draws as it is.
+    sizes: enemy::Sizes,
+}
+
+impl StageFighter {
+    /// A warrior drawn by `parts`, at the origin until something stands it somewhere.
+    fn of(parts: ArenaEnemy) -> Self {
+        Self {
+            entity: parts.warrior,
+            root: Root::standing(Vec3::ZERO, 0.0),
+            signals: FighterSignals::default(),
+            blade: parts.blade,
+            kind: parts.kind,
+            sizes: parts.sizes,
+        }
+    }
 }
 
 /// What a simulation has that the stage doesn't yet: [`ArenaActors::next_change`].
@@ -565,8 +584,9 @@ pub struct ArenaActors {
     /// What the last step said of each of them, for what poses them to read. Nothing before a fight.
     /// Beside [`Self::fighters`] rather than in it, so a fight's cues can read it as it stands.
     seen: Vec<Option<ActorView>>,
-    /// A warrior's joint that holds its blade.
-    hand: usize,
+    /// Each set of moves a kind of enemy plays, and that kind's place among the stage's. An actor on any
+    /// other set draws as the first kind.
+    kinds: Vec<(MoveSetId, usize)>,
     /// The foe the player has now, which the HUD shows and the character looks at.
     shown: Option<ActorId>,
     /// What the player's set's `ultimate` costs, as of the last step: nothing without one.
@@ -582,33 +602,27 @@ pub struct ArenaActors {
     ground: ArenaGround,
     /// Whether a fight has stepped, which draws the colliders itself.
     fighting: bool,
-    /// How big each warrior draws.
-    sizes: enemy::Sizes,
     /// The foe shown is a boss, as of the last step.
     boss: Option<BossBar>,
 }
 
 impl ArenaActors {
-    /// The two at their spawn points, drawn by `player` and `enemy`, each warrior at `sizes`.
-    pub(crate) fn new(
-        player: Entity,
-        enemy: ArenaEnemy,
-        sizes: enemy::Sizes,
-        shot: ArenaShot,
-        ground: ArenaGround,
-    ) -> Self {
+    /// The two at their spawn points, drawn by `player` and `enemy`.
+    pub(crate) fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
         let spawns = ground.spawns();
-        let fighter = |entity, spawn, blade| StageFighter {
-            entity,
-            root: Root::at(spawn),
+        let character = StageFighter {
+            entity: player,
+            root: Root::at(spawns.player),
             signals: FighterSignals::default(),
-            blade,
+            blade: None,
+            kind: 0,
+            sizes: enemy.sizes,
         };
-        let blade = Some((enemy.blade, enemy.blade_in_model));
+        let warrior = StageFighter { root: Root::at(spawns.enemy), ..StageFighter::of(enemy) };
         Self {
-            fighters: vec![fighter(player, spawns.player, None), fighter(enemy.warrior, spawns.enemy, blade)],
+            fighters: vec![character, warrior],
             seen: vec![None; 2],
-            hand: enemy.hand,
+            kinds: Vec::new(),
             shown: None,
             ultimate_cost: 0,
             locked_on: false,
@@ -617,9 +631,35 @@ impl ArenaActors {
             camera: (shot == ArenaShot::Director).then(|| ArenaCamera::new(spawns.player.yaw())),
             ground,
             fighting: false,
-            sizes,
             boss: None,
         }
+    }
+
+    /// Says which kind of enemy draws the fighters on each set: those a stage has stood by
+    /// (`FightShow::load_kinds`). Anyone on another set draws as the first.
+    pub(crate) fn set_kinds(&mut self, kinds: Vec<(MoveSetId, usize)>) {
+        self.kinds = kinds;
+    }
+
+    /// The place of the kind of enemy that draws `actor`.
+    pub(crate) fn kind_of(&self, actor: &ActorView) -> usize {
+        self.kind_of_set(actor.moves.set)
+    }
+
+    /// The place of the kind of enemy that draws someone on `set`.
+    pub(crate) fn kind_of_set(&self, set: Option<MoveSetId>) -> usize {
+        self.kinds.iter().find(|(kind_set, _)| Some(*kind_set) == set).map_or(0, |&(_, kind)| kind)
+    }
+
+    /// How many warriors of the kind at `kind` stand here with no actor yet.
+    pub(crate) fn free_warriors_of(&self, kind: usize) -> usize {
+        let free = self.seen.iter().zip(&self.fighters).skip(1).filter(|(seen, _)| seen.is_none());
+        free.filter(|(_, fighter)| fighter.kind == kind).count()
+    }
+
+    /// The kind of enemy `fighter` draws as, the player being 0, who has none.
+    pub(crate) fn kind(&self, fighter: usize) -> usize {
+        self.fighters[fighter].kind
     }
 
     /// How many fight here, the player among them.
@@ -650,12 +690,19 @@ impl ArenaActors {
         let gone = (1..self.fighters.len())
             .find(|&place| self.seen[place].is_some_and(|seen| simulation.actor(seen.id).is_none()));
         if let Some(place) = gone {
-            let fighter = self.fighters.remove(place);
-            self.seen.remove(place);
-            return Some(RosterChange::Left { warrior: fighter.entity });
+            return Some(self.take_off(place));
         }
-        self.bind_free_warriors(simulation, cast);
+        if let Some(change) = self.bind_free_warriors(simulation, cast) {
+            return Some(change);
+        }
         self.unseated(simulation, cast).map(|actor| RosterChange::Arrived(actor.id))
+    }
+
+    /// Takes the warrior at `place` off the stage.
+    fn take_off(&mut self, place: usize) -> RosterChange {
+        let fighter = self.fighters.remove(place);
+        self.seen.remove(place);
+        RosterChange::Left { warrior: fighter.entity }
     }
 
     /// How many warriors stand here with no actor yet.
@@ -683,21 +730,25 @@ impl ArenaActors {
     }
 
     /// Gives a warrior no actor has yet to the first who needs one, so a fight starts on those who stood
-    /// here before it.
-    fn bind_free_warriors(&mut self, simulation: &Simulation, cast: &[ActorId]) {
+    /// here before it. One of another kind than that actor's can't draw it, and goes: the change to make.
+    fn bind_free_warriors(&mut self, simulation: &Simulation, cast: &[ActorId]) -> Option<RosterChange> {
         while let Some(free) = self.seen.iter().skip(1).position(Option::is_none) {
-            let Some(actor) = self.unseated(simulation, cast) else { return };
-            self.seen[free + 1] = Some(actor);
+            let actor = self.unseated(simulation, cast)?;
+            let place = free + 1;
+            if self.fighters[place].kind != self.kind_of(&actor) {
+                return Some(self.take_off(place));
+            }
+            self.seen[place] = Some(actor);
         }
+        None
     }
 
     /// Stands `warrior` on the stage for an actor [`Self::next_change`] named, where it stands now.
     pub(crate) fn stand(&mut self, warrior: ArenaEnemy, actor: ActorView) {
         self.fighters.push(StageFighter {
-            entity: warrior.warrior,
             root: Root::standing(actor.position, actor.yaw),
             signals: FighterSignals { cut: true, ..Default::default() },
-            blade: Some((warrior.blade, warrior.blade_in_model)),
+            ..StageFighter::of(warrior)
         });
         self.seen.push(Some(actor));
     }
@@ -735,7 +786,7 @@ impl ArenaActors {
             return None;
         }
         let (position, yaw) = authored_root_at(motion.tables.root_samples(), position);
-        let scale = if fighter == 0 { 1.0 } else { self.sizes.scale };
+        let scale = if fighter == 0 { 1.0 } else { self.fighters[fighter].sizes.scale };
         Some(AuthoredFootMotion {
             serial: current.serial,
             source_from_model: Affine3A::from_scale_rotation_translation(
@@ -756,7 +807,7 @@ impl ArenaActors {
             foe.and_then(|foe| self.place_of(foe)).unwrap_or(0)
         };
         self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
-        let height = if other == 0 { PLAYER_EYES } else { self.sizes.eyes };
+        let height = if other == 0 { PLAYER_EYES } else { self.fighters[other].sizes.eyes };
         Some(self.drawn(other, alpha).w_axis.truncate() + Vec3::Y * height)
     }
 
@@ -768,7 +819,8 @@ impl ArenaActors {
     /// Where `fighter` draws, `alpha` of the way between its last two steps.
     pub(crate) fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
         let root = self.fighters[fighter].root.transform(alpha);
-        if fighter == 0 { root } else { root * Mat4::from_scale(Vec3::splat(self.sizes.scale)) }
+        let scale = self.fighters[fighter].sizes.scale;
+        if fighter == 0 { root } else { root * Mat4::from_scale(Vec3::splat(scale)) }
     }
 
     /// The entities that draw each fighter's own blade, the player first, which has none here.
@@ -776,16 +828,19 @@ impl ArenaActors {
         self.fighters.iter().map(|fighter| fighter.blade.map(|(blade, _)| blade))
     }
 
-    /// A warrior's joint that holds its blade.
-    pub(crate) fn blade_hand(&self) -> usize {
-        self.hand
+    /// The joint that holds `fighter`'s blade, if it has one here.
+    pub(crate) fn blade_hand(&self, fighter: usize) -> Option<usize> {
+        self.fighters[fighter].blade.map(|(_, grip)| grip.hand)
     }
 
-    /// A new version of the warrior: the joint that holds its blade, and where that is in its held pose.
-    pub(crate) fn follow_new_enemy(&mut self, hand: usize, blade_in_model: Mat4) {
-        self.hand = hand;
-        for (_, held) in self.fighters.iter_mut().filter_map(|fighter| fighter.blade.as_mut()) {
-            *held = blade_in_model;
+    /// A new version of the kind of enemy at `kind`: the joint that holds its blade, and where that is in its
+    /// held pose.
+    pub(crate) fn follow_new_kind(&mut self, kind: usize, grip: Option<enemy::Grip>) {
+        let Some(grip) = grip else { return };
+        for fighter in self.fighters.iter_mut().skip(1).filter(|fighter| fighter.kind == kind) {
+            if let Some((_, held)) = &mut fighter.blade {
+                *held = grip;
+            }
         }
     }
 
@@ -809,8 +864,8 @@ impl ArenaActors {
     /// Where `fighter`'s pose has the hand that holds its blade, in its model space: from a pose that
     /// moves, each frame. [`Self::present`] draws the blade there.
     pub(crate) fn hold_blade(&mut self, fighter: usize, blade_in_model: Mat4) {
-        if let Some((_, held)) = &mut self.fighters[fighter].blade {
-            *held = blade_in_model;
+        if let Some((_, grip)) = &mut self.fighters[fighter].blade {
+            grip.at = blade_in_model;
         }
     }
 
@@ -1016,7 +1071,7 @@ impl ArenaActors {
             let mut distance = (at - feet).with_y(0.0).length_squared();
             for (kept, far) in nearest.iter_mut().zip(&mut distances) {
                 if distance < *far {
-                    let subject = warrior_subject(self.sizes, at);
+                    let subject = warrior_subject(self.fighters[place].sizes, at);
                     let was = kept.replace(subject);
                     std::mem::swap(far, &mut distance);
                     match was {
@@ -1094,7 +1149,7 @@ impl ArenaActors {
                 Some(root) if place == 1 => root,
                 _ => self.drawn(place, alpha),
             };
-            let blade = fighter.blade.map(|(blade, held)| (blade, drawn * held));
+            let blade = fighter.blade.map(|(blade, grip)| (blade, drawn * grip.at));
             for (entity, drawn) in [(fighter.entity, drawn)].into_iter().chain(blade) {
                 if let Some(mut transform) = world.get_mut::<RenderTransform>(entity) {
                     transform.set_if_neq(RenderTransform(drawn));
@@ -1106,8 +1161,9 @@ impl ArenaActors {
             world.resource_mut::<OrbitCamera>().set_target(follow_target(feet));
         }
         let framed = self.framed();
-        let target =
-            framed.map(|place| warrior_subject(self.sizes, self.fighters[place].root.position(alpha)));
+        let target = framed.map(|place| {
+            warrior_subject(self.fighters[place].sizes, self.fighters[place].root.position(alpha))
+        });
         let bystanders = self.bystanders(framed, alpha);
         let player_yaw = self.fighters[0].root.yaw(alpha);
         if let (Some(camera), Some(aspect)) = (&mut self.camera, aspect) {
@@ -1280,8 +1336,13 @@ mod tests {
         let mut world = World::new();
         let mut placed = || world.spawn(RenderTransform::default()).id();
         let (player, warrior, blade) = (placed(), placed(), placed());
-        let enemy = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
-        (ArenaActors::new(player, enemy, enemy::Sizes::of(&enemy::Look::warrior()), shot, ground), world)
+        (ArenaActors::new(player, warrior_parts(warrior, blade), shot, ground), world)
+    }
+
+    /// A warrior drawn by these, with its blade in its hand at its model's origin.
+    fn warrior_parts(warrior: Entity, blade: Entity) -> ArenaEnemy {
+        let grip = enemy::Grip { hand: 0, at: Mat4::IDENTITY };
+        ArenaEnemy { warrior, blade: Some((blade, grip)), kind: 0, sizes: enemy::Look::warrior().sizes() }
     }
 
     /// A fight of the `arena-fight` scenario, on a director, and what it does first.
@@ -1302,8 +1363,7 @@ mod tests {
                 RosterChange::Arrived(id) => {
                     let warrior = world.spawn(RenderTransform::default()).id();
                     let blade = world.spawn(RenderTransform::default()).id();
-                    let parts = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
-                    actors.stand(parts, sim.actor(id).expect("it just arrived"));
+                    actors.stand(warrior_parts(warrior, blade), sim.actor(id).expect("it just arrived"));
                 }
                 RosterChange::Left { warrior } => {
                     world.despawn(warrior);

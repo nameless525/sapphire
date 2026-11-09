@@ -24,6 +24,11 @@ use sapphire_stage::turntable::Turntable;
 
 const HIPS: [f32; 3] = [0.0, 0.8, 0.0];
 
+/// A warrior's body and blade, for one whose kind holds a blade.
+fn pair(warrior: &Warrior) -> (Entity, Entity) {
+    (warrior.body, warrior.blade.expect("it holds a blade"))
+}
+
 const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
 
 /// A scene and a fight's show on it, which reads as the scene it's on.
@@ -108,7 +113,7 @@ impl Staged {
     }
 
     pub(super) fn animate_fighters(&mut self, player: &ClipTable<'_>, enemy: &ClipTable<'_>, alpha: f32) {
-        self.show.animate_fighters(&mut self.scene, player, enemy, alpha, None);
+        self.show.animate_fighters(&mut self.scene, player, std::slice::from_ref(enemy), alpha, None);
     }
 
     pub(super) fn cue_show(&self) -> Option<&CueShow> {
@@ -308,9 +313,10 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
     let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
     let set = ColliderSet::read(&cooked).expect("it reads");
     let sizes = Look::warrior().sizes();
-    let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2, sizes };
+    let grip = Some(enemy::Grip { hand: 2, at: Mat4::IDENTITY });
+    let held = enemy::Held { pose: pose.clone(), figure, grip, sizes };
     scene.spawn_arena(Arena {
-        enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) },
+        enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: Some(MeshHandle::from_raw(5)) },
         held,
         shot: ArenaShot::Follow,
         look: LookDev { town, fog_cards: None, pose, figure },
@@ -320,6 +326,80 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
     let scenario = find_scenario(&SCENARIOS, crate::arena::FIGHT_SCENARIO).expect("listed");
     let (sim, cast) = scenario.start(scenario.config).expect("it starts");
     (scene, sim, cast)
+}
+
+/// Two kinds of enemy in one fight (M3 B3b): each fighter draws as its own kind, at its kind's size, with
+/// its kind's mesh, and one whose kind holds nothing of its own draws with no blade. The warrior the stage
+/// stood before the fight is of the other kind than who it would draw, so it goes, and comes back for the
+/// warrior. They all pose, and none allocates once they're there.
+#[test]
+fn each_kind_of_enemy_draws_as_itself() {
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = Clip::read(&bytes).expect("a valid clip");
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+    let (mut scene, _, _) = fighting(&table);
+    let scenario = find_scenario(&SCENARIOS, "arena-captain").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
+    let kinds = scenario.kinds_of_enemy().expect("it plans");
+    let (warrior_set, captain_set) = (kinds[0].set, kinds[1].set);
+    assert_eq!(kinds[0].kind, enemy::KIND);
+
+    // The captain's kind, standing by as `load_kinds` has it: a mesh of its own, bigger, and holding nothing.
+    let warrior = &scene.show.stocks[0];
+    let sizes = enemy::Sizes { scale: 0.95, ..warrior.held.sizes };
+    let held = enemy::Held { grip: None, sizes, ..warrior.held.clone() };
+    let captain_mesh = MeshHandle::from_raw(6);
+    let meshes = EnemyMeshes { warrior: captain_mesh, blade: None };
+    let driver = warrior.driver.clone();
+    scene.show.stocks.push(WarriorStock { meshes, held, driver });
+    let arena = scene.show.arena.as_deref_mut().expect("built");
+    arena.set_kinds(vec![(warrior_set, 0), (captain_set, 1)]);
+    let stood = scene.show.warriors[0];
+
+    sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+    scene.follow_simulation(&sim, &cast);
+    assert_eq!(scene.show.warriors.len(), 2);
+    assert!(scene.show.spares.is_empty(), "the warrior stood before came back for the warrior");
+    assert!(scene.show.warriors.contains(&stood));
+    let arena = scene.show.arena.as_ref().expect("built");
+    let world = scene.world();
+    for (place, id) in cast.iter().enumerate().skip(1) {
+        let actor = sim.actor(*id).expect("alive");
+        let (kind, scale) = if actor.moves.set == Some(captain_set) { (1, 0.95) } else { (0, 0.8) };
+        let entity = arena.entity(place);
+        let warrior = scene.show.warriors.iter().find(|warrior| warrior.body == entity).expect("drawn");
+        assert_eq!(warrior.kind, kind, "{place}");
+        assert_eq!(arena.kind(place), kind, "{place}");
+        let mesh = world.get::<RenderMesh>(entity).expect("drawn").0;
+        assert_eq!(mesh == captain_mesh, kind == 1, "{place}");
+        assert_eq!(warrior.blade.is_some(), kind == 0, "only the warrior holds a blade");
+        assert_eq!(arena.blade_hand(place), (kind == 0).then_some(2));
+        let drawn = arena.drawn(place, 1.0);
+        assert!((drawn.x_axis.length() - scale).abs() < 1e-5, "{place} at its kind's size");
+        assert!(drawn.transform_point3(Vec3::ZERO).distance(actor.position) < 1e-5, "{place}");
+    }
+
+    let _ = scene.frame_packet(1.0, Some((16, 9)));
+    scene.end_frame();
+    assert_eq!(
+        scene.packet().characters.len(),
+        1 + 1 + 2,
+        "the player, the captain, and the warrior and blade"
+    );
+    scene.animate_fighters(&table, &table, 1.0);
+    assert_eq!(scene.anim_stats().characters as usize, cast.len(), "they all pose");
+    let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+        for _ in 0..200 {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            scene.follow_simulation(&sim, &cast);
+            scene.animate_fighters(&table, &table, 0.5);
+        }
+    });
+    if sapphire_core::alloc::PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
 }
 
 /// A fight's every actor draws: a warrior comes on for each, playing the graph, with a blade of its own at
@@ -338,9 +418,9 @@ fn everyone_in_a_fight_stands_on_the_stage() {
     scene.follow_simulation(&sim, &cast);
     assert_eq!(scene.show.warriors.len(), cast.len() - 1);
     let world = scene.world();
-    for (warrior, blade) in &scene.show.warriors {
-        assert!(world.get::<GraphDriver>(*warrior).is_some());
-        assert!(world.get::<RenderTransform>(*blade).is_some());
+    for (warrior, blade) in scene.show.warriors.iter().map(pair) {
+        assert!(world.get::<GraphDriver>(warrior).is_some());
+        assert!(world.get::<RenderTransform>(blade).is_some());
     }
 
     let _ = scene.frame_packet(1.0, Some((16, 9)));
@@ -350,7 +430,7 @@ fn everyone_in_a_fight_stands_on_the_stage() {
     let arena = scene.show.arena.as_ref().expect("built");
     for (place, id) in cast.iter().enumerate().skip(1) {
         let at = sim.actor(*id).expect("alive").position;
-        let (warrior, _) = scene.show.warriors[place - 1];
+        let warrior = scene.show.warriors[place - 1].body;
         assert_eq!(arena.entity(place), warrior);
         let drawn = scene.world().get::<RenderTransform>(warrior).expect("placed").0;
         assert!(drawn.transform_point3(Vec3::ZERO).distance(at) < 1e-5, "{place}");
@@ -369,14 +449,14 @@ fn everyone_in_a_fight_stands_on_the_stage() {
         assert_eq!(counts.allocations, 0, "{counts:?}");
     }
 
-    let (leaving, blade) = scene.show.warriors[2];
+    let leaving = scene.show.warriors[2];
     assert!(sim.despawn(cast[3]));
     sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
     scene.follow_simulation(&sim, &cast);
     assert_eq!(scene.show.warriors.len(), cast.len() - 2);
-    assert!(scene.world().get::<RenderMesh>(leaving).is_none(), "nothing draws it");
-    assert!(scene.world().get::<RenderMesh>(blade).is_none());
-    assert_eq!(scene.show.spares, [(leaving, blade)], "and it's there for whoever comes next");
+    assert!(scene.world().get::<RenderMesh>(leaving.body).is_none(), "nothing draws it");
+    assert!(scene.world().get::<RenderMesh>(pair(&leaving).1).is_none());
+    assert_eq!(scene.show.spares, [leaving], "and it's there for whoever comes next");
     let _ = scene.frame_packet(1.0, Some((16, 9)));
     scene.end_frame();
     assert_eq!(scene.packet().characters.len(), 1 + 2 * (cast.len() - 2), "they aren't lit either");
@@ -425,8 +505,8 @@ fn a_wave_comes_on_with_no_heap() {
     assert_eq!(scene.show.warriors.len(), planned);
     assert!(scene.show.spares.is_empty());
     let world = scene.world();
-    for (warrior, blade) in &scene.show.warriors {
-        assert!(world.get::<RenderMesh>(*warrior).is_some() && world.get::<RenderMesh>(*blade).is_some());
+    for (warrior, blade) in scene.show.warriors.iter().map(pair) {
+        assert!(world.get::<RenderMesh>(warrior).is_some() && world.get::<RenderMesh>(blade).is_some());
     }
     scene.animate_fighters(&table, &table, 1.0);
     assert_eq!(scene.anim_stats().characters as usize, 1 + planned, "they all pose");
@@ -530,7 +610,7 @@ fn both_fighters_play_their_graphs_and_the_blade_stays_in_hand() {
     let cooked = Clip::read(&bytes).expect("a valid clip");
     let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
     let (mut scene, mut sim, cast) = fighting(&table);
-    let (warrior, blade) = scene.show.warriors[0];
+    let (warrior, blade) = pair(&scene.show.warriors[0]);
     let palette =
         |scene: &Staged, entity| scene.world().get::<RenderPose>(entity).expect("posed").palette.clone();
     let held = palette(&scene, warrior);
@@ -658,13 +738,12 @@ pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     let set = ColliderSet::read(&cooked).expect("it reads");
     let ground = ArenaGround::new(set).expect("the stage stands on it");
     let mut scene = Staged::of(Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false));
-    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: Some(MeshHandle::from_raw(3)) };
     let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
     let held = enemy::Held {
         pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-        blade: blade_in_model,
-        hand: 0,
+        grip: Some(enemy::Grip { hand: 0, at: blade_in_model }),
         sizes: Look::warrior().sizes(),
     };
     scene.spawn_arena(Arena { enemy, held, shot, look, ground });
@@ -887,7 +966,7 @@ fn the_arena_stands_its_actors_where_the_simulation_has_them() {
     assert_eq!(origin(&scene, enemy), spawns.enemy.position());
     assert_eq!(scene.figure(), figure);
     // Drawn at its own size, with its blade where the model holds it, facing where it faces.
-    let (warrior, blade) = scene.show.warriors[0];
+    let (warrior, blade) = pair(&scene.show.warriors[0]);
     let scale = Look::warrior().scale;
     let transform = |scene: &Staged, entity| scene.world().get::<RenderTransform>(entity).expect("placed").0;
     let upright = transform(&scene, warrior).transform_vector3(Vec3::Y).length();
@@ -973,14 +1052,13 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
     let held = enemy::Held {
         pose,
         figure: warrior_figure,
-        blade: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)),
-        hand: 0,
+        grip: Some(enemy::Grip { hand: 0, at: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)) }),
         sizes: Look::warrior().sizes(),
     };
-    let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) };
+    let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: Some(MeshHandle::from_raw(5)) };
     scene.spawn_enemy(meshes, held);
     scene.step();
-    let (warrior, blade) = scene.show.warriors[0];
+    let (warrior, blade) = pair(&scene.show.warriors[0]);
     let (warrior, blade) = (InstanceId(warrior.to_bits()), InstanceId(blade.to_bits()));
     let character = InstanceId(scene.character().to_bits());
     let packet = scene.frame_packet(1.0, Some((1920, 1080)));
@@ -998,7 +1076,10 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
     let (warrior_key, blade_key) = (listed(warrior).lighting.key, listed(blade).lighting.key);
     assert!(warrior_key.direction.abs_diff_eq(blade_key.direction, 1e-4), "the two are lit alike");
     scene.end_frame();
-    scene.set_enemy_meshes(EnemyMeshes { warrior: MeshHandle::from_raw(6), blade: MeshHandle::from_raw(7) });
+    scene.set_enemy_meshes(EnemyMeshes {
+        warrior: MeshHandle::from_raw(6),
+        blade: Some(MeshHandle::from_raw(7)),
+    });
     let packet = scene.frame_packet(1.0, Some((1920, 1080)));
     let drawn: Vec<MeshHandle> = packet.instances.changed.iter().map(|instance| instance.mesh).collect();
     assert!(
@@ -1209,12 +1290,11 @@ fn ward_stage() -> Staged {
     let cooked = sapphire_gameplay::replay::ward_colliders().expect("it cooks");
     let ground = ArenaGround::at(ColliderSet::read(&cooked).expect("it reads"), &place).expect("it stands");
     let mut scene = Staged::of(Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false));
-    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: Some(MeshHandle::from_raw(3)) };
     let held = enemy::Held {
         pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-        blade: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-        hand: 0,
+        grip: Some(enemy::Grip { hand: 0, at: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)) }),
         sizes: Look::warrior().sizes(),
     };
     let shot = ArenaShot::Director;

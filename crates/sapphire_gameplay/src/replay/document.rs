@@ -198,6 +198,26 @@ fn zone_pack(id: AssetId) -> Result<Option<String>, ScenarioError> {
     Ok(None)
 }
 
+/// A kind of enemy in a scenario's simulations: what a stage draws the fighters on `set` as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KindOfEnemy {
+    /// The set its fighters play.
+    pub set: crate::moves::MoveSetId,
+    /// Its `.enemy.ron`'s ID, which its cook has.
+    pub kind: AssetId,
+}
+
+/// One of a scenario's `enemies`, read, and where [`ScenarioDocument::set_up`] puts it.
+struct PlannedEnemy {
+    document: EnemyDocument,
+    /// Its moves' place in `moves`.
+    moves: usize,
+    /// Another kind took those moves first, so it has a copy of them.
+    again: bool,
+    /// The number of the set it plays, in a simulation that had none before.
+    set: u32,
+}
+
 /// The side a document's number means: 0 is none.
 const fn side_of(number: u8) -> Option<Faction> {
     if number == 0 { Some(Faction::NONE) } else { Faction::new(number) }
@@ -288,6 +308,49 @@ impl ScenarioDocument {
         Ok(())
     }
 
+    /// Each of its kinds of enemy, by its sidecar's ID, and the set its fighters play in a simulation this
+    /// sets up: what draws them is that kind's look, which a stage reads from its cooked document (M3 B3b). The
+    /// simulation never reads it.
+    pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
+        let planned = self.planned_enemies()?;
+        let kinds = self.enemies.iter().zip(planned).map(|(path, plan)| {
+            Ok(KindOfEnemy { set: crate::moves::MoveSetId(plan.set), kind: id_of(path)? })
+        });
+        kinds.collect()
+    }
+
+    /// The document each of its move sets is loaded from, in set order: `moves`, then the one each copy
+    /// for a second kind on the same moves is, so a live edit of a document reaches every set it plays.
+    pub(super) fn set_documents(&self) -> Result<Vec<&str>, ScenarioError> {
+        let copies = self.planned_enemies()?.into_iter().filter(|plan| plan.again);
+        let copies: Vec<&str> = copies.map(|plan| self.moves[plan.moves].as_str()).collect();
+        Ok(self.moves.iter().map(String::as_str).chain(copies).collect())
+    }
+
+    /// Where each of `enemies` goes, in a simulation [`Self::set_up`] makes: on the set its moves have, the
+    /// first kind on them, or on a copy added after everything before it.
+    fn planned_enemies(&self) -> Result<Vec<PlannedEnemy>, ScenarioError> {
+        let mut taken = vec![false; self.moves.len()];
+        let mut next = self.moves.len() as u32;
+        let mut planned = Vec::with_capacity(self.enemies.len());
+        for path in &self.enemies {
+            let document = EnemyDocument::parse(named(path)?)?;
+            let moves = self.moves.iter().position(|moves| id_of(moves).ok() == Some(document.moves));
+            let moves = moves
+                .ok_or_else(|| invalid(format!("enemies: {path}"), "its moves aren't one of `moves`"))?;
+            let again = std::mem::replace(&mut taken[moves], true);
+            let set = match again {
+                true => {
+                    next += 1;
+                    next - 1
+                }
+                false => moves as u32,
+            };
+            planned.push(PlannedEnemy { document, moves, again, set });
+        }
+        Ok(planned)
+    }
+
     /// What a new recording of it starts from.
     pub(super) fn config(&self) -> SimConfig {
         SimConfig {
@@ -319,15 +382,14 @@ impl ScenarioDocument {
         for path in &self.moves {
             sets.push((kind_of(path), sim.add_move_set(moves_of(path)?)));
         }
-        for path in &self.enemies {
-            let document = EnemyDocument::parse(named(path)?)?;
-            let moves = self.moves.iter().find(|moves| id_of(moves).ok() == Some(document.moves));
-            let moves = moves
-                .ok_or_else(|| invalid(format!("enemies: {path}"), "its moves aren't one of `moves`"))?;
-            let enemy = document.compile(&MoveSetDocument::parse(named(moves)?)?)?;
-            let (_, set) = *sets.iter().find(|(kind, _)| *kind == kind_of(moves)).expect("added above");
-            let set =
-                if sim.move_library().mind(set).is_some() { sim.add_move_set(moves_of(moves)?) } else { set };
+        let planned = self.planned_enemies()?;
+        for (path, plan) in self.enemies.iter().zip(&planned) {
+            let moves = &self.moves[plan.moves];
+            let enemy = plan.document.compile(&MoveSetDocument::parse(named(moves)?)?)?;
+            let set = match plan.again {
+                false => sets[plan.moves].1,
+                true => sim.add_move_set(moves_of(moves)?),
+            };
             sim.add_enemy(set, enemy.mind)?;
             // A kind of enemy named as its moves are is those moves, already listed.
             if !sets.contains(&(kind_of(path), set)) {
@@ -589,5 +651,48 @@ mod tests {
                 assert!(named(path).is_ok(), "{name}: {path}");
             }
         }
+    }
+
+    /// What a stage draws each fighter as is what the simulation fights it as: every kind of enemy's set is a
+    /// set with that kind's mind, a set of its own, and a second kind on the same moves has a copy of them.
+    #[test]
+    fn each_kind_of_enemy_says_the_set_its_fighters_play() {
+        for (name, text) in SCENARIO_DOCUMENTS {
+            let document: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
+            let mut sim = Simulation::new(document.config());
+            document.set_up(&mut sim).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let kinds = document.kinds_of_enemy().unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(kinds.len(), document.enemies.len(), "{name}");
+            for (kind, path) in kinds.iter().zip(&document.enemies) {
+                let mind = sim.move_library().mind(kind.set).unwrap_or_else(|| panic!("{name}: {path}"));
+                let compiled = EnemyDocument::parse(named(path).expect("held")).expect("reads");
+                assert_eq!(
+                    mind.boss(),
+                    compiled.boss.as_ref().map(|boss| boss.name.as_str()),
+                    "{name}: {path}"
+                );
+                assert_eq!(kind.kind, id_of(path).expect("a sidecar"), "{name}: {path}");
+                assert_eq!(kinds.iter().filter(|other| other.set == kind.set).count(), 1, "{name}: {path}");
+            }
+        }
+        let boss = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "arena-boss").expect("held").1;
+        let boss: ScenarioDocument = sapphire_serialize::from_ron(boss).expect("reads");
+        let captain = id_of("content/combat/enemy/captain.enemy.ron").expect("a sidecar");
+        let kinds = boss.kinds_of_enemy().expect("it plans");
+        assert_eq!(kinds, [KindOfEnemy { set: crate::moves::MoveSetId(1), kind: captain }]);
+    }
+
+    /// A second kind on moves another kind has goes on a copy of them, after every set `moves` lists.
+    #[test]
+    fn a_second_kind_on_the_same_moves_plays_a_copy_of_them() {
+        let mut document = arena_fight();
+        document.enemies.push("content/combat/enemy/captain.enemy.ron".to_owned());
+        let mut sim = Simulation::new(document.config());
+        document.set_up(&mut sim).expect("it starts");
+        let kinds = document.kinds_of_enemy().expect("it plans");
+        let sets: Vec<u32> = kinds.iter().map(|kind| kind.set.0).collect();
+        assert_eq!(sets, [1, 2]);
+        assert_eq!(sim.move_library().set_count(), 3);
+        assert_eq!(sim.move_library().mind(kinds[1].set).and_then(|mind| mind.boss()), Some("boss-captain"));
     }
 }

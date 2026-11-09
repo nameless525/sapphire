@@ -385,6 +385,8 @@ impl App for SandboxApp {
         if let Some(combat) = combat {
             show.fight.attach_prepared_combat(combat, &mut scene, &content)?;
         }
+        // Each of the fight's kinds of enemy, drawn as itself (M3 B3b), before the prewarm sees them.
+        show.fight.load_kinds(&mut content, &mut renderer.renderer, &device.gpu)?;
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_studio(layout, meshes);

@@ -47,6 +47,7 @@ pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
     checksums_file_name,
 };
+pub use document::KindOfEnemy;
 pub use file::{
     COMMANDS_FORMAT_VERSION, FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION,
     Recorder, Replay, ReplayCommand, ReplayError, is_valid_name,

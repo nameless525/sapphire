@@ -125,16 +125,16 @@
             // KayKit's blade (`content/third_party/kaykit_skeletons/assets/Skeleton_Blade.gltf`), in its
             // right hand.
             held: Some((mesh: "1a612690-4615-4346-86f0-c903784d2db5", joint: "handslot.r")),
-            // The model stands 2.33 units to its crown and 2.59 to its horns' tips. This puts the crown at
-            // 1.87 m and the horns at 2.07 m against the character's 1.62 m: a head taller, as the reference
-            // fights' common enemies stand, with a blade whose reach, 1.8 m with the arm straight, is about
-            // what its moves author.
-            scale: 0.8,
+            // The model stands 2.33 units to its crown and 2.59 to its horns' tips. A boss stands over the
+            // warriors it leads: this puts the crown at 2.21 m and the horns at 2.46 m, against the warrior's
+            // 1.87 m and the character's 1.62 m. Its moves are the warrior's, so its blade reaches no further
+            // than theirs: a boss of its own would have moves of its own.
+            scale: 0.95,
             height: 2.33,
-            // About where a face's eyes sit under a crown, for what a foe looks at.
-            eyes_below_crown: 0.2,
+            // About where a face's eyes sit under a crown, for what a foe looks at: the warrior's, as drawn.
+            eyes_below_crown: 0.24,
             // Its shoulders and a blade held down, for what a camera frames.
-            framed_radius: 0.45,
+            framed_radius: 0.53,
         ),
     ),
 )

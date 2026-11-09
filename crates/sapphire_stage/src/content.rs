@@ -767,13 +767,38 @@ pub struct Content {
     stock_inputs_locked: bool,
 }
 
-/// Whose graph it is, by a name its owner gives (M2 T2): each binds against its own skeleton.
+/// Whose graph it is, by a name its owner gives (M2 T2), and a number for an owner with several, as a fight
+/// has a graph for each kind of enemy (M3 B3b): each binds against its own skeleton.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphKey(pub &'static str);
+pub struct GraphKey {
+    name: &'static str,
+    number: u16,
+}
 
 impl GraphKey {
     /// The scene's character's, which [`Content::load_graph`] loads.
-    pub const CHARACTER: Self = Self("character");
+    pub const CHARACTER: Self = Self::new("character");
+
+    /// The graph named `name`, its owner's first.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self { name, number: 0 }
+    }
+
+    /// Its owner's graph number `number`, 0 being this one.
+    #[must_use]
+    pub const fn numbered(self, number: u16) -> Self {
+        Self { name: self.name, number }
+    }
+}
+
+impl std::fmt::Display for GraphKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.number {
+            0 => formatter.write_str(self.name),
+            number => write!(formatter, "{} {number}", self.name),
+        }
+    }
 }
 
 /// What the newest of `owner`'s `files` says its graph is, if there's one and it reads: what binds, once a
@@ -1887,7 +1912,7 @@ impl Content {
 
     /// The graph `key` binds: the one live tuning took, or the one it loaded.
     pub fn graph_document_of(&self, key: GraphKey) -> Result<AnimGraph, String> {
-        let held = self.held_graph(key).ok_or_else(|| format!("the graph of `{}` isn't loaded", key.0))?;
+        let held = self.held_graph(key).ok_or_else(|| format!("the graph of `{key}` isn't loaded"))?;
         held.document(&self.server)
     }
 

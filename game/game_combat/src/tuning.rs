@@ -257,7 +257,7 @@ impl Document {
                 graph.resolve(clip_id);
                 fight.show.replace_graph_document(scene, owner, graph, content, renderer, gpu)?;
                 tuning.count_edit(document_file_name(path));
-                Ok(format!("{}'s animation graph, from the next state's start", owner.0))
+                Ok(format!("{owner}'s animation graph, from the next state's start"))
             }
             Self::Ui => {
                 let shown = tuning.screen_source().ok_or("no screen is showing: it takes --ui-game")?;
@@ -1331,6 +1331,41 @@ mod tests {
         assert_eq!(library.current_revision(id), Some(0));
         assert!(library.is_current(id, &edited));
         assert_eq!(combat.simulation().tick(), 0);
+    }
+
+    /// In `arena-captain` the captain plays a copy of the warrior's moves (M3 B3b): a live edit of the
+    /// document reaches both sets, and says what the first did.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn an_edit_of_moves_two_kinds_play_reaches_both() {
+        const WARRIOR: &str = "warrior.moves.ron";
+        let scratch = Scratch::new("two-kinds");
+        let option = CombatOption::Record {
+            path: scratch.0.clone(),
+            scenario: "arena-captain".to_owned(),
+            script: Some("fight-back".to_owned()),
+        };
+        let mut combat = Combat::new(&option).expect("sets up");
+        // The warrior is the first kind, on the set its document loads, and the captain plays the copy.
+        let kinds = combat.kinds_of_enemy().expect("its kinds");
+        let (warrior, copy) = (kinds[0].set, kinds[1].set);
+        assert_eq!(combat.plays(WARRIOR), Some(warrior));
+        assert_ne!(warrior, copy);
+        let running = combat.simulation().move_library().current(warrior).expect("it runs").clone();
+        let mut document =
+            MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
+                .expect("parses");
+        document.moves[0].recovery += 1;
+        let edited =
+            compile_document(&document.to_text().expect("writes"), Some(&running)).expect("compiles").set;
+
+        let tuned = combat.tune(WARRIOR, edited.clone()).expect("no refusal");
+        assert_eq!(tuned, Some((warrior, Tuned::Replaced { revision: 1 })));
+        let library = combat.simulation().move_library();
+        for set in [warrior, copy] {
+            assert!(library.is_current(set, &edited), "{set:?}");
+        }
+        assert!(library.mind(copy).is_some(), "the copy is still the captain's");
     }
 
     /// All of a party plays one document, so an edit of it reaches a party's fight as it does anyone's, and

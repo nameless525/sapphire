@@ -57,7 +57,7 @@ use std::path::{Path, PathBuf};
 use sapphire_assets::AssetId;
 use sapphire_dialogue::ConditionId;
 use sapphire_gameplay::replay::{
-    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
+    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, KindOfEnemy, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, SCRIPTS, Scenario,
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
@@ -511,10 +511,18 @@ impl Combat {
         }
     }
 
-    /// The set that plays the document with this file name, in this fight (M2 T2).
+    /// The set that plays the document with this file name, in this fight (M2 T2): the first, when a second
+    /// kind of enemy plays a copy of it (M3 B3b).
     #[cfg(feature = "dev")]
     pub(crate) fn plays(&self, document: &str) -> Option<MoveSetId> {
         find_scenario(&SCENARIOS, self.scenario())?.set_of(document)
+    }
+
+    /// Every set that plays the document with this file name, in this fight: a live edit goes to each.
+    #[cfg(feature = "dev")]
+    fn sets_playing(&self, document: &str) -> Vec<MoveSetId> {
+        find_scenario(&SCENARIOS, self.scenario())
+            .map_or(Vec::new(), |scenario| scenario.sets_of(document).collect())
     }
 
     /// Gives this fight a live edit of the document with this file name, between steps: what the set
@@ -530,13 +538,17 @@ impl Combat {
         if self.simulation().overhead_presentation_pair().is_some() {
             return Err("live move editing requires an unconfigured fight".into());
         }
-        let Some(id) = self.plays(document) else { return Ok(None) };
+        let sets = self.sets_playing(document);
+        let Some((&id, copies)) = sets.split_first() else { return Ok(None) };
         match &mut self.mode {
             Mode::Replaying { name, .. } => {
                 Err(format!("`{name}` is a replay, which plays what it recorded: it takes no live edits"))
             }
             Mode::Recording { recording, .. } => {
                 let ended = recording.edited_at();
+                for &copy in copies {
+                    recording.tune_move_set(copy, set.clone());
+                }
                 let tuned = recording.tune_move_set(id, set);
                 if let (None, Some(tick)) = (ended, recording.edited_at()) {
                     tracing::warn!(
@@ -548,7 +560,12 @@ impl Combat {
                 }
                 Ok(tuned.map(|tuned| (id, tuned)))
             }
-            Mode::Fighting(fight) => Ok(fight.tune(document, id, set).map(|tuned| (id, tuned))),
+            Mode::Fighting(fight) => {
+                for &copy in copies {
+                    fight.sim.tune_move_set(copy, set.clone());
+                }
+                Ok(fight.tune(document, id, set).map(|tuned| (id, tuned)))
+            }
         }
     }
 
@@ -690,6 +707,14 @@ impl Combat {
             Mode::Recording { script, .. } => script.is_none(),
             Mode::Fighting(fight) => fight.script.is_none(),
         }
+    }
+
+    /// The scenario's kinds of enemy, and the sets their fighters play: what the stage draws each as
+    /// ([`crate::fight::FightShow::load_kinds`]).
+    pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, String> {
+        let scenario = find_scenario(&SCENARIOS, self.scenario());
+        let scenario = scenario.ok_or_else(|| format!("no scenario `{}`", self.scenario()))?;
+        scenario.kinds_of_enemy().map_err(|error| error.to_string())
     }
 
     /// The actors the scenario's input drives, the player first.

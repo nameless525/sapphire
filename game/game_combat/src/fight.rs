@@ -27,7 +27,7 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
-use sapphire_gameplay::replay::LiveMoves;
+use sapphire_gameplay::replay::{KindOfEnemy, LiveMoves};
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
@@ -70,8 +70,12 @@ use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneSho
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
 
-/// Whose graph is the enemy's.
-pub const ENEMY_GRAPH: GraphKey = GraphKey("enemy");
+/// Whose graph is the enemy's: the warrior's, and numbered for each other kind of enemy with a graph or a
+/// skeleton of its own ([`FightShow::load_kinds`]).
+pub const ENEMY_GRAPH: GraphKey = GraphKey::new("enemy");
+
+/// The most kinds of enemy one fight draws, the warrior among them.
+pub const MAX_KINDS: usize = 8;
 
 /// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws,
 /// and the enemy who fights there.
@@ -105,18 +109,37 @@ type GraphPlayers = QueryState<(
     &'static mut RenderTransform,
 )>;
 
+/// A kind of enemy as a fight has loaded it: its cooked document, and what its look names, held for as long
+/// as this is.
+struct KindAssets {
+    /// Its document's ID.
+    id: AssetId,
+    _document: Handle<Enemy>,
+    /// What draws it, read from that.
+    look: Look,
+    /// Its model, and what it holds, if that's a mesh of its own.
+    mesh: Handle<Mesh>,
+    _held: Option<Handle<Mesh>>,
+    /// The skeleton its model's skin names, and that skeleton's ID.
+    skeleton: Option<Handle<Skeleton>>,
+    skeleton_id: Option<AssetId>,
+    /// Its meshes on the renderer.
+    meshes: EnemyMeshes,
+    /// The versions of its mesh and skeleton last seen ([`FightShow::take_kind_changed`]).
+    versions: (u32, u32),
+    /// The number of the graph it plays ([`ENEMY_GRAPH`]): the place of the first kind with its graph and its
+    /// skeleton, so kinds that draw alike share one.
+    graph_slot: usize,
+    /// A new version of it landed that its other parts don't fit yet ([`FightShow::replace_kind`]).
+    waits: bool,
+}
+
 /// What loading has given a fight, which stays loaded for as long as this does.
 #[derive(Default)]
 struct FightAssets {
-    /// The enemy's kind (`--look-dev enemy`, `--arena`), and what draws it, read from that.
-    enemy_kind: Option<(Handle<Enemy>, Look)>,
-    /// The enemy's model and its blade.
-    enemy: Option<[Handle<Mesh>; 2]>,
-    /// The enemy's skeleton, with those.
-    enemy_skeleton: Option<Handle<Skeleton>>,
-    /// The versions of the enemy's mesh and skeleton last seen ([`FightShow::take_enemy_changed`]), once
-    /// there's an enemy.
-    enemy_versions: Option<(u32, u32)>,
+    /// The kinds of enemy (`--look-dev enemy`, `--arena`): the warrior first, which a fight always has
+    /// ([`FightShow::load_enemy`]), then those the fight names ([`FightShow::load_kinds`]).
+    kinds: Vec<KindAssets>,
     /// The player's sword (`--blade on`).
     sword: Option<Handle<Mesh>>,
     /// The arena's colliders (`--arena`'s).
@@ -256,12 +279,21 @@ impl ImpactPair {
     }
 }
 
-/// What stands another warrior on the stage, as a simulation asks for one.
+/// What stands another warrior of a kind on the stage, as a simulation asks for one.
 struct WarriorStock {
     meshes: EnemyMeshes,
     held: enemy::Held,
     /// What it plays, in a fight whose fighters play graphs: never itself played.
     driver: Option<GraphDriver>,
+}
+
+/// The entities that draw one warrior: its body and its blade, if its kind holds one, and which kind it is,
+/// by that kind's place in the fight's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Warrior {
+    body: Entity,
+    blade: Option<Entity>,
+    kind: usize,
 }
 
 /// What a fight has on the scene. Empty, it plays nothing and costs a few branches a frame.
@@ -270,13 +302,13 @@ pub struct FightShow {
     assets: FightAssets,
     /// The warriors and their blades: one with `--look-dev enemy`, and with `--arena` as many as the fight
     /// has actors for.
-    warriors: Vec<(Entity, Entity)>,
-    /// What stands the next, with `--arena`.
-    stock: Option<WarriorStock>,
+    warriors: Vec<Warrior>,
+    /// What stands the next of each kind, with `--arena`, in the kinds' order: the warrior's first.
+    stocks: Vec<WarriorStock>,
     /// Warriors with no [`RenderMesh`], so nothing draws them and nothing poses them, who have what they need
-    /// to come on: those whose actors have gone, and those a zone's encounters will want
+    /// to come on as their kind: those whose actors have gone, and those a zone's encounters will want
     /// ([`Self::follow_volumes`]). A warrior who comes on from here allocates nothing.
-    spares: Vec<(Entity, Entity)>,
+    spares: Vec<Warrior>,
     /// The fight's encounters as the stage follows them (M3 W5).
     volumes: volumes::Volumes,
     /// The character's blade, with `--blade on`.
@@ -289,8 +321,6 @@ pub struct FightShow {
     fighters_posed: bool,
     fixed_fighters: [Option<FixedFighter>; 2],
     impact: Option<ImpactPair>,
-    /// A new version of the enemy landed that its other parts don't fit yet ([`Self::replace_enemy`]).
-    enemy_waits: bool,
     /// Which party member the character draws as, with `--party`.
     party_looks: Option<Drawn>,
     /// A fight's cues, fired (`--cues`, M2 E3).
@@ -323,66 +353,134 @@ pub struct FightShow {
 }
 
 impl FightShow {
-    /// Loads until the enemy's kind is resident, and the meshes its look names, the enemy and its blade,
+    /// Loads until the warrior's kind is resident, and the meshes its look names, the enemy and its blade,
     /// are on `renderer`, with their materials and the maps they name, and the warrior's skeleton is
     /// resident, and returns their meshes: the load screen of `--look-dev enemy` and `--arena`. They stay
-    /// loaded from then on.
+    /// loaded from then on. On a new renderer, every kind loaded so far goes to it again, as each kind's
+    /// meshes ([`Self::set_enemy_meshes`]).
     pub fn load_enemy(
         &mut self,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<EnemyMeshes, AppInitError> {
-        let failed = |error: AppInitError| AppInitError::msg(format!("the enemy didn't load: {error}"));
-        let kind: Handle<Enemy> = content.hold(enemy::KIND, renderer, gpu).map_err(failed)?;
-        let look = content.read(&kind).ok_or_else(|| failed(AppInitError::msg("its kind isn't resident")))?;
-        let look = Look::of(&look.look()).map_err(|error| failed(AppInitError::msg(error)))?;
-        content.keep_mesh_copy(look.mesh);
-        let warrior = content.hold(look.mesh, renderer, gpu).map_err(failed)?;
-        let blade = content.hold(look.blade, renderer, gpu).map_err(failed)?;
-        let skeleton: Option<AssetId> =
-            content.mesh_copy(look.mesh).and_then(|mesh| mesh.skin.as_ref()?.skeleton);
-        let skeleton = skeleton.map(|id| content.hold(id, renderer, gpu)).transpose().map_err(failed)?;
-        self.assets.enemy = Some([warrior, blade]);
-        self.assets.enemy_skeleton = skeleton;
-        self.assets.enemy_versions = self.enemy_versions(content);
-        let mesh = |id| content.mesh_on_renderer(id).expect("a ready mesh was uploaded here");
-        let meshes = EnemyMeshes { warrior: mesh(look.mesh), blade: mesh(look.blade) };
-        self.assets.enemy_kind = Some((kind, look));
-        Ok(meshes)
+        if self.assets.kinds.is_empty() {
+            let warrior = load_kind(enemy::KIND, &[], content, renderer, gpu)?;
+            self.assets.kinds.push(warrior);
+        } else {
+            for place in 0..self.assets.kinds.len() {
+                let id = self.assets.kinds[place].id;
+                let again = load_kind(id, &self.assets.kinds[..place], content, renderer, gpu)?;
+                self.assets.kinds[place] = again;
+            }
+        }
+        Ok(self.assets.kinds[0].meshes)
     }
 
-    /// What draws the enemy, once [`Self::load_enemy`] has read it.
-    fn enemy_look(&self) -> Result<&Look, AppInitError> {
-        let look = self.assets.enemy_kind.as_ref().map(|(_, look)| look);
-        look.ok_or_else(|| AppInitError::msg("the enemy isn't loaded"))
+    /// Loads each of `kinds` the fight hasn't, as [`Self::load_enemy`] does the warrior, with its held pose,
+    /// and in a fight whose fighters play graphs its graph and a driver over it, and has the arena draw each
+    /// fighter on a kind's set as that kind (M3 B3b). Kinds that draw with the same assets share them: a mesh
+    /// or a clip is uploaded once. Call it with a fight's kinds once the arena stands
+    /// ([`Self::spawn_arena`]) and its fighters play ([`Self::play_fighters`]), before the fight's first
+    /// step, so a warrior of every kind comes on with nothing to load. Nothing without the arena.
+    pub fn load_kinds(
+        &mut self,
+        kinds: &[KindOfEnemy],
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        if self.arena.is_none() {
+            return Ok(());
+        }
+        if self.assets.kinds.is_empty() || self.stocks.len() != self.assets.kinds.len() {
+            return Err(AppInitError::msg("the warrior stands before any other kind of enemy can"));
+        }
+        let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());
+        let mut table = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            let place = match self.assets.kinds.iter().position(|loaded| loaded.id == kind.kind) {
+                Some(place) => place,
+                None if self.assets.kinds.len() == MAX_KINDS => {
+                    let error = format!("a fight draws up to {MAX_KINDS} kinds of enemy, and this has more");
+                    return Err(AppInitError::msg(error));
+                }
+                None => self.stand_by_kind(kind.kind, ground.clone(), content, renderer, gpu)?,
+            };
+            table.push((kind.set, place));
+        }
+        if let Some(arena) = &mut self.arena {
+            arena.set_kinds(table);
+        }
+        Ok(())
     }
 
-    /// Whether the enemy's mesh or skeleton has a new version since the last call or since
-    /// [`Self::load_enemy`], whichever way it came; they may land frames apart. Always false with no enemy,
-    /// and it allocates nothing.
-    fn take_enemy_changed(&mut self, content: &Content) -> bool {
-        let versions = self.enemy_versions(content);
-        std::mem::replace(&mut self.assets.enemy_versions, versions) != versions
+    /// Loads the kind of enemy `id` and makes what stands its warriors, with a driver on `ground` if there's
+    /// one, and returns its place.
+    fn stand_by_kind(
+        &mut self,
+        id: AssetId,
+        ground: Option<Arc<PhysicsWorld>>,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<usize, AppInitError> {
+        let kind = load_kind(id, &self.assets.kinds, content, renderer, gpu)?;
+        let place = self.assets.kinds.len();
+        let (meshes, owns_graph) = (kind.meshes, kind.graph_slot == place);
+        self.assets.kinds.push(kind);
+        let held = self.held_of(place, content)?;
+        if ground.is_some() && owns_graph {
+            self.load_graph_of(place, content, renderer, gpu)?;
+        }
+        let driver = ground.map(|ground| self.driver_of(place, content, ground)).transpose()?;
+        self.stocks.push(WarriorStock { meshes, held, driver });
+        Ok(place)
     }
 
-    /// The versions the enemy's mesh and skeleton are at, if there's an enemy.
-    fn enemy_versions(&self, content: &Content) -> Option<(u32, u32)> {
-        let [warrior, _] = self.assets.enemy.as_ref()?;
-        let skeleton = self.assets.enemy_skeleton.as_ref();
-        let skeleton = skeleton.map_or(0, |skeleton| content.version_of(skeleton));
-        Some((content.version_of(warrior), skeleton))
+    /// The kind of enemy at `place`, once [`Self::load_enemy`] or [`Self::load_kinds`] has loaded it.
+    fn kind_assets(&self, place: usize) -> Result<&KindAssets, AppInitError> {
+        self.assets.kinds.get(place).ok_or_else(|| AppInitError::msg("the enemy isn't loaded"))
+    }
+
+    /// The number of the graph the kind at `place` plays: the warrior's with no kinds loaded.
+    fn graph_slot(&self, place: usize) -> usize {
+        self.assets.kinds.get(place).map_or(0, |kind| kind.graph_slot)
+    }
+
+    /// Whose graph the kind at `place` plays.
+    fn graph_key(&self, place: usize) -> GraphKey {
+        ENEMY_GRAPH.numbered(self.graph_slot(place) as u16)
+    }
+
+    /// Whether the mesh or skeleton of the kind at `place` has a new version since the last call or since it
+    /// loaded, whichever way it came; they may land frames apart. Allocates nothing.
+    fn take_kind_changed(&mut self, place: usize, content: &Content) -> bool {
+        let Some(kind) = self.assets.kinds.get_mut(place) else { return false };
+        let versions = versions_of(kind, content);
+        std::mem::replace(&mut kind.versions, versions) != versions
+    }
+
+    /// The versions the warrior's mesh and skeleton are at, once it's loaded: the first kind's, which the
+    /// fight's own bodies pose.
+    pub(crate) fn enemy_versions(&self, content: &Content) -> Option<(u32, u32)> {
+        self.assets.kinds.first().map(|kind| versions_of(kind, content))
     }
 
     /// The enemy's held pose, from what [`Self::load_enemy`] loaded.
     pub fn held_enemy(&self, content: &Content) -> Result<enemy::Held, AppInitError> {
-        let look = self.enemy_look()?;
-        let skin = content.mesh_copy(look.mesh).and_then(|mesh| mesh.skin.as_ref());
-        let skeleton = self.assets.enemy_skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
+        self.held_of(0, content)
+    }
+
+    /// The held pose of the kind at `place`.
+    fn held_of(&self, place: usize, content: &Content) -> Result<enemy::Held, AppInitError> {
+        let kind = self.kind_assets(place)?;
+        let skin = content.mesh_copy(kind.look.mesh).and_then(|mesh| mesh.skin.as_ref());
+        let skeleton = kind.skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
-        enemy::held(skin, skeleton, look).map_err(AppInitError::msg)
+        enemy::held(skin, skeleton, &kind.look).map_err(AppInitError::msg)
     }
 
     /// Loads the enemy's graph as `Content::load_graph` does the character's.
@@ -392,9 +490,19 @@ impl FightShow {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        let skeleton = self.assets.enemy_skeleton.clone();
-        let graph = self.enemy_look()?.graph;
-        content.load_graph_of(ENEMY_GRAPH, skeleton, graph, renderer, gpu)
+        self.load_graph_of(0, content, renderer, gpu)
+    }
+
+    /// Loads the graph of the kind at `place`, as its own number.
+    fn load_graph_of(
+        &self,
+        place: usize,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        let kind = self.kind_assets(place)?;
+        content.load_graph_of(self.graph_key(place), kind.skeleton.clone(), kind.look.graph, renderer, gpu)
     }
 
     /// A graph driver for the enemy, from what [`Self::load_enemy`] and [`Self::load_enemy_graph`] loaded.
@@ -403,9 +511,20 @@ impl FightShow {
         content: &Content,
         ground: Arc<PhysicsWorld>,
     ) -> Result<GraphDriver, AppInitError> {
-        let binding = self.enemy_binding(content)?;
-        let skin = content.mesh_copy(self.enemy_look()?.mesh).and_then(|mesh| mesh.skin.as_ref());
-        let skeleton = self.assets.enemy_skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
+        self.driver_of(0, content, ground)
+    }
+
+    /// A graph driver for the kind at `place`.
+    fn driver_of(
+        &self,
+        place: usize,
+        content: &Content,
+        ground: Arc<PhysicsWorld>,
+    ) -> Result<GraphDriver, AppInitError> {
+        let binding = self.binding(place, content)?;
+        let kind = self.kind_assets(place)?;
+        let skin = content.mesh_copy(kind.look.mesh).and_then(|mesh| mesh.skin.as_ref());
+        let skeleton = kind.skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
@@ -413,22 +532,25 @@ impl FightShow {
             .map_err(AppInitError::msg)
     }
 
-    /// The enemy's graph as it stands, bound to the enemy: the one live tuning took, or the cooked one.
-    fn enemy_binding(&self, content: &Content) -> Result<sapphire_anim::GraphBinding, AppInitError> {
-        let graph = content.graph_document_of(ENEMY_GRAPH).map_err(AppInitError::msg)?;
-        self.enemy_binding_of(content, &graph).map_err(AppInitError::msg)
+    /// The graph of the kind at `place` as it stands, bound to that kind: the one live tuning took, or the
+    /// cooked one.
+    fn binding(&self, place: usize, content: &Content) -> Result<sapphire_anim::GraphBinding, AppInitError> {
+        let graph = content.graph_document_of(self.graph_key(place)).map_err(AppInitError::msg)?;
+        self.binding_of(place, content, &graph).map_err(AppInitError::msg)
     }
 
-    /// [`Self::enemy_binding`], for `graph` rather than the one it holds.
-    fn enemy_binding_of(
+    /// [`Self::binding`], for `graph` rather than the one it holds.
+    fn binding_of(
         &self,
+        place: usize,
         content: &Content,
         graph: &sapphire_anim::AnimGraph,
     ) -> Result<sapphire_anim::GraphBinding, String> {
-        let skeleton = self.assets.enemy_skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
+        let kind = self.assets.kinds.get(place);
+        let skeleton = kind.and_then(|kind| content.read(kind.skeleton.as_ref()?));
         let skeleton = skeleton.ok_or("the enemy's skeleton isn't loaded")?;
-        sapphire_anim::GraphBinding::new(graph, skeleton, None, 0, &content.graph_clips_of(ENEMY_GRAPH))
-            .map_err(|error| error.to_string())
+        let clips = content.graph_clips_of(self.graph_key(place));
+        sapphire_anim::GraphBinding::new(graph, skeleton, None, 0, &clips).map_err(|error| error.to_string())
     }
 
     /// Loads until the player's sword is on `renderer`, with its material and the maps it names, and
@@ -521,12 +643,11 @@ impl FightShow {
         scene.world_mut().insert_resource(shot.camera(ground.spawns().player.position()));
         let character = scene.character();
         scene.world_mut().entity_mut(character).remove::<Turntable>();
-        let (blade_in_model, hand, sizes) = (held.blade, held.hand, held.sizes);
-        self.stock = Some(WarriorStock { meshes: enemy, held: held.clone(), driver: None });
+        let stock = WarriorStock { meshes: enemy, held: held.clone(), driver: None };
         self.spawn_enemy(scene, enemy, held);
-        let (warrior, blade) = self.warriors[0];
-        let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
-        self.arena = Some(Box::new(ArenaActors::new(character, enemy, sizes, shot, ground)));
+        let enemy = arena_enemy(self.warriors[0], &stock);
+        self.stocks = vec![stock];
+        self.arena = Some(Box::new(ArenaActors::new(character, enemy, shot, ground)));
     }
 
     /// Poses the arena's fighters by these graphs from now on, from what the simulation says of them
@@ -541,7 +662,7 @@ impl FightShow {
         scene.pose_character_by_graph(player);
         let world = scene.world_mut();
         world.entity_mut(warrior).insert(enemy.clone());
-        if let Some(stock) = &mut self.stock {
+        if let Some(stock) = self.stocks.first_mut() {
             stock.driver = Some(enemy);
         }
         self.graph_players = Some(world.query());
@@ -612,28 +733,29 @@ impl FightShow {
         while let Some(change) = arena.next_change(simulation, cast) {
             match change {
                 RosterChange::Left { warrior } => {
-                    let place = self.warriors.iter().position(|(standing, _)| *standing == warrior);
-                    let pair = self.warriors.remove(place.expect("it stood here"));
-                    undraw(world, pair);
-                    self.spares.push(pair);
+                    let place = self.warriors.iter().position(|standing| standing.body == warrior);
+                    let warrior = self.warriors.remove(place.expect("it stood here"));
+                    undraw(world, warrior);
+                    self.spares.push(warrior);
                 }
                 RosterChange::Arrived(id) => {
-                    let stock = self.stock.as_ref().expect("an arena has what stands its warriors");
                     let actor = simulation.actor(id).expect("it just arrived");
-                    let pair = match self.spares.pop() {
-                        Some(pair) => {
-                            draw(world, pair, stock.meshes);
-                            pair
+                    let kind =
+                        Some(arena.kind_of(&actor)).filter(|&kind| kind < self.stocks.len()).unwrap_or(0);
+                    let stock = self.stocks.get(kind).expect("an arena has what stands its warriors");
+                    let warrior = match self.spares.iter().rposition(|spare| spare.kind == kind) {
+                        Some(place) => {
+                            let warrior = self.spares.swap_remove(place);
+                            draw(world, warrior, stock.meshes);
+                            warrior
                         }
                         None => {
                             self.volumes.missed();
-                            stand_warrior(world, stock)
+                            stand_warrior(world, stock, kind)
                         }
                     };
-                    self.warriors.push(pair);
-                    let (blade_in_model, hand) = (stock.held.blade, stock.held.hand);
-                    let (warrior, blade) = pair;
-                    arena.stand(ArenaEnemy { warrior, blade, blade_in_model, hand }, actor);
+                    self.warriors.push(warrior);
+                    arena.stand(arena_enemy(warrior, stock), actor);
                 }
             }
         }
@@ -839,18 +961,27 @@ impl FightShow {
     /// extracted once. Call after `Scene::spawn_look_dev`, whose light rigs they take.
     pub fn spawn_enemy(&mut self, scene: &mut Scene, meshes: EnemyMeshes, held: enemy::Held) {
         scene.extract_poses();
-        let warrior = spawn_warrior(scene.world_mut(), meshes, &held);
+        let warrior = spawn_warrior(scene.world_mut(), meshes, &held, 0);
         self.warriors.push(warrior);
     }
 
-    /// Sets the meshes the warriors draw again: after GPU device loss.
+    /// Sets the meshes the warriors draw again, after GPU device loss: `meshes` for the warrior, and for each
+    /// other kind those [`Self::load_enemy`] uploaded again.
     pub fn set_enemy_meshes(&mut self, scene: &mut Scene, meshes: EnemyMeshes) {
-        for &(warrior, blade) in &self.warriors {
-            scene.world_mut().entity_mut(warrior).insert(RenderMesh(meshes.warrior));
-            scene.world_mut().entity_mut(blade).insert(RenderMesh(meshes.blade));
+        let kinds = &self.assets.kinds;
+        let meshes_of = |kind: usize| match kind {
+            0 => meshes,
+            kind => kinds.get(kind).map_or(meshes, |loaded| loaded.meshes),
+        };
+        for (kind, stock) in self.stocks.iter_mut().enumerate() {
+            stock.meshes = meshes_of(kind);
         }
-        if let Some(stock) = &mut self.stock {
-            stock.meshes = meshes;
+        for &warrior in &self.warriors {
+            let meshes = meshes_of(warrior.kind);
+            scene.world_mut().entity_mut(warrior.body).insert(RenderMesh(meshes.warrior));
+            if let (Some(blade), Some(mesh)) = (warrior.blade, meshes.blade) {
+                scene.world_mut().entity_mut(blade).insert(RenderMesh(mesh));
+            }
         }
     }
 
@@ -1025,15 +1156,30 @@ impl FightShow {
         content: &mut Content,
     ) -> Result<(), sapphire_assets::LoadError> {
         let character = scene.clips_in_use(Some(scene.character()));
-        let warriors = self.warrior_clips_in_use(scene);
-        content.hold_graph_clips(&[(ENEMY_GRAPH, &warriors), (GraphKey::CHARACTER, &character)])
+        let warriors: Vec<(GraphKey, Vec<AssetId>)> = self
+            .graph_slots()
+            .map(|slot| (ENEMY_GRAPH.numbered(slot as u16), self.warrior_clips_in_use(scene, slot)))
+            .collect();
+        let mut graphs: Vec<(GraphKey, &[AssetId])> =
+            warriors.iter().map(|(key, clips)| (*key, clips.as_slice())).collect();
+        graphs.push((GraphKey::CHARACTER, &character));
+        content.hold_graph_clips(&graphs)
     }
 
-    /// The clips any warrior's player may still read. Allocates, so only as a graph changes.
-    fn warrior_clips_in_use(&self, scene: &Scene) -> Vec<AssetId> {
+    /// The numbers of the graphs the kinds of enemy play, each once: the warrior's alone with none loaded.
+    fn graph_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        let kinds = self.assets.kinds.iter().enumerate();
+        std::iter::once(0)
+            .chain(kinds.skip(1).filter(|(place, kind)| kind.graph_slot == *place).map(|(place, _)| place))
+    }
+
+    /// The clips the player of any warrior on graph `slot` may still read. Allocates, so only as a graph
+    /// changes.
+    fn warrior_clips_in_use(&self, scene: &Scene, slot: usize) -> Vec<AssetId> {
         let mut clips = Vec::new();
-        for (warrior, _) in self.warriors.iter().chain(&self.spares) {
-            for clip in scene.clips_in_use(Some(*warrior)) {
+        let on_slot = |warrior: &&Warrior| self.graph_slot(warrior.kind) == slot;
+        for warrior in self.warriors.iter().chain(&self.spares).filter(on_slot) {
+            for clip in scene.clips_in_use(Some(warrior.body)) {
                 if !clips.contains(&clip) {
                     clips.push(clip);
                 }
@@ -1042,56 +1188,60 @@ impl FightShow {
         clips
     }
 
-    /// What a warrior who comes on from here plays: the graph as it stands. What can't bind leaves what it
-    /// had, with those already standing.
-    fn renew_stock_driver(&mut self, content: &Content) {
+    /// What a warrior of each kind on graph `slot` who comes on from here plays: the graph as it stands. What
+    /// can't bind leaves what it had, with those already standing.
+    fn renew_stock_drivers(&mut self, content: &Content, slot: usize) {
         let Some(ground) = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground())
         else {
             return;
         };
-        match self.enemy_driver(content, ground) {
-            Ok(driver) => {
-                if let Some(stock) = &mut self.stock {
-                    stock.driver = Some(driver);
-                }
+        for kind in 0..self.stocks.len() {
+            if self.graph_slot(kind) != slot {
+                continue;
             }
-            Err(error) => {
-                tracing::warn!(target: LOG_TARGET, %error, "the next warrior plays the graph the last one did")
+            match self.driver_of(kind, content, ground.clone()) {
+                Ok(driver) => self.stocks[kind].driver = Some(driver),
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, %error, "the next warrior plays the graph the last one did")
+                }
             }
         }
     }
 
-    /// Takes in a new version of the enemy's mesh or skeleton, whose joints may be others: for each warrior
-    /// the pose it holds, the hand its blade follows, what lights them, and in a fight a driver that starts
-    /// now from where its old one was, as the character's does (`Scene::replace_graph`). Those can land
-    /// frames apart and its clips later still, so until all of it fits it keeps everything it has, and tries
-    /// again as each part lands.
-    fn replace_enemy(&mut self, scene: &mut Scene, content: &mut Content) {
-        if self.warriors.is_empty() {
+    /// Takes in a new version of the mesh or skeleton of the kind of enemy at `place`, whose joints may be
+    /// others: for each of its warriors the pose it holds, the hand its blade follows, what lights them, and
+    /// in a fight a driver that starts now from where its old one was, as the character's does
+    /// (`Scene::replace_graph`). Those can land frames apart and its clips later still, so until all of it
+    /// fits it keeps everything it has, and tries again as each part lands.
+    fn replace_kind(&mut self, scene: &mut Scene, content: &mut Content, place: usize) {
+        if !self.warriors.iter().chain(&self.spares).any(|warrior| warrior.kind == place) {
             return;
         }
         if let Err(error) = self.hold_graph_clips(scene, content) {
             tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
         }
         let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());
-        let fitted = self.held_enemy(content).and_then(|held| {
-            let driver = ground.map(|ground| self.enemy_driver(content, ground)).transpose()?;
+        let fitted = self.held_of(place, content).and_then(|held| {
+            let driver = ground.map(|ground| self.driver_of(place, content, ground)).transpose()?;
             Ok((held, driver))
         });
+        let waits = fitted.is_err();
+        if let Some(kind) = self.assets.kinds.get_mut(place) {
+            kind.waits = waits;
+        }
         let (held, driver) = match fitted {
             Ok(fitted) => fitted,
             Err(error) => {
-                self.enemy_waits = true;
                 tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps its pose until the rest of it lands");
                 return;
             }
         };
-        self.enemy_waits = false;
         let carried = enemy::blade_figure(&held);
         let world = scene.world_mut();
-        for &(warrior, blade) in self.warriors.iter().chain(&self.spares) {
-            let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
-            let mut character = world.entity_mut(warrior);
+        for warrior in self.warriors.iter().chain(&self.spares).filter(|warrior| warrior.kind == place) {
+            let body = warrior.body;
+            let place = world.get::<RenderTransform>(body).map_or(Mat4::IDENTITY, |transform| transform.0);
+            let mut character = world.entity_mut(body);
             if let (Some(mut playing), Some(driver)) = (character.get_mut::<GraphDriver>(), &driver) {
                 let mut driver = driver.clone();
                 driver.continue_from(&playing);
@@ -1101,16 +1251,18 @@ impl FightShow {
                 rig.head = held.figure.head;
             }
             character.insert((held.pose.clone(), held.figure));
-            let mut item = world.entity_mut(blade);
-            if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
-                rig.head = carried.head;
+            if let (Some(blade), Some(carried), Some(grip)) = (warrior.blade, carried, held.grip) {
+                let mut item = world.entity_mut(blade);
+                if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
+                    rig.head = carried.head;
+                }
+                item.insert((carried, RenderTransform(place * grip.at)));
             }
-            item.insert((carried, RenderTransform(place * held.blade)));
         }
         if let Some(arena) = &mut self.arena {
-            arena.follow_new_enemy(held.hand, held.blade);
+            arena.follow_new_kind(place, held.grip);
         }
-        if let Some(stock) = &mut self.stock {
+        if let Some(stock) = self.stocks.get_mut(place) {
             stock.held = held;
             if driver.is_some() {
                 stock.driver = driver;
@@ -1118,11 +1270,24 @@ impl FightShow {
         }
     }
 
-    /// Gives every warrior `binding`, from its next state's start (`GraphPlayer::replace`).
-    fn replace_warriors_graph(&self, scene: &mut Scene, binding: &Arc<sapphire_anim::GraphBinding>) {
+    /// Whether any kind of enemy on graph `slot` waits for the rest of a new version of itself.
+    fn slot_waits(&self, slot: usize) -> bool {
+        self.assets.kinds.iter().any(|kind| kind.graph_slot == slot && kind.waits)
+    }
+
+    /// Gives every warrior on graph `slot` `binding`, from its next state's start (`GraphPlayer::replace`).
+    fn replace_warriors_graph(
+        &self,
+        scene: &mut Scene,
+        slot: usize,
+        binding: &Arc<sapphire_anim::GraphBinding>,
+    ) {
         let world = scene.world_mut();
-        for (warrior, _) in self.warriors.iter().chain(&self.spares) {
-            if let Some(mut playing) = world.get_mut::<GraphDriver>(*warrior) {
+        for warrior in self.warriors.iter().chain(&self.spares) {
+            if self.graph_slot(warrior.kind) != slot {
+                continue;
+            }
+            if let Some(mut playing) = world.get_mut::<GraphDriver>(warrior.body) {
                 playing.player.replace(Arc::clone(binding));
             }
         }
@@ -1137,7 +1302,7 @@ impl FightShow {
         &mut self,
         scene: &mut Scene,
         player: &ClipTable<'_>,
-        enemy: &ClipTable<'_>,
+        enemies: &[ClipTable<'_>],
         alpha: f32,
         presentation: Option<(&Content, Option<&Simulation>)>,
     ) {
@@ -1155,6 +1320,7 @@ impl FightShow {
         let mut stats = AnimStats::default();
         let staged = self.timeline.as_ref().map(TimelineShow::staged_fighters);
         let held_ticks = self.held_ticks;
+        let kinds = &self.assets.kinds;
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();
         let world = scene.world_mut();
@@ -1166,7 +1332,13 @@ impl FightShow {
             else {
                 continue;
             };
-            let clips = if index == 0 { player } else { enemy };
+            let clips = match index {
+                0 => player,
+                _ => {
+                    let slot = kinds.get(arena.kind(index)).map_or(0, |kind| kind.graph_slot);
+                    enemies.get(slot).unwrap_or(&enemies[0])
+                }
+            };
             if !driver.fits(&render) {
                 continue;
             }
@@ -1201,8 +1373,10 @@ impl FightShow {
                     if evaluated {
                         stats.evaluated += 1;
                         stats.joints += driver.player.pose().joint_count() as u32;
-                        if index == 1 {
-                            let hand = driver.player.pose().model()[arena.blade_hand()];
+                        if index == 1
+                            && let Some(hand) = arena.blade_hand(index)
+                        {
+                            let hand = driver.player.pose().model()[hand];
                             arena.hold_blade(index, Mat4::from(hand));
                         }
                     }
@@ -1259,8 +1433,8 @@ impl FightShow {
                 stats.evaluated += 1;
                 stats.joints += job.driver.player.pose().joint_count() as u32;
                 stats.ik += u32::from(job.driver.has_ik());
-                if index > 0 {
-                    let hand = job.driver.player.pose().model()[arena.blade_hand()];
+                if let Some(hand) = arena.blade_hand(index) {
+                    let hand = job.driver.player.pose().model()[hand];
                     arena.hold_blade(index, Mat4::from(hand));
                 }
             }
@@ -1281,10 +1455,19 @@ impl FightShow {
     ) {
         if self.fighters_posed {
             let alpha = self.alpha_of_fighters(alpha);
+            // Each graph a kind of enemy plays, by its slot (M3 B3b): the first kind's always.
+            let kinds = &self.assets.kinds;
+            let enemies: [ClipTable<'_>; MAX_KINDS] = std::array::from_fn(|slot| {
+                let played = slot == 0 || kinds.get(slot).is_some_and(|kind| kind.graph_slot == slot);
+                match played {
+                    true => content.graph_clips_of(ENEMY_GRAPH.numbered(slot as u16)),
+                    false => ClipTable::new(0, std::iter::empty()),
+                }
+            });
             self.animate_fighters(
                 scene,
                 &content.graph_clips(),
-                &content.graph_clips_of(ENEMY_GRAPH),
+                &enemies,
                 alpha,
                 Some((content, simulation)),
             );
@@ -1385,35 +1568,98 @@ impl FightShow {
         if owner == GraphKey::CHARACTER {
             return scene.replace_graph_document(graph, content, renderer, gpu);
         }
-        let first = self.warriors.first().map(|(warrior, _)| *warrior);
+        let slot = self.graph_slots().find(|&slot| ENEMY_GRAPH.numbered(slot as u16) == owner);
+        let on_slot = |warrior: &&Warrior| slot.is_some_and(|slot| self.graph_slot(warrior.kind) == slot);
+        let first = self.warriors.iter().find(on_slot).map(|warrior| warrior.body);
         let playing =
             first.filter(|&entity| self.fighters_posed && scene.world().get::<GraphDriver>(entity).is_some());
-        if playing.is_none() {
+        let (Some(slot), Some(_)) = (slot, playing) else {
             return Err("no enemy here plays a graph: `--arena --fight` has one".to_owned());
-        }
-        content.hold_clips_of(owner, &graph, &self.warrior_clips_in_use(scene), renderer, gpu)?;
-        let binding = self.enemy_binding_of(content, &graph);
-        if self.enemy_waits {
+        };
+        content.hold_clips_of(owner, &graph, &self.warrior_clips_in_use(scene, slot), renderer, gpu)?;
+        let binding = self.binding_of(slot, content, &graph);
+        if self.slot_waits(slot) {
             return content.end_wait_on(owner, graph, binding.map(drop), |content| {
-                self.replace_enemy(scene, content);
-                self.enemy_waits
+                for kind in 0..self.assets.kinds.len() {
+                    if self.graph_slot(kind) == slot && self.assets.kinds[kind].waits {
+                        self.replace_kind(scene, content, kind);
+                    }
+                }
+                self.slot_waits(slot)
             });
         }
         let binding = Arc::new(binding?);
         content.set_live_graph(owner, Some(graph));
-        self.replace_warriors_graph(scene, &binding);
-        self.renew_stock_driver(content);
+        self.replace_warriors_graph(scene, slot, &binding);
+        self.renew_stock_drivers(content, slot);
         Ok(())
     }
 }
 
-/// Stands a warrior and its blade as `held` has them, on the look-dev stage's spot until something places
-/// them: its light rigs are those the stage has.
-fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> (Entity, Entity) {
+/// Loads the kind of enemy `id` until its document is resident, and the meshes its look names are on
+/// `renderer`, with their materials and the maps they name, and its skeleton is resident. `before` are the
+/// kinds loaded before it, whose graph it plays if one has its graph and its skeleton.
+fn load_kind(
+    id: AssetId,
+    before: &[KindAssets],
+    content: &mut Content,
+    renderer: &mut Renderer,
+    gpu: &GpuContext,
+) -> Result<KindAssets, AppInitError> {
+    let failed = |error: AppInitError| AppInitError::msg(format!("the enemy {id} didn't load: {error}"));
+    let document: Handle<Enemy> = content.hold(id, renderer, gpu).map_err(failed)?;
+    let look = content.read(&document).ok_or_else(|| failed(AppInitError::msg("its kind isn't resident")))?;
+    let look = Look::of(&look.look());
+    content.keep_mesh_copy(look.mesh);
+    let mesh = content.hold(look.mesh, renderer, gpu).map_err(failed)?;
+    let held =
+        look.held.as_ref().map(|held| content.hold(held.mesh, renderer, gpu)).transpose().map_err(failed)?;
+    let skeleton_id: Option<AssetId> =
+        content.mesh_copy(look.mesh).and_then(|mesh| mesh.skin.as_ref()?.skeleton);
+    let skeleton = skeleton_id.map(|id| content.hold(id, renderer, gpu)).transpose().map_err(failed)?;
+    let on_renderer = |id| content.mesh_on_renderer(id).expect("a ready mesh was uploaded here");
+    let meshes = EnemyMeshes {
+        warrior: on_renderer(look.mesh),
+        blade: look.held.as_ref().map(|held| on_renderer(held.mesh)),
+    };
+    let same_graph = |kind: &KindAssets| kind.look.graph == look.graph && kind.skeleton_id == skeleton_id;
+    let graph_slot =
+        before.iter().position(same_graph).map_or(before.len(), |place| before[place].graph_slot);
+    let mut kind = KindAssets {
+        id,
+        _document: document,
+        look,
+        mesh,
+        _held: held,
+        skeleton,
+        skeleton_id,
+        meshes,
+        versions: (0, 0),
+        graph_slot,
+        waits: false,
+    };
+    kind.versions = versions_of(&kind, content);
+    Ok(kind)
+}
+
+/// The versions `kind`'s mesh and skeleton are at.
+fn versions_of(kind: &KindAssets, content: &Content) -> (u32, u32) {
+    let skeleton = kind.skeleton.as_ref().map_or(0, |skeleton| content.version_of(skeleton));
+    (content.version_of(&kind.mesh), skeleton)
+}
+
+/// What the arena draws `warrior` as, from what stands its kind.
+fn arena_enemy(warrior: Warrior, stock: &WarriorStock) -> ArenaEnemy {
+    let blade = warrior.blade.zip(stock.held.grip);
+    ArenaEnemy { warrior: warrior.body, blade, kind: warrior.kind, sizes: stock.held.sizes }
+}
+
+/// Stands a warrior of the kind at `kind` and its blade, if it holds one, as `held` has them, on the
+/// look-dev stage's spot until something places them: its light rigs are those the stage has.
+fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held, kind: usize) -> Warrior {
     let place = enemy::place(held.sizes.scale);
     let rig = LightRigId::DEFAULT;
-    let blade_figure = enemy::blade_figure(held);
-    let warrior = world
+    let body = world
         .spawn((
             RenderMesh(meshes.warrior),
             RenderTransform(place),
@@ -1422,36 +1668,44 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> 
             held.pose.clone(),
         ))
         .id();
-    let blade = world
-        .spawn((
-            RenderMesh(meshes.blade),
-            RenderTransform(place * held.blade),
-            CharacterLightRig { rig, head: blade_figure.head },
-            blade_figure,
-        ))
-        .id();
-    (warrior, blade)
+    let carried = meshes.blade.zip(held.grip).zip(enemy::blade_figure(held));
+    let blade = carried.map(|((mesh, grip), figure)| {
+        world
+            .spawn((
+                RenderMesh(mesh),
+                RenderTransform(place * grip.at),
+                CharacterLightRig { rig, head: figure.head },
+                figure,
+            ))
+            .id()
+    });
+    Warrior { body, blade, kind }
 }
 
-/// A warrior and its blade, ready to come on: what [`FightShow::follow_volumes`] does ahead of time.
-fn stand_warrior(world: &mut World, stock: &WarriorStock) -> (Entity, Entity) {
-    let (warrior, blade) = spawn_warrior(world, stock.meshes, &stock.held);
+/// A warrior of the kind at `kind` and its blade, ready to come on: what [`FightShow::follow_volumes`] does
+/// ahead of time.
+fn stand_warrior(world: &mut World, stock: &WarriorStock, kind: usize) -> Warrior {
+    let warrior = spawn_warrior(world, stock.meshes, &stock.held, kind);
     if let Some(driver) = &stock.driver {
-        world.entity_mut(warrior).insert(driver.clone());
+        world.entity_mut(warrior.body).insert(driver.clone());
     }
-    (warrior, blade)
+    warrior
 }
 
 /// Takes a warrior and its blade out of what's drawn: a spare.
-fn undraw(world: &mut World, (warrior, blade): (Entity, Entity)) {
-    world.entity_mut(warrior).remove::<RenderMesh>();
-    world.entity_mut(blade).remove::<RenderMesh>();
+fn undraw(world: &mut World, warrior: Warrior) {
+    world.entity_mut(warrior.body).remove::<RenderMesh>();
+    if let Some(blade) = warrior.blade {
+        world.entity_mut(blade).remove::<RenderMesh>();
+    }
 }
 
 /// Puts a spare back in what's drawn. Allocates nothing once [`FightShow::follow_volumes`] has warmed it.
-fn draw(world: &mut World, (warrior, blade): (Entity, Entity), meshes: EnemyMeshes) {
-    world.entity_mut(warrior).insert(RenderMesh(meshes.warrior));
-    world.entity_mut(blade).insert(RenderMesh(meshes.blade));
+fn draw(world: &mut World, warrior: Warrior, meshes: EnemyMeshes) {
+    world.entity_mut(warrior.body).insert(RenderMesh(meshes.warrior));
+    if let (Some(blade), Some(mesh)) = (warrior.blade, meshes.blade) {
+        world.entity_mut(blade).insert(RenderMesh(mesh));
+    }
 }
 
 impl SceneShow for FightShow {
@@ -1460,8 +1714,11 @@ impl SceneShow for FightShow {
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
-        if self.take_enemy_changed(content) || (self.enemy_waits && changes.graphs) {
-            self.replace_enemy(scene, content);
+        for kind in 0..self.assets.kinds.len() {
+            let waits = self.assets.kinds[kind].waits;
+            if self.take_kind_changed(kind, content) || (waits && changes.graphs) {
+                self.replace_kind(scene, content, kind);
+            }
         }
         if !self.fighters_posed || !(changes.character || changes.graphs) {
             return;
@@ -1471,18 +1728,20 @@ impl SceneShow for FightShow {
         }
         // A new character is the player's alone, and may have come in the same frame as a new graph. An
         // enemy waiting for the rest of it has the joints it had, which a new binding's aren't.
-        if !changes.graphs || self.enemy_waits {
+        if !changes.graphs || self.warriors.is_empty() {
             return;
         }
-        if self.warriors.is_empty() {
-            return;
-        }
-        match self.enemy_binding(content) {
-            Ok(binding) => {
-                self.replace_warriors_graph(scene, &Arc::new(binding));
-                self.renew_stock_driver(content);
+        for slot in self.graph_slots().collect::<Vec<_>>() {
+            if self.slot_waits(slot) {
+                continue;
             }
-            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
+            match self.binding(slot, content) {
+                Ok(binding) => {
+                    self.replace_warriors_graph(scene, slot, &Arc::new(binding));
+                    self.renew_stock_drivers(content, slot);
+                }
+                Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
+            }
         }
     }
 
@@ -1909,6 +2168,8 @@ impl Fight {
             scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
         let enemy = show.enemy_driver(content, world)?;
         show.play_fighters(scene, player.with_ik(solver), enemy);
+        let kinds = combat.kinds_of_enemy().map_err(AppInitError::msg)?;
+        show.load_kinds(&kinds, content, renderer, gpu)?;
         scene.set_spring_quality(animate::spring_quality(tier));
 
         let sword = show.load_sword(content, renderer, gpu)?;
@@ -1939,6 +2200,19 @@ impl Fight {
         let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
         Ok(followed)
+    }
+
+    /// Has the stage draw each of the fight's kinds of enemy as itself ([`FightShow::load_kinds`]): for a
+    /// caller that stood the arena and its fighters itself, once it has [`Self::combat`]. Nothing without one.
+    pub fn load_kinds(
+        &mut self,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        let Some(combat) = &self.combat else { return Ok(()) };
+        let kinds = combat.kinds_of_enemy().map_err(AppInitError::msg)?;
+        self.show.load_kinds(&kinds, content, renderer, gpu)
     }
 
     /// An error if a replay has left its recorded checksums so far.

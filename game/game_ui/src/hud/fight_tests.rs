@@ -92,13 +92,12 @@ fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
     let ground = ArenaGround::new(set).expect("the stage stands on it");
     let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: Some(MeshHandle::from_raw(3)) };
     let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
     let held = enemy::Held {
         pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-        blade: blade_in_model,
-        hand: 0,
+        grip: Some(enemy::Grip { hand: 0, at: blade_in_model }),
         sizes: enemy::Look::warrior().sizes(),
     };
     let mut show = ShownFight::default();

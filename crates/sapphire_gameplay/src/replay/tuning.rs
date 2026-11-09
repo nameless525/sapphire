@@ -13,6 +13,7 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 
 use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
+use crate::moves::MoveSetId;
 use crate::script::ScriptEdits;
 use crate::simulation::{SimConfig, Simulation};
 use crate::targeting::TargetingTuning;
@@ -101,9 +102,9 @@ impl LiveMoves {
         if let Some(tuning) = self.targeting {
             sim.tune_targeting(tuning);
         }
-        for path in scenario.documents {
-            let name = document_file_name(path);
-            if let (Some(id), Some(set)) = (scenario.set_of(name), self.latest(name)) {
+        for (index, path) in scenario.documents.iter().enumerate() {
+            let id = u32::try_from(index).ok().map(MoveSetId);
+            if let (Some(id), Some(set)) = (id, self.latest(document_file_name(path))) {
                 sim.stand_in_move_set(id, set.clone());
             }
         }
@@ -559,6 +560,32 @@ mod tests {
         assert_eq!(next.move_library().current_revision(warrior), Some(0), "the other set's as it was");
     }
 
+    /// A second kind of enemy on the same moves plays a copy of them (M3 B3b): the scenario lists the
+    /// document for each set, so a fight started from an edit of it has the edit in both.
+    #[test]
+    fn an_edit_reaches_every_set_its_document_plays() {
+        const WARRIOR: &str = "warrior.moves.ron";
+        let scenario = find_scenario(&SCENARIOS, "arena-captain").expect("listed");
+        let sets: Vec<MoveSetId> = scenario.sets_of(WARRIOR).collect();
+        assert_eq!(sets, [MoveSetId(1), MoveSetId(2)], "the warrior's, then the captain's copy");
+        assert_eq!(scenario.set_of(WARRIOR), Some(MoveSetId(1)));
+
+        let (sim, _) = scenario.start(scenario.config).expect("sets up");
+        let mut document = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
+        document.moves[0].recovery += 1;
+        let edited = document.to_text().expect("writes");
+        let edited = compile_document(&edited, sim.move_library().current(sets[0])).expect("compiles").set;
+        assert!(!sim.move_library().is_current(sets[1], &edited), "an edit");
+
+        let mut live = LiveMoves::default();
+        live.remember(WARRIOR, edited.clone());
+        let (next, _) = live.start(scenario, scenario.config).expect("sets up");
+        for set in sets {
+            assert!(next.move_library().is_current(set, &edited), "{set:?}");
+        }
+        assert!(next.move_library().mind(MoveSetId(2)).is_some(), "the copy is still the captain's");
+    }
+
     /// A document's issues name the move and the track: it's what a person hears from `link push`.
     #[test]
     fn a_bad_document_says_which_move_and_track() {
@@ -579,9 +606,10 @@ mod tests {
             let (sim, _) = scenario.start(scenario.config).expect("sets up");
             let library = sim.move_library();
             assert_eq!(library.set_count(), scenario.documents.len(), "{}", scenario.name);
-            for path in scenario.documents {
+            for (index, path) in scenario.documents.iter().enumerate() {
                 let text = std::fs::read_to_string(root.join(path)).expect(path);
-                let id = scenario.set_of(document_file_name(path)).expect(path);
+                let id = MoveSetId(u32::try_from(index).expect("a set's number"));
+                assert!(scenario.sets_of(document_file_name(path)).any(|set| set == id), "{path}");
                 // Moves that name clips read the tables they run on, which is how a live edit reads them,
                 // and everything else about the document has to match. `player_moves` is a cooked copy,
                 // and `tools/sapphire_pipeline/tests/player_moves.rs` answers for its tables.

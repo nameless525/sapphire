@@ -424,6 +424,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let Some(combat) = combat.filter(|_| !contact_sheet) {
         show.fight.attach_prepared_combat(combat, scene, content)?;
     }
+    // Each of the fight's kinds of enemy, drawn as itself (M3 B3b), before the prewarm sees them.
+    show.fight.load_kinds(content, renderer, gpu)?;
     // Its zone trips under the wipe, if it goes between zones (M3 W4): once the fight's set.
     let atlas = show.hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
     game_ui::wipe::cover_trips(show, atlas, content, renderer, gpu, quality.active().id)?;

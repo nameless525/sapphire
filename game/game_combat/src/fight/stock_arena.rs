@@ -29,7 +29,8 @@ impl StockArenaAssets {
         let remaining = || Duration::from_secs(15).saturating_sub(stopwatch.elapsed());
         let kind =
             content.preload_cpu::<Enemy>(enemy::KIND, &remaining).map_err(|error| error.to_string())?;
-        let look = enemy::Look::of(&kind.view().look())?;
+        let look = enemy::Look::of(&kind.view().look());
+        let blade = look.held.as_ref().map(|held| held.mesh).ok_or("the stock warrior holds no blade")?;
         // The first renderer upload may drain this preload before the arena reads the warrior skin.
         content.keep_mesh_copy(look.mesh);
         let heroine_mesh =
@@ -47,8 +48,7 @@ impl StockArenaAssets {
         let rig = content
             .preload_cpu::<CharacterRig>(lookdev::RIG, &remaining)
             .map_err(|error| error.to_string())?;
-        let weapon =
-            content.preload_cpu::<Mesh>(look.blade, &remaining).map_err(|error| error.to_string())?;
+        let weapon = content.preload_cpu::<Mesh>(blade, &remaining).map_err(|error| error.to_string())?;
         Ok(Self { heroine_mesh, heroine: BodyAssets { graph: heroine_graph, rig }, warrior, weapon, look })
     }
 
@@ -70,7 +70,7 @@ impl StockArenaAssets {
             .warrior
             .skeleton
             .view()
-            .find(&self.look.hand)
+            .find(self.look.held.as_ref().map_or("", |held| held.joint.as_str()))
             .and_then(|joint| u16::try_from(joint).ok())
             .ok_or("the cooked warrior has no supported hand socket")?;
         let (shape, meshes) = overhead_profile::bind(socket, [&self.heroine_mesh, &self.weapon])?;

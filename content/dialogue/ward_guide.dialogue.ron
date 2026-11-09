@@ -1,0 +1,20 @@
+// The guide at the Lantern Ward (M3 Q2): a line with a voice, a choice that sets the flag a fight's script
+// reads, a choice that shows only once the ward is lit, a branch, and a way out.
+(
+    type: "sapphire::dialogue::DialogueDocument",
+    version: 1,
+    data: (
+        start: "greet",
+        nodes: [
+            (name: "greet", say: (speaker: "guide-name", line: "guide-greet", vo: "guide_greet"), next: "ask"),
+            (name: "ask", say: (speaker: "guide-name", line: "guide-ask"), choices: [
+                (line: "guide-choice-light", to: "lit", set: [("ward_lit", 1)]),
+                (line: "guide-choice-again", to: "again", when: "flag.ward_lit >= 1"),
+                (line: "guide-choice-leave"),
+            ]),
+            (name: "lit", say: (speaker: "guide-name", line: "guide-thanks"), set: [("met_guide", 1)], next: "again"),
+            (name: "again", branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "farewell"),
+            (name: "farewell", say: (speaker: "guide-name", line: "guide-farewell")),
+        ],
+    ),
+)

@@ -28,6 +28,8 @@
 //!   because [`AssetKind::references`] checks each kind's bytes; `sapphire_anim` samples them.
 //! - Scripts (`.sscript`, M3 L2): `sapphire_bytecode`'s `ScriptChunk`, loaded like any kind and read by
 //!   whoever runs it, with no VM here.
+//! - Dialogues (`.sdialogue`, M3 Q2): `sapphire_dialogue`'s `Dialogue`, loaded like any kind and walked by
+//!   a game.
 //! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their

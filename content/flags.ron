@@ -1,0 +1,11 @@
+// Every story flag the game uses (M3 Q2): what dialogues' conditions read and their choices set, and what
+// scripts read and set. A flag is an `i32` that reads 0 until something sets it; the simulation holds at
+// most 256, so the cook refuses a registry with more.
+(
+    type: "sapphire::dialogue::FlagRegistry",
+    version: 1,
+    data: (
+        // `ward_answered` is `dialogue-flag`'s script's own: the fight has answered the lit ward.
+        flags: ["ward_lit", "met_guide", "ward_answered"],
+    ),
+)

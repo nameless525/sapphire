@@ -40,6 +40,8 @@ sapphire_strings.workspace = true
 # Timeline documents' checks and cooked format. Plain data: the tool links neither the simulation nor the
 # sequencer.
 sapphire_timeline.workspace = true
+# Dialogue documents, cooked to `.sdialogue` (M3 Q2).
+sapphire_dialogue.workspace = true
 sapphire_tod.workspace = true
 sapphire_zone.workspace = true
 # Reads `.ftl` sources (M3 V2), in the cooker only.

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use sapphire_bytecode::{ArchivedScriptChunk, ScriptChunk};
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
+use sapphire_dialogue::{ArchivedDialogue, Dialogue};
 use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
 use sapphire_serialize::cooked::access_unchecked;
@@ -35,7 +36,7 @@ slotmap::new_key_type! {
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
 /// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Timeline`], [`Sound`],
-/// [`Cue`], [`MoveSet`], [`Font`], [`FontChains`], [`UiDocument`].
+/// [`Cue`], [`MoveSet`], [`Font`], [`FontChains`], [`UiDocument`], [`Dialogue`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -66,6 +67,7 @@ mod sealed {
     impl Sealed for sapphire_navmesh::NavMesh {}
     impl Sealed for sapphire_timeline::Timeline {}
     impl Sealed for sapphire_bytecode::ScriptChunk {}
+    impl Sealed for sapphire_dialogue::Dialogue {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
@@ -173,6 +175,17 @@ impl Asset for ScriptChunk {
         // SAFETY: as for meshes: `ScriptChunk::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<ScriptChunk>(bytes) }
             .expect("the envelope was checked when the script was decoded")
+    }
+}
+
+impl Asset for Dialogue {
+    const KIND: AssetKind = AssetKind::Dialogue;
+    type View<'a> = &'a ArchivedDialogue;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedDialogue {
+        // SAFETY: as for meshes: `Dialogue::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Dialogue>(bytes) }
+            .expect("the envelope was checked when the dialogue was decoded")
     }
 }
 

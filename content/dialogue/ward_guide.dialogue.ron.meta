@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "7b3a0339-b2a1-4ac8-9cfa-458d4b0134a7",
+        importer: Dialogue(()),
+    ),
+)

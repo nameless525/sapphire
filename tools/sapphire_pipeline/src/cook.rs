@@ -86,6 +86,9 @@
 //!   cooks last of all; its key depends on those assets' keys.
 //! - **Scripts** cook `.luau` → `.sscript` (M3 L2, [`script`]): one chunk's bytecode, compiled once with a
 //!   pinned compiler and refused if it breaks a rule. A `.d.luau` is an editor's, and cooks to nothing.
+//! - **Dialogues** cook `.dialogue.ron` → `.sdialogue` (M3 Q2, [`dialogue`]): the graph, its effects and
+//!   its conditions' chunk, against the content root's `flags.ron`, which is in each dialogue's key. After
+//!   every asset has cooked, the keys they show are checked against every locale's table.
 //! - **Localized strings** cook `.ftl` sources and `.locale.ron` documents → `.sloc`, one table per
 //!   locale (M3 V2, [`loc`]), reading nothing another asset cooks. After every asset has cooked, the
 //!   tables are checked against each other, whatever came from the cache, and the report lists what's
@@ -154,6 +157,7 @@ use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::{AssetId, AssetKind};
 use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
+use sapphire_dialogue::{DIALOGUE_EXTENSION, Dialogue};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
@@ -171,6 +175,7 @@ use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
+use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
 use crate::encounter::{self, EncounterCookError};
 use crate::font::{self, FontCookError};
 use crate::import::fbx::{self, FbxImportError};
@@ -340,6 +345,12 @@ impl Recipe {
                 format: Timeline::VERSION,
                 extension: TIMELINE_EXTENSION,
             },
+            ImportSettings::Dialogue(_) => Self {
+                importer: dialogue::IMPORTER,
+                cooker: dialogue::COOKER,
+                format: Dialogue::VERSION,
+                extension: DIALOGUE_EXTENSION,
+            },
             ImportSettings::Encounter(_) => Self {
                 importer: encounter::IMPORTER,
                 cooker: encounter::COOKER,
@@ -497,6 +508,8 @@ impl Recipe {
             loc::output_path(relative, self.extension)
         } else if timeline::is_source(relative) {
             timeline::output_path(relative, self.extension)
+        } else if dialogue::is_source(relative) {
+            dialogue::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -624,6 +637,17 @@ pub enum CookError {
         #[source]
         source: Box<TimelineCookError>,
     },
+    #[error("failed to cook dialogue {}", path.display())]
+    Dialogue {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<DialogueCookError>,
+    },
+    #[error(transparent)]
+    Registry(#[from] Box<RegistryError>),
+    #[error("a dialogue can't ship as it is")]
+    DialogueKey(#[from] Box<MissingKey>),
     #[error("failed to cook UI document {}", path.display())]
     Ui {
         path: PathBuf,
@@ -945,6 +969,7 @@ fn cook_dir_through(
         asset.path.strip_prefix(source_root).expect("scanned under the source root").to_owned()
     };
     let fluent = fluent_files(source_root, &cooked_assets)?;
+    let flags = Registry::read(source_root).map_err(Box::new)?;
     // Every source's own output first, so a collision says so before any file is read. A source
     // wanted for its animations has none, nor has a Fluent source.
     let mut own_outputs = Vec::with_capacity(cooked_assets.len());
@@ -1064,6 +1089,7 @@ fn cook_dir_through(
         cook: options.cook,
         memory: &memory,
         fluent: &fluent,
+        flags: &flags,
         screens: &screen_characters,
     };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
@@ -1088,6 +1114,7 @@ fn cook_dir_through(
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     let localization = check_localization(&assets)?;
+    check_dialogues(&assets)?;
     check_screens(&screens, &assets)?;
     Ok(CookReport {
         assets,
@@ -1145,6 +1172,39 @@ fn check_localization(assets: &[CookedAsset]) -> Result<LocReport, CookError> {
         tables.push(table);
     }
     loc::check(&tables).map_err(|error| CookError::Localization(Box::new(error)))
+}
+
+/// Checks every key the tree's dialogues show against every locale's table, from the files as they now
+/// are, as [`check_localization`] does.
+fn check_dialogues(assets: &[CookedAsset]) -> Result<(), CookError> {
+    let of = |extension: &'static str| {
+        assets.iter().filter(move |asset| asset.output.extension().is_some_and(|e| e == extension))
+    };
+    if of(DIALOGUE_EXTENSION).next().is_none() {
+        return Ok(());
+    }
+    let mut dialogues = Vec::new();
+    for asset in of(DIALOGUE_EXTENSION) {
+        let bytes =
+            read_cooked(asset).map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        let dialogue = Dialogue::read(&bytes).map_err(|error| CookError::Dialogue {
+            path: asset.output.clone(),
+            source: Box::new(error.into()),
+        })?;
+        dialogues.push((asset.source.clone(), dialogue));
+    }
+    let mut tables = Vec::new();
+    for asset in of(STRINGS_EXTENSION) {
+        let bytes = fs::read(&asset.output)
+            .map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        tables.push(StringTable::read(&bytes).map_err(|error| {
+            CookError::Localization(Box::new(LocCheckError::Read {
+                path: asset.output.clone(),
+                source: Box::new(error),
+            }))
+        })?);
+    }
+    Ok(dialogue::check_keys(&dialogues, &tables)?)
 }
 
 /// The tree's screens and tables, from the files as they now are.
@@ -1459,6 +1519,7 @@ fn sub_assets(
         | ImportSettings::Fluent(_)
         | ImportSettings::Locale(_)
         | ImportSettings::Timeline(_)
+        | ImportSettings::Dialogue(_)
         | ImportSettings::Ui(_)
         | ImportSettings::Script(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
@@ -1681,6 +1742,8 @@ struct PlannedTree<'a> {
     cook: Cook,
     memory: &'a CookMemory,
     fluent: &'a FluentFiles,
+    /// The content root's flag registry, which dialogues read.
+    flags: &'a Registry,
     /// What the screens show, once the tree's documents and tables have cooked: before fonts do.
     screens: &'a OnceLock<ScreenCharacters>,
 }
@@ -1703,6 +1766,7 @@ impl<'a> PlannedTree<'a> {
             last_source: &remembered.last_source,
             memory: self.memory,
             fluent: self.fluent,
+            flags: self.flags,
             screens: self.screens,
         }
     }
@@ -1741,6 +1805,7 @@ struct Assets<'a> {
     last_source: &'a LastSource,
     memory: &'a CookMemory,
     fluent: &'a FluentFiles,
+    flags: &'a Registry,
     screens: &'a OnceLock<ScreenCharacters>,
 }
 
@@ -2322,6 +2387,8 @@ fn cook_source(
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
             .map_err(|source| CookError::Timeline { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Dialogue(_) => dialogue::cook(bytes, &assets.flags.flags)
+            .map_err(|source| CookError::Dialogue { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
@@ -2862,6 +2929,14 @@ fn source_dependencies(
         | ImportSettings::Fluent(_)
         | ImportSettings::Timeline(_)
         | ImportSettings::Script(_) => Ok(Vec::new()),
+        // A dialogue reads the registry, so a flag added to it recooks every dialogue.
+        ImportSettings::Dialogue(_) => Ok(assets
+            .flags
+            .bytes
+            .as_ref()
+            .map(|bytes| Dependency::File { path: dialogue::REGISTRY.to_owned(), hash: blake3::hash(bytes) })
+            .into_iter()
+            .collect()),
         ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
         // A locale's table is its sources': another locale's aren't in its key (`loc`'s docs).
         ImportSettings::Locale(_) => fluent_of(path, assets)
@@ -3268,7 +3343,8 @@ fn imported_mesh(
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
         | ImportSettings::Zone(_)
-        | ImportSettings::Timeline(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Timeline(_)
+        | ImportSettings::Dialogue(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 
@@ -3836,6 +3912,7 @@ mod tests {
                 cook: Cook::Desktop,
                 memory: &memory,
                 fluent: &FluentFiles::new(),
+                flags: &Registry::default(),
                 screens: &OnceLock::new(),
             };
             let remembered = Remembered::default();
@@ -3893,6 +3970,7 @@ mod tests {
             cook: Cook::Desktop,
             memory: &memory,
             fluent: &FluentFiles::new(),
+            flags: &Registry::default(),
             screens: &OnceLock::new(),
         };
         let remembered = Remembered::default();

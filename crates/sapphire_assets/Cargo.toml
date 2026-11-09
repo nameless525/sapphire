@@ -23,6 +23,7 @@ rkyv.workspace = true
 # Cooked collider sets, a kind of asset that CPU code reads (M2 D3).
 sapphire_colliders.workspace = true
 sapphire_bytecode.workspace = true
+sapphire_dialogue.workspace = true
 sapphire_navmesh.workspace = true
 sapphire_timeline.workspace = true
 sapphire_zone.workspace = true

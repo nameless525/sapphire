@@ -34,6 +34,8 @@ sapphire_colliders.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_cues.workspace = true
+# The dialogues' lines and choices, which name keys of the tables too (M3 Q2).
+sapphire_dialogue.workspace = true
 sapphire_input.workspace = true
 # Real string tables from the real sources, for what the menus' tests hold.
 sapphire_pipeline.workspace = true

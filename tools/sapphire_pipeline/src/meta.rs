@@ -144,6 +144,7 @@ use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
+use crate::dialogue::{self, DialogueSettings};
 use crate::encounter::{self, EncounterSettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
@@ -260,6 +261,8 @@ pub enum ImportSettings {
     Zone(ZoneSettings),
     /// A timeline document (`.timeline.ron`, M3 Q1). New variants go last: a key's encoding counts them.
     Timeline(TimelineSettings),
+    /// A dialogue document (`.dialogue.ron`, M3 Q2).
+    Dialogue(DialogueSettings),
 }
 
 impl ImportSettings {
@@ -294,6 +297,9 @@ impl ImportSettings {
         }
         if timeline::is_source(source) {
             return Some(Self::Timeline(TimelineSettings::default()));
+        }
+        if dialogue::is_source(source) {
+            return Some(Self::Dialogue(DialogueSettings::default()));
         }
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
@@ -373,7 +379,8 @@ impl ImportSettings {
             | Self::FbxClips(_)
             | Self::Vrma(_)
             | Self::Zone(_)
-            | Self::Timeline(_) => None,
+            | Self::Timeline(_)
+            | Self::Dialogue(_) => None,
         }
     }
 
@@ -403,7 +410,8 @@ impl ImportSettings {
             | Self::FbxClips(_)
             | Self::Vrma(_)
             | Self::Zone(_)
-            | Self::Timeline(_) => None,
+            | Self::Timeline(_)
+            | Self::Dialogue(_) => None,
         }
     }
 

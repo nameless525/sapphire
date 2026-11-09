@@ -1,5 +1,5 @@
-//! Every string the game draws (M3 C3): the game's documents and its cutscenes' subtitles name keys, and only
-//! the string tables say what they show, in English and Japanese. Nothing a document or a cutscene names is
+//! Every string the game draws (M3 C3): the game's documents, its cutscenes' subtitles and its dialogues' lines
+//! (M3 Q2) name keys, and only the string tables say what they show, in English and Japanese. Nothing a document or a cutscene names is
 //! missing from either language, the two have the same keys taking the same variables, no key is one
 //! nothing can show, the Japanese says it's machine-quality, and the fonts' character set holds every
 //! character the tables use. How a string is added is in `content/loc/en/game_ui.ftl`'s header. `menus.rs`
@@ -13,6 +13,7 @@ use std::path::Path;
 
 use game_ui::menus::MenuScreen;
 use sapphire_assets::ui::UiDocument;
+use sapphire_dialogue::DialogueDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
 use sapphire_timeline::TimelineDocument;
@@ -65,11 +66,32 @@ fn add_spoken(dir: &Path, into: &mut BTreeSet<String>) {
     }
 }
 
-/// What every timeline's subtitles say, and who says it: keys a cutscene shows.
+/// What every timeline's subtitles say, and who says it: keys a cutscene shows. Then what every dialogue's
+/// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2).
 fn spoken() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     add_spoken(&content(), &mut keys);
+    add_said(&content(), &mut keys);
     keys
+}
+
+fn add_said(dir: &Path, into: &mut BTreeSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            add_said(&path, into);
+        } else if path.to_str().is_some_and(|name| name.ends_with(".dialogue.ron")) {
+            let dialogue = DialogueDocument::from_ron(&fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            for node in dialogue.nodes {
+                if let Some(say) = node.say {
+                    into.insert(say.speaker);
+                    into.insert(say.line);
+                }
+                into.extend(node.choices.into_iter().map(|choice| choice.line));
+            }
+        }
+    }
 }
 
 fn add_variables(table: &StringTable, expression: Expression, into: &mut BTreeSet<String>) {

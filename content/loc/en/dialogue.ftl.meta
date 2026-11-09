@@ -1,0 +1,10 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "474970e7-3867-4764-9fb9-eb1a2561e273",
+        importer: Fluent((
+            locale: "en",
+        )),
+    ),
+)

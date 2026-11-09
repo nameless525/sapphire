@@ -116,6 +116,7 @@ pub mod colliders;
 mod color;
 pub mod combat;
 pub mod cook;
+pub mod dialogue;
 pub mod documents;
 pub mod encounter;
 pub mod extract;

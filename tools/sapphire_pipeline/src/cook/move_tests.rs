@@ -175,9 +175,14 @@ fn two_move_sets_with_one_name_stop_the_pack_by_name() {
     );
     let report = tree.try_cook(false).unwrap();
     let error = crate::pack::pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap_err();
-    assert!(matches!(error, crate::pack::PackError::MoveSetNameClash { .. }), "{error}");
+    let crate::pack::PackError::MoveSetNameClash { first, second } = &error else { panic!("{error}") };
+    let named = |tail: &str| [first, second].iter().any(|path| path.ends_with(tail));
+    assert!(named("moves/fighter.moves.ron") && named("other/fighter.moves.ron"), "{error}");
     let text = error.to_string();
-    assert!(text.contains("moves/fighter.moves.ron") && text.contains("other/fighter.moves.ron"), "{text}");
+    assert!(
+        text.contains(&first.display().to_string()) && text.contains(&second.display().to_string()),
+        "{text}"
+    );
 }
 
 /// The pose a clip draws at a tick: a joint's position with an offset and its rotation, in model space,

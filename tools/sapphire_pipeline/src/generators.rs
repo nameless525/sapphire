@@ -178,7 +178,8 @@ mod tests {
         generate_missing(&lock, source, &before, false).unwrap();
         assert!(generate_missing(&lock, source, &before, true).unwrap().is_empty(), "nothing's missing");
 
-        let added = source.join("gen/deep/added.txt");
+        // Joined as the generator joins it, so it prints the same on Windows.
+        let added = source.join("gen").join("deep/added.txt");
         let error = generate_missing(&lock, source, &after, true).unwrap_err();
         assert!(matches!(error, GenerateError::Missing { .. }), "{error}");
         assert!(error.to_string().contains(&added.display().to_string()), "{error}");
@@ -250,7 +251,7 @@ mod tests {
         fs::write(dir.join("gen/a.txt"), "committed").unwrap();
         let lock = dir.join("generate.lock");
         let error = generate_missing(&lock, dir, &generators, true).unwrap_err().to_string();
-        assert!(error.contains(&dir.join("gen/b.txt").display().to_string()), "{error}");
+        assert!(error.contains(&dir.join("gen").join("b.txt").display().to_string()), "{error}");
         assert!(!error.contains("a.txt"), "only what's missing is named: {error}");
         assert!(error.contains("--locked never writes sources") && error.contains("gen-test"), "{error}");
         assert!(!dir.join("gen/b.txt").exists());

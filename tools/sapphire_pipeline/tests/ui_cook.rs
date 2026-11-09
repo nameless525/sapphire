@@ -159,6 +159,8 @@ fn said_by(error: &CookError) -> String {
 }
 
 fn says(said: &str, wanted: &[&str]) {
+    // Paths print with Windows' separator there.
+    let said = said.replace('\\', "/");
     for word in wanted {
         assert!(said.contains(word), "wanted `{word}` in: {said}");
     }

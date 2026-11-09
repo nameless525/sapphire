@@ -150,6 +150,7 @@ mod simulation;
 mod stats;
 pub mod targeting;
 mod timeline;
+pub mod zone;
 
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
@@ -188,9 +189,10 @@ pub use stats::{
 };
 pub use targeting::SoftLock;
 pub use timeline::{
-    CinematicError, TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError,
-    TimelineProgress, TimelineRun,
+    CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
+    TimelineRun,
 };
+pub use zone::{ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneLoadError};
 
 #[doc(hidden)]
 pub use hits::overhead::{

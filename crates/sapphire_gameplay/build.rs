@@ -74,6 +74,28 @@ fn main() {
     }
     code.push_str("];\n");
 
+    // Every zone's sidecar, by the zone's stem: an exit names the zone it leads to by ID, and a scenario's
+    // zone names that zone's pack as a cook does (M3 W4).
+    let zones = root.join("content/zones");
+    println!("cargo:rerun-if-changed={}", zones.display());
+    let mut sidecars: Vec<PathBuf> = fs::read_dir(&zones)
+        .expect("content/zones")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.is_dir())
+        .flat_map(|directory| fs::read_dir(directory).expect("a zone's directory"))
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.to_string_lossy().ends_with(".zone.ron.meta"))
+        .collect();
+    sidecars.sort();
+    code.push_str("\npub(super) const ZONE_SIDECARS: &[(&str, &str)] = &[\n");
+    for path in &sidecars {
+        let file = path.file_name().and_then(|name| name.to_str()).expect("a UTF-8 name");
+        let stem = file.strip_suffix(".zone.ron.meta").expect("filtered");
+        writeln!(code, "    ({stem:?}, include_str!({:?})),", path.display().to_string()).expect("a string");
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    code.push_str("];\n");
+
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets it"));
     fs::write(out.join("scenario_documents.rs"), code).expect("OUT_DIR is writable");
 }

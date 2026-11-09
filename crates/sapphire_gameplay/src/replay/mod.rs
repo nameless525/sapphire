@@ -46,19 +46,20 @@ pub use checksums::{
     checksums_file_name,
 };
 pub use file::{
-    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION, Recorder, Replay, ReplayError,
-    is_valid_name,
+    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION, Recorder, Replay,
+    ReplayCommand, ReplayError, is_valid_name,
 };
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
-    FightWorld, PARTY_TUNING, PLAYERS, PreparedFight, RIVALS, SCENARIOS, Scenario, ScenarioError,
-    ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_MOVES, WARRIORS, add_melee_buttons, arena_fight,
-    document_file_name, duel, find_scenario, melee, melee_buttons, party_document, party_moves, player_moves,
-    test_moves, timelines, ultimate_cinematic, warrior_moves,
+    BAKED_ZONES, BakedZone, FightWorld, PARTY_TUNING, PLAYERS, PreparedFight, RIVALS, SCENARIOS, Scenario,
+    ScenarioError, ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_MOVES, WARRIORS, add_melee_buttons,
+    arena_fight, document_file_name, duel, find_scenario, melee, melee_buttons, party_document, party_moves,
+    player_moves, test_moves, timelines, ultimate_cinematic, warrior_moves,
 };
 pub use script::{
     ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS,
-    ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, SCRIPTS, Script, arena_energy, arena_ultimate,
+    ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, GROUND_START, HUB_FROM_GROUND, HUB_START,
+    PROVING_GROUND, PROVING_HUB, SCRIPTS, Script, ZONE_TRIP_ENTRIES, arena_energy, arena_ultimate,
     arena_walk, attempts, fight_back, find_script, idle, into_the_yard, melee_sweep,
 };
 pub use tuning::{LiveMoves, LiveSet, compile_document};

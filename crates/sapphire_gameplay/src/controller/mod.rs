@@ -479,6 +479,11 @@ impl CharacterWorld {
         Ok(())
     }
 
+    /// Trades the world's statics for those of `zone`, its bodies staying.
+    pub(crate) fn swap_statics(&mut self, zone: &mut PhysicsWorld) {
+        self.physics.swap_statics(zone);
+    }
+
     /// Gives a newly spawned actor its capsule, or leaves it without a controller if it can't have
     /// one, and counts that: a spawn inside a step has nowhere to report to. `movement` is what its
     /// document says it moves by, if it says.

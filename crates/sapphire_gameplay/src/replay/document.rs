@@ -150,10 +150,24 @@ fn invalid(field: impl Into<String>, problem: impl Into<String>) -> ScenarioErro
 /// one line and nothing else of it.
 fn id_of(document: &str) -> Result<AssetId, ScenarioError> {
     let path = format!("{document}.meta");
-    let text = named(&path)?;
+    id_in(named(&path)?, &path)
+}
+
+/// The ID in a sidecar's `text`, from `path`.
+fn id_in(text: &str, path: &str) -> Result<AssetId, ScenarioError> {
     let id = text.split("id:").nth(1).and_then(|rest| rest.split('"').nth(1));
-    let id = id.ok_or_else(|| invalid(path.clone(), "it has no `id`"))?;
-    id.parse().map_err(|_| invalid(path.clone(), format!("`{id}` isn't an ID")))
+    let id = id.ok_or_else(|| invalid(path, "it has no `id`"))?;
+    id.parse().map_err(|_| invalid(path, format!("`{id}` isn't an ID")))
+}
+
+/// The pack of the zone whose sidecar holds `id`, as a cook names it, among the zones this build holds.
+fn zone_pack(id: AssetId) -> Result<Option<String>, ScenarioError> {
+    for (stem, sidecar) in ZONE_SIDECARS {
+        if id_in(sidecar, stem)? == id {
+            return Ok(Some(sapphire_zone::pack_name(stem)));
+        }
+    }
+    Ok(None)
 }
 
 /// The side a document's number means: 0 is none.
@@ -382,8 +396,15 @@ fn arena_point(name: &str) -> Option<SpawnPoint> {
 /// A zone's document, and what the simulation reads of it archived as a cook archives it.
 fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
     let document = ZoneDocument::from_ron(named(path)?)?;
+    let mut simulation = document.simulation()?;
+    // An exit's pack is the pack of the zone it leads to, which a cook finds by its ID (M3 W4).
+    for exit in &mut simulation.exits {
+        let pack = zone_pack(exit.to)?;
+        exit.pack =
+            pack.ok_or_else(|| invalid(format!("exits `{}`.to", exit.name), "no zone has that ID"))?;
+    }
     let zone = Zone {
-        simulation: document.simulation()?,
+        simulation,
         presentation: ZonePresentation {
             cell_size: document.grid.cell_size,
             backdrop: None,

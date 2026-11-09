@@ -2,11 +2,12 @@
 //! came, and the fight that follows stays on the same checksums. `sapphire_sequencer`'s own test does the
 //! same with a player in front of it, skipped at every frame.
 
+use sapphire_gameplay::replay::ReplayCommand;
 use sapphire_gameplay::replay::{
     CINEMATIC, CUTSCENE, FORMAT_VERSION, PLAIN_FORMAT_VERSION, Player, Recording, Replay, ReplayError,
     SCENARIOS, Scenario, arena_fight, find_scenario, find_script, melee_sweep,
 };
-use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineCommand, TimelineId, TimelinePlayError};
+use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineId, TimelinePlayError};
 use sapphire_timeline::{Beat, BeatKind, TimelineDocument, TimelineSimulation};
 
 const CINEMATIC_DOCUMENT: &str = include_str!("../../sapphire_timeline/test_content/cinematic.timeline.ron");
@@ -210,7 +211,7 @@ fn the_scripts_pairs_reach_one_trail() {
 #[test]
 fn a_file_of_commands_is_in_its_own_version_and_round_trips() {
     let (replay, _) = watched();
-    assert_eq!(replay.commands(), [(PLAY_AT, TimelineCommand::Play(CINEMATIC))]);
+    assert_eq!(replay.commands(), [(PLAY_AT, ReplayCommand::PlayTimeline(CINEMATIC))]);
     let bytes = replay.encode();
     assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), FORMAT_VERSION);
     let decoded = Replay::decode(&bytes).expect("reads");
@@ -324,7 +325,7 @@ fn a_recording_refuses_what_a_simulation_does_and_records_nothing_for_it() {
     recording.play_timeline(CINEMATIC).expect("loaded");
     assert_eq!(recording.play_timeline(CUTSCENE), Err(TimelinePlayError::Busy(CINEMATIC)));
     run_to(&mut recording, 1);
-    assert_eq!(recording.finish().0.commands(), [(0, TimelineCommand::Play(CINEMATIC))]);
+    assert_eq!(recording.finish().0.commands(), [(0, ReplayCommand::PlayTimeline(CINEMATIC))]);
 }
 
 /// A changed cinematic is changed tables, by name, like a changed move: never a broken simulation.

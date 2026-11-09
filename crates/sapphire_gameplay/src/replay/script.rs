@@ -5,9 +5,11 @@
 //! need no one to play them: **to add one,** write a function and add a row to [`SCRIPTS`], then
 //! record it with `cargo xtask replay --record`.
 
+use super::file::ReplayCommand;
 use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
-use crate::timeline::{TimelineCommand, TimelineId};
+use crate::timeline::TimelineId;
+use crate::zone::{ZoneEntry, ZoneId};
 
 use super::ward::{COURT_GATE_ID, COURT_GATE_TICK};
 
@@ -17,6 +19,25 @@ const WARD_COURT_TICKS: u32 = 1200;
 /// What the `timelines` scenario loads, in order.
 pub const CINEMATIC: TimelineId = TimelineId::from_raw(0);
 pub const CUTSCENE: TimelineId = TimelineId::from_raw(1);
+
+/// What the `zone-trip` scenario's shelf holds, in order, and where in them its script arrives: each zone's
+/// spawners in the order of their IDs, which a test holds to their names.
+pub const PROVING_HUB: ZoneId = ZoneId::from_raw(0);
+pub const PROVING_GROUND: ZoneId = ZoneId::from_raw(1);
+pub const HUB_START: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 0 };
+pub const HUB_FROM_GROUND: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 1 };
+pub const GROUND_START: ZoneEntry = ZoneEntry { zone: PROVING_GROUND, spawner: 1 };
+
+/// The ticks the `zone-trip` script leaves each zone on, in order.
+pub const ZONE_TRIP_ENTRIES: [(u32, ZoneEntry); 5] = [
+    (ZONE_TRIP_LEG, HUB_START),
+    (2 * ZONE_TRIP_LEG, GROUND_START),
+    (3 * ZONE_TRIP_LEG, HUB_FROM_GROUND),
+    (4 * ZONE_TRIP_LEG, GROUND_START),
+    (5 * ZONE_TRIP_LEG, HUB_FROM_GROUND),
+];
+/// How long the `zone-trip` script stays in each place.
+const ZONE_TRIP_LEG: u32 = 120;
 
 /// Gives a recording each tick's actions: the seam between the simulation and what drives it.
 ///
@@ -44,8 +65,8 @@ pub struct Script {
     pub ticks: u32,
     /// The actions of a tick.
     pub actions: fn(u64, &[ActorId]) -> TickActions,
-    /// What it does with timelines, each with the tick it comes before, in order.
-    pub commands: &'static [(u32, TimelineCommand)],
+    /// What it does beyond its actions, each with the tick it comes before, in order.
+    pub commands: &'static [(u32, ReplayCommand)],
 }
 
 /// Every script.
@@ -164,28 +185,34 @@ pub const SCRIPTS: &[Script] = &[
         about: "`melee-sweep`'s presses, with a cinematic run under them from tick 120 and pressed all the way through",
         ticks: 600,
         actions: melee_sweep,
-        commands: &[(120, TimelineCommand::Play(CINEMATIC))],
+        commands: &[(120, ReplayCommand::PlayTimeline(CINEMATIC))],
     },
     Script {
         name: "cinematic-skipped",
         about: "`cinematic-watched`, with the cinematic skipped 50 steps in: it must reach all the same checksums",
         ticks: 600,
         actions: melee_sweep,
-        commands: &[(120, TimelineCommand::Play(CINEMATIC)), (170, TimelineCommand::Skip { at_ms: 833 })],
+        commands: &[
+            (120, ReplayCommand::PlayTimeline(CINEMATIC)),
+            (170, ReplayCommand::SkipTimeline { at_ms: 833 }),
+        ],
     },
     Script {
         name: "cutscene-watched",
         about: "`melee-sweep`'s presses, with a cutscene between ticks 120 and 121, watched to its end",
         ticks: 300,
         actions: melee_sweep,
-        commands: &[(120, TimelineCommand::Play(CUTSCENE))],
+        commands: &[(120, ReplayCommand::PlayTimeline(CUTSCENE))],
     },
     Script {
         name: "cutscene-skipped",
         about: "`cutscene-watched`, skipped 2.5 s in: it must reach all the same checksums",
         ticks: 300,
         actions: melee_sweep,
-        commands: &[(120, TimelineCommand::Play(CUTSCENE)), (120, TimelineCommand::Skip { at_ms: 2500 })],
+        commands: &[
+            (120, ReplayCommand::PlayTimeline(CUTSCENE)),
+            (120, ReplayCommand::SkipTimeline { at_ms: 2500 }),
+        ],
     },
     Script {
         name: "ward-court",
@@ -200,7 +227,7 @@ pub const SCRIPTS: &[Script] = &[
         about: "`ward-court`, with the court's gate cutscene before its step 30, watched to its end",
         ticks: WARD_COURT_TICKS,
         actions: fight_back,
-        commands: &[(COURT_GATE_TICK, TimelineCommand::Play(COURT_GATE_ID))],
+        commands: &[(COURT_GATE_TICK, ReplayCommand::PlayTimeline(COURT_GATE_ID))],
     },
     Script {
         name: "ward-court-skipped",
@@ -208,8 +235,8 @@ pub const SCRIPTS: &[Script] = &[
         ticks: WARD_COURT_TICKS,
         actions: fight_back,
         commands: &[
-            (COURT_GATE_TICK, TimelineCommand::Play(COURT_GATE_ID)),
-            (COURT_GATE_TICK, TimelineCommand::Skip { at_ms: 3100 }),
+            (COURT_GATE_TICK, ReplayCommand::PlayTimeline(COURT_GATE_ID)),
+            (COURT_GATE_TICK, ReplayCommand::SkipTimeline { at_ms: 3100 }),
         ],
     },
     Script {
@@ -235,6 +262,20 @@ pub const SCRIPTS: &[Script] = &[
         ticks: CHASE_LAPS_TICKS,
         actions: chase_laps,
         commands: &[],
+    },
+    Script {
+        name: "zone-trip",
+        about: "the player swings and walks in the arena, and goes on walking through a hub and a zone and back, \
+                twice over, entering each two seconds after the last",
+        ticks: 6 * ZONE_TRIP_LEG,
+        actions: zone_trip,
+        commands: &[
+            (ZONE_TRIP_ENTRIES[0].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[0].1)),
+            (ZONE_TRIP_ENTRIES[1].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[1].1)),
+            (ZONE_TRIP_ENTRIES[2].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[2].1)),
+            (ZONE_TRIP_ENTRIES[3].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[3].1)),
+            (ZONE_TRIP_ENTRIES[4].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[4].1)),
+        ],
     },
 ];
 
@@ -677,6 +718,23 @@ const ARENA_WALK_TICKS: u32 = {
     }
     ticks
 };
+
+/// [`SCRIPTS`]' `zone-trip`: a swing under way as the first entry comes, so a traveller's seen to arrive with
+/// nothing running, and then a walk, turning a quarter each leg.
+#[must_use]
+pub fn zone_trip(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let buttons = if tick == u64::from(ZONE_TRIP_LEG) - 10 { Buttons::LIGHT } else { Buttons::NONE };
+    let (x, y) = match tick / u64::from(ZONE_TRIP_LEG) % 4 {
+        0 => (0, 127),
+        1 => (127, 0),
+        2 => (0, -127),
+        _ => (-127, 0),
+    };
+    actions.set(player, ActorActions { buttons, stick: Stick::new(x, y) }).expect("one actor fits a tick");
+    actions
+}
 
 /// [`SCRIPTS`]' `arena-walk`: the arena's player by the stick alone, and its opponent standing, for the
 /// golden frame of a character the controller moved and for what its collision does on the way.

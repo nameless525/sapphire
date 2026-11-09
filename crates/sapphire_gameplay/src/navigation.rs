@@ -45,6 +45,13 @@ impl SimNavigation {
         })
     }
 
+    /// This, with no follower: a navmesh going back on a zone's shelf, whose followers stayed behind or
+    /// stood somewhere else.
+    pub(crate) fn without_paths(mut self) -> Self {
+        self.paths = Vec::new();
+        self
+    }
+
     /// A hash of the cooked navmesh. Its bytes are the same on every architecture, which
     /// `tools/sapphire_pipeline/tests/nav_baked.rs` holds to a bake on each of them.
     #[must_use]

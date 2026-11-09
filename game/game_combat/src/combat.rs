@@ -50,10 +50,10 @@ use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
-    PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCRIPTS, Scenario, ScenarioError,
-    checksums_file_name, find_scenario, find_script,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, SCRIPTS, Scenario,
+    ScenarioError, checksums_file_name, find_scenario, find_script,
 };
-use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelineCommand, TimelinePlayError};
+use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelinePlayError};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 /// Every scenario a fight here can start from, those with a script among them.
@@ -1191,15 +1191,16 @@ pub fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSourc
 
 /// A script by name.
 /// A recording script's timeline starts, carried out at their boundaries as the recording goes (M3 Q3). Its
-/// skips aren't: on a stage, a skip is presentation's, which tells the recording ([`Combat::skip_timeline`]).
+/// skips and zone entries aren't: on a stage, both are presentation's, which tells the recording
+/// ([`Combat::skip_timeline`]).
 #[derive(Clone, Copy, Debug)]
 struct ScriptStarts {
-    commands: &'static [(u32, TimelineCommand)],
+    commands: &'static [(u32, ReplayCommand)],
     next: usize,
 }
 
 impl ScriptStarts {
-    fn new(commands: &'static [(u32, TimelineCommand)]) -> Self {
+    fn new(commands: &'static [(u32, ReplayCommand)]) -> Self {
         Self { commands, next: 0 }
     }
 
@@ -1215,7 +1216,7 @@ impl ScriptStarts {
             && at <= recording.recorded_ticks()
         {
             self.next += 1;
-            if let TimelineCommand::Play(id) = command {
+            if let ReplayCommand::PlayTimeline(id) = command {
                 recording.play_timeline(id)?;
             }
         }

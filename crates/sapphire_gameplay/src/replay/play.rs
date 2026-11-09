@@ -4,7 +4,7 @@
 use sapphire_moves::MoveSet;
 
 use super::checksums::Trail;
-use super::file::{Cursor, MAX_TICKS, Recorder, Replay, ReplayError};
+use super::file::{Cursor, MAX_TICKS, Recorder, Replay, ReplayCommand, ReplayError};
 use super::scenario::{Scenario, ScenarioError, find_scenario};
 use super::script::{ActionSource, Script};
 use super::tuning::LiveMoves;
@@ -14,7 +14,8 @@ use crate::moves::{MoveSetId, Tuned};
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::SimStats;
 use crate::targeting::TargetingTuning;
-use crate::timeline::{TimelineCommand, TimelineId, TimelinePlayError};
+use crate::timeline::{TimelineId, TimelinePlayError};
+use crate::zone::{ZoneEntry, ZoneEntryError};
 
 /// A replay that can't start, or a recording that can't.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +44,8 @@ pub enum PlayError {
     /// A move's cinematic is the move's own steps, and the move has no way out (M3 Q3b).
     #[error("the timeline playing at tick {tick} is a move's cinematic, which can't be skipped")]
     Unskippable { tick: u32 },
+    #[error(transparent)]
+    Zone(#[from] ZoneEntryError),
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -205,7 +208,7 @@ impl Player {
             played: 0,
             cast,
         };
-        player.apply_commands();
+        player.reach_boundary();
         player
     }
 
@@ -218,29 +221,65 @@ impl Player {
     /// Plays one tick, then carries out the commands that come before the next, so that between two calls
     /// the simulation stands as the recording's did between those two steps: a cutscene started there is
     /// playing, and presentation beside it can hold the next step for it, as it did for whoever watched.
-    /// Returns `false`, and does nothing, once the replay has ended.
+    /// A zone entry is the exception: it stays due until the next call, which enters it first if nobody has,
+    /// so that a show beside this can cover the load ([`Self::due_zone_entry`]). Returns `false`, and does
+    /// nothing, once the replay has ended.
     pub fn step(&mut self) -> bool {
         let Some(actions) = self.cursor.next(&self.replay) else { return false };
+        self.apply_commands();
         self.played += 1;
         self.tracked.step(&actions);
-        self.apply_commands();
+        self.reach_boundary();
         true
     }
 
-    /// Carries out the commands at the boundary the run stands on: before its first step as it starts, and
-    /// after each step. The format allows commands at the boundary after the last tick, which this reaches
-    /// with no step past it.
+    /// Carries out the commands at the boundary the run has just reached, as it starts and after each step:
+    /// up to a zone entry, which stays due, except at the boundary after the last tick, which the format
+    /// allows commands at and which no step comes past.
+    fn reach_boundary(&mut self) {
+        if self.played == self.replay.ticks() {
+            self.apply_commands();
+        } else {
+            let _ = self.due_zone_entry();
+        }
+    }
+
+    /// Carries out every command at the boundary the run stands on, zone entries included.
     fn apply_commands(&mut self) {
+        while self.due_zone_entry().is_some() {
+            // As for a timeline's: a recording only holds what happened.
+            let _ = self.enter_due_zone();
+        }
+    }
+
+    /// Applies what's due before the next tick, up to any zone it enters, and says which that is: what a show
+    /// beside this asks ahead of each step, to cover the load before [`Self::enter_due_zone`]. [`Self::step`]
+    /// enters it at once, if nobody has.
+    pub fn due_zone_entry(&mut self) -> Option<ZoneEntry> {
         while let Some(&(tick, command)) = self.replay.commands().get(self.next_command)
             && tick == self.played
         {
-            // A recording only holds what started, so a refusal here is a crafted file, and it refuses
-            // the same every run. A skip is presentation's: see the `timeline` module.
-            if let TimelineCommand::Play(id) = command {
-                let _ = self.tracked.sim.play_timeline(id);
+            match command {
+                ReplayCommand::EnterZone(entry) => return Some(entry),
+                // A recording only holds what started, so a refusal here is a crafted file, and it refuses
+                // the same every run.
+                ReplayCommand::PlayTimeline(id) => {
+                    let _ = self.tracked.sim.play_timeline(id);
+                }
+                // Presentation's: see the `timeline` module.
+                ReplayCommand::SkipTimeline { .. } => {}
             }
             self.next_command += 1;
         }
+        None
+    }
+
+    /// Enters the zone [`Self::due_zone_entry`] said, if there is one, with the cast's first travelling.
+    pub fn enter_due_zone(&mut self) -> Result<(), ZoneEntryError> {
+        let Some(entry) = self.due_zone_entry() else { return Ok(()) };
+        self.next_command += 1;
+        let traveller = *self.cast.first().expect("a scenario's cast names the player first");
+        self.tracked.sim.enter_zone(entry, traveller)
     }
 
     /// Plays every tick left.
@@ -386,7 +425,7 @@ impl Recording {
     pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
         self.tracked.sim.play_timeline(id)?;
         if self.edited_at.is_none() {
-            self.recorder.command(TimelineCommand::Play(id));
+            self.recorder.command(ReplayCommand::PlayTimeline(id));
         }
         Ok(())
     }
@@ -399,11 +438,21 @@ impl Recording {
             return Err(PlayError::Unskippable { tick: self.recorded_ticks() });
         }
         if self.edited_at.is_none() {
-            self.recorder.command(TimelineCommand::Skip { at_ms });
+            self.recorder.command(ReplayCommand::SkipTimeline { at_ms });
         }
         let mut neutral = |_: u64, _: &[ActorId]| TickActions::NEUTRAL;
         for _ in 0..self.tracked.sim.timeline_steps_held() {
             self.step(&mut neutral)?;
+        }
+        Ok(())
+    }
+
+    /// Enters a zone on the shelf before the next step, with the cast's first travelling, and records that.
+    pub fn enter_zone(&mut self, entry: ZoneEntry) -> Result<(), ZoneEntryError> {
+        let traveller = *self.cast.first().expect("a scenario's cast names the player first");
+        self.tracked.sim.enter_zone(entry, traveller)?;
+        if self.edited_at.is_none() {
+            self.recorder.command(ReplayCommand::EnterZone(entry));
         }
         Ok(())
     }
@@ -421,8 +470,9 @@ impl Recording {
         while self.recorded_ticks() < ticks {
             while let Some(&(_, command)) = commands.next_if(|&&(at, _)| at <= self.recorded_ticks()) {
                 match command {
-                    TimelineCommand::Play(id) => self.play_timeline(id)?,
-                    TimelineCommand::Skip { at_ms } => self.skip_timeline(at_ms)?,
+                    ReplayCommand::PlayTimeline(id) => self.play_timeline(id)?,
+                    ReplayCommand::SkipTimeline { at_ms } => self.skip_timeline(at_ms)?,
+                    ReplayCommand::EnterZone(entry) => self.enter_zone(entry)?,
                 }
             }
             self.step(&mut source)?;

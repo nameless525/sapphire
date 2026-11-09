@@ -32,6 +32,7 @@ use crate::script::ScriptWorld;
 use crate::simulation::SimRng;
 use crate::targeting::{SoftLock, TargetingTuning};
 use crate::timeline::{TimelineLibrary, TimelineRun};
+use crate::zone::ZoneShelf;
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
@@ -423,6 +424,7 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
     world.resource::<SlowMotion>().write_canonical(&mut hasher);
     world.resource::<Party>().write_canonical(&mut hasher);
     world.resource::<TimelineRun>().write_canonical(&mut hasher);
+    world.resource::<ZoneShelf>().write_state(&mut hasher);
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
@@ -484,9 +486,9 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, every loaded
 /// timeline's simulation half, if there are any, targeting's weights, what a zone says if there's one,
-/// and last a script's bytecode and cadence, if there's one of those. Opted-in standing jump preparation
-/// contributes the policy and setup actor IDs independently of any jump's live countdown. Each of those
-/// is a resource of `world`, or isn't there.
+/// a script's bytecode and cadence, if there's one of those, and last every shelved zone's digest
+/// (M3 W4). Opted-in standing jump preparation contributes the policy and setup actor IDs independently
+/// of any jump's live countdown. Each of those is a resource of `world`, or isn't there.
 pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u64 {
     let library = world.resource::<MoveLibrary>();
     let characters = world.resource::<CharacterWorld>();
@@ -495,6 +497,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
     let timelines = world.resource::<TimelineLibrary>();
     let targeting = world.resource::<TargetingTuning>();
     let zone = world.get_resource::<SimZone>();
+    let zones = world.resource::<ZoneShelf>();
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
     hasher.u32(hashes.len() as u32);
@@ -531,6 +534,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
     if let Some(scripts) = world.get_resource::<ScriptWorld>() {
         scripts.write_tables(&mut hasher);
     }
+    zones.write_digests(&mut hasher);
     hasher.finish()
 }
 

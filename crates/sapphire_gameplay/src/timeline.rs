@@ -27,7 +27,7 @@
 //!
 //! # What's recorded
 //!
-//! A replay records the [`TimelineCommand`]s, and pins what they refer to through `tables_hash`. A run's
+//! A replay records the [`ReplayCommand`](crate::replay::ReplayCommand)s, and pins what they refer to through `tables_hash`. A run's
 //! beats follow from those, on the steps they fell on, rather than each being recorded as it fired: that
 //! would be recording what the simulation did, which a replay exists to check.
 //!
@@ -71,16 +71,6 @@ impl TimelineId {
     pub const fn raw(self) -> u32 {
         self.0
     }
-}
-
-/// What a replay holds of a timeline, between two steps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TimelineCommand {
-    /// [`Simulation::play_timeline`](crate::Simulation::play_timeline).
-    Play(TimelineId),
-    /// Someone skipped, this far in. It changes nothing in the simulation, whose [`TimelineRun`] just runs
-    /// out; it's here so a replay shown beside a renderer can show the skip.
-    Skip { at_ms: u32 },
 }
 
 /// Why a timeline didn't start.

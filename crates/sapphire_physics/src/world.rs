@@ -333,6 +333,14 @@ impl PhysicsWorld {
         self.counters.take(self.statics.len() as u32, self.bodies.len() as u32)
     }
 
+    /// Trades its static colliders for `other`'s, bodies staying where they are: a change of zone between
+    /// two steps, which asks whatever's overlapping anything new to sort that out by moving. Allocates nothing.
+    pub fn swap_statics(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.statics, &mut other.statics);
+        std::mem::swap(&mut self.tree, &mut other.tree);
+        std::mem::swap(&mut self.statics_digest, &mut other.statics_digest);
+    }
+
     /// A digest of every static collider, in ID order.
     pub fn statics_digest(&self) -> u64 {
         self.statics_digest

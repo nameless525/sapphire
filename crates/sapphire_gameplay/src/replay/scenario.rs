@@ -22,10 +22,11 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::{
     ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
 };
+use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
 use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
-use sapphire_zone::ZoneError;
+use sapphire_zone::{Zone, ZoneError};
 
 use super::document::ScenarioDocument;
 use crate::actions::{Buttons, Controls};
@@ -39,6 +40,7 @@ use crate::party::{PARTY_SLOTS, Party, PartyError, PartyTuning};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
+use crate::zone::{ZoneGround, ZoneLoadError};
 
 /// The test content's document: see that file for its numbers. The real moves came beside it (M2 O3,
 /// `arena-fight`), and the older scenarios stay on it, so tuning those moves moves none of their replays.
@@ -65,6 +67,61 @@ const ULTIMATE: &str = include_str!("../../../../content/combat/player/ultimate.
 
 /// The name the player's `ultimate` move gives its cinematic.
 pub const ULTIMATE_CINEMATIC: &str = "ultimate";
+
+/// A zone as a cook made it, its simulation's half: see [`zone_trip`].
+#[derive(Clone, Copy, Debug)]
+pub struct BakedZone {
+    /// The zone's source, by its sidecar's ID.
+    pub asset: AssetId,
+    /// The source's stem, from which its pack and its documents' names come.
+    pub stem: &'static str,
+    pub zone: &'static [u8],
+    pub colliders: &'static [u8],
+    pub navmesh: &'static [u8],
+}
+
+impl BakedZone {
+    /// What a simulation runs on while it's there.
+    pub fn load(&self) -> Result<ZoneGround, ZoneLoadError> {
+        let aligned = |bytes: &[u8]| {
+            let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
+            aligned.extend_from_slice(bytes);
+            aligned
+        };
+        let (zone, colliders, navmesh) = (aligned(self.zone), aligned(self.colliders), aligned(self.navmesh));
+        let simulation = &Zone::read(&zone)?.simulation;
+        let (collider_id, navmesh_id) =
+            (simulation.colliders.as_ref().copied(), simulation.navigation.as_ref().copied());
+        ZoneGround::from_cooked(self.asset, &zone, |id| {
+            if Some(id) == collider_id {
+                Some(&colliders[..])
+            } else if Some(id) == navmesh_id {
+                Some(&navmesh[..])
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// What the `zone-trip` scenario's shelf holds, in the script's order.
+pub const BAKED_ZONES: [BakedZone; 2] = [
+    BakedZone {
+        asset: AssetId::from_text("5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805"),
+        stem: "proving_hub",
+        zone: include_bytes!("../../baked/zones/proving_hub.szone"),
+        colliders: include_bytes!("../../baked/zones/proving_hub.scol"),
+        navmesh: include_bytes!("../../baked/zones/proving_hub.snav"),
+    },
+    BakedZone {
+        asset: AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2"),
+        stem: "proving_ground",
+        zone: include_bytes!("../../baked/zones/proving_ground.szone"),
+        colliders: include_bytes!("../../baked/zones/proving_ground.scol"),
+        navmesh: include_bytes!("../../baked/zones/proving_ground.snav"),
+    },
+];
+
 /// What the party's tests add to [`TEST_MOVES`]: a swap and three assists.
 const PARTY_MOVES: &str = include_str!("../../../sapphire_moves/test_content/party.moves.ron");
 
@@ -105,6 +162,8 @@ pub enum ScenarioError {
     /// The script a setup binds didn't cook or load.
     #[error("script {name}: {problem}")]
     Script { name: String, problem: String },
+    #[error(transparent)]
+    ZoneLoad(#[from] ZoneLoadError),
 }
 
 /// A named starting world.
@@ -256,6 +315,19 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: ScenarioSetup::Code(super::ward::ward_court),
+    },
+    Scenario {
+        name: "zone-trip",
+        about: "`arena-fight`, with the proving hub and the proving ground on the shelf: the warrior stays behind \
+                at the first entry, and the player goes on alone",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: ScenarioSetup::Code(zone_trip),
     },
 ];
 
@@ -628,6 +700,19 @@ impl PreparedFight {
 /// to it, by a setup of its own.
 pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     find_scenario(&SCENARIOS, "arena-fight").expect("this build holds its document").set_up(sim)
+}
+
+/// [`arena_fight`], with the zones it can go to on the shelf, in the order the `zone-trip` script names them.
+///
+/// **Copies, as the arena's navmesh and the player's moves are:** a replay needs no assets, so the simulation
+/// keeps what a cook made of each, and `tools/sapphire_pipeline/tests/zone_baked.rs` holds those to the
+/// documents. A row's digest is what a show beside a run holds the pack's own zone to.
+pub fn zone_trip(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cast = arena_fight(sim)?;
+    for baked in &BAKED_ZONES {
+        sim.add_zone(baked.load()?);
+    }
+    Ok(cast)
 }
 
 /// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded.

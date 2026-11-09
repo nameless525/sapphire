@@ -6,13 +6,27 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
 use crate::simulation::SimConfig;
-use crate::timeline::{TimelineCommand, TimelineId};
+use crate::timeline::TimelineId;
+use crate::zone::ZoneEntry;
+
+/// What a replay holds beyond its actions, between two steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayCommand {
+    /// [`Simulation::play_timeline`](crate::Simulation::play_timeline).
+    PlayTimeline(TimelineId),
+    /// Someone skipped, this far in. It changes nothing in the simulation, whose
+    /// [`TimelineRun`](crate::TimelineRun) just runs out; it's here so a replay shown beside a renderer can
+    /// show the skip.
+    SkipTimeline { at_ms: u32 },
+    /// [`Simulation::enter_zone`](crate::Simulation::enter_zone), for the cast's first.
+    EnterZone(ZoneEntry),
+}
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
 
 /// The file format's version. A change to its layout takes a new one, and older files are refused.
 ///
-/// A file with no [`TimelineCommand`]s is written in [`PLAIN_FORMAT_VERSION`] instead, which is this
+/// A file with no [`ReplayCommand`]s is written in [`PLAIN_FORMAT_VERSION`] instead, which is this
 /// layout without that section: most runs play no timeline, and they keep the bytes they've always had.
 pub const FORMAT_VERSION: u32 = 2;
 
@@ -36,6 +50,8 @@ const DIGEST_LEN: usize = 8;
 const COMMAND_LEN: usize = 4 + 1 + 4;
 const COMMAND_PLAY: u8 = 0;
 const COMMAND_SKIP: u8 = 1;
+/// Kind 2 is free: M3 W4's kind is 3 so that its argument can't be read as anything older by a slip of one.
+const COMMAND_ENTER_ZONE: u8 = 3;
 
 /// A run's length takes at most this many LEB128 bytes.
 const MAX_RUN_BYTES: usize = 5;
@@ -152,7 +168,7 @@ fn read_run_length(bytes: &[u8]) -> Option<(u32, &[u8])> {
 
 /// Reads the commands' section, checking all of it against the file's tick count. Allocates what the
 /// bytes that are really there pay for.
-fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, TimelineCommand)>, ReplayError> {
+fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, ReplayCommand)>, ReplayError> {
     let count = reader.u32("the commands' count")?;
     if count == 0 {
         return Err(ReplayError::EmptyCommands);
@@ -170,8 +186,9 @@ fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, Timeli
         }
         last = tick;
         let command = match kind {
-            COMMAND_PLAY => TimelineCommand::Play(TimelineId::from_raw(argument)),
-            COMMAND_SKIP => TimelineCommand::Skip { at_ms: argument },
+            COMMAND_PLAY => ReplayCommand::PlayTimeline(TimelineId::from_raw(argument)),
+            COMMAND_SKIP => ReplayCommand::SkipTimeline { at_ms: argument },
+            COMMAND_ENTER_ZONE => ReplayCommand::EnterZone(ZoneEntry::from_raw(argument)),
             kind => return Err(ReplayError::BadCommand { index, kind }),
         };
         commands.push((tick, command));
@@ -266,7 +283,7 @@ impl Cursor {
 /// up to the tick count, and a run is never empty or followed by a run of the same actions, so one
 /// set of inputs has one encoding: encoding what was decoded gives the same bytes.
 ///
-/// A [`TimelineCommand`] goes between two ticks: its tick is the step it comes before, or the tick count,
+/// A [`ReplayCommand`] goes between two ticks: its tick is the step it comes before, or the tick count,
 /// after the last. They come in order, and a file with none is in [`PLAIN_FORMAT_VERSION`], so that also
 /// has one encoding.
 ///
@@ -284,7 +301,7 @@ pub struct Replay {
     config: SimConfig,
     tables_hash: u64,
     ticks: u32,
-    commands: Vec<(u32, TimelineCommand)>,
+    commands: Vec<(u32, ReplayCommand)>,
     body: Vec<u8>,
 }
 
@@ -372,8 +389,9 @@ impl Replay {
             out.extend_from_slice(&(self.commands.len() as u32).to_le_bytes());
             for &(tick, command) in &self.commands {
                 let (kind, argument) = match command {
-                    TimelineCommand::Play(id) => (COMMAND_PLAY, id.raw()),
-                    TimelineCommand::Skip { at_ms } => (COMMAND_SKIP, at_ms),
+                    ReplayCommand::PlayTimeline(id) => (COMMAND_PLAY, id.raw()),
+                    ReplayCommand::SkipTimeline { at_ms } => (COMMAND_SKIP, at_ms),
+                    ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
                 };
                 out.extend_from_slice(&tick.to_le_bytes());
                 out.push(kind);
@@ -417,9 +435,9 @@ impl Replay {
     }
 
     /// What it did with timelines: each with the step it comes before, in order. A [`super::Player`] carries
-    /// out the [`TimelineCommand::Play`]s, and presentation beside it can read the skips here.
+    /// out the [`ReplayCommand::PlayTimeline`]s, and presentation beside it can read the skips here.
     #[must_use]
-    pub fn commands(&self) -> &[(u32, TimelineCommand)] {
+    pub fn commands(&self) -> &[(u32, ReplayCommand)] {
         &self.commands
     }
 
@@ -476,7 +494,7 @@ impl Recorder {
     }
 
     /// Adds a command before the next tick.
-    pub fn command(&mut self, command: TimelineCommand) {
+    pub fn command(&mut self, command: ReplayCommand) {
         self.replay.commands.push((self.replay.ticks, command));
     }
 

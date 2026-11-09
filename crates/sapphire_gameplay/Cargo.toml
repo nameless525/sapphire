@@ -33,8 +33,9 @@ sapphire_serialize.workspace = true
 sapphire_time.workspace = true
 # What a timeline does to the simulation: its time scale and gameplay events.
 sapphire_timeline.workspace = true
-# A zone's triggers and encounters, read when it's given one (M3 B2), and the spawners the Lantern Ward's
-# court scenario reads from its document.
+# A zone's triggers and encounters, read when it's given one (M3 B2); what it is to the simulation when
+# it's entered from a shelf (M3 W4): its colliders, its navmesh and its spawners; and the spawners the
+# Lantern Ward's court scenario reads from its document.
 sapphire_zone.workspace = true
 # Controller profiles as document data.
 serde.workspace = true

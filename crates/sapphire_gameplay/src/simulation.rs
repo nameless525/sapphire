@@ -8,10 +8,11 @@ use bevy_ecs::system::SystemState;
 use sapphire_core::Name;
 use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
-use sapphire_math::Pcg32;
+use sapphire_math::{Pcg32, Vec3};
 use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
+use sapphire_serialize::AssetId;
 use sapphire_time::{SimDuration, Stopwatch};
 use sapphire_timeline::{TimelineError, TimelineSimulation};
 
@@ -44,7 +45,7 @@ use crate::timeline::{
     self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
 };
-use sapphire_serialize::AssetId;
+use crate::zone::{self, ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneShelf};
 use sapphire_zone::ArchivedZone;
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
@@ -179,6 +180,7 @@ impl Simulation {
         world.insert_resource(TimelineLibrary::default());
         world.insert_resource(TimelineRun::default());
         world.insert_resource(TargetingTuning::shipped());
+        world.insert_resource(ZoneShelf::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -593,6 +595,86 @@ impl Simulation {
         self.ecs.world().get_resource::<SimZone>()
     }
 
+    /// Puts a zone on the shelf, between steps, for [`Self::enter_zone`], and says which row it took. Rows
+    /// count up from the first added: a replay adds the same ones in the same order. Its digest goes in
+    /// [`Self::tables_hash`].
+    pub fn add_zone(&mut self, zone: ZoneGround) -> ZoneId {
+        self.ecs.world_mut().resource_mut::<ZoneShelf>().add(zone)
+    }
+
+    /// Takes a zone off the shelf, unless it's the one this is in, and says whether it did: a game that goes
+    /// on through zones gives back what it can't reach any more. What's left keeps its row.
+    pub fn remove_zone(&mut self, id: ZoneId) -> bool {
+        self.ecs.world_mut().resource_mut::<ZoneShelf>().remove(id)
+    }
+
+    /// The zone this is in, once it's entered one.
+    #[must_use]
+    pub fn current_zone(&self) -> Option<ZoneId> {
+        self.ecs.world().resource::<ZoneShelf>().current()
+    }
+
+    /// The ground of a zone on the shelf.
+    #[must_use]
+    pub fn zone_ground(&self, id: ZoneId) -> Option<&ZoneGround> {
+        self.ecs.world().resource::<ZoneShelf>().row(id)
+    }
+
+    /// The row holding the zone asset `asset`, if it's on the shelf.
+    #[must_use]
+    pub fn find_zone(&self, asset: AssetId) -> Option<ZoneId> {
+        self.ecs.world().resource::<ZoneShelf>().find(asset)
+    }
+
+    /// Enters a zone from the shelf, between steps, with `traveller` and its party standing at the entry's
+    /// spawner and everyone else gone: see the [`zone`](crate::zone) module's docs for what it does and why it
+    /// stays deterministic. Tick, clocks and random stream are untouched, and so are the travellers' health
+    /// and their clocks' hitstop; what they were doing stops ([`Self::place_actor`]).
+    ///
+    /// Allocates. A paused world is the time for it: a wipe holds the steps.
+    ///
+    /// # Errors
+    ///
+    /// If it can't, in which case nothing has changed.
+    pub fn enter_zone(&mut self, entry: ZoneEntry, traveller: ActorId) -> Result<(), ZoneEntryError> {
+        let (position, yaw) = zone::check_entry(self.ecs.world(), entry, traveller)?;
+        let party = self.ecs.world().resource::<Party>();
+        let in_party = party.slots().any(|slot| slot.actor == traveller);
+        let members: Vec<ActorId> = party.slots().map(|slot| slot.actor).collect();
+        let travelling = |actor: ActorId| actor == traveller || (in_party && members.contains(&actor));
+        let staying: Vec<ActorId> = self
+            .ecs
+            .world()
+            .resource::<ActorTable>()
+            .iter()
+            .map(|(actor, _)| actor)
+            .filter(|&actor| !travelling(actor))
+            .collect();
+        for actor in staying {
+            self.despawn(actor);
+        }
+        let world = self.ecs.world_mut();
+        zone::swap_in(world, entry);
+        let travellers: Vec<ActorId> =
+            world.resource::<ActorTable>().iter().map(|(actor, _)| actor).collect();
+        for actor in travellers {
+            zone::forget_who_stayed(world, actor);
+            zone::place(world, actor, position, yaw);
+        }
+        Ok(())
+    }
+
+    /// Stands an actor somewhere else, between steps, at once, and says whether it's alive: a teleport, a
+    /// checkpoint's return, the one way anything but its own movement moves one. What it was doing stops: its
+    /// move, its presses, its slide, its hurtboxes and what its swings remember having hit, its controller's
+    /// state and motion. Its health and clock go on, and it keeps its aim and its brain.
+    ///
+    /// Moving it is a change of state as any other, so a replay has to make the same call at the same tick:
+    /// nothing records this one by itself. [`Self::enter_zone`] is the one a file holds.
+    pub fn place_actor(&mut self, id: ActorId, position: Vec3, yaw: f32) -> bool {
+        zone::place(self.ecs.world_mut(), id, position, yaw)
+    }
+
     /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,
     /// between steps. From here on its digest is in [`Self::tables_hash`] and its paths in
     /// [`Self::checksum`]; a simulation that's never given one hashes neither.
@@ -985,7 +1067,7 @@ impl Simulation {
     }
 
     /// Starts a timeline, between steps: it does nothing until the next. A replay records this, as a
-    /// [`TimelineCommand`](crate::TimelineCommand). The `timeline` module's docs say why there's no way to
+    /// [`ReplayCommand`](crate::replay::ReplayCommand). The `timeline` module's docs say why there's no way to
     /// stop or skip one here.
     pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
         let world = self.ecs.world_mut();

@@ -30,6 +30,8 @@
 *.ktx2 binary
 *.smoves binary
 *.snav binary
+*.szone binary
+*.scol binary
 *.dds binary
 *.astc binary
 *.smesh binary

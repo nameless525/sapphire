@@ -53,9 +53,10 @@
 //!
 //! A document with `navigation` makes a `.snav` of its own, a sub-asset (`town.snav`), baked from the
 //! cooked `.scol` the zone names, with the tile bounds and seeds the document gives. Its key holds that
-//! section, its spawners' places and the colliders' key, and nothing else: a save to a kit piece, a
-//! placement or a light leaves it alone, and a moved collider rebakes the tiles it reaches
-//! ([`crate::nav`]). The zone's `.szone` holds its ID and its key.
+//! section, its spawners' and checkpoints' places and the colliders' key, and nothing else: a save to a
+//! kit piece, a placement or a light leaves it alone, and a moved collider rebakes the tiles it reaches
+//! ([`crate::nav`]). Spawners and checkpoints seed it, so the cook refuses one that stands off it. The
+//! zone's `.szone` holds its ID and its key.
 //!
 //! # Exits
 //!
@@ -222,12 +223,13 @@ pub fn shape_path(relative: &Path, shape: &str, extension: &str) -> PathBuf {
 /// What a navmesh's sub-asset is called among a zone's. Never changed: its ID is derived from it.
 pub const NAVIGATION_PART: &str = "navigation";
 
-/// What a zone's navmesh is, in place of the document (see the [module docs](self)). A spawner's place
-/// is what seeds it; its name and what it spawns don't matter.
+/// What a zone's navmesh is, in place of the document (see the [module docs](self)). Spawners' and then
+/// checkpoints' places are what seed it; their names, what a spawner spawns and a checkpoint's volume
+/// don't matter. A zone with no checkpoints keys as it did before there were any.
 #[derive(Serialize)]
 struct NavigationRecipe<'a> {
     navigation: &'a sapphire_zone::ZoneNavigation,
-    spawners: Vec<[f32; 3]>,
+    seeds: Vec<[f32; 3]>,
     settings: BakeSettings,
 }
 
@@ -475,7 +477,9 @@ impl ZonePlan {
         let navigation = self.document.navigation.as_ref().expect("only a document with `navigation` bakes");
         let recipe = NavigationRecipe {
             navigation,
-            spawners: self.document.spawners.iter().map(|spawner| spawner.position).collect(),
+            seeds: (self.document.spawners.iter().map(|spawner| spawner.position))
+                .chain(self.document.checkpoints.iter().map(|checkpoint| checkpoint.position))
+                .collect(),
             settings: BakeSettings::CHARACTER,
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
@@ -863,12 +867,17 @@ pub fn cook_navigation(
         .iter()
         .enumerate()
         .map(|(index, spawner)| Seed { field: format!("spawners[{index}]"), position: spawner.position });
+    // Where the player comes back to stands on ground enemies can walk to, or the cook refuses it.
+    let checkpoints = document.checkpoints.iter().enumerate().map(|(index, checkpoint)| Seed {
+        field: format!("checkpoints[{index}] ({})", checkpoint.name),
+        position: checkpoint.position,
+    });
     let seeds = navigation
         .seeds
         .iter()
         .enumerate()
         .map(|(index, position)| Seed { field: format!("navigation.seeds[{index}]"), position: *position });
-    let seeds: Vec<Seed> = spawners.chain(seeds).collect();
+    let seeds: Vec<Seed> = spawners.chain(checkpoints).chain(seeds).collect();
     let (baked, _) = nav::bake_colliders(
         colliders,
         (navigation.min, navigation.max),

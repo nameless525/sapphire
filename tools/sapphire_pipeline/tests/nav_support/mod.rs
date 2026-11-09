@@ -34,11 +34,11 @@ pub fn proving_ground() -> (ColliderSet, Baked, IslandStats) {
         .cook()
         .expect("it cooks");
     let cooked = colliders.to_cooked().expect("it writes");
-    let seeds: Vec<Seed> = zone
-        .spawners
-        .iter()
-        .map(|spawner| Seed { field: spawner.name.clone(), position: spawner.position })
-        .collect();
+    // As the cook seeds it: spawners, then checkpoints.
+    let spawners = zone.spawners.iter().map(|spawner| (&spawner.name, spawner.position));
+    let checkpoints = zone.checkpoints.iter().map(|checkpoint| (&checkpoint.name, checkpoint.position));
+    let seeds: Vec<Seed> =
+        spawners.chain(checkpoints).map(|(name, position)| Seed { field: name.clone(), position }).collect();
     let area = (navigation.min, navigation.max);
     let (baked, islands) =
         bake_colliders(&cooked, area, &seeds, &BakeSettings::CHARACTER, None).expect("it bakes");

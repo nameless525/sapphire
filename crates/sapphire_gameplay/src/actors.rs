@@ -207,6 +207,12 @@ impl ActorRequests {
     }
 }
 
+/// How many times [`crate::Simulation::teleport`] has moved an actor since it spawned. Presentation draws
+/// between two steps only while this stays the same; when it changes, what's drawn snaps there and its
+/// springs start over. Nothing in a step reads it, so it isn't in the checksum.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Teleports(pub(crate) u32);
+
 /// Everything a pooled entity carries. A component a later package adds to actors goes here and in
 /// [`reset_actor`], so every actor has it from the pool on (spec §5.6).
 #[derive(Bundle)]
@@ -222,6 +228,7 @@ struct ActorBundle {
     fighter: Fighter,
     brain: Brain,
     soft_lock: SoftLock,
+    teleports: Teleports,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -241,6 +248,7 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             fighter: Fighter::default(),
             brain: Brain::default(),
             soft_lock: SoftLock::default(),
+            teleports: Teleports::default(),
         });
         pool.push(entity.id());
     }
@@ -262,6 +270,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut Fighter,
     &'w mut Brain,
     &'w mut SoftLock,
+    &'w mut Teleports,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -277,6 +286,7 @@ type ActorStateItem<'w> = (
     Mut<'w, Fighter>,
     Mut<'w, Brain>,
     Mut<'w, SoftLock>,
+    Mut<'w, Teleports>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -339,6 +349,7 @@ pub(crate) fn restart_pool(
         mut fighter,
         mut brain,
         mut soft_lock,
+        mut teleports,
     ) in &mut actors
     {
         *clock = world_clock.new_entity_clock();
@@ -352,6 +363,7 @@ pub(crate) fn restart_pool(
         *fighter = Fighter::default();
         *brain = Brain::default();
         *soft_lock = SoftLock::default();
+        *teleports = Teleports::default();
     }
     characters.refused = 0;
     characters.last_time = std::time::Duration::ZERO;
@@ -374,6 +386,7 @@ fn reset_actor(
         mut fighter,
         mut brain,
         mut soft_lock,
+        mut teleports,
     ): ActorStateItem<'_>,
     id: ActorId,
     spawn: ActorSpawn,
@@ -395,6 +408,7 @@ fn reset_actor(
     fighter.faction = spawn.faction;
     *brain = Brain::default();
     *soft_lock = SoftLock::default();
+    *teleports = Teleports::default();
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -427,4 +441,8 @@ pub struct ActorView {
     /// A party's member who isn't on the field: its position is where it last stood, and nothing it does
     /// reaches the fight. See [`crate::Party`].
     pub off_field: bool,
+    /// How many times [`crate::Simulation::teleport`] has moved it since it spawned. Draw between this
+    /// view and the one before only if both have the same count; otherwise it was put somewhere, and what's
+    /// drawn snaps there and starts its secondary motion over, as after a cut.
+    pub teleports: u32,
 }

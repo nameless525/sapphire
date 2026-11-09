@@ -842,11 +842,13 @@ impl ArenaActors {
     /// Takes the fixed step's roots from `simulation`, after each of its steps and [`Self::next_change`]'s.
     /// `cast` is the scenario's, the player first. A tick that went back or a changed run generation is a
     /// new fight, which stands where it stands with the camera cut to it, rather than sliding back across
-    /// the square. Returns whether someone else came in for the player, and for the foe it has.
+    /// the square. A fighter a teleport put somewhere stands there too, its graph cut, and the camera cuts
+    /// if that's the player. Returns whether someone else came in for the player, and for the foe it has.
     pub(crate) fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
         self.bind_free_warriors(simulation, cast);
         let mut came_in = [false; 2];
+        let mut player_teleported = false;
         let run = (simulation.world().id(), simulation.run_generation(), simulation.tick());
         let started_over = self
             .followed_run
@@ -861,19 +863,24 @@ impl ArenaActors {
             let actor = id.and_then(|id| simulation.actor(id));
             // Someone else came in: what's drawn starts on them, with no blend from who left.
             let swapped = self.seen[place].zip(actor).is_some_and(|(seen, actor)| seen.id != actor.id);
+            // Put somewhere by a teleport: what's drawn stands there, rather than sweeping across.
+            let teleported = self.seen[place]
+                .zip(actor)
+                .is_some_and(|(seen, actor)| seen.id == actor.id && seen.teleports != actor.teleports);
             if place == 0 {
                 came_in[0] = swapped;
+                player_teleported = teleported;
             }
             self.seen[place] = actor;
             let Some(actor) = actor else { continue };
             let signals = &mut fighter.signals;
-            if started_over || swapped {
+            if started_over || swapped || teleported {
                 *signals = FighterSignals { cut: true, ..Default::default() };
             }
             if !started_over {
                 signals.locomotion.observe(&actor);
             }
-            if started_over {
+            if started_over || teleported {
                 fighter.root = Root::standing(actor.position, actor.yaw);
             } else {
                 fighter.root.advance(actor.position, actor.yaw);
@@ -884,8 +891,12 @@ impl ArenaActors {
             .and_then(|player| simulation.move_library().current(player.moves.set?))
             .and_then(|set| set.find(ULTIMATE))
             .map_or(0, |(_, ultimate)| ultimate.cost());
-        if started_over && let Some(camera) = &mut self.camera {
-            camera.start_over();
+        if let Some(camera) = &mut self.camera {
+            if started_over {
+                camera.start_over();
+            } else if player_teleported {
+                camera.director.cut();
+            }
         }
         let shown = self.foe_to_show(started_over);
         came_in[1] = self.shown.zip(shown).is_some_and(|(was, is)| was != is);
@@ -1641,6 +1652,38 @@ mod tests {
         actors.present(&mut world, 1.0, Some(16.0 / 9.0));
         let eye = world.resource::<OrbitCamera>().eye();
         assert!(eye.distance(start) < 8.0, "{eye} from {start}");
+    }
+
+    /// A teleport puts the player somewhere between two steps: what's drawn stands there at every
+    /// `alpha`, its graph hears a cut once, and the camera lands behind it at once, as for a new fight.
+    #[test]
+    fn a_teleport_stands_where_it_put_them() {
+        let (mut actors, mut world, mut sim, cast) = fight();
+        for _ in 0..30 {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        }
+        actors.graph_input(0, 1.0);
+        // The last crowd spot, clear floor 6 m from where the player starts.
+        let far = Vec3::new(8.6, 0.0, 7.0);
+        let place = sapphire_gameplay::Place { position: far, yaw: 1.0 };
+        sim.teleport(cast[0], place).expect("the player is alive");
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        actors.follow(&sim, &cast);
+        let landed = sim.actor(cast[0]).expect("alive").position;
+        assert!(landed.distance(far) < 0.1, "{landed}");
+        assert_eq!(actors.fighters[0].root.position(0.0), landed, "nothing sweeps across the square");
+        assert_eq!(actors.fighters[0].root.position(1.0), landed);
+        assert!(actors.graph_input(0, 1.0).expect("a fight").cut, "its springs start over");
+        assert!(!actors.graph_input(0, 1.0).expect("a fight").cut, "once");
+
+        actors.drive_camera(1.0 / 60.0, Vec2::ZERO, 0.0);
+        actors.present(&mut world, 1.0, Some(16.0 / 9.0));
+        let eye = world.resource::<OrbitCamera>().eye();
+        assert!(eye.distance(landed) < 8.0, "{eye} from {landed}");
+
+        // The next step draws between again.
+        step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        assert!(!actors.graph_input(0, 1.0).expect("a fight").cut);
     }
 
     /// The player's lock-on button turns the director's rig on, on the press, and off on the next; a

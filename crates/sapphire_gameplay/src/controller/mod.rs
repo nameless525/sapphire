@@ -49,7 +49,8 @@
 //! [`crate::Simulation::teleport`] puts a character somewhere as a spawn there would: the body, the
 //! transform and yaw, and a controller state starting over, airborne until its first tick finds the
 //! ground, with nothing it was doing carried (stick, move, intents, slide). A load at a checkpoint and a
-//! teleport there walk on to the bit alike (`tests/walks.rs`).
+//! teleport there walk on to the bit alike (`tests/walks.rs`). [`crate::ActorView::teleports`] counts
+//! them, so presentation snaps instead of drawing between.
 //!
 //! # Time
 //!

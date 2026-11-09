@@ -319,6 +319,31 @@ fn a_teleport_refuses_what_it_cant_do() {
     assert_eq!(sim.return_to_checkpoint(ninth), Err(TeleportError::UnknownCheckpoint(ninth)));
     let (mut bare, _) = start("melee");
     assert_eq!(bare.return_to_checkpoint(walks::PLATFORM), Err(TeleportError::NoZone));
+    assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 0, "nothing refused is counted");
+}
+
+/// A teleport is counted where presentation reads it, so what's drawn snaps rather than sweeping, and the
+/// count is no part of the checksum: two returns to the platform hash as one does.
+#[test]
+fn a_teleport_is_counted_for_presentation_alone() {
+    let (mut sim, cast) = start("ground-walk");
+    let (mut still, _) = start("ground-walk");
+    sim.step(&TickActions::NEUTRAL);
+    still.step(&TickActions::NEUTRAL);
+    let here = place_of(&sim, cast[0]);
+    sim.teleport(cast[0], here).expect("alive");
+    assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 1);
+    assert_eq!(still.actor(cast[0]).expect("alive").teleports, 0);
+    sim.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 2);
+    let (mut once, _) = start("ground-walk");
+    once.step(&TickActions::NEUTRAL);
+    once.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    for _ in 0..30 {
+        sim.step(&TickActions::NEUTRAL);
+        once.step(&TickActions::NEUTRAL);
+        assert_eq!(sim.checksum(), once.checksum());
+    }
 }
 
 /// A return and the steps after it take nothing from the heap.

@@ -1048,6 +1048,30 @@ fn a_seed_keeps_ground_no_spawner_reaches() {
     assert!(polygons("seeds: [(-20.0, 6.5, -20.0)]") > polygons("seeds: []"));
 }
 
+/// A checkpoint seeds the navmesh as a spawner does, so the ground the player comes back to is ground
+/// enemies can walk, and moving one rebakes it. Its name and volume don't.
+#[test]
+fn a_checkpoint_keeps_the_ground_it_stands_on() {
+    let checkpoint = |at: &str, name: &str, radius: &str| {
+        format!(r##"checkpoints: [(name: "{name}", position: {at}, volume: Sphere(radius: {radius}))],"##)
+    };
+    let (tree, _) = nav_tree("zone-nav-checkpoint", &nav_zone(NAV_SPAWNERS));
+    let polygons = |report: &CookReport| {
+        NavMesh::read(&read_aligned(&by_id(report, navigation_id()).output)).unwrap().polygon_count()
+    };
+    let without = polygons(&tree.cook());
+    let on_the_slab =
+        format!("{} {}", nav_zone(NAV_SPAWNERS), checkpoint("(-20.0, 6.5, -20.0)", "slab", "1.0"));
+    write_zone(&tree, &on_the_slab);
+    let report = tree.cook();
+    assert_eq!(by_id(&report, navigation_id()).status, CookStatus::Cooked);
+    assert!(polygons(&report) > without, "the slab it stands on is kept");
+    write_zone(&tree, &on_the_slab.replace(r#""slab""#, r#""top""#).replace("radius: 1.0", "radius: 2.0"));
+    let report = tree.cook();
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked);
+    assert_eq!(by_id(&report, navigation_id()).status, CookStatus::UpToDate, "a renamed, wider one");
+}
+
 #[test]
 fn what_a_zone_gets_wrong_about_navigation_is_named() {
     let (tree, _) = nav_tree("zone-nav-errors", "");
@@ -1063,6 +1087,12 @@ fn what_a_zone_gets_wrong_about_navigation_is_named() {
     };
     let cases: Vec<(String, &str)> = vec![
         (nav_zone(off), "`spawners[1]`"),
+        (
+            nav_zone(&format!(
+                r##"{NAV_SPAWNERS} checkpoints: [(name: "stuck", position: (8.0, 0.0, 8.0), volume: Sphere(radius: 1.0))],"##
+            )),
+            "`checkpoints[0] (stuck)`",
+        ),
         (
             nav_zone(NAV_SPAWNERS).replace(bounds, &format!("{bounds}, seeds: [(500.0, 0.0, 0.0)]")),
             "`navigation.seeds[0]`",

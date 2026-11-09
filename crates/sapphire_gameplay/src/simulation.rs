@@ -18,7 +18,7 @@ use sapphire_timeline::{TimelineError, TimelineSimulation};
 
 use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
-    self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
+    self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError, Teleports,
 };
 use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample};
 use crate::brain::{self, Brain};
@@ -750,6 +750,8 @@ impl Simulation {
         controller.state = controller::ControllerState::default();
         controller.drive = controller::ControllerDrive::NONE;
         actor.get_mut::<Fighter>().expect("pooled").stop_slide();
+        let mut teleports = actor.get_mut::<Teleports>().expect("pooled");
+        teleports.0 = teleports.0.wrapping_add(1);
         Ok(())
     }
 
@@ -1288,5 +1290,6 @@ pub(crate) fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         soft_lock: *actor.get::<SoftLock>().expect("every pooled entity has a soft lock"),
         controls: *actor.get::<Controls>().expect("every pooled entity has controls"),
         off_field: world.resource::<Party>().is_off_field(id),
+        teleports: actor.get::<Teleports>().expect("every pooled entity has a count").0,
     }
 }

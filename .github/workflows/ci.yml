@@ -491,8 +491,8 @@ jobs:
   app-tests:
     name: App tests (vulkan-lavapipe)
     runs-on: ubuntu-24.04
-    # Its build took 24 minutes and its benches 21 on a busy 2026-11-09, past 45.
-    timeout-minutes: 75
+    # Its build took 24 minutes and its tests 50 on a busy 2026-11-09, the zone's walk 26 of them.
+    timeout-minutes: 90
     env:
       SAPPHIRE_GPU_BACKEND: vulkan
       SAPPHIRE_GPU_DEBUG: none

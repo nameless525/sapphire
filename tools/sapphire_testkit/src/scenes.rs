@@ -2240,7 +2240,7 @@ pub fn scenes() -> [Scene; 199] {
         // the slats coming in from the right over the arena, which the fight holds still behind. The wipe's
         // clock is the steps', so the frame is the same every run, and the load it covers comes later.
         Scene {
-            name: "zone-wipe-mid",
+            name: "trip-wipe-mid",
             args: &[
                 "--capture-ticks",
                 "135",
@@ -2261,7 +2261,7 @@ pub fn scenes() -> [Scene; 199] {
         // The same wipe covering the screen: however soon the hub comes in behind it, no step's time passes
         // over the frames drawn, so it can't uncover. Only the wipe draws.
         Scene {
-            name: "zone-wipe-covered",
+            name: "trip-wipe-covered",
             args: &[
                 "--capture-ticks",
                 "154",

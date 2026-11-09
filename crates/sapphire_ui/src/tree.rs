@@ -1091,24 +1091,6 @@ impl UiTree {
         stats.scrolling += self.stats.scrolling;
         stats.micros += cost.as_micros() as u32;
     }
-
-    /// Rasterizes this screen's glyphs ahead of showing it, up to `budget` glyphs, which can be shared
-    /// across trees: for a fade or a loading frame to spend. Whether it's all in the atlas now; if not,
-    /// call it again next frame. Call [`Self::update`] first.
-    pub fn warm(&self, fonts: &mut UiFonts, budget: &mut u32, list: &mut UiDrawList) -> bool {
-        let scale = self.scale;
-        let UiFonts { text: system, atlas: glyphs, families, locale, .. } = fonts;
-        let mut done = true;
-        for node in &self.nodes {
-            let Some(text) = &node.text else { continue };
-            let Some(family) = text.family else { continue };
-            let style = text_style(&self.styles[usize::from(text.style)], families, family, locale);
-            let width = text.wrap.then_some(node.content.width());
-            let shaped = system.shape(&text.resolved, &style, scale, width);
-            done &= glyphs.warm(shaped, budget, list);
-        }
-        done
-    }
 }
 
 /// A node's style in full: its layout, the safe area if it asks, and what the model says of it. The

@@ -1,8 +1,8 @@
 //! What pointers did, in time order and in points, for a screen's hit test.
 
 use sapphire_input::{
-    InputBindings, InputMap, InputSystem, MouseButton, Pointer, PointerEvent, PointerPhase, RawInput,
-    Timestamp,
+    InputBindings, InputMap, InputSystem, MAX_FINGERS, MouseButton, Pointer, PointerEvent, PointerPhase,
+    RawInput, Timestamp,
 };
 use sapphire_math::Vec2;
 use sapphire_platform::{
@@ -123,4 +123,29 @@ fn a_release_that_comes_with_a_loss_of_focus_cancels() {
     );
     system.update(ms(5));
     assert_eq!(seen(&system), [], "and it's said once");
+}
+
+/// `push` is public, so a slot no adapter makes reaches it: past the slots there are, it's dropped
+/// rather than shifted out of the held fingers' bits or reported as a finger nothing tracks.
+#[test]
+fn a_finger_past_the_slots_is_dropped() {
+    let mut system = system();
+    for finger in [MAX_FINGERS, 31, 32, usize::MAX] {
+        for phase in [TouchPhase::Down, TouchPhase::Moved, TouchPhase::Up] {
+            system.push(ms(1), RawInput::Touch { finger, phase, position: Vec2::ONE });
+        }
+    }
+    system.push(
+        ms(1),
+        RawInput::Touch { finger: MAX_FINGERS - 1, phase: TouchPhase::Down, position: Vec2::ONE },
+    );
+    system.push(ms(2), RawInput::ReleaseAll);
+    system.update(ms(3));
+    assert_eq!(
+        seen(&system),
+        [
+            (Pointer::Finger(MAX_FINGERS - 1), PointerPhase::Down, Vec2::ONE),
+            (Pointer::Finger(MAX_FINGERS - 1), PointerPhase::Canceled, Vec2::ZERO),
+        ]
+    );
 }

@@ -465,19 +465,21 @@ impl InputSystem {
         self.push(timestamp, input);
     }
 
-    /// Queues raw input for the next update. Nonfinite numeric payloads are ignored. Motion,
-    /// modifier and binding sums that overflow are ignored at the boundary that combines them,
-    /// so action values stay finite even for synthetic input or extreme authored scales.
+    /// Queues raw input for the next update. Nonfinite numeric payloads, and a finger slot at or past
+    /// [`MAX_FINGERS`], are ignored. Motion, modifier and binding sums that overflow are ignored at the
+    /// boundary that combines them, so action values stay finite even for synthetic input or extreme
+    /// authored scales.
     pub fn push(&mut self, timestamp: Timestamp, input: RawInput) {
-        let finite = match input {
+        let valid = match input {
             RawInput::MouseMotion { delta } | RawInput::MouseWheel { delta } => delta.is_finite(),
+            RawInput::Touch { finger, .. } if finger >= MAX_FINGERS => false,
             RawInput::Touch { phase: TouchPhase::Canceled, .. } => true,
             RawInput::Touch { position, .. } => position.is_finite(),
             RawInput::Virtual { value, .. } => value.is_finite(),
             RawInput::PadAxis { value, .. } => value.is_finite(),
             _ => true,
         };
-        if !finite {
+        if !valid {
             return;
         }
         self.queue.push((timestamp, input));

@@ -13,6 +13,7 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 
 use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
+use crate::script::ScriptEdits;
 use crate::simulation::{SimConfig, Simulation};
 use crate::targeting::TargetingTuning;
 
@@ -50,6 +51,8 @@ pub struct LiveMoves {
     latest: Vec<(String, MoveSet)>,
     /// `None` runs on [`TargetingTuning::shipped`].
     targeting: Option<TargetingTuning>,
+    /// Scripts' newest sources, for a setup that binds one (M3 L3).
+    scripts: ScriptEdits,
 }
 
 impl LiveMoves {
@@ -72,6 +75,19 @@ impl LiveMoves {
         self.targeting = Some(tuning);
     }
 
+    /// Keeps `source` as the newest edit of the script with this file name, which a new fight's setup binds
+    /// in place of its own ([`ScriptEdits`]). Remember only what a running fight took: a setup can't refuse
+    /// a script.
+    pub fn remember_script(&mut self, file_name: &str, source: &str) {
+        self.scripts.remember(file_name, source);
+    }
+
+    /// The newest edit of the script with this file name.
+    #[must_use]
+    pub fn latest_script(&self, file_name: &str) -> Option<&str> {
+        self.scripts.source(file_name)
+    }
+
     /// A new simulation of `scenario` with `config`, as a build with these edits in its documents would
     /// make one: each edited set is revision 0, and all the setup does runs on it, so what it spawns has
     /// its numbers and a brain's first wait is drawn from it. As in that build, the setup can refuse an
@@ -90,6 +106,9 @@ impl LiveMoves {
             if let (Some(id), Some(set)) = (scenario.set_of(name), self.latest(name)) {
                 sim.stand_in_move_set(id, set.clone());
             }
+        }
+        if !self.scripts.is_empty() {
+            sim.insert_resource(self.scripts.clone());
         }
         let cast = scenario.set_up(&mut sim)?;
         sim.check_cinematics()?;

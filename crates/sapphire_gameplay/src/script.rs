@@ -48,6 +48,38 @@ pub const MAX_HOOK_EVENTS: usize = 64;
 /// will choose where a boss's fall.
 const PHASES: u32 = 4;
 
+/// The scripts a fight starts from in place of what its scenario compiled in, by source file name: the newest
+/// live edits, which [`LiveMoves::start`](crate::replay::LiveMoves::start) puts in a simulation before its
+/// scenario's setup runs, for whoever binds a script there to read. Text only: cooking it is
+/// `sapphire_script`'s. A fight with no edits has no such resource.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptEdits {
+    /// By file name. A handful at most, so a list.
+    sources: Vec<(String, String)>,
+}
+
+impl ScriptEdits {
+    /// Keeps `source` as the newest edit of the script with this file name.
+    pub fn remember(&mut self, file_name: &str, source: &str) {
+        match self.sources.iter_mut().find(|(name, _)| name == file_name) {
+            Some((_, kept)) => source.clone_into(kept),
+            None => self.sources.push((file_name.to_owned(), source.to_owned())),
+        }
+    }
+
+    /// The newest edit of the script with this file name, if it's been edited.
+    #[must_use]
+    pub fn source(&self, file_name: &str) -> Option<&str> {
+        self.sources.iter().find(|(name, _)| name == file_name).map(|(_, source)| source.as_str())
+    }
+
+    /// Whether nothing's been edited.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
+
 /// Something a hook can answer. Everything it carries is what happened, in the simulation's own terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HookEvent {

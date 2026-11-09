@@ -4,6 +4,7 @@
 use std::sync::LazyLock;
 
 use sapphire_gameplay::replay::{SCENARIOS, Scenario, ScenarioError, ScenarioSetup, find_scenario};
+use sapphire_gameplay::script::ScriptEdits;
 use sapphire_gameplay::{ActorId, Simulation};
 
 use crate::{Limits, ScriptHost, attach, cook};
@@ -11,6 +12,12 @@ use crate::{Limits, ScriptHost, attach, cook};
 /// The chunk `arena-scripted` binds, in source. Its bytecode is in the replay's `tables_hash`, so changing
 /// what this cooks to refuses the replay until it's recorded again.
 pub const ARENA_SCRIPTED: &str = include_str!("../test_content/arena-scripted.luau");
+
+/// Its file's name: what an edit of it goes by.
+pub const ARENA_SCRIPTED_FILE: &str = "arena-scripted.luau";
+
+/// Its path from the repository's root, for hot reload to watch.
+pub const ARENA_SCRIPTED_PATH: &str = "crates/sapphire_script/test_content/arena-scripted.luau";
 
 /// How often `arena-scripted`'s `on_beat` fires. A game's wouldn't.
 const ARENA_SCRIPTED_BEAT: u64 = 60;
@@ -26,17 +33,27 @@ pub static SCRIPTED: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     }]
 });
 
+/// Every scenario a build with a VM plays: gameplay's, then those with a script, which an app and the replay
+/// runner look names up in.
+pub static ALL: LazyLock<Vec<Scenario>> =
+    LazyLock::new(|| SCENARIOS.iter().chain(SCRIPTED.iter()).copied().collect());
+
 /// `arena-skirmish`, which this build holds as a document.
 fn skirmish() -> &'static Scenario {
     find_scenario(&SCENARIOS, "arena-skirmish")
         .expect("arena-skirmish is a scenario document this build holds")
 }
 
+/// `arena-skirmish`, then its chunk, or the newest edit of it if the fight is a live one's
+/// ([`ScriptEdits`]).
 fn arena_scripted(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = skirmish().set_up(sim)?;
-    let cooked = cook(ARENA_SCRIPTED).expect("the committed chunk cooks: a test holds it");
-    let mut host = ScriptHost::new(Limits::default()).expect("a VM starts");
-    host.bind(&cooked, "=arena-scripted.luau").expect("the committed chunk loads: a test holds it");
+    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(ARENA_SCRIPTED_FILE));
+    let source = edit.unwrap_or(ARENA_SCRIPTED).to_owned();
+    let refused = |problem: String| ScenarioError::Script { name: ARENA_SCRIPTED_FILE.to_owned(), problem };
+    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
+    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
+    host.bind(&cooked, &format!("={ARENA_SCRIPTED_FILE}")).map_err(|error| refused(error.to_string()))?;
     host.beat_every(ARENA_SCRIPTED_BEAT);
     attach(sim, host);
     Ok(cast)

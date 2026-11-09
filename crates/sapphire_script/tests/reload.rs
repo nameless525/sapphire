@@ -5,7 +5,10 @@ mod support;
 
 use std::sync::Mutex;
 
+use sapphire_gameplay::replay::{LiveMoves, Recording};
 use sapphire_gameplay::script::BOARD_SLOTS;
+use sapphire_gameplay::{ActorId, TickActions};
+use sapphire_script::scenarios::{ARENA_SCRIPTED, ARENA_SCRIPTED_FILE, SCRIPTED};
 use sapphire_script::{CookedScript, Limits, ReloadError, Reloaded, ScriptStats, cook, host_of, reload};
 use support::{finish, host_running, player_with, replay_file};
 
@@ -167,6 +170,31 @@ fn a_reload_that_changes_nothing_or_fails_keeps_what_runs() {
     assert_eq!(reload(sim, "test.luau", TUNED).unwrap(), Reloaded::Replaced);
     assert_ne!(sim.tables_hash(), tables, "a replay recorded before refuses what comes after");
     assert_eq!(reload(sim, "test.luau", TUNED).unwrap(), Reloaded::Unchanged);
+}
+
+/// A fight started after an edit binds the edit, as a build with it in its file would, so starting over
+/// doesn't quietly go back; and a recording ends its file at the first edit that changes something.
+#[test]
+fn a_new_fight_starts_on_the_newest_edit_and_a_recording_ends_at_one() {
+    let scripted = &SCRIPTED[0];
+    let edited = format!("-- An edit: other lines, other bytes.\n{ARENA_SCRIPTED}");
+    let (mut plain, _) = LiveMoves::default().start(scripted, scripted.config).unwrap();
+    let mut live = LiveMoves::default();
+    live.remember_script(ARENA_SCRIPTED_FILE, &edited);
+    assert_eq!(live.latest_script(ARENA_SCRIPTED_FILE), Some(edited.as_str()));
+    let (on_the_edit, _) = live.start(scripted, scripted.config).unwrap();
+    assert_ne!(plain.tables_hash(), on_the_edit.tables_hash());
+    assert_eq!(reload(&mut plain, ARENA_SCRIPTED_FILE, &edited).unwrap(), Reloaded::Replaced);
+    assert_eq!(plain.tables_hash(), on_the_edit.tables_hash(), "the same as reloading the first");
+
+    let mut recording = Recording::new(scripted, scripted.config).unwrap();
+    for _ in 0..10 {
+        recording.step(&mut |_: u64, _: &[ActorId]| TickActions::default()).unwrap();
+    }
+    let unchanged = recording.edit(|sim| reload(sim, ARENA_SCRIPTED_FILE, ARENA_SCRIPTED)).unwrap();
+    assert_eq!((unchanged, recording.edited_at()), (Reloaded::Unchanged, None));
+    let replaced = recording.edit(|sim| reload(sim, ARENA_SCRIPTED_FILE, &edited)).unwrap();
+    assert_eq!((replaced, recording.edited_at()), (Reloaded::Replaced, Some(10)));
 }
 
 #[test]

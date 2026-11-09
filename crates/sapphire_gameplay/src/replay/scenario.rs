@@ -102,6 +102,9 @@ pub enum ScenarioError {
     /// A scenario's document names something it can't have.
     #[error("`{field}`: {problem}")]
     Document { field: String, problem: String },
+    /// The script a setup binds didn't cook or load.
+    #[error("script {name}: {problem}")]
+    Script { name: String, problem: String },
 }
 
 /// A named starting world.

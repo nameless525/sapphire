@@ -347,6 +347,17 @@ impl Recording {
         changed
     }
 
+    /// Changes the simulation between steps by `edit`, and ends the file if that moved its `tables_hash`, as
+    /// [`Self::tune_move_set`] does: what a reloaded script goes through, from a crate gameplay can't see.
+    pub fn edit<R>(&mut self, edit: impl FnOnce(&mut Simulation) -> R) -> R {
+        let before = self.tracked.sim.tables_hash();
+        let result = edit(&mut self.tracked.sim);
+        if self.tracked.sim.tables_hash() != before && self.edited_at.is_none() {
+            self.edited_at = Some(self.recorder.ticks());
+        }
+        result
+    }
+
     /// The tick a live edit ended the file at, if one did: it holds this many ticks.
     #[must_use]
     pub const fn edited_at(&self) -> Option<u32> {

@@ -30,10 +30,14 @@ struct Show {
 
 impl Show {
     fn new(scale: f32) -> Self {
+        Self::of(SCREEN, scale)
+    }
+
+    fn of(screen: &str, scale: f32) -> Self {
         let mut model = Model::default();
         model.player.shown = true;
         let mut show = Self {
-            tree: UiTree::new(&document(SCREEN)).unwrap(),
+            tree: UiTree::new(&document(screen)).unwrap(),
             fonts: fonts(),
             loc: localizer("en"),
             atlas: Atlas::paint(),
@@ -104,6 +108,17 @@ fn a_hidden_inset_shows_nothing_and_draws_nothing() {
     assert!(show.list.inset_runs.is_empty());
     assert_eq!(show.tree.insets().count(), 0);
     assert!(show.tree.holds_insets(), "it holds one still, for a renderer's warm-up");
+}
+
+#[test]
+fn an_inset_off_screen_draws_nothing_and_names_no_shot() {
+    // Pushed past the frame's right edge, at its full size.
+    let pushed = "layout: (width: Points(400), height: Points(300), shrink: 0, margin: (left: 2000))";
+    let screen = SCREEN.replace("layout: (width: Points(400), height: Points(300))", pushed);
+    assert_ne!(screen, SCREEN);
+    let show = Show::of(&screen, 1.0);
+    assert!(show.list.inset_runs.is_empty());
+    assert_eq!(show.tree.insets().count(), 0, "no showcase to stand for a picture nobody sees");
 }
 
 #[test]

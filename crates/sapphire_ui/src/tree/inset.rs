@@ -12,6 +12,7 @@ use sapphire_assets::ui::UiInset;
 use sapphire_look::UiQuad;
 use sapphire_math::Vec2;
 
+use super::paint::on_screen;
 use super::{UiNodeId, UiTree};
 
 /// A node's inset as it runs: what the document says, and how far it's turned.
@@ -48,13 +49,14 @@ pub(super) fn quad(rect: crate::layout::Rect, opacity: f32) -> UiQuad {
 }
 
 impl UiTree {
-    /// The insets the last draw showed, in drawing order. A node hidden, transparent or off screen
-    /// shows none.
+    /// The insets the last draw showed, in drawing order. A node hidden, transparent, off screen or
+    /// outside its mask shows none, as [`UiTree::draw`] draws none for it.
     pub fn insets(&self) -> impl Iterator<Item = UiInsetShot<'_>> {
-        let scale = self.scale;
+        let (scale, frame) = (self.scale, self.size);
         self.nodes.iter().enumerate().filter_map(move |(at, node)| {
             let inset = node.inset.as_ref()?;
-            if !node.visible || node.final_opacity <= 0.0 {
+            let shows = node.final_opacity > 0.0 && on_screen(node.screen, node.own_mask, frame);
+            if !node.visible || !shows {
                 return None;
             }
             let size = node.screen.max - node.screen.min;

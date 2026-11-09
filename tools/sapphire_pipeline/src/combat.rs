@@ -281,7 +281,10 @@ pub fn matcap_png() -> io::Result<Vec<u8>> {
     png(image)
 }
 
-fn png<P: image::PixelWithColorType>(image: image::ImageBuffer<P, Vec<P::Subpixel>>) -> io::Result<Vec<u8>>
+/// Encodes an image as PNG.
+pub(crate) fn png<P: image::PixelWithColorType>(
+    image: image::ImageBuffer<P, Vec<P::Subpixel>>,
+) -> io::Result<Vec<u8>>
 where
     [P::Subpixel]: image::EncodableLayout,
 {

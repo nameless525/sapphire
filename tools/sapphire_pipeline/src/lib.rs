@@ -56,6 +56,8 @@
 //!   the character's hair mask.
 //! - [`combat`]: the combat slice's generated sources (M2 O4): the enemy's model, palette and
 //!   masks.
+//! - [`figure`]: figures built from specs (M3 C2): an enemy's skinned model and the maps its
+//!   material reads, from `tools/figures/`.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
 //!   mannequin, the shader swatches' maps and materials, the face test head with its face
 //!   maps and material, the sky's maps and material, the environment's courtyard with its
@@ -115,6 +117,7 @@ pub mod combat;
 pub mod cook;
 pub mod documents;
 pub mod extract;
+pub mod figure;
 pub mod font;
 pub mod font_subset;
 pub mod generators;

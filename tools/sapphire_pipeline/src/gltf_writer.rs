@@ -120,7 +120,6 @@ impl GltfWriter {
 
     /// Adds a skin over the `joints` nodes, with one column-major inverse bind matrix per
     /// joint (none means identities), and returns its index.
-    #[cfg(test)]
     pub fn add_skin(&mut self, joints: &[usize], inverse_bind_matrices: Option<&[[f32; 16]]>) -> usize {
         let mut skin = json!({ "joints": joints });
         if let Some(matrices) = inverse_bind_matrices {

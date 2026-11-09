@@ -15,6 +15,7 @@ use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::documents;
 use sapphire_pipeline::extract::{self, ExtractOptions};
+use sapphire_pipeline::figure;
 use sapphire_pipeline::generators::{GENERATORS, generate_missing};
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
@@ -37,6 +38,10 @@ Usage:
   sapphire_pipeline gen-combat --out <DIR> [--force]
       Write the combat slice's generated sources into DIR, created if missing: the enemy's
       model, from the pack's that DIR's ../third_party holds, and its palette and masks. Missing
+      files only, as gen-samples, unless --force.
+  sapphire_pipeline gen-figures --specs <DIR> --out <DIR> [--force]
+      Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
+      tools/figures) under the content directory --out, in the folder each spec names. Missing
       files only, as gen-samples, unless --force.
   sapphire_pipeline generate --source <DIR> --lock <FILE> [--locked]
       Run each generator with a declared file missing under the content directory DIR, holding
@@ -68,7 +73,7 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
-  --force                    gen-samples, gen-lookdev, gen-combat: also replace generated files that
+  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
@@ -97,6 +102,11 @@ enum Command {
         force: bool,
     },
     GenCombat {
+        out: PathBuf,
+        force: bool,
+    },
+    GenFigures {
+        specs: PathBuf,
         out: PathBuf,
         force: bool,
     },
@@ -167,6 +177,12 @@ fn run(command: Command) -> anyhow::Result<()> {
             let generated = combat::write_all(&out, existing(force))
                 .with_context(|| format!("failed to write the combat sources to {}", out.display()))?;
             print_generated(&generated, "gen-combat");
+        }
+        Command::GenFigures { specs, out, force } => {
+            let generated = figure::write_all(&specs, &out, existing(force)).with_context(|| {
+                format!("failed to write the figures from {} to {}", specs.display(), out.display())
+            })?;
+            print_generated(&generated, "gen-figures");
         }
         Command::CookMesh { input, output, cook, outline } => {
             let sidecar = meta::sidecar_path(&input);
@@ -391,6 +407,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
         "gen-combat" => {
             Command::GenCombat { out: options.required("--out")?, force: options.flag("--force") }
         }
+        "gen-figures" => Command::GenFigures {
+            specs: options.required("--specs")?,
+            out: options.required("--out")?,
+            force: options.flag("--force"),
+        },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
             let outline = match options.value("--weld-tolerance")? {
@@ -505,6 +526,10 @@ mod tests {
         assert_eq!(
             parse(&["gen-combat", "--out", "dir"]).unwrap(),
             Command::GenCombat { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["gen-figures", "--specs", "figures", "--out", "content", "--force"]).unwrap(),
+            Command::GenFigures { specs: "figures".into(), out: "content".into(), force: true }
         );
         assert_eq!(
             parse(&["cook-mesh", "a.glb", "--cook=mobile", "b.smesh", "--weld-tolerance", "0.001"]).unwrap(),

@@ -240,3 +240,53 @@ fn a_scroll_allocates_nothing_once_warm() {
         assert_eq!(show.list.tree.layouts, 0, "and scrolling lays nothing out");
     }
 }
+
+/// A 3D inset (M3 U6) turned by a drag and a stick, its shot read each frame, as an app does.
+const INSET: &str = r#"model: "m.model.ron",
+    nodes: [
+        (name: "root", layout: (direction: Row, padding: (left: 20, top: 20))),
+        (name: "showcase", parent: "root", layout: (width: Points(400), height: Points(300)), inset: ()),
+    ],"#;
+
+#[test]
+fn turning_an_inset_allocates_nothing_once_warm() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut tree = UiTree::new(&document(INSET)).unwrap();
+    let (mut fonts, atlas, mut list, loc) = (fonts(), Atlas::paint(), UiDrawList::default(), localizer("en"));
+    let model = Model::default();
+    let mut now = 0.0;
+    let mut turn = |tree: &mut UiTree, fonts: &mut UiFonts, list: &mut UiDrawList| {
+        let touch = |phase, x: f32, seconds: f32| UiPointer {
+            id: 1,
+            kind: UiPointerKind::Touch,
+            phase,
+            position: Vec2::new(220.0 + x, 170.0),
+            at: at(seconds),
+        };
+        for x in [0.0, 12.0, 40.0, 90.0] {
+            now += 1.0 / 60.0;
+            let phase = if x == 0.0 { UiPointerPhase::Down } else { UiPointerPhase::Move };
+            tree.input(&UiInput { pointers: &[touch(phase, x, now)], ..UiInput::default() }, at(now));
+            tree.turn_insets(0.01);
+            frame_at(at(now), tree, fonts, &loc, &model, metrics([1280.0, 720.0]), &atlas, list);
+            let yaw: f32 = tree.insets().map(|shot| shot.yaw).sum();
+            assert!(yaw.is_finite());
+        }
+        tree.input(
+            &UiInput { pointers: &[touch(UiPointerPhase::Up, 90.0, now)], ..UiInput::default() },
+            at(now),
+        );
+    };
+    for _ in 0..3 {
+        turn(&mut tree, &mut fonts, &mut list);
+    }
+    let ((), counts) = alloc::count_in_scope(|| {
+        for _ in 0..10 {
+            turn(&mut tree, &mut fonts, &mut list);
+        }
+    });
+    assert_eq!(counts.allocations, 0, "ten drags: {counts:?}");
+    assert_eq!(list.inset_runs.len(), 1);
+}

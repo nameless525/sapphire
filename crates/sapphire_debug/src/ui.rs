@@ -472,6 +472,9 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         };
         row(ui, "Skinning", skinned);
         row(ui, "Interface", interface_text(&render.ui));
+        if render.insets != sapphire_render::InsetStats::default() {
+            row(ui, "Insets", insets_text(&render.insets));
+        }
         row(ui, "Sky", sky_text(&render.sky));
         row(ui, "Pipelines", pipelines_text(&render.pipelines));
         row(ui, "Post layers", post_text(&render.post));
@@ -923,6 +926,18 @@ fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
 }
 
 /// The interface's line (rule R9): its quads and draws, and the glyph atlas behind them.
+/// What 3D insets did (M3 U6): shown, drawn for a change, left out, and what they hold and take.
+fn insets_text(stats: &sapphire_render::InsetStats) -> String {
+    format!(
+        "{} shown, {} drawn, {} left out; {} held, {} drawn",
+        stats.shown,
+        stats.drawn,
+        stats.over_limit,
+        format_bytes(stats.held_bytes),
+        format_bytes(stats.drawn_bytes),
+    )
+}
+
 fn interface_text(stats: &sapphire_render::UiStats) -> String {
     let glyphs = &stats.glyphs;
     let mut text = format!(

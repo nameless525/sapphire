@@ -102,8 +102,8 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AmbientOcclusion, EnvironmentSettings, FoliageSettings, GtaoSettings, LOG_TARGET, LightPath,
-    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
+    AmbientOcclusion, EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET,
+    LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
     ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
@@ -234,6 +234,10 @@ pub struct QualityTier {
     /// [`RenderSettings::reflections`]). A table without it gets the desktop tiers'.
     #[serde(default)]
     pub reflections: ReflectionSettings,
+    /// How large 3D insets' pictures and scenes are (M3 U6, [`RenderSettings::inset`]). A table
+    /// without it gets the desktop tiers'.
+    #[serde(default)]
+    pub inset: InsetSettings,
 }
 
 /// The scene's size relative to the output.
@@ -390,6 +394,7 @@ impl QualityTier {
             foliage: self.foliage,
             ambient_occlusion: self.ambient_occlusion,
             reflections: self.reflections,
+            inset: self.inset,
             view_culling: true,
         }
     }
@@ -456,6 +461,9 @@ impl QualityTier {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.reflections.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.inset.validate() {
             return invalid(field, problem);
         }
         Ok(())
@@ -997,9 +1005,11 @@ mod tests {
                 shadows,
                 post_effects,
                 ambient_occlusion,
+                inset: tier.inset,
                 ..RenderSettings::default()
             };
             assert_eq!(tier.render_settings(), expected, "{id}");
+            assert_eq!(tier.inset.supersample, 2, "{id}: no MSAA, so an inset supersamples");
             assert_eq!(tier.resolution.base_scale(360), 1.0, "{id}");
             assert_eq!(tier.resolution.base_scale(1080), 1.0, "{id}: the bench's size");
         }
@@ -1014,6 +1024,7 @@ mod tests {
                 "{id}: spec §3.4's mobile budget"
             );
             assert_eq!(settings.post_effects.radial_blur_taps, 8, "{id}");
+            assert_eq!(settings.inset.supersample, 1, "{id}: an inset takes the main pass's MSAA");
         }
     }
 

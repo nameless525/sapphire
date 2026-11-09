@@ -29,6 +29,9 @@
 //!   pose: a range of [`FramePacket::palettes`] (its skinning palette) and of
 //!   [`FramePacket::morph_weights`]. An animated character sends one every frame; one that holds
 //!   still (hitstop, pause) sends none and keeps its last pose, which costs nothing to draw.
+//! - **Insets** ([`FramePacket::insets`], M3 U6) are rewritten whole every frame: a few views
+//!   after the main camera, each drawing the instances it names into a picture of its own, which
+//!   the interface shows where a quad names it. An instance an inset names draws nowhere else.
 //! - **Debug draws** ([`FramePacket::debug`], M2 T1) are rewritten whole every frame, and empty
 //!   unless development tools turned them on.
 //!
@@ -56,8 +59,8 @@ const RING_SIZE: usize = 3;
 ///
 /// # Later milestones
 ///
-/// The packet grows with the systems that feed it (spec §4.6). Shadow cascades (R4) and UI 3D insets
-/// add views after the main camera.
+/// The packet grows with the systems that feed it (spec §4.6). Shadow cascades (R4) are views the
+/// renderer makes itself; UI 3D insets (M3 U6) are [`Self::insets`].
 ///
 /// One scene constant is carried for the package that will read it and drawn from nothing yet:
 /// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
@@ -171,6 +174,12 @@ pub struct FramePacket {
     /// The on-screen interface, drawn over the finished frame (M2 I2, the `ui` module): rewritten
     /// whole every frame, like the lights. Left empty, nothing of it is built or drawn.
     pub ui: UiDrawList,
+    /// This frame's insets (M3 U6, the `inset` module): characters drawn into pictures of their own,
+    /// which [`Self::ui`]'s inset runs show. Rewritten whole every frame; empty, the default, builds
+    /// and draws nothing.
+    pub insets: Vec<InsetView>,
+    /// The instances the insets draw, back to back: each [`InsetView::instances`] is a range of it.
+    pub inset_instances: Vec<InstanceId>,
 }
 
 impl FramePacket {
@@ -233,6 +242,8 @@ impl FramePacket {
             debug,
             vfx,
             ui,
+            insets,
+            inset_instances,
         } = self;
         *number = frame;
         views.clear();
@@ -262,6 +273,21 @@ impl FramePacket {
         debug.clear();
         vfx.clear();
         ui.reset();
+        insets.clear();
+        inset_instances.clear();
+    }
+
+    /// Adds inset view `view`, drawing `instances`, which draw nowhere else this frame: appends them to
+    /// [`Self::inset_instances`] and sets the view's range. Allocates nothing once the packet's vectors
+    /// have grown to hold a frame's insets.
+    pub fn push_inset(&mut self, view: InsetView, instances: impl IntoIterator<Item = InstanceId>) {
+        let instances = append(&mut self.inset_instances, instances);
+        self.insets.push(InsetView { instances, ..view });
+    }
+
+    /// The instances `inset` draws, or `None` if its range is outside this packet's.
+    pub fn inset_instances(&self, inset: &InsetView) -> Option<&[InstanceId]> {
+        self.inset_instances.get(inset.instances.range())
     }
 }
 
@@ -297,6 +323,8 @@ impl Default for FramePacket {
             debug: DebugDrawList::default(),
             vfx: VfxFrame::default(),
             ui: UiDrawList::default(),
+            insets: Vec::new(),
+            inset_instances: Vec::new(),
         }
     }
 }
@@ -360,6 +388,51 @@ impl ViewData {
     /// A view from `camera` that continues the last frame's.
     pub fn new(camera: CameraData) -> Self {
         Self { camera, cut: false }
+    }
+}
+
+/// A 3D inset (M3 U6, spec §5.17's "render-to-texture insets"): a few instances, drawn from a camera of
+/// their own into a picture the interface shows. It is a view the packet names, as the main camera
+/// is, and the renderer knows nothing of the node that shows it: a quad of [`FramePacket::ui`] in a
+/// run naming [`Self::inset`] does (`sapphire_look::UiInsetRun`).
+///
+/// - **What it draws:** the instances in [`Self::instances`], and nothing else: no sky, environment,
+///   fog, local lights or effects. Those instances draw nowhere else, neither in the main view nor in
+///   any shadow map, character prepass or debug view. A listed character lights by its own entry in
+///   [`FramePacket::characters`], resolved for this camera, as the main view's are for theirs; it still
+///   reads the world's shadow maps and probe grid where it stands, so a showcase stands clear of both.
+/// - **Its look:** the anime character shading, outlines and eyes of the world, through the same
+///   pipelines, then exposed by [`Self::exposure`] and graded through post's tone curve and grade.
+///   It has no bloom, vignette or screen effects. The picture is opaque: [`Self::backdrop`] fills what
+///   no character covers, since the scene's alpha carries glow and can't say where characters are.
+/// - **When it draws:** only when what it shows changed: its camera, size, exposure, ambient light or
+///   backdrop, its instances, their poses or character entries, or the grade. A still showcase
+///   costs nothing past its first frame, and time alone (breathing emission, eye highlights) doesn't
+///   move it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsetView {
+    /// What the interface's inset runs name it by. Two views of one number draw the first.
+    pub inset: u16,
+    pub camera: CameraData,
+    /// The picture's size in pixels, as the node showing it covers the target. The renderer's
+    /// [`RenderSettings::inset`](crate::RenderSettings::inset) bounds it for the tier.
+    pub size: (u32, u32),
+    /// A range of [`FramePacket::inset_instances`]: set by [`FramePacket::push_inset`].
+    pub instances: PacketRange,
+    /// The multiplier on its light before the grade, as post's exposure is on the world's.
+    pub exposure: f32,
+    /// The light its characters' GI takes in place of the world's ambient.
+    pub ambient: AmbientLight,
+    /// Linear light behind its characters, exposed and graded with them.
+    pub backdrop: Vec3,
+}
+
+impl InsetView {
+    /// Inset `inset` from `camera` into a picture of `size` pixels, at exposure 1 under `ambient` before
+    /// a black backdrop, with no instances until [`FramePacket::push_inset`] adds it.
+    pub fn new(inset: u16, camera: CameraData, size: (u32, u32), ambient: AmbientLight) -> Self {
+        let instances = PacketRange::default();
+        Self { inset, camera, size, instances, exposure: 1.0, ambient, backdrop: Vec3::ZERO }
     }
 }
 
@@ -769,6 +842,21 @@ mod tests {
         let palette = (0..3).map(|joint| Affine3A::from_translation(Vec3::splat(joint as f32)));
         packet.push_skinned(InstanceId(0), palette, [0.5, 1.0]);
         packet.push_skinned(InstanceId(1), [Affine3A::IDENTITY], []);
+        let inset = InsetView::new(2, camera, (64, 96), AmbientLight::default());
+        packet.push_inset(inset, [InstanceId(1), InstanceId(2)]);
+    }
+
+    #[test]
+    fn an_inset_names_its_own_instances() {
+        let mut packet = FramePacket::default();
+        fill(&mut packet, 2);
+        let camera = packet.views[0].camera;
+        packet.push_inset(InsetView::new(5, camera, (8, 8), AmbientLight::default()), [InstanceId(7)]);
+        let [first, second] = [packet.insets[0], packet.insets[1]];
+        assert_eq!(packet.inset_instances(&first), Some(&[InstanceId(1), InstanceId(2)][..]));
+        assert_eq!(packet.inset_instances(&second), Some(&[InstanceId(7)][..]));
+        let past = InsetView { instances: PacketRange { start: 2, len: 9 }, ..second };
+        assert_eq!(packet.inset_instances(&past), None);
     }
 
     #[test]
@@ -803,6 +891,8 @@ mod tests {
                 packet.skinned.as_ptr(),
                 packet.palettes.as_ptr(),
                 packet.morph_weights.as_ptr(),
+                packet.insets.as_ptr(),
+                packet.inset_instances.as_ptr(),
             )
         };
         let warm: Vec<_> = ring.packets.iter().map(storage).collect();

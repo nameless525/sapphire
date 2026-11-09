@@ -161,6 +161,10 @@
 //!   with the same companions. It opens at the clock's start: `--ui-time <seconds>` is the one time it's
 //!   shown at, a capture's being byte-stable, and `--ui-walk up,down,left,right,confirm` the focus steps
 //!   taken as it opens. Input is `game_ui`'s (`sapphire_controls`' `MenuControls`), so none reaches it here.
+//! - `--ui-inset`: the 3D inset's test screen (M3 U6, `content/ui/test_inset.ui.ron`), the character in a
+//!   framed panel beside a menu, as the `ui-inset-*` goldens show it, with the same companions.
+//!   `--ui-turn <across>` turns it as a drag across that share of its width would, and `--ui-spin
+//!   <across>` turns it that much more each frame of a bench, so it draws every frame.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

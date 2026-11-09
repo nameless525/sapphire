@@ -16,6 +16,8 @@
 //!
 //! The main view's passes skip the static draws of instances its frustum culled (review RA-O01,
 //! [`MeshDraws::view`]); the shadow passes and the character prepass draw from a copy without it.
+//! Every pass draws one view's instances alone (M3 U6, [`MeshDraws::stand`]): the world's, or an
+//! inset's, whose instances draw nowhere else.
 //!
 //! The debug views' replays of the main pass (M1 F5, the `debug_view` module) draw through the
 //! same calls: the overdraw view's draw each alpha-tested draw twice, through two pipelines in
@@ -62,6 +64,11 @@ pub(crate) struct MeshDraws<'a> {
     /// `view_cull` module): for the main pass, the scene prepass and the debug views. `None`
     /// draws every one, as the other views do.
     pub view: Option<&'a [bool]>,
+    /// Per instance slot, the view it stands in (M3 U6, `inset`): 0 for the world's, `n` for the
+    /// frame's inset `n - 1`. Slots past its end stand in the world.
+    pub stands: &'a [u16],
+    /// The view this pass draws: only the instances that stand in it draw.
+    pub stand: u16,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -86,6 +93,11 @@ pub(crate) enum DrawSet {
 }
 
 impl MeshDraws<'_> {
+    /// Whether the instance in `slot` stands in the view this pass draws.
+    fn stands_here(&self, slot: u32) -> bool {
+        self.stands.get(slot as usize).copied().unwrap_or(0) == self.stand
+    }
+
     /// Whether `set` includes draw record `draw_id` of `material`, which has an outline hull or
     /// not.
     fn includes(&self, set: DrawSet, draw_id: u32, material: MaterialHandle, outline: bool) -> bool {
@@ -167,6 +179,7 @@ impl MeshDraws<'_> {
             if !self.includes(set, command.draw_id, command.material, command.outline)
                 || !instance(command.slot)
                 || !in_view(command.slot)
+                || !self.stands_here(command.slot)
             {
                 continue;
             }
@@ -259,6 +272,7 @@ impl MeshDraws<'_> {
         for command in &self.list.deformed[variant.index()] {
             if !self.includes(set, command.draw_id, command.material, command.outline)
                 || !instance(command.slot)
+                || !self.stands_here(command.slot)
             {
                 continue;
             }
@@ -328,12 +342,13 @@ impl MeshDraws<'_> {
             match draw {
                 DrawRef::Static { format, index } => {
                     let commands = &self.list.commands[format_index(format)][variant.index()];
-                    if let Some(command) = commands.get(index as usize) {
+                    if let Some(command) = commands.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         self.draw_command(pass, kind, format, command, &mut bound);
                     }
                 }
                 DrawRef::Deformed { index } => {
-                    if let Some(command) = self.list.deformed[variant.index()].get(index as usize) {
+                    let deformed = &self.list.deformed[variant.index()];
+                    if let Some(command) = deformed.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         self.draw_deformed_command(pass, kind, command, &mut bound);
                     }
                 }

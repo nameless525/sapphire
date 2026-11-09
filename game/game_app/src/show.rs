@@ -283,6 +283,10 @@ impl SceneShow for GameShow {
         }
     }
 
+    fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
+        self.shown.inset_shots(visit);
+    }
+
     fn draw_debug(&mut self) {
         self.shown.draw_debug();
     }

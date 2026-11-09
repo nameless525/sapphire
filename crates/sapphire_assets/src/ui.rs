@@ -216,6 +216,10 @@ pub struct UiNode {
     /// That it holds more than it shows along this axis, and scrolls through it. Takes a mask.
     #[serde(default)]
     pub scroll: Option<UiScrollAxis>,
+    /// That it shows a 3D inset (M3 U6): a showcase the renderer draws from a camera and light of its
+    /// own, over its look and under its children, which a drag or a stick turns.
+    #[serde(default)]
+    pub inset: Option<UiInset>,
 }
 
 fn opaque() -> f32 {
@@ -794,6 +798,123 @@ pub struct UiFocus {
     pub fires: Option<String>,
 }
 
+/// A node's 3D inset (M3 U6): how its showcase is shot and lit. What stands in it is the app's to say:
+/// the tree hands out each inset's number, size and turn, and the app places a showcase for it
+/// (`sapphire_stage::showcase`). Angles are in degrees, lengths in meters, light linear.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(default, deny_unknown_fields)]
+pub struct UiInset {
+    /// What the app and the renderer know its picture by: unique in a document.
+    pub inset: u16,
+    /// The character light rig preset that lights the showcase, by name.
+    pub rig: String,
+    /// The key light's color and intensity, as time of day's character key would be.
+    pub light: [f32; 3],
+    pub intensity: f32,
+    /// The ambient light from above and below, and its intensity.
+    pub ambient_sky: [f32; 3],
+    pub ambient_ground: [f32; 3],
+    pub ambient: f32,
+    /// Behind the showcase.
+    pub backdrop: [f32; 3],
+    /// The multiplier on its light before the frame's grade.
+    pub exposure: f32,
+    /// How high above the showcase's feet the camera looks.
+    pub look_at: f32,
+    /// How far the camera stands from that point.
+    pub distance: f32,
+    /// How far the camera looks down.
+    pub pitch: f32,
+    /// The camera's vertical field of view.
+    pub fov: f32,
+    /// How far round the showcase is turned when the screen opens, from facing the camera.
+    pub yaw: f32,
+    /// How far a drag across the node's whole width turns it, and so how fast a stick does.
+    pub turn: f32,
+}
+
+impl Default for UiInset {
+    /// The portrait preset at noon's character key under a pale sky, a full-length figure framed from
+    /// four meters, a drag across the node turning it once round.
+    fn default() -> Self {
+        Self {
+            inset: 0,
+            rig: "portrait".to_owned(),
+            light: [1.0, 0.97, 0.92],
+            intensity: 1.0,
+            ambient_sky: [0.62, 0.78, 0.95],
+            ambient_ground: [0.36, 0.34, 0.42],
+            ambient: 0.3,
+            backdrop: [0.05, 0.06, 0.09],
+            exposure: 1.0,
+            look_at: 0.9,
+            distance: 4.0,
+            pitch: 5.0,
+            fov: 30.0,
+            yaw: 0.0,
+            turn: 360.0,
+        }
+    }
+}
+
+impl UiInset {
+    /// What's wrong with it, each naming its field under `field`.
+    fn issues(&self, field: &str, issues: &mut Vec<UiIssue>) {
+        let mut issue = |name: &str, problem: String| {
+            issues.push(UiIssue { field: format!("{field}.{name}"), problem });
+        };
+        if self.rig.is_empty() {
+            issue("rig", "an inset names the light rig preset that lights it".to_owned());
+        }
+        let light = [("light", self.light), ("ambient_sky", self.ambient_sky)];
+        let colors =
+            light.into_iter().chain([("ambient_ground", self.ambient_ground), ("backdrop", self.backdrop)]);
+        for (name, color) in colors {
+            if !color.iter().all(|channel| channel.is_finite() && *channel >= 0.0) {
+                issue(name, format!("{color:?} isn't light: three numbers of at least 0"));
+            }
+        }
+        for (name, value) in [("intensity", self.intensity), ("ambient", self.ambient)] {
+            if !(value.is_finite() && value >= 0.0) {
+                issue(name, format!("{value} isn't an intensity of at least 0"));
+            }
+        }
+        if !(self.exposure.is_finite() && self.exposure > 0.0) {
+            issue("exposure", format!("{} isn't a multiplier above 0", self.exposure));
+        }
+        if !(self.distance.is_finite() && self.distance > 0.0 && self.distance <= 100.0) {
+            issue("distance", format!("{} isn't above 0 and at most 100 m", self.distance));
+        }
+        if !self.look_at.is_finite() || self.look_at.abs() > 100.0 {
+            issue("look_at", format!("{} isn't within 100 m of its feet", self.look_at));
+        }
+        if !(-89.0..=89.0).contains(&self.pitch) {
+            issue("pitch", format!("{} isn't from -89 to 89", self.pitch));
+        }
+        if !(1.0..=120.0).contains(&self.fov) {
+            issue("fov", format!("{} isn't from 1 to 120", self.fov));
+        }
+        if !self.yaw.is_finite() {
+            issue("yaw", format!("{} isn't an angle", self.yaw));
+        }
+        if !(self.turn.is_finite() && self.turn.abs() <= 3600.0) {
+            issue("turn", format!("{} isn't within 3600 degrees", self.turn));
+        }
+    }
+}
+
 /// The axis a node scrolls along.
 #[derive(
     Reflect,
@@ -1225,6 +1346,7 @@ impl UiDocument {
                 }
             }
         }
+        self.check_insets(&mut issues);
         self.check_focus(&mut issues);
         self.check_motion(&mut issues);
         if self.model.is_none()
@@ -1239,6 +1361,20 @@ impl UiDocument {
             });
         }
         issues
+    }
+
+    /// What's wrong with its nodes' insets: each on its own, and two of one number.
+    fn check_insets(&self, issues: &mut Vec<UiIssue>) {
+        let mut numbers = BTreeSet::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            let Some(inset) = &node.inset else { continue };
+            let field = format!("nodes[{index}] `{}`.inset", node.name);
+            if !numbers.insert(inset.inset) {
+                let problem = format!("another node shows inset {}", inset.inset);
+                issues.push(UiIssue { field: format!("{field}.inset"), problem });
+            }
+            inset.issues(&field, issues);
+        }
     }
 
     /// What's wrong with its nodes' focus: where a direction goes, where it starts, what it fires.
@@ -1898,6 +2034,29 @@ mod tests {
                 ".focus.focused.look.slant",
             ),
             (r#"(name: "root", scroll: Vertical)"#, ".scroll"),
+        ] {
+            let issues = motion_issues(nodes, "");
+            assert!(issues.iter().any(|issue| issue.contains(field)), "{nodes}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn an_inset_reads_with_defaults_and_is_refused_by_the_field_at_fault() {
+        let nodes = r#"(name: "root"), (name: "showcase", parent: "root", inset: (inset: 3, yaw: 20, distance: 3.5))"#;
+        let document = UiDocument::from_document(&document(nodes)).unwrap();
+        let inset = document.nodes[1].inset.as_ref().unwrap();
+        assert_eq!((inset.inset, inset.yaw, inset.distance), (3, 20.0, 3.5));
+        assert_eq!(inset.rig, "portrait", "what it leaves out is the default's");
+        for (nodes, field) in [
+            (r#"(name: "root", inset: (rig: ""))"#, ".inset.rig"),
+            (r#"(name: "root", inset: (distance: 0))"#, ".inset.distance"),
+            (r#"(name: "root", inset: (fov: 170))"#, ".inset.fov"),
+            (r#"(name: "root", inset: (backdrop: (0, -1, 0)))"#, ".inset.backdrop"),
+            (r#"(name: "root", inset: (exposure: 0))"#, ".inset.exposure"),
+            (
+                r#"(name: "root", inset: (inset: 1)), (name: "a", parent: "root", inset: (inset: 1))"#,
+                "`a`.inset.inset",
+            ),
         ] {
             let issues = motion_issues(nodes, "");
             assert!(issues.iter().any(|issue| issue.contains(field)), "{nodes}: {issues:?}");

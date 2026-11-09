@@ -866,6 +866,7 @@ pub mod foliage;
 mod frame;
 mod gpu_types;
 pub mod graph;
+pub mod inset;
 mod lights;
 mod materials;
 mod mesh_pool;
@@ -899,9 +900,10 @@ pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, FaceExpression, FramePacket,
-    FramePacketRing, HeadBasis, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
-    SkinnedInstance, ViewData, Weather, Wind,
+    FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance,
+    PacketRange, SkinnedInstance, ViewData, Weather, Wind,
 };
+pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;

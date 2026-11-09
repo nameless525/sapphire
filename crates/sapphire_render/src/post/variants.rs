@@ -11,6 +11,7 @@ use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
 };
+use crate::inset::{INSET_FORMAT, INSET_RESOLVE_PASS};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Cancel;
 use crate::shaders::BuildOn;
@@ -114,11 +115,16 @@ pub(super) enum Slot {
     Up,
     /// The fused pass, by [`Variant::composite_index`].
     Composite(usize),
+    /// An inset's resolve (M3 U6, `inset`): its scene exposed and graded into its picture. No frame
+    /// variant draws it, so it is outside [`Self::all`]: inventories declare it (`PipelineInventory::insets`).
+    Inset,
 }
 
 impl Slot {
-    /// How many there are.
+    /// How many the frame's variants have.
     const COUNT: usize = 4 + Variant::COMPOSITES;
+    /// How many there are, the inset's resolve with them.
+    const SLOTS: usize = Self::COUNT + 1;
 
     /// Every pipeline post has, in [`Self::index`]'s order.
     fn all() -> impl Iterator<Item = Self> {
@@ -133,6 +139,7 @@ impl Slot {
             Self::Down => 2,
             Self::Up => 3,
             Self::Composite(index) => 4 + index,
+            Self::Inset => Self::COUNT,
         }
     }
 
@@ -150,6 +157,7 @@ impl Slot {
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
                 (switches, 0)
             }
+            Self::Inset => (PostVariants::NONE, 0),
         }
     }
 
@@ -169,6 +177,7 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
+            Self::Inset => false,
         })
     }
 }
@@ -196,22 +205,17 @@ impl Builder {
             Slot::Prefilter { characters } => {
                 let constants = [(CHARACTERS_CONSTANT, switch(characters))];
                 let (layout, format) = (two, self.bloom_format);
-                self.pipeline(
-                    module,
-                    "bloom prefilter",
-                    fullscreen,
-                    "fs_bloom_prefilter",
-                    layout,
-                    format,
-                    &constants,
-                )
+                let names = ("bloom prefilter", fullscreen, "fs_bloom_prefilter");
+                self.pipeline(module, PipelineFamily::Post, names, layout, format, &constants)
             }
             Slot::Down => {
                 let (layout, format) = (&self.layouts.one, self.bloom_format);
-                self.pipeline(module, "bloom down", fullscreen, "fs_bloom_down", layout, format, &[])
+                let names = ("bloom down", fullscreen, "fs_bloom_down");
+                self.pipeline(module, PipelineFamily::Post, names, layout, format, &[])
             }
             Slot::Up => {
-                self.pipeline(module, "bloom up", fullscreen, "fs_bloom_up", two, self.bloom_format, &[])
+                let names = ("bloom up", fullscreen, "fs_bloom_up");
+                self.pipeline(module, PipelineFamily::Post, names, two, self.bloom_format, &[])
             }
             // The plain variant is R3's fused pass; the others composite (and measure the flare's
             // visibility once a frame, in their vertex shader).
@@ -229,20 +233,25 @@ impl Builder {
                     _ => ("vs_composite", "fs_composite", &constants[..]),
                 };
                 let (layout, format) = (&self.layouts.composite, self.output_format);
-                self.pipeline(module, COMPOSITE_PASS, vertex, fragment, layout, format, constants)
+                let names = (COMPOSITE_PASS, vertex, fragment);
+                self.pipeline(module, PipelineFamily::Post, names, layout, format, constants)
+            }
+            // The composite's layout, as an inset's group binds the frame's grading LUTs.
+            Slot::Inset => {
+                let names = (INSET_RESOLVE_PASS, fullscreen, "fs_inset");
+                let layout = &self.layouts.composite;
+                self.pipeline(module, PipelineFamily::Inset, names, layout, INSET_FORMAT, &[])
             }
         }
     }
 
-    /// A fullscreen pipeline drawing one triangle into `format`, reading the shared group and
-    /// `layout`.
-    #[allow(clippy::too_many_arguments)]
+    /// A fullscreen pipeline for `family` drawing one triangle into `format`, reading the shared
+    /// group and `layout`, named and with entry points by `(name, vertex, fragment)`.
     fn pipeline(
         &self,
         module: &wgpu::ShaderModule,
-        name: &str,
-        vertex: &str,
-        fragment: &str,
+        family: PipelineFamily,
+        (name, vertex, fragment): (&str, &str, &str),
         layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
         constants: &[(&str, f64)],
@@ -255,7 +264,7 @@ impl Builder {
         let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
         self.builds.render(
             &self.device,
-            PipelineFamily::Post,
+            family,
             &wgpu::RenderPipelineDescriptor {
                 label: Some(name),
                 layout: Some(&pipeline_layout),
@@ -288,7 +297,7 @@ impl Builder {
 /// Post's pipelines built so far, by [`Slot`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Pipelines {
-    slots: [Option<wgpu::RenderPipeline>; Slot::COUNT],
+    slots: [Option<wgpu::RenderPipeline>; Slot::SLOTS],
 }
 
 impl Pipelines {
@@ -340,7 +349,7 @@ impl Pipelines {
     /// what it returns is to be thrown away.
     pub(super) fn rebuilt(&self, builder: &Builder, module: &wgpu::ShaderModule, cancel: &Cancel) -> Self {
         let mut rebuilt = Self::default();
-        let built = Slot::all().filter(|&slot| self.get(slot).is_some());
+        let built = Slot::all().chain([Slot::Inset]).filter(|&slot| self.get(slot).is_some());
         rebuilt.build(builder, module, built.take_while(|_| !cancel.is_set()));
         rebuilt
     }

@@ -28,7 +28,8 @@
 //! clusters, the ambient pass (the probe grid's sky, prefilter, relight and characters, and GTAO;
 //! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low), a debug
 //! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1), the effects'
-//! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low) and the whole
+//! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low), a 3D inset's
+//! passes (`--ui-inset`, M3 U6: with `--ui-spin` it turns, and so draws, every frame) and the whole
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
@@ -42,7 +43,7 @@ use std::time::Duration;
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view, post, shadows,
+    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view, inset, post, shadows,
     temporal, vfx,
 };
 use sapphire_rhi::wgpu;
@@ -175,9 +176,11 @@ pub(crate) fn run(
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     let mut zone_walk = ZoneWalk::default();
+    let spin = options.ui_screen.as_ref().map_or(0.0, |shown| shown.spin);
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
+        spin_insets(&mut stage, spin);
         stage.step();
         stage.render(&view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
@@ -321,15 +324,29 @@ pub(crate) fn run(
     if !alloc::is_installed() {
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
-    gpu_times(&mut stage, &view, settings.bloom_levels)?;
+    gpu_times(&mut stage, &view, settings.bloom_levels, spin)?;
     stage.check_gpu()?;
     stage.show.fight.finish().map_err(AppInitError::msg)
+}
+
+/// Turns the screen's insets by `across` (`--ui-spin`), so they draw again this frame.
+fn spin_insets(stage: &mut Stage, across: f32) {
+    if across != 0.0
+        && let Some(screen) = &mut stage.show.screen
+    {
+        screen.turn_insets(across);
+    }
 }
 
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's
 /// `exclusive` time (what it added to the frame; see `sapphire_render::graph::PassTime`) and its
 /// start-to-end `duration`, and the frame's span. `bloom_levels` is the renderer's.
-fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> Result<(), AppInitError> {
+fn gpu_times(
+    stage: &mut Stage,
+    view: &wgpu::TextureView,
+    bloom_levels: u32,
+    spin: f32,
+) -> Result<(), AppInitError> {
     if !stage.gpu.caps().timestamp_query {
         tracing::info!(target: LOG_TARGET, "no timestamp queries on this device: GPU times not measured");
         return Ok(());
@@ -344,12 +361,14 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     let mut debug_draws = zero;
     let mut effects = zero;
     let mut ui = zero;
+    let mut insets = zero;
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
     let (mut bloom, mut composite, mut post_total) = (zero, zero, zero);
     let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
     for _ in 0..TIMED_FRAMES {
+        spin_insets(stage, spin);
         stage.step();
         stage.render(view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
@@ -365,7 +384,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 13] = [
+        let groups: [(&[&str], &mut Sums); 14] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -379,6 +398,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
             (&[debug_draw::PASS], &mut debug_draws),
             (&[vfx::PASS], &mut effects),
             (&[UI_PASS], &mut ui),
+            (&inset::PASSES, &mut insets),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -454,6 +474,10 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_ui_us = format_args!("{:.1}", micros(ui.0, ui.2)),
         gpu_ui_duration_us = format_args!("{:.1}", micros(ui.1, ui.2)),
         ui_frames = ui.2,
+        gpu_insets_us = format_args!("{:.1}", micros(insets.0, insets.2)),
+        gpu_insets_duration_us = format_args!("{:.1}", micros(insets.1, insets.2)),
+        inset_frames = insets.2,
+        insets = ?stage.renderer.stats().insets,
         "bench gpu",
     );
     Ok(())

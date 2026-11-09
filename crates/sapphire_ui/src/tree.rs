@@ -58,6 +58,7 @@
 
 mod bind;
 mod focus;
+mod inset;
 mod motion;
 mod paint;
 mod scroll;
@@ -82,6 +83,7 @@ use taffy::{LayoutInput, compute_leaf_layout};
 use self::bind::{BoundText, read};
 use self::focus::Hold;
 pub use self::focus::{UiEvent, UiHit, UiInput, UiPointer, UiPointerKind, UiPointerPhase, UiStep};
+pub use self::inset::UiInsetShot;
 use self::motion::{Placement, Player, Pose};
 use self::scroll::Scroll;
 use crate::atlas::Atlas;
@@ -257,6 +259,8 @@ struct Node {
     child_mask: Option<[f32; 4]>,
     /// Multiplied down from the root, for this frame.
     final_opacity: f32,
+    /// Shows a 3D inset's picture over its look.
+    inset: Option<inset::InsetState>,
 }
 
 /// A screen: see the [module docs](self).
@@ -388,6 +392,7 @@ impl UiTree {
                 own_mask: None,
                 child_mask: None,
                 final_opacity: 1.0,
+                inset: node.inset.as_ref().map(inset::InsetState::new),
             });
         }
         let root =
@@ -920,6 +925,9 @@ impl UiTree {
                         &atlas.sprites,
                         &mut list.quads,
                     );
+                }
+                if let Some(inset) = &node.inset {
+                    list.push_inset_quad(inset.setup.inset, inset::quad(node.rect, node.final_opacity));
                 }
             }
             if let Some(text) = &node.text

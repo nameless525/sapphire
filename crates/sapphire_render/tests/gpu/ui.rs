@@ -610,8 +610,8 @@ fn an_edit_to_its_shader_rebuilds_its_one_pipeline_once_it_is_built() {
     let original = sources.get(ShaderFile::Ui).to_owned();
     // A shader that draws everything half as bright.
     let dimmed = original.replace(
-        "return vec4<f32>(rgb, fill + line) * mask;",
-        "return vec4<f32>(rgb * 0.25, fill + line) * mask;",
+        "let shape = vec4<f32>(rgb, fill + line);",
+        "let shape = vec4<f32>(rgb * 0.25, fill + line);",
     );
     assert_ne!(dimmed, original);
     sources.set(ShaderFile::Ui, dimmed.clone());

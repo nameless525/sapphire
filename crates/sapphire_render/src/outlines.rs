@@ -53,6 +53,22 @@ pub(crate) struct OutlineCull {
     counts: OutlineCounts,
 }
 
+/// Which instance slots stand in an inset (M3 U6), and those insets' cameras: what judges their hulls.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Insets<'a> {
+    /// Per instance slot, 0 for the world's view or `n` for inset `n - 1` (`MeshDraws::stands`).
+    pub stands: &'a [u16],
+    pub cameras: &'a [CameraData],
+}
+
+impl Insets<'_> {
+    /// The camera of the inset instance slot `slot` stands in, if it stands in one.
+    fn camera(&self, slot: u32) -> Option<&CameraData> {
+        let stand = self.stands.get(slot as usize).copied().unwrap_or(0);
+        stand.checked_sub(1).and_then(|inset| self.cameras.get(usize::from(inset)))
+    }
+}
+
 impl OutlineCull {
     /// Decides, for `camera`, which of `list`'s hulls draw: those whose instance's bounding
     /// sphere (from `meshes`, the pool's records) comes within its material's cutoff, read from
@@ -61,9 +77,14 @@ impl OutlineCull {
     /// read and their bounds placed (review RA-O03): most draws are the world's, without one,
     /// their material slots another family's. Allocates nothing once the draw list stops
     /// growing.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the world's camera and the insets', and what it judges by"
+    )]
     pub(crate) fn prepare(
         &mut self,
         camera: &CameraData,
+        insets: Insets<'_>,
         scale: f32,
         list: &DrawList,
         slots: &InstanceSlots,
@@ -72,7 +93,8 @@ impl OutlineCull {
     ) {
         profiling::scope!("OutlineCull::prepare");
         // tan(fov_y / 2) is 1 / the projection's y focal length.
-        let effective = 1.0 / (camera.proj.y_axis.y.abs().max(1e-6) * REFERENCE_TAN_HALF_FOV);
+        let effective =
+            |camera: &CameraData| 1.0 / (camera.proj.y_axis.y.abs().max(1e-6) * REFERENCE_TAN_HALF_FOV);
         self.visible.clear();
         self.visible.resize(list.draws.len(), false);
         let hulls =
@@ -83,12 +105,14 @@ impl OutlineCull {
             let draw = &list.draws[draw_id as usize];
             let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
             // A cutoff of 0 (or one that isn't a number) draws nothing, wherever the hull is.
+            // An inset's instance is judged by the inset's camera (M3 U6).
+            let camera = insets.camera(draw.instance).unwrap_or(camera);
             let visible = cutoff > 0.0
                 && slots.world_bounds(draw.instance, meshes).is_some_and(|sphere| {
                     // The view is rigid, so no point of the sphere is nearer in depth than this.
                     let depth = -camera.view.transform_point3(sphere.center).z;
                     let gap = (depth - sphere.radius).max(0.0);
-                    gap * effective < cutoff
+                    gap * effective(camera) < cutoff
                 });
             self.visible[draw_id as usize] = visible;
             counts.drawn += u32::from(visible);
@@ -209,7 +233,7 @@ mod tests {
         let (list, mut slots) = scene(&[(0, Mat4::IDENTITY, 0, Some(true))]);
         let mut cull = OutlineCull::default();
         let mut prepare = |slots: &InstanceSlots| {
-            cull.prepare(&camera, 1.0, &list, slots, &meshes, |_| Some(cutoff(5.0)));
+            cull.prepare(&camera, Insets::default(), 1.0, &list, slots, &meshes, |_| Some(cutoff(5.0)));
             cull.visible()[0]
         };
         assert!(!prepare(&slots), "the bind pose is past its cutoff");
@@ -262,7 +286,7 @@ mod tests {
             }
             let (list, slots) = scene(&placed);
             let mut cull = OutlineCull::default();
-            cull.prepare(&camera, 1.0, &list, &slots, &meshes, |_| Some(cutoff(limit)));
+            cull.prepare(&camera, Insets::default(), 1.0, &list, &slots, &meshes, |_| Some(cutoff(limit)));
             for (draw, &(_, transform, ..)) in placed.iter().enumerate() {
                 let sphere = bounds.transformed(transform);
                 let depth = |point: Vec3| -camera.view.transform_point3(point).z;
@@ -298,7 +322,7 @@ mod tests {
         );
         let (list, slots) = scene(&[(0, place, 0, Some(false))]);
         let mut cull = OutlineCull::default();
-        cull.prepare(&camera, 1.0, &list, &slots, &meshes, |_| Some(cutoff(10.0)));
+        cull.prepare(&camera, Insets::default(), 1.0, &list, &slots, &meshes, |_| Some(cutoff(10.0)));
         assert_eq!((cull.visible(), cull.counts()), (&[true][..], OutlineCounts { drawn: 1, culled: 0 }));
     }
 
@@ -331,7 +355,7 @@ mod tests {
         let mut cull = OutlineCull::default();
         for _ in 0..2 {
             looked_up.borrow_mut().clear();
-            cull.prepare(&camera, 1.0, &list, &slots, &meshes, params);
+            cull.prepare(&camera, Insets::default(), 1.0, &list, &slots, &meshes, params);
             let visible = [false, true, false, true, false, false, false, false, false, false];
             assert_eq!(cull.visible(), visible, "draws without a hull stay false");
             assert_eq!(cull.counts(), OutlineCounts { drawn: 2, culled: 5 });
@@ -342,7 +366,7 @@ mod tests {
             assert_eq!(read, [0, 0, 0, 1, 1, 2, 3]);
         }
         // The renderer's scale reaches every cutoff: at 0 nothing draws.
-        cull.prepare(&camera, 0.0, &list, &slots, &meshes, params);
+        cull.prepare(&camera, Insets::default(), 0.0, &list, &slots, &meshes, params);
         assert_eq!(cull.counts(), OutlineCounts { drawn: 0, culled: 7 });
         assert!(cull.visible().iter().all(|&visible| !visible));
     }

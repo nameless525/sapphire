@@ -13,6 +13,7 @@ use sapphire_render::{PipelineInventory, PostParams, UiDrawList, UiPageState, Vf
 use crate::content::Content;
 use crate::frame::FrameLaps;
 use crate::scene::Scene;
+use crate::showcase::InsetShot;
 
 /// What the show has to hear of what a frame's loading changed ([`Scene::follow_content`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,6 +62,11 @@ pub trait SceneShow {
 
     /// Draws its interface over a frame of `size`, once the frame's characters are listed.
     fn draw_interface(&mut self, _size: (u32, u32), _list: &mut UiDrawList) {}
+
+    /// Hands `visit` each 3D inset its interface just drew (M3 U6), for [`Scene::frame_packet`] to shoot its
+    /// showcases into ([`crate::showcase`]). A show that draws insets also declares
+    /// [`PipelineInventory::insets`].
+    fn inset_shots(&self, _visit: &mut dyn FnMut(InsetShot<'_>)) {}
 
     /// Its debug draws, last in the frame, which go out with the packet.
     fn draw_debug(&mut self) {}

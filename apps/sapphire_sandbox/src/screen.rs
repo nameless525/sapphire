@@ -1,8 +1,9 @@
 //! The sandbox's test screens (`--ui-screen`, M3 U4): `content/ui/test_screen.ui.ron` in the language asked
 //! for, with fixed values to bind, which is what the tree's goldens show and what hot reload and live link
 //! reach. `--ui-menu` shows `content/ui/test_menu.ui.ron` instead (M3 U5), opened at the clock's start and
-//! read at `--ui-time`, after the steps of `--ui-walk`. `game_ui::screen` shows them, and no window's input
-//! reaches either. They aren't a game's.
+//! read at `--ui-time`, after the steps of `--ui-walk`. `--ui-inset` shows `content/ui/test_inset.ui.ron`
+//! (M3 U6): the character in a 3D inset, a showcase of it the sandbox stands for inset 0, turned by
+//! `--ui-turn`. `game_ui::screen` shows them, and no window's input reaches any. They aren't a game's.
 
 use bevy_reflect::{PartialReflect, Reflect};
 use game_ui::screen::{ScreenLayer, ScreenSetup};
@@ -15,6 +16,9 @@ use sapphire_ui::UiStep;
 pub const TEST_SCREEN: AssetId = AssetId::from_text("0606f00f-d999-4659-9953-965ffdcfd348");
 /// `content/ui/test_menu.ui.ron`.
 pub const TEST_MENU: AssetId = AssetId::from_text("2eca009b-073e-4cab-a436-1894f36479d0");
+
+/// `content/ui/test_inset.ui.ron`, which reads [`TestScreenModel`].
+pub const TEST_INSET: AssetId = AssetId::from_text("c4c93b69-e921-4489-b4c6-7ceb62b89ce8");
 
 /// What the test screen's paths read. `content/ui/test_screen.model.ron` says the same for a cook, and a
 /// test holds the two together.
@@ -64,6 +68,12 @@ pub struct ScreenOptions {
     pub time: f32,
     /// `--ui-walk`: steps of focus taken when it opens, as `UiTree::walk` names them.
     pub walk: Vec<String>,
+    /// `--ui-inset`: the inset's test screen in place of the test screen.
+    pub inset: bool,
+    /// `--ui-turn`: its insets turned as a drag across that share of their width turns them.
+    pub turn: f32,
+    /// `--ui-spin`: as `turn`, again each frame a bench runs, so its insets draw every frame.
+    pub spin: f32,
 }
 
 /// Where the screen's clock stands with no `--ui-time`: well past what the test menu does.
@@ -78,6 +88,9 @@ impl Default for ScreenOptions {
             menu: false,
             time: SETTLED,
             walk: Vec::new(),
+            inset: false,
+            turn: 0.0,
+            spin: 0.0,
         }
     }
 }
@@ -86,7 +99,11 @@ impl ScreenOptions {
     /// The document it shows.
     #[must_use]
     pub const fn document(&self) -> AssetId {
-        if self.menu { TEST_MENU } else { TEST_SCREEN }
+        match (self.menu, self.inset) {
+            (true, _) => TEST_MENU,
+            (false, true) => TEST_INSET,
+            (false, false) => TEST_SCREEN,
+        }
     }
 
     /// `assets` as these flags ask, on the model of the screen they show.
@@ -106,7 +123,9 @@ impl ScreenOptions {
             time: Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64),
             walk: self.walk.clone(),
         };
-        ScreenLayer::new(assets, setup).map_err(|error| format!("--ui-screen: {error}"))
+        let mut layer = ScreenLayer::new(assets, setup).map_err(|error| format!("--ui-screen: {error}"))?;
+        layer.turn_insets(self.turn);
+        Ok(layer)
     }
 }
 
@@ -130,6 +149,7 @@ mod tests {
         for (id, sidecar) in [
             (TEST_SCREEN, include_str!("../../../content/ui/test_screen.ui.ron.meta")),
             (TEST_MENU, include_str!("../../../content/ui/test_menu.ui.ron.meta")),
+            (TEST_INSET, include_str!("../../../content/ui/test_inset.ui.ron.meta")),
             (FONT_CHAINS, include_str!("../../../content/fonts/ui.fontchains.ron.meta")),
             (LOCALES[0], include_str!("../../../content/loc/en.locale.ron.meta")),
             (LOCALES[1], include_str!("../../../content/loc/ja.locale.ron.meta")),

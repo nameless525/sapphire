@@ -31,6 +31,10 @@ use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
+use crate::inset::{
+    INSET_CHARACTER_PASS, INSET_MAIN_PASS, InsetBindings, InsetDraw, InsetFrame, InsetSettings, InsetStats,
+    Insets, MAX_INSETS,
+};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
@@ -41,7 +45,7 @@ use crate::pipelines::{
     MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
     SurfaceVariant, VELOCITY_FORMAT,
 };
-use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
+use crate::post::{InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
 use crate::retire::FrameFence;
 use crate::scene::GpuScene;
 use crate::shader_builds::{
@@ -54,7 +58,7 @@ use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::GpuTexture;
-use crate::ui::{Ui, UiStats};
+use crate::ui::{Ui, UiPicture, UiStats};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
@@ -149,6 +153,8 @@ pub struct RenderSettings {
     /// The reflection cube a probe grid's environment specular reads (M1 W5): the sky cube's
     /// prefiltered mips. Made only with environment specular on.
     pub reflections: ReflectionSettings,
+    /// How large 3D insets' pictures and scenes are (M3 U6, the [`inset`](crate::inset) module).
+    pub inset: InsetSettings,
     /// Main-view culling of static environment and foliage instances (review RA-O01): the main
     /// pass, the scene prepass and the debug views skip those wholly outside the main view's
     /// frustum, which changes no pixel. On by default; off draws everything, for comparisons and
@@ -192,6 +198,7 @@ impl Default for RenderSettings {
             foliage: FoliageSettings::default(),
             ambient_occlusion: AmbientOcclusion::OFF,
             reflections: ReflectionSettings::default(),
+            inset: InsetSettings::default(),
             view_culling: true,
         }
     }
@@ -208,7 +215,8 @@ impl RenderSettings {
         self.post_effects.validate()?;
         self.foliage.validate()?;
         self.ambient_occlusion.validate()?;
-        self.reflections.validate()
+        self.reflections.validate()?;
+        self.inset.validate()
     }
 }
 
@@ -460,6 +468,8 @@ pub struct RenderStats {
     pub vfx: VfxRenderStats,
     /// The on-screen interface's quads and what it built (M2 I2).
     pub ui: UiStats,
+    /// The 3D insets it shows and draws (M3 U6).
+    pub insets: InsetStats,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -563,7 +573,7 @@ pub struct Renderer {
     frame_uniforms: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     /// Every view's uniforms, one per [`Self::view_stride`]: the main view first, then the sky
-    /// cube's six faces (written once, at creation).
+    /// cube's six faces (written once, at creation), the shadow views, then the insets'.
     view_uniforms: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
     /// Bytes between views in [`Self::view_uniforms`]: a view's size, aligned for dynamic offsets.
@@ -608,6 +618,10 @@ pub struct Renderer {
     post: PostProcess,
     /// The on-screen interface over the finished frame (M2 I2).
     ui: Ui,
+    /// 3D insets the interface shows (M3 U6). Boxed: most frames have none.
+    insets: Box<Insets>,
+    /// The first of the insets' views in [`Self::view_uniforms`], after the shadow views.
+    first_inset_view: u32,
     /// Temporal AA's history and passes, with [`RenderSettings::temporal`].
     temporal: Option<Box<Temporal>>,
     uploads: wgpu::util::StagingBelt,
@@ -820,10 +834,11 @@ impl Renderer {
         );
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
         // the main camera, then the sky cube's faces, then the shadow cascades and character
-        // maps (M1 R4).
+        // maps (M1 R4), then the insets (M3 U6).
         let view_stride = (size_of::<ViewUniforms>() as u32)
             .next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
-        let views = FIRST_SHADOW_VIEW + shadows.views();
+        let first_inset_view = FIRST_SHADOW_VIEW + shadows.views();
+        let views = first_inset_view + MAX_INSETS as u32;
         let view_uniforms = uniform("view uniforms", (view_stride * views) as usize);
         for face in 0..sky::CUBE_FACES {
             let camera = cube_face_camera(face as usize);
@@ -932,6 +947,8 @@ impl Renderer {
             skinning,
             post,
             ui,
+            insets: Box::new(Insets::new(settings.inset)),
+            first_inset_view,
             temporal,
             uploads,
             prepared: None,
@@ -1759,6 +1776,9 @@ impl Renderer {
             if inventory.ui {
                 renderer.ui.build(&renderer.shaders);
             }
+            if inventory.insets {
+                renderer.post.build_inset(on);
+            }
             for &material in &inventory.sky {
                 renderer.sky.prewarm(material, &renderer.materials, on);
             }
@@ -1880,7 +1900,8 @@ impl Renderer {
             // Edited shaders are checked here too: a variant first drawn now builds from them.
             self.checked_build(Self::prepare_drawn_pipelines);
         }
-        if lists_replaced || characters_replaced {
+        let rebind = lists_replaced || characters_replaced;
+        if rebind {
             self.rebuild_frame_bind_group();
         }
         self.ambient.prepare(packet, self.characters.table());
@@ -1924,21 +1945,6 @@ impl Renderer {
             constants: FrameUniforms::new(packet, lights, self.outline_distance, fog.uniforms),
             wind: packet.wind,
         });
-        let unsupported_cards = if let Some((view, fog)) = main_view.zip(fog.as_ref()) {
-            let materials = &self.materials;
-            let params = |slot| materials.anime_character(slot);
-            let (list, slots) = (self.scene.draw_list(), self.scene.slots());
-            let meshes = self.meshes.records();
-            self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
-            self.fog_cards.sort(&view.camera, list, slots, meshes, materials, fog)
-        } else {
-            self.fog_cards.no_view();
-            0
-        };
-        if unsupported_cards != 0 && self.stats.fog.unsupported_cards == 0 {
-            tracing::warn!(target: LOG_TARGET, unsupported_cards, "unsupported GPU fog cards were skipped");
-        }
-        self.stats.fog.unsupported_cards = unsupported_cards;
         // A sky material with a nebula or lit clouds builds its variants the first time it draws.
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
@@ -1949,6 +1955,49 @@ impl Renderer {
         let camera = packet.main_view().map(|view| view.camera);
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
         self.checked_build(|renderer| renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun));
+        // The insets (M3 U6), graded as post just settled: their targets, which instances stand in them,
+        // and which draw. The first frame showing one builds its resolve unless an inventory declared it.
+        if let Some(prepared) = self.prepared.as_ref().filter(|_| !self.device_lost) {
+            let world = prepared.constants;
+            let bindings = InsetBindings {
+                device: &self.device,
+                layout: &self.layouts.frame,
+                world: FrameBindings {
+                    uniforms: &self.frame_uniforms,
+                    lights: &self.lights,
+                    characters: &self.characters,
+                    shadows: &self.shadows,
+                    character_prepass: &self.character_prepass,
+                    ambient: &self.ambient,
+                },
+                post: &self.post,
+                ui: &self.ui,
+                labels: self.labels,
+            };
+            self.insets.prepare(packet, self.scene.slots(), &world, rebind, &bindings);
+            if self.insets.any() {
+                self.checked_build(|renderer| {
+                    renderer.post.build_inset(BuildOn::sources(renderer.edited_shaders))
+                });
+            }
+        }
+        self.stats.insets = self.insets.stats(self.settings.msaa.sample_count());
+        let unsupported_cards = if let Some((view, fog)) = main_view.zip(fog.as_ref()) {
+            let materials = &self.materials;
+            let params = |slot| materials.anime_character(slot);
+            let (list, slots) = (self.scene.draw_list(), self.scene.slots());
+            let meshes = self.meshes.records();
+            let insets = self.insets.stands();
+            self.outlines.prepare(&view.camera, insets, self.outline_distance, list, slots, meshes, params);
+            self.fog_cards.sort(&view.camera, list, slots, meshes, materials, fog)
+        } else {
+            self.fog_cards.no_view();
+            0
+        };
+        if unsupported_cards != 0 && self.stats.fog.unsupported_cards == 0 {
+            tracing::warn!(target: LOG_TARGET, unsupported_cards, "unsupported GPU fog cards were skipped");
+        }
+        self.stats.fog.unsupported_cards = unsupported_cards;
         // Effects, at the exposure post just settled, which build what the first one draws through.
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
@@ -2045,6 +2094,7 @@ impl Renderer {
         self.shadows.frame_lost();
         let Some(recorded) = recorded else { return };
         self.previous_clip_from_world = recorded.previous_clip_from_world;
+        self.insets.frame_lost();
         self.skinning.frame_lost();
         self.ambient.frame_lost();
         self.sky.frame_lost();
@@ -2237,6 +2287,8 @@ impl Renderer {
             ref debug_draw,
             ref frame_ran,
             ref ui,
+            ref mut insets,
+            first_inset_view,
             ..
         } = *self;
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
@@ -2275,6 +2327,8 @@ impl Renderer {
         let (light_uploads, cluster_pass) = lights.split_for_record();
         let (character_uploads, character_slots) = characters.split_for_record();
         let skinning_frame = skinning.frame();
+        // The insets (M3 U6): their uploads, those that draw, and those the interface shows.
+        let inset_frame = insets.split_for_record(first_inset_view, view_stride);
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,
@@ -2284,7 +2338,10 @@ impl Renderer {
             hulls: outlines.visible(),
             lines: false,
             view: None,
+            stands: inset_frame.stands,
+            stand: 0,
         };
+        let InsetFrame { uploads: inset_uploads, draws: inset_draws, shown: inset_shown, .. } = inset_frame;
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
         let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
         // Handles, so `post` and `temporal` can be borrowed mutably for their passes below.
@@ -2347,6 +2404,9 @@ impl Renderer {
             }
             if let Some(ui_upload) = &ui_upload {
                 ui_upload.write(uploads, ctx.encoder);
+            }
+            for inset in inset_uploads.iter().flatten() {
+                inset.write(uploads, ctx.encoder, view_uniforms);
             }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
@@ -2419,29 +2479,9 @@ impl Renderer {
                 // ones (fading characters' among them, which the draw list moves there) through
                 // the masked one (M1 C7), cut out as the main pass cuts them, then the two-sided
                 // ones through theirs, which cull nothing (M1 C8).
-                let listed = |slot: u32| character_slots.listed(slot);
-                let set = DrawSet::Surfaces;
-                for prepass in 0..MeshPipelines::CHARACTER_PREPASSES {
-                    for format in PositionFormat::ALL {
-                        let Some(mesh) = pipelines.mesh(format) else { continue };
-                        let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
-                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                mesh_draws.draw_static_where(&mut pass, kind, format, variant, set, listed);
-                            }
-                        }
-                    }
-                    if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
-                        let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
-                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                mesh_draws.draw_deformed_where(&mut pass, kind, variant, set, listed);
-                            }
-                        }
-                    }
-                }
+                draw_character_prepass(&mut pass, pipelines, &mesh_draws, |slot| {
+                    character_slots.listed(slot)
+                });
             });
         let mut scene_prepass = graph
             .add_pass(SCENE_PREPASS)
@@ -2619,6 +2659,98 @@ impl Renderer {
             }
         });
 
+        // The insets that draw this frame (M3 U6), each through its own character prepass and main pass
+        // into a scene of its own, which post resolves into its picture. Their instances stand in
+        // their own view, so `stand` picks them alone, and every world pass above skipped them.
+        let mut inset_pictures: [Option<TextureId>; MAX_INSETS] = [None; MAX_INSETS];
+        for (picture, shown) in inset_pictures.iter_mut().zip(&inset_shown) {
+            *picture = shown.map(|shown| graph.import_texture("inset picture", shown.picture));
+        }
+        let mut inset_resolves: [Option<InsetResolve<'f>>; MAX_INSETS] = std::array::from_fn(|_| None);
+        for ((resolve, draw), picture) in inset_resolves.iter_mut().zip(inset_draws).zip(inset_pictures) {
+            let (Some(draw), Some(picture)) = (draw, picture) else { continue };
+            let InsetDraw { stand, view_offset, frame_group, character_prepass, post, scene_size, backdrop } =
+                draw;
+            let (character_depth, character_ids) = character_prepass.import(graph);
+            let inset_attachment = |format| TransientDesc {
+                width: scene_size.0,
+                height: scene_size.1,
+                format,
+                sample_count: samples,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
+            };
+            let inset_color = graph.create_texture(
+                "inset scene color",
+                TransientDesc {
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    ..inset_attachment(SCENE_COLOR_FORMAT)
+                },
+            );
+            let inset_msaa = (samples > 1)
+                .then(|| graph.create_texture("inset msaa color", inset_attachment(SCENE_COLOR_FORMAT)));
+            let inset_depth = graph.create_texture("inset depth", inset_attachment(DEPTH_FORMAT));
+            let draws = MeshDraws { stand, ..mesh_draws };
+            graph
+                .add_pass(INSET_CHARACTER_PASS)
+                .weight(pass_weight::CHARACTERS)
+                .write(character_depth)
+                .write(character_ids)
+                .record(move |ctx| {
+                    let colors = [Some(character_ids)];
+                    let mut pass = begin_prepass(ctx, INSET_CHARACTER_PASS, character_depth, &colors, labels);
+                    pass.set_bind_group(1, view_bind_group, &[view_offset]);
+                    pass.set_bind_group(2, &scene_bind_groups[0], &[]);
+                    pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+                    draw_character_prepass(&mut pass, pipelines, &draws, |slot| character_slots.listed(slot));
+                });
+            let mut inset_main = graph
+                .add_pass(INSET_MAIN_PASS)
+                .weight(pass_weight::CHARACTERS)
+                .read(character_depth)
+                .read(character_ids)
+                .write(inset_color)
+                .write(inset_depth);
+            if let Some(msaa) = inset_msaa {
+                inset_main = inset_main.write(msaa);
+            }
+            inset_main.record(move |ctx| {
+                let (view, resolve_target, store) = match inset_msaa {
+                    Some(msaa) => (ctx.view(msaa), Some(ctx.view(inset_color)), wgpu::StoreOp::Discard),
+                    None => (ctx.view(inset_color), None, wgpu::StoreOp::Store),
+                };
+                let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: labels.then_some(INSET_MAIN_PASS),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target,
+                        // No sky: the backdrop fills what no character covers.
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(backdrop), store },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: ctx.view(inset_depth),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: ctx.timestamp_writes(),
+                    ..Default::default()
+                });
+                pass.set_bind_group(0, frame_group, &[]);
+                pass.set_bind_group(1, view_bind_group, &[view_offset]);
+                pass.set_bind_group(2, &scene_bind_groups[0], &[]);
+                pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+                let pipeline = |format, variant, set| {
+                    main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
+                };
+                draw_main_pass(&mut pass, &pipeline, &draws, scene_bind_groups, None, None, |_| true);
+            });
+            *resolve = Some(InsetResolve { post, scene: inset_color, picture });
+        }
+
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
         let resolved = match (temporal, temporal_targets, targets.responsive) {
             (Some((textures, passes)), Some(temporal_targets), Some(responsive)) => {
@@ -2650,7 +2782,7 @@ impl Renderer {
                 }
                 None => resolved,
             };
-        post.record(graph, resolved, scene_color, target, labels);
+        post.record(graph, resolved, scene_color, target, inset_resolves.into_iter().flatten(), labels);
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
             let frame = DebugFrame {
@@ -2668,7 +2800,13 @@ impl Renderer {
             views.record(graph, frame);
         }
         // The interface, over the frame and any debug view (M2 I2).
-        ui.record(graph, target, output);
+        let mut pictures: [Option<UiPicture<'f>>; MAX_INSETS] = [None; MAX_INSETS];
+        for ((picture, shown), texture) in pictures.iter_mut().zip(inset_shown).zip(inset_pictures) {
+            *picture = shown.zip(texture).and_then(|(shown, texture)| {
+                Some(UiPicture { inset: shown.inset, group: shown.group?, texture })
+            });
+        }
+        ui.record(graph, target, output, pictures);
         // Debug draws last, over all of it; the overlay draws over them.
         if let Some(draw) = debug_draw {
             draw.record(graph, target, targets.depth, labels);
@@ -2805,18 +2943,45 @@ impl Renderer {
 
     /// Rebuilds group 0 after a buffer or texture in it was replaced.
     fn rebuild_frame_bind_group(&mut self) {
-        self.frame_bind_group = create_frame_bind_group(
-            &self.device,
-            &self.layouts.frame,
-            FrameBindings {
-                uniforms: &self.frame_uniforms,
-                lights: &self.lights,
-                characters: &self.characters,
-                shadows: &self.shadows,
-                character_prepass: &self.character_prepass,
-                ambient: &self.ambient,
-            },
-        );
+        self.frame_bind_group =
+            create_frame_bind_group(&self.device, &self.layouts.frame, self.frame_bindings());
+        // The insets' groups bind the same resources but their own constants and character targets.
+        let Self {
+            insets,
+            device,
+            layouts,
+            frame_uniforms,
+            lights,
+            characters,
+            shadows,
+            character_prepass,
+            ambient,
+            post,
+            ui,
+            labels,
+            ..
+        } = self;
+        let world = FrameBindings {
+            uniforms: frame_uniforms,
+            lights,
+            characters,
+            shadows,
+            character_prepass,
+            ambient,
+        };
+        insets.rebind(&InsetBindings { device, layout: &layouts.frame, world, post, ui, labels: *labels });
+    }
+
+    /// What the world's group 0 binds.
+    fn frame_bindings(&self) -> FrameBindings<'_> {
+        FrameBindings {
+            uniforms: &self.frame_uniforms,
+            lights: &self.lights,
+            characters: &self.characters,
+            shadows: &self.shadows,
+            character_prepass: &self.character_prepass,
+            ambient: &self.ambient,
+        }
     }
 
     /// Sets the scene's size as a fraction of the target's width and height, from the next
@@ -3132,6 +3297,39 @@ fn check_foliage(
     Ok(())
 }
 
+/// Draws the character prepass's surfaces of `draws` whose instance slot `listed` takes: every part
+/// but hair, then hair, each the opaque, alpha-tested and two-sided surfaces through their pipelines
+/// ([`Renderer::record`] says why). Groups 1 and 2 and the index buffer must be bound.
+fn draw_character_prepass(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipelines: &Pipelines,
+    draws: &MeshDraws<'_>,
+    listed: impl Fn(u32) -> bool + Copy,
+) {
+    let set = DrawSet::Surfaces;
+    for prepass in 0..MeshPipelines::CHARACTER_PREPASSES {
+        for format in PositionFormat::ALL {
+            let Some(mesh) = pipelines.mesh(format) else { continue };
+            let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
+            if variants.iter().any(|&variant| draws.has_static(format, variant)) {
+                pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                for &variant in variants {
+                    draws.draw_static_where(pass, kind, format, variant, set, listed);
+                }
+            }
+        }
+        if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+            let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
+            if variants.iter().any(|&variant| draws.has_deformed(variant)) {
+                pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                for &variant in variants {
+                    draws.draw_deformed_where(pass, kind, variant, set, listed);
+                }
+            }
+        }
+    }
+}
+
 /// Begins a prepass's render pass: `depth` and the `colors` cleared, all stored.
 fn begin_prepass<'p>(
     ctx: &'p mut PassContext<'_>,
@@ -3177,16 +3375,17 @@ fn upload(
 }
 
 /// What group 0 binds, by owner (the crate docs' binding table).
-struct FrameBindings<'a> {
-    uniforms: &'a wgpu::Buffer,
-    lights: &'a Lights,
-    characters: &'a Characters,
-    shadows: &'a Shadows,
-    character_prepass: &'a CharacterPrepassTargets,
-    ambient: &'a Ambient,
+#[derive(Clone, Copy)]
+pub(crate) struct FrameBindings<'a> {
+    pub uniforms: &'a wgpu::Buffer,
+    pub lights: &'a Lights,
+    pub characters: &'a Characters,
+    pub shadows: &'a Shadows,
+    pub character_prepass: &'a CharacterPrepassTargets,
+    pub ambient: &'a Ambient,
 }
 
-fn create_frame_bind_group(
+pub(crate) fn create_frame_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     bindings: FrameBindings<'_>,

@@ -257,6 +257,7 @@ use bytemuck::{Pod, Zeroable};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::graph::{FrameGraph, TextureId};
+use crate::inset::INSET_RESOLVE_PASS;
 use crate::pipeline_builds::PipelineBuilds;
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shader_builds::Step;
@@ -453,6 +454,8 @@ pub(crate) struct PostProcess {
     uniform_buffer: wgpu::Buffer,
     /// Group 0: the uniforms and the sampler.
     shared: wgpu::BindGroup,
+    /// The linear clamp sampler group 0 binds, which insets' groups bind too.
+    sampler: wgpu::Sampler,
     /// Bound as the bloom and diffusion inputs while bloom is off: one black texel.
     no_bloom: wgpu::TextureView,
     luts: [wgpu::Texture; 2],
@@ -511,6 +514,21 @@ struct BindGroups {
     prefilter: CachedBindGroup,
     down: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
     up: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
+}
+
+/// An inset's share of post (M3 U6, `inset`): its constants, their group 0, and its resolve's group 1.
+#[derive(Debug)]
+pub(crate) struct InsetPost {
+    shared: wgpu::BindGroup,
+    cache: CachedBindGroup,
+}
+
+/// An inset's resolve, which [`PostProcess::record`] adds after post's own passes: its scene, exposed
+/// and graded, into its picture.
+pub(crate) struct InsetResolve<'f> {
+    pub post: &'f mut InsetPost,
+    pub scene: TextureId,
+    pub picture: TextureId,
 }
 
 /// A texture a fullscreen pass samples: one from the frame graph or a persistent one.
@@ -689,6 +707,7 @@ impl PostProcess {
             first_use_builds: 0,
             uniform_buffer,
             shared,
+            sampler,
             no_bloom,
             luts,
             lut_views,
@@ -716,6 +735,49 @@ impl PostProcess {
             tracing::debug!(target: crate::LOG_TARGET, built, ready = ?self.ready, "post variants prewarmed");
         }
         built
+    }
+
+    /// Builds the inset resolve's pipeline unless it is built (M3 U6): an inventory's, while nothing draws,
+    /// or a first use, in the frame that first shows an inset. Says how many it built.
+    pub(crate) fn build_inset(&mut self, on: BuildOn) -> u32 {
+        self.pipelines.build_all(&self.builder, &self.module, [Slot::Inset], on)
+    }
+
+    /// A new inset's constants buffer and groups.
+    pub(crate) fn inset_post(&self) -> (wgpu::Buffer, InsetPost) {
+        let device = &self.builder.device;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("inset post uniforms"),
+            size: size_of::<PostUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shared = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("inset post"),
+            layout: &self.builder.shared_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        (buffer, InsetPost { shared, cache: CachedBindGroup::default() })
+    }
+
+    /// An inset's constants this frame: the frame's grade at the inset's `exposure` (1 where it isn't a
+    /// positive number).
+    pub(crate) fn inset_uniforms(&self, exposure: f32) -> PostUniforms {
+        let mut uniforms = self.uniforms;
+        uniforms.composite[0] = if exposure.is_finite() && exposure > 0.0 { exposure } else { 1.0 };
+        uniforms.composite[3] = 0.0;
+        uniforms
+    }
+
+    /// What an inset's grade is made of this frame: the LUT blend and shaper, the slots the grades read,
+    /// and the bakes so far, which change when a slot is baked again. Equal values grade alike.
+    pub(crate) fn inset_grade(&self) -> [u32; 8] {
+        let [x, y, z, w] = self.uniforms.lut.map(f32::to_bits);
+        let [a, b] = self.bound.map(|slot| slot as u32);
+        [self.uniforms.composite[2].to_bits(), x, y, z, w, a, b, self.bakes]
     }
 
     /// The pipelines built so far, to build again from new sources (shader hot reload, off the
@@ -870,6 +932,7 @@ impl PostProcess {
         input: TextureId,
         scene_color: TextureId,
         target: TextureId,
+        insets: impl IntoIterator<Item = InsetResolve<'f>>,
         labels: bool,
     ) {
         let Self {
@@ -963,6 +1026,25 @@ impl PostProcess {
             target,
             pass(pipeline(Slot::Composite(variant.composite_index())), &layouts.composite, composite),
         );
+        // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs.
+        for InsetResolve { post: inset, scene, picture } in insets {
+            let InsetPost { ref shared, ref mut cache, .. } = *inset;
+            let none = Input::View(no_bloom);
+            add_fullscreen(
+                graph,
+                INSET_RESOLVE_PASS,
+                [Input::Graph(scene), none, lut_a, lut_b, none, none],
+                picture,
+                Fullscreen {
+                    device,
+                    labels,
+                    pipeline: pipeline(Slot::Inset),
+                    shared,
+                    layout: &layouts.composite,
+                    cache,
+                },
+            );
+        }
     }
 }
 

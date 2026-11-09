@@ -391,6 +391,9 @@ impl App for SandboxApp {
         if let Some(shown) = &options.ui_screen {
             let assets = content.load_screen(shown.document(), &mut renderer.renderer, &device.gpu)?;
             show.screen = Some(shown.layer(assets).map_err(AppInitError::msg)?);
+            if shown.inset {
+                scene.spawn_showcase(scene.character(), 0);
+            }
         }
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.

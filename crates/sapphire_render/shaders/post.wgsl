@@ -10,6 +10,7 @@
 //      down        the previous, larger level   —                      —              —
 //      up          the next, smaller level      this size's down level —              —
 //      composite   post's input                 bloom (half size)      the two LUTs   bloom's widest
+//      inset       an inset's scene (M3 U6)     its scene again        the two LUTs   its scene again
 //
 //      and the composite's mask_source: scene color, whose alpha is the character mask (post's
 //      input itself unless a screen effect reads the mask).
@@ -363,6 +364,16 @@ fn fs_post(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     color += textureSampleLevel(texture1, linear_clamp, in.uv, 0.0).rgb * post.composite.y;
     color *= vignette(in.uv, size);
     // The LUT holds sRGB-encoded values; the sRGB target encodes what this returns.
+    return vec4<f32>(srgb_to_linear(graded(color)), 1.0);
+}
+
+// An inset's resolve (M3 U6, `sapphire_render::inset`): its scene, exposed by its own exposure (its
+// group 0's `composite.x`) and graded through the frame's LUTs, into its picture, which encodes on
+// write. No bloom, vignette or effects. The picture is as large as the scene or half as wide and
+// tall, so a bilinear tap at each pixel's center is the scene's texel or the box of four under it.
+@fragment
+fn fs_inset(in: FullscreenVaryings) -> @location(0) vec4<f32> {
+    let color = textureSampleLevel(texture0, linear_clamp, in.uv, 0.0).rgb * post.composite.x;
     return vec4<f32>(srgb_to_linear(graded(color)), 1.0);
 }
 

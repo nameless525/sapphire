@@ -124,6 +124,25 @@ impl ScreenLayer {
     pub fn tree(&self) -> &UiTree {
         &self.tree
     }
+
+    /// Turns its insets as a drag `across` that share of their width would (M3 U6, `UiTree::turn_insets`).
+    pub fn turn_insets(&mut self, across: f32) {
+        self.tree.turn_insets(across);
+    }
+
+    /// Hands `visit` each inset the last [`Self::draw`] showed, as a [`SceneShow`] does.
+    ///
+    /// [`SceneShow`]: sapphire_stage::SceneShow
+    pub fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
+        for shot in self.tree.insets() {
+            visit(sapphire_stage::InsetShot {
+                inset: shot.setup.inset,
+                size: shot.size,
+                yaw: shot.yaw,
+                setup: shot.setup,
+            });
+        }
+    }
 }
 
 fn new_tree(document: &UiDocument) -> Result<UiTree, String> {

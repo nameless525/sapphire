@@ -43,6 +43,8 @@ pub enum PipelineFamily {
     Effects,
     Sky,
     Ui,
+    /// An inset's resolve (M3 U6): its meshes draw through [`Self::Mesh`].
+    Inset,
     Ambient,
     Temporal,
     Lights,
@@ -60,6 +62,7 @@ impl PipelineFamily {
             Self::Effects => "effects",
             Self::Sky => "sky",
             Self::Ui => "ui",
+            Self::Inset => "inset",
             Self::Ambient => "ambient",
             Self::Temporal => "temporal",
             Self::Lights => "lights",
@@ -142,6 +145,8 @@ pub struct PipelineInventory {
     pub skinning: bool,
     /// It draws an interface: atlas quads and glyph pages go through the one pipeline this builds.
     pub ui: bool,
+    /// It shows 3D insets (M3 U6): their resolve. Their characters draw through `meshes`' keys.
+    pub insets: bool,
     /// The sky materials it draws, uploaded by the time they're listed.
     pub sky: Vec<MaterialHandle>,
     /// A probe grid arrives after this (a zone's, M3 C1): the ambient pass's pipelines, and the environment
@@ -150,7 +155,8 @@ pub struct PipelineInventory {
 }
 
 impl PipelineInventory {
-    /// The name of each entry, as a miss names it: `mesh` and a key, `post`, `effects`, `skinning`, `ui`, `sky`.
+    /// The name of each entry, as a miss names it: `mesh` and a key, `post`, `effects`, `skinning`, `ui`,
+    /// `inset`, `sky`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
         let others = [
@@ -158,6 +164,7 @@ impl PipelineInventory {
             (PipelineFamily::Effects, self.effects),
             (PipelineFamily::Skinning, self.skinning),
             (PipelineFamily::Ui, self.ui),
+            (PipelineFamily::Inset, self.insets),
             (PipelineFamily::Sky, !self.sky.is_empty()),
             (PipelineFamily::Ambient, self.probe_grid),
         ];
@@ -175,6 +182,7 @@ impl PipelineInventory {
             "effects" => self.effects = false,
             "skinning" => self.skinning = false,
             "ui" => self.ui = false,
+            "inset" => self.insets = false,
             "sky" => self.sky.clear(),
             "ambient" => self.probe_grid = false,
             _ => self.meshes.retain(|key| format!("mesh {key}") != name),

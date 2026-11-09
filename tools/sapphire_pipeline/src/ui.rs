@@ -43,9 +43,9 @@ use crate::cache::{Dependency, Stage};
 use crate::font::{self, FontCookError};
 
 /// The UI document importer as cache keys know it.
-pub const IMPORTER: Stage = Stage { name: "UI document", version: 2 };
+pub const IMPORTER: Stage = Stage { name: "UI document", version: 3 };
 /// The UI document cooker. Bump it whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "sui", version: 2 };
+pub const COOKER: Stage = Stage { name: "sui", version: 3 };
 
 /// What a UI document's file name ends with.
 const SOURCE_SUFFIX: &str = ".ui.ron";

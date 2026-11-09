@@ -545,6 +545,7 @@ impl SceneShow for ShownFight {
     fn declare_pipelines(&self, inventory: &mut sapphire_render::PipelineInventory) {
         self.fight.declare_pipelines(inventory);
         inventory.ui |= self.hud.is_some() || self.screen.is_some();
+        inventory.insets |= self.screen.as_ref().is_some_and(|screen| screen.tree().holds_insets());
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -591,6 +592,12 @@ impl SceneShow for ShownFight {
         }
         if let Some(screen) = &mut self.screen {
             screen.draw(size, list);
+        }
+    }
+
+    fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
+        if let Some(screen) = &self.screen {
+            screen.inset_shots(visit);
         }
     }
 

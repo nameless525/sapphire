@@ -135,6 +135,7 @@ use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 use crate::show::{ContentChanges, SceneShow};
+use crate::showcase::{self, InsetShot, Showcased};
 use crate::skinned::{self, Sway};
 use crate::studio::{self, Piece, StudioLayout, StudioMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
@@ -206,6 +207,17 @@ type FrameCharacters = SystemState<(
     Res<'static, LightRigLibrary>,
     Characters,
     FaceHeads,
+)>;
+
+/// What a frame's packet shoots its insets from (M3 U6), likewise.
+type FrameInsets = SystemState<(
+    ResMut<'static, RenderExtract>,
+    Res<'static, LightRigLibrary>,
+    Query<
+        'static,
+        'static,
+        (Entity, &'static Showcased, &'static CharacterLightRig, &'static RenderTransform),
+    >,
 )>;
 
 /// The effect stack and its presets, borrowed together in place. `World::resource_scope` would
@@ -440,6 +452,9 @@ pub struct Scene {
     /// Made once: a query made each frame would allocate.
     frame_start: FrameStart,
     frame_characters: FrameCharacters,
+    frame_insets: FrameInsets,
+    /// The showcases standing for characters in insets ([`Self::spawn_showcase`]).
+    showcases: Vec<Entity>,
     /// Made once, like the queries: [`Self::with_screen_effects`] runs inside fixed steps.
     screen_effects: ScreenEffects,
     lamps: Lamps,
@@ -511,6 +526,7 @@ impl Scene {
         ecs.startup();
         let frame_start = SystemState::new(ecs.world_mut());
         let frame_characters = SystemState::new(ecs.world_mut());
+        let frame_insets = SystemState::new(ecs.world_mut());
         let screen_effects = SystemState::new(ecs.world_mut());
         let lamps = ecs.world_mut().query();
         let players = ecs.world_mut().query();
@@ -560,6 +576,8 @@ impl Scene {
             bounds,
             frame_start,
             frame_characters,
+            frame_insets,
+            showcases: Vec::new(),
             screen_effects,
             lamps,
             sky_material: None,
@@ -1515,6 +1533,75 @@ impl Scene {
         self.character
     }
 
+    /// Stands a showcase of the character `of` for inset `inset` (M3 U6, [`crate::showcase`]): drawn only
+    /// in that inset, wearing `of`'s mesh, rig and pose each frame, at the inset's stand. `of` must be
+    /// a character, with a mesh and a light rig.
+    pub fn spawn_showcase(&mut self, of: Entity, inset: u16) -> Entity {
+        let world = self.ecs.world_mut();
+        let source = world.entity(of);
+        let mesh = *source.get::<RenderMesh>().expect("a showcase shows a character with a mesh");
+        let rig = *source.get::<CharacterLightRig>().expect("a showcase shows a character with a light rig");
+        let (figure, pose) = (source.get::<Figure>().copied(), source.get::<RenderPose>().cloned());
+        let place = RenderTransform(Mat4::from_translation(showcase::stand(inset)));
+        let mut showcase = world.spawn((Showcased { inset, of }, mesh, rig, place));
+        if let Some(figure) = figure {
+            showcase.insert(figure);
+        }
+        if let Some(pose) = pose {
+            showcase.insert(pose);
+        }
+        let showcase = showcase.id();
+        self.showcases.push(showcase);
+        showcase
+    }
+
+    /// Takes a showcase away, as a game does when it closes the screen that showed it.
+    pub fn despawn_showcase(&mut self, showcase: Entity) {
+        self.showcases.retain(|&shown| shown != showcase);
+        self.ecs.world_mut().despawn(showcase);
+    }
+
+    /// Dresses each showcase as the character it stands for is this frame: its mesh, rig and pose, written
+    /// only where they differ, so one standing still extracts nothing and a warm frame allocates nothing.
+    fn follow_showcases(&mut self) {
+        let world = self.ecs.world_mut();
+        for &showcase in &self.showcases {
+            let Some(&Showcased { of, .. }) = world.get::<Showcased>(showcase) else { continue };
+            let Ok(source) = world.get_entity(of) else { continue };
+            let mesh = source.get::<RenderMesh>().copied();
+            let rig = source.get::<CharacterLightRig>().map(|rig| rig.head);
+            let figure = source.get::<Figure>().copied();
+            let mut shown = world.entity_mut(showcase);
+            if let Some(mesh) = mesh
+                && let Some(mut shown_mesh) = shown.get_mut::<RenderMesh>()
+            {
+                shown_mesh.set_if_neq(mesh);
+            }
+            if let Some(head) = rig
+                && let Some(mut shown_rig) = shown.get_mut::<CharacterLightRig>()
+                && shown_rig.head != head
+            {
+                shown_rig.head = head;
+            }
+            if let Some(figure) = figure
+                && let Some(mut shown_figure) = shown.get_mut::<Figure>()
+            {
+                shown_figure.set_if_neq(figure);
+            }
+            // Lent out of the character for the copy, unmarked, so the character isn't extracted again.
+            let Some(mut source_pose) = world.get_mut::<RenderPose>(of) else { continue };
+            let pose = std::mem::take(source_pose.bypass_change_detection());
+            if let Some(mut shown_pose) = world.get_mut::<RenderPose>(showcase)
+                && *shown_pose != pose
+            {
+                shown_pose.clone_from(&pose);
+            }
+            if let Some(mut source_pose) = world.get_mut::<RenderPose>(of) {
+                *source_pose.bypass_change_detection() = pose;
+            }
+        }
+    }
+
     /// Where the character's light rig finds its head and body, for a character without a [`Figure`] of its
     /// own.
     pub fn figure(&self) -> Figure {
@@ -1889,6 +1976,7 @@ impl Scene {
         for (lamp, mut light) in self.lamps.iter_mut(self.ecs.world_mut()) {
             light.0.intensity = lamp.intensity * day_night;
         }
+        self.follow_showcases();
         self.ecs.extract();
         let scene_figure = self.figure;
         let (face_layout, fade) = (self.face_layout, self.fade);
@@ -1955,6 +2043,13 @@ impl Scene {
         if let Some(size) = target_size {
             let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
             show.draw_interface(size, &mut extract.packet_mut().ui);
+            // The insets it drew, each from its own camera, after the characters they show are listed.
+            let (mut extract, rigs, showcases) = self
+                .frame_insets
+                .get_mut(self.ecs.world_mut())
+                .expect("the scene inserts what insets shoot from");
+            let packet = extract.packet_mut();
+            show.inset_shots(&mut |shot| shoot_inset(packet, &rigs, &showcases, &shot));
         }
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.
@@ -2098,6 +2193,33 @@ impl Scene {
             self.ecs.world_mut().entity_mut(stalk).insert(RenderMesh(mesh));
         }
     }
+}
+
+/// Pushes inset `shot`'s view, naming the showcases standing in it, and lights them for its camera by its
+/// own rig and light, not the hour's. A second shot of one inset is the first's.
+fn shoot_inset(
+    packet: &mut FramePacket,
+    rigs: &LightRigLibrary,
+    showcases: &Query<'_, '_, (Entity, &Showcased, &CharacterLightRig, &RenderTransform)>,
+    shot: &InsetShot<'_>,
+) {
+    if packet.insets.iter().any(|view| view.inset == shot.inset) {
+        return;
+    }
+    let camera = showcase::camera(shot, showcase::stand(shot.inset));
+    let rig = rigs.rig(rigs.find(&shot.setup.rig).unwrap_or(LightRigId::DEFAULT));
+    let (key, light) = showcase::lights(shot.setup);
+    let standing = || showcases.iter().filter(|(_, showcased, ..)| showcased.inset == shot.inset);
+    for (entity, _, character, transform) in standing() {
+        let id = extract::instance_id(entity);
+        let head = transform.0.transform_point3(character.head);
+        if let Some(listed) = packet.characters.iter_mut().find(|listed| listed.id == id) {
+            listed.lighting = rig.resolve(&key, &light, &camera, head);
+            listed.opacity = 1.0;
+        }
+    }
+    let ids = standing().map(|(entity, ..)| extract::instance_id(entity));
+    packet.push_inset(showcase::view(shot, camera), ids);
 }
 
 /// Width over height of a target the main view can draw into: none without a target, or for

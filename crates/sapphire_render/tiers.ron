@@ -31,6 +31,11 @@
 // - `reflections` (M1 W5): the sky cube prefiltered into roughness mips for a probe grid's
 //   environment specular, half the sky cube's size; Mobile-Low has no environment specular, so
 //   none is made there.
+// - `inset` (M3 U6): a 3D inset's picture, at most `max_side` pixels on its longest side, and its
+//   scene, `supersample` times as wide and tall. Desktop tiers have no MSAA and an inset gets no TAA
+//   history, so their scene is twice the picture's, which the resolve box-filters; phones draw it
+//   with their 4x MSAA in tile memory at the picture's size. The sides hold a character screen's
+//   showcase at each tier's height (`sapphire_render::inset`).
 // - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4), `max_particles`
 //   (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
@@ -99,6 +104,7 @@
                 post_effects: (radial_blur_taps: 16),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
+                inset: (max_side: 960, supersample: 2),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -131,6 +137,7 @@
                 post_effects: (radial_blur_taps: 12),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
+                inset: (max_side: 720, supersample: 2),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -164,6 +171,7 @@
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 64),
+                inset: (max_side: 720, supersample: 1),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -199,6 +207,7 @@
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
                 reflections: (cube_size: 32),
+                inset: (max_side: 512, supersample: 1),
             ),
         ],
     ),

@@ -230,8 +230,8 @@ pub(crate) struct Options {
     /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
-    /// `--ui-screen`, `--ui-menu`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-time` and `--ui-walk`: the retained tree's test screen over
-    /// the scene (M3 U4).
+    /// `--ui-screen`, `--ui-menu`, `--ui-inset`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-time`,
+    /// `--ui-walk`, `--ui-turn` and `--ui-spin`: the retained tree's test screens over the scene (M3 U4, U5, U6).
     pub ui_screen: Option<ScreenOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
@@ -617,6 +617,7 @@ impl Options {
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut hud_paused = false;
         let (mut ui_menu, mut ui_time, mut ui_walk) = (false, None, Vec::new());
+        let (mut ui_inset, mut ui_turn, mut ui_spin) = (false, None, None);
         let (mut ui_screen, mut ui_locale, mut ui_scale, mut ui_pseudo) = (false, None, None, false);
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
@@ -793,6 +794,24 @@ impl Options {
                 "--ui-menu" => {
                     ui_screen = true;
                     ui_menu = true;
+                }
+                "--ui-inset" => {
+                    ui_screen = true;
+                    ui_inset = true;
+                }
+                "--ui-turn" => {
+                    let across: f32 = number(&value("--ui-turn")?, "--ui-turn")?;
+                    if !across.is_finite() {
+                        return Err(format!("--ui-turn expects a share of a drag across, got {across}"));
+                    }
+                    ui_turn = Some(across);
+                }
+                "--ui-spin" => {
+                    let across: f32 = number(&value("--ui-spin")?, "--ui-spin")?;
+                    if !across.is_finite() {
+                        return Err(format!("--ui-spin expects a share of a drag across, got {across}"));
+                    }
+                    ui_spin = Some(across);
                 }
                 "--ui-time" => {
                     let seconds: f32 = number(&value("--ui-time")?, "--ui-time")?;
@@ -1069,10 +1088,12 @@ impl Options {
             || ui_scale.is_some()
             || ui_pseudo
             || ui_time.is_some()
-            || !ui_walk.is_empty();
+            || !ui_walk.is_empty()
+            || ui_turn.is_some()
+            || ui_spin.is_some();
         if !ui_screen && companions {
             return Err(
-                "--ui-locale, --ui-scale, --ui-pseudo, --ui-time and --ui-walk need --ui-screen or --ui-menu"
+                "--ui-locale, --ui-scale, --ui-pseudo, --ui-time, --ui-walk, --ui-turn and --ui-spin need --ui-screen, --ui-menu or --ui-inset"
                     .to_owned(),
             );
         }
@@ -1085,6 +1106,9 @@ impl Options {
                 menu: ui_menu,
                 time: ui_time.unwrap_or(shown.time),
                 walk: ui_walk,
+                inset: ui_inset,
+                turn: ui_turn.unwrap_or(shown.turn),
+                spin: ui_spin.unwrap_or(shown.spin),
             }
         });
         options.faces = match (faces, face_layout) {
@@ -1960,8 +1984,13 @@ mod tests {
             ..ScreenOptions::default()
         };
         assert_eq!(options.ui_screen, Some(shown));
+        let (options, _) = parse(&["--ui-inset", "--ui-turn", "0.25"]).unwrap();
+        let shown = ScreenOptions { inset: true, turn: 0.25, ..ScreenOptions::default() };
+        assert_eq!(options.ui_screen, Some(shown));
         for args in [
             &["--ui-locale", "ja"][..],
+            &["--ui-turn", "0.5"],
+            &["--ui-inset", "--ui-turn", "inf"],
             &["--ui-scale", "2"],
             &["--ui-pseudo"],
             &["--ui-time", "1"],

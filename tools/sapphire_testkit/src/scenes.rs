@@ -155,7 +155,7 @@ pub struct Scene {
 /// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 153] {
+pub fn scenes() -> [Scene; 155] {
     [
         Scene {
             name: "turntable-start",
@@ -3780,6 +3780,61 @@ pub fn scenes() -> [Scene; 153] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The 3D inset's test screen (M3 U6): the character in a panel, drawn by the anime character
+        // pipelines into a picture of its own and shown by the tree, at 16:9 on desktop high, and at a
+        // phone's 19.5:9 at twice the points on mobile low, a quarter turn round by a drag.
+        Scene {
+            name: "ui-inset-wide",
+            args: &[
+                "--size",
+                "1280x720",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "desktop-high",
+                "--plain-sky",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-inset",
+                "--ui-locale",
+                "ja",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "ui-inset-phone",
+            args: &[
+                "--size",
+                "1688x780",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "mobile-low",
+                "--plain-sky",
+                "--plain-post",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-inset",
+                "--ui-locale",
+                "en",
+                "--ui-scale",
+                "2",
+                "--ui-turn",
+                "0.25",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The combat HUD's fixed frame (M2 I2) at the aspect ratios spec §5.17 names, each a phone-
         // sized frame in points: bright midday behind it at 16:9 and with a notch, golden hour at
         // 4:3 and the lantern-lit street at 21:9, so its inks and digits read over all three.
@@ -4521,7 +4576,10 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else if !scene.name.starts_with("ui-tree-") && !scene.name.starts_with("ui-menu-") {
+            } else if !["ui-tree-", "ui-menu-", "ui-inset-"]
+                .iter()
+                .any(|prefix| scene.name.starts_with(prefix))
+            {
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }

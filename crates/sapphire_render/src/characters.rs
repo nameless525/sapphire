@@ -83,7 +83,7 @@ use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{
     AmbientLight, CameraRim, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
-    CharacterShade, FramePacket,
+    CharacterShade, FramePacket, InsetView, InstanceId,
 };
 
 /// The radius of the sphere around a character's head that the face pass samples the
@@ -611,7 +611,8 @@ impl CharacterList {
                     self.ignored += 1;
                     continue;
                 }
-                None => self.push(index, character, ambient),
+                // An inset's character takes its inset's ambient light (M3 U6).
+                None => self.push(index, character, inset_ambient(packet, character.id).unwrap_or(ambient)),
             };
             // Every slot is 0 here until this frame gives it an entry: an instance listed again
             // takes its last entry, and counts once.
@@ -715,6 +716,12 @@ impl CharacterList {
         self.same_body.push(before.unwrap_or(0));
         entry
     }
+}
+
+/// The ambient light of the inset that names instance `id`, if one does (M3 U6, [`InsetView::ambient`]).
+fn inset_ambient(packet: &FramePacket, id: InstanceId) -> Option<&AmbientLight> {
+    let names = |inset: &&InsetView| packet.inset_instances(inset).is_some_and(|ids| ids.contains(&id));
+    packet.insets.iter().find(names).map(|inset| &inset.ambient)
 }
 
 #[cfg(test)]

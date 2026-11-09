@@ -13,8 +13,8 @@ use sapphire_platform::Timestamp;
 use super::{UiNodeId, UiTree};
 use crate::layout::Rect;
 
-/// How far a pointer goes along a scroller, in points, before it's dragging it and not pressing what's
-/// under it.
+/// How far a pointer goes along a scroller, or across an inset, in points, before it's dragging it and
+/// not pressing what's under it.
 const DRAG_SLOP: f32 = 8.0;
 
 /// How much room a reveal leaves past a focused node, in points.
@@ -145,6 +145,8 @@ pub(super) struct Hold {
     node: Option<u32>,
     scroller: Option<u32>,
     start_offset: f32,
+    /// The inset it turns, how far that was turned when it started, and where across it started turning.
+    inset: Option<(u32, f32, f32)>,
     dragging: bool,
 }
 
@@ -220,7 +222,8 @@ impl UiTree {
     pub fn hit(&self, point: Vec2) -> UiHit {
         for at in (0..self.nodes.len()).rev() {
             let node = &self.nodes[at];
-            let shows = node.look.is_some() || node.text.is_some() || node.focus.is_some();
+            let shows =
+                node.look.is_some() || node.text.is_some() || node.focus.is_some() || node.inset.is_some();
             if !shows || !node.visible || node.final_opacity <= 0.0 || !node.screen.contains(point) {
                 continue;
             }
@@ -276,7 +279,10 @@ impl UiTree {
             self.focus_shown = kind == UiPointerKind::Mouse;
             self.move_focus(Some(node), at);
         }
-        let scroller = self.scroller_at(position);
+        // An inset under a finger takes its drag, to turn what stands in it, over a scroller it's in.
+        let inset =
+            self.inset_at(position).and_then(|inset| Some((inset, self.inset_yaw(inset)?, position.x)));
+        let scroller = if inset.is_some() { None } else { self.scroller_at(position) };
         let start_offset = scroller.map_or(0.0, |scroller| {
             self.nodes[scroller as usize].scroll.as_ref().map_or(0.0, |scroll| scroll.offset(at))
         });
@@ -296,11 +302,28 @@ impl UiTree {
             node,
             scroller,
             start_offset,
+            inset,
             dragging: false,
         });
     }
 
     fn drag(&mut self, position: Vec2, at: Timestamp) {
+        if let Some(hold) = &mut self.hold
+            && let Some((inset, yaw, from)) = &mut hold.inset
+        {
+            if !hold.dragging && (position.x - *from).abs() >= DRAG_SLOP {
+                // It turns from where the drag became one, so the slop doesn't jump it.
+                hold.dragging = true;
+                *from = position.x;
+            }
+            let (inset, yaw, moved) = (*inset, *yaw, position.x - *from);
+            hold.last = position;
+            hold.last_at = at;
+            if hold.dragging {
+                self.drag_inset(inset, yaw, moved);
+            }
+            return;
+        }
         let Some(hold) = &mut self.hold else { return };
         let Some(scroller) = hold.scroller else { return };
         let Some(scroll) = &mut self.nodes[scroller as usize].scroll else { return };

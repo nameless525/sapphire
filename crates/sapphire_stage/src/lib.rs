@@ -86,6 +86,7 @@ mod readback;
 pub mod rims;
 pub mod scene;
 mod show;
+pub mod showcase;
 pub mod skinned;
 pub mod studio;
 pub mod swatches;
@@ -101,6 +102,7 @@ pub use frame::{
 pub use readback::Readback;
 pub use scene::Scene;
 pub use show::{ContentChanges, SceneShow};
+pub use showcase::{InsetShot, Showcased};
 
 /// Log target for the stage.
 pub(crate) const LOG_TARGET: &str = "sapphire::stage";

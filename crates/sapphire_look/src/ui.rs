@@ -88,6 +88,10 @@ pub struct UiQuad {
 /// A quad's [`UiQuad::softness`] when its texels are coverage, not a field: they draw as they are.
 pub const UI_COVERAGE: f32 = -1.0;
 
+/// A quad's [`UiQuad::softness`] when its texels are a picture: an inset's (M3 U6), linear color
+/// premultiplied by its alpha, which the quad's color tints and fades.
+pub const UI_PICTURE: f32 = -2.0;
+
 impl UiQuad {
     /// A quad over `uv` in `color`, the shape as painted, nothing else on.
     pub const fn new(
@@ -122,6 +126,14 @@ impl UiQuad {
         quad.softness = UI_COVERAGE;
         quad
     }
+
+    /// An inset's picture over the rectangle from `origin` across `axis_x` and down `axis_y`, all of
+    /// it, faded by `opacity` (0 to 255).
+    pub const fn picture(origin: [f32; 2], axis_x: [f32; 2], axis_y: [f32; 2], opacity: u8) -> Self {
+        let mut quad = Self::new(origin, axis_x, axis_y, [0.0, 0.0, 1.0, 1.0], [255, 255, 255, opacity]);
+        quad.softness = UI_PICTURE;
+        quad
+    }
 }
 
 /// A run of [`UiDrawList::quads`] that reads a glyph page, not the list's atlas.
@@ -130,6 +142,15 @@ pub struct UiPageRun {
     pub first: u32,
     pub count: u32,
     pub page: u16,
+}
+
+/// A run of [`UiDrawList::quads`] that shows an inset's picture (M3 U6): what the frame packet's inset
+/// view numbered `inset` drew. A renderer drawing no such inset draws none of the run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiInsetRun {
+    pub first: u32,
+    pub count: u32,
+    pub inset: u16,
 }
 
 /// From quad `first` of [`UiDrawList::quads`] on, until the next of these, only what's inside `rect`
@@ -239,8 +260,11 @@ pub struct UiDrawList {
     pub atlas: Option<Arc<UiAtlas>>,
     /// Back to front.
     pub quads: Vec<UiQuad>,
-    /// The quads that read a glyph page, in order and apart. Every other quad reads `atlas`.
+    /// The quads that read a glyph page, in order and apart. Every other quad reads `atlas`, but
+    /// those of [`Self::inset_runs`].
     pub page_runs: Vec<UiPageRun>,
+    /// The quads that show an inset's picture, in order and apart from each other and the pages'.
+    pub inset_runs: Vec<UiInsetRun>,
     /// Where masks start and stop, by ascending `first`. Empty is no mask at all.
     pub masks: Vec<UiMask>,
     /// A glyph page's side in texels, all of them `R8Unorm` with one mip level.
@@ -269,6 +293,7 @@ impl UiDrawList {
         self.atlas = None;
         self.quads.clear();
         self.page_runs.clear();
+        self.inset_runs.clear();
         self.masks.clear();
         self.page_size = 0;
         self.page_uploads.clear();
@@ -342,6 +367,17 @@ impl UiDrawList {
         left_out
     }
 
+    /// Adds a quad showing inset `inset`'s picture, joining the run before it if that's of the same
+    /// inset.
+    pub fn push_inset_quad(&mut self, inset: u16, quad: UiQuad) {
+        let at = self.quads.len() as u32;
+        self.quads.push(quad);
+        match self.inset_runs.last_mut() {
+            Some(run) if run.inset == inset && run.first + run.count == at => run.count += 1,
+            _ => self.inset_runs.push(UiInsetRun { first: at, count: 1, inset }),
+        }
+    }
+
     /// Adds a quad over a glyph page, joining the run before it if that's on the same page.
     pub fn push_page_quad(&mut self, page: u16, quad: UiQuad) {
         let at = self.quads.len() as u32;
@@ -397,6 +433,28 @@ mod tests {
         );
         list.reset();
         assert!(list.page_runs.is_empty() && list.quads.is_empty());
+    }
+
+    #[test]
+    fn inset_quads_join_a_run_only_of_their_inset_and_right_after_it() {
+        let quad = UiQuad::picture([0.0; 2], [1.0, 0.0], [0.0, 1.0], 255);
+        let mut list = UiDrawList::default();
+        list.push_inset_quad(0, quad);
+        list.push_inset_quad(0, quad);
+        list.push_page_quad(0, UiQuad::glyph([0.0; 2], [1.0; 2], [0.0; 4], [255; 4]));
+        list.push_inset_quad(0, quad);
+        list.push_inset_quad(1, quad);
+        assert_eq!(
+            list.inset_runs,
+            [
+                UiInsetRun { first: 0, count: 2, inset: 0 },
+                UiInsetRun { first: 3, count: 1, inset: 0 },
+                UiInsetRun { first: 4, count: 1, inset: 1 },
+            ],
+        );
+        assert_eq!(list.page_runs, [UiPageRun { first: 2, count: 1, page: 0 }]);
+        list.reset();
+        assert!(list.inset_runs.is_empty());
     }
 
     fn with_uploads(uploads: &[(u16, u16, u16, u16, u16, u8)]) -> UiDrawList {

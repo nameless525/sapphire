@@ -4,7 +4,9 @@
 //
 // A texel holds 0.5 + distance / (2 × spread), so 0.5 is a shape's edge at any scale or shear, and
 // its screen-space slope gives a one-pixel antialiased edge wherever the quad lands. A glyph page's
-// texel is coverage instead, already antialiased, which a negative softness says. Colors arrive
+// texel is coverage instead, already antialiased, which a negative softness says, and an inset's
+// (M3 U6) a picture, linear color the quad's color tints, which a softness of -2 or less says
+// (`UI_PICTURE`). Colors arrive
 // display-encoded and are decoded here, so an opaque color comes out on exactly its code through
 // the target's encode, and everything blends in linear light.
 
@@ -98,7 +100,8 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
 
     let across = ui_slice(in.local.x, in.clip_slice.z);
     let uv = mix(in.uv.xy, in.uv.zw, vec2<f32>(across, in.local.y));
-    let field = textureSampleLevel(ui_atlas, ui_sampler, uv, 0.0).r;
+    let texel = textureSampleLevel(ui_atlas, ui_sampler, uv, 0.0);
+    let field = texel.r;
 
     // A pixel's worth of field, so edges stay one pixel wide at any scale; softness widens them.
     let slope = length(vec2<f32>(dpdx(field), dpdy(field)));
@@ -132,5 +135,8 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
     let fill = color.a * inner;
     let line = in.outline_color.a * (outer - inner);
     let rgb = color.rgb * fill + in.outline_color.rgb * line;
-    return vec4<f32>(rgb, fill + line) * mask;
+    let shape = vec4<f32>(rgb, fill + line);
+    // A picture is opaque light, premultiplied by its alpha, which the color tints and fades.
+    let picture = vec4<f32>(texel.rgb * color.rgb, texel.a) * color.a;
+    return select(shape, picture, softness < -1.5) * mask;
 }

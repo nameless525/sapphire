@@ -3,7 +3,6 @@
 
 use std::sync::LazyLock;
 
-use sapphire_bytecode::compile::CookedScript;
 use sapphire_dialogue::{Dialogue, DialogueDocument, FlagRegistry};
 use sapphire_gameplay::replay::document::ScenarioDocument;
 use sapphire_gameplay::replay::{SCENARIOS, Scenario, ScenarioError, ScenarioSetup, find_scenario};
@@ -82,34 +81,12 @@ pub fn document_of(name: &str) -> Option<&'static ScenarioDocument> {
 /// If the committed dialogue or registry doesn't cook, which a test holds.
 #[must_use]
 pub fn ward_guide() -> Dialogue {
-    cook_ward_guide().0
-}
-
-/// The guide's chunk of conditions as the compiler made it, for [`ScriptHost::bind_conditions`]: the bytes
-/// of [`ward_guide`]'s `presentation.chunk`.
-///
-/// # Panics
-///
-/// As [`ward_guide`].
-#[must_use]
-pub fn ward_guide_conditions() -> CookedScript {
-    cook_ward_guide().1.expect("the guide's dialogue has conditions")
-}
-
-fn cook_ward_guide() -> (Dialogue, Option<CookedScript>) {
     let registry = FlagRegistry::from_ron(FLAGS).expect("the committed registry reads: a test holds it");
-    let mut chunk = None;
-    let dialogue = DialogueDocument::from_ron(WARD_GUIDE)
+    DialogueDocument::from_ron(WARD_GUIDE)
         .and_then(|document| {
-            document.cook(&registry, |source| {
-                let cooked = cook(source).map_err(|error| error.to_string())?;
-                let bytes = cooked.as_ref().to_vec();
-                chunk = Some(cooked);
-                Ok(bytes)
-            })
+            document.cook(&registry, |source| cook(source).map(drop).map_err(|e| e.to_string()))
         })
-        .expect("the committed dialogue cooks: a test holds it");
-    (dialogue, chunk)
+        .expect("the committed dialogue cooks: a test holds it")
 }
 
 /// `arena-skirmish`, which this build holds as a document.

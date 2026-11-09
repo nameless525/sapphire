@@ -445,6 +445,15 @@ impl SimZone {
         Ok(Some(PhysicsWorld::from_cooked(ColliderSet::read(bytes)?, capacity)?))
     }
 
+    /// How many times the triggers whose event is `event` have fired, all told, in this run in this zone:
+    /// what presentation follows to start something as someone walks in, such as a conversation (M3 Q2b).
+    /// It reads what the checksum already holds.
+    #[must_use]
+    pub fn fires(&self, event: Name) -> u32 {
+        let event = event.as_u64();
+        self.triggers.iter().filter(|trigger| trigger.event == event).map(|trigger| trigger.fires).sum()
+    }
+
     /// Its encounters, in the zone's order, which is by ID.
     #[must_use]
     pub fn encounters(&self) -> &[SimEncounter] {

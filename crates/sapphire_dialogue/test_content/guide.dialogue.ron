@@ -4,16 +4,17 @@
     version: 1,
     data: (
         start: "greet",
+        opens_on: "court_entered",
         nodes: [
-            (name: "greet", say: (speaker: "guide-name", line: "guide-greet", vo: "guide_greet"), next: "ask"),
-            (name: "ask", say: (speaker: "guide-name", line: "guide-ask"), choices: [
-                (line: "choice-light-ward", to: "lit", set: [("ward_lit", 1)]),
-                (line: "choice-ask-again", to: "again", when: "flag.ward_lit >= 1"),
-                (line: "choice-leave"),
+            (name: "greet", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-greet", vo: "guide_greet"), next: "ask"),
+            (name: "ask", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-ask"), choices: [
+                (line: "dialogue-choice-light-ward", to: "lit", set: [("ward_lit", 1)]),
+                (line: "dialogue-choice-ask-again", to: "again", when: "flag.ward_lit >= 1"),
+                (line: "dialogue-choice-leave"),
             ]),
-            (name: "lit", say: (speaker: "guide-name", line: "guide-thanks"), set: [("met_guide", 1)], next: "again"),
+            (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks"), set: [("met_guide", 1)], next: "again"),
             (name: "again", branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "farewell"),
-            (name: "farewell", say: (speaker: "guide-name", line: "guide-farewell")),
+            (name: "farewell", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-farewell")),
         ],
     ),
 )

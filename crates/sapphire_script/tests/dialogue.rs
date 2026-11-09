@@ -10,7 +10,7 @@ use sapphire_gameplay::replay::{
 };
 use sapphire_gameplay::{ActorId, DialogueEffect, DialogueId, FlagValues, Simulation};
 use sapphire_save::ProgressStore;
-use sapphire_script::scenarios::{DIALOGUE_FLAG, FLAGS, SCRIPTED, ward_guide, ward_guide_conditions};
+use sapphire_script::scenarios::{DIALOGUE_FLAG, FLAGS, SCRIPTED, ward_guide};
 use sapphire_script::{ConditionSet, Limits, ScriptHost, VmError, ask, attach, cook, host_of};
 
 /// The guide's choice that shows once the ward is lit, and the branch that sends a stranger back to the
@@ -32,9 +32,7 @@ fn no_choice() -> Script {
 }
 
 fn conditions(on: &Recording) -> ConditionSet {
-    host_of(on.simulation())
-        .bind_conditions(&ward_guide(), &ward_guide_conditions(), "=ward_guide")
-        .expect("binds")
+    host_of(on.simulation()).bind_conditions(&ward_guide(), "=ward_guide").expect("binds")
 }
 
 fn recorded(script: &Script) -> (Replay, Trail) {
@@ -57,19 +55,24 @@ fn the_guides_dialogue_cooks_against_the_registry_and_binds() {
     let recording = Recording::new(scenario(), scenario().config).expect("starts");
     assert_eq!(conditions(&recording).len(), 2);
 
-    // A chunk that isn't the dialogue's own is refused, and one that makes a different number than the graph
-    // asks is too, each naming the dialogue.
+    // Source a cooked file says that makes a different number than the graph asks is refused, naming the
+    // dialogue, and so is source that doesn't compile or that the scan refuses: a pack's text is compiled
+    // here, and its bytes are never run.
     let host = host_of(recording.simulation());
-    let chunk = cook("return { names = {}, conditions = { function() return true end } }").expect("cooks");
-    match host.bind_conditions(&dialogue, &chunk, "=other") {
-        Err(VmError::ConditionChunk { name }) => assert_eq!(name, "=other"),
-        other => panic!("bound {:?}", other.map(|set| set.len())),
-    }
-    let mut short = dialogue;
-    short.presentation.chunk = chunk.as_ref().to_vec();
-    match host.bind_conditions(&short, &chunk, "=short") {
+    let mut short = dialogue.clone();
+    short.presentation.source =
+        "return { names = {}, conditions = { function() return true end } }".to_owned();
+    match host.bind_conditions(&short, "=short") {
         Err(VmError::ConditionCount { name, expected: 2, found: 1 }) => assert_eq!(name, "=short"),
         other => panic!("bound {:?}", other.map(|set| set.len())),
+    }
+    for source in ["return { names = {}, conditions = {", "x = 1 return { names = {}, conditions = {} }"] {
+        let mut broken = dialogue.clone();
+        broken.presentation.source = source.to_owned();
+        match host.bind_conditions(&broken, "=broken") {
+            Err(VmError::Cook(_)) => {}
+            other => panic!("{source}: bound {:?}", other.map(|set| set.len())),
+        }
     }
     let registry = FlagRegistry::from_ron(FLAGS).expect("reads");
     assert!(["ward_lit", "met_guide", "ward_answered"].iter().all(|flag| registry.has(flag)));
@@ -95,9 +98,7 @@ fn ten_thousand_questions_move_nothing() {
     let (replay, trail) = recorded(choice_script());
     let tables = replay.tables_hash();
     let mut player = Player::new(replay, &SCRIPTED).expect("starts");
-    let mut set = host_of(player.simulation())
-        .bind_conditions(&ward_guide(), &ward_guide_conditions(), "=ward_guide")
-        .expect("binds");
+    let mut set = host_of(player.simulation()).bind_conditions(&ward_guide(), "=ward_guide").expect("binds");
     let mut asked = 0_u32;
     loop {
         while asked < 10_000 && asked < (player.simulation().tick() as u32 + 1) * 17 {
@@ -137,16 +138,15 @@ fn a_condition_that_writes_draws_or_fails_is_refused_and_reads_false() {
         source.push_str(&format!(" function() {body} end,"));
     }
     source.push_str(" } }");
-    let chunk = cook(&source).expect("cooks");
     let mut dialogue = ward_guide();
-    dialogue.presentation.chunk = chunk.as_ref().to_vec();
+    dialogue.presentation.source = source;
     dialogue.presentation.conditions = bodies.len() as u16 + 1;
 
     let mut recording = Recording::new(scenario(), scenario().config).expect("starts");
     recording.step(&mut no_choice().actions).expect("steps");
     let (checksum, tables) = (recording.simulation().checksum(), recording.simulation().tables_hash());
     let host = host_of(recording.simulation());
-    let mut set = host.bind_conditions(&dialogue, &chunk, "=writes").expect("binds");
+    let mut set = host.bind_conditions(&dialogue, "=writes").expect("binds");
     for (place, body) in bodies.iter().enumerate() {
         assert!(!ask(&mut recording, &mut set, ConditionId(place as u16)), "{body}");
     }
@@ -225,13 +225,17 @@ fn walk_to_the_choice(dialogue: &Dialogue, talk: &mut Talk<'_>) -> DialogueWalk 
     let view = walk.view(dialogue).expect("a line");
     assert_eq!(
         (view.speaker, view.line, view.vo, view.next),
-        ("guide-name", "guide-greet", Some("guide_greet"), true)
+        ("dialogue-guide-name", "dialogue-guide-greet", Some("guide_greet"), true)
     );
     assert!(walk.next(dialogue, talk));
     let view = walk.view(dialogue).expect("a line");
-    assert_eq!(view.line, "guide-ask");
+    assert_eq!(view.line, "dialogue-guide-ask");
     let shown: Vec<_> = view.choices.iter().flatten().map(|choice| choice.line).collect();
-    assert_eq!(shown, ["guide-choice-light", "guide-choice-leave"], "the ward isn't lit yet");
+    assert_eq!(
+        shown,
+        ["dialogue-guide-choice-light", "dialogue-guide-choice-leave"],
+        "the ward isn't lit yet"
+    );
     walk
 }
 
@@ -248,9 +252,9 @@ fn a_save_made_mid_quest_replays_as_never_having_stopped() {
     let mut walk = walk_to_the_choice(&dialogue, &mut talk);
     assert!(walk.choose(&dialogue, 0, &mut talk));
     // Lit, thanked (which sets `met_guide`), and the branch reads that and goes on to the farewell.
-    assert_eq!(walk.view(&dialogue).expect("a line").line, "guide-thanks");
+    assert_eq!(walk.view(&dialogue).expect("a line").line, "dialogue-guide-thanks");
     assert!(walk.next(&dialogue, &mut talk));
-    assert_eq!(walk.view(&dialogue).expect("a line").line, "guide-farewell");
+    assert_eq!(walk.view(&dialogue).expect("a line").line, "dialogue-guide-farewell");
     assert!(walk.next(&dialogue, &mut talk) && walk.is_over());
 
     // Saved, through the store a game writes, and loaded back.

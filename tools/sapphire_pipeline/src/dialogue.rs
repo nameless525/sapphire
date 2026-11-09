@@ -108,7 +108,7 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
 pub fn cook(bytes: &[u8], registry: &FlagRegistry) -> Result<Vec<u8>, DialogueCookError> {
     let document = DialogueDocument::from_ron(std::str::from_utf8(bytes)?)?;
     let dialogue = document.cook(registry, |source| {
-        sapphire_bytecode::cook(source).map(|chunk| chunk.into_bytes()).map_err(|error| error.to_string())
+        sapphire_bytecode::cook(source).map(drop).map_err(|error| error.to_string())
     })?;
     let cooked = dialogue.to_cooked()?;
     Dialogue::read(&cooked)?;

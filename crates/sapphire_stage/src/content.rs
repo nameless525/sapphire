@@ -100,6 +100,7 @@ use sapphire_assets::{
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
+use sapphire_dialogue::Dialogue;
 #[cfg(feature = "dev")]
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
@@ -1574,29 +1575,80 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Vec<Arc<Timeline>>, AppInitError> {
-        let mut found: Vec<Option<Arc<Timeline>>> = vec![None; digests.len()];
+        self.find_by_digest(AssetKind::Timeline, "timeline", digests, zone, |content, id| {
+            let timeline = content.load_timeline(id, renderer, gpu)?;
+            let digest = timeline.simulation.digest();
+            Ok((timeline, digest))
+        })
+    }
+
+    /// Loads the cooked dialogue `id` until it's resident, and hands it back to be walked: it holds nothing of
+    /// the server's from then on. The server checked it as it loaded ([`Dialogue::read`]), and nothing in it
+    /// is run as it stands: its conditions are source, which whoever asks them compiles (M3 Q2b).
+    pub fn load_dialogue(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Arc<Dialogue>, AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the dialogue {id}: {error}"));
+        let assets = &mut self.gpu;
+        let handle =
+            self.server.load_with::<Dialogue>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        self.server
+            .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        let dialogue = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?;
+        Ok(Arc::new(Dialogue::from_archived(dialogue)))
+    }
+
+    /// Finds the cooked dialogue whose simulation half has each of `digests`, as [`Self::find_timelines`]
+    /// finds timelines: what a game walks beside the dialogues its simulation loaded (M3 Q2b).
+    pub fn find_dialogues(
+        &mut self,
+        digests: &[u64],
+        zone: Option<&str>,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Vec<Arc<Dialogue>>, AppInitError> {
+        self.find_by_digest(AssetKind::Dialogue, "dialogue", digests, zone, |content, id| {
+            let dialogue = content.load_dialogue(id, renderer, gpu)?;
+            let digest = dialogue.simulation.digest();
+            Ok((dialogue, digest))
+        })
+    }
+
+    /// What [`Self::find_timelines`] and [`Self::find_dialogues`] share: loads `kind`'s assets of the shared
+    /// pack and `zone`'s until every digest has one.
+    fn find_by_digest<T>(
+        &mut self,
+        kind: AssetKind,
+        what: &str,
+        digests: &[u64],
+        zone: Option<&str>,
+        mut load: impl FnMut(&mut Self, AssetId) -> Result<(Arc<T>, u64), AppInitError>,
+    ) -> Result<Vec<Arc<T>>, AppInitError> {
+        let mut found: Vec<Option<Arc<T>>> = vec![None; digests.len()];
         let packs = std::iter::once(PACK.to_owned()).chain(zone.map(sapphire_zone::pack_name));
-        let ids: Vec<AssetId> =
-            packs.flat_map(|pack| self.server.assets_of_kind(&pack, AssetKind::Timeline)).collect();
+        let ids: Vec<AssetId> = packs.flat_map(|pack| self.server.assets_of_kind(&pack, kind)).collect();
         for id in ids {
             if found.iter().all(Option::is_some) {
                 break;
             }
-            let timeline = self.load_timeline(id, renderer, gpu)?;
-            let digest = timeline.simulation.digest();
+            let (asset, digest) = load(self, id)?;
             for (slot, _) in
                 found.iter_mut().zip(digests).filter(|(slot, want)| slot.is_none() && **want == digest)
             {
-                *slot = Some(Arc::clone(&timeline));
+                *slot = Some(Arc::clone(&asset));
             }
         }
         found
             .into_iter()
             .zip(digests)
-            .map(|(timeline, digest)| {
-                timeline.ok_or_else(|| {
+            .map(|(asset, digest)| {
+                asset.ok_or_else(|| {
                     AppInitError::msg(format!(
-                        "no cooked timeline has the simulation's timeline {digest:#018x}: run `cargo xtask content`"
+                        "no cooked {what} has the simulation's {what} {digest:#018x}: run `cargo xtask content`"
                     ))
                 })
             })

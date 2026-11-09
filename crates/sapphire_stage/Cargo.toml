@@ -28,6 +28,8 @@ sapphire_zone.workspace = true
 sapphire_time.workspace = true
 # Cooked timelines, which a content loads as it does any other kind and a show plays.
 sapphire_timeline.workspace = true
+# Cooked dialogues, loaded the same way, which a game walks (M3 Q2b).
+sapphire_dialogue.workspace = true
 sapphire_vfx.workspace = true
 sapphire_world.workspace = true
 profiling.workspace = true

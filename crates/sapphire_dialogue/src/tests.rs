@@ -20,8 +20,8 @@ fn guide() -> DialogueDocument {
 }
 
 /// What the cook would do: the pinned compiler and its scan.
-fn compile(source: &str) -> Result<Vec<u8>, String> {
-    sapphire_bytecode::cook(source).map(|chunk| chunk.into_bytes()).map_err(|error| error.to_string())
+fn compile(source: &str) -> Result<(), String> {
+    sapphire_bytecode::cook(source).map(drop).map_err(|error| error.to_string())
 }
 
 fn cooked() -> Dialogue {
@@ -85,6 +85,10 @@ fn a_cook_is_repeatable_and_reads_back() {
     assert!(read.needs_scripts(), "it has conditions");
     assert_eq!(read.presentation.conditions, 2);
     assert_eq!(read.simulation.effects.len(), 2, "the choice's write and the line's");
+    // What it ships is the source a load compiles, not bytecode, and the trigger that opens it.
+    let source = guide().conditions_source(&registry()).unwrap().expect("it has conditions");
+    assert_eq!(read.presentation.source, source);
+    assert_eq!(read.presentation.opens_on, Some(Name::new("court_entered").as_u64()));
 }
 
 #[test]
@@ -100,12 +104,36 @@ fn the_conditions_chunk_lists_the_flags_it_reads_and_one_function_each() {
 fn a_dialogue_with_no_conditions_has_no_chunk_and_never_compiles() {
     let text = GUIDE.replace(r#", when: "flag.ward_lit >= 1""#, "").replace(
         r#"branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "farewell""#,
-        r#"say: (speaker: "guide-name", line: "guide-again"), next: "farewell""#,
+        r#"say: (speaker: "dialogue-guide-name", line: "dialogue-guide-again"), next: "farewell""#,
     );
     let document = DialogueDocument::from_ron(&text).expect("reads");
     let dialogue = document.cook(&registry(), |_| panic!("nothing to compile")).expect("cooks");
     assert!(!dialogue.needs_scripts());
-    assert!(dialogue.presentation.chunk.is_empty());
+    assert!(dialogue.presentation.source.is_empty());
+}
+
+/// A dialogue says only keys under the prefix a panel reads, so a line can't be missing from the panel's
+/// fonts: the UI cook holds every key under it to them.
+#[test]
+fn every_key_a_dialogue_shows_is_under_the_panels_prefix() {
+    for (from, to, field) in [
+        (r#"line: "dialogue-guide-greet""#, r#"line: "guide-greet""#, "`nodes[0].say.line`"),
+        (
+            r#"speaker: "dialogue-guide-name", line: "dialogue-guide-ask""#,
+            r#"speaker: "guide-name", line: "dialogue-guide-ask""#,
+            "`nodes[1].say.speaker`",
+        ),
+        (r#"line: "dialogue-choice-leave""#, r#"line: "choice-leave""#, "`nodes[1].choices[2].line`"),
+    ] {
+        let text = GUIDE.replacen(from, to, 1);
+        let error = DialogueDocument::from_ron(&text).unwrap().cook(&registry(), compile).unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains(field) && error.contains(crate::KEY_PREFIX), "{to}: {error}");
+    }
+    let mut dialogue = cooked();
+    dialogue.presentation.nodes[1].choices[0].line = "choice-light".to_owned();
+    let error = Dialogue::read(&dialogue.to_cooked().unwrap()).unwrap_err().to_string();
+    assert!(error.contains("`nodes[1].choices[0].line`"), "{error}");
 }
 
 /// The digest is of what the simulation reads and nothing else, and a pinned value, so a change to it is
@@ -115,7 +143,7 @@ fn the_digest_is_the_effects_alone() {
     let dialogue = cooked();
     assert_eq!(dialogue.simulation.digest(), 0x1590_0ba2_77f2_2bfc);
     let mut reworded = guide();
-    reworded.nodes[0].say.as_mut().unwrap().line = "guide-hello".to_owned();
+    reworded.nodes[0].say.as_mut().unwrap().line = "dialogue-guide-hello".to_owned();
     let reworded = reworded.cook(&registry(), compile).unwrap();
     assert_eq!(reworded.simulation.digest(), dialogue.simulation.digest());
     let mut revalued = guide();
@@ -132,22 +160,26 @@ fn a_walk_shows_lines_hides_choices_and_takes_branches() {
     let view = at.view(&dialogue).unwrap();
     assert_eq!(
         (view.speaker, view.line, view.vo, view.next),
-        ("guide-name", "guide-greet", Some("guide_greet"), true)
+        ("dialogue-guide-name", "dialogue-guide-greet", Some("guide_greet"), true)
     );
     assert!(!at.choose(&dialogue, 0, &mut world), "a line with no choices goes on by next");
     assert!(at.next(&dialogue, &mut world));
-    assert_eq!(line(&at, &world).as_deref(), Some("guide-ask"));
-    assert_eq!(choices(&at, &world), ["choice-light-ward", "choice-leave"], "the ward isn't lit");
+    assert_eq!(line(&at, &world).as_deref(), Some("dialogue-guide-ask"));
+    assert_eq!(
+        choices(&at, &world),
+        ["dialogue-choice-light-ward", "dialogue-choice-leave"],
+        "the ward isn't lit"
+    );
     assert!(!at.next(&dialogue, &mut world), "a line with choices waits for one");
     assert!(!at.choose(&dialogue, 2, &mut world), "there's no third shown");
 
     // Lighting it sets the flag, then the line after sets another, then the branch reads it.
     assert!(at.choose(&dialogue, 0, &mut world));
     assert_eq!(world.applied, [0, 1]);
-    assert_eq!(line(&at, &world).as_deref(), Some("guide-thanks"));
+    assert_eq!(line(&at, &world).as_deref(), Some("dialogue-guide-thanks"));
     assert_eq!(at.at(&dialogue), Some(Name::new("lit")));
     assert!(at.next(&dialogue, &mut world));
-    assert_eq!(line(&at, &world).as_deref(), Some("guide-farewell"), "met_guide is 1 now");
+    assert_eq!(line(&at, &world).as_deref(), Some("dialogue-guide-farewell"), "met_guide is 1 now");
     assert!(at.next(&dialogue, &mut world));
     assert!(at.is_over() && at.view(&dialogue).is_none());
     assert!(!at.next(&dialogue, &mut world), "nothing follows the end");
@@ -159,10 +191,13 @@ fn a_choice_shows_once_its_condition_holds_and_slots_follow_what_shows() {
     let dialogue = world.dialogue.clone();
     let mut at = walk(&mut world);
     at.next(&dialogue, &mut world);
-    assert_eq!(choices(&at, &world), ["choice-light-ward", "choice-ask-again", "choice-leave"]);
+    assert_eq!(
+        choices(&at, &world),
+        ["dialogue-choice-light-ward", "dialogue-choice-ask-again", "dialogue-choice-leave"]
+    );
     // The second slot is the second shown: "ask again", to the branch, which goes back to the start.
     assert!(at.choose(&dialogue, 1, &mut world));
-    assert_eq!(line(&at, &world).as_deref(), Some("guide-greet"));
+    assert_eq!(line(&at, &world).as_deref(), Some("dialogue-guide-greet"));
     assert!(world.applied.is_empty(), "nothing it took sets anything");
 
     // The last shown choice ends it.
@@ -176,7 +211,7 @@ fn a_choice_shows_once_its_condition_holds_and_slots_follow_what_shows() {
 fn a_line_is_found_by_its_nodes_name() {
     let dialogue = cooked();
     let line = dialogue.line(Name::new("farewell")).expect("a line");
-    assert_eq!((line.speaker, line.line, line.vo), ("guide-name", "guide-farewell", None));
+    assert_eq!((line.speaker, line.line, line.vo), ("dialogue-guide-name", "dialogue-guide-farewell", None));
     assert_eq!(dialogue.line(Name::new("again")), None, "a branch says nothing");
     assert_eq!(dialogue.line(Name::new("nowhere")), None);
 }
@@ -186,18 +221,19 @@ fn a_line_is_found_by_its_nodes_name() {
 fn checks_name_the_field() {
     let cases: &[(&str, &str, &str)] = &[
         (r#"start: "greet""#, r#"start: "nowhere""#, "`start`"),
+        (r#"opens_on: "court_entered""#, r#"opens_on: "Court entered""#, "`opens_on`"),
         (r#"(name: "lit""#, r#"(name: "Lit""#, "`nodes[2].name`"),
         (r#"(name: "farewell""#, r#"(name: "greet""#, "`nodes[4].name`"),
         (r#"next: "ask""#, r#"next: "nowhere""#, "`nodes[0].next`"),
-        (r#"line: "guide-greet""#, r#"line: "Hello there!""#, "`nodes[0].say.line`"),
+        (r#"line: "dialogue-guide-greet""#, r#"line: "Hello there!""#, "`nodes[0].say.line`"),
         (
-            r#"speaker: "guide-name", line: "guide-ask""#,
-            r#"speaker: "", line: "guide-ask""#,
+            r#"speaker: "dialogue-guide-name", line: "dialogue-guide-ask""#,
+            r#"speaker: "", line: "dialogue-guide-ask""#,
             "`nodes[1].say.speaker`",
         ),
         (r#"vo: "guide_greet""#, r#"vo: """#, "`nodes[0].say.vo`"),
         (r#"to: "lit", set"#, r#"to: "gone", set"#, "`nodes[1].choices[0].to`"),
-        (r#"line: "choice-leave""#, r#"line: "leave now""#, "`nodes[1].choices[2].line`"),
+        (r#"line: "dialogue-choice-leave""#, r#"line: "leave now""#, "`nodes[1].choices[2].line`"),
         (r#""flag.ward_lit >= 1""#, r#""flag.ward_lit""#, "`nodes[1].choices[1].when`"),
         (r#""flag.ward_lit >= 1""#, r#""flag.unknown >= 1""#, "`nodes[1].choices[1].when`"),
         (r#"set: [("ward_lit", 1)]"#, r#"set: [("quest_done", 1)]"#, "`nodes[1].choices[0].set[0]`"),
@@ -208,8 +244,8 @@ fn checks_name_the_field() {
         ),
         (r#"set: [("met_guide", 1)]"#, r#"set: [("met", 1)]"#, "`nodes[2].set[0]`"),
         (
-            r#"(line: "choice-leave")"#,
-            r#"(line: "choice-leave"), (line: "a"), (line: "b")"#,
+            r#"(line: "dialogue-choice-leave")"#,
+            r#"(line: "dialogue-choice-leave"), (line: "a"), (line: "b")"#,
             "`nodes[1].choices`",
         ),
         (
@@ -230,18 +266,18 @@ fn checks_name_the_field() {
         (r#"otherwise: "farewell""#, r#"otherwise: "farewell", next: "greet""#, "`nodes[3].next`"),
         (r#"to: "greet")], otherwise"#, r#"to: "again")], otherwise"#, "`nodes[3]`"),
         (
-            r#"line: "guide-thanks")"#,
-            r#"line: "guide-thanks"), branch: [(when: "flag.visits > 1", to: "greet")]"#,
+            r#"line: "dialogue-guide-thanks")"#,
+            r#"line: "dialogue-guide-thanks"), branch: [(when: "flag.visits > 1", to: "greet")]"#,
             "`nodes[2].branch`",
         ),
         (
-            r#"(name: "farewell", say: (speaker: "guide-name", line: "guide-farewell"))"#,
+            r#"(name: "farewell", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-farewell"))"#,
             r#"(name: "farewell")"#,
             "`nodes[4].say`",
         ),
         (
-            r#"line: "guide-farewell")),"#,
-            r#"line: "guide-farewell")), (name: "extra", say: (speaker: "a", line: "b")),"#,
+            r#"line: "dialogue-guide-farewell")),"#,
+            r#"line: "dialogue-guide-farewell")), (name: "extra", say: (speaker: "dialogue-a", line: "dialogue-b")),"#,
             "`nodes[5]`",
         ),
     ];
@@ -274,7 +310,7 @@ fn a_field_nobody_knows_is_refused() {
 }
 
 #[test]
-fn a_chunk_the_compiler_refuses_stops_the_cook() {
+fn conditions_the_compiler_refuses_stop_the_cook() {
     let error = guide().cook(&registry(), |_| Err("no".to_owned())).unwrap_err().to_string();
     assert!(error.contains("don't compile"), "{error}");
 }
@@ -292,7 +328,8 @@ fn values_a_document_cant_hold_a_pack_cant_either() {
         ("`nodes[3]`", |d| d.presentation.nodes[3].branch[0].to = 3),
         ("`nodes[4]`", |d| d.presentation.nodes[3].otherwise = Some(0)),
         ("`nodes[0].say.line`", |d| d.presentation.nodes[0].say.as_mut().unwrap().line = "a b".to_owned()),
-        ("`chunk`", |d| d.presentation.chunk.clear()),
+        ("`source`", |d| d.presentation.source.clear()),
+        ("`source`", |d| d.presentation.source = "-".repeat(crate::MAX_SOURCE + 1)),
         ("`effects[0].writes`", |d| d.simulation.effects[0].writes.clear()),
         ("`nodes[1].choices`", |d| {
             for choice in &mut d.presentation.nodes[1].choices {

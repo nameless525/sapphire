@@ -7,20 +7,24 @@
 //!     version: 1,
 //!     data: (
 //!         start: "greet",
+//!         // A zone's trigger whose event this is opens it, as someone goes in. Without, nothing does.
+//!         opens_on: "court_entered",
 //!         nodes: [
-//!             // A line, and the node after it. Keys are `sapphire_loc`'s, never text.
-//!             (name: "greet", say: (speaker: "guide-name", line: "guide-greet", vo: "guide_greet"),
-//!              next: "ask"),
+//!             // A line, and the node after it. Keys are `sapphire_loc`'s, never text, and under
+//!             // `dialogue-`, which is what a panel reads.
+//!             (name: "greet", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-greet",
+//!              vo: "guide_greet"), next: "ask"),
 //!             // A line and up to four choices. Each shows only while its `when` holds, and one of them
 //!             // has no `when`, so a player is never left with nothing to pick.
-//!             (name: "ask", say: (speaker: "guide-name", line: "guide-ask"), choices: [
-//!                 (line: "choice-light-ward", to: "lit", set: [("ward_lit", 1)]),
-//!                 (line: "choice-ask-again", to: "again", when: "flag.ward_lit >= 1"),
+//!             (name: "ask", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-ask"), choices: [
+//!                 (line: "dialogue-light-ward", to: "lit", set: [("ward_lit", 1)]),
+//!                 (line: "dialogue-ask-again", to: "again", when: "flag.ward_lit >= 1"),
 //!                 // No `to`: the conversation ends.
-//!                 (line: "choice-leave"),
+//!                 (line: "dialogue-leave"),
 //!             ]),
 //!             // Saying a line can set flags too, as it's shown.
-//!             (name: "lit", say: (speaker: "guide-name", line: "guide-thanks"), set: [("met_guide", 1)]),
+//!             (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks"),
+//!              set: [("met_guide", 1)]),
 //!             // A branch says nothing: it goes to the first arm whose `when` holds, or `otherwise`.
 //!             (name: "again", branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "lit"),
 //!         ],
@@ -60,6 +64,12 @@ pub const MAX_WRITES: usize = 16;
 pub const MAX_NAME: usize = 64;
 /// The longest key or voice cue, in bytes.
 pub const MAX_KEY: usize = 256;
+/// The longest conditions' source a cooked dialogue holds, in bytes: far past what [`MAX_NODES`] nodes'
+/// conditions could ask, and what a load compiles.
+pub const MAX_SOURCE: usize = 1 << 20;
+/// What every key a dialogue shows starts with: what the panel's document reads by (`key_from`'s `prefix`
+/// in `content/ui/dialogue.ui.ron`), and so what a UI cook holds to the panel's fonts and variables.
+pub const KEY_PREFIX: &str = "dialogue-";
 
 /// A dialogue document: see the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
@@ -68,11 +78,15 @@ pub const MAX_KEY: usize = 256;
 pub struct DialogueDocument {
     /// The node it starts at.
     pub start: String,
+    /// The event of the trigger that opens it, in whichever zone has one: what a game listens for to start
+    /// the conversation as someone walks in. A dialogue without is opened by whatever asks for it by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opens_on: Option<String>,
     pub nodes: Vec<NodeDocument>,
 }
 
 impl Versioned for DialogueDocument {
-    /// 1: M3 Q2.
+    /// 1: M3 Q2, with `opens_on` since M3 Q2b, which a document without needn't say.
     const VERSION: u32 = 1;
 }
 
@@ -195,6 +209,18 @@ pub(crate) fn check_key(field: impl FnOnce() -> String, key: &str) -> Result<(),
     }
 }
 
+/// A key a panel shows: [`check_key`]'s, under [`KEY_PREFIX`].
+pub(crate) fn check_shown_key(field: impl Fn() -> String, key: &str) -> Result<(), DialogueError> {
+    check_key(&field, key)?;
+    if key.starts_with(KEY_PREFIX) {
+        Ok(())
+    } else {
+        let problem =
+            format!("{key:?} doesn't start with `{KEY_PREFIX}`, which is all a dialogue panel reads");
+        Err(DialogueError::invalid(field(), problem))
+    }
+}
+
 pub(crate) fn check_cue(field: impl FnOnce() -> String, cue: &str) -> Result<(), DialogueError> {
     if (1..=MAX_KEY).contains(&cue.len()) {
         Ok(())
@@ -284,6 +310,9 @@ impl DialogueDocument {
 
     /// Checks everything, naming the field, against the flags `registry` lists.
     pub fn check(&self, registry: &FlagRegistry) -> Result<(), DialogueError> {
+        if let Some(event) = &self.opens_on {
+            check_name(|| "opens_on".to_owned(), event)?;
+        }
         self.gather(registry).map(|_| ())
     }
 
@@ -301,19 +330,23 @@ impl DialogueDocument {
         Ok(self.gather(registry)?.1.conditions)
     }
 
-    /// Cooks it, checking everything first. `compile` makes the conditions' chunk's bytes from
-    /// [`Self::conditions_source`]'s text, and isn't called for a dialogue with no conditions: the cooker
-    /// passes `sapphire_bytecode::cook`, whose scan refuses what a replay can't survive.
+    /// Cooks it, checking everything first. `compile` is shown [`Self::conditions_source`]'s text, and
+    /// isn't called for a dialogue with no conditions: the cooker passes `sapphire_bytecode::cook`, whose
+    /// scan refuses what a replay can't survive, so a dialogue whose conditions won't load never cooks. The
+    /// cooked dialogue keeps the source, which a load compiles again (see [`crate::cooked`]).
     pub fn cook(
         &self,
         registry: &FlagRegistry,
-        compile: impl FnOnce(&str) -> Result<Vec<u8>, String>,
+        compile: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<Dialogue, DialogueError> {
         let (nodes, gathered) = self.gather(registry)?;
-        let chunk = match source_of(&gathered.conditions) {
-            Some(source) => compile(&source).map_err(DialogueError::Compile)?,
-            None => Vec::new(),
-        };
+        let source = source_of(&gathered.conditions).unwrap_or_default();
+        if !source.is_empty() {
+            compile(&source).map_err(DialogueError::Compile)?;
+        }
+        if let Some(event) = &self.opens_on {
+            check_name(|| "opens_on".to_owned(), event)?;
+        }
         let resolved = self.resolve(registry)?;
         let dialogue = Dialogue {
             simulation: DialogueSimulation { effects: gathered.effects },
@@ -321,7 +354,8 @@ impl DialogueDocument {
                 start: resolved.node(|| "start".to_owned(), &self.start)?,
                 nodes,
                 conditions: gathered.conditions.len() as u16,
-                chunk,
+                source,
+                opens_on: self.opens_on.as_deref().map(|event| Name::new(event).as_u64()),
             },
         };
         dialogue.validate()?;
@@ -414,8 +448,8 @@ fn cook_node(
             return Err(DialogueError::invalid(at(field), "a node that says a line doesn't branch"));
         }
     }
-    check_key(|| at("say.speaker"), &say.speaker)?;
-    check_key(|| at("say.line"), &say.line)?;
+    check_shown_key(|| at("say.speaker"), &say.speaker)?;
+    check_shown_key(|| at("say.line"), &say.line)?;
     if let Some(vo) = &say.vo {
         check_cue(|| at("say.vo"), vo)?;
     }
@@ -431,7 +465,7 @@ fn cook_node(
     let mut choices = Vec::with_capacity(node.choices.len());
     for (choice_index, choice) in node.choices.iter().enumerate() {
         let field = |part: &str| format!("nodes[{index}].choices[{choice_index}].{part}");
-        check_key(|| field("line"), &choice.line)?;
+        check_shown_key(|| field("line"), &choice.line)?;
         let to = choice.to.as_deref().map(|to| resolved.node(|| field("to"), to)).transpose()?;
         let when = match &choice.when {
             Some(text) => Some(gathered.condition(resolved.condition(|| field("when"), text)?)),

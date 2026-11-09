@@ -56,7 +56,9 @@ pub struct ScriptStats {
 }
 
 /// A dialogue's conditions, bound in a host's VM by [`ScriptHost::bind_conditions`]: functions of no
-/// arguments that read flags by their place in `names`, as hooks read moves. Asked through [`ask`].
+/// arguments that read flags by their place in `names`, as hooks read moves. Asked through [`ask`]. The
+/// default is a dialogue's with none, which binds nothing.
+#[derive(Default)]
 pub struct ConditionSet {
     functions: Vec<Hook>,
     /// The chunk's `names`, which [`ask`] puts on the frame for the time of one question.
@@ -154,31 +156,29 @@ impl ScriptHost {
         !self.name.is_empty() && hash.finish() == self.chunk
     }
 
-    /// Runs a dialogue's cooked chunk of conditions, between steps, and keeps what it makes. Nothing about
-    /// the hooks changes, and nothing reaches `tables_hash`: a condition decides only what a dialogue
-    /// shows, never the simulation. A dialogue with no conditions binds nothing.
+    /// Compiles a dialogue's conditions from the source its cook kept, with this build's pinned compiler and
+    /// its scan, runs the chunk between steps and keeps what it makes. Nothing about the hooks changes, and
+    /// nothing reaches `tables_hash`: a condition decides only what a dialogue shows, never the simulation. A
+    /// dialogue with no conditions binds nothing and compiles nothing.
+    ///
+    /// The chunk is made here, in this process, from text, so the VM never loads bytes a file supplied (M3
+    /// Q2b): a cooked dialogue may be anyone's, and Luau's loader trusts its bytecode's structure. It costs a
+    /// compile, once a dialogue, which `examples/dialogue_bench.rs` measures.
     ///
     /// # Errors
     ///
-    /// If `chunk` isn't the dialogue's own, doesn't load, isn't a table of `conditions` and `names`, or makes a
-    /// different number of conditions than the graph asks.
-    ///
-    /// `chunk` is the dialogue's `presentation.chunk` as a [`CookedScript`], which says where its bytes came
-    /// from: the compiler, in the same process, as everything [`ScriptVm::load`] runs.
-    pub fn bind_conditions(
-        &self,
-        dialogue: &Dialogue,
-        chunk: &CookedScript,
-        name: &str,
-    ) -> Result<ConditionSet, VmError> {
+    /// If the source doesn't compile or fails the scan, doesn't load, isn't a table of `conditions` and
+    /// `names`, or makes a different number of conditions than the graph asks.
+    pub fn bind_conditions(&self, dialogue: &Dialogue, name: &str) -> Result<ConditionSet, VmError> {
         let expected = usize::from(dialogue.presentation.conditions);
-        if chunk.as_ref() != dialogue.presentation.chunk.as_slice() {
-            return Err(VmError::ConditionChunk { name: name.to_owned() });
-        }
         if expected == 0 {
             return Ok(ConditionSet { functions: Vec::new(), names: Vec::new() });
         }
-        let table = self.vm.load(chunk, name)?;
+        let chunk = {
+            let _vm = alloc::VmAllocations::enter();
+            sapphire_bytecode::cook(&dialogue.presentation.source)?
+        };
+        let table = self.vm.load(&chunk, name)?;
         let functions = table.conditions()?;
         if functions.len() != expected {
             return Err(VmError::ConditionCount { name: name.to_owned(), expected, found: functions.len() });

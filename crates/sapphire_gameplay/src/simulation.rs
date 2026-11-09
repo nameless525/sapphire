@@ -1264,6 +1264,13 @@ impl Simulation {
         self.ecs.world_mut().resource_mut::<DialogueLibrary>().add(dialogue)
     }
 
+    /// The digest of loaded dialogue `id`'s simulation half, which `tables_hash` holds: what presentation finds
+    /// the cooked dialogue by, as it does a timeline. `None` past the last one loaded.
+    #[must_use]
+    pub fn dialogue_digest(&self, id: DialogueId) -> Option<u64> {
+        self.ecs.world().resource::<DialogueLibrary>().digest(id)
+    }
+
     /// Applies one of a loaded dialogue's effects, between steps: its flags are set from the next step on.
     /// A replay records this, as a [`ReplayCommand::Dialogue`](crate::replay::ReplayCommand). The
     /// `dialogue` module's docs say why nothing else of a dialogue reaches here.

@@ -1,7 +1,8 @@
 //! What a dialogue costs between steps: `cargo run --release -p sapphire_script --example dialogue_bench`.
 //!
-//! On `dialogue-flag`'s fight, the Lantern Ward guide's dialogue: a condition asked of the VM on a read-only
-//! frame, an effect applied, and a panel's view of a line.
+//! On `dialogue-flag`'s fight, the Lantern Ward guide's dialogue: its conditions bound (compiled from the
+//! source its cook kept, then loaded), a condition asked of the VM on a read-only frame, an effect applied,
+//! and a panel's view of a line.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -9,11 +10,13 @@ use std::time::Duration;
 
 use sapphire_dialogue::{ConditionId, DialogueWalk, DialogueWorld, EffectId};
 use sapphire_gameplay::replay::{LIGHT_THE_WARD, Recording, find_scenario};
-use sapphire_script::scenarios::{SCRIPTED, ward_guide, ward_guide_conditions};
+use sapphire_script::scenarios::{SCRIPTED, ward_guide};
 use sapphire_script::{ask, host_of};
 use sapphire_time::Stopwatch;
 
 const ROUNDS: usize = 20_000;
+/// Bindings, each a compile and a load: fewer, since each costs more and a game binds once a dialogue.
+const BINDS: usize = 500;
 
 fn summary(what: &str, mut times: Vec<Duration>) {
     times.sort_unstable();
@@ -42,9 +45,32 @@ fn main() {
     let scenario = find_scenario(&SCRIPTED, "dialogue-flag").expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("starts");
     let dialogue = ward_guide();
-    let mut set = host_of(recording.simulation())
-        .bind_conditions(&dialogue, &ward_guide_conditions(), "=ward_guide")
-        .expect("binds");
+    let mut binds = Vec::with_capacity(BINDS);
+    for _ in 0..BINDS {
+        let stopwatch = Stopwatch::start();
+        let set = host_of(recording.simulation()).bind_conditions(&dialogue, "=ward_guide").expect("binds");
+        binds.push(stopwatch.elapsed());
+        drop(set);
+        // A bind's functions stay in the VM until collected, as a game's would between steps: collect them
+        // all here, outside what's timed, so a run of binds doesn't fill the VM's memory.
+        let host = host_of(recording.simulation());
+        while !host.gc_step().expect("collects") {}
+    }
+    let mut compiles = Vec::with_capacity(BINDS);
+    for _ in 0..BINDS {
+        let stopwatch = Stopwatch::start();
+        let chunk = sapphire_script::cook(&dialogue.presentation.source).expect("compiles");
+        compiles.push(stopwatch.elapsed());
+        drop(chunk);
+    }
+    let mut scripts = Vec::with_capacity(BINDS);
+    for _ in 0..BINDS {
+        let stopwatch = Stopwatch::start();
+        let chunk = sapphire_script::cook(sapphire_script::scenarios::ARENA_SCRIPTED).expect("compiles");
+        scripts.push(stopwatch.elapsed());
+        drop(chunk);
+    }
+    let mut set = host_of(recording.simulation()).bind_conditions(&dialogue, "=ward_guide").expect("binds");
 
     let mut asks = Vec::with_capacity(ROUNDS);
     let mut held = 0_u32;
@@ -72,6 +98,9 @@ fn main() {
         views.push(stopwatch.elapsed());
     }
 
+    summary("the guide's conditions bound (compiled, scanned and loaded)", binds);
+    summary("the guide's conditions compiled and scanned alone", compiles);
+    summary("arena-scripted's chunk compiled and scanned, for scale", scripts);
     summary("a condition asked", asks);
     summary("an effect applied and recorded", effects);
     summary("a line's view", views);

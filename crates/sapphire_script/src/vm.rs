@@ -277,8 +277,6 @@ pub enum VmError {
     UnflippedBinding(&'static str),
     #[error("dialogue `{name}`'s chunk makes {found} conditions where its graph asks {expected}")]
     ConditionCount { name: String, expected: usize, found: usize },
-    #[error("dialogue `{name}`'s conditions were bound from a chunk that isn't the one it cooked with")]
-    ConditionChunk { name: String },
 }
 
 thread_local! {

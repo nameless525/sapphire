@@ -106,6 +106,12 @@ impl DialogueLibrary {
         Ok(())
     }
 
+    /// The digest of dialogue `id`'s simulation half, if it's loaded.
+    #[must_use]
+    pub fn digest(&self, id: DialogueId) -> Option<u64> {
+        self.dialogues.get(usize::from(id.0)).map(|&(_, digest)| digest)
+    }
+
     /// Effects applied so far (rule R9).
     #[must_use]
     pub const fn applied(&self) -> u64 {

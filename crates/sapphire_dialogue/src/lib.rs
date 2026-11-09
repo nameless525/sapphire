@@ -14,7 +14,7 @@
 //! - **The flag registry** ([`flags`]): `content/flags.ron`, every flag a game has, at most [`MAX_FLAGS`].
 //! - **The cooked format** ([`cooked`]): [`Dialogue`], an rkyv archive (`.sdialogue`), split into what the
 //!   simulation reads ([`DialogueSimulation`]: effects) and what only presentation does
-//!   ([`DialoguePresentation`]: the graph, its keys, the chunk).
+//!   ([`DialoguePresentation`]: the graph, its keys, the trigger that opens it, the conditions' source).
 //! - **The walk** ([`walk`]): [`DialogueWalk`], where a conversation has got to, and [`DialogueView`], what
 //!   a panel shows of it. [`Dialogue::line`] finds one line by its node's name, for a cutscene's subtitles.
 //!
@@ -22,8 +22,8 @@
 //!
 //! - Flags themselves, and applying an effect: `sapphire_gameplay`'s `Flags`, in the simulation, hashed
 //!   and saved, and an effect is a replay command there.
-//! - Asking a condition: `sapphire_script`, which loads the chunk into a simulation's VM and runs a
-//!   function between steps on a frame that can't write.
+//! - Asking a condition: `sapphire_script`, which compiles the conditions' source, loads the chunk into a
+//!   simulation's VM and runs a function between steps on a frame that can't write.
 //! - Reading sources, checking keys against the tables and packs: `sapphire_pipeline`'s `dialogue` module.
 //! - Drawing: a game's panel (`game_ui`'s dialogue screen) reads a [`DialogueView`].
 //!
@@ -53,8 +53,8 @@ pub use cooked::{
     DialoguePresentation, DialogueSimulation, Effect, FlagWrite, LineView,
 };
 pub use document::{
-    BranchArm, ChoiceDocument, DialogueDocument, DialogueError, MAX_ARMS, MAX_CHOICES, MAX_NODES, MAX_WRITES,
-    NodeDocument, SayDocument,
+    BranchArm, ChoiceDocument, DialogueDocument, DialogueError, KEY_PREFIX, MAX_ARMS, MAX_CHOICES, MAX_NODES,
+    MAX_SOURCE, MAX_WRITES, NodeDocument, SayDocument,
 };
 pub use flags::{FlagRegistry, MAX_FLAGS};
 pub use walk::{ChoiceView, ConditionId, DialogueView, DialogueWalk, DialogueWorld, EffectId};

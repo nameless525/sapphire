@@ -182,7 +182,18 @@ fn no_frame_goes_past_the_entity_budget_and_the_nearest_comes_first() {
     let budget = StreamBudget { entities: 5, micros: 1_000_000 };
     let mut streamer = streamer(&mut server, StreamSettings { budget, ..settings() });
     let focus = [16.0, 0.0, 16.0];
-    // Load everything first, so the order is the placing's and not the loads'.
+    // Load everything first, so the order is the placing's and not the loads': the streamer places what
+    // has landed, and which of a frame's reads lands first is the reader threads', so under load a far
+    // cell's could beat a near one's. Held here, each is ready the frame the streamer asks for it.
+    let cells = (0..SMALL.side).flat_map(|x| (0..SMALL.side).map(move |z| SyntheticZone::cell_mesh(x, z)));
+    let meshes = [SyntheticZone::backdrop_mesh(), SyntheticZone::instance_mesh()].into_iter().chain(cells);
+    let _loaded: Vec<Handle<Mesh>> = meshes
+        .map(|id| {
+            let mesh = server.load(id).unwrap();
+            server.finish(&mesh, accept).unwrap();
+            mesh
+        })
+        .collect();
     let mut first_seen: Vec<AssetId> = Vec::new();
     let mut seen = BTreeSet::new();
     let start = Stopwatch::start();

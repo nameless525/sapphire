@@ -184,7 +184,7 @@ fn the_order_of_creation_doesnt_leak_through_iteration_order() {
     fn history(reverse_despawns: bool) -> (Vec<ActorId>, Vec<u64>) {
         let mut sim = Simulation::new(SimConfig { seed: 11, max_actors: 32, ..SimConfig::default() });
         let moves = sim.add_move_set(slice());
-        sim.add_combat_system(CombatSet::Resolve, replay::melee_buttons);
+        replay::add_melee_buttons(&mut sim);
         let at = |x: u32| ActorSpawn {
             position: Vec3::new(x as f32, 0.0, 0.0),
             moves: Some(moves),

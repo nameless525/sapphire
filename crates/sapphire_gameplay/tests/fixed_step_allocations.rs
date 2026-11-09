@@ -11,7 +11,7 @@ use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
     CINEMATIC, CUTSCENE, Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated,
-    find_scenario, find_script, melee, melee_buttons, melee_sweep,
+    add_melee_buttons, find_scenario, find_script, melee, melee_sweep,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, HitQuery,
@@ -195,7 +195,7 @@ fn a_full_pool_refuses_without_allocating() {
     }
     let mut sim = Simulation::new(SimConfig { max_actors: 2, ..SimConfig::default() });
     let moves = sim.add_move_set(slice());
-    sim.add_combat_system(CombatSet::Resolve, melee_buttons);
+    add_melee_buttons(&mut sim);
     let actor = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
     let spawn = press(actor, Buttons::JUMP);
 

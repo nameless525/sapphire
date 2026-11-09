@@ -50,9 +50,9 @@ pub use file::{
 };
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
-    FightWorld, PARTY_TUNING, PreparedFight, SCENARIOS, Scenario, ScenarioError, arena, arena_fight,
-    document_file_name, duel, find_scenario, melee, melee_buttons, party, party_document, party_moves,
-    player_moves, test_moves, timelines, warrior_moves,
+    FightWorld, PARTY_TUNING, PreparedFight, SCENARIOS, Scenario, ScenarioError, add_melee_buttons, arena,
+    arena_fight, document_file_name, duel, find_scenario, melee, melee_buttons, party, party_document,
+    party_moves, player_moves, test_moves, timelines, warrior_moves,
 };
 pub use script::{
     ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, SCRIPTS, Script,

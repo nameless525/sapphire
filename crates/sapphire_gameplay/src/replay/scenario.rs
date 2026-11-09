@@ -361,12 +361,20 @@ fn flat_ground(sim: &mut Simulation) -> Result<ProfileId, ScenarioError> {
     Ok(sim.add_controller_profile(&ControllerProfile::default())?)
 }
 
+/// Adds [`melee_buttons`] to `sim`, after the hits and perfect dodges of [`CombatSet::Resolve`]: it forces a
+/// skill on an actor it spawned, as a hit can force a reaction, and so the later of the two is the one an
+/// actor plays. Without the order, which was later fell to how the schedule happened to sort them, and a
+/// new set of systems elsewhere (M3 Q3b's) or a body attached could swap them.
+pub fn add_melee_buttons(sim: &mut Simulation) {
+    sim.add_combat_system(CombatSet::Resolve, melee_buttons.after(crate::resolve::fire_perfect_dodges));
+}
+
 /// Three characters that stand apart and turned differently, with [`melee_buttons`]: everything a step
 /// can do to a move, on one world.
 pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let controller = Some(flat_ground(sim)?);
     let moves = sim.add_move_set(test_moves()?);
-    sim.add_combat_system(CombatSet::Resolve, melee_buttons);
+    add_melee_buttons(sim);
     let mut cast = Vec::with_capacity(3);
     for x in [-2.0, 0.0, 2.0] {
         cast.push(sim.spawn(ActorSpawn {

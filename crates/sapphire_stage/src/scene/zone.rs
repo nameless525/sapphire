@@ -277,15 +277,32 @@ impl Scene {
         self.zone.as_ref().map(|zone| zone.streamer.stats())
     }
 
+    /// Asks the zone to stream for these points, in the world, beside the view's eye, from the next frame on
+    /// and until asked again: where a timeline's camera is about to cut, so that the cut lands on cells
+    /// already placed (M3 Q3). Past [`AHEAD`](sapphire_world::streaming::AHEAD) of them, the rest are left out.
+    pub fn stream_ahead(&mut self, points: impl IntoIterator<Item = Vec3>) {
+        let (slots, count) = &mut self.stream_ahead;
+        *count = 0;
+        for (slot, point) in slots.iter_mut().zip(points) {
+            *slot = point;
+            *count += 1;
+        }
+    }
+
     /// Runs this frame's streaming, after the content's update. Allocates nothing while nothing changes.
     pub(super) fn stream_zone(&mut self, content: &mut Content) {
         let Some(zone) = &mut self.zone else { return };
         let eye = self.ecs.world().resource::<OrbitCamera>().eye();
         let focus = (eye + zone.stand).to_array();
+        let (points, count) = &self.stream_ahead;
+        let mut ahead = [[0.0; 3]; sapphire_world::streaming::AHEAD];
+        for (slot, point) in ahead.iter_mut().zip(&points[..*count]) {
+            *slot = (*point + zone.stand).to_array();
+        }
         let to_world = Mat4::from_translation(-zone.stand);
         let (server, meshes) = content.streaming_parts();
         let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
-        zone.streamer.update(focus, server, &mut host);
+        zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
     }
 
     /// Draws what the zone has placed with its meshes on a new `renderer`: after device loss or for a new

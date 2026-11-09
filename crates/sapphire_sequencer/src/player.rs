@@ -259,6 +259,24 @@ impl TimelinePlayer {
         Some(Shot { eye, rotation: looking(eye, look_at, roll), fov_y: fov.to_radians(), cut })
     }
 
+    /// Where the view will jump to in the next `within` seconds, in order: each camera cut's eye, and the
+    /// first shot's before the playhead has moved, since the blend in heads there. What streaming asks for
+    /// ahead, so that a cut never lands on cells not yet there (M3 Q3). Nothing once it's over.
+    pub fn cuts_ahead(&self, within: f32) -> impl Iterator<Item = Vec3> + '_ {
+        let keys = match (&self.timeline.presentation.camera, self.state) {
+            (Some(camera), Playing::Yes) => &camera.keys[..],
+            _ => &[],
+        };
+        let starting = self.playhead <= 0.0;
+        let from = if starting { 0 } else { keys.partition_point(|key| key.at <= self.playhead) };
+        let to = keys.partition_point(|key| key.at <= self.playhead + within.max(0.0));
+        keys[from..to.max(from)]
+            .iter()
+            .enumerate()
+            .filter(move |(index, key)| key.ease == Ease::Cut || (starting && from + index == 0))
+            .map(|(_, key)| self.origin.point(key.eye))
+    }
+
     /// Adds the post tracks' offsets at the playhead to what the look resolved. Nothing here bakes a LUT, so
     /// it costs what writing four numbers does, and every track ends on 0, so handing back moves nothing.
     pub fn apply_post(&self, post: &mut PostParams) {
@@ -427,6 +445,28 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         a.distance(b) < 1e-4
+    }
+
+    /// M3 Q3: what streaming is asked for ahead, on the Lantern Ward's gate: the first shot as it starts,
+    /// each cut once it's within reach, and nothing once it's over or skipped.
+    #[test]
+    fn the_cuts_ahead_are_the_first_shot_and_each_cut_within_reach() {
+        const GATE: &str = include_str!("../../../content/zones/lantern_ward/court_gate.timeline.ron");
+        let ahead = |player: &TimelinePlayer, within| player.cuts_ahead(within).collect::<Vec<_>>();
+        let mut player = TimelinePlayer::new(timeline(GATE), Origin::default());
+        assert_eq!(ahead(&player, 1.5), [Vec3::new(2.6, 2.7, -57.0)]);
+        player.advance(0.5, None);
+        assert!(ahead(&player, 1.5).is_empty(), "the first cut is 2 s off");
+        player.advance(0.6, None);
+        assert_eq!(ahead(&player, 1.5), [Vec3::new(1.9, 1.3, -84.6)]);
+        assert_eq!(
+            ahead(&player, 6.5),
+            [Vec3::new(1.9, 1.3, -84.6), Vec3::new(-1.5, 0.95, -67.2), Vec3::new(1.1, 2.1, -58.2)]
+        );
+        player.advance(1.5, None);
+        assert!(ahead(&player, 1.5).is_empty(), "a cut behind the playhead has landed");
+        player.skip();
+        assert!(ahead(&player, 100.0).is_empty());
     }
 
     #[test]

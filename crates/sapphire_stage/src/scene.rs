@@ -409,6 +409,9 @@ pub struct Scene {
     zone: Option<ZoneStage>,
     /// The zone stage's walk along a rail (`--zone-walk`).
     zone_walk: Option<zone::ZoneWalk>,
+    /// Where the view will be soon, in the world, for the zone to stream ahead ([`Self::stream_ahead`]), and
+    /// how many of them there are.
+    stream_ahead: ([Vec3; sapphire_world::streaming::AHEAD], usize),
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
@@ -556,6 +559,7 @@ impl Scene {
             town_stand: None,
             zone: None,
             zone_walk: None,
+            stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             view_cut: false,

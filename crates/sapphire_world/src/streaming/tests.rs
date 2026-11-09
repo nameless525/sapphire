@@ -483,3 +483,47 @@ fn preload_after_a_zone_reload_does_not_abandon_existing_entities() {
     assert_eq!(host.live(), 1 + 4 + 4 * 5);
     assert!(host.removed >= before as u64);
 }
+
+/// M3 Q3: a camera cut to the far corner of the zone, with the frames before it either asking for the cut's
+/// eye ahead or not. Asked, the cut lands on its places placed and no frame is missing any; not asked, the
+/// frame of the cut has its view's places still to come, which is what the ask is for.
+#[test]
+fn a_cut_asked_ahead_lands_on_its_places_and_one_not_asked_misses_them() {
+    let (from, to) = ([16.0, 0.0, 16.0], [240.0, 0.0, 240.0]);
+    let within = cells_within(SMALL, (240.0, 240.0), 64.0);
+    for asked in [false, true] {
+        let (mut server, _) = server_over(SMALL);
+        let mut host = Ledger::default();
+        let budget = StreamBudget { entities: 8, micros: 1_000_000 };
+        let mut streamer = streamer(&mut server, StreamSettings { budget, ..settings() });
+        settle(&mut streamer, from, &mut server, &mut host);
+        assert_eq!(streamer.stats().unready, 0);
+        let ahead: &[[f32; 3]] = if asked { &[to] } else { &[] };
+        let start = Stopwatch::start();
+        loop {
+            server.update();
+            server.upload(accept);
+            server.wait(Duration::from_millis(1));
+            streamer.update_ahead(from, ahead, &mut server, &mut host);
+            let stats = streamer.stats();
+            assert_eq!(stats.unready, 0, "the focus's own places stay while it asks ahead: {stats:?}");
+            if stats.pending == 0 && stats.loading == 0 {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "it stalled: {stats:?}");
+        }
+        assert_eq!(host.has(SyntheticZone::cell_mesh(7, 7)), asked);
+        let missed_before = streamer.stats().unready_frames;
+        // The cut.
+        frame(&mut streamer, to, &mut server, &mut host);
+        let stats = streamer.stats();
+        if asked {
+            assert_eq!((stats.unready, stats.unready_frames), (0, missed_before), "{stats:?}");
+            assert!(host.has(SyntheticZone::cell_mesh(7, 7)));
+        } else {
+            assert!(stats.unready > 0 && stats.unready <= within, "{stats:?}");
+            assert_eq!(stats.unready_frames, missed_before + 1);
+            assert!(!host.has(SyntheticZone::cell_mesh(7, 7)));
+        }
+    }
+}

@@ -12,6 +12,14 @@
 //! ready; past [`StreamSettings::release`] its entities go and its handles with them. Between them a
 //! place stays as it is, which is what stops a walk along a radius flapping.
 //!
+//! # Asked ahead
+//!
+//! A camera cut jumps the focus, maybe hundreds of metres, in one frame, and walking up to a place is what
+//! the load radius hides. So presentation that knows where a cut will land says so ahead of it
+//! ([`Streamer::update_ahead`], M3 Q3): each point it names streams as the focus does, nearest of them all
+//! first, and the cut finds its cells placed. [`StreamStats::unready`] says when a frame's focus stood within
+//! the activation radius of a place with entities still to come, which a cut asked ahead never shows.
+//!
 //! # Presentation only
 //!
 //! **The simulation streams nothing** (m3-plan §3). Nothing here runs in a fixed step, and no simulation
@@ -115,7 +123,15 @@ pub struct StreamStats {
     /// Entities placed and removed since the streamer started.
     pub total_placed: u64,
     pub total_removed: u64,
+    /// Places within the activation radius of this frame's focus, not the points asked ahead, with entities
+    /// still to come and meshes that haven't failed: what the view may be missing.
+    pub unready: u32,
+    /// Frames so far that ended with any such place.
+    pub unready_frames: u64,
 }
+
+/// How many points [`Streamer::update_ahead`] streams for beside the focus: a timeline's next cuts.
+pub const AHEAD: usize = 4;
 
 /// How far a place's meshes have got.
 enum Meshes {
@@ -151,7 +167,10 @@ struct StreamPlace<P> {
     mesh_ids: Box<[AssetId]>,
     /// What it places: its whole mesh, its instances, then its lights.
     items: u32,
+    /// From the nearest of the focus and the points asked ahead: what streams it.
     distance: f32,
+    /// From the focus alone: what the view needs now.
+    shown: f32,
     want: Want,
     meshes: Meshes,
     /// What exists: its first `placed.len()` items, so taking some away and adding them again needs no
@@ -191,6 +210,7 @@ impl<P> StreamPlace<P> {
             mesh_ids,
             items: items as u32,
             distance: f32::INFINITY,
+            shown: f32::INFINITY,
             want: Want::Nothing,
             meshes: Meshes::None,
             placed: Vec::new(),
@@ -233,6 +253,8 @@ pub struct Streamer<P> {
     pending: Vec<u32>,
     /// Where the focus was at the last rescan.
     scanned: Option<[f32; 2]>,
+    /// Where the points asked ahead were at the last rescan.
+    scanned_ahead: [Option<[f32; 2]>; AHEAD],
     /// The next update places everything it can, after a load screen ([`Self::preload`]).
     unbudgeted: bool,
     stats: StreamStats,
@@ -251,6 +273,7 @@ impl<P> Streamer<P> {
             places: Vec::new(),
             pending: Vec::new(),
             scanned: None,
+            scanned_ahead: [None; AHEAD],
             unbudgeted: false,
             stats: StreamStats::default(),
             stats_dirty: true,
@@ -290,7 +313,7 @@ impl<P> Streamer<P> {
         if !self.settled_on_zone(server) {
             return;
         }
-        self.rescan([focus[0], focus[2]]);
+        self.rescan([focus[0], focus[2]], [None; AHEAD]);
         for place in &mut self.places {
             if place.want != Want::Active {
                 continue;
@@ -342,22 +365,66 @@ impl<P> Streamer<P> {
         server: &mut AssetServer,
         host: &mut H,
     ) {
+        self.update_ahead(focus, &[], server, host);
+    }
+
+    /// As [`Self::update`], with `ahead` streamed as the focus is: where the view will be soon, a cut's
+    /// eye above all, so that its places are there when it is (see the [module docs](self)). Past
+    /// [`AHEAD`] of them, the rest are left out.
+    pub fn update_ahead<H: CellHost<Placed = P>>(
+        &mut self,
+        focus: [f32; 3],
+        ahead: &[[f32; 3]],
+        server: &mut AssetServer,
+        host: &mut H,
+    ) {
         profiling::scope!("Streamer::update");
         let stopwatch = Stopwatch::start();
         self.stats.placed = 0;
         self.stats.removed = 0;
         if self.settled_on_zone_hosted(server, host) {
             let focus = [focus[0], focus[2]];
-            let moved = self.scanned.is_none_or(|scanned| {
-                let (x, z) = (focus[0] - scanned[0], focus[1] - scanned[1]);
-                x * x + z * z > self.settings.activate * self.settings.activate / 1024.0
-            });
+            let mut asked = [None; AHEAD];
+            for (slot, point) in asked.iter_mut().zip(ahead) {
+                *slot = Some([point[0], point[2]]);
+            }
+            let near = self.settings.activate * self.settings.activate / 1024.0;
+            let apart = |from: [f32; 2], to: [f32; 2]| {
+                let (x, z) = (from[0] - to[0], from[1] - to[1]);
+                x * x + z * z > near
+            };
+            let moved = self.scanned.is_none_or(|scanned| apart(focus, scanned))
+                || asked.iter().zip(&self.scanned_ahead).any(|pair| match pair {
+                    (Some(point), Some(scanned)) => apart(*point, *scanned),
+                    (None, None) => false,
+                    _ => true,
+                });
             if moved {
-                self.rescan(focus);
+                self.rescan(focus, asked);
             }
             self.work(&stopwatch, server, host);
+            self.count_unready();
         }
         self.publish(&stopwatch);
+    }
+
+    /// [`StreamStats::unready`]: only a waiting place can be one, since the focus asks all of them to be
+    /// active.
+    fn count_unready(&mut self) {
+        let activate = self.settings.activate;
+        let places = &self.places;
+        let unready = self
+            .pending
+            .iter()
+            .map(|&index| &places[index as usize])
+            .filter(|place| {
+                place.shown <= activate
+                    && place.placed.len() < place.items as usize
+                    && !matches!(place.meshes, Meshes::Failed)
+            })
+            .count();
+        self.stats.unready = unready as u32;
+        self.stats.unready_frames += u64::from(unready > 0);
     }
 
     /// Takes everything down at once and lets go of what it holds, the zone's handle aside: a zone
@@ -375,6 +442,7 @@ impl<P> Streamer<P> {
         self.pending.clear();
         self.built = None;
         self.scanned = None;
+        self.scanned_ahead = [None; AHEAD];
         self.unbudgeted = false;
         self.stats_dirty = true;
         self.stats.places = 0;
@@ -439,25 +507,31 @@ impl<P> Streamer<P> {
         self.stats_dirty = true;
         self.built = Some(generation);
         self.scanned = None;
+        self.scanned_ahead = [None; AHEAD];
     }
 
-    /// Goes by a focus at `focus`: each place's distance and what that asks of it, and the work that
-    /// makes, nearest first.
-    fn rescan(&mut self, focus: [f32; 2]) {
+    /// Goes by a focus at `focus` and the points asked `ahead`: each place's distance from the nearest and
+    /// what that asks of it, and the work that makes, nearest first.
+    fn rescan(&mut self, focus: [f32; 2], ahead: [Option<[f32; 2]>; AHEAD]) {
         profiling::scope!("Streamer::rescan");
         self.stats_dirty = true;
         self.scanned = Some(focus);
+        self.scanned_ahead = ahead;
         let StreamSettings { activate, load, release, .. } = self.settings;
         for place in &mut self.places {
-            place.distance = if place.index == BACKDROP {
-                0.0
-            } else {
+            let from = |point: [f32; 2]| {
+                if place.index == BACKDROP {
+                    return 0.0;
+                }
                 let past = |axis: usize| {
-                    (place.least[axis] - focus[axis]).max(focus[axis] - place.most[axis]).max(0.0)
+                    (place.least[axis] - point[axis]).max(point[axis] - place.most[axis]).max(0.0)
                 };
                 let (x, z) = (past(0), past(1));
                 (x * x + z * z).sqrt()
             };
+            place.shown = from(focus);
+            place.distance =
+                ahead.iter().flatten().fold(place.shown, |nearest, &point| nearest.min(from(point)));
             place.want = match place.distance {
                 distance if distance <= activate => Want::Active,
                 distance if distance <= load => Want::Loaded,

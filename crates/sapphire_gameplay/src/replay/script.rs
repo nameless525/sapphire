@@ -15,7 +15,13 @@ use crate::dialogue::{DialogueEffect, DialogueId};
 use crate::timeline::TimelineId;
 use crate::zone::{ZoneEntry, ZoneId};
 
-use super::ward::{COURT_GATE_ID, COURT_GATE_TICK};
+/// `ward-court`'s gate cutscene: the first of its document's `timelines`.
+pub const COURT_GATE_ID: TimelineId = TimelineId::from_raw(0);
+
+/// The step the court's gate scripts play its cutscene before: half a second in, with the player standing at
+/// the checkpoint and the warrior not yet near. Only the scripts go by it: a game plays the gate from its
+/// flow's beat (M3 G1), when the court's encounter starts.
+pub const COURT_GATE_TICK: u32 = 30;
 
 /// The ward's court scripts' length: the gate, and the fight after it to the warrior's defeat or near it.
 const WARD_COURT_TICKS: u32 = 1200;

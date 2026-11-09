@@ -1731,7 +1731,7 @@ mod tests {
     /// timeline plays and skips among its commands, which plays back to where the run got.
     #[test]
     fn a_run_keeps_a_file_only_when_asked_and_records_its_beats_commands() {
-        let mut unkept = run(sapphire_gameplay::replay::WARD_COURT, None);
+        let mut unkept = run("ward-court", None);
         assert_eq!(unkept.status(), CombatStatus::Running { scenario: "ward-court", kept: None });
         assert!(unkept.is_played());
         for _ in 0..5 {
@@ -1741,7 +1741,7 @@ mod tests {
         unkept.finish().expect("nothing to write");
 
         let scratch = Scratch::new("run-kept");
-        let mut kept = run(sapphire_gameplay::replay::WARD_COURT, Some(&scratch.0));
+        let mut kept = run("ward-court", Some(&scratch.0));
         assert_eq!(kept.status(), CombatStatus::Running { scenario: "ward-court", kept: Some(&scratch.0) });
         for _ in 0..5 {
             kept.step(&mut no_bindings);

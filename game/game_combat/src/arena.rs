@@ -89,7 +89,7 @@ use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
+use sapphire_gameplay::replay::{ZoneFight, zone_fight};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, MoveSetId, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::{PER_MILLE, RootSample};
@@ -215,17 +215,16 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
              this one starts from `{scenario}`"
         ));
     }
-    // A fight on the arena's colliders, or one a zone stands: the court (M3 Q3), whose scenario is code, or a
-    // document's on its zone's own colliders (M3 C2); or the one that goes between the proving zones (M3 W4),
-    // from the arena.
-    let in_a_zone = scenario == WARD_COURT
-        || document.is_some_and(|document| document.party.is_none() && zone_fight(scenario).is_some());
+    // A fight on the arena's colliders, or one a zone stands, a document's on its zone's own colliders (M3 C2);
+    // or the one that goes between the proving zones (M3 W4), from the arena.
+    let in_a_zone =
+        document.is_some_and(|document| document.party.is_none() && zone_fight(scenario).is_some());
     if (on_the_stage.is_some() && !has_a_party) || in_a_zone || scenario == ZONE_TRIP_SCENARIO {
         return Ok(());
     }
     Err(format!(
         "--arena plays a fight of a scenario on the arena's colliders such as `{SCENARIO}`, `{FIGHT_SCENARIO}` \
-         or `{SKIRMISH_SCENARIO}`, `{ZONE_TRIP_SCENARIO}`, or one in a zone such as `{WARD_COURT}`, and this one \
+         or `{SKIRMISH_SCENARIO}`, `{ZONE_TRIP_SCENARIO}`, or one in a zone such as `ward-court`, and this one \
          starts from `{scenario}`",
     ))
 }

@@ -1,0 +1,41 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the player at the Lantern Ward's temple court checkpoint and a warrior at its far end, its encounters already fought, with the court's gate cutscene loaded to open on",
+        max_actors: 8,
+        colliders: "content/zones/lantern_ward/lantern_ward.colliders.ron",
+        zone: Some("content/zones/lantern_ward/lantern_ward.zone.ron"),
+        encounters: [
+            "content/zones/lantern_ward/market.encounter.ron",
+            "content/zones/lantern_ward/garden.encounter.ron",
+            "content/zones/lantern_ward/court.encounter.ron",
+            "content/zones/lantern_ward/terrace.encounter.ron",
+        ],
+        // The duel is the gate's, not the court's encounter's: a save that has fought them all.
+        cleared: [
+            "content/zones/lantern_ward/market.encounter.ron",
+            "content/zones/lantern_ward/garden.encounter.ron",
+            "content/zones/lantern_ward/court.encounter.ron",
+            "content/zones/lantern_ward/terrace.encounter.ron",
+        ],
+        // Every kind the zone's spawners name, as its encounters are built whether they come or not.
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/enemy/warrior.moves.ron",
+            "content/combat/lancer/lancer.moves.ron",
+            "content/combat/knell_colossus/knell_colossus.moves.ron",
+        ],
+        enemies: [
+            "content/combat/enemy/warrior.enemy.ron",
+            "content/combat/lancer/lancer.enemy.ron",
+            "content/combat/knell_colossus/knell_colossus.enemy.ron",
+        ],
+        cast: [
+            (moves: "player", at: "checkpoint_court", faction: 1, soft_lock: true, standing_jump: true),
+            (moves: "warrior", at: "court_spawn_e", faction: 2, brain: true),
+        ],
+        // Timeline 0, which the gate's scripts play.
+        timelines: ["content/zones/lantern_ward/court_gate.timeline.ron"],
+    ),
+)

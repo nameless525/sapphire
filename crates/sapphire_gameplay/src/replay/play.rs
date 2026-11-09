@@ -693,7 +693,7 @@ mod tests {
     /// one made to be a file refuses the step, as it always has.
     #[test]
     fn a_run_that_goes_on_past_the_limit_plays_on_and_its_file_stops_there() {
-        let ward = find_scenario(&SCENARIOS, super::super::WARD_COURT).expect("listed");
+        let ward = find_scenario(&SCENARIOS, "ward-court").expect("listed");
         let mut source = super::super::script::idle;
 
         let mut file = Recording::new(ward, ward.config).unwrap();

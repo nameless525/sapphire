@@ -42,6 +42,13 @@
 //! pipeline. Going back into the zone a run started in goes into its copy on the shelf, which starts that
 //! zone over.
 //!
+//! **What a run can play and open** (M3 G1): `timelines` and `dialogues` list the cutscenes and conversations
+//! a game's flow or a replay's commands can start, each loaded in its list's order, so the first is timeline 0
+//! and dialogue 0: the timelines before the player's ultimate's cinematic, so that one comes after them.
+//! [`ScenarioDocument::timelines_by_id`] and [`ScenarioDocument::dialogues_by_id`] say which is which by the
+//! documents' IDs, which is how a flow names them. A dialogue's conditions are checked as its cook checks them,
+//! by the pipeline: the simulation loads only its effects, cooked against the registry `flags` names.
+//!
 //! **A zone here is what the simulation reads of its document** ([`ZoneDocument::simulation`]) with no
 //! navmesh and no presentation, archived as a cook archives it, so it goes in through the same door as a pack's
 //! `.szone` ([`Simulation::set_zone`]), and `tools/sapphire_pipeline/tests/encounters.rs` holds the two to one
@@ -50,12 +57,14 @@
 
 use bevy_reflect::Reflect;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
+use sapphire_dialogue::{DialogueDocument, FlagRegistry};
 use sapphire_math::Vec3;
 use sapphire_moves::{EnemyDocument, MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::PhysicsWorld;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
+use sapphire_timeline::TimelineDocument;
 use sapphire_zone::{EncounterDocument, Zone, ZoneDocument, ZonePresentation};
 use serde::{Deserialize, Serialize};
 
@@ -65,12 +74,14 @@ use crate::actors::{ActorId, ActorSpawn};
 use crate::arena::SpawnPoint;
 use crate::checkpoint::{Place, ZoneStart};
 use crate::controller::ControllerProfile;
+use crate::dialogue::DialogueId;
 use crate::encounter::ZoneCast;
 use crate::faction::Faction;
 use crate::moves::WarpTarget;
 use crate::party::PartyTuning;
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
+use crate::timeline::TimelineId;
 
 include!(concat!(env!("OUT_DIR"), "/scenario_documents.rs"));
 
@@ -115,6 +126,16 @@ pub struct ScenarioDocument {
     /// this order: see the [module docs](self).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shelf: Vec<String>,
+    /// The timelines a run can play, `.timeline.ron`s from the repository's root, loaded first and in this
+    /// order (M3 G1): see the [module docs](self).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timelines: Vec<String>,
+    /// The dialogues a run can open, `.dialogue.ron`s from the repository's root, loaded in this order (M3 G1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogues: Vec<String>,
+    /// The flag registry `dialogues` cook against, a `.ron` from the repository's root: the game's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
 }
 
 fn default_seed() -> u64 {
@@ -327,6 +348,9 @@ impl ScenarioDocument {
         for (index, path) in self.shelf.iter().enumerate() {
             baked_zone(path).map_err(|problem| invalid(format!("shelf[{index}]"), problem))?;
         }
+        if !self.dialogues.is_empty() && self.flags.is_none() {
+            return Err(invalid("flags", "its dialogues cook against a flag registry, and it names none"));
+        }
         if let Some(party) = &self.party {
             for (index, &member) in party.members.iter().enumerate() {
                 if member >= self.cast.len() {
@@ -346,6 +370,51 @@ impl ScenarioDocument {
             Ok(KindOfEnemy { set: crate::moves::MoveSetId(plan.set), kind: id_of(path)? })
         });
         kinds.collect()
+    }
+
+    /// Each of its timelines, by its sidecar's ID, and the timeline it is in a simulation this sets up: what a
+    /// game's flow plays by ID (M3 G1).
+    pub fn timelines_by_id(&self) -> Result<Vec<(AssetId, TimelineId)>, ScenarioError> {
+        let ids = self.timelines.iter().enumerate().map(|(place, path)| {
+            let place = u32::try_from(place).map_err(|_| invalid("timelines", "too many"))?;
+            Ok((id_of(path)?, TimelineId::from_raw(place)))
+        });
+        ids.collect()
+    }
+
+    /// Each of its dialogues, by its sidecar's ID, and the dialogue it is in a simulation this sets up: what a
+    /// game's flow opens by ID (M3 G1).
+    pub fn dialogues_by_id(&self) -> Result<Vec<(AssetId, DialogueId)>, ScenarioError> {
+        let ids = self.dialogues.iter().enumerate().map(|(place, path)| {
+            let place = u16::try_from(place).map_err(|_| invalid("dialogues", "too many"))?;
+            Ok((id_of(path)?, DialogueId::from_raw(place)))
+        });
+        ids.collect()
+    }
+
+    /// Loads its timelines, then its dialogues' effects, each in its list's order: so each has the ID its place
+    /// says ([`Self::timelines_by_id`], [`Self::dialogues_by_id`]), which this holds it to.
+    fn load_timelines_and_dialogues(&self, sim: &mut Simulation) -> Result<(), ScenarioError> {
+        for ((_, id), path) in self.timelines_by_id()?.into_iter().zip(&self.timelines) {
+            let timeline = TimelineDocument::from_ron(named(path)?)?.cook()?;
+            if sim.add_timeline(timeline.simulation)? != id {
+                return Err(invalid(format!("timelines: {path}"), "something else loaded a timeline first"));
+            }
+        }
+        let Some(flags) = self.flags.as_deref().filter(|_| !self.dialogues.is_empty()) else { return Ok(()) };
+        let registry =
+            FlagRegistry::from_ron(named(flags)?).map_err(|error| invalid("flags", error.to_string()))?;
+        for ((_, id), path) in self.dialogues_by_id()?.into_iter().zip(&self.dialogues) {
+            let refused =
+                |error: &dyn std::fmt::Display| invalid(format!("dialogues: {path}"), error.to_string());
+            let document = DialogueDocument::from_ron(named(path)?).map_err(|error| refused(&error))?;
+            // Its conditions' source is the pipeline's to check: this keeps only the effects.
+            let dialogue = document.cook(&registry, |_| Ok(())).map_err(|error| refused(&error))?;
+            if sim.add_dialogue(dialogue.simulation).map_err(|error| refused(&error))? != id {
+                return Err(refused(&"something else loaded a dialogue first"));
+            }
+        }
+        Ok(())
     }
 
     /// The document each of its move sets is loaded from, in set order: `moves`, then the one each copy
@@ -499,6 +568,7 @@ impl ScenarioDocument {
             let set = ColliderSet::read(&colliders)?;
             sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
         }
+        self.load_timelines_and_dialogues(sim)?;
         // The player's moves name their ultimate's cinematic, which a fight loads before them, as `fight_on`
         // does (M3 Q3b).
         if self.moves.iter().any(|path| kind_of(path) == "player") {
@@ -776,6 +846,29 @@ mod tests {
         let mut document = waves;
         document.encounters.clear();
         assert!(cant_start(&document).contains("`encounters`"));
+    }
+
+    /// A document's timelines load first, in its order, so each has the ID its place says, and the player's
+    /// ultimate's cinematic comes after them (M3 G1): what the court's gate scripts play as timeline 0.
+    #[test]
+    fn a_documents_timelines_are_its_first() {
+        let court = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "ward-court").expect("held").1;
+        let court: ScenarioDocument = sapphire_serialize::from_ron(court).expect("reads");
+        let ids = court.timelines_by_id().expect("it says");
+        let gate = id_of("content/zones/lantern_ward/court_gate.timeline.ron").expect("a sidecar");
+        assert_eq!(ids, [(gate, TimelineId::from_raw(0))]);
+        let mut sim = Simulation::new(court.config());
+        court.set_up(&mut sim).expect("sets up");
+        let gate = TimelineDocument::from_ron(named(&court.timelines[0]).expect("held")).expect("reads");
+        let digest = gate.cook().expect("cooks").simulation.digest();
+        assert_eq!(sim.timeline_digest(TimelineId::from_raw(0)), Some(digest));
+        assert!(sim.timeline_digest(TimelineId::from_raw(1)).is_some(), "then the ultimate's cinematic");
+        assert!(court.dialogues_by_id().expect("it says").is_empty());
+
+        let mut document = court;
+        document.dialogues = vec!["content/dialogue/ward_guide.dialogue.ron".to_owned()];
+        let error = document.check().expect_err("no registry");
+        assert!(error.to_string().contains("`flags`"), "{error}");
     }
 
     /// A trip's zones go on the shelf in the document's order (M3 G1), and only from a zone, and only zones

@@ -73,9 +73,11 @@ fn record(ticks: u32, source: impl Fn(u64, &[ActorId]) -> TickActions) -> (Repla
     recording.finish()
 }
 
-/// Plays a replay's bytes with nothing beside it.
+/// Plays a replay's bytes with nothing beside it, on the scenarios the app plays, whose kinds' scripts are
+/// bound: the ward's boss's, which `ward-court` names.
 fn headless(bytes: &[u8]) -> Played {
-    let mut player = Player::new(Replay::decode(bytes).expect("reads"), &SCENARIOS).expect("starts");
+    let scenarios = &game_combat::combat::SCENARIOS;
+    let mut player = Player::new(Replay::decode(bytes).expect("reads"), scenarios).expect("starts");
     player.run_to_end();
     player.finish()
 }

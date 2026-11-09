@@ -33,6 +33,7 @@ use super::play::RunStart;
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
+use crate::dialogue::DialogueId;
 use crate::encounter::{ZoneCast, ZoneStartError};
 use crate::faction::Faction;
 use crate::movement::ActorTransform;
@@ -41,6 +42,7 @@ use crate::party::{PARTY_SLOTS, Party, PartyError, PartyTuning};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
+use crate::timeline::TimelineId;
 use crate::zone::{ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneLoadError};
 
 /// The test content's document: see that file for its numbers. The real moves came beside it (M2 O3,
@@ -291,10 +293,19 @@ impl Scenario {
     /// opens that zone around the fight and stands its ground on the zone's colliders.
     #[must_use]
     pub fn zone(&self) -> Option<&'static str> {
-        if self.name == super::ward::WARD_COURT {
-            return Some(super::ward::WARD_ZONE_STEM);
-        }
         ScenarioDocument::zone_stem(self.document()?.stands_in_zone()?).ok()
+    }
+
+    /// The timelines its runs load, by their documents' IDs, and the ID each has there: a document's
+    /// `timelines` (M3 G1). A scenario of code names none.
+    pub fn timelines(&self) -> Result<Vec<(AssetId, TimelineId)>, ScenarioError> {
+        self.document().map_or(Ok(Vec::new()), ScenarioDocument::timelines_by_id)
+    }
+
+    /// The dialogues its runs load, by their documents' IDs, and the ID each has there: a document's
+    /// `dialogues` (M3 G1). A scenario of code names none.
+    pub fn dialogues(&self) -> Result<Vec<(AssetId, DialogueId)>, ScenarioError> {
+        self.document().map_or(Ok(Vec::new()), ScenarioDocument::dialogues_by_id)
     }
 }
 
@@ -378,19 +389,6 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: ScenarioSetup::Code(timelines),
-    },
-    Scenario {
-        name: super::ward::WARD_COURT,
-        about: "`arena-fight` in the Lantern Ward's temple court: the zone's colliders, the player at the court's \
-                checkpoint and the warrior at its far end, with the court's gate cutscene loaded to open on",
-        config: SimConfig {
-            seed: 7,
-            max_actors: 8,
-            step_budget: BUDGET_DESKTOP_LOW,
-            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
-        },
-        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
-        setup: ScenarioSetup::Code(super::ward::ward_court),
     },
     Scenario {
         name: "zone-trip",

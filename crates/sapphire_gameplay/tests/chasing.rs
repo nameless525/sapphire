@@ -201,7 +201,8 @@ impl Room {
 }
 
 fn ground(a: Vec3, b: Vec3) -> f32 {
-    ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt()
+    let (x, z) = (a.x - b.x, a.z - b.z);
+    (x * x + z * z).sqrt()
 }
 
 /// What §5.19 asks: in the same room as its foe a brain steers straight at it and costs no search, every

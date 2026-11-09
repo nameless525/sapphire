@@ -325,7 +325,7 @@ impl NavGraph {
     /// on it has a capsule's room all along, and "in one room" needs no room: this is what it comes to.
     ///
     /// It answers for walking, not seeing: a pit stops it as a wall does. A line through a corner may
-    /// come out at no. So may one of over [`LINE_POLYGONS`], and either costs only a route.
+    /// come out at no. So may one over 64 polygons long (`LINE_POLYGONS`), and either costs only a route.
     #[must_use]
     pub fn walks_straight(&self, from: Location, to: Location) -> bool {
         let mut polygon = from.polygon;

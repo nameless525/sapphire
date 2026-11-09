@@ -67,7 +67,7 @@ fn the_proving_grounds_guard_walks_the_spline_its_spawner_names() {
     let name = spawner.patrol().expect("it names one");
     let patrol = zone.simulation.patrol(name).expect("checked");
     let points: Vec<[f32; 3]> = patrol.points().collect();
-    let walk = sim.add_patrol(name, &points, patrol.closed.into()).expect("a good one");
+    let walk = sim.add_patrol(name, &points, patrol.closed).expect("a good one");
     let guard = sim
         .spawn(ActorSpawn {
             position: Vec3::from_array(spawner.position()),

@@ -132,6 +132,8 @@ pub(super) fn nav_patrol(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioE
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use sapphire_nav::NODES_PER_TICK;
 
     use super::super::{SCENARIOS, find_scenario, find_script};
@@ -161,6 +163,12 @@ mod tests {
         touching: usize,
     }
 
+    /// Metres across the ground.
+    fn ground(a: Vec3, b: Vec3) -> f32 {
+        let (x, z) = (a.x - b.x, a.z - b.z);
+        (x * x + z * z).sqrt()
+    }
+
     fn spread(sim: &Simulation, player: ActorId, chasers: &[ActorId]) -> Spread {
         let centre = sim.actor(player).expect("alive").position;
         let at: Vec<Vec3> =
@@ -179,7 +187,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter(|(other, _)| *other != index)
-                .map(|(_, other)| ((other.x - place.x).powi(2) + (other.z - place.z).powi(2)).sqrt())
+                .map(|(_, other)| ground(*place, *other))
                 .fold(f32::MAX, f32::min);
             closest = closest.min(nearest);
             touching += usize::from(nearest < 0.65);
@@ -220,8 +228,9 @@ mod tests {
         let (queue, _) = chase(&mut sim, player, &chasers);
         let (mut sim, player, chasers) = start(chasers_apart(1.2), false);
         let (crowd, searches) = chase(&mut sim, player, &chasers);
-        println!("NAV-CROWD queue {queue:?}");
-        println!("NAV-CROWD crowd {crowd:?}, {searches} searches");
+        let mut out = std::io::stdout();
+        writeln!(out, "NAV-CROWD queue {queue:?}").expect("it prints");
+        writeln!(out, "NAV-CROWD crowd {crowd:?}, {searches} searches").expect("it prints");
         assert!(crowd.bearings > queue.bearings, "it's round them, not behind them: {crowd:?} {queue:?}");
         assert!(crowd.bearings >= 12, "{crowd:?}");
         assert!(crowd.closest > queue.closest, "{crowd:?} {queue:?}");

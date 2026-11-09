@@ -81,6 +81,8 @@ fn a_cooked_zone_is_what_a_scenario_reads() {
             faction: Faction::new(1).expect("a side"),
         })
         .expect("room");
+    // A scenario's fighters start with full meters (M3 Q3c).
+    cooked.fill_energy(actor);
     cooked.give_soft_lock(actor);
 
     assert_eq!(cooked.tables_hash(), read.tables_hash(), "one zone, one set of tables");

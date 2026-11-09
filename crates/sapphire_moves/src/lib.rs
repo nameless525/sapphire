@@ -244,19 +244,21 @@ pub use brain::{
 pub use document::{
     AllowDocument, ArmourDocument, AttackDocument, BrainAttackDocument, BrainDocument, BrainRiseDocument,
     CancelDocument, ClipMotionDocument, ClipPathDocument, CounterDocument, CueDocument, DodgeVolumeDocument,
-    FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument, IntentDocument, Issue,
-    MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey, PerfectDodgeDocument,
-    ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument, WarpDocument,
+    EnergyDocument, FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument,
+    IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey,
+    PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument,
+    WarpDocument,
 };
 pub use movement::{
     ControllerProfile, MAX_JUMP_REACH, MAX_THROW_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError,
 };
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
-    DodgeVolume, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,
-    Knockback, MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH,
-    MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MOVE_SET_EXTENSION, Move, MoveSet, MoveSetError,
-    PerfectDodgeWindow, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight, WorldSlowMotion,
+    DodgeVolume, EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState,
+    IntentDef, Knockback, MAX_BUFFER_TICKS, MAX_ENERGY, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS,
+    MAX_MOVE_REACH, MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MOVE_SET_EXTENSION, Move,
+    MoveSet, MoveSetError, PerfectDodgeWindow, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight,
+    WorldSlowMotion,
 };
 
 use bevy_reflect::TypePath;

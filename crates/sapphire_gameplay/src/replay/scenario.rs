@@ -684,8 +684,14 @@ impl FightActors {
             controller,
             faction: WARRIORS,
         })?;
+        // A built-in fight starts with the player's ultimate ready (M3 Q3c): every fight recorded before
+        // the meter was, and a full meter stays out of the checksum.
+        sim.fill_energy(first);
         if party {
             let members = [first, sim.spawn(member)?, sim.spawn(member)?];
+            for &member in &members[1..] {
+                sim.fill_energy(member);
+            }
             if let Some(formation) = initial_party {
                 sim.restore_builtin_party(formation);
             } else {

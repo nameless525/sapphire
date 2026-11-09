@@ -57,9 +57,9 @@ pub use scenario::{
     test_moves, timelines, ultimate_cinematic, warrior_moves,
 };
 pub use script::{
-    ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE,
-    SCRIPTS, Script, arena_ultimate, arena_walk, attempts, fight_back, find_script, idle, into_the_yard,
-    melee_sweep,
+    ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS,
+    ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, SCRIPTS, Script, arena_energy, arena_ultimate,
+    arena_walk, attempts, fight_back, find_script, idle, into_the_yard, melee_sweep,
 };
 pub use tuning::{LiveMoves, LiveSet, compile_document};
 pub use ward::{

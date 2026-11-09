@@ -292,6 +292,12 @@ pub(crate) fn apply_hits(
             characters.fell(event.target);
         }
         applied.0.push(AppliedHit { event: *event, attack, outcome, move_started_at });
+        // The attacker's meter fills for it (M3 Q3c), as the target's did as it took it.
+        if let Some(attacker) = table.entity(event.attacker)
+            && let Ok((_, mut attacker, ..)) = targets.get_mut(attacker)
+        {
+            attacker.landed_a_hit();
+        }
     }
 }
 

@@ -67,7 +67,8 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 //
 // The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
 // it names. Every fight that loads these moves loads `ultimate.timeline.ron`, beside this file, under that
-// name, or refuses to start.
+// name, or refuses to start. It costs a full energy meter (M3 Q3c), which the hits the character lands and
+// takes fill: a built-in fight starts with it full.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -106,6 +107,8 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
                 poise_break: "dazed",
                 defeat: "defeat",
             ),
+            // The ultimate's meter (M3 Q3c): ten hits landed fill it from empty, or twenty taken.
+            energy: (max: 100, landed: 10, taken: 5),
 @MOVEMENT@        ),
         moves: [
 """
@@ -319,6 +322,7 @@ LATER = [
         cues=[('skill_flash', 0), ('swing_windup', 12), ('swing', 62), ('finisher_land', 65)],
         active=(62, 66),
         cinematic='ultimate',
+        cost=100,
     ),
 ]
 
@@ -637,5 +641,7 @@ def move_text(d, clips):
     lines.append(f"{i}],")
     if d.get('cinematic'):
         lines.append(f'{i}cinematic: "{d["cinematic"]}",')
+    if d.get('cost'):
+        lines.append(f'{i}cost: {d["cost"]},')
     lines.append('            ),')
     return '\n'.join(lines)

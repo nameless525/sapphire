@@ -618,6 +618,8 @@ fn lone() -> (Simulation, ActorId) {
     let moves =
         sim.add_move_set(MoveSet::from_cooked(&player().set.to_cooked().expect("cooks")).expect("reads"));
     let actor = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
+    // Full, as a built-in fight starts, so the ultimate can be pressed (M3 Q3c).
+    assert!(sim.fill_energy(actor), "the player has a meter");
     (sim, actor)
 }
 

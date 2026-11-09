@@ -25,7 +25,8 @@
 //
 // The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
 // it names. Every fight that loads these moves loads `ultimate.timeline.ron`, beside this file, under that
-// name, or refuses to start.
+// name, or refuses to start. It costs a full energy meter (M3 Q3c), which the hits the character lands and
+// takes fill: a built-in fight starts with it full.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -64,6 +65,8 @@
                 poise_break: "dazed",
                 defeat: "defeat",
             ),
+            // The ultimate's meter (M3 Q3c): ten hits landed fill it from empty, or twenty taken.
+            energy: (max: 100, landed: 10, taken: 5),
             // How this character moves. Save, and the next step moves by these, with no restart and no
             // cook: a character mid-jump finishes that jump's arc under the new gravity, and its new jump
             // speed waits for its next jump. Metres, seconds and degrees. A number left out is the
@@ -490,6 +493,7 @@
                     (name: "finisher_land", at: 65),
                 ],
                 cinematic: "ultimate",
+                cost: 100,
             ),
         ],
     ),

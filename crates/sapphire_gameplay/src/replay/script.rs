@@ -221,6 +221,14 @@ pub const SCRIPTS: &[Script] = &[
         commands: &[],
     },
     Script {
+        name: "arena-energy",
+        about: "`arena-ultimate`, then the ultimate pressed again every third of a second while the fight \
+                fills its energy back up: it fires once the meter is full, and not before",
+        ticks: ARENA_ENERGY_TICKS,
+        actions: arena_energy,
+        commands: &[],
+    },
+    Script {
         name: "chase-laps",
         about: "the arena's player runs a lap of the square's clear floor by the stick, and stands, for \
                 whoever's following a path to it",
@@ -611,6 +619,30 @@ pub fn into_the_yard(tick: u64, cast: &[ActorId]) -> TickActions {
         }
     }
     fight_back(tick - ends_at, cast)
+}
+
+/// How often [`arena_energy`] presses the ultimate again, in ticks, once it's fighting back.
+pub const ARENA_ENERGY_TRIES_EVERY: u64 = 20;
+
+/// [`arena_energy`]'s length: long enough for the fight to fill the meter and the ultimate to play again.
+pub const ARENA_ENERGY_TICKS: u32 = 900;
+
+/// [`SCRIPTS`]' `arena-energy` (M3 Q3c): [`arena_ultimate`], whose ultimate empties the player's energy, and
+/// then a press of the ultimate every [`ARENA_ENERGY_TRIES_EVERY`] ticks on top of [`fight_back`]. Each press
+/// before the hits have filled the meter again fires nothing; the first one after that finds the player
+/// between moves does, about a second after it filled.
+#[must_use]
+pub fn arena_energy(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = arena_ultimate(tick, cast);
+    let Some(&player) = cast.first() else { return actions };
+    if tick >= ARENA_ULTIMATE_FIGHTS_AT
+        && (tick - ARENA_ULTIMATE_FIGHTS_AT).is_multiple_of(ARENA_ENERGY_TRIES_EVERY)
+    {
+        let mut held = actions.get(player);
+        held.buttons = held.buttons | Buttons::ULTIMATE;
+        actions.set(player, held).expect("one actor fits a tick");
+    }
+    actions
 }
 
 /// [`SCRIPTS`]' `idle`.

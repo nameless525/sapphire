@@ -290,6 +290,17 @@ fn write_fighter(hasher: &mut StateHasher, fighter: &Fighter) {
     if fighter.faction != Faction::NONE {
         hasher.u8(fighter.faction.number());
     }
+    // An energy meter (M3 Q3c) goes in only while it isn't full, which is all a meter with none ever is,
+    // and how every fight recorded before it began and stayed: a built-in fight starts full. Its top and
+    // gains are its set's, in the tables' hash, so a full meter needs nothing here.
+    let energy = &fighter.energy;
+    if energy.now != energy.max {
+        hasher.u8(1);
+        hasher.u32(energy.now);
+        hasher.u32(energy.max);
+        hasher.u32(energy.landed);
+        hasher.u32(energy.taken);
+    }
 }
 
 fn write_time(hasher: &mut StateHasher, time: Option<sapphire_time::SimTime>) {
@@ -755,6 +766,8 @@ mod sensitivity_tests {
             ("a slide's progress", |f| f.slide.elapsed = SimDuration::from_subticks(1)),
             ("how far a slide has gone", |f| f.slide.moved += 0.125),
             ("its side", |f| f.faction = Faction::new(1).unwrap()),
+            ("energy", |f| f.energy.now += 1),
+            ("an energy meter's top", |f| f.energy.max += 1),
         ];
         let (mut sim, swinging, _) = world();
         for (what, edit) in edits {
@@ -769,6 +782,18 @@ mod sensitivity_tests {
         flips::<Fighter>(&mut sim, swinging, "another refill time", |f| {
             f.poise_refills_at = Some(SimTime::from_subticks(8));
         });
+        // A meter that isn't full says what fills it; a full one leaves that to the tables' hash.
+        let half = |f: &mut Fighter| (f.energy.now, f.energy.max) = (50, 100);
+        flips::<Fighter>(&mut sim, swinging, "a meter half full", half);
+        half(&mut world_fighter(&mut sim, swinging));
+        flips::<Fighter>(&mut sim, swinging, "what a landed hit gives", |f| f.energy.landed += 1);
+        flips::<Fighter>(&mut sim, swinging, "what a hit taken gives", |f| f.energy.taken += 1);
+    }
+
+    fn world_fighter(sim: &mut Simulation, actor: ActorId) -> Mut<'_, Fighter> {
+        let world = sim.ecs_mut().world_mut();
+        let entity = world.resource::<ActorTable>().entity(actor).unwrap();
+        world.get_mut::<Fighter>(entity).unwrap()
     }
 
     /// A lock that's off writes nothing, so a lock's target only counts once it's on.

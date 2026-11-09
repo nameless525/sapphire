@@ -288,13 +288,17 @@ impl ScenarioDocument {
                     (point.position, point.yaw())
                 }
             };
-            cast.push(sim.spawn(ActorSpawn {
+            let actor = sim.spawn(ActorSpawn {
                 position: Vec3::from_array(position),
                 yaw,
                 moves,
                 controller,
                 faction: side_of(member.faction).expect("`check` looked at it"),
-            })?);
+            })?;
+            // A scenario's fight starts with every meter full, as a built-in one does (M3 Q3c), so a full
+            // meter stays out of the checksum. A set with none has nothing to fill.
+            sim.fill_energy(actor);
+            cast.push(actor);
         }
 
         if let Some(party) = &self.party {

@@ -860,6 +860,16 @@ impl Simulation {
         true
     }
 
+    /// Fills a live actor's energy meter to the top (M3 Q3c), between steps: how a fight that wants its
+    /// ultimate ready from the start begins. Returns whether it has a meter to fill.
+    pub fn fill_energy(&mut self, id: ActorId) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        let mut fighter = world.get_mut::<Fighter>(entity).expect("every pooled entity has a fighter");
+        fighter.fill_energy();
+        fighter.max_energy() > 0
+    }
+
     /// Gives a live actor a soft lock, between steps: from its next step on, each step chooses who it's
     /// aiming at from where it stands and where its stick points, and writes the [`WarpTarget`]. Returns
     /// whether the actor is alive. See [`crate::targeting`].

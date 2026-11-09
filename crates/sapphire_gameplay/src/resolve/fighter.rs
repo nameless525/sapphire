@@ -2,7 +2,7 @@
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_moves::{Attack, FighterDef, Knockback};
+use sapphire_moves::{Attack, EnergyDef, FighterDef, Knockback};
 use sapphire_time::{SimDuration, SimTime};
 
 use crate::faction::Faction;
@@ -65,6 +65,42 @@ pub struct Fighter {
     pub(crate) slide: Slide,
     /// Whose side it's on, from its spawn to its end.
     pub(crate) faction: Faction,
+    /// Its energy meter (M3 Q3c), which hits fill and a move's cost spends.
+    pub(crate) energy: Energy,
+}
+
+/// A fighter's energy meter now (M3 Q3c): its [`EnergyDef`]'s numbers, copied at spawn, and what it holds.
+/// A set with none leaves it all zero, and nothing then fills or spends it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Energy {
+    pub(crate) now: u32,
+    pub(crate) max: u32,
+    pub(crate) landed: u32,
+    pub(crate) taken: u32,
+}
+
+impl Energy {
+    fn new(def: Option<EnergyDef>) -> Self {
+        def.map_or_else(Self::default, |def| Self {
+            now: 0,
+            max: def.max,
+            landed: def.landed,
+            taken: def.taken,
+        })
+    }
+
+    /// Takes a new revision's numbers: a full meter stays full, and any other keeps what it holds, up to
+    /// the new top.
+    fn refit(&mut self, def: Option<EnergyDef>) {
+        let full = self.max > 0 && self.now == self.max;
+        let mut next = Self::new(def);
+        next.now = if full { next.max } else { self.now.min(next.max) };
+        *self = next;
+    }
+
+    fn gain(&mut self, amount: u32) {
+        self.now = self.now.saturating_add(amount).min(self.max);
+    }
 }
 
 impl Fighter {
@@ -76,6 +112,7 @@ impl Fighter {
             poise: def.poise,
             max_poise: def.poise,
             poise_refill: def.refill(),
+            energy: Energy::new(def.energy),
             ..Self::default()
         }
     }
@@ -89,6 +126,7 @@ impl Fighter {
             *self = Self { slide: self.slide, faction: self.faction, ..Self::default() };
             return;
         };
+        self.energy.refit(def.energy);
         if self.defeated {
             self.max_health = def.health;
         } else {
@@ -145,6 +183,40 @@ impl Fighter {
         self.is_fighter() && !self.defeated && faction.is_hostile_to(self.faction)
     }
 
+    /// The energy it holds (M3 Q3c).
+    #[must_use]
+    pub const fn energy(&self) -> u32 {
+        self.energy.now
+    }
+
+    /// Its energy meter when full. Zero is no meter.
+    #[must_use]
+    pub const fn max_energy(&self) -> u32 {
+        self.energy.max
+    }
+
+    /// Whether it holds `cost` energy, so a move that costs that much can start. Nothing costs nothing.
+    #[must_use]
+    pub const fn can_afford(&self, cost: u32) -> bool {
+        self.energy.now >= cost
+    }
+
+    /// Spends what a move that's starting costs. A move it couldn't afford never starts, so this never
+    /// goes below zero; a forced start that skipped the check spends what there is.
+    pub(crate) fn spend(&mut self, cost: u32) {
+        self.energy.now = self.energy.now.saturating_sub(cost);
+    }
+
+    /// Fills its meter to the top: how a fight that wants it ready from the start begins.
+    pub(crate) fn fill_energy(&mut self) {
+        self.energy.now = self.energy.max;
+    }
+
+    /// What a hit it landed gives it.
+    pub(super) fn landed_a_hit(&mut self) {
+        self.energy.gain(self.energy.landed);
+    }
+
     /// Whether a hit has taken the last of its health: it starts nothing more, hits nothing more and
     /// can't be hit.
     #[must_use]
@@ -192,6 +264,7 @@ impl Fighter {
     /// [module docs](super#what-a-hit-does). `armour` is the threshold open on its move now.
     pub(super) fn take_hit(&mut self, attack: &Attack, armour: u32, now: SimTime) -> HitOutcome {
         self.health = self.health.saturating_sub(attack.damage);
+        self.energy.gain(self.energy.taken);
         if attack.poise > 0 {
             self.poise = self.poise.saturating_sub(attack.poise);
             self.poise_refills_at = (self.poise_refill != SimDuration::ZERO).then(|| now + self.poise_refill);

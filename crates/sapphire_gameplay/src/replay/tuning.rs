@@ -421,6 +421,7 @@ mod tests {
                 controller,
                 faction: WARRIORS,
             })?;
+            sim.fill_energy(player);
             sim.give_soft_lock(player);
             sim.prepare_standing_jump(player);
             sim.give_brain(enemy);

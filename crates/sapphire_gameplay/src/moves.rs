@@ -658,13 +658,14 @@ pub(crate) fn settle_cancels(
     mut actors: Query<
         '_,
         '_,
-        (&EntityClock, &mut MoveRunner, &mut IntentRing, &mut MoveOutput, &WarpTarget, &Fighter),
+        (&EntityClock, &mut MoveRunner, &mut IntentRing, &mut MoveOutput, &WarpTarget, &mut Fighter),
     >,
     transforms: Query<'_, '_, &ActorTransform>,
 ) {
     let tick = world_clock.0.ticks();
     for (id, entity) in table.iter() {
-        let Ok((clock, mut runner, mut ring, mut output, target, fighter)) = actors.get_mut(entity) else {
+        let Ok((clock, mut runner, mut ring, mut output, target, mut fighter)) = actors.get_mut(entity)
+        else {
             continue;
         };
         *output = MoveOutput::default();
@@ -694,7 +695,7 @@ pub(crate) fn settle_cancels(
             output: &mut output,
         };
         let frozen = clock.0.last_delta() == SimDuration::ZERO;
-        settle(stage, set, &mut runner, &mut ring, clock.0.now(), frozen);
+        settle(stage, set, &mut runner, &mut ring, &mut fighter, clock.0.now(), frozen);
         if runner.counter.is_some_and(|counter| counter.closes <= clock.0.now()) {
             runner.counter = None;
         }
@@ -702,12 +703,15 @@ pub(crate) fn settle_cancels(
     }
 }
 
-/// See [`settle_cancels`] and the [module docs](self).
+/// See [`settle_cancels`] and the [module docs](self). A press or hold for a move that costs more energy
+/// than `fighter` holds fires nothing, and stays in the ring until it expires or the meter fills (M3 Q3c);
+/// a move that starts spends its cost. A forced start, a reaction's or a test's, neither asks nor spends.
 fn settle(
     mut stage: Stage<'_>,
     set: MoveSetId,
     runner: &mut MoveRunner,
     ring: &mut IntentRing,
+    fighter: &mut Fighter,
     now: SimTime,
     frozen: bool,
 ) {
@@ -741,9 +745,11 @@ fn settle(
                     limit: now.as_subticks(),
                 };
                 let mut best = None;
-                scan_counter(runner, library, current, current_revision, &window, ring, &mut best);
-                window.scan(current.neutral(), true, current, ring, &mut best);
+                let energy = fighter.energy();
+                scan_counter(runner, library, current, current_revision, &window, ring, energy, &mut best);
+                window.scan(current.neutral(), true, current, ring, energy, &mut best);
                 let Some(fire) = best else { return };
+                spend(fighter, current, fire.target);
                 take(&mut stage, runner, ring, fire, reference(fire.target));
             }
             Some(running) => {
@@ -756,10 +762,11 @@ fn settle(
                 let reached = runner.cursor.as_subticks();
                 let unread = if running.fresh { reached } else { reached.saturating_add(1) };
                 let mut best = None;
+                let energy = fighter.energy();
                 // A counter window can outlast the move: what's past the move's end waits for that.
                 let limit = now.as_subticks().min(ends_at.as_subticks());
                 let bounds = OpenWindow { opens: 0, closes: 0, reached, unread, limit };
-                scan_counter(runner, library, current, current_revision, &bounds, ring, &mut best);
+                scan_counter(runner, library, current, current_revision, &bounds, ring, energy, &mut best);
                 for cancel in &mv.cancels {
                     let window = OpenWindow {
                         opens: (running.started_at + cancel.span.start()).as_subticks(),
@@ -768,9 +775,10 @@ fn settle(
                         unread,
                         limit: now.as_subticks(),
                     };
-                    window.scan(&cancel.allow, same_revision, current, ring, &mut best);
+                    window.scan(&cancel.allow, same_revision, current, ring, energy, &mut best);
                 }
                 if let Some(fire) = best {
+                    spend(fighter, current, fire.target);
                     take(&mut stage, runner, ring, fire, reference(fire.target));
                     stage.stats.cancels_fired += 1;
                 } else if ends_at <= now {
@@ -850,13 +858,16 @@ impl OpenWindow {
         }
     }
 
-    /// Considers everything `allows` lets the ring do in this window.
+    /// Considers everything `allows` lets the ring do in this window, with `energy` to spend: a move that
+    /// costs more isn't considered.
+    #[allow(clippy::too_many_arguments, reason = "the window's own reading of the actor's state")]
     fn scan(
         &self,
         allows: &[Allow],
         same_revision: bool,
         current: &MoveSet,
         ring: &IntentRing,
+        energy: u32,
         best: &mut Option<Fire>,
     ) {
         for allow in allows {
@@ -866,6 +877,9 @@ impl OpenWindow {
                 current.find(allow.target_name()).map(|(index, _)| index)
             };
             let Some(target) = target else { continue };
+            if current.move_at(target).is_some_and(|mv| mv.cost() > energy) {
+                continue;
+            }
             let mut consider = |fire: Fire| {
                 if best.is_none_or(|best| fire.beats(&best)) {
                     *best = Some(fire);
@@ -894,6 +908,7 @@ impl OpenWindow {
 
 /// Considers what the actor's counter window lets the ring do, with `bounds` saying how far this step has
 /// been read and may reach. Goes first, so among equals a counter stands. See the [module docs](self).
+#[allow(clippy::too_many_arguments, reason = "the window's own reading of the actor's state")]
 fn scan_counter(
     runner: &MoveRunner,
     library: &MoveLibrary,
@@ -901,6 +916,7 @@ fn scan_counter(
     current_revision: u32,
     bounds: &OpenWindow,
     ring: &IntentRing,
+    energy: u32,
     best: &mut Option<Fire>,
 ) {
     let Some(counter) = runner.counter else { return };
@@ -913,9 +929,16 @@ fn scan_counter(
         unread: bounds.unread,
         limit: bounds.limit,
     };
-    window.scan(&allow.allow, counter.at.revision == current_revision, current, ring, best);
+    window.scan(&allow.allow, counter.at.revision == current_revision, current, ring, energy, best);
     if let Some(fire) = best {
         fire.counter = true;
+    }
+}
+
+/// Spends what the move at `target` of `current` costs, as it starts (M3 Q3c).
+fn spend(fighter: &mut Fighter, current: &MoveSet, target: u32) {
+    if let Some(mv) = current.move_at(target) {
+        fighter.spend(mv.cost());
     }
 }
 

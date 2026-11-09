@@ -20,10 +20,10 @@ use crate::brain::{
 use crate::movement::ControllerProfile;
 use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
-    FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
-    MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH, MAX_MOVE_TICKS,
-    MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions,
-    Shape, Span, WarpWindow, Weight, WorldSlowMotion,
+    EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,
+    Knockback, MAX_BUFFER_TICKS, MAX_ENERGY, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH,
+    MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MoveParts, MoveSet, MoveSetError,
+    PerfectDodgeWindow, Reactions, Shape, Span, WarpWindow, Weight, WorldSlowMotion,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -109,6 +109,25 @@ pub struct FighterDocument {
     /// spawned with. A live edit reaches a running fight on its next step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub movement: Option<ControllerProfile>,
+    /// Its energy meter (M3 Q3c), which hits fill and a move's `cost` spends. Left out, it has none, and
+    /// no move of the set can cost any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<EnergyDocument>,
+}
+
+/// A fighter's energy meter (M3 Q3c). See [`EnergyDef`].
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnergyDocument {
+    /// The meter when full, 1 to [`MAX_ENERGY`].
+    pub max: u32,
+    /// What each hit it lands gives it.
+    #[serde(default)]
+    pub landed: u32,
+    /// What each hit it takes gives it.
+    #[serde(default)]
+    pub taken: u32,
 }
 
 /// One of a fighter's own hurtboxes. See [`FighterHurtbox`].
@@ -243,6 +262,10 @@ pub struct MoveDocument {
     /// fight is refused as it's prepared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cinematic: Option<String>,
+    /// The energy it spends as it starts (M3 Q3c): it can't start until its fighter has that much. Left out
+    /// or zero, it costs nothing. A cost needs the set's fighter to have an energy meter that holds it.
+    #[serde(default, skip_serializing_if = "costs_nothing")]
+    pub cost: u32,
 }
 
 /// A window with nothing else to say: open on ticks `from` to `to − 1`.
@@ -298,6 +321,11 @@ pub struct AttackDocument {
 
 fn is_zero(value: &u16) -> bool {
     *value == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `skip_serializing_if` passes a reference")]
+const fn costs_nothing(cost: &u32) -> bool {
+    *cost == 0
 }
 
 /// A hurtbox change. See [`HurtboxChange`].
@@ -737,6 +765,20 @@ impl Checker {
                 self.add("movement", issue);
             }
         }
+        let energy = fighter.energy.map(|energy| {
+            if !(1..=MAX_ENERGY).contains(&energy.max) {
+                self.add("energy", format!("a meter of {}, not 1 to {MAX_ENERGY}", energy.max));
+            }
+            for (which, gain) in [("landed", energy.landed), ("taken", energy.taken)] {
+                if gain > energy.max {
+                    self.add(
+                        "energy",
+                        format!("a hit {which} gives {gain}, more than the meter's {}", energy.max),
+                    );
+                }
+            }
+            EnergyDef { max: energy.max, landed: energy.landed, taken: energy.taken }
+        });
         FighterDef {
             health: fighter.health,
             poise: fighter.poise,
@@ -744,6 +786,7 @@ impl Checker {
             hurtboxes,
             reactions,
             movement: fighter.movement,
+            energy,
         }
     }
 
@@ -1523,6 +1566,18 @@ fn compile_move(
         Name::intern(name)
     });
 
+    if mv.cost > 0 {
+        match known.fighter.and_then(|fighter| fighter.energy) {
+            None => {
+                check.add("cost", format!("costs {}, and the set's fighter has no energy meter", mv.cost))
+            }
+            Some(energy) if mv.cost > energy.max => {
+                check.add("cost", format!("costs {}, more than the meter's {}", mv.cost, energy.max));
+            }
+            Some(_) => {}
+        }
+    }
+
     Some(
         MoveParts {
             label: mv.name.clone(),
@@ -1540,6 +1595,7 @@ fn compile_move(
             warps,
             cues,
             cinematic,
+            cost: mv.cost,
         }
         .build(),
     )
@@ -1722,8 +1778,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 7,
-                current: 6
+                found: 8,
+                current: 7
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];

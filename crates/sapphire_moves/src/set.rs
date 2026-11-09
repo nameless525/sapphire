@@ -693,6 +693,8 @@ pub struct Move {
     pub cues: Vec<Cue>,
     /// The name of the cinematic the move plays from its first tick, if any (M3 Q3b).
     cinematic: Option<u64>,
+    /// The energy it spends as it starts (M3 Q3c); zero is none.
+    cost: u32,
 }
 
 impl Move {
@@ -715,6 +717,12 @@ impl Move {
             Some(name) => Some(Name::from_u64(name)),
             None => None,
         }
+    }
+
+    /// The energy it spends as it starts, which its fighter must have (M3 Q3c). Zero costs nothing.
+    #[must_use]
+    pub const fn cost(&self) -> u32 {
+        self.cost
     }
 
     /// The whole move, in ticks.
@@ -766,6 +774,7 @@ pub(crate) struct MoveParts {
     pub(crate) warps: Vec<WarpWindow>,
     pub(crate) cues: Vec<Cue>,
     pub(crate) cinematic: Option<Name>,
+    pub(crate) cost: u32,
 }
 
 impl MoveParts {
@@ -786,6 +795,7 @@ impl MoveParts {
             mut warps,
             mut cues,
             cinematic,
+            cost,
         } = self;
         // Stable sorts: authored order stands among equals, so it's part of what a set means.
         hitboxes.sort_by_key(|hitbox| hitbox.span.from);
@@ -814,6 +824,7 @@ impl MoveParts {
             warps,
             cues,
             cinematic: cinematic.map(Name::as_u64),
+            cost,
         }
     }
 }
@@ -916,6 +927,23 @@ pub struct FighterDef {
     /// How it moves, within [`MOVEMENT_LIMITS`](crate::MOVEMENT_LIMITS). `None` leaves its actors the
     /// profile they spawned with, which is what a document with no such section means.
     pub movement: Option<ControllerProfile>,
+    /// Its energy meter (M3 Q3c). `None` has none, and nothing of the set costs any.
+    pub energy: Option<EnergyDef>,
+}
+
+/// The most a fighter's energy meter can hold.
+pub const MAX_ENERGY: u32 = 10_000;
+
+/// A fighter's energy meter (M3 Q3c): what a move's [`Move::cost`] spends, and what hits fill. It starts
+/// empty unless the fight fills it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct EnergyDef {
+    /// Full, 1 to [`MAX_ENERGY`].
+    pub max: u32,
+    /// Given for each hit the fighter lands.
+    pub landed: u32,
+    /// Given for each hit it takes.
+    pub taken: u32,
 }
 
 impl FighterDef {
@@ -943,8 +971,8 @@ pub struct MoveSet {
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
-    /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics.
-    const VERSION: u32 = 6;
+    /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs.
+    const VERSION: u32 = 7;
 }
 
 /// A move set that can't be built, read or written.

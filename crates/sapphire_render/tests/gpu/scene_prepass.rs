@@ -16,8 +16,8 @@ use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::{
-    CameraData, DirectionalLight, FramePacketRing, InstanceId, MeshInstance, RenderSettings, Renderer,
-    SCENE_PREPASS, ViewData,
+    CameraData, DirectionalLight, FramePacketRing, InstanceId, MeshInstance, PipelineInventory,
+    RenderSettings, Renderer, SCENE_PREPASS, ViewData,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -267,6 +267,28 @@ fn debug_lines_on_mobile_low_build_the_pass_and_test_against_it() {
     frames.render(&[]);
     assert!(!frames.prepass_ran(), "no lines, no pass");
     assert_eq!(frames.pipelines(), built, "and what it built stays, for the next lines");
+}
+
+/// Declared, debug lines build nothing on their first frame (M3 E5's gizmo): the prewarm builds their pass and
+/// the scene prepass for what's drawn, and what's drawn after has its share built as it uploads.
+#[test]
+#[ignore = "needs a GPU"]
+fn declared_debug_lines_build_nothing_when_they_come() {
+    let (from, to) = (Vec3::new(-20.0, 0.0, -3.0), Vec3::new(20.0, 0.0, -3.0));
+    let lines = [DebugLine { from, to, color: Color::rgb(255, 40, 200), depth: Depth::Tested }];
+    let mut frames = Frames::new(tier(TierId::MobileLow));
+    frames.add(&outlined(AlphaMode::Opaque, false), Vec3::ZERO);
+    frames.render(&[]);
+    let inventory = PipelineInventory { debug_draw: true, ..PipelineInventory::default() };
+    assert!(frames.renderer.prewarm(&inventory) > 1, "the pass and the prepass");
+    assert_eq!(frames.renderer.prewarm(&inventory), 0);
+    assert_eq!(inventory.entries(), ["debug"]);
+    frames.add(&outlined(MASK, false), Vec3::new(-2.5, 1.6, 0.0));
+    frames.render(&[]);
+    let before = frames.renderer.stats().pipelines;
+    frames.render(&lines);
+    assert!(frames.prepass_ran());
+    assert_eq!(frames.renderer.stats().pipelines, before, "{}", frames.renderer.first_use_report());
 }
 
 /// A kind first drawn after debug lines came builds its share of the pass with itself: it ends up with

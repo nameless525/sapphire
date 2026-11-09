@@ -27,6 +27,12 @@ const ARENA_SCRIPTED_BEAT: u64 = 60;
 /// The chunk `dialogue-flag` binds, in source: a fight that answers a story flag (M3 Q2).
 pub const DIALOGUE_FLAG: &str = include_str!("../test_content/dialogue-flag.luau");
 
+/// [`DIALOGUE_FLAG`]'s file name: what an edit of it goes by.
+pub const DIALOGUE_FLAG_FILE: &str = "dialogue-flag.luau";
+
+/// [`DIALOGUE_FLAG`]'s path from the repository's root, for hot reload to watch.
+pub const DIALOGUE_FLAG_PATH: &str = "crates/sapphire_script/test_content/dialogue-flag.luau";
+
 /// The dialogue `dialogue-flag` loads, the game's own: the guide at the Lantern Ward, whose first effect
 /// lights the ward. Its effects are in the replay's `tables_hash`.
 pub const WARD_GUIDE: &str = include_str!("../../../content/dialogue/ward_guide.dialogue.ron");
@@ -62,15 +68,54 @@ pub static SCRIPTED: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
 pub static ALL: LazyLock<Vec<Scenario>> =
     LazyLock::new(|| SCENARIOS.iter().chain(SCRIPTED.iter()).copied().collect());
 
-/// Each script a scenario here binds, by its path from the repository's root: what an app's hot reload
-/// watches and live link's status lists.
-pub const SOURCES: &[&str] = &[ARENA_SCRIPTED_PATH];
+/// The script a scenario here binds: a row of [`SCRIPTS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptOf {
+    /// The scenario that binds it, one of [`SCRIPTED`].
+    pub scenario: &'static str,
+    /// The scenario whose document its world comes from.
+    pub built_on: &'static str,
+    /// Its file's name: what an edit of it goes by.
+    pub file: &'static str,
+    /// Its path from the repository's root, for hot reload to watch.
+    pub path: &'static str,
+}
+
+/// Each scenario's script, one row for each of [`SCRIPTED`], which a test holds them to: a scenario with a
+/// script added there and not here would have none to reload.
+pub const SCRIPTS: &[ScriptOf] = &[
+    ScriptOf {
+        scenario: "arena-scripted",
+        built_on: "arena-skirmish",
+        file: ARENA_SCRIPTED_FILE,
+        path: ARENA_SCRIPTED_PATH,
+    },
+    ScriptOf {
+        scenario: "dialogue-flag",
+        built_on: "arena-skirmish",
+        file: DIALOGUE_FLAG_FILE,
+        path: DIALOGUE_FLAG_PATH,
+    },
+];
+
+/// Each script a scenario here binds, by its path from the repository's root, once each: what an app's hot
+/// reload watches and live link's status lists. From [`SCRIPTS`].
+pub static SOURCES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut sources: Vec<&'static str> = Vec::with_capacity(SCRIPTS.len());
+    for script in SCRIPTS {
+        if !sources.contains(&script.path) {
+            sources.push(script.path);
+        }
+    }
+    sources
+});
 
 /// The document a scenario's world comes from: its own, or for one with a script, the document of the one
 /// it's built on. What an app asks of a world it stands a fight in.
 #[must_use]
 pub fn document_of(name: &str) -> Option<&'static ScenarioDocument> {
-    let built_on = if SCRIPTED.iter().any(|scripted| scripted.name == name) { skirmish().name } else { name };
+    let built_on =
+        SCRIPTS.iter().find(|script| script.scenario == name).map_or(name, |script| script.built_on);
     find_scenario(&SCENARIOS, built_on)?.document()
 }
 
@@ -110,14 +155,44 @@ fn arena_scripted(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(cast)
 }
 
+/// `arena-skirmish` with the ward guide's dialogue, then its chunk, or the newest edit of it if the fight is a
+/// live one's ([`ScriptEdits`]).
 fn dialogue_flag(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = skirmish().set_up(sim)?;
     sim.add_dialogue(ward_guide().simulation)
         .expect("the committed dialogue's effects are valid: a test holds it");
-    let cooked = cook(DIALOGUE_FLAG).expect("the committed chunk cooks: a test holds it");
-    let mut host = ScriptHost::new(Limits::default()).expect("a VM starts");
-    host.bind(&cooked, "=dialogue-flag").expect("the committed chunk loads: a test holds it");
+    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(DIALOGUE_FLAG_FILE));
+    let source = edit.unwrap_or(DIALOGUE_FLAG).to_owned();
+    let refused = |problem: String| ScenarioError::Script { name: DIALOGUE_FLAG_FILE.to_owned(), problem };
+    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
+    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
+    host.bind(&cooked, &format!("={DIALOGUE_FLAG_FILE}")).map_err(|error| refused(error.to_string()))?;
     host.beat_every(DIALOGUE_FLAG_BEAT);
     attach(sim, host);
     Ok(cast)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{SCRIPTED, SCRIPTS, SOURCES, document_of};
+
+    /// Every scenario with a script has its script's row, so hot reload watches it, and every row is a
+    /// scenario's, built on a document this build holds, with a file that's there.
+    #[test]
+    fn every_scripted_scenarios_source_is_watched() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for scenario in SCRIPTED.iter() {
+            let rows = SCRIPTS.iter().filter(|script| script.scenario == scenario.name).count();
+            assert_eq!(rows, 1, "{} has one script", scenario.name);
+        }
+        for script in SCRIPTS {
+            assert!(SCRIPTED.iter().any(|scenario| scenario.name == script.scenario), "{script:?}");
+            assert!(SOURCES.contains(&script.path), "{script:?}");
+            assert!(script.path.ends_with(&format!("/{}", script.file)), "{script:?}");
+            assert!(root.join(script.path).is_file(), "{script:?}");
+            assert!(document_of(script.scenario).is_some(), "{script:?}");
+        }
+    }
 }

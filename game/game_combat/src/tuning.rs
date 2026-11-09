@@ -441,7 +441,7 @@ impl LiveTuning {
                 add(path, Document::Moves);
             }
         }
-        for path in sapphire_script::scenarios::SOURCES {
+        for &path in sapphire_script::scenarios::SOURCES.iter() {
             add(path, Document::Script);
         }
         if let Some(path) = run.screen {

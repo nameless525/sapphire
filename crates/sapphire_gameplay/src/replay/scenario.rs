@@ -81,8 +81,9 @@ pub struct BakedZone {
 }
 
 impl BakedZone {
-    /// What a simulation runs on while it's there.
-    pub fn load(&self) -> Result<ZoneGround, ZoneLoadError> {
+    /// What a simulation runs on while it's there. The encounters it lists come from their documents, cooked
+    /// as a pack's are, since what they say is in the zone's digest.
+    pub fn load(&self) -> Result<ZoneGround, ScenarioError> {
         let aligned = |bytes: &[u8]| {
             let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
             aligned.extend_from_slice(bytes);
@@ -92,15 +93,22 @@ impl BakedZone {
         let simulation = &Zone::read(&zone)?.simulation;
         let (collider_id, navmesh_id) =
             (simulation.colliders.as_ref().copied(), simulation.navigation.as_ref().copied());
-        ZoneGround::from_cooked(self.asset, &sapphire_zone::pack_name(self.stem), &zone, |id| {
-            if Some(id) == collider_id {
-                Some(&colliders[..])
-            } else if Some(id) == navmesh_id {
-                Some(&navmesh[..])
-            } else {
-                None
-            }
-        })
+        let encounters = simulation
+            .encounters
+            .iter()
+            .map(|id| Ok((*id, super::document::cooked_encounter(*id)?)))
+            .collect::<Result<Vec<_>, ScenarioError>>()?;
+        let ground =
+            ZoneGround::from_cooked(self.asset, &sapphire_zone::pack_name(self.stem), &zone, |id| {
+                if Some(id) == collider_id {
+                    Some(&colliders[..])
+                } else if Some(id) == navmesh_id {
+                    Some(&navmesh[..])
+                } else {
+                    encounters.iter().find(|(held, _)| *held == id).map(|(_, bytes)| bytes.as_slice())
+                }
+            })?;
+        Ok(ground)
     }
 }
 

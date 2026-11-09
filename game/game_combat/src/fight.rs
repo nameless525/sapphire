@@ -1169,8 +1169,8 @@ impl FightShow {
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();
         let world = scene.world_mut();
-        let stick_released = arena.fighters()[0]
-            .1
+        let stick_released = arena
+            .player_seen()
             .is_some_and(|actor| actor.controls.current.stick == sapphire_gameplay::Stick::CENTER);
         for index in 0..arena.fighter_count() {
             let Ok((mut driver, render, figure, rig, _)) = graph_players.get_mut(world, arena.entity(index))
@@ -1703,8 +1703,8 @@ impl Fight {
     #[cfg(feature = "dev")]
     fn clear_recording_presentation(&mut self, scene: &mut Scene) {
         if let Some(arena) = &self.show.arena {
-            for (entity, _) in arena.fighters() {
-                if let Some(mut driver) = scene.world_mut().get_mut::<GraphDriver>(entity) {
+            for fighter in 0..arena.fighter_count() {
+                if let Some(mut driver) = scene.world_mut().get_mut::<GraphDriver>(arena.entity(fighter)) {
                     driver.player.pose_mut().clear_body_presentation();
                 }
             }

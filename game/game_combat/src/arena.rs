@@ -607,8 +607,14 @@ impl ArenaActors {
         self.fighters[fighter].entity
     }
 
+    /// What the last step said of the player, nothing before a fight.
+    pub(crate) fn player_seen(&self) -> Option<&ActorView> {
+        self.seen[0].as_ref()
+    }
+
     /// The player and the first warrior, each one's entity and what the last step said of it: the two a
-    /// fight's simulation-owned bodies pose. Nothing's said before a fight.
+    /// fight's simulation-owned bodies pose. Nothing's said before a fight. Only a fight that starts with
+    /// both asks: once the warrior's left the roster (defeated, or left behind by a zone trip), it's gone.
     pub(crate) fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
         [0, 1].map(|place| (self.fighters[place].entity, self.seen[place].as_ref()))
     }

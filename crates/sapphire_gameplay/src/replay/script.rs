@@ -26,7 +26,7 @@ pub const PROVING_HUB: ZoneId = ZoneId::from_raw(0);
 pub const PROVING_GROUND: ZoneId = ZoneId::from_raw(1);
 pub const HUB_START: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 0 };
 pub const HUB_FROM_GROUND: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 1 };
-pub const GROUND_START: ZoneEntry = ZoneEntry { zone: PROVING_GROUND, spawner: 1 };
+pub const GROUND_START: ZoneEntry = ZoneEntry { zone: PROVING_GROUND, spawner: 3 };
 
 /// The ticks the `zone-trip` script leaves each zone on, in order.
 pub const ZONE_TRIP_ENTRIES: [(u32, ZoneEntry); 5] = [

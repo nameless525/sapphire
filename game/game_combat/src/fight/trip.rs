@@ -29,7 +29,6 @@ use sapphire_colliders::ColliderSet;
 use sapphire_core::Name;
 use sapphire_gameplay::zone::ZoneId;
 use sapphire_physics::PhysicsWorld;
-use sapphire_stage::RenderMesh;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::{Scene, ZoneLoad, ZoneTarget};
 use sapphire_time::Stopwatch;

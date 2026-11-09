@@ -153,6 +153,18 @@ fn id_of(document: &str) -> Result<AssetId, ScenarioError> {
     id_in(named(&path)?, &path)
 }
 
+/// Encounter `id`, cooked as a pack holds it, from the document whose sidecar names it: a zone that lists it
+/// stands a fight there, and a scenario that names it is how this build holds it (M3 W4's trip into B2's yard).
+pub(super) fn cooked_encounter(id: AssetId) -> Result<AlignedVec, ScenarioError> {
+    for (path, text) in NAMED_DOCUMENTS {
+        let Some(document) = path.strip_suffix(".meta") else { continue };
+        if document.ends_with(".encounter.ron") && id_in(text, path)? == id {
+            return Ok(EncounterDocument::from_ron(named(document)?)?.cook()?.to_cooked()?);
+        }
+    }
+    Err(invalid(format!("encounter {id}"), "no encounter document this build holds has that ID"))
+}
+
 /// The ID in a sidecar's `text`, from `path`.
 fn id_in(text: &str, path: &str) -> Result<AssetId, ScenarioError> {
     let id = text.split("id:").nth(1).and_then(|rest| rest.split('"').nth(1));

@@ -79,6 +79,15 @@ pub enum ZoneStartError {
     TooManyEncounters { count: usize },
 }
 
+/// Where a zone's trigger stands: what starts an encounter, for presentation to warm ahead of (M3 W5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StartVolume {
+    /// Its centre, in the zone's space.
+    pub position: [f32; 3],
+    /// Axis-aligned about [`Self::position`], as a trigger tests it.
+    pub volume: CookedVolume,
+}
+
 /// How far along an encounter is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EncounterPhase {
@@ -256,6 +265,12 @@ impl SimEncounter {
         self.spawns.len()
     }
 
+    /// How many of [`Self::planned`] have been asked for: those still to come are the rest.
+    #[must_use]
+    pub const fn spawned(&self) -> u32 {
+        self.spawned
+    }
+
     /// How many waves have come.
     #[must_use]
     pub const fn waves_begun(&self) -> u32 {
@@ -409,6 +424,15 @@ impl SimZone {
     #[must_use]
     pub fn encounters(&self) -> &[SimEncounter] {
         &self.encounters
+    }
+
+    /// Where encounter `index` starts: the first trigger whose event is its `starts_on`, the trigger that
+    /// fires it first. `None` for an encounter that no trigger here starts, or past the end.
+    #[must_use]
+    pub fn start_volume(&self, index: usize) -> Option<StartVolume> {
+        let encounter = self.encounters.get(index)?;
+        let trigger = self.triggers.iter().find(|trigger| trigger.event == encounter.starts_on)?;
+        Some(StartVolume { position: trigger.position, volume: trigger.volume })
     }
 
     /// How many fighters all its encounters bring: room a pool has to keep.

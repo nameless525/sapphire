@@ -207,6 +207,28 @@ fn a_holder_who_goes_gives_the_token_back() {
     assert_eq!(most, 1, "and someone else takes it");
 }
 
+/// What presentation warms ahead of (M3 W5): an encounter's start is its trigger's volume, and what's still
+/// to come of it is what its waves haven't spawned.
+#[test]
+fn an_encounter_says_where_it_starts_and_how_many_are_still_to_come() {
+    let (mut sim, cast) = {
+        let scenario = find_scenario(&SCENARIOS, "cart-yard").expect("listed");
+        scenario.start(scenario.config).expect("sets up")
+    };
+    let zone = sim.zone().expect("it has one");
+    let start = zone.start_volume(0).expect("the cart yard's trigger starts it");
+    assert_eq!(start.position, [9.0, 1.0, 10.0]);
+    assert_eq!(start.volume, sapphire_zone::CookedVolume::Box { half_extents: [4.0, 2.0, 4.0] });
+    assert_eq!(zone.start_volume(1), None, "one encounter");
+    assert_eq!(encounter(&sim).spawned(), 0);
+    let mut script = replay::into_the_yard;
+    for _ in 0..300 {
+        let actions = script.actions(sim.tick(), &cast);
+        sim.step(&actions);
+    }
+    assert_eq!(encounter(&sim).spawned(), 2, "the first wave");
+}
+
 /// The trigger fires as someone goes in, and not before, once, with its encounter starting once.
 #[test]
 fn a_zone_trigger_starts_its_encounter_when_someone_walks_in() {

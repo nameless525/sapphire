@@ -442,6 +442,25 @@ fn a_timeline_is_a_document_like_any_other() {
     assert!(issues.iter().any(|issue| issue.contains("camera.keys[1]")), "{issues:?}");
 }
 
+/// E5's zone panel: a placement moves by the path of one number of its `at`, as a drag of the gizmo sets it, and
+/// that number's bytes are all that change.
+#[test]
+fn a_placement_moves_by_its_place_alone() {
+    let mut zone = open("content/zones/proving_ground/proving_ground.zone.ron", kinds::zone());
+    assert_eq!(zone.failure(), None);
+    let text = zone.text().to_owned();
+    zone.begin_gesture("move the cart");
+    for (axis, value) in [(0, 9.25_f32), (0, 9.5), (2, 11.25)] {
+        let at = path(&format!("placements[2].at[{axis}]"));
+        assert_eq!(zone.set("move the cart", &at, &value), Ok(Outcome::Changed));
+    }
+    zone.end_gesture();
+    assert_eq!(zone.text(), text.replace("at: (9.0, 0.0, 10.0)", "at: (9.5, 0.0, 11.25)"));
+    assert_eq!(zone.undo_label(), Some("move the cart"));
+    assert!(zone.undo());
+    assert_eq!(zone.text(), text, "one gesture, one undo");
+}
+
 #[test]
 fn a_value_of_the_wrong_type_is_refused() {
     let mut document = sample(LAID_OUT);

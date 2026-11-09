@@ -17,6 +17,7 @@ use sapphire_assets::ui::UiDocument;
 use sapphire_moves::MoveSetDocument;
 use sapphire_timeline::TimelineDocument;
 use sapphire_vfx::EffectLibrary;
+use sapphire_zone::ZoneDocument;
 
 use crate::set::{DocumentSet, SetError};
 
@@ -89,6 +90,29 @@ pub fn timeline() -> Schema<TimelineDocument> {
     }
 }
 
+/// A `.zone.ron`. Its checks are its parse's: a zone reads only if it's right.
+#[must_use]
+pub fn zone() -> Schema<ZoneDocument> {
+    Schema {
+        parse: |text| ZoneDocument::from_ron(text).map_err(|error| error.to_string()),
+        check: no_rules,
+        importer: Some(ZONE_IMPORTER),
+    }
+}
+
+/// The importer a cook writes in a new zone's sidecar: a zone cooks meshes, so it has their settings, laid out at
+/// the depth the sidecar puts them. `tools/sapphire_pipeline/tests/document_sidecars.rs` holds it to the cooker's.
+const ZONE_IMPORTER: &str = "Zone((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [],
+                mobile_skip: 0,
+            ),
+            position_format: Float32,
+        ))";
+
 /// An effect library, such as `default_effects.ron`, which is compiled in and no cook reads.
 #[must_use]
 pub fn effects() -> Schema<EffectLibrary> {
@@ -119,10 +143,12 @@ pub enum Kind {
     Effects,
     Timeline,
     Ui,
+    Zone,
 }
 
 impl Kind {
-    pub const ALL: [Self; 6] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects, Self::Timeline, Self::Ui];
+    pub const ALL: [Self; 7] =
+        [Self::Moves, Self::Graph, Self::Cue, Self::Effects, Self::Timeline, Self::Ui, Self::Zone];
 
     /// What a file's name says it is, if it's a document this crate knows. A library of effects has no suffix
     /// of its own beyond its name, as `default_effects.ron` shows.
@@ -140,6 +166,7 @@ impl Kind {
             Self::Effects => "_effects.ron",
             Self::Timeline => ".timeline.ron",
             Self::Ui => ".ui.ron",
+            Self::Zone => ".zone.ron",
         }
     }
 
@@ -153,6 +180,7 @@ impl Kind {
             Self::Effects => "Effects",
             Self::Timeline => "Timelines",
             Self::Ui => "Screens",
+            Self::Zone => "Zones",
         }
     }
 
@@ -165,6 +193,7 @@ impl Kind {
             Self::Effects => set.open(path, effects(), Arc::new(registry_of::<EffectLibrary>())),
             Self::Timeline => set.open(path, timeline(), Arc::new(registry_of::<TimelineDocument>())),
             Self::Ui => set.open(path, ui(), Arc::new(registry_of::<UiDocument>())),
+            Self::Zone => set.open(path, zone(), Arc::new(registry_of::<ZoneDocument>())),
         }
     }
 }

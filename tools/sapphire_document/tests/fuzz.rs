@@ -319,6 +319,17 @@ fn every_property_of_a_screen_undoes_to_the_same_bytes() {
     run("character.ui.ron", "content/ui/character.ui.ron", kinds::ui(), false);
 }
 
+/// A zone checks everything as it reads, so a value it can't take is refused with the text as it was.
+#[test]
+fn every_property_of_a_zone_undoes_or_is_refused() {
+    run(
+        "proving_ground.zone.ron",
+        "content/zones/proving_ground/proving_ground.zone.ron",
+        kinds::zone(),
+        true,
+    );
+}
+
 /// The library checks everything as it reads, so many values are refused here, each with the text as it
 /// was, and that's its rule at work.
 #[test]

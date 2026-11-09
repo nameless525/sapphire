@@ -330,33 +330,36 @@
         spawners: [
             // Where the walk starts, by the ward's closed gate, facing the temple's lane.
             (name: "player_start", position: (0.0, 0.0, 14.0), yaw_degrees: 180.0, spawns: "player"),
-            // The Market Court.
+            // The Market Court: two warriors and two Lancers.
+            (name: "market_gate", position: (40.0, 0.0, 0.0), yaw_degrees: 90.0, spawns: "player"),
             (name: "market_arrive", position: (47.0, 0.0, 0.0), yaw_degrees: 90.0, spawns: "player"),
             (name: "market_spawn_a", position: (60.0, 0.0, -6.0), yaw_degrees: 270.0, spawns: "warrior"),
-            (name: "market_spawn_b", position: (66.0, 0.0, 5.0), yaw_degrees: 270.0, spawns: "warrior"),
+            (name: "market_spawn_b", position: (66.0, 0.0, 5.0), yaw_degrees: 270.0, spawns: "lancer"),
             (name: "market_spawn_c", position: (72.0, 0.0, -3.0), yaw_degrees: 270.0, spawns: "warrior"),
-            (name: "market_spawn_d", position: (70.0, 0.0, 8.0), yaw_degrees: 270.0, spawns: "warrior"),
-            // The Blossom Garden.
+            (name: "market_spawn_d", position: (70.0, 0.0, 8.0), yaw_degrees: 270.0, spawns: "lancer"),
+            // The Blossom Garden: two warriors and two Lancers.
             (name: "garden_arrive", position: (-47.0, 0.0, 0.0), yaw_degrees: 270.0, spawns: "player"),
             (name: "garden_spawn_a", position: (-58.0, 0.0, 0.0), yaw_degrees: 90.0, spawns: "warrior"),
             (name: "garden_spawn_b", position: (-64.0, 0.0, -10.0), yaw_degrees: 90.0, spawns: "warrior"),
-            (name: "garden_spawn_c", position: (-64.0, 0.0, 9.0), yaw_degrees: 90.0, spawns: "warrior"),
-            (name: "garden_spawn_d", position: (-72.0, 0.0, 1.0), yaw_degrees: 90.0, spawns: "warrior"),
+            (name: "garden_spawn_c", position: (-64.0, 0.0, 9.0), yaw_degrees: 90.0, spawns: "lancer"),
+            (name: "garden_spawn_d", position: (-72.0, 0.0, 1.0), yaw_degrees: 90.0, spawns: "lancer"),
             // The Temple Court: inside its gate, where its checkpoint stands and the court's fight starts the
-            // player, then a fight, then the terrace.
+            // player, then a fight with three warriors and two Lancers, then the terrace.
             (name: "checkpoint_court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, spawns: "player"),
             (name: "court_spawn_a", position: (-8.0, 0.0, -80.0), yaw_degrees: 0.0, spawns: "warrior"),
             (name: "court_spawn_b", position: (8.0, 0.0, -80.0), yaw_degrees: 0.0, spawns: "warrior"),
-            (name: "court_spawn_c", position: (-14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "warrior"),
-            (name: "court_spawn_d", position: (14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "court_spawn_c", position: (-14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "lancer"),
+            (name: "court_spawn_d", position: (14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "lancer"),
             (name: "court_spawn_e", position: (0.0, 0.0, -90.0), yaw_degrees: 0.0, spawns: "warrior"),
             // Where a boss stands, on the terrace before the hall.
             (name: "boss", position: (0.0, 1.2, -108.0), yaw_degrees: 0.0, spawns: "boss"),
         ],
         triggers: [
-            (name: "market_threshold", position: (43.0, 1.5, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "market_entered"),
-            (name: "garden_threshold", position: (-43.0, 1.5, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "garden_entered"),
-            (name: "court_threshold", position: (0.0, 1.5, -61.0), volume: Box(half_extents: (4.5, 1.5, 1.0)), event: "court_entered"),
+            // Each ground-level box reaches a quarter metre under the paving: a trigger holds a character by its
+            // feet, which settle a hair under the ground, and a box that starts at the paving never holds them.
+            (name: "market_threshold", position: (43.0, 1.25, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "market_entered"),
+            (name: "garden_threshold", position: (-43.0, 1.25, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "garden_entered"),
+            (name: "court_threshold", position: (0.0, 1.25, -61.0), volume: Box(half_extents: (4.5, 1.5, 1.0)), event: "court_entered"),
             (name: "terrace_steps", position: (0.0, 2.0, -99.0), volume: Box(half_extents: (5.0, 2.0, 2.5)), event: "terrace_reached"),
         ],
         // Where a game comes back to (M3 B4): the start, each room's arrival and inside the court's gate. Someone
@@ -366,6 +369,13 @@
             (name: "market", position: (47.0, 0.0, 0.0), yaw_degrees: 90.0, volume: Box(half_extents: (1.5, 1.5, 4.5))),
             (name: "garden", position: (-47.0, 0.0, 0.0), yaw_degrees: 270.0, volume: Box(half_extents: (1.5, 1.5, 4.5))),
             (name: "court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, volume: Box(half_extents: (4.5, 1.5, 1.5))),
+        ],
+        // Its fights, each started by a trigger above: `market.encounter.ron`, `garden.encounter.ron` and
+        // `court.encounter.ron`.
+        encounters: [
+            "9c124ff2-ab3d-4b6c-a281-79dc6eade2ec",
+            "f2a2a203-7ac5-4a8b-91ec-4366daa62246",
+            "3e7d6965-beed-4aee-86c8-ea292239a816",
         ],
         splines: [
             // Through everything once, on foot, at about a character's height: a capture's and a bench's walk.

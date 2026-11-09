@@ -1,0 +1,16 @@
+// The Blossom Garden's fight (M3 C2): a warrior and a Lancer as someone comes through its gate, and another
+// pair when one is left, with two tokens between them.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "garden_entered",
+        faction: 2,
+        tokens: 2,
+        token_rest: 40,
+        waves: [
+            (when: Start, gap: 20, spawners: ["garden_spawn_a", "garden_spawn_c"]),
+            (when: Remaining(1), gap: 30, spawners: ["garden_spawn_b", "garden_spawn_d"]),
+        ],
+    ),
+)

@@ -13,6 +13,7 @@ use sapphire_zone::ZoneDocument;
 use super::scenario::{
     ScenarioError, fight_on, player_moves, ultimate_cinematic, warrior_enemy, warrior_moves,
 };
+use super::{SCENARIOS, find_scenario};
 use crate::actors::ActorId;
 use crate::arena::{ArenaSpawns, SpawnPoint};
 use crate::simulation::Simulation;
@@ -79,15 +80,24 @@ pub struct ZoneFight {
     pub colliders: sapphire_serialize::cooked::AlignedVec,
 }
 
-/// [`ZoneFight`] for the scenario named `scenario`, if it stands in a zone.
+/// [`ZoneFight`] for the scenario named `scenario`, if it stands in a zone: the court, or a scenario document
+/// whose zone stands on colliders of its own (M3 C2), which says the rest.
 pub fn zone_fight(scenario: &str) -> Option<Result<ZoneFight, ScenarioError>> {
-    (scenario == WARD_COURT).then(|| {
-        Ok(ZoneFight {
-            stem: WARD_ZONE_STEM,
-            player_at: PLAYER_SPAWNER,
-            spawns: ward_spawns()?,
-            colliders: ward_colliders()?,
-        })
+    if scenario == WARD_COURT {
+        return Some(court_fight());
+    }
+    let document = find_scenario(&SCENARIOS, scenario)?.document()?;
+    document.stands_in_zone()?;
+    Some(document.zone_fight())
+}
+
+/// [`ZoneFight`] for the court.
+fn court_fight() -> Result<ZoneFight, ScenarioError> {
+    Ok(ZoneFight {
+        stem: WARD_ZONE_STEM,
+        player_at: PLAYER_SPAWNER,
+        spawns: ward_spawns()?,
+        colliders: ward_colliders()?,
     })
 }
 

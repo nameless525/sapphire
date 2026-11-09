@@ -269,7 +269,10 @@ impl Scenario {
     /// opens that zone around the fight and stands its ground on the zone's colliders.
     #[must_use]
     pub fn zone(&self) -> Option<&'static str> {
-        (self.name == super::ward::WARD_COURT).then_some(super::ward::WARD_ZONE_STEM)
+        if self.name == super::ward::WARD_COURT {
+            return Some(super::ward::WARD_ZONE_STEM);
+        }
+        ScenarioDocument::zone_stem(self.document()?.stands_in_zone()?).ok()
     }
 }
 
@@ -1003,21 +1006,21 @@ mod tests {
         assert!(find_scenario(&SCENARIOS, "no-such-scenario").is_none());
     }
 
-    /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick
-    /// where it stood, which is the floor but for a start at a zone's checkpoint up on something (M3 B4).
+    /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick where it
+    /// was put, on the arena's floor or a zone's spawner or checkpoint, which may be up on something: a start at
+    /// the proving ground's platform (M3 B4), or the ward's terrace, 1.2 m up.
     #[test]
     fn the_fights_stand_on_the_ground() {
         for scenario in SCENARIOS.iter() {
             let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
-            let stood: Vec<f32> =
-                cast.iter().map(|&actor| sim.actor(actor).expect("alive").position.y).collect();
+            let put: Vec<_> = cast.iter().map(|&actor| sim.actor(actor).expect("there").position.y).collect();
             sim.step(&crate::actions::TickActions::NEUTRAL);
-            for (actor, stood) in cast.into_iter().zip(stood) {
+            for (actor, put) in cast.into_iter().zip(put) {
                 let view = sim.actor(actor).expect("alive");
                 assert!(view.controller.is_active(), "{}", scenario.name);
                 assert_eq!(view.controller.state.mode, crate::controller::GroundMode::Grounded);
-                assert!((view.position.y - stood).abs() < 1e-5, "{}: {}", scenario.name, view.position.y);
-                assert!(stood == 0.0 || scenario.name == "ground-platform", "{}: {stood}", scenario.name);
+                let y = view.position.y;
+                assert!((y - put).abs() < 1e-5, "{}: {y} from {put}", scenario.name);
             }
         }
     }

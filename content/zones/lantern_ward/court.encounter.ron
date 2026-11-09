@@ -1,0 +1,16 @@
+// The Temple Court's fight (M3 C2), past its gate: three warriors as someone comes in, and both Lancers when
+// one is left, with two tokens between them.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "court_entered",
+        faction: 2,
+        tokens: 2,
+        token_rest: 40,
+        waves: [
+            (when: Start, gap: 20, spawners: ["court_spawn_e", "court_spawn_a", "court_spawn_b"]),
+            (when: Remaining(1), gap: 30, spawners: ["court_spawn_c", "court_spawn_d"]),
+        ],
+    ),
+)

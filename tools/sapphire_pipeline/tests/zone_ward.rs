@@ -159,11 +159,16 @@ fn everywhere_the_ward_names_is_a_walk_from_the_start() {
     }
     assert!(count > 40, "the ward names more than {count} places");
     let spawns = |what: &str| document.spawners.iter().filter(|spawner| spawner.spawns == what).count();
-    assert_eq!(spawns("boss"), 1, "where a boss stands");
+    // Where a boss stands goes by the spawner's name: what stands there is its kind's, the zone's to say.
+    assert_eq!(
+        document.spawners.iter().filter(|spawner| spawner.name == "boss").count(),
+        1,
+        "where a boss stands"
+    );
     let checkpoints: Vec<&str> =
         document.checkpoints.iter().map(|checkpoint| checkpoint.name.as_str()).collect();
     assert_eq!(checkpoints, ["start", "market", "garden", "court"], "where a game comes back to");
-    assert!(spawns("warrior") >= 12, "three rooms' fights");
+    assert!(spawns("warrior") + spawns("lancer") >= 12, "three rooms' fights");
 }
 
 /// The walls hold: the bake keeps nothing outside them, as an island no seed reaches is dropped and a gap

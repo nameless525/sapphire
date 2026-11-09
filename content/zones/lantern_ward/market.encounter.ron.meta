@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "9c124ff2-ab3d-4b6c-a281-79dc6eade2ec",
+        importer: Encounter(()),
+    ),
+)

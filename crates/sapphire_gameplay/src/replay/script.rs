@@ -193,6 +193,14 @@ pub const SCRIPTS: &[Script] = &[
         commands: &[],
     },
     Script {
+        name: "into-the-market",
+        about: "the Lantern Ward's player runs east through the Market Court's gate, whose trigger starts its \
+                encounter, then does as `fight-back` does",
+        ticks: 2400,
+        actions: into_the_market,
+        commands: &[],
+    },
+    Script {
         name: "arena-walk",
         about: "the arena's player walks and runs its clear floor, into a lantern post, jumps there, and comes \
                 back, by the stick alone",
@@ -715,8 +723,24 @@ const INTO_THE_YARD_LEGS: [(i8, i8, u64); 2] = [(0, 127, 90), (127, 0, 70)];
 /// [`SCRIPTS`]' `into-the-yard`.
 #[must_use]
 pub fn into_the_yard(tick: u64, cast: &[ActorId]) -> TickActions {
+    legs_then_fight_back(&INTO_THE_YARD_LEGS, tick, cast)
+}
+
+/// [`into_the_market`]'s leg from the Lantern Ward's `market_gate` at (40, 0): a run along +X through the
+/// Market Court's gate, whose trigger spans x = 42 to 44, to its arrival at about x = 46.
+const INTO_THE_MARKET_LEGS: [(i8, i8, u64); 1] = [(127, 0, 60)];
+
+/// [`SCRIPTS`]' `into-the-market` (M3 C2).
+#[must_use]
+pub fn into_the_market(tick: u64, cast: &[ActorId]) -> TickActions {
+    legs_then_fight_back(&INTO_THE_MARKET_LEGS, tick, cast)
+}
+
+/// The player's stick held along each of `legs` for its ticks, in the world's axes, and then [`fight_back`]'s
+/// schedule from where the last leg ends.
+fn legs_then_fight_back(legs: &[(i8, i8, u64)], tick: u64, cast: &[ActorId]) -> TickActions {
     let mut ends_at = 0;
-    for (x, y, ticks) in INTO_THE_YARD_LEGS {
+    for &(x, y, ticks) in legs {
         ends_at += ticks;
         if tick < ends_at {
             let mut actions = TickActions::NEUTRAL;

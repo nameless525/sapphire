@@ -2,13 +2,30 @@
     type: "sapphire::gameplay::ScenarioDocument",
     version: 1,
     data: (
-        about: "the player at the Lantern Ward's start, with the whole ward to walk and its checkpoints to reach",
+        about: "the player at the Lantern Ward's start, with the whole ward to walk and its checkpoints to reach, its fights already fought",
         max_actors: 8,
         colliders: "content/zones/lantern_ward/lantern_ward.colliders.ron",
         zone: Some("content/zones/lantern_ward/lantern_ward.zone.ron"),
-        encounters: [],
-        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
-        enemies: ["content/combat/enemy/warrior.enemy.ron"],
+        encounters: [
+            "content/zones/lantern_ward/market.encounter.ron",
+            "content/zones/lantern_ward/garden.encounter.ron",
+            "content/zones/lantern_ward/court.encounter.ron",
+        ],
+        // The walk is the ground's, not a fight's: a save that has fought them all.
+        cleared: [
+            "content/zones/lantern_ward/market.encounter.ron",
+            "content/zones/lantern_ward/garden.encounter.ron",
+            "content/zones/lantern_ward/court.encounter.ron",
+        ],
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/enemy/warrior.moves.ron",
+            "content/combat/lancer/lancer.moves.ron",
+        ],
+        enemies: [
+            "content/combat/enemy/warrior.enemy.ron",
+            "content/combat/lancer/lancer.enemy.ron",
+        ],
         cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
     ),
 )

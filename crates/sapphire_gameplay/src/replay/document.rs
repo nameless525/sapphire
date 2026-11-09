@@ -351,6 +351,69 @@ impl ScenarioDocument {
         Ok(planned)
     }
 
+    /// Where the stage stands it, if it stands in a zone of its own (M3 C2): one it names, on colliders that
+    /// aren't the arena's, since a fight on the arena's colliders stands on the town's square whatever zone
+    /// it names.
+    pub(super) fn stands_in_zone(&self) -> Option<&str> {
+        let zone = self.zone.as_deref()?;
+        (self.colliders != crate::arena::COLLIDERS_PATH).then_some(zone)
+    }
+
+    /// The zone's stem, the name the app's content finds it by: its file's, before `.zone.ron`.
+    pub(super) fn zone_stem(zone: &str) -> Result<&str, ScenarioError> {
+        let file = super::scenario::document_file_name(zone);
+        file.strip_suffix(".zone.ron").ok_or_else(|| invalid("zone", "a zone's document ends `.zone.ron`"))
+    }
+
+    /// What the stage needs of it to stand it in its zone (see [`Self::stands_in_zone`]): the player at the
+    /// first of the cast who chooses a target as a player does, and as its other fighter whoever of the rest of
+    /// the cast or its encounters' spawners stands nearest, then the next six for its crowd, which are only
+    /// where the stage checks for ground. The simulation says where everyone is from its first step.
+    pub(super) fn zone_fight(&'static self) -> Result<super::ZoneFight, ScenarioError> {
+        let path =
+            self.stands_in_zone().ok_or_else(|| invalid("zone", "it doesn't stand in a zone of its own"))?;
+        let stem = Self::zone_stem(path)?;
+        let (document, _) = zone_of(path)?;
+        let point = |name: &str| {
+            let spawner = document.spawners.iter().find(|spawner| spawner.name == name);
+            let spawner =
+                spawner.ok_or_else(|| invalid("cast", format!("the zone has no spawner `{name}`")))?;
+            Ok::<_, ScenarioError>(SpawnPoint {
+                position: spawner.position,
+                yaw_degrees: spawner.yaw_degrees,
+            })
+        };
+        let player_at = self.cast.iter().find(|member| member.soft_lock).unwrap_or(&self.cast[0]).at.as_str();
+        let player = point(player_at)?;
+
+        let mut others = Vec::new();
+        for member in self.cast.iter().filter(|member| member.at != player_at) {
+            others.push(point(&member.at)?);
+        }
+        for path in &self.encounters {
+            for wave in EncounterDocument::from_ron(named(path)?)?.waves {
+                for name in &wave.spawners {
+                    others.push(point(name)?);
+                }
+            }
+        }
+        let away =
+            |spawn: &SpawnPoint| Vec3::from_array(spawn.position).distance(Vec3::from_array(player.position));
+        // Stable, so two as far away keep the order they're named in.
+        others.sort_by(|a, b| away(a).total_cmp(&away(b)));
+        let enemy = others.first().copied().unwrap_or(player);
+        let crowd = std::array::from_fn(|at| others.get(at + 1).copied().unwrap_or(enemy));
+
+        let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
+        Ok(super::ZoneFight {
+            stem,
+            player_at,
+            // A zone's patrols are its own document's (M3 P3), not the arena's.
+            spawns: crate::arena::ArenaSpawns { player, enemy, crowd, patrols: Vec::new() },
+            colliders,
+        })
+    }
+
     /// What a new recording of it starts from.
     pub(super) fn config(&self) -> SimConfig {
         SimConfig {

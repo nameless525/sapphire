@@ -139,9 +139,10 @@ pub(super) struct BoundKey {
     pub(super) failed: bool,
     /// What the path last read: a key, or nothing.
     chosen: String,
-    /// What it says of a key not under the prefix, once, until the path reads something else.
+    /// `chosen` isn't under the prefix.
     wrong: bool,
-    told: bool,
+    /// `chosen` has been judged since it was read ([`BoundText::judge_chosen`]).
+    pub(super) told: bool,
 }
 
 /// A node's text as it runs.
@@ -241,14 +242,22 @@ impl BoundText {
         }
     }
 
-    /// What to say of a chosen key that isn't under the prefix, the first time it's read. A cook held
-    /// only the keys under it to the fonts and the variables, so one outside may not show properly.
-    pub(super) fn chosen_out_of_bounds(&mut self) -> Option<String> {
-        let from = self.key_from.as_mut()?;
-        if !from.wrong || from.told {
-            return None;
-        }
+    /// The verdict on a chosen key not judged since it was read: `Some` once each time the path reads
+    /// something new, holding what to say if it isn't under the prefix. A cook held only the keys under
+    /// it to the fonts and the variables, so one outside may not show properly.
+    pub(super) fn judge_chosen(&mut self) -> Option<Option<String>> {
+        let from = self.key_from.as_mut().filter(|from| !from.failed && !from.told)?;
         from.told = true;
-        Some(format!("`{}` read `{}`, which doesn't start with `{}`", from.source, from.chosen, from.prefix))
+        Some(from.wrong.then(|| {
+            format!("`{}` read `{}`, which doesn't start with `{}`", from.source, from.chosen, from.prefix)
+        }))
+    }
+
+    /// Whether anything about it has a problem now: a path that doesn't read, a chosen key outside
+    /// the prefix, or a role no font chain answers.
+    pub(super) fn has_problem(&self) -> bool {
+        self.args.iter().any(|arg| arg.failed)
+            || self.key_from.as_ref().is_some_and(|from| from.failed || from.wrong)
+            || self.family.is_none()
     }
 }

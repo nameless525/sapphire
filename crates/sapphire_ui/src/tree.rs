@@ -129,6 +129,9 @@ pub const PROBLEM_COLOR: UiColor = [255, 0, 200, 255];
 /// over a fade of a few frames, at a tenth of a millisecond or so.
 const WARM_PER_FRAME: u32 = 64;
 
+/// The field a bound key's problems are said of.
+const KEY_FROM_PATH: &str = "text.key_from.path";
+
 /// Fonts, shaping and the glyph atlas, which every tree on screen shares.
 #[derive(Debug)]
 pub struct UiFonts {
@@ -303,6 +306,13 @@ struct Node {
     final_opacity: f32,
     /// Shows a 3D inset's picture over its look.
     inset: Option<inset::InsetState>,
+}
+
+impl Node {
+    /// Whether it has a problem now, from any cause: what its frame says.
+    fn has_problem(&self) -> bool {
+        self.binds.iter().any(|bind| bind.failed) || self.text.as_ref().is_some_and(BoundText::has_problem)
+    }
 }
 
 /// Whether `rect` leaves `holder` by more than `slack`, along the axes asked about.
@@ -691,11 +701,9 @@ impl UiTree {
             _ => info.map(UiModel::of_type),
         };
         for node in &mut self.nodes {
-            let mut failed = false;
             let mut report = |field: String, problem: String| {
                 tracing::error!(target: crate::LOG_TARGET, node = %node.name, field, problem, "a screen's binding");
                 self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
-                failed = true;
             };
             for (at, bind) in node.binds.iter_mut().enumerate() {
                 let kind = model.as_ref().and_then(|model| model.kind_of(&bind.source));
@@ -733,9 +741,11 @@ impl UiTree {
                 if let Some(from) = &mut text.key_from {
                     let kind = model.as_ref().and_then(|model| model.kind_of(&from.source));
                     from.failed = kind != Some(UiValueKind::Text);
+                    // Its key's problems went with the last model's: judge it again.
+                    from.told = false;
                     if from.failed {
                         report(
-                            "text.key_from.path".to_owned(),
+                            KEY_FROM_PATH.to_owned(),
                             match (&model, kind) {
                                 (None, _) => format!("`{}`: there's no model to read", from.source),
                                 (_, Some(kind)) => {
@@ -748,7 +758,7 @@ impl UiTree {
                 }
                 text.stale = true;
             }
-            node.failed = failed;
+            node.failed = node.has_problem();
         }
     }
 
@@ -767,12 +777,8 @@ impl UiTree {
                 );
                 tracing::error!(target: crate::LOG_TARGET, node = %node.name, field, problem, "a screen's text");
                 self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
-                node.failed = true;
-            } else {
-                node.failed = node.binds.iter().any(|bind| bind.failed)
-                    || text.args.iter().any(|arg| arg.failed)
-                    || text.key_from.as_ref().is_some_and(|from| from.failed);
             }
+            node.failed = node.has_problem();
             self.taffy.mark_dirty(node.id).expect("the tree's own node");
         }
         self.dirty = true;
@@ -830,11 +836,16 @@ impl UiTree {
             }
             text.stale = false;
             self.stats.resolves += 1;
-            if let Some(chosen) = text.chosen_out_of_bounds() {
-                let (field, problem) = ("text.key_from.path".to_owned(), chosen);
-                tracing::error!(target: crate::LOG_TARGET, node = %node.name, field, problem, "a screen's text");
-                self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
-                node.failed = true;
+            // A key read anew replaces what was said of the last: a problem only while it lasts.
+            if let Some(verdict) = text.judge_chosen() {
+                let name = &*node.name;
+                self.problems.retain(|problem| !(problem.node == name && problem.field == KEY_FROM_PATH));
+                if let Some(problem) = verdict {
+                    let field = KEY_FROM_PATH.to_owned();
+                    tracing::error!(target: crate::LOG_TARGET, node = %node.name, field, problem, "a screen's text");
+                    self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
+                }
+                node.failed = node.binds.iter().any(|bind| bind.failed) || text.has_problem();
             }
             let args: Vec<Arg<'_>> = text.args.iter().map(|arg| (&*arg.name, arg.value())).collect();
             let mut shown = std::mem::take(&mut text.resolved);

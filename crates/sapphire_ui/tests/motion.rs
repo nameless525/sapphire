@@ -6,7 +6,7 @@ mod common;
 use common::{Model, at, document, fonts, frame, frame_at, glyphs, localizer, metrics};
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
-use sapphire_ui::{Atlas, Insets, UiFrame, UiMetrics, UiTree};
+use sapphire_ui::{Atlas, Insets, PROBLEM_COLOR, UiFrame, UiMetrics, UiTree};
 
 /// A panel that fades in and slides up over a quarter of a second, and fades out in a tenth, under a
 /// machine. Text and a look, so a frame has both glyphs and field quads.
@@ -358,6 +358,23 @@ fn a_bound_key_reads_the_model_and_keeps_to_its_prefix() {
     assert_eq!(tree.problems().len(), 1, "{:#?}", tree.problems());
     assert_eq!(tree.problems()[0].field, "text.key_from.path");
     assert!(tree.problems()[0].problem.contains("`title`"), "{:#?}", tree.problems());
+    let framed = |list: &UiDrawList| list.quads.iter().filter(|quad| quad.color == PROBLEM_COLOR).count();
+    assert!(framed(&list) > 0, "a problem's node is framed");
+
+    // Another key outside replaces what was said of the last, rather than adding to it.
+    for name in ["menu", "title", "menu"] {
+        model.name = name.to_owned();
+        frame(&mut tree, &mut fonts, &loc, &model, size, &atlas, &mut list);
+    }
+    assert_eq!(tree.problems().len(), 1, "{:#?}", tree.problems());
+    assert!(tree.problems()[0].problem.contains("`menu`"), "{:#?}", tree.problems());
+
+    // Back under the prefix: no problem, and no frame saying there is one.
+    model.name = "only-english-brand".to_owned();
+    frame(&mut tree, &mut fonts, &loc, &model, size, &atlas, &mut list);
+    assert_eq!(tree.problems(), &[]);
+    assert_ne!(line(&tree), plain);
+    assert_eq!(framed(&list), 0, "its frame goes with its problem");
 }
 
 #[test]

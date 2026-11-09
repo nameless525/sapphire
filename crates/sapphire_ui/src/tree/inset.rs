@@ -12,7 +12,7 @@ use sapphire_assets::ui::UiInset;
 use sapphire_look::UiQuad;
 use sapphire_math::Vec2;
 
-use super::paint::on_screen;
+use super::paint::{on_screen, snapped};
 use super::{UiNodeId, UiTree};
 
 /// A node's inset as it runs: what the document says, and how far it's turned.
@@ -41,7 +41,7 @@ pub struct UiInsetShot<'a> {
     pub size: (u32, u32),
 }
 
-/// The quad that shows inset `setup` over `rect` (points), at `opacity`.
+/// The quad that shows inset `setup` over `rect` (points, snapped as the node's plate is), at `opacity`.
 pub(super) fn quad(rect: crate::layout::Rect, opacity: f32) -> UiQuad {
     let size = rect.max - rect.min;
     let opacity = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -59,7 +59,9 @@ impl UiTree {
             if !node.visible || !shows {
                 return None;
             }
-            let size = node.screen.max - node.screen.min;
+            // The picture's quad, as `draw` places it: on the plate's whole pixels.
+            let drawn = node.placed.rect(snapped(node.rect, scale));
+            let size = drawn.max - drawn.min;
             let pixels = |points: f32| (points * scale).round().max(0.0) as u32;
             let size = (pixels(size.x), pixels(size.y));
             if size.0 == 0 || size.1 == 0 {

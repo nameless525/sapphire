@@ -1045,7 +1045,8 @@ impl UiTree {
                     );
                 }
                 if let Some(inset) = &node.inset {
-                    list.push_inset_quad(inset.setup.inset, inset::quad(node.rect, node.final_opacity));
+                    let rect = paint::snapped(node.rect, scale);
+                    list.push_inset_quad(inset.setup.inset, inset::quad(rect, node.final_opacity));
                 }
             }
             if let Some(text) = &node.text

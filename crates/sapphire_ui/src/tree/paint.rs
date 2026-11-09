@@ -13,8 +13,8 @@ use crate::paint::{Paint, faded};
 /// The width of a problem's frame, in points.
 const PROBLEM_FRAME: f32 = 2.0;
 
-/// `rect` with each edge on a whole pixel.
-fn snapped(rect: Rect, scale: f32) -> Rect {
+/// `rect` with each edge on a whole pixel, as a node's plate and its inset's picture draw.
+pub(super) fn snapped(rect: Rect, scale: f32) -> Rect {
     let snap = |value: f32| (value * scale).round() / scale;
     Rect::new(Vec2::new(snap(rect.min.x), snap(rect.min.y)), Vec2::new(snap(rect.max.x), snap(rect.max.y)))
 }

@@ -101,6 +101,29 @@ fn an_inset_draws_its_picture_and_names_its_shot() {
 }
 
 #[test]
+fn an_inset_off_whole_pixels_meets_its_plate() {
+    // A plate behind the picture, laid out off whole pixels at 1.5 pixels a point.
+    let screen = SCREEN.replace("padding: (left: 20, top: 20)", "padding: (left: 20.3, top: 20.3)").replace(
+        "layout: (width: Points(400), height: Points(300)),\n",
+        "layout: (width: Points(400.4), height: Points(300.4)), look: (fill: Color((0, 0, 0, 255))),\n",
+    );
+    assert_eq!(screen.matches("400.4").count(), 1, "{screen}");
+    let show = Show::of(&screen, 1.5);
+    let [run] = show.list.inset_runs[..] else { panic!("one run: {:?}", show.list.inset_runs) };
+    let picture = show.list.quads[run.first as usize];
+    let plate = show.list.quads[run.first as usize - 1];
+    let edges = |quad: sapphire_look::UiQuad| (quad.origin, quad.axis_x, quad.axis_y);
+    assert_eq!(edges(picture), edges(plate), "the picture's edges are the plate's");
+    let pixels = |points: f32| points * 1.5;
+    for value in [picture.origin[0], picture.origin[1], picture.axis_x[0], picture.axis_y[1]] {
+        assert_eq!(pixels(value), pixels(value).round(), "{value} points is on a whole pixel");
+    }
+    let shot = show.tree.insets().next().expect("shown");
+    let drawn = (pixels(picture.axis_x[0]) as u32, pixels(picture.axis_y[1]) as u32);
+    assert_eq!(shot.size, drawn, "the shot is the picture's pixels, one to one");
+}
+
+#[test]
 fn a_hidden_inset_shows_nothing_and_draws_nothing() {
     let mut show = Show::new(1.0);
     show.model.player.shown = false;

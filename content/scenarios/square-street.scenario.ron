@@ -1,0 +1,13 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the arena's player up the street from the square, whose encounter starts as they reach it: two warriors and then a third, one token between them",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        zone: Some("content/zones/square_street/square_street.zone.ron"),
+        encounters: ["content/zones/square_street/street_ambush.encounter.ron"],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [(moves: "player", at: "up_the_street", faction: 1, soft_lock: true)],
+    ),
+)

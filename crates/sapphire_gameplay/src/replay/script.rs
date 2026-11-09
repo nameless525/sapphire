@@ -173,6 +173,14 @@ pub const SCRIPTS: &[Script] = &[
         commands: &[],
     },
     Script {
+        name: "up-the-street",
+        about: "the arena's player runs down the street into the square, whose trigger starts its encounter, then \
+                does as `fight-back` does: what the stage warms on the way in (M3 W5)",
+        ticks: 2000,
+        actions: up_the_street,
+        commands: &[],
+    },
+    Script {
         name: "arena-walk",
         about: "the arena's player walks and runs its clear floor, into a lantern post, jumps there, and comes \
                 back, by the stick alone",
@@ -683,6 +691,24 @@ pub fn arena_energy(tick: u64, cast: &[ActorId]) -> TickActions {
         held.buttons = held.buttons | Buttons::ULTIMATE;
         actions.set(player, held).expect("one actor fits a tick");
     }
+    actions
+}
+
+/// [`up_the_street`]'s run from the street's start at (3.2, 17) along −Z: about 13 m, past the trigger's
+/// edge at z 6.3 and on to the square's middle.
+const UP_THE_STREET_RUN: u64 = 130;
+
+/// [`SCRIPTS`]' `up-the-street`.
+#[must_use]
+pub fn up_the_street(tick: u64, cast: &[ActorId]) -> TickActions {
+    if tick >= UP_THE_STREET_RUN {
+        return fight_back(tick - UP_THE_STREET_RUN, cast);
+    }
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    actions
+        .set(player, ActorActions { buttons: Buttons::NONE, stick: Stick::new(0, -127) })
+        .expect("one actor fits a tick");
     actions
 }
 

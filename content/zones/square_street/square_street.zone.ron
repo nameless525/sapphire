@@ -1,0 +1,22 @@
+// The arena's square, come to from up the street (M3 W5): an encounter someone walks into rather than starts
+// in, so what the stage warms ahead of a fight has a walk to do it in. Like `../square`, only what a fight
+// there reads, with no geometry and no colliders of its own: the stage's town and
+// `content/arena/square.colliders.ron` are every app's. The player starts 13 m up the street from the
+// square's middle, on its clear paving, and the warriors stand where the arena's do.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        spawners: [
+            (name: "up_the_street", position: (3.2, 0.0, 17.0), yaw_degrees: 180.0, spawns: "player"),
+            (name: "north", position: (3.2, 0.0, -1.0), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "north_west", position: (0.4, 0.0, -3.5), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "north_east", position: (6.2, 0.0, -4.5), yaw_degrees: 0.0, spawns: "warrior"),
+        ],
+        triggers: [
+            (name: "the_square", position: (3.2, 1.0, 4.0), volume: Sphere(radius: 2.5), event: "square_reached"),
+        ],
+        encounters: ["f25728e2-c1a4-4fc1-be1e-97a3f671ca11"],
+    ),
+)

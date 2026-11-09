@@ -60,7 +60,7 @@ pub use script::{
     ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS,
     ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, GROUND_START, HUB_FROM_GROUND, HUB_START,
     PROVING_GROUND, PROVING_HUB, SCRIPTS, Script, ZONE_TRIP_ENTRIES, arena_energy, arena_ultimate,
-    arena_walk, attempts, fight_back, find_script, idle, into_the_yard, melee_sweep,
+    arena_walk, attempts, fight_back, find_script, idle, into_the_yard, melee_sweep, up_the_street,
 };
 pub use tuning::{LiveMoves, LiveSet, compile_document};
 pub use ward::{

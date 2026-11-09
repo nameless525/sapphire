@@ -59,6 +59,10 @@ impl Staged {
         self.show.follow_simulation(&mut self.scene, sim, cast);
     }
 
+    pub(super) fn follow_volumes(&mut self, sim: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
+        self.show.follow_volumes(&mut self.scene, sim, cast);
+    }
+
     pub(super) fn show_cues(&mut self, sim: &Simulation) {
         self.show.show_cues(&mut self.scene, sim);
     }
@@ -438,6 +442,66 @@ fn a_wave_comes_on_with_no_heap() {
     }
     assert_eq!(scene.show.warriors.len(), planned - 1);
     assert_eq!(scene.show.spares.len(), 1);
+}
+
+/// An encounter someone walks into (M3 W5): nothing of it stands while they're far off, its spares stand on
+/// the way in, before its trigger fires, and its waves then take them with no heap.
+#[test]
+fn an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap() {
+    use sapphire_gameplay::replay::{self, ActionSource, SCENARIOS, find_scenario};
+
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = Clip::read(&bytes).expect("a valid clip");
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+    let (mut scene, _, _) = fighting(&table);
+    let scenario = find_scenario(&SCENARIOS, "square-street").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
+
+    scene.follow_simulation(&sim, &cast);
+    scene.follow_volumes(&sim, &cast);
+    assert!(scene.show.spares.is_empty(), "nobody's near yet");
+    assert_eq!(scene.show.volume_stats().encounters, 1);
+
+    let mut script = replay::up_the_street;
+    let (mut warm_at, mut fired_at) = (None, None);
+    let mut step = |scene: &mut Staged, sim: &mut Simulation| {
+        let actions = script.actions(sim.tick(), &cast);
+        sim.step(&actions);
+        scene.follow_simulation(sim, &cast);
+        scene.follow_volumes(sim, &cast);
+        scene.animate_fighters(&table, &table, 0.5);
+    };
+    while fired_at.is_none() {
+        step(&mut scene, &mut sim);
+        // The stage's own warrior is free for the first, so two stand by for the rest.
+        if warm_at.is_none() && scene.show.spares.len() == 2 {
+            warm_at = Some(sim.tick());
+        }
+        if sim.zone().expect("it has one").stats().triggers_fired > 0 {
+            fired_at = Some(sim.tick());
+        }
+        assert!(sim.tick() < 600, "the run gets there");
+    }
+    let (warm_at, fired_at) = (warm_at.expect("they stood"), fired_at.expect("it fired"));
+    assert!(warm_at > 10, "not at the start: {warm_at}");
+    assert!(fired_at > warm_at + 30, "well before it fired: {warm_at} and {fired_at}");
+
+    let counts = sapphire_core::alloc::count_in_scope(|| {
+        for _ in 0..900 {
+            step(&mut scene, &mut sim);
+        }
+    })
+    .1;
+    if sapphire_core::alloc::PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+    let zone = sim.zone().expect("it has one");
+    assert!(zone.encounters()[0].spawned() >= 2, "a wave came");
+    let stats = scene.show.volume_stats();
+    assert_eq!((stats.started_warm, stats.started_cold), (1, 0), "{stats:?}");
+    assert_eq!((stats.stood_ahead, stats.stood_in_step), (2, 0), "{stats:?}");
+    assert!(stats.warming_frames >= 1);
+    assert_eq!(stats.holding, zone.encounters()[0].phase() == sapphire_gameplay::EncounterPhase::Running);
 }
 
 /// The character's sword stays in the hand of the held pose until its graph has made a pose.

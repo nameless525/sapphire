@@ -701,6 +701,60 @@ fn a_wave_comes_on_in_a_bench_with_no_heap_in_its_steps() {
     }
 }
 
+/// An encounter someone walks into (M3 W5), on each tier's settings: its fighters stand by on the way in, so its
+/// trigger finds them ready and no step stands one; no pipeline builds after the load; and while it runs the zone's
+/// streaming is held and asks for nothing. That a wave then takes no heap is the stage's own test
+/// (`an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap`).
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn an_encounter_walked_into_is_warm_before_its_trigger_fires() {
+    for tier in ["desktop-low", "mobile-low"] {
+        let replay = workspace().join("tests").join("replays").join("square-street.sreplay");
+        let output = sandbox(
+            &[
+                "--bench",
+                "1",
+                "--draw-every",
+                DRAW_EVERY,
+                "--arena",
+                "--replay",
+                replay.to_str().expect("UTF-8"),
+                "--tier",
+                tier,
+                "--size",
+                "64x36",
+                "--cues",
+                "--hud",
+                "live",
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content(),
+        );
+        let log = log_of(&output);
+        assert!(output.status.success(), "{tier}: {log}");
+        // A bench that draws one frame in many plays the fight once.
+        assert_eq!(log.matches("replay reached its recorded checksums").count(), 1, "{tier}: {log}");
+        let started: Vec<&str> = log.lines().filter(|line| line.contains("an encounter started")).collect();
+        assert_eq!(started.len(), 1, "{tier}: {log}");
+        for line in started {
+            assert!(line.contains("warm=true"), "{tier}: {line}");
+        }
+        assert!(log.contains("an encounter holds the zone's streaming"), "{tier}: {log}");
+        let stats = log.lines().find(|line| line.contains("warmed a fight's encounters")).expect("logged");
+        for part in ["started_cold: 0", "stood_in_step: 0", "asked_while_held: 0"] {
+            assert!(stats.contains(part), "{tier}: {stats}");
+        }
+        assert!(!stats.contains("held_frames: 0,"), "{tier}: {stats}");
+        let rows: Vec<&str> = log.lines().filter(|line| line.contains("fight pipelines")).collect();
+        assert!(!rows.is_empty(), "{tier}: {log}");
+        for row in rows {
+            assert!(row.contains("first_use=0"), "{tier}: {row}");
+        }
+    }
+}
+
 /// A bench of a committed replay on `tier`'s settings, as a phone's or a laptop's run has them: not [`PINS`],
 /// because the count is of what those settings build. Every tick of the replay steps, and every frame prepares and
 /// records, but only one frame in [`DRAW_EVERY`] runs its graph: lavapipe takes over a second to draw a frame here,

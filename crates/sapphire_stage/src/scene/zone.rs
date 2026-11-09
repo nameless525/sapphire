@@ -548,6 +548,19 @@ impl Scene {
         }
     }
 
+    /// What the zone streams by, with a zone open: its radii and the budget a frame's work shares.
+    pub fn stream_settings(&self) -> Option<StreamSettings> {
+        self.zone.as_ref().map(|zone| zone.streamer.settings())
+    }
+
+    /// Holds the zone's streaming where it is, or lets it go: a fight holds it while an encounter runs
+    /// (M3 W5), so its frames neither ask for nor place a cell. Nothing without a zone open.
+    pub fn hold_zone_streaming(&mut self, held: bool) {
+        if let Some(zone) = &mut self.zone {
+            zone.streamer.hold(held);
+        }
+    }
+
     /// Runs this frame's streaming, after the content's update. Allocates nothing while nothing changes.
     pub(super) fn stream_zone(&mut self, content: &mut Content) {
         if let Some(zone) = &mut self.zone {

@@ -21,7 +21,7 @@
 //!   player's spawn point, and the enemy (`crate::enemy`) and its blade at the enemy's. With `--replay`,
 //!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time, and whoever
 //!   else a simulation has comes on as another warrior ([`ArenaActors::next_change`]). Those a zone's
-//!   encounters will bring stand by from before the first step, undrawn (`FightShow::warm_roster`).
+//!   encounters will bring stand by, undrawn, before their triggers fire (`FightShow::follow_volumes`).
 //! - **The camera** (`--arena-shot`, [`ArenaShot`]): `sapphire_camera`'s director by default, on its
 //!   combat rig, framing both fighters and colliding with the world. `follow` is a plain fixed follow,
 //!   what the golden scenes pin, so a change of camera tuning moves none of them. The tests' `framing`

@@ -24,7 +24,6 @@ use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::SimZone;
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
 use sapphire_gameplay::replay::LiveMoves;
@@ -272,10 +271,10 @@ pub struct FightShow {
     stock: Option<WarriorStock>,
     /// Warriors with no [`RenderMesh`], so nothing draws them and nothing poses them, who have what they need
     /// to come on: those whose actors have gone, and those a zone's encounters will want
-    /// ([`Self::warm_roster`]). A warrior who comes on from here allocates nothing.
+    /// ([`Self::follow_volumes`]). A warrior who comes on from here allocates nothing.
     spares: Vec<(Entity, Entity)>,
-    /// Whether [`Self::warm_roster`] has looked at this fight's zone.
-    roster_warm: bool,
+    /// The fight's encounters as the stage follows them (M3 W5).
+    volumes: volumes::Volumes,
     /// The character's blade, with `--blade on`.
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
@@ -570,6 +569,7 @@ impl FightShow {
             impact.follow(simulation, started_over || followed.came_in.into_iter().any(|came_in| came_in));
         }
         if started_over {
+            self.volumes.start_over();
             scene.cut_view();
             if let Some(cues) = &mut self.cues {
                 scene.with_screen_effects(|stack, _| cues.start_over(stack));
@@ -607,7 +607,10 @@ impl FightShow {
                             draw(world, pair, stock.meshes);
                             pair
                         }
-                        None => stand_warrior(world, stock),
+                        None => {
+                            self.volumes.missed();
+                            stand_warrior(world, stock)
+                        }
                     };
                     self.warriors.push(pair);
                     let (blade_in_model, hand) = (stock.held.blade, stock.held.hand);
@@ -616,41 +619,9 @@ impl FightShow {
                 }
             }
         }
-        if !self.roster_warm {
-            self.roster_warm = true;
-            self.warm_roster(scene, simulation);
-        }
-    }
-
-    /// Stands by a warrior for everyone `simulation`'s zone will bring, once, before its first step wherever a
-    /// caller follows it then ([`Fight::stand`] does), so that a wave's arrival in a fixed step allocates
-    /// nothing. It's about 29 allocations a warrior, and memory for their poses, and a spare costs a frame nothing.
-    fn warm_roster(&mut self, scene: &mut Scene, simulation: &Simulation) {
-        let (Some(arena), Some(stock)) = (&mut self.arena, &self.stock) else { return };
-        let planned = simulation.zone().map_or(0, SimZone::planned);
-        let wanted = planned.saturating_sub(arena.free_warriors() + self.spares.len());
-        if planned == 0 {
-            return;
-        }
-        if let Some(cues) = &mut self.cues {
-            cues.stand_by(arena.fighter_count() + planned - arena.free_warriors().min(planned));
-        }
-        arena.reserve(planned);
-        self.warriors.reserve(planned);
-        self.spares.reserve(planned);
-        let world = scene.world_mut();
-        let first = self.spares.len();
-        for _ in 0..wanted {
-            self.spares.push(stand_warrior(world, stock));
-        }
-        // All of them drawn first, so that what holds drawn warriors has room for them all, then none, then the
-        // way back once, so that the world knows it.
-        for &pair in &self.spares[first..] {
-            undraw(world, pair);
-        }
-        if let Some(&pair) = self.spares.get(first) {
-            draw(world, pair, stock.meshes);
-            undraw(world, pair);
+        // Before a fight's first step, what's near stands at once; after it, a frame at a time.
+        if self.volumes.unseen() {
+            self.warm_volumes(scene, simulation, cast, volumes::Pace::AtOnce);
         }
     }
 
@@ -1444,7 +1415,7 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> 
     (warrior, blade)
 }
 
-/// A warrior and its blade, ready to come on: what [`FightShow::warm_roster`] does ahead of time.
+/// A warrior and its blade, ready to come on: what [`FightShow::follow_volumes`] does ahead of time.
 fn stand_warrior(world: &mut World, stock: &WarriorStock) -> (Entity, Entity) {
     let (warrior, blade) = spawn_warrior(world, stock.meshes, &stock.held);
     if let Some(driver) = &stock.driver {
@@ -1459,7 +1430,7 @@ fn undraw(world: &mut World, (warrior, blade): (Entity, Entity)) {
     world.entity_mut(blade).remove::<RenderMesh>();
 }
 
-/// Puts a spare back in what's drawn. Allocates nothing once [`FightShow::warm_roster`] has done it.
+/// Puts a spare back in what's drawn. Allocates nothing once [`FightShow::follow_volumes`] has warmed it.
 fn draw(world: &mut World, (warrior, blade): (Entity, Entity), meshes: EnemyMeshes) {
     world.entity_mut(warrior).insert(RenderMesh(meshes.warrior));
     world.entity_mut(blade).insert(RenderMesh(meshes.blade));
@@ -1953,6 +1924,10 @@ impl Fight {
         if let Some(cues) = self.show.cue_show() {
             tracing::info!(target: LOG_TARGET, stats = ?cues.stats(), "fired a fight's cues");
         }
+        let volumes = self.show.volume_stats();
+        if volumes.encounters > 0 {
+            tracing::info!(target: LOG_TARGET, stats = ?volumes, "warmed a fight's encounters");
+        }
         self.combat.take().map_or(Ok(()), Combat::finish)
     }
 }
@@ -1973,6 +1948,9 @@ impl SceneShow for Fight {
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
         self.show.follow_content(scene, content, changes);
         self.advance_trip(scene, content);
+        if let Some(combat) = &self.combat {
+            self.show.follow_volumes(scene, combat.simulation(), combat.cast());
+        }
     }
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
@@ -2002,6 +1980,7 @@ impl SceneShow for Fight {
 }
 
 pub mod trip;
+pub mod volumes;
 
 #[cfg(test)]
 mod impact_tests {

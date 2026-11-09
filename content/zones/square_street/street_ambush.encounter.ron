@@ -1,0 +1,16 @@
+// Who waits in the square for someone coming up the street (M3 W5): two warriors as they reach it, and a
+// third when one is left, with one token between them.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "square_reached",
+        faction: 2,
+        tokens: 1,
+        token_rest: 45,
+        waves: [
+            (when: Start, spawners: ["north", "north_west"]),
+            (when: Remaining(1), gap: 30, spawners: ["north_east"]),
+        ],
+    ),
+)

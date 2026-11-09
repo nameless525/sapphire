@@ -37,6 +37,7 @@ sapphire_timeline.workspace = true
 sapphire_ui.workspace = true
 sapphire_vfx.workspace = true
 sapphire_world.workspace = true
+# What a zone trip copies, and what starts an encounter, which the stage warms ahead of (M3 W4, W5).
 sapphire_zone.workspace = true
 profiling.workspace = true
 thiserror.workspace = true
@@ -51,7 +52,6 @@ sapphire_livelink = { workspace = true, optional = true }
 sapphire_reflect.workspace = true
 # The tests hold allocations to their budgets, so they count them as an app does.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
-sapphire_zone.workspace = true
 
 [features]
 # Development builds: live tuning. An app's `dev` forwards it.

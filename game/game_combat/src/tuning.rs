@@ -24,7 +24,7 @@
 //!   table still finds its names. What's playing ends, and a trail starts again at the next cut.
 //!
 //! - **A retained screen** (`.ui.ron`, M3 U4): a document that parses, checks and resolves against the
-//!   model replaces the screen on show, with `--ui-screen`, and one that doesn't keeps it.
+//!   model replaces the screen on show, with `--ui-game`, and one that doesn't keeps it. Only the shown screen's document is taken.
 //!
 //! A document that doesn't parse or check keeps what's playing, and says why in the log, in the overlay's
 //! stats panel and, pushed, in `link push`'s non-zero exit. The next good one works.
@@ -251,8 +251,13 @@ impl Document {
                 Ok(format!("{}'s animation graph, from the next state's start", owner.0))
             }
             Self::Ui => {
+                let shown = tuning.screen_source().ok_or("no screen is showing: it takes --ui-game")?;
+                let document = document_file_name(origin);
+                if document != document_file_name(&shown) {
+                    return Err(format!("`{document}` isn't on show: `{}` is", document_file_name(&shown)));
+                }
                 host.take_screen(text)?;
-                tuning.count_edit(document_file_name(SCREEN_PATH));
+                tuning.count_edit(document);
                 Ok(self.name().to_owned())
             }
             Self::Bindings => {
@@ -298,8 +303,8 @@ pub struct TunedRun<'a> {
     pub graph_show: bool,
     /// A fight runs in the arena, each fighter on a graph.
     pub arena_fight: bool,
-    /// A retained screen shows (`--ui-screen`).
-    pub screen: bool,
+    /// The source of the retained screen on show (`--ui-game`), from the repository's root.
+    pub screen: Option<&'a str>,
     /// The combat HUD is over it.
     pub hud: bool,
     /// Whether anything reads saved files: off, only what's pushed comes.
@@ -308,8 +313,6 @@ pub struct TunedRun<'a> {
     pub extra_documents: &'a [PathBuf],
 }
 
-/// The sandbox's test screen's document.
-const SCREEN_PATH: &str = "content/ui/test_screen.ui.ron";
 /// The animation graph's document (`lookdev::GRAPH`).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
 /// The enemy's animation graph's document (`enemy::GRAPH`).
@@ -425,8 +428,8 @@ impl LiveTuning {
                 add(path, Document::Moves);
             }
         }
-        if run.screen {
-            add(SCREEN_PATH, Document::Ui);
+        if let Some(path) = run.screen {
+            add(path, Document::Ui);
         }
         // A fight's cues fire the camera's shakes, by their places in its tuning.
         if run.camera_director || run.cues {
@@ -772,6 +775,11 @@ impl LiveTuning {
             .iter()
             .filter(move |source| source.document == kind)
             .map(|source| document_file_name(&source.path))
+    }
+
+    /// The screen's document it watches, if one's on show.
+    fn screen_source(&self) -> Option<String> {
+        self.sources.iter().find(|source| source.document == Document::Ui).map(|source| source.path.clone())
     }
 
     fn count_edit(&mut self, document: &str) {
@@ -1305,7 +1313,7 @@ mod tests {
         cues: false,
         graph_show: false,
         arena_fight: false,
-        screen: false,
+        screen: None,
         hud: false,
         reads_files: true,
         extra_documents: &[],

@@ -68,6 +68,19 @@ impl MenuScreen {
         Self::ids()[self.index()]
     }
 
+    /// Its document's source, from the repository's root: what live tuning watches.
+    #[must_use]
+    pub const fn source(self) -> &'static str {
+        match self {
+            Self::Title => "content/ui/title.ui.ron",
+            Self::Pause => "content/ui/pause.ui.ron",
+            Self::Settings => "content/ui/settings.ui.ron",
+            Self::Character => "content/ui/character.ui.ron",
+            Self::Dialogue => "content/ui/dialogue.ui.ron",
+            Self::Hud => "content/ui/hud.ui.ron",
+        }
+    }
+
     /// Its document's file name, without what follows.
     #[must_use]
     pub const fn stem(self) -> &'static str {

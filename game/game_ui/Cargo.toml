@@ -36,6 +36,10 @@ sapphire_cues.workspace = true
 sapphire_input.workspace = true
 # Real string tables from the real sources, for what the menus' tests hold.
 sapphire_pipeline.workspace = true
+# The tables' patterns, for the variables each language's entry takes.
+sapphire_strings.workspace = true
+# The cutscenes' subtitles, which name keys of the tables too.
+sapphire_timeline.workspace = true
 sapphire_vfx.workspace = true
 
 [features]

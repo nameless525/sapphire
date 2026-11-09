@@ -193,7 +193,7 @@ macro_rules! game_scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-pub fn scenes() -> [Scene; 197] {
+pub fn scenes() -> [Scene; 190] {
     [
         Scene {
             name: "turntable-start",
@@ -3750,246 +3750,6 @@ pub fn scenes() -> [Scene; 197] {
             ],
             thresholds: Thresholds::default(),
         },
-        // The test menu (M3 U5): halfway through its fade and slide at a fixed time, and at rest after a
-        // walk off the end of its list, in both languages, with a shadow and a line chosen from the model.
-        Scene {
-            name: "ui-menu-fade",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-menu",
-                "--ui-locale",
-                "ja",
-                "--ui-time",
-                "0.1",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-menu-focus",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-menu",
-                "--ui-locale",
-                "ja",
-                "--ui-walk",
-                "down,down,down,down,down",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-menu-focus-en",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-menu",
-                "--ui-locale",
-                "en",
-                "--ui-walk",
-                "down,down,down,down,down",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        // The retained tree's test screen (M3 U4), opaque over a plain scene, at the aspect ratios spec §5.17
-        // names: Japanese with Latin, nine-slices, gradients and a mask, and English once at 16:9.
-        Scene {
-            name: "ui-tree-wide",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-screen",
-                "--ui-locale",
-                "ja",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-tree-tablet",
-            args: &[
-                "--size",
-                "1024x768",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-screen",
-                "--ui-locale",
-                "ja",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-tree-ultrawide",
-            args: &[
-                "--size",
-                "1680x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-screen",
-                "--ui-locale",
-                "ja",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-tree-wide-en",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-screen",
-                "--ui-locale",
-                "en",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        // The 3D inset's test screen (M3 U6): the character in a panel, drawn by the anime character
-        // pipelines into a picture of its own and shown by the tree, at 16:9 on desktop high, and at a
-        // phone's 19.5:9 at twice the points on mobile low, a quarter turn round by a drag.
-        Scene {
-            name: "ui-inset-wide",
-            args: &[
-                "--size",
-                "1280x720",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "desktop-high",
-                "--plain-sky",
-                "--plain-post",
-                "--aa",
-                "msaa",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-inset",
-                "--ui-locale",
-                "ja",
-            ],
-            thresholds: Thresholds::default(),
-        },
-        Scene {
-            name: "ui-inset-phone",
-            args: &[
-                "--size",
-                "1688x780",
-                "--capture-ticks",
-                "2",
-                "--tier",
-                "mobile-low",
-                "--plain-sky",
-                "--plain-post",
-                "--ao",
-                "off",
-                "--shadows",
-                "off",
-                "--fog",
-                "off",
-                "--ui-inset",
-                "--ui-locale",
-                "en",
-                "--ui-scale",
-                "2",
-                "--ui-turn",
-                "0.25",
-            ],
-            thresholds: Thresholds::default(),
-        },
         // The game's screens (M3 U7) at the aspect ratios spec §5.17 names, in both languages, on their sample
         // models. The HUD's words stand over the HUD they belong to.
         game_scene!("game-title-tablet-en", "title", "1024x768", "en"),
@@ -4059,6 +3819,17 @@ pub fn scenes() -> [Scene; 197] {
         game_scene!("game-hud-wide-ja", "hud", "1280x720", "ja", "--hud", "fixed"),
         game_scene!("game-hud-ultrawide-en", "hud", "1680x720", "en", "--hud", "fixed"),
         game_scene!("game-hud-ultrawide-ja", "hud", "1680x720", "ja", "--hud", "fixed"),
+        // Motion on a game's screen (M3 C3, in place of U5's test menu): the pause screen a tenth of a second
+        // into its entrance, and the settings after a walk down their list, focus and its pulse moved with it.
+        game_scene!("game-pause-entering-ja", "pause", "1280x720", "ja", "--ui-time", "0.1"),
+        game_scene!(
+            "game-settings-walked-ja",
+            "settings",
+            "1280x720",
+            "ja",
+            "--ui-walk",
+            "down,down,down,down,down"
+        ),
         // The combat HUD's fixed frame (M2 I2) at the aspect ratios spec §5.17 names, each a phone-
         // sized frame in points: bright midday behind it at 16:9 and with a notch, golden hour at
         // 4:3 and the lantern-lit street at 21:9, so its inks and digits read over all three.
@@ -4844,10 +4615,7 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else if !["ui-tree-", "ui-menu-", "ui-inset-"]
-                .iter()
-                .any(|prefix| scene.name.starts_with(prefix))
-            {
+            } else {
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }
@@ -4856,9 +4624,9 @@ mod tests {
         }
     }
 
-    /// Spec §5.17's aspect ratios again, for the retained tree: Japanese in all three, as exit test 4 wants.
+    /// Spec §5.17's aspect ratios again, for the game's screens: Japanese in all three, as exit test 4 wants.
     #[test]
-    fn the_tree_s_scenes_cover_the_aspect_ratios_in_japanese() {
+    fn the_screens_scenes_cover_the_aspect_ratios_in_japanese() {
         let size_of = |name: &str| {
             let scene = scenes().into_iter().find(|scene| scene.name == name).expect("the scene");
             assert!(scene.args.windows(2).any(|pair| pair == ["--ui-locale", "ja"]), "{name}");
@@ -4866,9 +4634,9 @@ mod tests {
             let (width, height) = size.split_once('x').expect("a size");
             width.parse::<f32>().expect("a width") / height.parse::<f32>().expect("a height")
         };
-        assert!((size_of("ui-tree-tablet") - 4.0 / 3.0).abs() < 0.01);
-        assert!((size_of("ui-tree-wide") - 16.0 / 9.0).abs() < 0.01);
-        assert!((size_of("ui-tree-ultrawide") - 21.0 / 9.0).abs() < 0.01);
+        assert!((size_of("game-title-tablet-ja") - 4.0 / 3.0).abs() < 0.01);
+        assert!((size_of("game-title-wide-ja") - 16.0 / 9.0).abs() < 0.01);
+        assert!((size_of("game-title-ultrawide-ja") - 21.0 / 9.0).abs() < 0.01);
     }
 
     #[test]

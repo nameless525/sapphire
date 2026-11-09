@@ -1,5 +1,7 @@
-# ゲームのインターフェース文字列 (M3 U7)。
-# Machine-quality Japanese, unreviewed: C3 owes these a reader's pass.
+### ゲームが表示するすべての文字列 (M3 U7、C3 で集約)。
+###
+### Machine-quality Japanese: written by an agent and not yet read by a Japanese reader, who owes every
+### line here a pass. Take this mark off only once they have. `en/game_ui.ftl` says how a string is added.
 
 title-name = サファイア
 title-tagline = はじめての戦い

@@ -368,9 +368,9 @@ fn a_document_is_refused_by_field_and_its_paths_by_its_model() {
     says(&said_by(&tree.cook_with(Some(&cache)).expect_err("the path went away")), &["level"]);
 }
 
-/// The test screen as committed, with all its fonts, which the goldens show.
+/// The game's screens as committed, with all their fonts, which the goldens show.
 #[test]
-fn the_test_screen_cooks_in_both_languages_and_brings_its_characters() {
+fn the_game_s_screens_cook_in_both_languages_and_bring_their_characters() {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ui_cook_shipped");
     let _ = fs::remove_dir_all(&root);
     let content = root.join("content");
@@ -389,24 +389,32 @@ fn the_test_screen_cooks_in_both_languages_and_brings_its_characters() {
     for file in ["fonts/ui.charset.ron", "fonts/ui.fontchains.ron", "fonts/ui.fontchains.ron.meta"] {
         copy(file.to_owned());
     }
-    for file in [
-        "ui/test_screen.model.ron",
-        "ui/test_screen.ui.ron",
-        "ui/test_screen.ui.ron.meta",
-        "loc/en.locale.ron",
-        "loc/en.locale.ron.meta",
-        "loc/ja.locale.ron",
-        "loc/ja.locale.ron.meta",
-        "loc/en/test_screen.ftl",
-        "loc/en/test_screen.ftl.meta",
-        "loc/ja/test_screen.ftl",
-        "loc/ja/test_screen.ftl.meta",
-    ] {
+    for stem in ["title", "pause", "settings", "character", "dialogue", "hud"] {
+        for file in
+            [format!("ui/{stem}.model.ron"), format!("ui/{stem}.ui.ron"), format!("ui/{stem}.ui.ron.meta")]
+        {
+            copy(file);
+        }
+    }
+    for file in ["loc/en.locale.ron", "loc/en.locale.ron.meta", "loc/ja.locale.ron", "loc/ja.locale.ron.meta"]
+    {
         copy(file.to_owned());
+    }
+    for locale in ["en", "ja"] {
+        copy(format!("loc/{locale}/game_ui.ftl"));
+        copy(format!("loc/{locale}/game_ui.ftl.meta"));
+    }
+    // An objective no document names, which the HUD's `hud-objective-` keys can show: the cook brings its
+    // characters, though the character set doesn't have them.
+    for (locale, line) in
+        [("en", "hud-objective-dawn = Wait for dawn"), ("ja", "hud-objective-dawn = 暁を待て")]
+    {
+        let table = content.join(format!("loc/{locale}/game_ui.ftl"));
+        let text = fs::read_to_string(&table).unwrap();
+        fs::write(&table, format!("{text}\n{line}\n")).unwrap();
     }
     let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
     let report = cook_dir(&content, &root.join("loose"), &options).expect("a locked cook");
-    // Japanese's body has it, and the character set doesn't.
     let charset = fs::read_to_string(content.join("fonts/ui.charset.ron")).unwrap();
     assert!(!charset.contains('暁'), "this test wants a character only a screen brings");
     assert!(font_shows(&report, "M PLUS 1", '暁'));

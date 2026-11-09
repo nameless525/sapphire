@@ -135,7 +135,7 @@ impl game_combat::tuning::DocumentHost for DocumentsHere<'_> {
     }
 
     fn take_screen(&mut self, text: &str) -> Result<(), String> {
-        let screen = self.screen.as_mut().ok_or("no screen is showing: it takes --ui-screen")?;
+        let screen = self.screen.as_mut().ok_or("no screen is showing: it takes --ui-game")?;
         screen.replace(text)
     }
 }

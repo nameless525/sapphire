@@ -29,7 +29,7 @@
 //! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low), a debug
 //! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1), the effects'
 //! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low), a 3D inset's
-//! passes (`--ui-inset`, M3 U6: with `--ui-spin` it turns, and so draws, every frame) and the whole
+//! passes (`--ui-game character`, M3 U6: with `--ui-spin` it turns, and so draws, every frame) and the whole
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.

@@ -1,4 +1,5 @@
-# The Lantern Ward's cutscenes (M3 Q3): what their subtitles say, and who says it. C3 owns every string later.
+### The Lantern Ward's cutscenes (M3 Q3, gathered in C3), in English: what their subtitles say, and who says
+### it. A timeline's `subtitles` name these keys. `game_ui.ftl`'s header says how a string is added.
 
 ## The court's gate (`content/zones/lantern_ward/court_gate.timeline.ron`)
 

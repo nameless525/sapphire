@@ -1367,7 +1367,7 @@ fn a_refused_named_insert_does_not_refuse_an_independent_insert_in_the_same_list
 /// A screen's own rules are its `issues`, each naming its field, and a person can go on editing past one.
 #[test]
 fn a_screen_edits_as_a_document_and_reports_its_rules() {
-    let mut screen = open("content/ui/test_screen.ui.ron", kinds::ui());
+    let mut screen = open("content/ui/pause.ui.ron", kinds::ui());
     let text = screen.text().to_owned();
     assert_eq!(screen.issues(), Vec::<String>::new());
     let parent = screen.entry_path(&path("nodes"), 1).expect("a node").join(Step::Field("parent".to_owned()));

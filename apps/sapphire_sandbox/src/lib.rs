@@ -153,22 +153,18 @@
 //!   day; `--view`, `--fov` and `--zoom` adjust the shot. The golden scenes
 //!   `lookdev-town-day`, `-hero`, `-golden`, `-blue` and `-night`, `lookdev-street-night` and
 //!   `lookdev-face` show it.
-//! - `--ui-screen`: the retained tree's test screen (M3 U4, `content/ui/test_screen.ui.ron`) over whatever
-//!   the scene draws, as the `ui-tree-*` goldens do. Hot reload and live link's `push_document` take edits
-//!   of its document. `--ui-locale <tag>` picks its language (`en`, by default, or `ja`), `--ui-scale
-//!   <scale>` its pixels per point, and `--ui-pseudo` turns on pseudo-localization.
-//! - `--ui-menu`: the test menu (M3 U5, `content/ui/test_menu.ui.ron`), as the `ui-menu-*` goldens show it,
-//!   with the same companions. It opens at the clock's start: `--ui-time <seconds>` is the one time it's
-//!   shown at, a capture's being byte-stable, and `--ui-walk up,down,left,right,confirm` the focus steps
-//!   taken as it opens. Input is `game_ui`'s (`sapphire_controls`' `MenuControls`), so none reaches it here.
-//! - `--ui-inset`: the 3D inset's test screen (M3 U6, `content/ui/test_inset.ui.ron`), the character in a
-//!   framed panel beside a menu, as the `ui-inset-*` goldens show it, with the same companions.
-//!   `--ui-turn <across>` turns it as a drag across that share of its width would, and `--ui-spin
-//!   <across>` turns it that much more each frame of a bench, so it draws every frame.
 //! - `--ui-game <stem>`: one of the game's screens (M3 U7, `content/ui/<stem>.ui.ron`: `title`, `pause`,
-//!   `settings`, `character`, `dialogue` or `hud`) on its sample model, as the `game-*` goldens show them,
-//!   with the same companions. With `--hud` both draw from one atlas, the HUD over the screen. `--ui-plain`
-//!   stands a flat color behind any of these screens, so a capture doesn't move with the scene.
+//!   `settings`, `character`, `dialogue` or `hud`) on its sample model over whatever the scene draws, as the
+//!   `game-*` goldens show them. Hot reload and live link's `push_document` take edits of its document.
+//!   `--ui-locale <tag>` picks its language (`en`, by default, or `ja`), `--ui-scale <scale>` its pixels per
+//!   point, and `--ui-pseudo` turns on pseudo-localization. It opens at the clock's start: `--ui-time
+//!   <seconds>` is the one time it's shown at, a capture's being byte-stable, and `--ui-walk
+//!   up,down,left,right,confirm` the focus steps taken as it opens. Input is `game_app`'s, so none reaches it
+//!   here. With `--hud` both draw from one atlas, the HUD over the screen. `--ui-plain` stands a flat color
+//!   behind it, so a capture doesn't move with the scene. `character` holds the 3D inset (M3 U6), which the
+//!   sandbox stands a showcase of the character for: `--ui-turn <across>` turns it as a drag across that
+//!   share of its width would, and `--ui-spin <across>` turns it that much more each frame of a bench, so it
+//!   draws every frame.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

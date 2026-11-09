@@ -402,7 +402,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         *shown_hud = Some(game_ui::hud::FightHud::new(hud));
     }
     if let Some(shown) = &options.ui_screen {
-        let assets = content.load_screens(&[shown.document()], renderer, gpu)?;
+        let assets = content.load_screens(&[shown.screen.id()], renderer, gpu)?;
         let atlas = shown_hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
         *shown_screen = Some(shown.stack(assets, atlas).map_err(AppInitError::msg)?);
         if shown.shows_inset() {

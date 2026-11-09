@@ -287,6 +287,11 @@ fn the_commit_that_put_a_boss_in_its_zone_touched_only_content() {
         for boss in bosses {
             let kind = boss.kind.file_name().unwrap().to_str().unwrap().trim_end_matches(".enemy.ron");
             let put = format!("spawns: \"{kind}\"");
+            // A zone reaches the bosses of the zones its exits lead to, and the commit is the one that put the
+            // boss on a spawner of the zone that has it.
+            if !std::fs::read_to_string(content.root.join(&zone)).expect("the zone reads").contains(&put) {
+                continue;
+            }
             let log = git(&["log", "--format=%H", "-S", &put, "--", &zone]).expect("git reads the log");
             let commit = log.lines().last().unwrap_or_else(|| panic!("a commit put {put} in {zone}"));
             let touched = git(&["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit])

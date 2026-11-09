@@ -67,12 +67,10 @@ pub fn finish(player: Player) -> Finished {
     Finished { played: player.finish(), stats, commands_applied, digest, board, used_memory, last_error }
 }
 
-/// Plays a whole replay with `host` on it, a collection step after every tick, as a frame's would be.
+/// Plays a whole replay with `host` on it, which collects after every tick, as a game's does.
 pub fn play(host: ScriptHost, replay: Replay) -> Finished {
     let mut player = player_with(host, replay);
-    while player.step() {
-        host_of(player.simulation()).gc_step().expect("collects");
-    }
+    while player.step() {}
     finish(player)
 }
 

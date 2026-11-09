@@ -312,9 +312,7 @@ fn fight_row() {
             hooks.push(stats.last_step);
             fired = stats.hooks_fired;
         }
-        let stopwatch = Stopwatch::start();
-        host.gc_step().expect("collects");
-        collector.push(stopwatch.elapsed());
+        collector.push(stats.last_collection);
     }
     let stats = host_of(player.simulation()).stats();
     let (steps, quiet) = (hooks.len(), player.simulation().tick() as usize - hooks.len());

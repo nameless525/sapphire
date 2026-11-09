@@ -182,7 +182,7 @@ pub use navigation::{PathId, SimNavigation};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use script::{HookEvent, HookFrame, HookWants, ScriptCommand, ScriptWorld};
-pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
+pub use simulation::{BetweenSteps, CombatSet, SimConfig, SimRng, Simulation};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
 };

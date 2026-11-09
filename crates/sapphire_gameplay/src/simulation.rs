@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy_ecs::schedule::{IntoScheduleConfigs, ScheduleLabel, SingleThreadedExecutor, SystemSet};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::system::SystemState;
 use sapphire_core::Name;
@@ -85,6 +85,12 @@ impl Default for SimConfig {
     }
 }
 
+/// Runs after every step, outside its time and its allocation count, for what belongs at a tick boundary
+/// and isn't simulation: a script VM's collector (M3 L3). Whatever steps a simulation, a game or a replay's
+/// runner, runs it, since [`Simulation::step`] does. Nothing here may change simulated state.
+#[derive(ScheduleLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BetweenSteps;
+
 /// Combat's randomness (spec §5.4). No system reads the OS for numbers, and the state is in the
 /// checksum.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +155,8 @@ pub struct Simulation {
     run_generation: u64,
     /// Setup opt-ins, kept in actor ID order even after an opted-in actor despawns.
     standing_jump_actors: Vec<ActorId>,
+    /// Whether anything's in [`BetweenSteps`], so a world with nothing there doesn't look for it.
+    between_steps: bool,
 }
 
 impl Simulation {
@@ -239,6 +247,7 @@ impl Simulation {
             physics_budget: config.physics_budget,
             run_generation: 0,
             standing_jump_actors: Vec::new(),
+            between_steps: false,
         }
     }
 
@@ -271,6 +280,28 @@ impl Simulation {
         self.ecs.world_mut().resource_mut::<MoveLibrary>().restart();
         self.stats = SimStats { budget: config.step_budget, ..SimStats::default() };
         self.physics_budget = config.physics_budget;
+    }
+
+    /// Adds a system to [`BetweenSteps`], which every step runs once it's done and counted: what
+    /// `sapphire_script` collects a VM's garbage with. It builds the schedule here, as
+    /// [`Self::add_combat_system`] does.
+    pub fn add_between_steps_system<M>(&mut self, system: impl IntoScheduleConfigs<ScheduleSystem, M>) {
+        let world = self.ecs.world_mut();
+        if !self.between_steps {
+            let mut schedule = Schedule::new(BetweenSteps);
+            schedule.set_executor(SingleThreadedExecutor::new());
+            world.add_schedule(schedule);
+            self.between_steps = true;
+        }
+        world.schedule_scope(BetweenSteps, |world, schedule| {
+            schedule.add_systems(system);
+            if let Err(error) = schedule.initialize(world) {
+                panic!(
+                    "the between-steps schedule doesn't build: {}",
+                    error.to_string(schedule.graph(), world)
+                );
+            }
+        });
     }
 
     /// Adds a system to a [`CombatSet`], for a crate above gameplay (`sapphire_script` fires its hooks
@@ -679,7 +710,8 @@ impl Simulation {
     }
 
     /// Runs one fixed step on `actions`: the only way time moves. Allocates nothing on this thread
-    /// (rule R6), tested from the first tick.
+    /// (rule R6), tested from the first tick. Then runs [`BetweenSteps`], if anything's in it, outside the
+    /// step's time and count.
     pub fn step(&mut self, actions: &TickActions) {
         profiling::scope!("Simulation::step");
         let stopwatch = Stopwatch::start();
@@ -694,6 +726,9 @@ impl Simulation {
         let allocated = allocations.counts().allocations;
         let elapsed = stopwatch.elapsed();
         self.record_step(elapsed, allocated);
+        if self.between_steps {
+            self.ecs.world_mut().run_schedule(BetweenSteps);
+        }
     }
 
     fn record_step(&mut self, elapsed: Duration, allocated: u64) {

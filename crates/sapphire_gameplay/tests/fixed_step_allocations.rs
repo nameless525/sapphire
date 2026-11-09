@@ -343,6 +343,39 @@ fn the_allocation_gate_bites_a_step_that_allocates() {
     assert_eq!(player.finish().allocation_gate(), Ok(()));
 }
 
+/// Allocates every time, and counts its runs where a test can read them.
+fn allocates_between_steps(mut runs: ResMut<'_, BetweenRuns>) {
+    runs.0 += 1;
+    std::hint::black_box(Vec::<u8>::with_capacity(64));
+}
+
+#[derive(Resource, Default)]
+struct BetweenRuns(u32);
+
+fn with_an_allocating_system_between_steps(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cast = melee(sim)?;
+    sim.insert_resource(BetweenRuns::default());
+    sim.add_between_steps_system(allocates_between_steps);
+    Ok(cast)
+}
+
+/// What runs between steps runs after every one, whoever steps the simulation, and stays out of the step's
+/// count and time: what a script VM's collector relies on.
+#[test]
+fn between_steps_runs_once_a_step_outside_the_gate() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenarios =
+        [Scenario { setup: ScenarioSetup::Code(with_an_allocating_system_between_steps), ..SCENARIOS[0] }];
+    let mut player = Player::new(recorded(100), &scenarios).expect("starts");
+    player.run_to_end();
+    assert_eq!(player.simulation().world().resource::<BetweenRuns>().0, 100);
+    let played = player.finish();
+    assert_eq!(played.allocation_gate(), Ok(()));
+    assert_eq!(played.stats.allocations, 0);
+}
+
 /// With no counting allocator [`sapphire_gameplay::SimStats::allocations`] stays 0 whatever a step
 /// does, so a bench holding a step to it without one would check nothing.
 #[test]

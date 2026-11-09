@@ -92,7 +92,6 @@ fn run(reload: Option<&str>) -> Run {
         tick += 1;
         sim.push(player.simulation().checksum());
         digest.push(player.simulation().scripts().expect("attached").digest());
-        host_of(player.simulation()).gc_step().unwrap();
         if tick == RELOAD_AT
             && let Some(source) = reload
         {

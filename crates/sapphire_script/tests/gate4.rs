@@ -120,7 +120,6 @@ fn a_hook_that_commands_nothing_leaves_the_fight_alone() {
             let (a, b) = (unscripted.simulation().actor(actor), scripted.simulation().actor(actor));
             assert_eq!(a, b, "at tick {tick}");
         }
-        host_of(scripted.simulation()).gc_step().unwrap();
     }
     assert!(host_of(scripted.simulation()).stats().hooks_fired > 100);
     assert_ne!(unscripted.simulation().checksum(), scripted.simulation().checksum(), "the board's in it");
@@ -221,8 +220,7 @@ fn what_hooks_allocate_once_warm() {
                 seen.push(spent);
             }
             last_fired = fired;
-            host.gc_step().unwrap();
-            last = alloc::vm_counts();
+            last = counts;
         }
         assert_eq!(with_no_hook, 0, "a step with no hook made VM allocations");
         let warm = &seen[seen.len() / 2..];
@@ -231,7 +229,8 @@ fn what_hooks_allocate_once_warm() {
 }
 
 /// A collector stepped once a tick keeps a hook that makes garbage every tick at one size, with the
-/// stop in between: stopped isn't the same as never.
+/// stop in between: stopped isn't the same as never. The replay's runner steps nothing but the simulation,
+/// so this is also the host collecting at each tick boundary by itself.
 #[test]
 fn a_step_a_tick_keeps_up_with_a_hook_a_tick() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
@@ -241,12 +240,14 @@ fn a_step_a_tick_keeps_up_with_a_hook_a_tick() {
     let mut sizes = Vec::new();
     while player.step() {
         let host = host_of(player.simulation());
-        host.gc_step().unwrap();
         assert!(host.vm().collector_stopped());
         sizes.push(host.vm().used_memory());
     }
     let second = sizes[sizes.len() / 2..].iter().copied().max().unwrap();
     let first = sizes[..sizes.len() / 2].iter().copied().max().unwrap();
     assert!(second <= first + first / 4, "it keeps growing: {first} then {second}");
-    assert_eq!(host_of(player.simulation()).stats().hooks_failed, 0);
+    let stats = host_of(player.simulation()).stats();
+    assert_eq!(stats.hooks_failed, 0);
+    assert_eq!(stats.collections, sizes.len() as u64, "one a step");
+    player.finish().allocation_gate().expect("and outside the step's count");
 }

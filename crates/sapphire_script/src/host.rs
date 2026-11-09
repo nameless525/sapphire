@@ -4,7 +4,9 @@
 //! What a hook reads and writes, and how that reaches the checksum, is gameplay's
 //! ([`sapphire_gameplay::script`]), which knows nothing of this crate. [`attach`] gives a simulation its
 //! script state and adds the system that fires hooks to [`CombatSet::Hooks`], and from then on a step goes: gameplay
-//! gathers events, this answers them, gameplay applies what was asked for.
+//! gathers events, this answers them, gameplay applies what was asked for. After each step, in
+//! [`BetweenSteps`](sapphire_gameplay::BetweenSteps), it steps the VM's collector once, so whatever steps the simulation, a game or a replay's
+//! runner, collects as a game does.
 
 use std::time::Duration;
 
@@ -42,6 +44,10 @@ pub struct ScriptStats {
     pub longest_step: Duration,
     /// Steps that spent more than [`Limits::step_budget`] (spec §3.2).
     pub over_budget_steps: u64,
+    /// Collection steps taken between steps, and how long the latest and the longest took.
+    pub collections: u64,
+    pub last_collection: Duration,
+    pub longest_collection: Duration,
 }
 
 /// One simulation's VM and what's bound to it, as a resource in its world: a system takes it by `ResMut`,
@@ -121,10 +127,24 @@ impl ScriptHost {
         self.error.as_deref()
     }
 
-    /// One piece of collection, outside a step: see [`ScriptVm::gc_step`].
+    /// One piece of collection, outside a step: see [`ScriptVm::gc_step`]. An attached host takes one after
+    /// every step by itself.
     pub fn gc_step(&self) -> Result<bool, VmError> {
         let _vm = alloc::VmAllocations::enter();
         self.vm.gc_step()
+    }
+
+    /// The step of collection a tick boundary takes, counted. A collector that can't step is a VM gone
+    /// wrong, which the log hears of; the fight doesn't, since nothing simulated is in the VM.
+    fn collect(&mut self) {
+        let stopwatch = Stopwatch::start();
+        if let Err(error) = self.gc_step() {
+            self.error = Some(error.to_string());
+        }
+        let spent = stopwatch.elapsed();
+        self.stats.collections += 1;
+        self.stats.last_collection = spent;
+        self.stats.longest_collection = self.stats.longest_collection.max(spent);
     }
 
     /// Answers this step's events, in order, until they're done or the step's interrupts have gone.
@@ -211,8 +231,9 @@ fn answer(event: HookEvent, frame: &HookFrame) -> (usize, (f64, f64, f64)) {
     }
 }
 
-/// Puts `host` in a simulation, between steps, and adds the system that fires its hooks. Attaching again
-/// replaces the host and keeps the one system.
+/// Puts `host` in a simulation, between steps, and adds the system that fires its hooks, the only one in
+/// [`CombatSet::Hooks`], and the one that steps its collector after every step. Attaching again replaces
+/// the host and keeps the two systems.
 pub fn attach(sim: &mut Simulation, host: ScriptHost) {
     let installed = sim.world().contains_resource::<ScriptAttached>();
     sim.enable_scripts();
@@ -221,6 +242,7 @@ pub fn attach(sim: &mut Simulation, host: ScriptHost) {
     if !installed {
         sim.insert_resource(ScriptAttached);
         sim.add_combat_system(CombatSet::Hooks, fire_hooks);
+        sim.add_between_steps_system(collect);
     }
 }
 
@@ -267,6 +289,10 @@ fn fire_hooks(
     mut rng: ResMut<'_, SimRng>,
 ) {
     host.run(&mut scripts, &mut rng.0);
+}
+
+fn collect(mut host: ResMut<'_, ScriptHost>) {
+    host.collect();
 }
 
 /// The host [`attach`] put in `sim`, to read: its stats, a collection step between steps.

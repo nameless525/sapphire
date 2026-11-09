@@ -1015,7 +1015,7 @@ fn an_independent_simulation_at_the_same_tick_cuts_and_snaps_once() {
 /// ward's colliders, the fighters stand at its spawners, and the gate cutscene is what plays beside the
 /// simulation's timeline 0.
 fn ward_stage() -> Staged {
-    let place = crate::arena::FightPlace::of(sapphire_gameplay::replay::WARD_COURT).expect("a zone's fight");
+    let place = FightPlace::of(sapphire_gameplay::replay::WARD_COURT).expect("a zone's fight");
     let cooked = sapphire_gameplay::replay::ward_colliders().expect("it cooks");
     let ground = ArenaGround::at(ColliderSet::read(&cooked).expect("it reads"), &place).expect("it stands");
     let mut scene = Staged::of(Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false));

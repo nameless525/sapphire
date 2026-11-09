@@ -14,8 +14,11 @@ use sapphire_timeline::TimelineDocument;
 
 const GATE: &str = include_str!("../../../content/zones/lantern_ward/court_gate.timeline.ron");
 
-/// What each line says, at a moment it's up, in English and Japanese, with who says it.
-const LINES: [(f32, (&str, &str), (&str, &str)); 3] = [
+/// Who says a line and what they say, in one language.
+type Said = (&'static str, &'static str);
+
+/// What each line says, at a moment it's up, in English and Japanese.
+const LINES: [(f32, Said, Said); 3] = [
     (
         1.5,
         ("Wanderer", "The temple court. It was quiet a moment ago."),

@@ -1,0 +1,457 @@
+// The Knell Colossus's moves (M3 C2): the terrace's bronze temple guardian, 3.5 m tall, with a staff ending in
+// a bell. Slow, heavy blows that read from across the terrace, and a long kneel when its guard breaks, to
+// punish. Frame data in 60 Hz ticks. Each move lasts as long as its clip in `tools/motion/`, which posed
+// them to these numbers, and its graph names the clip each plays, at the move's own ticks.
+//
+// Root and staff are keyed by hand from those clips (the pose module's `--motion` prints them): in root
+// space +Z is forward and +X its left, and the `staff` path is the bell's middle, its +Y running along the
+// staff toward the bell. `ground` is a point before its feet, for what shakes the ground, and `body` its
+// chest, for a ram.
+//
+// A brain presses the attacks, and its phases change the brain (its `.enemy.ron`): the second wind,
+// `phase_shift`, is an attack only the second brain has, which it chooses first and once. Light and
+// medium hits land without a flinch; only a heavy one staggers it, and breaking its poise kneels it.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            (name: "slam", buffer: 10, priority: 2),
+            (name: "sweep", buffer: 10, priority: 1),
+            (name: "stomp", buffer: 10, priority: 1),
+            (name: "charge", buffer: 10, priority: 2),
+            (name: "slam_double", buffer: 10, priority: 2),
+            (name: "leap", buffer: 10, priority: 2),
+            (name: "phase_shift", buffer: 10, priority: 3),
+        ],
+        neutral: [
+            (intent: "slam", move: "slam"),
+            (intent: "sweep", move: "sweep"),
+            (intent: "stomp", move: "stomp"),
+            (intent: "charge", move: "charge"),
+            (intent: "slam_double", move: "slam_double"),
+            (intent: "leap", move: "leap"),
+            (intent: "phase_shift", move: "phase_shift"),
+        ],
+        fighter: (
+            // A boss: two and a half warriors' health, and nearly four times a warrior's poise, slow to come
+            // back, so that breaking it is something a fight works toward: about six of the player's strings.
+            health: 600,
+            poise: 220,
+            poise_refill: 600,
+            hurtboxes: [
+                // From the ground to its helm at 3.2 m, broad at the shoulders: the crown isn't something to
+                // hit.
+                (name: "body", offset: (0.0, 1.7, 0.0), shape: Capsule(radius: 0.8, length: 1.9)),
+            ],
+            reactions: (
+                heavy: "stagger",
+                poise_break: "break",
+                defeat: "death",
+            ),
+            // Heavy and slow on its feet. Its brain's `pace` is how far it tilts the stick.
+            movement: (
+                run_speed: 3.5,
+                walk_speed: 1.6,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                acceleration: 30.0,
+                deceleration: 30.0,
+                turn_rate_degrees: 360.0,
+                jump_speed: 5.0,
+                gravity: 22.0,
+                air_acceleration: 6.0,
+                max_fall_speed: 30.0,
+                coyote_ticks: 5,
+                slope_limit_degrees: 50.0,
+                step_height: 0.35,
+                ground_snap: 0.35,
+                stance_radius: 0.3,
+                max_slide_speed: 6.0,
+                // The capsule, a little under its helm: its hurtbox above is what a hit reads.
+                height: 3.0,
+                radius: 0.7,
+                skin: 0.01,
+            ),
+        ),
+        moves: [
+            (
+                // 1.67 s. The bell raised over its shoulder with both hands and brought down on the ground
+                // before it, 2.2 m out: three quarters of a second to read, and a long recovery to punish.
+                name: "slam",
+                startup: 44,
+                active: 6,
+                recovery: 50,
+                armour: [(from: 0, to: 50, threshold: 1000)],
+                motion: (
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                                (at: 36, offset: (-0.58, 3.64, -1.32), rotation: (-0.0683, 0.88, -0.469, -0.032)),
+                                (at: 44, offset: (-0.62, 3.64, -1.54), rotation: (-0.0569, 0.8517, -0.5204, -0.0227)),
+                                (at: 46, offset: (-0.41, 4.69, 0.68), rotation: (-0.0322, 0.9972, 0.0483, -0.0475)),
+                                (at: 48, offset: (-0.37, 4.19, 1.33), rotation: (-0.0638, 0.9679, 0.2044, -0.1316)),
+                                (at: 49, offset: (-0.28, 2.36, 2.49), rotation: (0.654, -0.0402, 0.0014, 0.7554)),
+                                (at: 50, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 64, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 100, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "slam_hit",
+                        from: 46,
+                        to: 51,
+                        path: "staff",
+                        shape: Capsule(radius: 0.6, length: 0.6),
+                        attack: (
+                            damage: 45,
+                            poise: 50,
+                            weight: Heavy,
+                            hitstop: 10,
+                            knockback: (distance: 1.6, ticks: 18),
+                            cue: "hit_heavy",
+                        ),
+                    ),
+                ],
+                warps: [
+                    (from: 0, to: 44, max_distance: 0.8, max_turn: 1.4, keep: 2.2),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "swing", at: 46),
+                    (name: "heavy_land", at: 50),
+                ],
+            ),
+            (
+                // 1.43 s. Wound far to its right, the staff swung flat round its front at a fighter's waist,
+                // bell first, reaching 2.4 m: its answer to someone at its side.
+                name: "sweep",
+                startup: 36,
+                active: 10,
+                recovery: 40,
+                armour: [(from: 0, to: 46, threshold: 1000)],
+                motion: (
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                                (at: 30, offset: (-2.12, 2.15, -1.37), rotation: (-0.2692, 0.7012, -0.5717, -0.3301)),
+                                (at: 36, offset: (-2.06, 2.1, -1.51), rotation: (-0.2536, 0.705, -0.5884, -0.3039)),
+                                (at: 38, offset: (-2.08, 1.56, 1.23), rotation: (0.6498, -0.3292, 0.3717, 0.5755)),
+                                (at: 39, offset: (-1.79, 1.49, 1.61), rotation: (0.6939, -0.2609, 0.3021, 0.5993)),
+                                (at: 40, offset: (-1.01, 1.4, 2.19), rotation: (0.753, -0.1181, 0.1408, 0.6318)),
+                                (at: 41, offset: (-0.57, 1.38, 2.36), rotation: (0.7644, -0.0478, 0.057, 0.6404)),
+                                (at: 42, offset: (-0.06, 1.34, 2.37), rotation: (0.7711, 0.0254, -0.0308, 0.6354)),
+                                (at: 43, offset: (0.93, 1.33, 2.1), rotation: (0.7427, 0.1744, -0.2121, 0.6108)),
+                                (at: 44, offset: (1.35, 1.35, 1.85), rotation: (0.7093, 0.2452, -0.2938, 0.592)),
+                                (at: 45, offset: (2.0, 1.36, 0.96), rotation: (0.6036, 0.3949, -0.4616, 0.5164)),
+                                (at: 46, offset: (2.12, 1.38, 0.64), rotation: (0.5593, 0.4405, -0.5061, 0.4868)),
+                                (at: 60, offset: (1.68, 1.9, 1.48), rotation: (0.585, 0.3604, -0.3242, 0.6502)),
+                                (at: 86, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "sweep_hit",
+                        from: 37,
+                        to: 46,
+                        path: "staff",
+                        shape: Capsule(radius: 0.5, length: 0.7),
+                        attack: (damage: 35, poise: 35, weight: Medium, hitstop: 8, knockback: (distance: 1.4, ticks: 16)),
+                    ),
+                ],
+                warps: [
+                    (from: 0, to: 36, max_distance: 0.5, max_turn: 1.2, keep: 1.8),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 37),
+                ],
+            ),
+            (
+                // 1.17 s. Its right foot raised high and stamped down, the staff planted: the ground shakes
+                // 2.2 m round its feet. Its answer to someone standing in close.
+                name: "stomp",
+                startup: 30,
+                active: 4,
+                recovery: 36,
+                armour: [(from: 0, to: 34, threshold: 1000)],
+                motion: (
+                    paths: [
+                        (name: "ground", keys: [(at: 0, offset: (0.0, 0.4, 0.5))]),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "stomp_hit",
+                        from: 30,
+                        to: 34,
+                        path: "ground",
+                        shape: Sphere(radius: 2.2),
+                        attack: (damage: 20, poise: 30, weight: Medium, hitstop: 6, knockback: (distance: 1.8, ticks: 14)),
+                    ),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "heavy_land", at: 30),
+                ],
+            ),
+            (
+                // 1.43 s. Head down and the staff levelled like a ram, it charges seven metres in 300 ms and
+                // stops hard: from across the terrace. Warp bends it toward a target by up to 2 m.
+                name: "charge",
+                startup: 28,
+                active: 18,
+                recovery: 40,
+                armour: [(from: 0, to: 46, threshold: 1000)],
+                motion: (
+                    root: [
+                        (at: 28, offset: (0.0, 0.0, 0.0)),
+                        (at: 31, offset: (0.0, 0.0, 1.05)),
+                        (at: 43, offset: (0.0, 0.0, 6.3)),
+                        (at: 46, offset: (0.0, 0.0, 7.0)),
+                    ],
+                    paths: [
+                        (name: "body", keys: [(at: 0, offset: (0.0, 1.6, 1.1))]),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "charge_hit",
+                        from: 30,
+                        to: 46,
+                        path: "body",
+                        shape: Capsule(radius: 0.9, length: 1.4),
+                        attack: (
+                            damage: 40,
+                            poise: 45,
+                            weight: Heavy,
+                            hitstop: 9,
+                            knockback: (distance: 2.4, ticks: 18),
+                            cue: "hit_heavy",
+                        ),
+                    ),
+                ],
+                warps: [
+                    (from: 0, to: 30, max_distance: 2.0, max_turn: 1.0, keep: 1.6),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "lunge_land", at: 46),
+                ],
+            ),
+            (
+                // 2.5 s, its second phase's. The slam, and once more a step to its left: a dodge of the first
+                // has to be ready for the second.
+                name: "slam_double",
+                startup: 44,
+                active: 6,
+                recovery: 100,
+                armour: [(from: 0, to: 100, threshold: 1000)],
+                motion: (
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                                (at: 36, offset: (-0.58, 3.64, -1.32), rotation: (-0.0683, 0.88, -0.469, -0.032)),
+                                (at: 44, offset: (-0.62, 3.64, -1.54), rotation: (-0.0569, 0.8517, -0.5204, -0.0227)),
+                                (at: 46, offset: (-0.41, 4.69, 0.68), rotation: (-0.0322, 0.9972, 0.0483, -0.0475)),
+                                (at: 48, offset: (-0.37, 4.19, 1.33), rotation: (-0.0638, 0.9679, 0.2044, -0.1316)),
+                                (at: 49, offset: (-0.28, 2.36, 2.49), rotation: (0.654, -0.0402, 0.0014, 0.7554)),
+                                (at: 50, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 62, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 88, offset: (-0.58, 3.64, -1.32), rotation: (-0.0683, 0.88, -0.469, -0.032)),
+                                (at: 94, offset: (-0.45, 3.64, -1.55), rotation: (-0.0238, 0.8528, -0.5216, -0.0095)),
+                                (at: 96, offset: (-0.02, 4.68, 0.68), rotation: (0.0534, 0.9944, 0.0456, 0.0784)),
+                                (at: 98, offset: (0.27, 4.17, 1.29), rotation: (0.167, 0.9223, 0.156, 0.3117)),
+                                (at: 99, offset: (0.68, 2.35, 2.34), rotation: (0.6557, 0.2669, -0.0184, 0.7061)),
+                                (at: 100, offset: (0.58, 0.3, 2.09), rotation: (0.9064, 0.1136, -0.0541, 0.4033)),
+                                (at: 114, offset: (0.58, 0.3, 2.09), rotation: (0.9064, 0.1136, -0.0541, 0.4033)),
+                                (at: 150, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "slam_first",
+                        from: 46,
+                        to: 51,
+                        path: "staff",
+                        shape: Capsule(radius: 0.6, length: 0.6),
+                        attack: (damage: 35, poise: 40, weight: Medium, hitstop: 8, knockback: (distance: 1.0, ticks: 14)),
+                    ),
+                    (
+                        name: "slam_second",
+                        from: 96,
+                        to: 101,
+                        path: "staff",
+                        shape: Capsule(radius: 0.6, length: 0.6),
+                        attack: (
+                            damage: 45,
+                            poise: 50,
+                            weight: Heavy,
+                            hitstop: 10,
+                            knockback: (distance: 1.6, ticks: 18),
+                            cue: "hit_heavy",
+                        ),
+                    ),
+                ],
+                warps: [
+                    (from: 0, to: 44, max_distance: 0.8, max_turn: 1.4, keep: 2.2),
+                    (from: 62, to: 94, max_distance: 0.6, max_turn: 1.0, keep: 2.2),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "swing", at: 46),
+                    (name: "heavy_land", at: 50),
+                    (name: "swing", at: 96),
+                    (name: "heavy_land", at: 100),
+                ],
+            ),
+            (
+                // 1.77 s, its second phase's. A crouch, a leap of 4.5 m with the bell raised, and a landing
+                // that brings it down: from further than the charge's start. Warp bends it by up to 2.5 m.
+                name: "leap",
+                startup: 40,
+                active: 6,
+                recovery: 60,
+                armour: [(from: 0, to: 46, threshold: 1000)],
+                motion: (
+                    root: [
+                        (at: 34, offset: (0.0, 0.0, 0.4)),
+                        (at: 38, offset: (0.0, 0.0, 1.9)),
+                        (at: 40, offset: (0.0, 0.0, 3.0)),
+                        (at: 43, offset: (0.0, 0.0, 4.5)),
+                    ],
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                                (at: 30, offset: (-0.58, 3.64, -1.32), rotation: (-0.0683, 0.88, -0.469, -0.032)),
+                                (at: 38, offset: (-0.64, 3.92, -1.42), rotation: (-0.0683, 0.88, -0.469, -0.032)),
+                                (at: 40, offset: (-0.41, 4.79, 0.58), rotation: (-0.0322, 0.9972, 0.0483, -0.0475)),
+                                (at: 43, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 60, offset: (-0.08, 0.3, 2.19), rotation: (0.9083, 0.0, 0.0, 0.4183)),
+                                (at: 106, offset: (-0.73, 3.44, 0.79), rotation: (0.0791, 0.0024, 0.0299, 0.9964)),
+                            ],
+                        ),
+                        (name: "ground", keys: [(at: 0, offset: (0.0, 0.4, 1.4))]),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "leap_hit",
+                        from: 42,
+                        to: 46,
+                        path: "ground",
+                        shape: Sphere(radius: 2.0),
+                        attack: (
+                            damage: 50,
+                            poise: 55,
+                            weight: Heavy,
+                            hitstop: 10,
+                            knockback: (distance: 2.0, ticks: 18),
+                            cue: "hit_heavy",
+                        ),
+                    ),
+                ],
+                warps: [
+                    (from: 6, to: 40, max_distance: 2.5, max_turn: 1.2, keep: 2.0),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "heavy_land", at: 43),
+                ],
+            ),
+            (
+                // 2.5 s, once: its second wind, which its second brain chooses first. It straightens to its
+                // full height, lifts the bell high, and drives the staff into the ground, and the toll throws
+                // everyone near back 3 m. Nothing touches it until the toll, as a boss's second wind goes in the
+                // reference fights, so nothing can break it either, and nothing flinches it after.
+                name: "phase_shift",
+                startup: 98,
+                active: 4,
+                recovery: 48,
+                armour: [(from: 0, to: 150, threshold: 1000)],
+                invulnerable: [(from: 0, to: 102)],
+                motion: (
+                    paths: [
+                        (name: "ground", keys: [(at: 0, offset: (0.0, 0.5, 0.5))]),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "toll",
+                        from: 98,
+                        to: 102,
+                        path: "ground",
+                        shape: Sphere(radius: 3.2),
+                        attack: (damage: 12, poise: 40, weight: Medium, hitstop: 6, knockback: (distance: 3.0, ticks: 20)),
+                    ),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "heavy_land", at: 98),
+                ],
+            ),
+            (
+                // 1 s: rocked back a step by a heavy hit, the bell swinging wide.
+                name: "stagger",
+                startup: 0,
+                active: 0,
+                recovery: 60,
+                armour: [(from: 0, to: 60, threshold: 1000)],
+                motion: (
+                    root: [
+                        (at: 8, offset: (0.0, 0.0, -0.2)),
+                        (at: 12, offset: (0.0, 0.0, -0.24)),
+                        (at: 22, offset: (0.0, 0.0, -0.4)),
+                    ],
+                ),
+                cues: [(name: "stagger_heavy", at: 0)],
+            ),
+            (
+                // 3 s: its guard broken, it drops to a knee bowed over the planted staff, and gets up again.
+                // Hits take their numbers and can't cut it short: this is the window a fight works toward.
+                name: "break",
+                startup: 0,
+                active: 0,
+                recovery: 180,
+                armour: [(from: 0, to: 180, threshold: 1000)],
+                cues: [
+                    (name: "stagger_heavy", at: 0),
+                    (name: "body_land", at: 30),
+                    (name: "recover", at: 140),
+                ],
+            ),
+            (
+                // 3 s: it sinks to a knee and bows over the staff to go still as stone, and nothing can hit it
+                // any more.
+                name: "death",
+                startup: 0,
+                active: 0,
+                recovery: 180,
+                hurtboxes: [
+                    (name: "body", from: 0, to: 180, state: Off),
+                ],
+                invulnerable: [(from: 0, to: 180)],
+                cues: [
+                    (name: "death", at: 0),
+                    (name: "body_land", at: 60),
+                    (name: "death_fade", at: 150),
+                ],
+            ),
+        ],
+    ),
+)

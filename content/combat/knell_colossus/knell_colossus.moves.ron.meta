@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "44c03915-fd61-4b01-afe0-affca3905c01",
+        importer: MoveSet(()),
+    ),
+)

@@ -1,0 +1,57 @@
+// How the Knell Colossus's clips play (M3 C2). Its stride is KayKit's `Walking_A`, retargeted onto its own
+// lengths by the pack's sidecar; everything else is its own key-pose documents, each as long as the move in
+// its moves that plays it. It never backs off or circles, so its ground has only its guard and its walk.
+// Its awakening and its quarter turns are posed but play nowhere yet: a stage that opens on it, and turns in
+// place, would take them.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            (name: "guard", source: "17ce890c-d05e-5ab9-b030-617a3de1ff0f"),
+            // Rig_Medium_MovementBasic.
+            (name: "advance", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Walking_A", target: "49e92e56-e2b1-4cb0-93b9-6c7aef439350"),
+            (name: "slam", source: "4d0d2b8c-fc6f-5760-9ab1-46c288a840f3"),
+            (name: "sweep", source: "7cfe536c-b1ea-5453-98ae-52531357434d"),
+            (name: "stomp", source: "1d1ecfa1-72cb-5e96-b7c7-3415a6e5efcc"),
+            (name: "charge", source: "c73eaa3d-fa8e-59c6-b61d-1c7c5e1c1b92"),
+            (name: "slam_double", source: "1b3ad8b4-a38c-5f91-898c-69da5f484e8a"),
+            (name: "leap", source: "9b4a42b4-9882-5a8b-875f-4379d459ab43"),
+            (name: "phase_shift", source: "9c2c3a73-6316-586c-bb24-73d51d03fbb1"),
+            (name: "stagger", source: "6c067cf8-3326-5673-a760-e33e31d4134f"),
+            (name: "break", source: "f5e6bfea-08c9-5d5c-93d2-90567f70bb41"),
+            (name: "death", source: "6a0c78cc-1b81-504b-9e01-47b5e88785d8"),
+        ],
+        locomotion: (
+            start: "ground",
+            smoothing: 4.0,
+            states: [
+                (name: "ground", plays: Blend((
+                    // The walk's speed is the support foot's travel per second, measured on the pack's chibi
+                    // rig and scaled by its legs, 3.48 times as long. The guard breathes at its own rate.
+                    samples: [
+                        (clip: "guard", at: (0.0, 0.0), sync: false),
+                        (clip: "advance", at: (0.0, 2.3)),
+                    ],
+                    rate: (0.5, 1.6),
+                ))),
+            ],
+        ),
+        combat: (
+            decay: 8,
+            exit: 12,
+            moves: [
+                (move: "slam", clip: "slam", decay: 6),
+                (move: "sweep", clip: "sweep", decay: 6),
+                (move: "stomp", clip: "stomp", decay: 6),
+                (move: "charge", clip: "charge", decay: 6),
+                (move: "slam_double", clip: "slam_double", decay: 6),
+                (move: "leap", clip: "leap", decay: 6),
+                (move: "phase_shift", clip: "phase_shift", decay: 6),
+                (move: "stagger", clip: "stagger", decay: 4),
+                (move: "break", clip: "break", decay: 5),
+                (move: "death", clip: "death", decay: 5),
+            ],
+        ),
+    ),
+)

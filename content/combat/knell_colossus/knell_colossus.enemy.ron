@@ -1,0 +1,154 @@
+// The Lantern Ward's boss as a kind of enemy (M3 C2): the Knell Colossus, the bronze bell guardian woken on
+// the terrace before the hall. Its moves are beside this file; its brains press their intents, by name. At
+// half health its second wind changes its brain to one that presses harder, adds a double slam and a leap,
+// and starts with the toll of its bell.
+(
+    type: "sapphire::moves::EnemyDocument",
+    version: 1,
+    data: (
+        // Its moves, beside this file.
+        moves: "44c03915-fd61-4b01-afe0-affca3905c01",
+        brains: {
+            "steady": (
+                // A first guess, for Feel review to move. It walks in to where its slam lands, and never backs
+                // off or circles: everything it does is slow, and reads from across the terrace.
+                spacing: (near: 1.8, far: 3.0),
+                pace: (
+                    // 1.6 m/s, its walk: anyone can outrun it, which is what the charge is for.
+                    approach: 0.5,
+                    retreat: 0.0,
+                    circle: 0.0,
+                    circle_share: 0.0,
+                    // A sixth of the player's turn: it has to come round to someone at its side.
+                    turn_rate_degrees: 150.0,
+                ),
+                // 1 to 2.5 s between attacks, and 0.7 to 1.5 s standing after one.
+                patience: (min: 60, max: 150),
+                rest: (min: 40, max: 90),
+                recover: (min: 4, max: 12),
+                attacks: [
+                    (
+                        // The slam: where it means to stand, and best on someone already reeling.
+                        intent: "slam",
+                        reach: (near: 1.2, best: 2.3, far: 3.2),
+                        against: (swinging: 0.6, reacting: 1.4, untouchable: 0.0),
+                        recent: (ticks: 300, floor: 0.3),
+                    ),
+                    (
+                        // The sweep, for someone at its side or swinging at it.
+                        intent: "sweep",
+                        weight: 0.8,
+                        reach: (near: 0.0, best: 1.8, far: 2.8),
+                        against: (swinging: 1.4, opening: 1.2, untouchable: 0.0),
+                        recent: (ticks: 300, floor: 0.3),
+                    ),
+                    (
+                        // The stomp, for someone standing in close, under the staff's reach.
+                        intent: "stomp",
+                        weight: 0.7,
+                        reach: (near: 0.0, best: 0.6, far: 2.0),
+                        against: (swinging: 1.6, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                    (
+                        // The charge, from across the terrace.
+                        intent: "charge",
+                        weight: 0.8,
+                        reach: (near: 4.0, best: 6.5, far: 9.0),
+                        against: (swinging: 0.6, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                ],
+            ),
+            "tolling": (
+                // Its second wind: half the patience and rest, and two more attacks.
+                spacing: (near: 1.8, far: 3.0),
+                pace: (
+                    approach: 0.6,
+                    retreat: 0.0,
+                    circle: 0.0,
+                    circle_share: 0.0,
+                    turn_rate_degrees: 180.0,
+                ),
+                patience: (min: 30, max: 80),
+                rest: (min: 20, max: 50),
+                recover: (min: 4, max: 12),
+                attacks: [
+                    (
+                        // First, and once: the toll of its bell, from as far as anything else it does reaches.
+                        // A phase changes only its brain, so it's this brain's heaviest choice, and after it the
+                        // least: its score climbs back from nothing over four and a half hours. Every other attack
+                        // between them covers its reach, and like theirs it waits out a dodge, so it's never the
+                        // only one left.
+                        intent: "phase_shift",
+                        weight: 50.0,
+                        reach: (near: 0.0, best: 2.0, far: 9.0),
+                        against: (untouchable: 0.0),
+                        recent: (ticks: 1000000000, floor: 0.0),
+                    ),
+                    (
+                        intent: "slam_double",
+                        reach: (near: 1.2, best: 2.3, far: 3.2),
+                        against: (swinging: 0.6, reacting: 1.4, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.25),
+                    ),
+                    (
+                        intent: "slam",
+                        weight: 0.6,
+                        reach: (near: 1.2, best: 2.3, far: 3.2),
+                        against: (swinging: 0.6, reacting: 1.4, untouchable: 0.0),
+                        recent: (ticks: 300, floor: 0.3),
+                    ),
+                    (
+                        intent: "sweep",
+                        weight: 0.8,
+                        reach: (near: 0.0, best: 1.8, far: 2.8),
+                        against: (swinging: 1.4, opening: 1.2, untouchable: 0.0),
+                        recent: (ticks: 300, floor: 0.3),
+                    ),
+                    (
+                        intent: "stomp",
+                        weight: 0.7,
+                        reach: (near: 0.0, best: 0.6, far: 2.0),
+                        against: (swinging: 1.6, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                    (
+                        // The leap, from further than the charge starts.
+                        intent: "leap",
+                        reach: (near: 3.0, best: 5.0, far: 8.0),
+                        against: (swinging: 0.6, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                    (
+                        intent: "charge",
+                        weight: 0.6,
+                        reach: (near: 4.0, best: 6.5, far: 9.0),
+                        against: (swinging: 0.6, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                ],
+            ),
+        },
+        brain: "steady",
+        // The second is the phase its bar marks and its music and screen hang on, by its name.
+        phases: [(at: 500, name: Some("tolling"), brain: Some("tolling")), (at: 0)],
+        // Its name's key in the game's words, for its boss bar.
+        boss: Some((name: "boss-knell-colossus")),
+        look: (
+            // Its `.glb`, from its spec in `tools/figures/`.
+            mesh: "49e92e56-e2b1-4cb0-93b9-6c7aef439350",
+            // Its graph, beside this file.
+            graph: "cdb951df-80e4-46ab-b488-b082dc1d305b",
+            // Its staff is skinned to its right hand's slot, so it holds nothing else.
+            // Built at its own size: 3.18 m to its helm and 3.52 m to its crown's finial, against the
+            // character's 1.62 m.
+            scale: 1.0,
+            height: 3.52,
+            // Its glowing eyes, under the helm's brow.
+            eyes_below_crown: 0.6,
+            // Its flared shoulders, for what a camera frames.
+            framed_radius: 1.1,
+        ),
+    ),
+)

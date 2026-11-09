@@ -93,7 +93,9 @@
 //! chest. A later joint of a chain hangs from the one before it, so a collider coming between the two
 //! has no answer a bone can give.
 //!
-//! The action substep holds the swing and bend limits after proxy contact to avoid unbounded curl.
+//! The action substep holds the swing and bend limits after proxy contact to avoid unbounded curl,
+//! except under a grounded torso ([`SpringBones::update_with_torso_contact`]), which clears strands
+//! after the limits.
 //! A collider can overrun a constrained tail and release it without a jump across the collider's
 //! axis (`overrun_give`). The heroine also resolves garment and limb contact at the drawn pose,
 //! with a bounded coherent change to each strand rather than more bend at the tip.

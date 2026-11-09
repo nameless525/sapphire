@@ -70,7 +70,14 @@ impl App for OffscreenApp {
                     _ => *ticks,
                 };
                 let to_end = matches!(options.combat, Some(CombatOption::Replay { to_end: true, .. }));
-                crate::capture::run(&mut stage, path, (ticks, to_end), *frames, width, height)?;
+                crate::capture::run(
+                    &mut stage,
+                    path,
+                    (ticks, to_end),
+                    (*frames, options.draw_every),
+                    width,
+                    height,
+                )?;
             }
             OffscreenMode::Bench { frames } => {
                 crate::bench::run(platform, &options, *frames, width, height)?;

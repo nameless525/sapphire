@@ -327,6 +327,11 @@ pub(crate) struct Options {
     /// first among them, losing the rest: it checks a load's inventory and measures nothing (M3 K1). On a software
     /// GPU a frame costs seconds, and every pipeline is built before a graph runs.
     pub bench_draw_every: Option<NonZeroU32>,
+    /// `--draw-every <n>`: with `--offscreen` or `--capture`, every frame steps, animates, prepares and records,
+    /// and only every `n`th runs its graph, the first among them, losing the rest as a frame whose surface was
+    /// lost. A capture's own frame always draws. It's for a long run on a software GPU, where drawing is what
+    /// costs: the renderer is still beside every frame of the fight, and nothing the simulation sees changes.
+    pub draw_every: Option<NonZeroU32>,
     /// `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the character at a spawner of the zone cooked from
     /// `<stem>.zone.ron`, `player_start` unless named, under the zone's day and light rigs.
     pub zone: Option<(String, String)>,
@@ -792,6 +797,7 @@ impl Options {
                     options.bench_draw_every =
                         Some(number(&value("--bench-draw-every")?, "--bench-draw-every")?);
                 }
+                "--draw-every" => options.draw_every = Some(number(&value("--draw-every")?, "--draw-every")?),
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
@@ -1272,6 +1278,9 @@ impl Options {
             (None, None) => None,
         };
         let capturing = matches!(mode, Some(OffscreenMode::Capture { .. }));
+        if options.draw_every.is_some() && !(capturing || serve) {
+            return Err(format!("--draw-every needs {CAPTURE_FLAG} or {OFFSCREEN_FLAG}"));
+        }
         if fight && options.arena.is_none() {
             return Err("--fight fights in the arena: it needs --arena".to_owned());
         }
@@ -2582,6 +2591,23 @@ mod tests {
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn drawing_one_frame_in_n_goes_with_a_capture_or_offscreen() {
+        for args in
+            [&["--capture", "x.png", "--draw-every", "50"][..], &["--offscreen", "--draw-every", "50"]]
+        {
+            let (options, _) = parse(args).unwrap();
+            assert_eq!(options.draw_every.map(NonZeroU32::get), Some(50), "{args:?}");
+        }
+        for args in [
+            &["--draw-every", "50"][..],
+            &["--bench", "1", "--replay", "x", "--draw-every", "50"],
+            &["--offscreen", "--draw-every", "0"],
+        ] {
+            assert!(parse(args).unwrap_err().contains("--draw-every"), "{args:?}");
         }
     }
 

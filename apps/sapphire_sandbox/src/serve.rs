@@ -10,6 +10,10 @@
 //! With `--record <file> --scenario <name> --script <name>` it runs a fight beside the scene, one tick a
 //! frame, which live tuning edits and whose recording is written when it quits (M2 T2).
 //!
+//! With `--draw-every <n>` every frame steps, animates, prepares and records and one in `n` runs its graph, so a
+//! long run on a software GPU costs what its simulation and the renderer's CPU side cost. A live link capture
+//! always draws.
+//!
 //! With `--cues` a fight's sound goes through the real mixer with no device (`OfflineAudio`), so a long
 //! run holds what a fight in a window holds.
 //!
@@ -56,6 +60,8 @@ pub(crate) struct Serving {
     size: (u32, u32),
     /// Frames still to draw, with `--frames`.
     remaining: Option<u64>,
+    /// Frames so far, drawn or lost (`--draw-every`).
+    frames: u64,
     /// The frames since the last frame stats line.
     lengths: FrameLengths,
     /// A fight's sound, with `--cues`.
@@ -136,6 +142,7 @@ impl Serving {
             options,
             size: (width, height),
             remaining: frame_limit,
+            frames: 0,
             lengths,
             audio,
             clock: Stopwatch::start(),
@@ -243,12 +250,17 @@ impl Serving {
                 capture.finish(&stage.gpu, stage.hooks.dev.frames());
             }
             None => {
-                stage.render(&self.view, 1.0, |_, _| {})?;
+                let every = self.options.draw_every.map(|every| u64::from(every.get()));
+                stage.lose_frames = every.is_some_and(|every| !self.frames.is_multiple_of(every));
+                let rendered = stage.render(&self.view, 1.0, |_, _| {});
+                stage.lose_frames = false;
+                rendered?;
                 // One frame in flight at most, as on a display.
                 stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
             }
         }
         stage.scene.end_frame();
+        self.frames += 1;
         stage.check_gpu()
     }
 }

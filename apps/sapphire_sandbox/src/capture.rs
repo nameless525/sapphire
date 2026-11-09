@@ -4,7 +4,9 @@
 //! With `--capture-frames` it draws several frames and writes the last, as temporal AA needs: a
 //! still scene redrawn while the history converges (`--capture-step 0`), or the scene playing at
 //! 60 fps up to the capture's tick (`--capture-step 1`). The jitter follows the renderer's frame
-//! count, so every run draws the same frames.
+//! count, so every run draws the same frames. With `--draw-every <n>` only one of those earlier frames in `n` runs
+//! its graph, the first among them; the rest are prepared and recorded and lost, and the captured frame always
+//! draws. That's for a fight beside the renderer on a software GPU: its picture's history isn't the full run's.
 //!
 //! Next to the PNG it writes `<name>.adapter.txt` (`backend=`, `adapter=`, `device_type=`,
 //! `driver=` lines) naming the GPU that rendered it, so golden-image tests
@@ -12,6 +14,7 @@
 
 use std::fs::File;
 use std::io::BufWriter;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use sapphire_platform::AppInitError;
@@ -56,12 +59,14 @@ pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
     (ticks, to_end): (u32, bool),
-    frames: CaptureFrames,
+    (frames, draw_every): (CaptureFrames, Option<NonZeroU32>),
     width: u32,
     height: u32,
 ) -> Result<(), AppInitError> {
     let history_only = history_only_requested(std::env::var_os(HISTORY_ONLY_ENV).as_deref())?;
     let mut history_only_frames = 0_u32;
+    // Frames whose graph ran, the captured one among them.
+    let mut drawn = 1_u32;
     let first =
         frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
     for _ in 0..first {
@@ -73,8 +78,13 @@ pub(crate) fn run(
     if earlier > 0 {
         let target = stage.target(width, height, wgpu::TextureUsages::empty());
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let draw_every = draw_every.map(NonZeroU32::get);
         for frame in 0..earlier {
-            history_only_frames += u32::from(stage.render_capture_warmup(&view, history_only)?);
+            stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
+            drawn += u32::from(!stage.lose_frames);
+            let drawn = stage.render_capture_warmup(&view, history_only);
+            stage.lose_frames = false;
+            history_only_frames += u32::from(drawn?);
             stage.scene.end_frame();
             stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
             // The frames still to come, the captured one included, each this many ticks later.
@@ -98,6 +108,7 @@ pub(crate) fn run(
         ticks,
         frames = frames.count,
         step = frames.step,
+        drawn,
         history_only_frames,
         "captured frame"
     );

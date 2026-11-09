@@ -429,9 +429,11 @@ fn fights_ended(log: &str) -> Vec<FightEnded> {
 }
 
 /// Runs the window's stock fight with the same script and end tick in two captures. The fixed bodies
-/// participate in combat, so both runs load them from the same cook. Rendering every eight ticks must
-/// produce the same simulation results as drawing one frame at the end, through two full fights and
-/// the first part of a third.
+/// participate in combat, so both runs load them from the same cook. A frame every eight ticks, animated,
+/// prepared and recorded, must produce the same simulation results as drawing one frame at the end, through
+/// two full fights and the first part of a third. One frame in [`FIGHT_DRAW_EVERY`] runs its graph, small:
+/// what the simulation could see of the renderer is all on the CPU's side, and lavapipe takes over a second
+/// to draw each of these frames at full size.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
@@ -440,7 +442,7 @@ fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
     const RESTART_TICK: u32 = DEFEAT_TICK + 240;
 
     let temp = Temp::new("fight");
-    let capture = |name, cadence: &[&str]| {
+    let capture = |name, cadence: &[&str], drawn: u32| {
         let path = temp.path(name);
         let tick = CAPTURE_TICK.to_string();
         let mut args = vec![
@@ -448,6 +450,8 @@ fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
             path.to_str().expect("UTF-8"),
             "--capture-ticks",
             &tick,
+            "--size",
+            "320x180",
             "--arena",
             "--fight",
             "--script",
@@ -458,6 +462,8 @@ fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
         let log = log_of(&output);
         assert!(output.status.success(), "{log}");
         assert!(path.exists(), "{log}");
+        let captured = log.lines().find(|line| line.contains("captured frame")).expect("a capture line");
+        assert!(captured.contains(&format!(" drawn={drawn} ")), "{captured}");
         let fights = fights_ended(&log);
         assert_eq!(fights.len(), 3, "two ended and one going on:\n{log}");
         for (number, fight) in fights.iter().enumerate() {
@@ -467,8 +473,10 @@ fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
         fights
     };
 
-    let frequent = capture("frequent.png", &["--capture-frames", "550", "--capture-step", "8"]);
-    let single = capture("single.png", &[]);
+    let every = &["--capture-frames", "550", "--capture-step", "8", "--draw-every", FIGHT_DRAW_EVERY];
+    // 549 frames before the captured one, every 50th from the first drawn.
+    let frequent = capture("frequent.png", every, 12);
+    let single = capture("single.png", &[], 1);
     for (fight, reference) in frequent.iter().zip(&single) {
         assert_eq!(
             (fight.ticks, fight.fell_at, fight.checksum),
@@ -529,15 +537,27 @@ fn offscreen_runs_mobile_low_at_its_own_rate() {
     }
 }
 
-/// The same with `--offscreen`, as an agent runs a fight, for as long as it's left running. Only `dev`
-/// builds have it.
+/// The same with `--offscreen`, as an agent runs a fight, for as long as it's left running, every frame
+/// beside the renderer and one in [`FIGHT_DRAW_EVERY`] drawn. Only `dev` builds have it.
 #[cfg(feature = "dev")]
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn an_agent_runs_a_fight_offscreen_by_its_script() {
     let replay = workspace().join("tests").join("replays").join("arena-fight-still.sreplay");
     let played = headless(&fs::read(&replay).expect("committed"));
-    let output = run_app(&["--offscreen", "--frames", "300", "--arena", "--fight", "--script", "idle"]);
+    let output = run_app(&[
+        "--offscreen",
+        "--frames",
+        "300",
+        "--size",
+        "320x180",
+        "--draw-every",
+        FIGHT_DRAW_EVERY,
+        "--arena",
+        "--fight",
+        "--script",
+        "idle",
+    ]);
     let log = log_of(&output);
     assert!(output.status.success(), "{log}");
     let fights = fights_ended(&log);
@@ -639,6 +659,10 @@ fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
 
 /// One frame in this many runs its graph: 17 of the 3,147 frames the four whole plays below take.
 const DRAW_EVERY: &str = "200";
+
+/// A long fight's frames beside the renderer, one in this many drawn: each is animated, prepared and recorded,
+/// and the rest of lavapipe's second a frame is lost.
+const FIGHT_DRAW_EVERY: &str = "50";
 
 /// The arena's stage draws through this and nothing else does, on either tier.
 const UNIQUE_KEY: &str = "mesh environment flags 0x0 Float32";

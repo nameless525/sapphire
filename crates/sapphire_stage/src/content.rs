@@ -1283,16 +1283,8 @@ impl Content {
             .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
         let probes = self.server.get(&zone).and_then(|zone| zone.presentation.probes.as_ref().copied());
-        let mut inventory = PipelineInventory {
-            meshes: self.server.pipeline_keys_of(pack),
-            probe_grid: probes.is_some(),
-            ..PipelineInventory::default()
-        };
-        if let Some(entry) = &self.left_out_of_zones {
-            inventory.remove(entry);
-        }
-        let built = renderer.prewarm(&inventory);
-        tracing::info!(target: LOG_TARGET, pack, keys = inventory.meshes.len(), built, "a zone's pipelines prewarmed");
+        self.mount_zone_pack(pack, probes.is_some(), renderer)?;
+        let assets = &mut self.gpu;
         self.zone_probes = probes
             .map(|grid| {
                 let grid = self.server.load_with(grid, LoadPriority::Critical).map_err(AppInitError::msg)?;
@@ -1354,6 +1346,30 @@ impl Content {
     #[must_use]
     pub fn cooked_bytes(&self, id: AssetId) -> Option<&[u8]> {
         self.server.cooked_bytes(id)
+    }
+
+    /// Mounts zone pack `pack` if it isn't, and builds what every mesh in it draws through on `renderer`,
+    /// lit by a probe grid if `probe_grid`.
+    pub(crate) fn mount_zone_pack(
+        &mut self,
+        pack: &str,
+        probe_grid: bool,
+        renderer: &mut Renderer,
+    ) -> Result<(), AppInitError> {
+        if !self.server.is_mounted(pack) {
+            self.server.mount_now(pack).map_err(AppInitError::msg)?;
+        }
+        let mut inventory = PipelineInventory {
+            meshes: self.server.pipeline_keys_of(pack),
+            probe_grid,
+            ..PipelineInventory::default()
+        };
+        if let Some(entry) = &self.left_out_of_zones {
+            inventory.remove(entry);
+        }
+        let built = renderer.prewarm(&inventory);
+        tracing::info!(target: LOG_TARGET, pack, keys = inventory.meshes.len(), built, "a zone's pipelines prewarmed");
+        Ok(())
     }
 
     /// Brings what `streamer` holds to `renderer`, a new one.

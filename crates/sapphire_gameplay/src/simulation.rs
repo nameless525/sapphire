@@ -39,7 +39,8 @@ use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 use crate::targeting::TargetingTuning;
 use crate::timeline::{
-    self, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress, TimelineRun,
+    self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
+    TimelineRun,
 };
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
@@ -98,6 +99,9 @@ pub enum CombatSet {
     Party,
     /// The move graph checks cancel windows.
     Cancels,
+    /// A move the cancels just started starts its cinematic, if it names one (M3 Q3b): after every move
+    /// that starts this step has, and before anything reads one, so the run starts on the move's first tick.
+    Cinematics,
     /// Each move advances on its local clock.
     Moves,
     /// Root motion and the controller, then hurtboxes: `movement::apply_root_motion` writes each
@@ -169,6 +173,7 @@ impl Simulation {
                     CombatSet::Intents,
                     CombatSet::Party,
                     CombatSet::Cancels,
+                    CombatSet::Cinematics,
                     CombatSet::Moves,
                     CombatSet::Movement,
                     CombatSet::Hits,
@@ -187,6 +192,7 @@ impl Simulation {
             )
             .add_systems(FixedCombat, party::settle_swaps.in_set(CombatSet::Party))
             .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
+            .add_systems(FixedCombat, timeline::start_cinematics.in_set(CombatSet::Cinematics))
             .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
             .add_systems(
                 FixedCombat,
@@ -819,7 +825,43 @@ impl Simulation {
     /// [`Self::tables_hash`], so a replay that plays it says so if it changes. A scenario loads what a
     /// replay of it could play, up front.
     pub fn add_timeline(&mut self, timeline: TimelineSimulation) -> Result<TimelineId, TimelineError> {
-        self.ecs.world_mut().resource_mut::<TimelineLibrary>().add(timeline)
+        self.ecs.world_mut().resource_mut::<TimelineLibrary>().add(timeline, None)
+    }
+
+    /// Loads a move's cinematic under the `name` its moves give it, between steps and before the sets
+    /// that name it (M3 Q3b). As [`Self::add_timeline`], it goes in [`Self::tables_hash`], its name too.
+    /// It has to run on the [`Steps`](sapphire_timeline::TimelineClock::Steps) clock, beneath its move.
+    pub fn add_cinematic(
+        &mut self,
+        name: &str,
+        timeline: TimelineSimulation,
+    ) -> Result<TimelineId, CinematicError> {
+        let library = self.ecs.world().resource::<TimelineLibrary>();
+        if library.find(Name::intern(name)).is_some() {
+            return Err(CinematicError::Taken(name.to_owned()));
+        }
+        if timeline.ticks == 0 {
+            return Err(CinematicError::Held(name.to_owned()));
+        }
+        let library = &mut self.ecs.world_mut().resource_mut::<TimelineLibrary>();
+        Ok(library.add(timeline, Some(Name::intern(name)))?)
+    }
+
+    /// Refuses a fight whose move sets name a cinematic it hasn't loaded, naming the first: what a fight's
+    /// preparation runs once its sets and timelines are in, so that no ultimate goes missing silently.
+    pub fn check_cinematics(&self) -> Result<(), CinematicError> {
+        let world = self.ecs.world();
+        let timelines = world.resource::<TimelineLibrary>();
+        for (set, moves) in world.resource::<MoveLibrary>().current_sets() {
+            for mv in moves.moves() {
+                if let Some(name) = mv.cinematic()
+                    && timelines.find(name).is_none()
+                {
+                    return Err(CinematicError::Missing { set: set.0, mv: mv.label().to_owned(), name });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Starts a timeline, between steps: it does nothing until the next. A replay records this, as a
@@ -828,7 +870,7 @@ impl Simulation {
     pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
         let world = self.ecs.world_mut();
         let mut run = *world.resource::<TimelineRun>();
-        run.start(world.resource::<TimelineLibrary>(), id)?;
+        run.start(world.resource::<TimelineLibrary>(), id, None)?;
         *world.resource_mut::<TimelineRun>() = run;
         Ok(())
     }
@@ -844,6 +886,13 @@ impl Simulation {
     #[must_use]
     pub fn timelines_played(&self) -> u64 {
         self.ecs.world().resource::<TimelineRun>().played()
+    }
+
+    /// How many moves' cinematics couldn't start, because another timeline was playing or the fight never
+    /// loaded it: a fight that [`Self::check_cinematics`] passed counts only the first.
+    #[must_use]
+    pub fn cinematics_refused(&self) -> u64 {
+        self.ecs.world().resource::<TimelineRun>().cinematics_refused()
     }
 
     /// The timeline playing, if one is.

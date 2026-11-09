@@ -30,13 +30,31 @@
 //! A replay records the [`TimelineCommand`]s, and pins what they refer to through `tables_hash`. A run's
 //! beats follow from those, on the steps they fell on, rather than each being recorded as it fired: that
 //! would be recording what the simulation did, which a replay exists to check.
+//!
+//! # A move's cinematic
+//!
+//! A move can name a cinematic (M3 Q3b): a character's ultimate, played beneath the move. The fight loads
+//! it by that name, [`Simulation::add_cinematic`](crate::Simulation::add_cinematic), before it loads the
+//! sets that name it, and a scenario refuses a set naming one it hasn't loaded
+//! ([`Simulation::check_cinematics`](crate::Simulation::check_cinematics)). Then [`start_cinematics`],
+//! in [`CombatSet::Cinematics`](crate::CombatSet::Cinematics), after the cancels that start moves and
+//! before anything reads one, starts the run on the move's first tick, with its owner. Nothing is
+//! recorded for it: the move's start follows from the replay's input, and the run from the move.
+//!
+//! Its beats fire from the next step's [`CombatSet::Timeline`](crate::CombatSet::Timeline), as a run
+//! started between steps does. A time scale beat slows the world clock and counter-scales its owner's,
+//! as a perfect dodge does, so the others are held while the move plays through at its own speed.
 
+use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_time::ScaleSource;
 use sapphire_timeline::{Beat, BeatKind, TimelineError, TimelineSimulation};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
+use crate::actors::{ActorId, ActorTable};
 use crate::checksum::StateHasher;
+use crate::moves::{MoveLibrary, MoveRunner};
+use crate::resolve::counter_scale;
 
 /// A loaded timeline's simulation half, by the order it was added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -74,6 +92,25 @@ pub enum TimelinePlayError {
     Busy(TimelineId),
 }
 
+/// Why a fight can't play a move's cinematic.
+#[derive(Debug, thiserror::Error)]
+pub enum CinematicError {
+    #[error(transparent)]
+    Timeline(#[from] TimelineError),
+    #[error("a cinematic named `{0}` is loaded already")]
+    Taken(String),
+    #[error(
+        "cinematic `{0}` holds the simulation, but a move's cinematic plays beneath its move: give it the \
+         `Steps` clock"
+    )]
+    Held(String),
+    #[error(
+        "move `{mv}` of move set {set} plays the cinematic {name}, which this fight hasn't loaded: load it \
+         with `add_cinematic` before the set"
+    )]
+    Missing { set: u32, mv: String, name: Name },
+}
+
 /// Something a timeline told gameplay, on the step it fell on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimelineEvent {
@@ -90,31 +127,52 @@ pub struct TimelineProgress {
     pub tick: u32,
     /// Its length in steps: 0 for one that holds the simulation.
     pub ticks: u32,
+    /// The actor whose move started it, for a move's cinematic: the one its time scale leaves alone.
+    pub owner: Option<ActorId>,
+}
+
+/// A loaded timeline: its simulation half, its digest and, for a move's cinematic, its name.
+#[derive(Debug)]
+struct Loaded {
+    timeline: TimelineSimulation,
+    digest: u64,
+    name: Option<Name>,
 }
 
 /// The loaded timelines. Nothing here changes during a step.
 #[derive(Resource, Debug, Default)]
 pub struct TimelineLibrary {
-    timelines: Vec<(TimelineSimulation, u64)>,
+    timelines: Vec<Loaded>,
 }
 
 impl TimelineLibrary {
-    pub(crate) fn add(&mut self, timeline: TimelineSimulation) -> Result<TimelineId, TimelineError> {
+    pub(crate) fn add(
+        &mut self,
+        timeline: TimelineSimulation,
+        name: Option<Name>,
+    ) -> Result<TimelineId, TimelineError> {
         timeline.validate()?;
         let id = TimelineId(self.timelines.len() as u32);
         let digest = timeline.digest();
-        self.timelines.push((timeline, digest));
+        self.timelines.push(Loaded { timeline, digest, name });
         Ok(id)
     }
 
     fn get(&self, id: TimelineId) -> Option<&TimelineSimulation> {
-        self.timelines.get(id.0 as usize).map(|(timeline, _)| timeline)
+        self.timelines.get(id.0 as usize).map(|loaded| &loaded.timeline)
+    }
+
+    /// The cinematic loaded under `name`, in no time and with no heap: a step looks one up.
+    #[must_use]
+    pub fn find(&self, name: Name) -> Option<TimelineId> {
+        let at = self.timelines.iter().position(|loaded| loaded.name == Some(name))?;
+        Some(TimelineId(at as u32))
     }
 
     /// The digest of the timeline `id`, as `tables_hash` takes it: what presentation finds its cooked copy by.
     #[must_use]
     pub fn digest(&self, id: TimelineId) -> Option<u64> {
-        self.timelines.get(id.0 as usize).map(|&(_, digest)| digest)
+        self.timelines.get(id.0 as usize).map(|loaded| loaded.digest)
     }
 
     fn beats(&self, id: TimelineId) -> &[Beat] {
@@ -127,8 +185,13 @@ impl TimelineLibrary {
             return;
         }
         hasher.u32(self.timelines.len() as u32);
-        for &(_, digest) in &self.timelines {
-            hasher.u64(digest);
+        for loaded in &self.timelines {
+            hasher.u64(loaded.digest);
+            // What a move's cinematic finds it by is what the fight plays: only a named one says it, so a
+            // run on unnamed timelines hashes as it did.
+            if let Some(name) = loaded.name {
+                hasher.u64(name.as_u64());
+            }
         }
     }
 }
@@ -140,6 +203,8 @@ struct Playing {
     ticks: u32,
     /// The next beat.
     next: u32,
+    /// Whose move started it, if a move did: its time scale counter-scales their clock.
+    owner: Option<ActorId>,
 }
 
 /// The timeline a simulation is playing, and what its timelines have done.
@@ -154,6 +219,8 @@ pub struct TimelineRun {
     events_hash: u64,
     /// Time scale beats the world clock's full stack turned away.
     scales_refused: u64,
+    /// Moves' cinematics that couldn't start: another was playing, or the fight never loaded it.
+    cinematics_refused: u64,
 }
 
 impl TimelineRun {
@@ -176,6 +243,7 @@ impl TimelineRun {
             id: playing.id,
             tick: playing.tick,
             ticks: playing.ticks,
+            owner: playing.owner,
         })
     }
 
@@ -197,6 +265,18 @@ impl TimelineRun {
         self.scales_refused
     }
 
+    /// Moves' cinematics that couldn't start: another timeline was playing, or the fight never loaded it.
+    #[must_use]
+    pub fn cinematics_refused(&self) -> u64 {
+        self.cinematics_refused
+    }
+
+    /// Who the playing timeline's move belongs to, if a move started it.
+    #[must_use]
+    pub fn owner(&self) -> Option<ActorId> {
+        self.playing.and_then(|playing| playing.owner)
+    }
+
     /// What the current step told gameplay, for a system of a later [`CombatSet`](crate::CombatSet) to read,
     /// or what the latest one did, between steps.
     pub fn events<'a>(&self, library: &'a TimelineLibrary) -> impl Iterator<Item = TimelineEvent> + 'a {
@@ -209,16 +289,18 @@ impl TimelineRun {
         })
     }
 
+    /// Starts `id`, for `owner`'s move if a move started it.
     pub(crate) fn start(
         &mut self,
         library: &TimelineLibrary,
         id: TimelineId,
+        owner: Option<ActorId>,
     ) -> Result<(), TimelinePlayError> {
         if let Some(playing) = self.playing {
             return Err(TimelinePlayError::Busy(playing.id));
         }
         let timeline = library.get(id).ok_or(TimelinePlayError::Unknown(id))?;
-        self.playing = Some(Playing { id, tick: 0, ticks: timeline.ticks, next: 0 });
+        self.playing = Some(Playing { id, tick: 0, ticks: timeline.ticks, next: 0, owner });
         self.played += 1;
         Ok(())
     }
@@ -226,7 +308,7 @@ impl TimelineRun {
     /// Writes nothing for a simulation that has never played one, so its checksums stay what they were.
     /// `latest` stays out: every step starts by replacing it, so no state outlives a step through it.
     pub(crate) fn write_canonical(&self, hasher: &mut StateHasher) {
-        if self.played == 0 {
+        if self.played == 0 && self.cinematics_refused == 0 {
             return;
         }
         hasher.u64(self.played);
@@ -240,8 +322,42 @@ impl TimelineRun {
                 hasher.u32(playing.tick);
                 hasher.u32(playing.ticks);
                 hasher.u32(playing.next);
+                // Only a move's run has one, so a run between steps hashes as it did.
+                if let Some(owner) = playing.owner {
+                    hasher.u8(2);
+                    hasher.u32(owner.raw());
+                }
             }
             None => hasher.u8(0),
+        }
+        if self.cinematics_refused > 0 {
+            hasher.u8(3);
+            hasher.u64(self.cinematics_refused);
+        }
+    }
+}
+
+/// [`CombatSet::Cinematics`](crate::CombatSet::Cinematics): starts the cinematic of each move the cancels
+/// just started, on its first tick, before [`CombatSet::Moves`](crate::CombatSet::Moves) reads any of it.
+/// Actors go in [`ActorTable::iter`]'s order, so if two start one on a step, the first in it plays and
+/// the other is counted. See the [module docs](self#a-moves-cinematic).
+pub(crate) fn start_cinematics(
+    table: Res<'_, ActorTable>,
+    moves: Res<'_, MoveLibrary>,
+    library: Res<'_, TimelineLibrary>,
+    mut run: ResMut<'_, TimelineRun>,
+    runners: Query<'_, '_, &MoveRunner>,
+) {
+    for (id, entity) in table.iter() {
+        let Ok(runner) = runners.get(entity) else { continue };
+        let Some(running) = runner.running.filter(|running| running.fresh) else { continue };
+        let Some(name) = moves.get(running.at).and_then(sapphire_moves::Move::cinematic) else { continue };
+        let started = library
+            .find(name)
+            .ok_or(())
+            .and_then(|timeline| run.start(&library, timeline, Some(id)).map_err(|_| ()));
+        if started.is_err() {
+            run.cinematics_refused += 1;
         }
     }
 }
@@ -252,9 +368,14 @@ pub(crate) fn advance_timeline(
     library: Res<'_, TimelineLibrary>,
     mut run: ResMut<'_, TimelineRun>,
     mut world_clock: ResMut<'_, WorldClock>,
+    table: Res<'_, ActorTable>,
+    mut clocks: Query<'_, '_, &mut EntityClock>,
 ) {
     run.latest = None;
     let Some(mut playing) = run.playing else { return };
+    // A move's owner plays through its own cinematic's time scale, as a perfect dodge's dodger does.
+    let mut owner_clock =
+        playing.owner.and_then(|owner| table.entity(owner)).and_then(|entity| clocks.get_mut(entity).ok());
     let beats = library.beats(playing.id);
     let from = playing.next;
     while let Some(beat) = beats.get(playing.next as usize).filter(|beat| beat.tick == playing.tick) {
@@ -262,8 +383,16 @@ pub(crate) fn advance_timeline(
             BeatKind::Scale { per_mille } => {
                 world_clock.0.remove_source(ScaleSource::Cinematic);
                 // Refused, it's counted, and the same on every run: the stack's contents are in the checksum.
-                run.scales_refused +=
-                    u64::from(world_clock.0.push_scale(ScaleSource::Cinematic, per_mille).is_err());
+                let refused = world_clock.0.push_scale(ScaleSource::Cinematic, per_mille).is_err();
+                run.scales_refused += u64::from(refused);
+                if let Some(clock) = &mut owner_clock {
+                    clock.0.remove_source(ScaleSource::Cinematic);
+                    if !refused {
+                        run.scales_refused += u64::from(
+                            clock.0.push_scale(ScaleSource::Cinematic, counter_scale(per_mille)).is_err(),
+                        );
+                    }
+                }
             }
             BeatKind::Event { event, value } => {
                 run.events_fired += 1;
@@ -279,6 +408,9 @@ pub(crate) fn advance_timeline(
     playing.tick += 1;
     if playing.tick >= playing.ticks {
         world_clock.0.remove_source(ScaleSource::Cinematic);
+        if let Some(clock) = &mut owner_clock {
+            clock.0.remove_source(ScaleSource::Cinematic);
+        }
         run.playing = None;
     } else {
         run.playing = Some(playing);

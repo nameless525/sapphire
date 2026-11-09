@@ -92,6 +92,7 @@ impl LiveMoves {
             }
         }
         let cast = (scenario.setup)(&mut sim)?;
+        sim.check_cinematics()?;
         Ok((sim, cast))
     }
 }

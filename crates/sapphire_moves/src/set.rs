@@ -691,6 +691,8 @@ pub struct Move {
     /// Never overlapping, so at most one bends the motion at any instant.
     pub warps: Vec<WarpWindow>,
     pub cues: Vec<Cue>,
+    /// The name of the cinematic the move plays from its first tick, if any (M3 Q3b).
+    cinematic: Option<u64>,
 }
 
 impl Move {
@@ -704,6 +706,15 @@ impl Move {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// The cinematic the move plays from its first tick: the name a fight loaded its timeline under.
+    #[must_use]
+    pub const fn cinematic(&self) -> Option<Name> {
+        match self.cinematic {
+            Some(name) => Some(Name::from_u64(name)),
+            None => None,
+        }
     }
 
     /// The whole move, in ticks.
@@ -754,6 +765,7 @@ pub(crate) struct MoveParts {
     pub(crate) cancels: Vec<CancelWindow>,
     pub(crate) warps: Vec<WarpWindow>,
     pub(crate) cues: Vec<Cue>,
+    pub(crate) cinematic: Option<Name>,
 }
 
 impl MoveParts {
@@ -773,6 +785,7 @@ impl MoveParts {
             mut cancels,
             mut warps,
             mut cues,
+            cinematic,
         } = self;
         // Stable sorts: authored order stands among equals, so it's part of what a set means.
         hitboxes.sort_by_key(|hitbox| hitbox.span.from);
@@ -800,6 +813,7 @@ impl MoveParts {
             cancels,
             warps,
             cues,
+            cinematic: cinematic.map(Name::as_u64),
         }
     }
 }
@@ -929,8 +943,8 @@ pub struct MoveSet {
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
-    /// 4: M2 G6's brain. 5: M2 T2's movement.
-    const VERSION: u32 = 5;
+    /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics.
+    const VERSION: u32 = 6;
 }
 
 /// A move set that can't be built, read or written.

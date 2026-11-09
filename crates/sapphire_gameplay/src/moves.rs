@@ -234,6 +234,14 @@ impl MoveLibrary {
         self.sets.get(id.0 as usize).map_or(&[], Vec::as_slice)
     }
 
+    /// Each set's current revision, by ID.
+    pub(crate) fn current_sets(&self) -> impl Iterator<Item = (MoveSetId, &MoveSet)> {
+        self.sets
+            .iter()
+            .enumerate()
+            .filter_map(|(at, revisions)| Some((MoveSetId(at as u32), &revisions.last()?.set)))
+    }
+
     /// The set's current revision: what the next move starts from.
     #[must_use]
     pub fn current(&self, id: MoveSetId) -> Option<&MoveSet> {

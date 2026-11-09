@@ -84,6 +84,48 @@ fn a_timelines_run_does_not_allocate_from_the_first_tick() {
     assert_eq!((stats.timelines_played, stats.timeline_events), (2, 5), "{stats:?}");
 }
 
+/// A move's cinematic, started from inside a step (M3 Q3b), counted from the first step: twice, its time
+/// scale holding a bystander and counter-scaling the owner both times.
+#[test]
+fn a_moves_cinematic_does_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut document = MoveSetDocument::parse(SLICE).expect("parses");
+    let spin = document.moves.iter_mut().find(|mv| mv.name == "spin").expect("the test content spins");
+    spin.cinematic = Some("finisher".to_owned());
+    let mut sim = Simulation::new(SimConfig::default());
+    let timeline = sapphire_timeline::TimelineDocument::from_ron(include_str!(
+        "../../sapphire_timeline/test_content/cinematic.timeline.ron"
+    ))
+    .expect("reads");
+    sim.add_cinematic("finisher", timeline.cook().expect("cooks").simulation).expect("loads");
+    let moves = sim.add_move_set(document.compile().expect("compiles"));
+    let owner = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
+    sim.spawn(ActorSpawn {
+        moves: Some(moves),
+        position: Vec3::new(0.0, 0.0, 20.0),
+        ..ActorSpawn::default()
+    })
+    .expect("room");
+    sim.check_cinematics().expect("loaded");
+    let ticks: Vec<TickActions> =
+        (0..400)
+            .map(|tick| {
+                if tick == 10 || tick == 200 { press(owner, Buttons::ULTIMATE) } else { TickActions::NEUTRAL }
+            })
+            .collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "a move's cinematic allocated {} times", counts.allocations);
+    assert_eq!((sim.timelines_played(), sim.cinematics_refused()), (2, 0));
+}
+
 /// A party's whole fight, counted from the first step: swaps, assists and falls, capsules and hurtboxes
 /// leaving and coming back, and the party going down.
 #[test]

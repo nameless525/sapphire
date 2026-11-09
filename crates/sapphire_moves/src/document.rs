@@ -238,6 +238,11 @@ pub struct MoveDocument {
     pub warps: Vec<WarpDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cues: Vec<CueDocument>,
+    /// The cinematic the move plays from its first tick (M3 Q3b), by the name the fight loaded its timeline
+    /// under: a character's ultimate, say. Every fight that loads the set has to have loaded it, or the
+    /// fight is refused as it's prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cinematic: Option<String>,
 }
 
 /// A window with nothing else to say: open on ticks `from` to `to − 1`.
@@ -1513,6 +1518,11 @@ fn compile_move(
         cues.push(Cue::new(Name::intern(&cue.name), cue.at));
     }
 
+    let cinematic = mv.cinematic.as_deref().map(|name| {
+        check.named("cinematic", name);
+        Name::intern(name)
+    });
+
     Some(
         MoveParts {
             label: mv.name.clone(),
@@ -1529,6 +1539,7 @@ fn compile_move(
             cancels,
             warps,
             cues,
+            cinematic,
         }
         .build(),
     )
@@ -1711,8 +1722,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 6,
-                current: 5
+                found: 7,
+                current: 6
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];

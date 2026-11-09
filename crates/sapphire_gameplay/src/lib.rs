@@ -179,8 +179,8 @@ pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
 };
 pub use timeline::{
-    TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
-    TimelineRun,
+    CinematicError, TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError,
+    TimelineProgress, TimelineRun,
 };
 
 #[doc(hidden)]

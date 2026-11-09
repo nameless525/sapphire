@@ -83,6 +83,8 @@ pub enum ScenarioError {
     Timeline(#[from] TimelineError),
     #[error(transparent)]
     Zone(#[from] sapphire_zone::ZoneError),
+    #[error(transparent)]
+    Cinematic(#[from] crate::CinematicError),
     #[error("the zone has no spawner named `{0}`")]
     MissingSpawner(&'static str),
     #[error("the arena couldn't bind its runtime profiles: {0}")]
@@ -113,6 +115,7 @@ impl Scenario {
     pub fn start(&self, config: SimConfig) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
         let mut sim = Simulation::new(config);
         let cast = (self.setup)(&mut sim)?;
+        sim.check_cinematics()?;
         Ok((sim, cast))
     }
 
@@ -478,6 +481,7 @@ impl PreparedFight {
         let warrior = live.latest(document_file_name(WARRIOR_MOVES_PATH)).unwrap_or(&self.warrior);
         let cast =
             fight_on(&mut sim, player.clone(), warrior.clone(), &self.colliders, self.spawns, self.party)?;
+        sim.check_cinematics()?;
         Ok((sim, cast))
     }
 }

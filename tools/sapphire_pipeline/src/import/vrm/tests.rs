@@ -1021,7 +1021,8 @@ fn tree(scratch: &TempDir, name: &str, sample: &SampleVrm) -> std::path::PathBuf
 
 fn cook(scratch: &TempDir, cook: Cook, cache: bool) -> Result<crate::cook::CookReport, CookError> {
     let cache_dir = scratch.path().join("cache");
-    let options = CookOptions { cook, cache: cache.then_some(cache_dir.as_path()), locked: false };
+    let options =
+        CookOptions { cook, cache: cache.then_some(cache_dir.as_path()), locked: false, editor: false };
     cook_dir(&scratch.path().join("content"), &scratch.path().join("out").join(cook.name()), &options)
 }
 

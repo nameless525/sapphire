@@ -735,6 +735,9 @@ pub struct CookOptions<'a> {
     pub cache: Option<&'a Path>,
     /// Fail on a source without a sidecar instead of creating one (CI; see [`meta`]).
     pub locked: bool,
+    /// Also cook what only an editor reads: each zone's shapes (`zone`'s "Shapes"). Never for the packs an app
+    /// ships, which stay as they are without it.
+    pub editor: bool,
 }
 
 /// What a cook did with one asset.
@@ -957,8 +960,9 @@ fn cook_dir_through(
     for (asset, output) in cooked_assets.into_iter().zip(own_outputs) {
         // Which sub-assets there are may take reading the file, which could panic in a crate.
         let planned_from = Cell::new(None);
-        let parts =
-            guarded(&asset.path, || sub_assets(&asset, &planned_from, &prefabs, &mut zones, cache.as_ref()))?;
+        let parts = guarded(&asset.path, || {
+            sub_assets(&asset, &planned_from, &prefabs, &mut zones, cache.as_ref(), options.editor)
+        })?;
         let planned_from = planned_from.get();
         let skeleton =
             asset.meta.importer.shared_rig().map(|owner| meta::sub_asset_id(owner, SKELETON)).or_else(|| {
@@ -991,6 +995,7 @@ fn cook_dir_through(
                     source_relative.with_file_name(file)
                 }
                 Part::Cell(place) => zone::part_path(&source_relative, *place, recipe.extension),
+                Part::Shape(shape) => zone::shape_path(&source_relative, shape, recipe.extension),
                 Part::FontSubset { pack, .. } => {
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
@@ -1191,9 +1196,10 @@ fn cook_independent(
     workers: usize,
     cooked: &mut [Option<CookedAsset>],
 ) -> Result<(), CookError> {
-    // A zone's cells cook apart: each is a whole mesh's work, reading only what its own key holds.
+    // A zone's cells and shapes cook apart: each is a whole mesh's work, reading only what its own key holds.
     let same_source = |&a: &usize, &b: &usize| {
-        tree.plan[a].asset.path == tree.plan[b].asset.path && !matches!(tree.plan[b].part, Part::Cell(_))
+        tree.plan[a].asset.path == tree.plan[b].asset.path
+            && !matches!(tree.plan[b].part, Part::Cell(_) | Part::Shape(_))
     };
     let mut failure = None;
     let mut keyed: Vec<Option<Keyed>> = tree.plan.iter().map(|_| None).collect();
@@ -1307,6 +1313,8 @@ enum Part {
     KeyPose { rig: AssetId, file: String },
     /// A zone's merged mesh for one place.
     Cell(Place),
+    /// A zone's mesh of one shape of its placements, by its name, which only an editor draws.
+    Shape(String),
     /// A font's cut for a further pack: its entry in the sidecar's `subsets`, and that pack.
     FontSubset { index: usize, pack: String },
     /// A zone's navmesh.
@@ -1329,6 +1337,7 @@ fn sub_assets(
     prefabs: &HashMap<AssetId, SourceAsset>,
     zones: &mut HashMap<PathBuf, ZonePlan>,
     cache: Option<&Cache>,
+    editor: bool,
 ) -> Result<Vec<PlannedPart>, CookError> {
     let SourceAsset { path, meta } = asset;
     let clip_error = |source: ClipCookError| CookError::Clip { path: path.clone(), source: Box::new(source) };
@@ -1454,11 +1463,23 @@ fn sub_assets(
         | ImportSettings::Script(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
             let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
-            let parts = plan.places().map(|place| PlannedPart {
+            let cells = plan.places().map(|place| PlannedPart {
                 id: plan.part_id(place),
                 part: Part::Cell(place),
                 recipe: Recipe::zone_cell(),
             });
+            // Only an editor's cook has shapes: nothing a game loads names one.
+            let shapes: Vec<PlannedPart> = if editor {
+                let shape = |shape: &str| PlannedPart {
+                    id: plan.shape_id(shape),
+                    part: Part::Shape(shape.to_owned()),
+                    recipe: Recipe::zone_cell(),
+                };
+                plan.shapes().map(shape).collect()
+            } else {
+                Vec::new()
+            };
+            let parts = cells.chain(shapes);
             let navigation = plan.navigation_id().map(|id| PlannedPart {
                 id,
                 part: Part::Navigation,
@@ -2066,6 +2087,7 @@ fn asset_key(
     // A cell's or a navmesh's key holds what's in it, rather than the whole document (see `zone`).
     let keyed_source = match part {
         Part::Cell(place) => assets.zones[path].recipe(*place),
+        Part::Shape(shape) => assets.zones[path].shape_recipe(shape),
         Part::Navigation => assets.zones[path].navigation_recipe(),
         _ => source.hash,
     };
@@ -2220,6 +2242,12 @@ fn cook_source(
             };
             return cook_cell(path, *place, settings, cook, assets);
         }
+        Part::Shape(shape) => {
+            let ImportSettings::Zone(settings) = settings else {
+                unreachable!("only zones plan shapes");
+            };
+            return cook_shape(path, shape, settings, cook, assets);
+        }
         Part::Navigation => return cook_navigation(path, assets),
         Part::Skeleton => {
             let joints = if settings.is_animation_only() {
@@ -2329,12 +2357,37 @@ fn cook_cell(
 ) -> Result<Vec<u8>, CookError> {
     let plan = &assets.zones[path];
     let _held = assets.memory.hold(plan.source_bytes_in(place) * MESH_MEMORY_PER_SOURCE_BYTE);
-    let (mut mesh, bindings) = plan.merge(place, assembly_detail(cook)).map_err(zone_error(path))?;
+    let (mesh, bindings) = plan.merge(place, assembly_detail(cook)).map_err(zone_error(path))?;
+    zone_mesh(path, mesh, &bindings, settings, cook)
+}
+
+/// A zone's mesh of `shape`, as cooked bytes: cooked as a cell's is, so it looks as the cells do.
+fn cook_shape(
+    path: &Path,
+    shape: &str,
+    settings: &zone::ZoneSettings,
+    cook: Cook,
+    assets: &Assets<'_>,
+) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let _held = assets.memory.hold(plan.shape_source_bytes(shape) * MESH_MEMORY_PER_SOURCE_BYTE);
+    let (mesh, bindings) = plan.merge_shape(shape, assembly_detail(cook)).map_err(zone_error(path))?;
+    zone_mesh(path, mesh, &bindings, settings, cook)
+}
+
+/// A zone's merged `mesh`, baked, optimized and packed by its `settings`.
+fn zone_mesh(
+    path: &Path,
+    mut mesh: ImportedMesh,
+    bindings: &BTreeMap<String, AssetId>,
+    settings: &zone::ZoneSettings,
+    cook: Cook,
+) -> Result<Vec<u8>, CookError> {
     validate_mesh_inputs(path, &mesh)?;
     bake::outline_normals(&mut mesh, &settings.outline);
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
     let packed = mesh
-        .pack(settings.position_format, &bindings)
+        .pack(settings.position_format, bindings)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
     Ok(cooked_bytes(path, &packed)?.into_vec())
 }
@@ -2929,14 +2982,22 @@ fn clips_of_set<'a>(bytes: &[u8], assets: &Assets<'a>) -> Vec<&'a Planned> {
 /// What a zone's part reads besides its own document, and the check of what it names, on every cook.
 fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Vec<Dependency>, CookError> {
     let plan = &assets.zones[path];
-    if let Part::Cell(place) = part {
-        for (field, id) in plan.materials_in(*place) {
+    let meshes = match part {
+        Part::Cell(place) => Some((plan.materials_in(*place).collect(), plan.prefab_files_in(*place))),
+        Part::Shape(shape) => {
+            Some((plan.shape_materials(shape).collect(), vec![plan.shape_prefab_file(shape)]))
+        }
+        _ => None,
+    };
+    if let Some((materials, prefabs)) = meshes {
+        let materials: Vec<(String, AssetId)> = materials;
+        for (field, id) in materials {
             if !assets.get(id).is_some_and(Planned::is_material) {
                 return Err(CookError::NotAMaterial { path: path.to_owned(), slot: field, id });
             }
         }
         let mut dependencies = Vec::new();
-        for (id, prefab, hash) in plan.prefab_files_in(*place) {
+        for (id, prefab, hash) in prefabs {
             let bytes =
                 fs::read(prefab).map_err(|source| CookError::Read { path: prefab.to_owned(), source })?;
             // What's merged is the document the plan read: a save since then cooks again from the top.
@@ -2991,7 +3052,7 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         reference(field.clone(), "a static mesh", instance.mesh, |planned| {
             planned.recipe.extension == MESH_EXTENSION
                 && planned.skeleton.is_none()
-                && !matches!(planned.part, Part::Cell(_))
+                && !matches!(planned.part, Part::Cell(_) | Part::Shape(_))
         })?;
         dependencies.push(cooked_key(instance.mesh, field, "a static mesh")?);
     }
@@ -3482,7 +3543,12 @@ mod tests {
 
         fn cook_with(&self, cook: Cook, cache: bool) -> CookReport {
             let cache_dir = self.dir.path().join("cache");
-            let options = CookOptions { cook, cache: cache.then_some(cache_dir.as_path()), locked: false };
+            let options = CookOptions {
+                cook,
+                cache: cache.then_some(cache_dir.as_path()),
+                locked: false,
+                editor: false,
+            };
             cook_dir(&self.source(), &self.out_for(cook), &options).unwrap()
         }
 
@@ -3550,8 +3616,12 @@ mod tests {
     /// The assets of `scratch`'s tree cooked on `workers` threads: what each reports, and its file.
     fn cooked_on(scratch: &Scratch, workers: usize, cache: bool) -> Vec<(AssetId, CookStatus, Vec<u8>)> {
         let cache_dir = scratch.dir.path().join(format!("cache{workers}"));
-        let options =
-            CookOptions { cook: Cook::Desktop, cache: cache.then_some(cache_dir.as_path()), locked: false };
+        let options = CookOptions {
+            cook: Cook::Desktop,
+            cache: cache.then_some(cache_dir.as_path()),
+            locked: false,
+            editor: false,
+        };
         let out = scratch.dir.path().join(format!("out{workers}"));
         let report = cook_dir_on(&scratch.source(), &out, &options, workers).unwrap();
         let read = |asset: &CookedAsset| fs::read(&asset.output).unwrap();
@@ -3598,7 +3668,7 @@ mod tests {
         }
         for workers in [1, 2, 4, 8] {
             for _ in 0..8 {
-                let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+                let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
                 let error = cook_dir_on(&scratch.source(), &scratch.out(), &options, workers).unwrap_err();
                 let CookError::Texture { path, .. } = &error else { panic!("{error:?}") };
                 assert_eq!(path.file_name().unwrap(), "c.png", "{workers} workers");
@@ -3960,7 +4030,7 @@ mod tests {
         assert_eq!(fs::read_to_string(sidecar_path(&source)).unwrap(), sidecar);
         assert_eq!(second.assets[0].id, first.assets[0].id);
 
-        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         let unsidecarred = scratch.add_mannequin("new.glb");
         let error = cook_dir(&scratch.source(), &scratch.out(), &locked).unwrap_err();
         assert!(matches!(error, CookError::Meta(MetaError::Missing { .. })), "{error:?}");
@@ -4095,7 +4165,7 @@ mod tests {
     }
 
     fn scratch_error(scratch: &Scratch) -> CookError {
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
         cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err()
     }
 
@@ -4586,7 +4656,7 @@ mod tests {
         // It keeps its ID, and a locked cook still needs its sidecar.
         assert_eq!(meta::read(&sidecar).unwrap().id, meta.id);
         fs::remove_file(&sidecar).unwrap();
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         let error = cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err();
         assert!(matches!(error, CookError::Meta(MetaError::Missing { .. })), "{error:?}");
 
@@ -4683,7 +4753,7 @@ mod tests {
         let source = scratch.source().join("arena.colliders.ron");
         fs::create_dir_all(scratch.source()).unwrap();
         fs::write(&source, collider_document("ground", 5.0)).unwrap();
-        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         let error = cook_dir(&scratch.source(), &scratch.out(), &locked).unwrap_err();
         assert!(
             matches!(&error, CookError::Meta(MetaError::Missing { sources }) if *sources == [source.clone()])
@@ -4722,7 +4792,7 @@ mod tests {
         let error = cook_dir(
             &scratch.source(),
             &scratch.out(),
-            &CookOptions { cook: Cook::Desktop, cache: None, locked: false },
+            &CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false },
         )
         .unwrap_err();
         assert!(matches!(&error, CookError::Script { path, .. } if *path == source), "{error:?}");
@@ -4885,7 +4955,7 @@ mod tests {
         fs::write(&map, ilm_document("bias.png")).unwrap();
         assert!(asset(&scratch.cook(), &map).output.exists());
         fs::remove_file(sidecar_path(&map)).unwrap();
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         let error = cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err();
         assert!(
             matches!(&error, CookError::Meta(MetaError::Missing { sources }) if *sources == [map.clone()]),

@@ -458,7 +458,7 @@ fn grids_cook_through_the_cache_and_follow_their_materials() {
     let cache = scratch.path().join("cache");
     let cook = |target: Cook| {
         let out = scratch.path().join("out").join(target.name());
-        let options = CookOptions { cook: target, cache: Some(cache.as_path()), locked: true };
+        let options = CookOptions { cook: target, cache: Some(cache.as_path()), locked: true, editor: false };
         (cook_dir(&source, &out, &options).unwrap(), out)
     };
     let (report, out) = cook(Cook::Desktop);
@@ -511,7 +511,7 @@ fn fog_cards_are_left_out_of_the_bake() {
         let source = scratch.path().join(name).join("content");
         write_tree(&source, [0.8, 0.2, 0.1, 1.0], wall);
         let out = scratch.path().join(name).join("out");
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         cook_dir(&source, &out, &options).unwrap();
         fs::read(out.join("court.sprobe")).unwrap()
     };
@@ -702,7 +702,7 @@ fn an_hdr_emission_map_bounces_at_its_own_strength() {
         let meta = AssetMeta::new(glow, settings);
         fs::write(sidecar_path(&source.join(file)), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
         let out = scratch.path().join(name).join("out");
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         cook_dir(&source, &out, &options).unwrap();
         let bytes = crate::test_util::read_aligned(&out.join("court.sprobe"));
         ProbeGrid::read(&bytes)
@@ -741,7 +741,7 @@ fn foliage_cards_bake_through_their_maps() {
         let source = scratch.path().join(name).join("content");
         write_tree(&source, [0.8, 0.2, 0.1, 1.0], wall);
         let out = scratch.path().join(name).join("out");
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
         cook_dir(&source, &out, &options).unwrap();
         fs::read(out.join("court.sprobe")).unwrap()
     };

@@ -1127,7 +1127,7 @@ fn a_clip_cook_names_the_file_and_the_problem() {
     let text = sapphire_serialize::to_ron(&sidecar).expect("the sidecar");
     std::fs::write(crate::meta::sidecar_path(&source), text).expect("write the sidecar");
     let out = dir.path().join("out");
-    let options = crate::cook::CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = crate::cook::CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     let error = crate::cook::cook_dir(&dir.path().join("content"), &out, &options).unwrap_err();
     assert!(error.to_string().contains("walk.gltf"), "{error}");
     let CookError::Clip { source, .. } = &error else { panic!("{error:?}") };

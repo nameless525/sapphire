@@ -39,7 +39,7 @@ fn a_cooked_zone_is_what_a_scenario_reads() {
     fs::copy(&colliders, source.join("square.colliders.ron")).expect("copies");
     fs::copy(content("arena/square.colliders.ron.meta"), source.join("square.colliders.ron.meta"))
         .expect("copies");
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     let report = cook_dir(&source, &out, &options).expect("cooks");
 
     let output_named = |suffix: &str| {

@@ -42,16 +42,29 @@ pub const SOURCE_DIR: &str = "content";
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android. Mirrors `sapphire_pipeline::cook::Cook`; xtask runs the pipeline as a
 /// process rather than linking it, since nothing may depend on a tool crate.
+///
+/// `editor` is the desktop cook and what only an editor reads (each zone's shapes, M3 E5), in a folder of its
+/// own, so no pack an app ships holds editor data: what `cargo xtask editor` opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cook {
     Desktop,
     Mobile,
+    Editor,
 }
 
 impl Cook {
     pub fn name(self) -> &'static str {
         match self {
             Self::Desktop => "desktop",
+            Self::Mobile => "mobile",
+            Self::Editor => "editor",
+        }
+    }
+
+    /// The pipeline's cook it is.
+    fn target(self) -> &'static str {
+        match self {
+            Self::Desktop | Self::Editor => "desktop",
             Self::Mobile => "mobile",
         }
     }
@@ -67,10 +80,10 @@ impl FromStr for Cook {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        [Self::Desktop, Self::Mobile]
+        [Self::Desktop, Self::Mobile, Self::Editor]
             .into_iter()
             .find(|cook| cook.name() == s)
-            .ok_or_else(|| anyhow!("unknown cook `{s}`; expected `desktop` or `mobile`"))
+            .ok_or_else(|| anyhow!("unknown cook `{s}`; expected `desktop`, `mobile` or `editor`"))
     }
 }
 
@@ -145,11 +158,14 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         .arg(&out)
         .arg("--code")
         .arg(workspace::root())
-        .args(["--cook", cook.name()])
+        .args(["--cook", cook.target()])
         .arg("--cache")
         .arg(cache_dir());
     if workspace::locked() {
         command.arg("--locked");
+    }
+    if cook == Cook::Editor {
+        command.arg("--editor");
     }
     workspace::run(&mut command)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
@@ -176,7 +192,10 @@ mod tests {
     fn parses_cooks_and_places_their_output() {
         assert_eq!("desktop".parse::<Cook>().unwrap(), Cook::Desktop);
         assert_eq!("mobile".parse::<Cook>().unwrap(), Cook::Mobile);
+        assert_eq!("editor".parse::<Cook>().unwrap(), Cook::Editor);
+        assert_eq!(Cook::Editor.target(), "desktop", "a desktop cook, with more");
         assert!("console".parse::<Cook>().is_err());
+        assert!(cooked_dir(Cook::Editor).ends_with("target/content/editor"));
         assert!(cooked_dir(Cook::Mobile).ends_with("target/content/mobile"));
         assert!(loose_dir(Cook::Mobile).ends_with("target/content/loose/mobile"));
         assert!(cache_dir().ends_with("target/content/cache"));

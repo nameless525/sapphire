@@ -232,7 +232,7 @@ mod tests {
         let report = cook_dir(
             &dir.join("in"),
             &dir.join("out"),
-            &CookOptions { cook: Cook::Desktop, cache: None, locked: false },
+            &CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false },
         )?;
         Ok(report.assets[0].status)
     }

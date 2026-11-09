@@ -78,7 +78,7 @@ fn load_fonts(
 #[test]
 fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     let root = font_tree("font_cook_shipped");
-    let options = CookOptions { cook: Cook::Mobile, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Mobile, cache: None, locked: true, editor: false };
     let report = cook_dir(&root.join("content"), &root.join("loose"), &options).expect("a locked cook");
     assert_eq!(report.assets.len(), 4, "three fonts and the chains");
     let packs = root.join("packs");
@@ -233,7 +233,7 @@ fn a_new_font_needs_only_its_sidecar() {
         .unwrap();
     let sidecar = "(type: \"sapphire::assets::AssetMeta\", version: 1, data: (id: \"11111111-2222-4333-8444-555555555555\", importer: Font((license: \"OFL.txt\", subsets: [(pack: \"fonts\", characters: \"../../fonts/ui.charset.ron\")]))))";
     fs::write(content.join("third_party/another/Another.ttf.meta"), sidecar).unwrap();
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     let report = cook_dir(&content, &root.join("loose"), &options).expect("a cook");
     assert_eq!(report.assets.len(), 5, "found through its sidecar");
 }

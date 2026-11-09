@@ -1,6 +1,6 @@
 //! `cargo xtask editor [<file.moves.ron>] [editor args]`: the combat timeline editor (spec §5.28, M2 T3),
-//! built for the host and pointed at the desktop cook, so a move's clips and the character are there to
-//! preview. Everything after `editor` goes to the tool as it is.
+//! built for the host and pointed at the editor's cook (the desktop cook with what only an editor reads, such
+//! as each zone's shapes), so a move's clips, the character and a zone's placements are there to preview. Everything after `editor` goes to the tool as it is.
 //!
 //! This opens a window, so it's for a person at the machine; agents use `--capture` and the crate's tests
 //! (`docs/development-iteration.md`, "The timeline editor"). The cook's lock goes before it starts, so a
@@ -15,7 +15,7 @@ use crate::workspace::{self, BuildProfile, CargoBuild};
 const TOOL: &str = "sapphire_editor";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
-    let dir = content::cook(Cook::Desktop)?.dir.clone();
+    let dir = content::cook(Cook::Editor)?.dir.clone();
     let env = platforms::host_build_env()?;
     // The cooker's profile: optimized, without cross-crate LTO, and most of it built by that cook already.
     let tool = workspace::build_binary(

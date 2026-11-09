@@ -28,7 +28,8 @@
 //! names it, it would move to that zone's pack and leave every other app without it:
 //! [`check_code_names`] fails the cook instead, naming the line ([`crate::code_names`]). Give the zone a
 //! copy of its own, or name the asset through the zone. A zone's navmesh is named by that zone alone, so
-//! it's always in that zone's pack.
+//! it's always in that zone's pack. So are its shapes' meshes in an editor's cook, which nothing names but
+//! an editor that knows the zone: whatever a zone's source cooks to is a root of its pack, as the zone is.
 //!
 //! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
 //! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
@@ -479,10 +480,12 @@ fn groups<'a>(
         Ok(seen)
     };
 
-    // The one zone that reaches each asset, or `None` once a second has.
+    // The one zone that reaches each asset, or `None` once a second has. A zone's own parts are its roots
+    // too: its shapes' meshes are cooked from it and reached by nothing (`zone`'s "Shapes").
     let mut owner: HashMap<AssetId, Option<AssetId>> = HashMap::new();
     for asset in &zones {
-        for id in walk(vec![asset.id])? {
+        let parts = report.assets.iter().filter(|part| part.source == asset.source).map(|part| part.id);
+        for id in walk(parts.collect())? {
             owner.entry(id).and_modify(|owner| *owner = None).or_insert(Some(asset.id));
         }
     }

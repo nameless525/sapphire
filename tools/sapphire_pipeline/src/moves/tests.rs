@@ -60,7 +60,7 @@ fn a_cook_takes_a_fighters_movement_and_refuses_a_number_past_its_limit() {
         fs::create_dir_all(&content).unwrap();
         let text = SLICE.replacen("fighter: (", &format!("fighter: (\nmovement: ({movement}),"), 1);
         fs::write(content.join("fighter.moves.ron"), text).unwrap();
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
         let result = cook_dir(&content, &out, &options);
         let bytes = fs::read(out.join("fighter.smoves")).ok();
         let _ = fs::remove_dir_all(&root);
@@ -85,7 +85,7 @@ fn a_document_cooks_through_a_content_tree_and_its_cache() {
     let (content, out, cache) = (root.join("content"), root.join("out"), root.join("cache"));
     fs::create_dir_all(content.join("fighter")).unwrap();
     fs::write(content.join("fighter/slice.moves.ron"), SLICE).unwrap();
-    let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+    let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
 
     let report = cook_dir(&content, &out, &options).unwrap();
     assert_eq!(report.assets.len(), 1);
@@ -127,7 +127,7 @@ fn a_bad_document_fails_the_cook_by_name() {
     fs::create_dir_all(&content).unwrap();
     let bad = SLICE.replacen("from: 10, to: 24", "from: 10, to: 40", 1);
     fs::write(content.join("bad.moves.ron"), bad).unwrap();
-    let options = CookOptions { cook: Cook::Mobile, cache: None, locked: false };
+    let options = CookOptions { cook: Cook::Mobile, cache: None, locked: false, editor: false };
     let error = cook_dir(&content, &out, &options).unwrap_err();
     assert!(matches!(error, CookError::MoveSet { .. }), "{error:?}");
     assert!(error.to_string().contains("bad.moves.ron"), "{error}");
@@ -153,7 +153,7 @@ fn a_cooked_set_packs() {
     let (content, out, cache) = (root.join("content"), root.join("out"), root.join("cache"));
     fs::create_dir_all(&content).unwrap();
     fs::write(content.join("slice.moves.ron"), SLICE).unwrap();
-    let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+    let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
     let report = cook_dir(&content, &out, &options).unwrap();
     assert_eq!(crate::pack::kind(&report.assets[0].output), Some(AssetKind::MoveSet));
     assert_eq!(crate::pack::codec(AssetKind::MoveSet), sapphire_assets::pack::Codec::Lz4);

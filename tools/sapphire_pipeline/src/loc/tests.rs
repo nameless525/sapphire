@@ -42,7 +42,7 @@ impl Tree {
 
     fn cook(&self) -> Result<CookReport, CookError> {
         let cache = self.dir.path().join("cache");
-        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
         cook_dir(&self.source(), &self.dir.path().join("out"), &options)
     }
 
@@ -346,7 +346,7 @@ fn tables_pack_apart_from_everything_else() {
 fn a_locked_cook_needs_a_ftls_sidecar() {
     let tree = Tree::new("locked", "title = Menu\n", "title = メニュー\n");
     let cache = tree.dir.path().join("cache");
-    let locked = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: true };
+    let locked = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: true, editor: false };
     let out = tree.dir.path().join("out");
     let error = cook_dir(&tree.source(), &out, &locked).expect_err("no sidecars yet");
     assert!(error.to_string().contains("a.ftl") || error.to_string().contains(".locale.ron"), "{error}");
@@ -372,7 +372,7 @@ fn the_importer_names_the_locked_parser() {
 fn the_committed_tables_are_what_their_sources_cook_to() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/sapphire_loc/testdata");
     let scratch = TempDir::new("loc-committed");
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     let report = cook_dir(&root.join("content"), scratch.path(), &options).unwrap();
     let mut keys: Vec<(&str, &str)> = report
         .localization

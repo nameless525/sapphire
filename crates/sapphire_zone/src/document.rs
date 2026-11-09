@@ -50,7 +50,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_reflect::Reflect;
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use sapphire_core::Name;
 use sapphire_math::det;
 use sapphire_reflect::Versioned;
@@ -358,6 +358,14 @@ impl ZoneDocument {
         let document: Self = sapphire_serialize::from_ron(text).map_err(Box::new)?;
         document.check()?;
         Ok(document)
+    }
+
+    /// Whether a placement cuts its prefab along the grid. Such a zone's placements cook into its cells
+    /// alone, with no mesh of their shapes ([`Placement::shape_name`]), since a whole town's prefab would
+    /// be the town again.
+    #[must_use]
+    pub fn has_split(&self) -> bool {
+        self.placements.iter().any(|placement| placement.split.is_some())
     }
 
     /// Where a thing placed at `at` belongs.
@@ -676,6 +684,42 @@ impl Volume {
     }
 }
 
+impl Placement {
+    /// What a cook calls the mesh of this placement's prefab on its own, which an editor draws it with
+    /// (M3 E5): `prefab/<hash>`, by its prefab, the materials it swaps and the axes its scale mirrors, so
+    /// placements alike in those share one, wherever they stand, however turned and however large. The
+    /// mesh is the prefab mirrored as [`Self::mirror`] says, and drawn at [`Self::shape_transform`].
+    #[must_use]
+    pub fn shape_name(&self) -> String {
+        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+        hasher.update(&self.prefab.to_bytes());
+        for (slot, material) in &self.materials {
+            hasher.update(&(slot.len() as u64).to_le_bytes());
+            hasher.update(slot.as_bytes());
+            hasher.update(&material.to_bytes());
+        }
+        hasher.update(&self.mirror().map(|sign| u8::from(sign < 0.0)));
+        format!("prefab/{:016x}", hasher.digest())
+    }
+
+    /// The sign of its scale on each axis: what of its transform a mesh of its shape holds, since a mirror turns
+    /// triangles inside out and a renderer draws only one side.
+    #[must_use]
+    pub fn mirror(&self) -> [f32; 3] {
+        self.scale.map(|scale| if scale < 0.0 { -1.0 } else { 1.0 })
+    }
+
+    /// The rest of its transform, `at · turn · |scale|`, which a mesh of its shape is drawn at.
+    #[must_use]
+    pub fn shape_transform(&self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(
+            Vec3::from(self.scale.map(f32::abs)),
+            det::quat_from_axis_angle(Vec3::Y, self.turn.to_radians()),
+            Vec3::from(self.at),
+        )
+    }
+}
+
 impl Instance {
     fn cooked(&self) -> CookedInstance {
         let turn = det::quat_from_axis_angle(Vec3::Y, self.turn.to_radians());
@@ -863,6 +907,29 @@ mod tests {
             "#
         ))
         .expect("a good document")
+    }
+
+    /// A shape is its prefab, its materials and its mirror: where it stands, its turn and its size are the
+    /// transform it's drawn at, and the two together are the placement's whole transform.
+    #[test]
+    fn a_shape_leaves_out_what_its_transform_holds() {
+        let document = full();
+        let [plain, swapped, ..] = &document.placements[..] else { unreachable!() };
+        let moved = Placement { at: [1.0, 2.0, 3.0], turn: 75.0, scale: [2.0, 0.5, 3.0], ..plain.clone() };
+        assert_eq!(moved.shape_name(), plain.shape_name());
+        assert_ne!(swapped.shape_name(), plain.shape_name(), "it swaps a material");
+        let mirrored = Placement { scale: [-2.0, 0.5, 3.0], ..moved.clone() };
+        assert_ne!(mirrored.shape_name(), plain.shape_name());
+        assert!(plain.shape_name().starts_with("prefab/"));
+
+        let whole = Mat4::from_scale_rotation_translation(
+            Vec3::from(mirrored.scale),
+            det::quat_from_axis_angle(Vec3::Y, mirrored.turn.to_radians()),
+            Vec3::from(mirrored.at),
+        );
+        let split = mirrored.shape_transform() * Mat4::from_scale(Vec3::from(mirrored.mirror()));
+        assert!(split.abs_diff_eq(whole, 1e-5), "{split:?} against {whole:?}");
+        assert!(document.has_split());
     }
 
     #[test]

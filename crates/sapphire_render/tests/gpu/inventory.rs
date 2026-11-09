@@ -110,7 +110,7 @@ fn cooked_pack(name: &str, cook: Cook) -> Vec<u8> {
 
 /// What `temp`'s content cooks and packs to: its shared pack.
 fn shared_pack(temp: &Temp, cook: Cook) -> Vec<u8> {
-    let options = CookOptions { cook, cache: None, locked: false };
+    let options = CookOptions { cook, cache: None, locked: false, editor: false };
     let report = cook_dir(&temp.0.join("content"), &temp.0.join("loose"), &options).expect("it cooks");
     let packs = temp.0.join("packs");
     pack_cooked(&report, &packs, None).expect("it packs");

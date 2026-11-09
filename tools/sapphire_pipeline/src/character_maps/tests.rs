@@ -93,7 +93,11 @@ impl Tree {
 
     fn try_cook(&self, cook: Cook) -> Result<CookReport, CookError> {
         let cache = self.dir.path().join("cache");
-        cook_dir(&self.source(), &self.out(cook), &CookOptions { cook, cache: Some(&cache), locked: false })
+        cook_dir(
+            &self.source(),
+            &self.out(cook),
+            &CookOptions { cook, cache: Some(&cache), locked: false, editor: false },
+        )
     }
 
     fn cook(&self, cook: Cook) -> CookReport {

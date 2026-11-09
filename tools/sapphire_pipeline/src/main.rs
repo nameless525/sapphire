@@ -62,7 +62,7 @@ Usage:
       settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
       compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps.
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
-                         [--cache <DIR>] [--locked]
+                         [--cache <DIR>] [--locked] [--editor]
       Cook every source asset under --source (skipping hidden entries, and sources whose
       sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
       sidecars next to the sources, then pack the cooked
@@ -82,6 +82,8 @@ Options:
   --cache <DIR>              Content cache: reuse the cooked output and pack encoding of
                              any asset whose inputs are unchanged, and store new ones.
   --locked                   Fail on a source without a sidecar instead of creating one (CI).
+  --editor                   Also cook what only an editor reads (each zone's shapes): never for packs
+                             that ship.
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
   -h, --help                 Show this message.
   -V, --version              Show the version.";
@@ -132,6 +134,7 @@ enum Command {
         cook: Cook,
         cache: Option<PathBuf>,
         locked: bool,
+        editor: bool,
     },
     Help,
     Version,
@@ -233,8 +236,8 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.written.len()
             );
         }
-        Command::Cook { source, out, packs, code, cook, cache, locked } => {
-            let options = CookOptions { cook, cache: cache.as_deref(), locked };
+        Command::Cook { source, out, packs, code, cook, cache, locked, editor } => {
+            let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
             let report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
             if let Some(packs) = packs {
@@ -440,6 +443,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             cook: options.required("--cook")?,
             cache: options.value("--cache")?,
             locked: options.flag("--locked"),
+            editor: options.flag("--editor"),
         },
         other => bail!("unknown command `{other}`"),
     };
@@ -562,6 +566,7 @@ mod tests {
                 cook: Cook::Desktop,
                 cache: None,
                 locked: true,
+                editor: false,
             }
         );
         let Command::Cook { cache, locked, packs, .. } = parse(&[

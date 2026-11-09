@@ -465,7 +465,7 @@ mod tests {
         }
 
         fn cook_as(&self, cook: Cook) -> Result<cook::CookReport, CookError> {
-            let options = CookOptions { cook, cache: None, locked: false };
+            let options = CookOptions { cook, cache: None, locked: false, editor: false };
             cook_dir(&self.content(), &self.dir.path().join("loose"), &options)
         }
 
@@ -627,7 +627,8 @@ mod tests {
         let cache = tree.dir.path().join("cache");
         let id = tree.id_of("type/one.ttf");
         let cook = || {
-            let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+            let options =
+                CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
             let out = tree.dir.path().join("loose");
             let report = cook_dir(&tree.content(), &out, &options).unwrap();
             report.assets.iter().find(|asset| asset.id == id).unwrap().output_hash

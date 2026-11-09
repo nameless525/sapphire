@@ -135,7 +135,7 @@ impl Tree {
     }
 
     fn cook_with(&self, cache: Option<&Path>) -> Result<CookReport, CookError> {
-        let options = CookOptions { cook: Cook::Desktop, cache, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache, locked: true, editor: false };
         cook_dir(&self.content(), &self.root.join("loose"), &options)
     }
 
@@ -423,7 +423,7 @@ fn the_game_s_screens_cook_in_both_languages_and_bring_their_characters() {
         let text = fs::read_to_string(&table).unwrap();
         fs::write(&table, format!("{text}\n{line}\n")).unwrap();
     }
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     let report = cook_dir(&content, &root.join("loose"), &options).expect("a locked cook");
     let charset = fs::read_to_string(content.join("fonts/ui.charset.ron")).unwrap();
     assert!(!charset.contains('暁'), "this test wants a character only a screen brings");

@@ -70,7 +70,7 @@ fn what_a_manifest_names_ships_byte_for_byte_and_only_what_changed_is_written() 
     tree.manifest("targeting: Some(\"tuning/my_targeting.ron\"), hud: Some(\"my_hud.ron\")");
 
     // A real cook takes the tree with these in it: they're no assets, and need no sidecars, locked or not.
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     cook_dir(&tree.source(), &tree.0.join("loose"), &options).expect("a cook ignores them");
 
     let shipped = ship_documents(&tree.source(), &tree.packs()).expect("ships");

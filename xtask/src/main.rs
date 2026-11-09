@@ -31,11 +31,13 @@ Usage: cargo xtask [--locked] <command> [options]
 Commands:
   check-layers
       Check crate layering against xtask/layers.toml (spec §4.1, rules R1 and R8).
-  content [--cook desktop|mobile]
+  content [--cook desktop|mobile|editor]
       Generate missing sample sources under content/, then cook content/ into
       target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
+      `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
+      target/content/editor/, which no app ships.
   bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
       [--exe <path>] [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/, by the

@@ -143,7 +143,7 @@ mod tests {
         }
 
         fn cook(&self) -> Result<cook::CookReport, CookError> {
-            let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+            let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
             cook_dir(&self.content(), &self.dir.path().join("loose"), &options)
         }
 
@@ -280,7 +280,7 @@ mod tests {
     fn desktop_and_mobile_cook_the_same_bytes() {
         let tree = Tree::new("audio_cooks");
         let cooked = |cook: Cook| {
-            let options = CookOptions { cook, cache: None, locked: false };
+            let options = CookOptions { cook, cache: None, locked: false, editor: false };
             let out = tree.dir.path().join(cook.name());
             let report = cook_dir(&tree.content(), &out, &options).unwrap();
             let by_id: HashMap<AssetId, Vec<u8>> =

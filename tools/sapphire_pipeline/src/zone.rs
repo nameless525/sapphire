@@ -64,6 +64,18 @@
 //! gives this one's `.szone` is its pack's name, from its source's stem, so that's in the key. Nothing of the
 //! other is a reference, so it goes in no pack of this one's.
 //!
+//! # Shapes
+//!
+//! An editor moves one placement while the cells hold it merged, so an editor's cook (`CookOptions::editor`,
+//! `cargo xtask content --cook editor`) also makes a mesh of each **shape** a zone places (M3 E5): a prefab,
+//! with the materials a placement swaps and the axes its scale mirrors, in the prefab's own space
+//! ([`sapphire_zone::Placement::shape_name`]). An editor draws each placement as its shape's mesh at the
+//! rest of its transform, and a drag moves an instance with no cook. A shape's mesh cooks as a cell's does,
+//! and its key holds its prefab, final materials and mirror, so a moved placement recooks only its cell.
+//! Nothing names them and a game loads none, so a cook for an app makes none, and its packs are the bytes
+//! they'd be without them; in an editor's, the packer puts them in the zone's pack with it. A zone with a
+//! `split` placement has none: its prefab is a whole town.
+//!
 //! # What it doesn't do
 //!
 //! The coplanar check runs within an assembly and not between placements, so two prefabs fighting in
@@ -201,6 +213,12 @@ pub fn part_path(relative: &Path, place: Place, extension: &str) -> PathBuf {
     })
 }
 
+/// The file a shape's mesh cooks to: `proving_ground.zone.ron` → `proving_ground.prefab.0f3a….smesh`.
+pub fn shape_path(relative: &Path, shape: &str, extension: &str) -> PathBuf {
+    let stem = stem(relative);
+    relative.with_file_name(format!("{stem}.{}.{extension}", shape.replace('/', ".")))
+}
+
 /// What a navmesh's sub-asset is called among a zone's. Never changed: its ID is derived from it.
 pub const NAVIGATION_PART: &str = "navigation";
 
@@ -301,6 +319,25 @@ pub struct ZonePlan {
     /// Each placement's final materials, by its prefab's slot names.
     materials: Vec<BTreeMap<String, AssetId>>,
     places: BTreeMap<Place, PlacePlan>,
+    /// Each shape's mesh, by [`sapphire_zone::Placement::shape_name`]: none if a placement is split.
+    shapes: BTreeMap<String, ShapePlan>,
+}
+
+/// What a zone's placements of one shape have in common: a mesh of the prefab alone, for an editor to draw
+/// each with (M3 E5).
+struct ShapePlan {
+    /// The first placement of it, which stands for all of them.
+    placement: usize,
+    /// What keys its mesh in place of the document: its prefab, its final materials and its mirror.
+    recipe: blake3::Hash,
+}
+
+/// What a shape adds to its mesh's recipe.
+#[derive(Serialize)]
+struct ShapeRecipe<'a> {
+    prefab: AssetId,
+    materials: &'a BTreeMap<String, AssetId>,
+    mirror: [f32; 3],
 }
 
 /// Every assembly source of the tree by ID, whether it cooks a mesh of its own or not.
@@ -406,7 +443,21 @@ impl ZonePlan {
                 (place, PlacePlan { pieces, recipe: blake3::hash(&encoded) })
             })
             .collect();
-        Ok(Self { id, document, prefabs: read, materials, places })
+        let mut shapes = BTreeMap::new();
+        if !document.has_split() {
+            for (index, placement) in document.placements.iter().enumerate() {
+                shapes.entry(placement.shape_name()).or_insert_with(|| {
+                    let recipe = ShapeRecipe {
+                        prefab: placement.prefab,
+                        materials: &materials[index],
+                        mirror: placement.mirror(),
+                    };
+                    let encoded = postcard::to_allocvec(&recipe).expect("a shape's recipe always encodes");
+                    ShapePlan { placement: index, recipe: blake3::hash(&encoded) }
+                });
+            }
+        }
+        Ok(Self { id, document, prefabs: read, materials, places, shapes })
     }
 
     /// The zone source's ID.
@@ -450,6 +501,58 @@ impl ZonePlan {
         self.places[&place].recipe
     }
 
+    /// The names of the shapes that have a mesh of their own ([`sapphire_zone::Placement::shape_name`]).
+    pub fn shapes(&self) -> impl Iterator<Item = &str> + '_ {
+        self.shapes.keys().map(String::as_str)
+    }
+
+    /// The ID of a shape's mesh.
+    pub fn shape_id(&self, shape: &str) -> AssetId {
+        self.id.sub_asset(shape)
+    }
+
+    /// What a shape's key holds in place of the document's hash.
+    pub fn shape_recipe(&self, shape: &str) -> blake3::Hash {
+        self.shapes[shape].recipe
+    }
+
+    /// The materials a shape's mesh names, with the field each comes from.
+    pub fn shape_materials(&self, shape: &str) -> impl Iterator<Item = (String, AssetId)> + '_ {
+        let index = self.shapes[shape].placement;
+        self.materials[index].iter().map(move |(slot, &id)| (format!("placements[{index}].{slot}"), id))
+    }
+
+    /// A shape's prefab's ID, document's path and that document's hash when the plan read it, for a key.
+    pub fn shape_prefab_file(&self, shape: &str) -> (AssetId, &Path, blake3::Hash) {
+        let id = self.document.placements[self.shapes[shape].placement].prefab;
+        let prefab = &self.prefabs[&id];
+        (id, prefab.path.as_path(), prefab.hash)
+    }
+
+    /// About how many source bytes a shape's cook starts from.
+    pub fn shape_source_bytes(&self, shape: &str) -> u64 {
+        self.prefabs[&self.document.placements[self.shapes[shape].placement].prefab].document_bytes
+    }
+
+    /// A shape's geometry: its prefab mirrored as its placements are, in the prefab's own space, with its
+    /// slots named and bound as [`Self::merge`]'s are.
+    pub fn merge_shape(
+        &self,
+        shape: &str,
+        detail: Detail,
+    ) -> Result<(ImportedMesh, BTreeMap<String, AssetId>), ZoneCookError> {
+        let index = self.shapes[shape].placement;
+        let field = format!("placements[{index}]");
+        let mirror = Mat4::from_scale(Vec3::from(self.document.placements[index].mirror()));
+        let mut by_material = BTreeMap::new();
+        let piece = Piece { placement: index, part: None };
+        self.place_piece(piece, mirror, &field, detail, &mut by_material)?;
+        if by_material.values().all(|merged: &Merged| merged.indices.is_empty()) {
+            return Err(ZoneCookError::invalid(field, "it has no triangles to draw"));
+        }
+        Ok(mesh_of(by_material))
+    }
+
     /// The prefabs a place's pieces place, each once.
     fn prefabs_in(&self, place: Place) -> impl Iterator<Item = (AssetId, &Prefab)> + '_ {
         let ids: BTreeSet<AssetId> = self.places[&place]
@@ -490,54 +593,14 @@ impl ZonePlan {
     ) -> Result<(ImportedMesh, BTreeMap<String, AssetId>), ZoneCookError> {
         let grid = self.document.grid;
         let mut by_material: BTreeMap<AssetId, Merged> = BTreeMap::new();
-        for piece in &self.places[&place].pieces {
+        for &piece in &self.places[&place].pieces {
             let placement = &self.document.placements[piece.placement];
             let field = match piece.part {
                 Some(part) => format!("placements[{}].place[{part}]", piece.placement),
                 None => format!("placements[{}]", piece.placement),
             };
-            let prefab = &self.prefabs[&placement.prefab];
-            let geometry = prefab.geometry(detail).map_err(|source| ZoneCookError::Prefab {
-                field: field.clone(),
-                path: prefab.path.clone(),
-                source: Box::new(source),
-            })?;
             let transform = placement_transform(placement.at, placement.turn, placement.scale);
-            let placing = Placing::new(transform);
-            let parts = match piece.part {
-                Some(part) => std::slice::from_ref(&geometry.parts[part]),
-                None => geometry.parts.as_slice(),
-            };
-            let mut bounds: Option<Bounds> = None;
-            let mut placed = HashMap::new();
-            for triangles in parts.iter().flatten() {
-                let slot = &geometry.slots[triangles.slot];
-                let material = self.materials[piece.placement].get(slot).copied().ok_or_else(|| {
-                    let problem = format!(
-                        "draws in slot `{slot}`, which {}'s sidecar doesn't bind, and a cell's mesh names only \
-                         material assets",
-                        prefab.path.display()
-                    );
-                    ZoneCookError::invalid(field.clone(), problem)
-                })?;
-                let merged = by_material.entry(material).or_default();
-                for corners in triangles.indices.as_chunks::<3>().0 {
-                    let mut corners = *corners;
-                    if placing.mirrors {
-                        corners.swap(1, 2);
-                    }
-                    for corner in corners {
-                        let index = *placed.entry((material, corner)).or_insert_with(|| {
-                            let vertex = placing.vertex(&geometry.vertices[corner as usize]);
-                            let more = Bounds { min: vertex.position, max: vertex.position };
-                            bounds = Some(bounds.map_or(more, |bounds| bounds.union(more)));
-                            merged.vertices.push(vertex);
-                            (merged.vertices.len() - 1) as u32
-                        });
-                        merged.indices.push(index);
-                    }
-                }
-            }
+            let bounds = self.place_piece(piece, transform, &field, detail, &mut by_material)?;
             if let (Place::Cell(cell), Some(bounds)) = (place, bounds)
                 && let Some(reach) = grid.overreach(cell, bounds)
             {
@@ -555,6 +618,60 @@ impl ZonePlan {
             ));
         }
         Ok(mesh_of(by_material))
+    }
+
+    /// Adds `piece`'s triangles, placed by `transform`, to `by_material`, and says what bounds they have there.
+    fn place_piece(
+        &self,
+        piece: Piece,
+        transform: Mat4,
+        field: &str,
+        detail: Detail,
+        by_material: &mut BTreeMap<AssetId, Merged>,
+    ) -> Result<Option<Bounds>, ZoneCookError> {
+        let placement = &self.document.placements[piece.placement];
+        let prefab = &self.prefabs[&placement.prefab];
+        let geometry = prefab.geometry(detail).map_err(|source| ZoneCookError::Prefab {
+            field: field.to_owned(),
+            path: prefab.path.clone(),
+            source: Box::new(source),
+        })?;
+        let placing = Placing::new(transform);
+        let parts = match piece.part {
+            Some(part) => std::slice::from_ref(&geometry.parts[part]),
+            None => geometry.parts.as_slice(),
+        };
+        let mut bounds: Option<Bounds> = None;
+        let mut placed = HashMap::new();
+        for triangles in parts.iter().flatten() {
+            let slot = &geometry.slots[triangles.slot];
+            let material = self.materials[piece.placement].get(slot).copied().ok_or_else(|| {
+                let problem = format!(
+                    "draws in slot `{slot}`, which {}'s sidecar doesn't bind, and a cell's mesh names only \
+                     material assets",
+                    prefab.path.display()
+                );
+                ZoneCookError::invalid(field, problem)
+            })?;
+            let merged = by_material.entry(material).or_default();
+            for corners in triangles.indices.as_chunks::<3>().0 {
+                let mut corners = *corners;
+                if placing.mirrors {
+                    corners.swap(1, 2);
+                }
+                for corner in corners {
+                    let index = *placed.entry((material, corner)).or_insert_with(|| {
+                        let vertex = placing.vertex(&geometry.vertices[corner as usize]);
+                        let more = Bounds { min: vertex.position, max: vertex.position };
+                        bounds = Some(bounds.map_or(more, |bounds| bounds.union(more)));
+                        merged.vertices.push(vertex);
+                        (merged.vertices.len() - 1) as u32
+                    });
+                    merged.indices.push(index);
+                }
+            }
+        }
+        Ok(bounds)
     }
 }
 

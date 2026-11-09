@@ -59,19 +59,26 @@ impl Tree {
 
     pub(super) fn try_cook(&self, locked: bool) -> Result<CookReport, CookError> {
         let cache = self.dir.path().join("cache");
-        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked };
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked, editor: false };
         cook_dir(&self.content(), &self.out(), &options)
     }
 
     /// A cook on one worker that calls `reached` at each stage, to save a file there.
     pub(super) fn try_cook_through(&self, reached: &dyn Fn(CookStage)) -> Result<CookReport, CookError> {
         let cache = self.dir.path().join("cache");
-        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
         cook_dir_through(&self.content(), &self.out(), &options, 1, reached)
     }
 
     pub(super) fn cook(&self) -> CookReport {
         self.try_cook(false).unwrap()
+    }
+
+    /// An editor's cook: [`Self::cook`]'s, and what only an editor reads.
+    pub(super) fn cook_for_editor(&self) -> CookReport {
+        let cache = self.dir.path().join("cache");
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: true };
+        cook_dir(&self.content(), &self.out(), &options).unwrap()
     }
 }
 
@@ -518,7 +525,7 @@ fn a_cook_is_byte_identical_run_to_run() {
         let source = tree.write("figure.glb", &animated_figure());
         tree.sidecar(&source, AssetId::from_bytes([0x88; 16]), clips_on(ClipSettings::default()));
         animation_tests::add_every_kind_of_animation_source(&tree);
-        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
         let report = cook_dir(&tree.content(), &tree.out(), &options).unwrap();
         let packs = tree.dir.path().join("packs");
         pack_cooked(&report, &packs, None).unwrap();

@@ -1005,7 +1005,7 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
         }
         assert!(clips.retarget.iter().all(|retarget| targets.contains(&retarget.target)), "{file}");
         let asset = SourceAsset { path, meta: meta.clone() };
-        let parts = sub_assets(&asset, &Cell::new(None), &HashMap::new(), &mut HashMap::new(), None)
+        let parts = sub_assets(&asset, &Cell::new(None), &HashMap::new(), &mut HashMap::new(), None, false)
             .unwrap_or_else(|error| panic!("{file}: {error}"));
         let count = |what: fn(&Part) -> bool| parts.iter().filter(|planned| what(&planned.part)).count();
         assert_eq!(count(|part| matches!(part, Part::Skeleton)), skeletons, "{file}");

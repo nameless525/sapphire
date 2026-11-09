@@ -73,7 +73,7 @@ impl Scratch {
 
     fn cook(&self, cook: Cook) -> CookReport {
         let cache = self.cache();
-        let options = CookOptions { cook, cache: Some(&cache), locked: false };
+        let options = CookOptions { cook, cache: Some(&cache), locked: false, editor: false };
         cook_dir(&self.source(), &self.dir.path().join("loose").join(cook.name()), &options).unwrap()
     }
 
@@ -419,7 +419,7 @@ fn sub_assets_are_packed_and_load_by_their_own_ids() {
     let source = dir.path().join("content/characters/sample.vrm");
     fs::create_dir_all(source.parent().unwrap()).unwrap();
     fs::write(&source, crate::import::vrm::samples::vrm1().to_glb()).unwrap();
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
     let report = cook_dir(&dir.path().join("content"), &dir.path().join("loose"), &options).unwrap();
     let packs = dir.path().join("packs");
     pack_cooked(&report, &packs, None).unwrap();

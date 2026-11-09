@@ -19,7 +19,7 @@ fn tree(scratch: &TempDir, sample: &SampleVrm) -> PathBuf {
 }
 
 fn cook(scratch: &TempDir) -> CookReport {
-    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
     cook_dir(&scratch.path().join("content"), &scratch.path().join("out"), &options).expect("the tree cooks")
 }
 

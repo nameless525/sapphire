@@ -179,6 +179,96 @@ fn a_zone_cooks_to_a_mesh_per_cell_in_the_zones_space() {
     assert_eq!(mesh.streams.bounds.to_native().max, [21.0, 1.0, 5.0], "it draws with no transform");
 }
 
+/// The ID of the mesh of placement `index`'s shape in `data`.
+fn shape_id(data: &str, index: usize) -> AssetId {
+    let document = ZoneDocument::from_ron(&zone_text(data)).unwrap();
+    ZONE.sub_asset(&document.placements[index].shape_name())
+}
+
+#[test]
+fn an_editors_cook_has_a_mesh_of_each_shape_in_its_prefabs_space_shipped_alone() {
+    let tree = tree("zone-shapes");
+    let data = format!(
+        r##"{}
+        instances: [],"##,
+        placements().replace("(-4.0, 0.0, -4.0),", "(-4.0, 0.0, -4.0), scale: (-2.0, 1.0, 1.0),")
+    );
+    write_zone(&tree, &data);
+    let plain = tree.cook();
+    assert!(
+        plain.assets.iter().all(|asset| !asset.output.to_string_lossy().contains(".prefab.")),
+        "a cook that ships has none"
+    );
+    let report = tree.cook_for_editor();
+    assert_eq!(report.assets.len(), plain.assets.len() + 3, "an editor's cook is the same, and the shapes");
+
+    // A plain crate, three blocks however placed, and a mirrored crate in stone: three shapes.
+    let shapes: BTreeSet<AssetId> = (0..5).map(|index| shape_id(&data, index)).collect();
+    assert_eq!(shapes.len(), 3);
+    assert_eq!(shape_id(&data, 1), shape_id(&data, 4), "a block wherever it stands");
+    let crate_mesh = by_id(&report, shape_id(&data, 0));
+    let name = crate_mesh.output.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("town.prefab.") && name.ends_with(".smesh"), "{name}");
+    let read = |id| {
+        let bytes = read_aligned(&by_id(&report, id).output);
+        let mesh = Mesh::read(&bytes).unwrap();
+        let bounds = mesh.streams.bounds.to_native();
+        let materials: Vec<_> = mesh.materials.iter().map(|slot| format!("{:?}", slot.material)).collect();
+        let corner = |index: usize| {
+            Vec3::from(mesh.streams.position(mesh.indices[index].to_native() as usize).expect("in range"))
+        };
+        let facing = (corner(1) - corner(0)).cross(corner(2) - corner(0)).normalize();
+        ((bounds.min, bounds.max), materials, facing)
+    };
+    let (bounds, materials, facing) = read(shape_id(&data, 0));
+    assert_eq!(bounds, ([0.0, 0.0, 0.0], [1.0, 1.0, 0.0]), "the prefab's own space, wherever it's placed");
+    assert_eq!(materials, [format!("Asset({WOOD:?})")]);
+    let (mirrored, materials, mirrored_facing) = read(shape_id(&data, 3));
+    assert_eq!(mirrored, ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), "mirrored, at its size of one");
+    assert_eq!(materials, [format!("Asset({STONE:?})")], "with the placement's swap");
+    assert_eq!(facing, mirrored_facing, "its faces outward, as a mirrored cell's are");
+
+    // Moving a placement moves no shape.
+    write_zone(&tree, &data.replace("(20.0, 0.0, 4.0)", "(21.0, 0.0, 4.0)"));
+    let moved = tree.cook_for_editor();
+    for id in &shapes {
+        assert_eq!(by_id(&moved, *id).status, CookStatus::UpToDate);
+    }
+
+    // Nothing names them, and they ship with their zone, and only there.
+    let zone = read_zone(&moved);
+    assert!(!AssetKind::Zone.reach(&zone).unwrap().contains(&shape_id(&data, 0)));
+    let packed = pack_cooked(&moved, &tree.dir.path().join("packs"), None).unwrap();
+    for id in &shapes {
+        let holding: Vec<&str> = packed
+            .packs
+            .iter()
+            .filter(|pack| {
+                let bytes = fs::read(&pack.path).unwrap();
+                PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == *id)
+            })
+            .map(|pack| pack.name.as_str())
+            .collect();
+        assert_eq!(holding, ["zone_town"]);
+    }
+}
+
+#[test]
+fn a_zone_with_a_split_placement_has_no_shapes() {
+    let tree = tree("zone-split-shapes");
+    add_town(&tree);
+    let data = format!(
+        r##"placements: [
+            (prefab: "{CRATE}", at: (2.0, 0.0, 2.0)),
+            (prefab: "{TOWN}", split: Some((backdrop: ["#quad"]))),
+        ],"##
+    );
+    write_zone(&tree, &data);
+    let report = tree.cook_for_editor();
+    assert!(report.assets.iter().all(|asset| asset.id != shape_id(&data, 0)));
+    assert!(report.assets.iter().all(|asset| !asset.output.to_string_lossy().contains(".prefab.")));
+}
+
 #[test]
 fn a_cells_submeshes_are_its_final_materials() {
     let tree = tree("zone-materials");
@@ -551,7 +641,7 @@ fn a_zones_cook_is_the_same_bytes_on_any_number_of_threads_and_every_time() {
         );
         write_zone(&tree, &data);
         let cache = tree.dir.path().join("cache");
-        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false, editor: false };
         let report = cook_dir_on(&tree.content(), &tree.out(), &options, workers).unwrap();
         report.assets.iter().map(|asset| (asset.id, fs::read(&asset.output).unwrap())).collect::<Vec<_>>()
     };

@@ -153,24 +153,31 @@ pub struct PipelineInventory {
     /// A probe grid arrives after this (a zone's, M3 C1): the ambient pass's pipelines, and the environment
     /// and foliage surfaces with the grid's constants on, so that its arrival builds nothing.
     pub probe_grid: bool,
+    /// Its characters may fade (M1 C7, `--fade` or the proximity fade): the alpha-tested variants of the anime
+    /// character surfaces built by then and of [`Self::meshes`]' own, with their outlines, eyes through hair and
+    /// the prepasses' masked pipelines, which a fading character's opaque draws move to.
+    pub fades: bool,
+    /// It draws debug lines (M2 T1): their pass's pipeline, and the scene prepass's, whose depth it reads.
+    pub debug_draw: bool,
 }
 
 impl PipelineInventory {
-    /// The name of each entry, as a miss names it: `mesh` and a key, `post`, `effects`, `skinning`, `ui`,
-    /// `inset`, `sky`.
+    /// The name of each entry: `mesh` and a key, `post`, `effects`, `skinning`, `ui`, `inset`, `sky` and `ambient`
+    /// as a miss names them, and `fades` and `debug`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
         let others = [
-            (PipelineFamily::Post, self.post != PostVariants::NONE),
-            (PipelineFamily::Effects, self.effects),
-            (PipelineFamily::Skinning, self.skinning),
-            (PipelineFamily::Ui, self.ui),
-            (PipelineFamily::Inset, self.insets),
-            (PipelineFamily::Sky, !self.sky.is_empty()),
-            (PipelineFamily::Ambient, self.probe_grid),
+            (PipelineFamily::Post.name(), self.post != PostVariants::NONE),
+            (PipelineFamily::Effects.name(), self.effects),
+            (PipelineFamily::Skinning.name(), self.skinning),
+            (PipelineFamily::Ui.name(), self.ui),
+            (PipelineFamily::Inset.name(), self.insets),
+            (PipelineFamily::Sky.name(), !self.sky.is_empty()),
+            (PipelineFamily::Ambient.name(), self.probe_grid),
+            ("fades", self.fades),
+            (PipelineFamily::Debug.name(), self.debug_draw),
         ];
-        entries
-            .extend(others.into_iter().filter(|&(_, listed)| listed).map(|(family, _)| family.to_string()));
+        entries.extend(others.into_iter().filter(|&(_, listed)| listed).map(|(name, _)| name.to_owned()));
         entries
     }
 
@@ -186,6 +193,8 @@ impl PipelineInventory {
             "inset" => self.insets = false,
             "sky" => self.sky.clear(),
             "ambient" => self.probe_grid = false,
+            "fades" => self.fades = false,
+            "debug" => self.debug_draw = false,
             _ => self.meshes.retain(|key| format!("mesh {key}") != name),
         }
         listed

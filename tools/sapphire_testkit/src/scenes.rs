@@ -4350,6 +4350,9 @@ fn run_scene(
         Ok(family) => family,
         Err(message) => return Ok(error(Status::Error, None, message)),
     };
+    if let Some(builds) = fs::read_to_string(&log).ok().and_then(|text| frame_builds(&text, scene)) {
+        return Ok(error(Status::Error, Some(family), builds));
+    }
     let outcome =
         |status: Status, failure: Option<String>| Outcome { status, family: Some(family.clone()), failure };
     let golden_path = paths.goldens.join(format!("{}.{family}.png", scene.name));
@@ -4461,6 +4464,25 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> io::Result<Option
 }
 
 /// The last [`LOG_TAIL_LINES`] lines of a scene's log, indented, for its failure.
+/// What a scene's frames built that its load didn't declare (M3 K1), from its log's "captured frame" line:
+/// `None` if nothing, or if the scene shows a debug view. A capture counts what its load builds as prewarmed,
+/// so a first use there is a frame's, which a game's frame would stall on: the load's inventory, or what the
+/// scene declares, should list it. A debug view alone builds in its frame: it copies what that frame draws
+/// into its own target, and no load declares a view a tool turns on.
+fn frame_builds(log: &str, scene: &Scene) -> Option<String> {
+    if scene.args.contains(&"--debug-view") {
+        return None;
+    }
+    let line = log.lines().rfind(|line| line.contains("captured frame"))?;
+    let count: u32 = line.split_once(" first_use=")?.1.split(' ').next()?.parse().ok()?;
+    (count > 0).then(|| {
+        format!(
+            "its frames built {count} pipelines its load didn't declare; its log's \"built on first use\" lines \
+             name them"
+        )
+    })
+}
+
 fn log_tail(path: &Path) -> String {
     const MAX_BYTES: u64 = 16 * 1024;
     let read = || -> io::Result<String> {
@@ -4542,6 +4564,23 @@ fn backend_family(capture: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_frame_s_first_use_fails_a_scene_unless_it_shows_a_debug_view() {
+        let line = |count: u32| {
+            format!(
+                "INFO sapphire::sandbox: captured frame path=x.png ticks=90 prewarmed=40 first_use={count}\n"
+            )
+        };
+        let plain =
+            Scene { name: "plain", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() };
+        let viewed =
+            Scene { name: "viewed", args: &["--debug-view", "wireframe"], thresholds: Thresholds::default() };
+        assert_eq!(frame_builds(&line(0), &plain), None);
+        assert!(frame_builds(&line(3), &plain).is_some_and(|why| why.contains("built 3 pipelines")));
+        assert_eq!(frame_builds(&line(3), &viewed), None, "a debug view builds in its frame");
+        assert_eq!(frame_builds("INFO sapphire::sandbox: contact sheet written\n", &plain), None);
+    }
+
     use std::io::Write as _;
 
     use super::*;

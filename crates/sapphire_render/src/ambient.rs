@@ -1635,6 +1635,21 @@ impl Ambient {
                 ],
             }));
         }
+        self.build_pipelines(sources, set);
+    }
+
+    /// Builds the pipelines a reflective character's first frame would ([`Self::set_reflective`]): the sky's
+    /// projection and the prefilter, but not the cube, which that frame makes (M3 K1: a reflective material's
+    /// upload builds them).
+    pub(crate) fn build_reflection_pipelines(&mut self, sources: &ShaderSources) {
+        self.build_pipelines(
+            sources,
+            PipelineSet { projection: true, prefilter: true, ..PipelineSet::default() },
+        );
+    }
+
+    /// Builds `set`'s pipelines that aren't built yet, from `sources`.
+    fn build_pipelines(&mut self, sources: &ShaderSources, set: PipelineSet) {
         let missing = set.without(self.pipelines.set());
         if !missing.is_empty() {
             let built = AmbientPipelines::new(&self.device, &self.layouts, &self.builds, sources, missing);

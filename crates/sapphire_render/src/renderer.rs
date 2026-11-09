@@ -993,6 +993,11 @@ impl Renderer {
     ) -> Result<MaterialHandle, RenderError> {
         let (handle, replaced) =
             self.materials.upload(&self.device, &self.queue, &self.layouts.materials, material, textures)?;
+        // A reflective character material makes the ambient pass prefilter the reflection cube on the first frame
+        // that draws it (`prepare_drawn_pipelines`): its pipelines build with the upload, as a mesh's do (M3 K1).
+        if self.materials.record(handle).is_some_and(|record| record.reflects) {
+            self.checked_build(|renderer| renderer.ambient.build_reflection_pipelines(&renderer.shaders));
+        }
         if replaced && MESH_FAMILIES.contains(&material.family) {
             self.scene_bind_groups = create_scene_bind_groups(
                 &self.device,
@@ -1784,6 +1789,13 @@ impl Renderer {
             for &material in &inventory.sky {
                 renderer.sky.prewarm(material, &renderer.materials, on);
             }
+            if inventory.fades {
+                renderer.prepare_fades();
+            }
+            if inventory.debug_draw {
+                renderer.pipelines.keep_scene_prepass(&renderer.device, on);
+                renderer.make_debug_draw();
+            }
         });
         self.prewarmed_keys.extend(inventory.meshes.iter().copied());
         let built = self.pipeline_builds.stats().prewarmed - before;
@@ -2134,11 +2146,44 @@ impl Renderer {
     fn prepare_debug_draw(&mut self, lines: &[DebugLine]) {
         // Its pass reads the scene prepass's depth, so that pass runs while there are lines.
         self.pipelines.keep_scene_prepass(&self.device, BuildOn::sources(self.edited_shaders));
-        let draw = self.debug_draw.get_or_insert_with(|| {
-            let builds = &self.pipeline_builds;
-            Box::new(DebugDraw::new(&self.device, self.color_format, &self.shaders, builds))
-        });
+        self.make_debug_draw();
+        let draw = self.debug_draw.as_mut().expect("made above");
         draw.prepare(&self.device, &self.queue, lines);
+    }
+
+    /// Makes the debug lines' pass state, with its pipeline, unless it's made.
+    fn make_debug_draw(&mut self) {
+        if self.debug_draw.is_none() {
+            let builds = &self.pipeline_builds;
+            let draw = DebugDraw::new(&self.device, self.color_format, &self.shaders, builds);
+            self.debug_draw = Some(Box::new(draw));
+        }
+    }
+
+    /// Builds what a fading character draws through (M1 C7, [`PipelineInventory::fades`]): for every opaque anime
+    /// character surface built, its alpha-tested variant, with its outline, eyes through hair if the opaque one
+    /// has them, and the prepasses' masked pipelines, as [`Self::prepare_drawn_pipelines`] would on the fade's
+    /// first frame.
+    fn prepare_fades(&mut self) {
+        let on = BuildOn::sources(self.edited_shaders);
+        for format in PositionFormat::ALL {
+            let Some(mesh) = self.pipelines.mesh(format) else { continue };
+            let draws: Vec<Drawn> = SurfaceVariant::ALL
+                .into_iter()
+                .filter(|variant| {
+                    matches!(variant.shading, Shading::Character(_)) && variant.coverage == Coverage::Opaque
+                })
+                .filter(|&variant| mesh.surface(variant).is_some())
+                .map(|variant| Drawn {
+                    variant: variant.with_coverage(Coverage::AlphaTest),
+                    surface: true,
+                    through_hair: mesh.through_hair(variant).is_some(),
+                })
+                .collect();
+            if !draws.is_empty() {
+                self.pipelines.prepare_draws(&self.device, format, &draws, on);
+            }
+        }
     }
 
     /// The GPU half of a frame: adds the frame's uploads, the skinning pass, the prepasses, the

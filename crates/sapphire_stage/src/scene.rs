@@ -1889,12 +1889,15 @@ impl Scene {
     }
 
     /// What this scene and `show` may draw through that no pack's table can say (M3 K1): the post variants of the
-    /// screen effects it may push, its effects if it plays any, its sky, and what the show declares.
+    /// screen effects it may push, its effects if it plays any, its sky, its characters' fades if they fade, its
+    /// debug lines if it draws any, and what the show declares.
     pub fn declared_pipelines(&self, show: &impl SceneShow) -> PipelineInventory {
         let mut inventory = PipelineInventory {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
             sky: self.sky_material.into_iter().collect(),
+            fades: self.fade != Fade::Off,
+            debug_draw: self.debug_draw_demo.is_some() || debug_draw::enabled(),
             ..PipelineInventory::default()
         };
         show.declare_pipelines(&mut inventory);

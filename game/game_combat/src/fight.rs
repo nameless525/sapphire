@@ -272,8 +272,9 @@ pub struct FightShow {
     party_looks: Option<Drawn>,
     /// A fight's cues, fired (`--cues`, M2 E3).
     cues: Option<CueShow>,
-    /// The timeline playing (M3 Q1), which a fight with none spends nothing on.
-    timeline: Option<Box<TimelineShow>>,
+    /// The timeline playing (M3 Q1), in place rather than boxed: a run the simulation starts starts this in a
+    /// fixed step, which allocates nothing (M3 Q3).
+    timeline: Option<TimelineShow>,
     /// What plays beside each of the simulation's timelines, by its ID (M3 Q3): what a run the simulation
     /// starts shows, found by its digest ([`Self::hold_timelines`]).
     timelines: Vec<Arc<Timeline>>,
@@ -615,7 +616,7 @@ impl FightShow {
     /// shots through the director, if this stage has one, its post on each frame, its cues through the
     /// fight's table. The simulation's half is the simulation's: see [`Simulation::play_timeline`].
     pub fn play_timeline(&mut self, timeline: Arc<Timeline>, origin: Origin) {
-        let show = Box::new(TimelineShow::new(timeline, origin));
+        let show = TimelineShow::new(timeline, origin);
         self.draws_latest = show.holds_simulation();
         self.timeline = Some(show);
         self.timeline_unready = None;
@@ -674,14 +675,14 @@ impl FightShow {
     /// The timeline playing, for what it says at the playhead: its subtitle above all, which Q2 and U7 draw.
     #[must_use]
     pub fn timeline_player(&self) -> Option<&TimelinePlayer> {
-        self.timeline.as_deref().map(TimelineShow::player)
+        self.timeline.as_ref().map(TimelineShow::player)
     }
 
     /// Whether a timeline holds the simulation, so that a loop of its own runs the fight no steps: a
     /// cutscene, until it ends or is skipped. The scene's own step goes on, and the wind and clouds with it.
     #[must_use]
     pub fn holds_simulation(&self) -> bool {
-        self.timeline.as_deref().is_some_and(TimelineShow::holds_simulation)
+        self.timeline.as_ref().is_some_and(TimelineShow::holds_simulation)
     }
 
     /// Moves the timeline to this frame and gives the director its shot, ahead of the director's own frame.
@@ -1021,7 +1022,7 @@ impl FightShow {
         };
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
-        let staged = self.timeline.as_deref().map(TimelineShow::staged_fighters);
+        let staged = self.timeline.as_ref().map(TimelineShow::staged_fighters);
         let held_ticks = self.held_ticks;
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();

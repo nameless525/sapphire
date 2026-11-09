@@ -49,6 +49,10 @@ pub struct ScriptStats {
     pub collections: u64,
     pub last_collection: Duration,
     pub longest_collection: Duration,
+    /// All the time spent on hooks and on collection so far, by wall clock: what a bench takes the difference
+    /// of across a frame, for §3.2's script row (M3 Z1).
+    pub hooks_time: Duration,
+    pub collections_time: Duration,
     /// A dialogue's conditions asked between steps ([`ask`]), and those that didn't end well: a fault,
     /// an error, over budget, or asked by a number its set doesn't have. Those read false.
     pub conditions_asked: u64,
@@ -247,6 +251,7 @@ impl ScriptHost {
         }
         let spent = stopwatch.elapsed();
         self.stats.collections += 1;
+        self.stats.collections_time += spent;
         self.stats.last_collection = spent;
         self.stats.longest_collection = self.stats.longest_collection.max(spent);
     }
@@ -277,6 +282,7 @@ impl ScriptHost {
         *rng = scripts.frame_mut().rng;
         let spent = stopwatch.elapsed();
         self.stats.last_step = spent;
+        self.stats.hooks_time += spent;
         self.stats.longest_step = self.stats.longest_step.max(spent);
         self.stats.over_budget_steps += u64::from(spent > limits.step_budget);
     }

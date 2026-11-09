@@ -59,6 +59,10 @@ libc.workspace = true
 jni-sys.workspace = true
 ndk-context.workspace = true
 
+# The process's footprint (M3 Z1, `memory.rs`): `proc_pid_rusage`.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+
 # A rename that reaches the disk (M3 V1, `durable.rs`): Windows has no directory to flush.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

@@ -736,6 +736,8 @@ pub struct Content {
     zone_probes: Option<Handle<ProbeGrid>>,
     /// The pipelines of zones coming next, built over frames: see [`Self::queue_zone_prewarm`].
     zone_prewarms: Vec<ZonePrewarm>,
+    /// What building them took this frame: [`Self::zone_prewarm_time`].
+    zone_prewarm_time: std::time::Duration,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -912,6 +914,7 @@ impl Content {
             left_out_of_zones: None,
             zone_probes: None,
             zone_prewarms: Vec::new(),
+            zone_prewarm_time: std::time::Duration::ZERO,
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -1357,7 +1360,14 @@ impl Content {
         }
     }
 
+    /// What this frame's update took to build the pipelines of zones coming next (M3 Z1).
+    #[must_use]
+    pub fn zone_prewarm_time(&self) -> std::time::Duration {
+        self.zone_prewarm_time
+    }
+
     fn prewarm_next_zones(&mut self, renderer: &mut Renderer) {
+        let stopwatch = Stopwatch::start();
         let mut built = 0;
         self.zone_prewarms.retain_mut(|prewarm| {
             while built == 0 || prewarm.hurried {
@@ -1368,6 +1378,7 @@ impl Content {
             }
             !prewarm.keys.is_empty()
         });
+        self.zone_prewarm_time = stopwatch.elapsed();
     }
 
     /// The cooked bytes of asset `id`, while the server holds them.

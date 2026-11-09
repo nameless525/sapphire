@@ -414,6 +414,8 @@ pub struct Scene {
     stream_ahead: ([Vec3; sapphire_world::streaming::AHEAD], usize),
     /// Zones on their way (M3 W4).
     next_zones: Vec<zone::NextZone>,
+    /// What this frame's zones on their way took: [`Self::prefetch_time`].
+    prefetch_time: Duration,
     /// The zone laid out for an editor.
     layout: Option<layout::ZoneLayout>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
@@ -565,6 +567,7 @@ impl Scene {
             zone_walk: None,
             stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
             next_zones: Vec::new(),
+            prefetch_time: Duration::ZERO,
             layout: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),

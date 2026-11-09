@@ -873,6 +873,14 @@ impl Combat {
         }
     }
 
+    /// All the time its scripts have taken so far, hooks and collection, or `None` for a fight with no script
+    /// host: what a bench reads §3.2's script row from (M3 Z1).
+    pub fn script_time(&self) -> Option<std::time::Duration> {
+        let host = self.simulation().world().get_resource::<sapphire_script::ScriptHost>()?;
+        let stats = host.stats();
+        Some(stats.hooks_time + stats.collections_time)
+    }
+
     /// The simulation as it stands.
     pub fn simulation(&self) -> &Simulation {
         match &self.mode {
@@ -1453,6 +1461,7 @@ fn recorded_trail(path: &Path, name: &str) -> Result<Option<RecordedTrail>, Stri
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use sapphire_gameplay::replay::{Replay, find_script};
     use sapphire_gameplay::{ActorActions, Buttons, Stick};
@@ -1529,6 +1538,24 @@ mod tests {
         combat.finish().expect("writes");
         let file = CombatOption::Replay { path: scripted.0.clone(), to_end: true };
         assert!(!Combat::new(&file).expect("reads").is_played());
+    }
+
+    /// What a bench reads §3.2's script row from (M3 Z1): a fight whose scenario binds hooks counts their time
+    /// as it goes, and one with no script host has none to count.
+    #[test]
+    fn a_scripted_fight_counts_its_scripts_time_and_a_plain_one_has_none() {
+        let committed = |name: &str| CombatOption::Replay {
+            path: Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/replays/{name}.sreplay")),
+            to_end: true,
+        };
+        let mut scripted = Combat::new(&committed("arena-scripted")).expect("reads");
+        assert_eq!(scripted.script_time(), Some(Duration::ZERO), "nothing's run yet");
+        while scripted.script_time() == Some(Duration::ZERO) {
+            assert!(scripted.simulation().tick() < 1_700, "no hook or collection was timed");
+            scripted.step(&mut no_bindings);
+        }
+        let plain = Combat::new(&committed("arena-fight-won")).expect("reads");
+        assert_eq!(plain.script_time(), None);
     }
 
     fn recording(path: &Path, script: Option<&str>) -> Combat {

@@ -773,6 +773,43 @@ fn an_encounter_walked_into_is_warm_before_its_trigger_fires() {
     }
 }
 
+/// A walk through a zone as a bench reads it (M3 Z1, exit test 8): the ward's walk stands on the ward's own ground
+/// and streams it, reaching every checksum with nothing built after the load, and says what it held at its start,
+/// its most and its end; and each of the trip's five goes through every step, from its exit to its wipe gone.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_bench_of_a_zone_walk_reads_its_memory_and_times_each_trip() {
+    let bench = |replay: &str, tier: &str| {
+        let output = inventory_bench(replay, tier, None);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{replay} on {tier}: {log}");
+        assert_eq!(
+            log.matches("replay reached its recorded checksums").count(),
+            1,
+            "{replay} on {tier}: {log}"
+        );
+        let memory = log.lines().find(|line| line.contains("zone memory")).expect("logged");
+        for part in ["resident_mib=", "mesh_pool_mib=", "entities=", "process_mib="] {
+            assert!(memory.contains(part), "{replay} on {tier}: {memory}");
+        }
+        log
+    };
+    for tier in ["desktop-low", "mobile-low"] {
+        let log = bench("walk-the-ward", tier);
+        let pipelines = log.lines().find(|line| line.contains("fight pipelines")).expect("logged");
+        assert!(pipelines.contains("first_use=0"), "{tier}: {pipelines}");
+        assert!(!log.contains("zone trip, from its exit"), "{tier}: the ward's walk takes no exit");
+    }
+    let log = bench("zone-trip", "desktop-low");
+    let trips: Vec<&str> = log.lines().filter(|line| line.contains("zone trip, from its exit")).collect();
+    assert_eq!(trips.len(), 5, "{log}");
+    for trip in trips {
+        for step in ["covered=", "swapped=", "first_cells=", "clear="] {
+            assert!(trip.contains(step), "{trip}");
+        }
+    }
+}
+
 /// A bench of a committed replay on `tier`'s settings, as a phone's or a laptop's run has them: not [`PINS`],
 /// because the count is of what those settings build. Every tick of the replay steps, and every frame prepares and
 /// records, but only one frame in [`DRAW_EVERY`] runs its graph: lavapipe takes over a second to draw a frame here,

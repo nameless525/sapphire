@@ -531,6 +531,12 @@ impl Scene {
         Some(server.unmount(&pack))
     }
 
+    /// What this frame's zones on their way took on the CPU, mounting, loading and streaming around where
+    /// they're arrived at, beside `Content::zone_prewarm_time`: a bench's prefetch cost (M3 Z1).
+    pub fn prefetch_time(&self) -> std::time::Duration {
+        self.prefetch_time
+    }
+
     /// What the zone's streaming did this frame and where it stands, with a zone open.
     pub fn stream_stats(&self) -> Option<StreamStats> {
         self.zone.as_ref().map(|zone| zone.streamer.stats())
@@ -576,9 +582,11 @@ impl Scene {
             let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
             zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
         }
+        let stopwatch = sapphire_time::Stopwatch::start();
         for next in &mut self.next_zones {
             next.advance(content);
         }
+        self.prefetch_time = stopwatch.elapsed();
     }
 
     /// Draws what the zone has placed with its meshes on a new `renderer`: after device loss or for a new

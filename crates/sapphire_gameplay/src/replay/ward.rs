@@ -125,6 +125,26 @@ mod tests {
         assert_eq!((spawns.player.yaw_degrees, spawns.enemy.yaw_degrees), (180.0, 0.0));
     }
 
+    /// A scenario document that walks a zone on its own ground stands there on a stage, so the zone bench can
+    /// play it (M3 Z1): the zone by its stem, its first at their spawner, its colliders the zone's. One on the
+    /// arena's colliders stands in the town, its zone the simulation's alone, and one that starts at a
+    /// checkpoint is refused, naming it.
+    #[test]
+    fn a_walk_of_a_zone_stands_on_its_ground_and_one_on_the_arenas_doesnt() {
+        let walk = zone_fight("lantern-walk").expect("it walks the ward").expect("it stands");
+        assert_eq!((walk.stem, walk.player_at), ("lantern_ward", "player_start"));
+        assert_eq!(walk.spawns.player.position, [0.0, 0.0, 14.0]);
+        assert_eq!(walk.colliders.as_slice(), ward_colliders().expect("cooks").as_slice());
+        let yard = zone_fight("cart-yard").expect("it walks the proving ground").expect("it stands");
+        assert_eq!(yard.stem, "proving_ground");
+        assert!(zone_fight("square-street").is_none(), "it's on the arena's colliders");
+        assert!(zone_fight("arena-fight").is_none());
+        assert!(zone_fight("no-such-scenario").is_none());
+        let Some(Err(error)) = zone_fight("ground-platform") else { panic!("it starts at a checkpoint") };
+        assert!(error.to_string().contains("no spawner"), "{error}");
+        assert!(zone_fight(WARD_COURT).expect("the court").is_ok());
+    }
+
     #[test]
     fn the_scenario_loads_the_gate_and_says_its_zone() {
         let scenario = find_scenario(&SCENARIOS, WARD_COURT).expect("listed");

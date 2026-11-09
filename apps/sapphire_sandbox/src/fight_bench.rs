@@ -25,7 +25,13 @@
 //! a spike's tick says which moment of the fight it was. Nothing it records allocates in a frame.
 //!
 //! `--draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
-//! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, and no others.
+//! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, a zone's memory and
+//! its trips' steps, which count frames and bytes rather than time them, and no other rows.
+//!
+//! **A walk through a zone** (M3 Z1) is a fight like any other here: `--arena --replay` of a replay whose
+//! scenario walks one, such as `walk-the-ward`, or that goes between zones, such as `zone-trip`. §3.2's script
+//! and streaming rows read as they do in a fight, and say `not exercised` where nothing gave them anything to
+//! time; [`zone`] adds memory across the walk and each trip's steps.
 //!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
 //! two tiers. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
@@ -52,8 +58,11 @@ use crate::offscreen::Stage;
 use crate::options::Options;
 use game_combat::combat::Combat;
 use game_combat::combat::CombatOption;
+use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
+
+mod zone;
 
 /// What a phase measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +170,16 @@ struct Traced {
     vfx: Duration,
     /// The zone's streaming, within [`FrameLaps::content`].
     streaming: Duration,
+    /// A zone streams on the stage: what makes the streaming row's frames count.
+    streams: bool,
+    /// The scripts' hooks and collection, within the steps, or `None` with no script host (M3 Z1).
+    script: Option<Duration>,
+    /// Zones on their way: the stage's part, then building their pipelines, within [`FrameLaps::content`].
+    prefetch: Duration,
+    /// Where the trip under way had got by the frame's end, if one was.
+    trip: Option<TripPhase>,
+    /// What the engine held after it, by its own accounting.
+    memory: zone::Held,
     /// Allocations and bytes in the whole frame, the mix and the wait included.
     allocations: u64,
     bytes: u64,
@@ -218,7 +237,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 27] = [
+const ROWS: [Row; 29] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -226,8 +245,10 @@ const ROWS: [Row; 27] = [
     cpu_row("animation and ik", |t| Some(t.animation.saturating_sub(t.springs)), low(1_500, 3_000)),
     cpu_row("secondary motion", |t| Some(t.springs), low(500, 1_000)),
     cpu_row("vfx simulation", |t| Some(t.vfx), low(300, 600)),
+    // A fight with no script host, or a frame with no zone streaming, doesn't exercise these, and says so.
+    cpu_row("script events", |t| t.script, low(300, 500)),
+    cpu_row("streaming activation", |t| t.streams.then_some(t.streaming), low(500, 1_000)),
     cpu_row("audio update", |t| Some(t.audio), low(200, 300)),
-    cpu_row("streaming activation", |t| Some(t.streaming), low(500, 1_000)),
     cpu_row("extract", |t| Some(t.laps.packet.saturating_sub(t.camera + t.hud)), low(700, 1_200)),
     cpu_row("render", |t| Some(t.laps.prepare + t.laps.record), low(4_000, 8_000)),
     cpu_row("cues", |t| Some(t.laps.cues), UNBUDGETED),
@@ -235,6 +256,8 @@ const ROWS: [Row; 27] = [
     cpu_row("camera", |t| Some(t.camera), UNBUDGETED),
     cpu_row("hud", |t| Some(t.hud), UNBUDGETED),
     cpu_row("content", |t| Some(t.laps.content), UNBUDGETED),
+    // Only the frames a zone was on its way in, as a hub's exits come behind a trip.
+    cpu_row("zone prefetch", |t| (!t.prefetch.is_zero()).then_some(t.prefetch), UNBUDGETED),
     cpu_row("gpu wait", |t| Some(t.wait), UNBUDGETED),
     gpu_row("gpu frame", |t| t.gpu.span, [Some(12_000), Some(14_000), Some(13_000), Some(26_000)]),
     gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)),
@@ -362,6 +385,7 @@ pub(crate) fn run(
     };
     if run.draw_every.is_some() {
         run.phase(Phase::First, frames)?;
+        zone::report(run.stage, &run.trace, Phase::First);
         stage.lose_frames = false;
         stage.check_gpu()?;
         return stage.show.fight.finish().map_err(AppInitError::msg);
@@ -456,6 +480,7 @@ impl Run<'_> {
             stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::stats).unwrap_or_default();
         let sim_before =
             stage.show.fight.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
+        let script_before = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         let cpu = Stopwatch::start();
@@ -517,6 +542,9 @@ impl Run<'_> {
             None => (0, 0, [0; 2], 1.0),
         };
         let layers = stage.scene.with_screen_effects(|stack, _| stack.len()) as u32;
+        let script = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
+        let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
+        let memory = zone::Held::of(stage, after.live_bytes);
         Ok(Traced {
             phase,
             frame,
@@ -537,6 +565,11 @@ impl Run<'_> {
             hud: stage.show.hud.as_ref().map_or(Duration::ZERO, |hud| hud.last_frame().1),
             vfx: stats.vfx.simulation.simulation,
             streaming: stage.scene.stream_stats().map_or(Duration::ZERO, |stream| stream.time),
+            streams: stage.scene.stream_stats().is_some(),
+            script,
+            prefetch: stage.scene.prefetch_time() + stage.content.zone_prewarm_time(),
+            trip: stage.show.fight.show.trip_phase(),
+            memory,
             allocations: after.total_allocations - before.total_allocations,
             bytes: after.total_bytes - before.total_bytes,
             live_bytes: after.live_bytes,
@@ -600,7 +633,11 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             let values = frames()
                 .filter(|frame| counts(row, frame, phase))
                 .filter_map(|frame| Some(((row.read)(frame)?, frame.tick)));
-            let Some(spread) = spread(values) else { continue };
+            let Some(spread) = spread(values) else {
+                // Not 0: nothing on this walk or fight gave it anything to time.
+                tracing::info!(target: LOG_TARGET, phase = phase.name(), row = row.name, "fight row not exercised");
+                continue;
+            };
             let budget = row.budget[column];
             tracing::info!(
                 target: LOG_TARGET,
@@ -649,6 +686,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             ribbon_points_worst = frames().map(|frame| frame.ribbon_points).max().unwrap_or(0),
             "fight phase",
         );
+        zone::report(run.stage, &run.trace, phase);
     }
 }
 
@@ -658,7 +696,8 @@ audio,mix,content,animation,springs,poses,joints,packet,camera,hud,vfx,streaming
 live_bytes,step_allocations,sim_allocations,animation_allocations,packet_allocations,packet_bytes,prepare_allocations,\
 prepare_bytes,record_allocations,record_bytes,sprites,ribbon_points,cues_read,effects,sounds,screens,layers,\
 hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span,gpu_main,gpu_prepasses,\
-gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui";
+gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui,\
+script,prefetch,trip,resident,mesh_pool,textures,entities,process";
 
 /// One frame's line of `--bench-trace`'s file.
 fn trace_line_into(frame: &Traced, line: &mut String) {
@@ -743,6 +782,20 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
             None => line.push(','),
         }
     }
+    match frame.script {
+        Some(time) => {
+            let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
+        }
+        None => line.push(','),
+    }
+    let trip = frame.trip.map_or("", |trip| match trip {
+        TripPhase::Covering => "covering",
+        TripPhase::Swapping => "swapping",
+        TripPhase::Arriving => "arriving",
+        TripPhase::Uncovering => "uncovering",
+    });
+    let _ = write!(line, ",{:.1},{trip},", frame.prefetch.as_secs_f64() * 1e6);
+    frame.memory.trace_into(line);
 }
 
 #[cfg(test)]
@@ -767,7 +820,7 @@ fn write_trace(path: &Path, trace: &[Traced]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn traced(tick: u64, cpu_us: u64) -> Traced {
+    pub(super) fn traced(tick: u64, cpu_us: u64) -> Traced {
         Traced {
             phase: Phase::Cpu,
             frame: 0,
@@ -788,6 +841,11 @@ mod tests {
             hud: Duration::ZERO,
             vfx: Duration::ZERO,
             streaming: Duration::ZERO,
+            streams: false,
+            script: None,
+            prefetch: Duration::ZERO,
+            trip: None,
+            memory: zone::Held::default(),
             allocations: 0,
             bytes: 0,
             live_bytes: 0,

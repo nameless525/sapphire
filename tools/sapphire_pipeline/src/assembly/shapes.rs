@@ -36,6 +36,7 @@
 //! multiplied into the assembly's.
 
 use glam::{Quat, Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::{PieceTriangle, ShapeUv};
@@ -530,7 +531,7 @@ impl Mesh {
         let directions: Vec<Vec3> = (0..=sides)
             .map(|k| {
                 let angle = std::f32::consts::TAU * (k % sides) as f32 / sides as f32;
-                Vec3::new(angle.cos(), 0.0, -angle.sin())
+                Vec3::new(det::cos(angle), 0.0, -det::sin(angle))
             })
             .collect();
         let widest = profile.iter().map(|&(r, _)| r).fold(0.0, f32::max);
@@ -677,7 +678,7 @@ pub(super) fn circle(center: Vec2, radius: f32, count: usize) -> Vec<Vec2> {
     (0..count)
         .map(|k| {
             let angle = std::f32::consts::TAU * k as f32 / count as f32;
-            center + Vec2::new(angle.cos(), angle.sin()) * radius
+            center + Vec2::new(det::cos(angle), det::sin(angle)) * radius
         })
         .collect()
 }

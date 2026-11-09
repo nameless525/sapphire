@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use glam::{IVec3, Vec2, Vec3};
+use sapphire_math::det;
 
 /// Faces fight only when their normals are within this many degrees: a steeper crossing is an
 /// edge the depth buffer resolves.
@@ -69,7 +70,7 @@ pub struct Overlap {
 pub fn overlaps(faces: &[Face]) -> Vec<Overlap> {
     // A hair over the angle's chord, so rounding never hides a pair from the bucket that owes
     // it a test.
-    let chord = 2.0 * (0.5 * ANGLE.to_radians()).sin() + 1e-4;
+    let chord = 2.0 * det::sin(0.5 * ANGLE.to_radians()) + 1e-4;
     // Each face is at home in its normal's bucket and a guest in the others its neighborhood
     // reaches.
     let mut buckets: HashMap<IVec3, Vec<(usize, bool)>> = HashMap::new();
@@ -181,7 +182,7 @@ fn sweep(faces: &[Face], slab: &mut [Extent], found: &mut Vec<Overlap>) {
 /// [`WIDTH`] and, for faces in one slot, they shade differently somewhere in it.
 pub fn fight(a: &Face, b: &Face) -> Option<Vec3> {
     let facing = a.normal.dot(b.normal);
-    if facing < ANGLE.to_radians().cos() {
+    if facing < det::cos(ANGLE.to_radians()) {
         return None;
     }
     // In `a`'s plane, `u × v` along its normal, so its corners wind counter-clockwise.
@@ -245,7 +246,7 @@ fn shade(shading: &[Shading; 3], flat: [Vec2; 3], q: Vec2) -> Shading {
 fn alike(a: Shading, b: Shading, uv_offset: Vec2) -> bool {
     let uv = a.uv - b.uv;
     (a.occlusion - b.occlusion).abs() <= OCCLUSION
-        && a.normal.dot(b.normal) >= NORMAL.to_radians().cos()
+        && a.normal.dot(b.normal) >= det::cos(NORMAL.to_radians())
         && (uv - uv_offset).abs().max_element() <= TEXTURE
 }
 

@@ -27,6 +27,7 @@
 //! The seams where slopes meet (hips, the ridge) are left to those ridges and beams to cover.
 
 use glam::{Quat, Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::polygon::{self, HalfPlane};
@@ -391,7 +392,7 @@ impl<'a> Plan<'a> {
     fn slopes(&self) -> Vec<Slope> {
         let Vec2 { x: hx, y: hz } = self.half;
         let run = self.run;
-        let turn = |quarters: f32| Quat::from_rotation_y(quarters * std::f32::consts::FRAC_PI_2);
+        let turn = |quarters: f32| det::quat_from_rotation_y(quarters * std::f32::consts::FRAC_PI_2);
         // A slope whose eave is `half` long each way and whose ends are hips, up to `top`.
         let hipped = |half: f32, top: f32| {
             Region::new(

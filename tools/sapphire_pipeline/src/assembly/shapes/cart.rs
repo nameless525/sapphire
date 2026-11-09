@@ -7,7 +7,8 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::goods::{Goods, Place, Surface, validate_goods};
@@ -181,7 +182,7 @@ impl Cart {
             let mut wheel = Mesh::default();
             self.wheel(&mut wheel, detail);
             // Turned about +Y, then +Y turned to +X.
-            mesh.append(wheel, Quat::from_rotation_z(-FRAC_PI_2), Vec3::new(x, plan.radius, plan.axle_z));
+            mesh.append(wheel, det::quat_from_rotation_z(-FRAC_PI_2), Vec3::new(x, plan.radius, plan.axle_z));
         }
         for goods in &self.goods {
             let place = self.place(goods.on)?;
@@ -224,7 +225,7 @@ impl Cart {
         );
         for k in 0..spokes {
             let angle = TAU * (k as f32 + 0.5) / spokes as f32;
-            let out = Vec3::new(angle.cos(), 0.0, -angle.sin());
+            let out = Vec3::new(det::cos(angle), 0.0, -det::sin(angle));
             mesh.bar(Part::Timber, out * 0.8 * hub, out * (inner + 0.01), SPOKE, Vec3::Y, [false, false]);
         }
     }

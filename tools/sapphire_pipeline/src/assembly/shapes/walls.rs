@@ -11,6 +11,7 @@
 //! bays, and timber beams wrap all four sides prouder still, so beams cross in front of posts.
 
 use glam::{Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::roof::{Ridge, Roof, RoofKind, Tiles};
@@ -358,7 +359,7 @@ impl Opening {
                 let arc: Vec<Vec2> = (0..=count)
                     .map(|k| {
                         let angle = from + (to - from) * k as f32 / count as f32;
-                        Vec2::new(a + radius * angle.cos(), cy + radius * angle.sin())
+                        Vec2::new(a + radius * det::cos(angle), cy + radius * det::sin(angle))
                     })
                     .collect();
                 let (jl, jr) = (arc[0].x, arc[count].x);
@@ -380,7 +381,7 @@ impl Opening {
 /// height `base`, its center `cy` high: from the left over the top to the right is from the
 /// first down to the second.
 fn arc_span(radius: f32, cy: f32, base: f32) -> (f32, f32) {
-    let rise = ((base - cy) / radius).clamp(-1.0, 1.0).asin();
+    let rise = det::asin(((base - cy) / radius).clamp(-1.0, 1.0));
     (std::f32::consts::PI - rise, rise)
 }
 
@@ -1035,7 +1036,7 @@ fn ring(
             let outer = (0..=count)
                 .map(|k| {
                     let angle = from + (to - from) * k as f32 / count as f32;
-                    center + Vec2::new(angle.cos(), angle.sin()) * (radius + width)
+                    center + Vec2::new(det::cos(angle), det::sin(angle)) * (radius + width)
                 })
                 .collect();
             (inner, outer)

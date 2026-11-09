@@ -98,16 +98,18 @@ fn bridge(points: &[DVec2], ring: Vec<usize>, hole: &[usize]) -> Result<Vec<usiz
         // A reflex corner inside triangle (M, I, P) would block the bridge: take the one
         // nearest the ray's direction instead.
         let candidate = p_at;
-        let mut best_angle = f64::MAX;
+        let mut nearest: Option<DVec2> = None;
         for k in 0..ring.len() {
             let r = points[ring[k]];
             if k == candidate || !reflex(points, &ring, k) || !inside_triangle(r, mp, i, p) || r == mp {
                 continue;
             }
+            // Its direction folded above the ray, compared by exact arithmetic rather than an
+            // `atan2`, whose last bits differ between C libraries.
             let d = r - mp;
-            let angle = d.y.abs().atan2(d.x);
-            if angle < best_angle {
-                best_angle = angle;
+            let folded = DVec2::new(d.x, d.y.abs());
+            if nearest.is_none_or(|best| nearer_the_ray(folded, best)) {
+                nearest = Some(folded);
                 p_at = k;
             }
         }
@@ -118,6 +120,16 @@ fn bridge(points: &[DVec2], ring: Vec<usize>, hole: &[usize]) -> Result<Vec<usiz
     spliced.push(ring[p_at]);
     spliced.extend_from_slice(&ring[p_at + 1..]);
     Ok(spliced)
+}
+
+/// Whether direction `a` is strictly nearer +X than `b`, both nonzero and on or above the X axis:
+/// `atan2(a.y, a.x) < atan2(b.y, b.x)`, in `+ - *` alone.
+fn nearer_the_ray(a: DVec2, b: DVec2) -> bool {
+    if a.y == 0.0 && b.y == 0.0 {
+        // Both on the axis: only +X against -X is nearer, as a cross product can't tell them.
+        return a.x > 0.0 && b.x < 0.0;
+    }
+    a.perp_dot(b) > 0.0
 }
 
 /// Whether corner `k` of the counter-clockwise `ring` turns clockwise.
@@ -284,6 +296,27 @@ mod tests {
                 center + Vec2::new(angle.cos(), angle.sin()) * radius
             })
             .collect()
+    }
+
+    #[test]
+    fn nearer_the_ray_orders_directions_as_their_angles_do() {
+        let mut directions = vec![DVec2::X, -DVec2::X, DVec2::Y, DVec2::new(3.0, 0.0), DVec2::new(-2.0, 0.0)];
+        for k in 0..=24 {
+            let angle = std::f64::consts::PI * f64::from(k) / 24.0;
+            directions.push(DVec2::new(angle.cos(), angle.sin()) * (1.0 + f64::from(k % 5)));
+        }
+        // Folded as the bridge folds them: -X is (-1, 0), never (-1, -0) at -π.
+        let directions: Vec<DVec2> = directions.into_iter().map(|d| DVec2::new(d.x, d.y.abs())).collect();
+        for &a in &directions {
+            assert!(!nearer_the_ray(a, a), "{a} is never nearer than itself");
+            for &b in &directions {
+                let (angle_a, angle_b) = (a.y.atan2(a.x), b.y.atan2(b.x));
+                // Directions apart by more than rounding: within it, the comparison is the exact one.
+                if (angle_a - angle_b).abs() > 1e-9 {
+                    assert_eq!(nearer_the_ray(a, b), angle_a < angle_b, "{a} against {b}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -10,7 +10,8 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::{Detail, Mesh, Part, check, finite};
@@ -351,7 +352,7 @@ fn bolts(mesh: &mut Mesh, base: Vec3, size: f32, detail: Detail) {
     let r = BOLT * size;
     let sides = sides(2.0 * r, detail);
     // Lying along X: turned about +Y, then +Y turned to +X.
-    let lay = Quat::from_rotation_z(-FRAC_PI_2);
+    let lay = det::quat_from_rotation_z(-FRAC_PI_2);
     for (z, y, part) in
         [(-r, r, Part::Valance), (r, r, Part::Valance), (0.0, r * (1.0 + 3f32.sqrt()), Part::Cloth)]
     {

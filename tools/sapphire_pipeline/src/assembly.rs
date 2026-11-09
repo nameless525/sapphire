@@ -65,6 +65,11 @@
 //!   so the list stays as short as the assembly needs. The search buckets triangles by normal
 //!   and plane and sweeps each plane, so it costs little beside the rest of the cook (14 ms of
 //!   the look-dev town's 60–70 ms import, its 89k triangles).
+//! - **The same bits on every host.** Its trigonometry, roots and powers go through
+//!   `sapphire_math::det`, never `std`'s, which call each platform's C library: glibc rounded
+//!   some of `#ground`'s ring directions otherwise than Apple's and Microsoft's libraries, so the
+//!   town's triangles differed on Linux in their low bits. `nav_bake` pins the town's triangles'
+//!   digest on every platform.
 //!
 //! The cooked asset is a mesh like any glTF's (`town.assembly.ron` → `town.smesh`): outline
 //! normals are baked, the mesh optimized and LODs built as its sidecar says (`importer:
@@ -85,9 +90,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 use sapphire_assets::material::AnimeCharacterMaterial;
 use sapphire_assets::mesh::{Lod, Submesh, Vertex, VertexFlags};
+use sapphire_math::det;
 use sapphire_reflect::{TypePath, Versioned};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
@@ -112,8 +118,9 @@ pub use shapes::{
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// pieces are imported by it, so a bump there must recook assemblies too. Bump the high bits
 /// whenever assembly output changes for the same document and pieces. Version 4 rechecks
-/// procedural geometry admission and texture agreement throughout coplanar overlaps.
-pub const IMPORTER: Stage = Stage { name: "assembly", version: (4 << 16) | gltf::IMPORTER.version };
+/// procedural geometry admission and texture agreement throughout coplanar overlaps; version 5
+/// takes its trigonometry from `det`, which moved a Linux cook's `#ground` and nothing elsewhere.
+pub const IMPORTER: Stage = Stage { name: "assembly", version: (5 << 16) | gltf::IMPORTER.version };
 
 /// The end of an assembly document's file name, lowercase.
 pub const SOURCE_SUFFIX: &str = ".assembly.ron";
@@ -810,7 +817,7 @@ fn ground(diameter: f32) -> Piece {
     let directions: Vec<Vec3> = (0..GROUND_SEGMENTS)
         .map(|segment| {
             let angle = std::f32::consts::TAU * segment as f32 / GROUND_SEGMENTS as f32;
-            Vec3::new(angle.cos(), 0.0, angle.sin())
+            Vec3::new(det::cos(angle), 0.0, det::sin(angle))
         })
         .collect();
     let point =
@@ -876,7 +883,7 @@ impl PreparedTransform {
             matrix,
             normals: linear.inverse().transpose(),
             mirrored: determinant < 0.0,
-            meters_scale: determinant.abs().cbrt(),
+            meters_scale: det::cbrt(determinant.abs()),
         }
     }
 }
@@ -940,7 +947,7 @@ impl CoplanarAllowance {
     /// `at`.
     fn holds(&self, normal: Vec3, at: Vec3) -> bool {
         self.facing.is_none_or(|facing| {
-            Vec3::from(facing).normalize().dot(normal) >= coplanar::ANGLE.to_radians().cos()
+            Vec3::from(facing).normalize().dot(normal) >= det::cos(coplanar::ANGLE.to_radians())
         }) && self.region.is_none_or(|(least, greatest)| {
             at.cmpge(Vec3::from(least)).all() && at.cmple(Vec3::from(greatest)).all()
         })
@@ -984,7 +991,7 @@ impl<'a> Builder<'a> {
         }
         let local = Mat4::from_scale_rotation_translation(
             placement.scale.vector(),
-            Quat::from_rotation_y(placement.turn.to_radians()),
+            det::quat_from_rotation_y(placement.turn.to_radians()),
             Vec3::from(placement.at),
         );
         let transform = parent * local;

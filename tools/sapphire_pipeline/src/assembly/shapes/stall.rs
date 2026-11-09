@@ -16,6 +16,7 @@
 use std::f32::consts::PI;
 
 use glam::{Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::goods::{Goods, Place, Surface, validate_goods};
@@ -668,7 +669,7 @@ impl Drape {
         let climb = cloth.rise / (self.high - self.rest);
         let mut y = self.top + climb * (s - self.rest);
         if s > self.rest && s < self.high {
-            y -= cloth.sag * (PI * (s - self.rest) / (self.high - self.rest)).sin();
+            y -= cloth.sag * det::sin(PI * (s - self.rest) / (self.high - self.rest));
         }
         if s < self.rest && cloth.sweep > 0.0 {
             let along = 1.0 - smoothstep(0.0, cloth.sweep_reach, self.half.x - x.abs());
@@ -811,7 +812,7 @@ impl Drape {
             .map(|k| {
                 let x = width * k as f32 / (count * points) as f32 - self.half.x;
                 let phase = (k % points) as f32 / points as f32;
-                let y = self.underside(x, 0.0) - (drop - depth) - depth * (PI * phase).sin();
+                let y = self.underside(x, 0.0) - (drop - depth) - depth * det::sin(PI * phase);
                 (x, y)
             })
             .collect();

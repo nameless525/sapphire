@@ -154,6 +154,13 @@ pub fn hypot(x: f32, y: f32) -> f32 {
     libm::hypotf(x, y)
 }
 
+/// Cube root of `x`, negative for a negative `x`.
+#[inline]
+#[must_use]
+pub fn cbrt(x: f32) -> f32 {
+    libm::cbrtf(x)
+}
+
 /// A rotation of `angle` radians about the unit vector `axis`, computed deterministically
 /// (unlike `Quat::from_axis_angle`).
 #[inline]

@@ -5,10 +5,12 @@
 //! number: a bake's bytes go in `tables_hash`. `input` is the triangles' bits and `baked` the cooked
 //! file's bytes, so a difference can be placed.
 //!
-//! **The town isn't pinned,** as no zone bakes from drawn triangles: `assembly` makes them with `std`'s
-//! transcendentals, so the low bits of its `input` differ on Linux, whose C library isn't the others'.
-//! Its `NAV-TOWN` lines give each of its top-level placements a digest, so a diff of two platforms' logs
-//! names the pieces that differ.
+//! **The town is pinned too,** though no zone bakes from drawn triangles: they're the largest real
+//! geometry there is, and what `assembly` draws must be the same on every host. It once wasn't: its
+//! trigonometry was `std`'s, and glibc rounded some of `#ground`'s ring directions otherwise than
+//! Apple's and Microsoft's libraries, so Linux's `input` differed in its low bits. It goes through
+//! `sapphire_math::det` now. Its `NAV-TOWN` lines give each of its top-level placements a digest, so
+//! if the pin fails on one platform, a diff of two platforms' logs names the pieces that differ.
 
 mod nav_support;
 
@@ -31,6 +33,8 @@ const ARENA_INPUT: &str = "9fc719ca74cedde58fcd99e2177c8c8661ab60306f898775e3957
 const ARENA_BAKED: &str = "c36d92bce9879696de17791376f20bc16c0dc8c0696008d8dbabc63c7be581d0";
 const PROVING_GROUND_INPUT: &str = "09d0ceb2b37e115b05107d35c68f7a25ca19d50f419ad993077f5c8448676cd6";
 const PROVING_GROUND_BAKED: &str = "935ba1185821fc192ceadf5c95016c998f6783b2c4d584a25de98bf0c3620d17";
+const TOWN_INPUT: &str = "fd6761e46979818171a0513dca190b1db834542112b6087f50ebd815551a5f3a";
+const TOWN_BAKED: &str = "5b35e20ab91fa860b8a7b497e5fe1cf790faa46da9369c9509fe18d0c81e5599";
 
 /// Says what a bake came to, and returns its digests.
 fn holds(name: &str, triangles: &[Triangle], bounds: TileBounds) -> (String, String) {
@@ -62,8 +66,10 @@ fn the_arenas_bake_repeats_and_is_pinned() {
 }
 
 #[test]
-fn the_towns_bake_repeats() {
-    holds("town", &town_triangles(), TOWN);
+fn the_towns_bake_repeats_and_is_pinned() {
+    let (input, baked) = holds("town", &town_triangles(), TOWN);
+    assert_eq!(input, TOWN_INPUT, "the town's drawn triangles moved: diff this platform's `NAV-TOWN` lines");
+    assert_eq!(baked, TOWN_BAKED, "the town's bake moved");
 }
 
 /// A real zone's whole way through a cook's steps, bar the cook: its document's area and spawners, from

@@ -1,6 +1,7 @@
 //! Turned and boxed props: `#column` and `#lantern`.
 
 use glam::{Vec2, Vec3};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::{Detail, Mesh, Part, check, finite};
@@ -166,9 +167,9 @@ impl Lantern {
             LanternKind::Round | LanternKind::Drum => {
                 let (fractions, swell): (&[f32], fn(f32) -> f32) = match self.kind {
                     LanternKind::Round => (&[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0], |t| {
-                        0.42 + 0.58 * (std::f32::consts::PI * t).sin().max(0.0).powf(0.7)
+                        0.42 + 0.58 * det::pow(det::sin(std::f32::consts::PI * t).max(0.0), 0.7)
                     }),
-                    _ => (&[0.0, 0.25, 0.5, 0.75, 1.0], |t| 0.9 + 0.1 * (std::f32::consts::PI * t).sin()),
+                    _ => (&[0.0, 0.25, 0.5, 0.75, 1.0], |t| 0.9 + 0.1 * det::sin(std::f32::consts::PI * t)),
                 };
                 let paper: Vec<(f32, f32)> =
                     fractions.iter().map(|&t| (radius * swell(t), cap + t * height)).collect();

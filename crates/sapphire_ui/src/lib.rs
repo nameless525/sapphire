@@ -9,7 +9,8 @@
 //!   scrolling, and one focus model that a keyboard, a pad and a pointer all reach as plain [`UiInput`].
 //! - **Layout** ([`layout`]): rectangles in UI points, the frame's metrics ([`UiMetrics`]: size and
 //!   safe-area insets, from a [`Window`](sapphire_platform::Window) or made up for a capture) and
-//!   anchors. A UI point is `pixels / display scale`, so a thumb's size is the same everywhere.
+//!   anchors. A UI point is `pixels / (display scale × player's scale)`, so a thumb's size is the
+//!   same everywhere.
 //! - **The atlas** ([`atlas`]): every shape as a signed distance field, painted by code at load.
 //! - **Painting** ([`paint`]): shapes into [`sapphire_look::UiQuad`]s, in points.
 //! - **What the touch zones read** ([`touch`]), as plain [`TouchActions`]: the zones themselves, fingers to
@@ -51,10 +52,11 @@
 //!
 //! The sandbox's fixed frame is 41 quads, written in 2.3 µs on the same machine.
 //!
-//! # What M3 adds to go further
+//! # What stays here after M3
 //!
-//! - **The HUD on documents** (U7), with [`HudLayout`]'s hand-placed rectangles going to `taffy`. Its
-//!   digits stay on the distance field atlas.
+//! The combat HUD's bars, buttons, stick and numbers are [`CombatHud`]'s, placed by [`HudLayout`] from
+//! `default_hud.ron`'s numbers, since their goldens are pinned and they animate per frame. U7 put the
+//! HUD's words and every menu on the tree, and its digits stay on the distance field atlas.
 
 /// Where this crate logs.
 pub(crate) const LOG_TARGET: &str = "sapphire::ui";

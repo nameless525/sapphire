@@ -460,6 +460,23 @@ impl GameMenus {
         }
     }
 
+    /// Whether any of the game's screens holds a 3D inset (M3 U6), opened or not: what declares the inset's
+    /// pipeline before the character screen first opens, so it never builds on first use.
+    #[must_use]
+    pub fn holds_insets(&self) -> bool {
+        self.documents.iter().any(|document| document.nodes.iter().any(|node| node.inset.is_some()))
+    }
+
+    /// Hands `visit` each inset the last [`Self::draw`] showed, as a `SceneShow` does.
+    pub fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
+        self.stack.inset_shots(visit);
+    }
+
+    /// Turns the insets on show as a drag `across` that share of their width would: a stick's turn.
+    pub fn turn_insets(&mut self, across: f32) {
+        self.stack.turn_insets(across);
+    }
+
     /// Whether `screen` is showing and isn't on its way out.
     #[must_use]
     pub fn is_open(&self, screen: MenuScreen) -> bool {

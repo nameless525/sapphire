@@ -193,7 +193,7 @@ macro_rules! game_scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-pub fn scenes() -> [Scene; 196] {
+pub fn scenes() -> [Scene; 197] {
     [
         Scene {
             name: "turntable-start",
@@ -4016,6 +4016,37 @@ pub fn scenes() -> [Scene; 196] {
         game_scene!("game-character-wide-ja", "character", "1280x720", "ja"),
         game_scene!("game-character-ultrawide-en", "character", "1680x720", "en"),
         game_scene!("game-character-ultrawide-ja", "character", "1680x720", "ja"),
+        // The character screen's inset (M3 U6) on a phone's 19.5:9 at twice the points, on Mobile-Low, a
+        // quarter turn round by a drag.
+        Scene {
+            name: "game-character-phone-en",
+            args: &[
+                "--size",
+                "1688x780",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "mobile-low",
+                "--plain-sky",
+                "--plain-post",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-plain",
+                "--ui-game",
+                "character",
+                "--ui-locale",
+                "en",
+                "--ui-scale",
+                "2",
+                "--ui-turn",
+                "0.25",
+            ],
+            thresholds: Thresholds::default(),
+        },
         game_scene!("game-dialogue-tablet-en", "dialogue", "1024x768", "en"),
         game_scene!("game-dialogue-tablet-ja", "dialogue", "1024x768", "ja"),
         game_scene!("game-dialogue-wide-en", "dialogue", "1280x720", "en"),

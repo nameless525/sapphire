@@ -10,6 +10,7 @@ use game_ui::menus::{
     CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings,
 };
 use sapphire_controls::{CombatControls, ControlsError};
+use sapphire_ecs::prelude::Entity;
 use sapphire_gameplay::ActorId;
 use sapphire_input::{DeviceKind, InputMap};
 use sapphire_platform::{AppInitError, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
@@ -28,6 +29,8 @@ use crate::LOG_TARGET;
 
 /// Who a step with no fight on it asks the bindings for: see `read_bindings`.
 const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
+/// The inset the character screen's document shows the character in.
+const CHARACTER_INSET: u16 = 0;
 /// How often a fight says how it's going.
 const REPORT_EVERY: Duration = Duration::from_secs(1);
 
@@ -52,6 +55,8 @@ pub struct GameShow {
     report_in: Duration,
     /// Pipelines frames have built that the load didn't, as last said.
     first_uses: u32,
+    /// The character standing in the character screen's inset while it's open (M3 U6).
+    showcase: Option<Entity>,
 }
 
 impl GameShow {
@@ -75,6 +80,7 @@ impl GameShow {
             commands: Vec::with_capacity(8),
             settings_changed: false,
             controls,
+            showcase: None,
             camera_yaw: 0.0,
             report_in: Duration::ZERO,
             first_uses: 0,
@@ -312,6 +318,7 @@ impl SceneShow for GameShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         self.shown.declare_pipelines(inventory);
         inventory.ui = true;
+        inventory.insets |= self.menus.as_ref().is_some_and(GameMenus::holds_insets);
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -348,6 +355,16 @@ impl SceneShow for GameShow {
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
         self.shown.present(scene, alpha, aspect);
+        // The character screen's inset shows a showcase of the character while it's open, and none after.
+        let wanted = self.menus.as_ref().is_some_and(|menus| menus.is_open(MenuScreen::Character));
+        match (wanted, self.showcase) {
+            (true, None) => self.showcase = Some(scene.spawn_showcase(scene.character(), CHARACTER_INSET)),
+            (false, Some(showcase)) => {
+                scene.despawn_showcase(showcase);
+                self.showcase = None;
+            }
+            _ => {}
+        }
     }
 
     fn write_effects(&mut self, frame: &mut VfxFrame, alpha: f32) {
@@ -367,6 +384,9 @@ impl SceneShow for GameShow {
 
     fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
         self.shown.inset_shots(visit);
+        if let Some(menus) = &self.menus {
+            menus.inset_shots(visit);
+        }
     }
 
     fn draw_debug(&mut self) {
@@ -463,6 +483,17 @@ mod tests {
         press(&mut show, &mut clock, Scancode::RETURN);
         assert!(!show.on_title());
         (show, clock)
+    }
+
+    /// The character screen's inset is declared from the documents, before it opens, so the first open builds
+    /// nothing.
+    #[test]
+    fn the_character_screen_s_inset_is_declared_before_it_opens() {
+        let show = undrawn();
+        assert!(!is_open(&show, MenuScreen::Character));
+        let mut inventory = PipelineInventory::default();
+        show.declare_pipelines(&mut inventory);
+        assert!(inventory.insets && inventory.ui);
     }
 
     /// The menus and the HUD draw from one atlas, which opening the fight hands on rather than painting again:

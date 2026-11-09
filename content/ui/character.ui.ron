@@ -33,10 +33,10 @@
                     fill: Gradient(from: (14, 34, 92, 255), to: (58, 30, 92, 255), angle: 70),),
             ),
             (
-                name: "sigil",
+                name: "showcase",
                 parent: "plate",
-                layout: (width: Points(72), height: Points(72)),
-                look: (shape: Sprite(Spark), fill: Color((96, 243, 212, 255))),
+                layout: (grow: 1, width: Percent(100), min_height: Points(0)),
+                inset: (inset: 0, look_at: 1.0, distance: 4.4, backdrop: (0.06, 0.08, 0.2)),
             ),
             (
                 name: "name",

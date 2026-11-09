@@ -129,7 +129,7 @@ impl ScreenOptions {
     /// Whether it shows an inset, which needs a showcase of the character standing for inset 0.
     #[must_use]
     pub const fn shows_inset(&self) -> bool {
-        matches!(self.shown, ShownScreen::TestInset)
+        matches!(self.shown, ShownScreen::TestInset | ShownScreen::Game(MenuScreen::Character))
     }
 
     /// The document it shows.

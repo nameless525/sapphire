@@ -33,6 +33,8 @@ game_ui.workspace = true
 sapphire_controls.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
+# The showcase the character screen's inset stands, which the scene names by entity.
+sapphire_ecs.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_input.workspace = true
 sapphire_jobs.workspace = true

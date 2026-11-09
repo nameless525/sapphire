@@ -357,3 +357,28 @@ fn a_terminal_play_is_applied_once_without_an_extra_tick() {
         assert_eq!(player.simulation().checksum(), expected);
     }
 }
+
+/// A replay stands between two steps as its recording did: once a step's boundary started a cutscene, the
+/// simulation has it playing, so that presentation replaying it can hold the next step for it the way it
+/// was held for whoever watched (M3 Q3). A boundary's commands used to wait for the next step, which left
+/// presentation nothing to hold for.
+#[test]
+fn a_replay_starts_a_cutscene_at_the_boundary_its_recording_did() {
+    let script = find_script("cutscene-watched").expect("listed");
+    let mut recording = recording();
+    recording.run_script(script, script.ticks).expect("runs");
+    let (replay, played) = recording.finish();
+    let mut player =
+        Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+    let play_at = u64::from(script.commands[0].0);
+    while player.simulation().tick() < play_at {
+        assert!(player.simulation().timeline().is_none(), "nothing plays before its boundary");
+        assert!(player.step());
+    }
+    let progress = player.simulation().timeline().expect("the cutscene plays between the two steps");
+    assert_eq!(progress.id, CUTSCENE);
+    assert!(player.step());
+    assert!(player.simulation().timeline().is_none(), "a cutscene's run is no steps long");
+    player.run_to_end();
+    assert_eq!(player.trail(), &played.trail);
+}

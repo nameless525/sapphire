@@ -181,9 +181,7 @@ impl Player {
             played: 0,
             cast,
         };
-        if player.replay.ticks() == 0 {
-            player.apply_commands();
-        }
+        player.apply_commands();
         Ok(player)
     }
 
@@ -193,20 +191,21 @@ impl Player {
         &self.cast
     }
 
-    /// Plays one tick. Returns `false`, and does nothing, once the replay has ended.
+    /// Plays one tick, then carries out the commands that come before the next, so that between two calls
+    /// the simulation stands as the recording's did between those two steps: a cutscene started there is
+    /// playing, and presentation beside it can hold the next step for it, as it did for whoever watched.
+    /// Returns `false`, and does nothing, once the replay has ended.
     pub fn step(&mut self) -> bool {
         let Some(actions) = self.cursor.next(&self.replay) else { return false };
-        self.apply_commands();
         self.played += 1;
         self.tracked.step(&actions);
-        if self.played == self.replay.ticks() {
-            self.apply_commands();
-        }
+        self.apply_commands();
         true
     }
 
-    // The format permits commands at the boundary after the last tick. Apply them without an
-    // extra simulation step, including a zero-tick replay's initial/final boundary.
+    /// Carries out the commands at the boundary the run stands on: before its first step as it starts, and
+    /// after each step. The format allows commands at the boundary after the last tick, which this reaches
+    /// with no step past it.
     fn apply_commands(&mut self) {
         while let Some(&(tick, command)) = self.replay.commands().get(self.next_command)
             && tick == self.played

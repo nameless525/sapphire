@@ -39,7 +39,9 @@ use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
-use crate::pipeline_builds::{FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats};
+use crate::pipeline_builds::{
+    FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats, PipelineWarmup,
+};
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES,
     MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
@@ -1787,6 +1789,14 @@ impl Renderer {
         let built = self.pipeline_builds.stats().prewarmed - before;
         drop(warming);
         built
+    }
+
+    /// Counts every pipeline built while what it returns lives as prewarmed (M3 K1): a load's, which stalls no
+    /// frame. A capture holds one over its load, which builds what its uploads draw through rather than declare
+    /// an inventory, and drops it before its first frame, so that only what a frame built counts as first use.
+    /// A game declares its inventory instead ([`Self::prewarm`]), and a bench is held to it.
+    pub fn warm_load(&self) -> PipelineWarmup {
+        self.pipeline_builds.warming()
     }
 
     /// Every pipeline built on first use so far, by name (M3 K1): what [`PipelineStats::first_use_builds`]

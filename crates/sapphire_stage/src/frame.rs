@@ -17,7 +17,7 @@ use sapphire_platform::{AppInitError, Host};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierTable};
-use sapphire_render::{MeshHandle, RenderSettings, Renderer};
+use sapphire_render::{MeshHandle, PipelineWarmup, RenderSettings, Renderer};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 use sapphire_time::Stopwatch;
 
@@ -156,11 +156,15 @@ pub struct StageDesc {
     pub skinned: bool,
     /// Build what the packs' meshes draw through before the character's uploaded (M3 K1), as a game does. A
     /// capture doesn't, for the same reason a renderer builds nothing a frame can't run: a software GPU's run would
-    /// pay for the whole pack.
+    /// pay for the whole pack. It builds what its uploads draw through, under [`Self::warm_load`].
     pub prewarm_packs: bool,
     /// The entry of [`Content::pipeline_inventory`] left out of `prewarm_packs`, by its name: what proves a miss
     /// fails.
     pub inventory_without: Option<String>,
+    /// Count what the load builds, from the renderer's making to the first frame, as prewarmed (M3 K1;
+    /// [`Renderer::warm_load`]): a capture's, which declares no inventory, so that what its log calls a first use
+    /// is what a frame built. A bench is held to the packs' inventory instead, and never sets this.
+    pub warm_load: bool,
 }
 
 impl StageDesc {
@@ -187,6 +191,7 @@ impl StageDesc {
             skinned: false,
             prewarm_packs: false,
             inventory_without: None,
+            warm_load: false,
         }
     }
 }
@@ -242,6 +247,8 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub gpu: Arc<GpuContext>,
     /// The last frame's stage times, measured while something draws over the frames.
     last_times: Option<StageTimes>,
+    /// Held from the renderer's making to the first frame, with [`StageDesc::warm_load`].
+    load_warmup: Option<PipelineWarmup>,
     format: wgpu::TextureFormat,
 }
 
@@ -279,8 +286,10 @@ impl Stage {
             skinned,
             prewarm_packs,
             inventory_without,
+            warm_load,
         } = desc;
         let mut renderer = Renderer::new(&gpu, format, settings)?;
+        let load_warmup = warm_load.then(|| renderer.warm_load());
         if prewarm_packs {
             let mut inventory = content.pipeline_inventory();
             if let Some(entry) = &inventory_without
@@ -326,6 +335,7 @@ impl Stage {
             laps: FrameLaps::default(),
             gpu,
             last_times: None,
+            load_warmup,
             format,
         })
     }
@@ -347,6 +357,7 @@ impl Stage {
             laps,
             gpu,
             last_times,
+            load_warmup,
             format,
         } = self;
         Stage {
@@ -364,6 +375,7 @@ impl Stage {
             laps,
             gpu,
             last_times,
+            load_warmup,
             format,
         }
     }
@@ -387,6 +399,7 @@ impl<S: SceneShow> Stage<S> {
             laps,
             gpu,
             last_times,
+            load_warmup,
             format,
         } = self;
         Stage {
@@ -404,6 +417,7 @@ impl<S: SceneShow> Stage<S> {
             laps,
             gpu,
             last_times,
+            load_warmup,
             format,
         }
     }
@@ -466,6 +480,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// A frame with nothing to draw into, for a window whose surface gave no image: still loaded, animated
     /// and prepared, so the renderer's persistent scene sees every packet's deltas.
     pub fn skip_frame(&mut self, alpha: f32) {
+        self.load_warmup = None;
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content, &mut self.show);
         self.scene.animate(&self.content, alpha, &mut self.show);
@@ -492,6 +507,8 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         alpha: f32,
         after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
     ) -> Result<bool, AppInitError> {
+        // The load is over: what this frame builds stalls it.
+        self.load_warmup = None;
         let mut laps = Stopwatch::start();
         // Hot reload and loading run every frame, as in the windowed app, so a bench measures them.
         self.hooks.before_loading(LoadingFrame {

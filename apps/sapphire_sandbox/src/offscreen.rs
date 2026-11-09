@@ -189,6 +189,11 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     desc.skinned = options.skinned;
     desc.prewarm_packs =
         options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
+    // A capture builds what its load uploads as it goes, and none of that stalls a frame: what it logs as a first
+    // use is what one of its frames built.
+    desc.warm_load = options.offscreen.as_ref().is_some_and(|run| {
+        matches!(run.mode, OffscreenMode::Capture { .. } | OffscreenMode::ContactSheet { .. })
+    });
     desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
     let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);

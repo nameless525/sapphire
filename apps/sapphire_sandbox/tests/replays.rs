@@ -753,6 +753,32 @@ fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
     }
 }
 
+/// A capture declares no inventory: what its load uploads builds as it goes, and none of that stalls a frame, so
+/// it counts as prewarmed and its log names no first use. What a frame builds still counts: a debug view, built
+/// on the frame that first shows it.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_capture_counts_its_load_as_prewarmed_and_names_what_a_frame_built() {
+    let temp = Temp::new("capture_first_use");
+    let capture = |name: &str, extra: &[&str]| {
+        let path = temp.text(name);
+        let mut args = vec!["--capture", &path, "--size", "64x36", "--capture-ticks", "2", "--arena"];
+        args.extend(extra);
+        let output = sandbox(&args, &content());
+        let log = log_of(&output);
+        assert!(output.status.success(), "{name}: {log}");
+        let row = log.lines().find(|line| line.contains("captured frame"));
+        let row = row.unwrap_or_else(|| panic!("{name}: {log}")).to_owned();
+        (row, log)
+    };
+    let (row, log) = capture("arena.png", &[]);
+    assert!(row.contains(" first_use=0") && !row.contains(" prewarmed=0 "), "{row}");
+    assert!(!log.contains("built on first use"), "{log}");
+    let (row, log) = capture("wireframe.png", &["--debug-view", "wireframe"]);
+    assert!(!row.contains(" first_use=0"), "{row}");
+    assert!(log.contains("built on first use") && log.contains("family=debug"), "{log}");
+}
+
 /// A bench on `tier` with `entry` left out fails, saying `named`.
 fn assert_inventory_miss(replay: &str, tier: &str, entry: &str, named: &str) {
     let output = inventory_bench(replay, tier, Some(entry));

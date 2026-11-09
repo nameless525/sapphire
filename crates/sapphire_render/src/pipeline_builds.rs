@@ -5,7 +5,8 @@
 //! through [`PipelineBuilds`], which owns the pipeline cache they share and sorts what it builds into three:
 //!
 //! - **Prewarmed:** built while a renderer is made, or inside a prewarm
-//!   ([`Renderer::prewarm`](crate::Renderer::prewarm) and its kin), when nothing draws.
+//!   ([`Renderer::prewarm`](crate::Renderer::prewarm) and its kin), or under a load's
+//!   [`Renderer::warm_load`](crate::Renderer::warm_load), when nothing draws.
 //! - **Rebuilt:** an edit's new pipelines, built by `shader_builds`' job from what was already built, off the
 //!   frame thread or with the app asking for that stall.
 //! - **First use:** every other one, wherever it comes from: an upload of a mesh whose key nothing prewarmed,
@@ -223,10 +224,17 @@ impl Drop for Rebuilding {
     }
 }
 
-/// While this lives, what's built is prewarmed.
-pub(crate) struct Warming(Arc<Ledger>);
+/// While this lives, what's built is prewarmed, on whichever thread builds it.
+#[must_use = "it counts builds as prewarmed only while it lives"]
+pub struct PipelineWarmup(Arc<Ledger>);
 
-impl Drop for Warming {
+impl fmt::Debug for PipelineWarmup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PipelineWarmup")
+    }
+}
+
+impl Drop for PipelineWarmup {
     fn drop(&mut self) {
         self.0.warming.fetch_sub(1, Ordering::Relaxed);
     }
@@ -256,9 +264,9 @@ impl PipelineBuilds {
     }
 
     /// Counts what's built as prewarmed until what it returns drops.
-    pub(crate) fn warming(&self) -> Warming {
+    pub(crate) fn warming(&self) -> PipelineWarmup {
         self.ledger.warming.fetch_add(1, Ordering::Relaxed);
-        Warming(self.ledger.clone())
+        PipelineWarmup(self.ledger.clone())
     }
 
     /// Builds a render pipeline for `family`.

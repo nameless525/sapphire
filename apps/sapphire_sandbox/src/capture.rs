@@ -100,6 +100,8 @@ pub(crate) fn run(
     let pixels = render(stage, width, height)?;
     write_capture(&stage.gpu, path, (width, height), &pixels)?;
     stage.show.fight.finish().map_err(AppInitError::msg)?;
+    // What the load built counts as prewarmed (`StageDesc::warm_load`): a first use here is what a frame built.
+    let builds = stage.renderer.stats().pipelines;
     tracing::info!(
         target: LOG_TARGET,
         path = %path.display(),
@@ -110,6 +112,8 @@ pub(crate) fn run(
         step = frames.step,
         drawn,
         history_only_frames,
+        prewarmed = builds.prewarmed,
+        first_use = builds.first_use_builds,
         "captured frame"
     );
     Ok(())

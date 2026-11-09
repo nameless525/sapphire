@@ -2,8 +2,9 @@
 //!
 //! Builds `sapphire_replay`, which links the simulation and nothing with a GPU or a window, and runs
 //! it on `tests/replays/`. It runs as a process because nothing may depend on a tool crate (rule R1),
-//! as with `sapphire_testkit`. The build takes no SDK or NDK environment: none of what it links
-//! compiles C, which `cargo xtask check-layers` keeps true.
+//! as with `sapphire_testkit`. The build takes no SDK or NDK environment: the only C++ it compiles is
+//! Luau's, through `sapphire_script`, which needs a host compiler alone, and `cargo xtask check-layers`
+//! keeps SDL out of what it links.
 
 use std::process::Command as Process;
 

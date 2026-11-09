@@ -60,6 +60,7 @@ sapphire_navmesh = { kind = "runtime", layer = 2 }
 # what only presentation does (M3 Q1). Below the simulation, which plays the first half, so it joins
 # [simulation], and below the asset server, so the cooker links no renderer.
 sapphire_timeline = { kind = "runtime", layer = 2 }
+sapphire_dialogue = { kind = "runtime", layer = 2 }
 # Luau bytecode as plain data: the cooked format and the scan, beneath the asset server and the cooker,
 # which can't link `sapphire_script`'s gameplay and physics (M3 L2). `compile`: the compiler, for what
 # cooks a script, so the asset server's tree holds no Luau.
@@ -197,6 +198,10 @@ edges = [
     ["sapphire_timeline", "sapphire_serialize"],
     ["sapphire_timeline", "sapphire_reflect"],
     ["sapphire_assets", "sapphire_timeline"],
+    # Cooked dialogues are named and versioned the same way, and packs store them.
+    ["sapphire_dialogue", "sapphire_serialize"],
+    ["sapphire_dialogue", "sapphire_reflect"],
+    ["sapphire_assets", "sapphire_dialogue"],
     # Cooked scripts are named and versioned the same way, and packs store them.
     ["sapphire_bytecode", "sapphire_serialize"],
     ["sapphire_bytecode", "sapphire_reflect"],
@@ -233,7 +238,7 @@ edges = [
 # `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
 # clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
-crates = ["sapphire_body_pose", "sapphire_bytecode", "sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_nav", "sapphire_navmesh", "sapphire_physics", "sapphire_script", "sapphire_timeline", "sapphire_zone"]
+crates = ["sapphire_body_pose", "sapphire_bytecode", "sapphire_colliders", "sapphire_dialogue", "sapphire_gameplay", "sapphire_moves", "sapphire_nav", "sapphire_navmesh", "sapphire_physics", "sapphire_script", "sapphire_timeline", "sapphire_zone"]
 runners = ["sapphire_replay"]
 forbidden = [
     "naga",

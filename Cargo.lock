@@ -3845,6 +3845,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_dialogue"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "rkyv",
+ "sapphire_bytecode",
+ "sapphire_core",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "sapphire_document"
 version = "0.1.0"
 dependencies = [

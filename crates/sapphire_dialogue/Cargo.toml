@@ -1,0 +1,28 @@
+[package]
+name = "sapphire_dialogue"
+description = "Dialogue as plain data: the `.dialogue.ron` graph document and its checks, its conditions as Luau source, the `flags.ron` registry, the cooked `.sdialogue` format split into what the simulation reads and what only presentation does, and the walk a panel reads lines and choices from, with no VM, renderer, world or physics, so the cooker and the simulation can both link it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Documents derive `Reflect` and cooked data `TypePath`, whose derives find the crate by this name.
+bevy_reflect.workspace = true
+rkyv.workspace = true
+# Nodes' and flags' IDs are names' hashes.
+sapphire_core.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+# The digest a replay pins.
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+# The tests compile what the cook would, to see a condition's chunk pass the scan.
+sapphire_bytecode = { workspace = true, features = ["compile"] }
+
+[lints]
+workspace = true

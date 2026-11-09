@@ -806,8 +806,11 @@ fn parse_document(bytes: &[u8], cache: Option<&Cache>) -> Result<ZoneDocument, Z
         return Ok(ZoneDocument::from_ron(text)?);
     };
     let key = CacheKey::parsed(&blake3::hash(bytes), IMPORTER);
+    // Checked as a parse is, since a check added after this was kept bumps no stage: one it fails is parsed
+    // again, which says what's wrong from the document itself.
     if let Some(parsed) = cache.get(&key)?
-        && let Ok(document) = serde_json::from_slice(&parsed)
+        && let Ok(document) = serde_json::from_slice::<ZoneDocument>(&parsed)
+        && document.check().is_ok()
     {
         return Ok(document);
     }
@@ -967,6 +970,25 @@ pub fn cook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parse kept in the cache is checked as one just made is, since a check added after it was kept bumps
+    /// no stage: one that fails isn't taken for the document, which is parsed again.
+    #[test]
+    fn a_kept_parse_that_fails_a_check_is_parsed_again() {
+        let scratch = crate::test_util::TempDir::new("zone_parse_kept");
+        let cache = Cache::new(scratch.path());
+        let bytes = br#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0)))"#;
+        let document = parse_document(bytes, Some(&cache)).expect("a good document");
+        assert_eq!(parse_document(bytes, Some(&cache)).expect("from the cache"), document);
+
+        let mut refused = document.clone();
+        refused.grid.cell_size = 0.0;
+        assert!(refused.check().is_err(), "a cell of 0 m isn't a grid");
+        let key = CacheKey::parsed(&blake3::hash(bytes), IMPORTER);
+        cache.put(&key, &serde_json::to_vec(&refused).unwrap()).unwrap();
+        assert_eq!(parse_document(bytes, Some(&cache)).expect("parsed again"), document);
+        assert_eq!(parse_document(bytes, Some(&cache)).expect("kept again"), document);
+    }
 
     #[test]
     fn a_prefabs_geometry_is_cached_separately_for_each_detail() {

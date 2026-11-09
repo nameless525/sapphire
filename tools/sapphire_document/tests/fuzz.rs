@@ -9,7 +9,7 @@ mod support;
 use bevy_reflect::{FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectRef, Typed};
 use sapphire_document::text::comments;
 use sapphire_document::walk::{self, PropertyKind};
-use sapphire_document::{Document, Outcome, Property, PropertyPath, Refused, Schema, Step, kinds};
+use sapphire_document::{Document, Kind, Outcome, Property, PropertyPath, Refused, Schema, Step, kinds};
 use sapphire_time::Stopwatch;
 use support::{Random, Tally, another_value, open, value_of};
 
@@ -350,12 +350,12 @@ fn every_path_prints_and_parses_back() {
     assert!(steps.iter().any(|step| matches!(step, Step::Some)));
 }
 
-/// The walker agrees with every document of these kinds in the repository, not just the five the fuzz runs
-/// on.
+/// The walker agrees with every document of each kind in the content, not just the one a kind's fuzz runs on: a
+/// file it disagrees with opens read only, which nothing else would notice.
 #[test]
-fn every_cue_and_graph_and_moves_file_opens_for_editing() {
+fn every_document_in_the_content_opens_for_editing() {
     let root = support::repository_root().join("content");
-    let mut seen = 0;
+    let (mut seen, mut count) = (std::collections::BTreeSet::new(), 0);
     let mut stack = vec![root];
     while let Some(folder) = stack.pop() {
         for entry in std::fs::read_dir(folder).expect("a folder") {
@@ -364,23 +364,26 @@ fn every_cue_and_graph_and_moves_file_opens_for_editing() {
                 stack.push(path);
                 continue;
             }
-            let name = path.file_name().expect("a name").to_string_lossy().into_owned();
+            let Some(kind) = Kind::of(&path) else { continue };
             let relative = path.strip_prefix(support::repository_root()).expect("inside");
             let relative = relative.to_string_lossy().into_owned();
-            let failure = if name.ends_with(".cue.ron") {
-                open(&relative, kinds::cue()).failure().cloned()
-            } else if name.ends_with(".moves.ron") {
-                open(&relative, kinds::moves()).failure().cloned()
-            } else if name.ends_with(".animgraph.ron") {
-                open(&relative, kinds::graph()).failure().cloned()
-            } else {
-                continue;
+            let failure = match kind {
+                Kind::Moves => open(&relative, kinds::moves()).failure().cloned(),
+                Kind::Graph => open(&relative, kinds::graph()).failure().cloned(),
+                Kind::Cue => open(&relative, kinds::cue()).failure().cloned(),
+                Kind::Effects => open(&relative, kinds::effects()).failure().cloned(),
+                Kind::Timeline => open(&relative, kinds::timeline()).failure().cloned(),
+                Kind::Ui => open(&relative, kinds::ui()).failure().cloned(),
+                Kind::Zone => open(&relative, kinds::zone()).failure().cloned(),
             };
             assert_eq!(failure, None, "{relative}");
-            seen += 1;
+            seen.insert(kind);
+            count += 1;
         }
     }
-    assert!(seen >= 15, "{seen}");
+    let missing: Vec<_> = Kind::ALL.into_iter().filter(|kind| !seen.contains(kind)).collect();
+    assert_eq!(missing, [Kind::Effects], "every kind but effects, which the content has none of");
+    assert!(count >= 30, "{count}");
 }
 
 /// What one edit costs, for a person dragging: it prints, and asserts nothing, since this Mac's load moves it.

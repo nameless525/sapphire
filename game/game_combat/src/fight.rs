@@ -616,7 +616,10 @@ impl FightShow {
     /// shots through the director, if this stage has one, its post on each frame, its cues through the
     /// fight's table. The simulation's half is the simulation's: see [`Simulation::play_timeline`].
     pub fn play_timeline(&mut self, timeline: Arc<Timeline>, origin: Origin) {
-        let show = TimelineShow::new(timeline, origin);
+        self.show_timeline(TimelineShow::new(timeline, origin));
+    }
+
+    fn show_timeline(&mut self, show: TimelineShow) {
         self.draws_latest = show.holds_simulation();
         self.timeline = Some(show);
         self.timeline_unready = None;
@@ -660,16 +663,24 @@ impl FightShow {
         }
         self.timelines_followed = played;
         let Some(progress) = simulation.timeline().filter(|progress| progress.tick == 0) else { return };
-        if let Some(timeline) = self.timelines.get(progress.id.raw() as usize) {
-            tracing::info!(target: LOG_TARGET, id = progress.id.raw(), tick = simulation.tick(), "a timeline started");
-            self.play_timeline(Arc::clone(timeline), Origin::default());
+        let Some(timeline) = self.timelines.get(progress.id.raw() as usize).map(Arc::clone) else { return };
+        tracing::info!(target: LOG_TARGET, id = progress.id.raw(), tick = simulation.tick(), "a timeline started");
+        // A move's cinematic plays in its owner's space, as they stand on its first step, whatever the arena or
+        // zone, and can't be skipped (M3 Q3b). Any other run is in the space of the fight's own content.
+        match progress.owner.and_then(|owner| simulation.actor(owner)) {
+            Some(owner) => self.show_timeline(TimelineShow::of_move(
+                timeline,
+                Origin { position: owner.position, yaw: owner.yaw },
+            )),
+            None => self.play_timeline(timeline, Origin::default()),
         }
     }
 
     /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
     /// The camera blends back from its next frame.
+    /// A move's cinematic says no: `None`, as with nothing playing.
     pub fn skip_timeline(&mut self) -> Option<u32> {
-        self.timeline.as_mut().map(|show| show.player_mut().skip())
+        self.timeline.as_mut().filter(|show| show.skippable()).map(|show| show.player_mut().skip())
     }
 
     /// The timeline playing, for what it says at the playhead: its subtitle above all, which Q2 and U7 draw.
@@ -1613,7 +1624,8 @@ impl Fight {
     }
 
     /// Skips the timeline playing, between frames (M3 Q3): the stage lets it go and blends back to the
-    /// fight's camera, and a recording records how far in it was. Says whether one was playing.
+    /// fight's camera, and a recording records how far in it was. Says whether it let one go: a move's
+    /// cinematic it never does.
     pub fn skip_timeline(&mut self) -> bool {
         let Some(at_ms) = self.show.skip_timeline() else { return false };
         if let Some(combat) = &mut self.combat {

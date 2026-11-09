@@ -40,6 +40,9 @@ pub enum PlayError {
     Timeline(#[from] TimelinePlayError),
     #[error("the recording ended at tick {tick} after a live edit; it cannot record more ticks")]
     RecordingEnded { tick: u32 },
+    /// A move's cinematic is the move's own steps, and the move has no way out (M3 Q3b).
+    #[error("the timeline playing at tick {tick} is a move's cinematic, which can't be skipped")]
+    Unskippable { tick: u32 },
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -358,8 +361,11 @@ impl Recording {
 
     /// Records that someone skipped the timeline playing, `at_ms` into it, and runs the steps it holds
     /// input for, on neutral input: exactly the steps watching it would have run. See the `timeline`
-    /// module, which is why this is all a skip is.
-    pub fn skip_timeline(&mut self, at_ms: u32) -> Result<(), ReplayError> {
+    /// module, which is why this is all a skip is. A move's cinematic is refused, recording nothing.
+    pub fn skip_timeline(&mut self, at_ms: u32) -> Result<(), PlayError> {
+        if self.tracked.sim.timeline().is_some_and(|run| run.owner.is_some()) {
+            return Err(PlayError::Unskippable { tick: self.recorded_ticks() });
+        }
         if self.edited_at.is_none() {
             self.recorder.command(TimelineCommand::Skip { at_ms });
         }

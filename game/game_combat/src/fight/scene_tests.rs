@@ -1184,3 +1184,69 @@ fn the_gates_tracks_stage_each_fighter_in_turn() {
     assert_eq!(hero.name, sapphire_core::Name::new("court_guard"));
     assert!((hero.position - 60.0).abs() < 0.5, "{}", hero.position);
 }
+
+fn ultimate() -> Arc<Timeline> {
+    let text = include_str!("../../../../content/combat/player/ultimate.timeline.ron");
+    Arc::new(sapphire_timeline::TimelineDocument::from_ron(text).expect("reads").cook().expect("cooks"))
+}
+
+/// M3 Q3b, the brief's "cuts back to the fight camera with no pop": the eye's path through the player's
+/// ultimate in the arena, on `arena-ultimate`'s script, from the fight's camera into the cinematic and back
+/// out. It plays in the player's space as they stand on its first step, it never holds the fight (it plays on
+/// the steps), a skip lets nothing go, and through its blends and shots, but for its three authored cuts,
+/// the eye moves less than 0.35 m a frame and turns its path no more sharply than the fight's own camera does.
+#[test]
+#[allow(clippy::print_stdout, reason = "the numbers the spec's note reports")]
+fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
+    use sapphire_gameplay::replay::{ARENA_ULTIMATE_AT, SCENARIOS, find_scenario};
+
+    let (mut scene, _) = arena_stage(ArenaShot::Director);
+    scene.show.timelines = vec![ultimate()];
+    let path = std::env::temp_dir().join(format!("sapphire-q3b-eye-{}.sreplay", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed").name.to_owned();
+    let option = CombatOption::Record { path, scenario, script: Some("arena-ultimate".to_owned()) };
+    let mut combat = Combat::new(&option).expect("sets up");
+    let player = combat.cast()[0];
+    let mut frames = Vec::new();
+    let mut origin = None;
+    let at = ARENA_ULTIMATE_AT as usize;
+    for frame in 0..(at + 144 + 180) {
+        let drawn = ward_frame(&mut scene, &mut combat);
+        assert!(!drawn.held, "a move's cinematic runs the fight beneath it");
+        if frame == at {
+            let view = combat.simulation().actor(player).expect("alive");
+            origin = Some((view.position, view.yaw));
+            assert!(scene.show.timeline_player().is_some(), "it plays from the move's first step");
+            assert_eq!(scene.show.skip_timeline(), None, "and can't be skipped");
+            assert!(scene.show.timeline_player().is_some(), "it's still playing");
+        }
+        frames.push(drawn);
+    }
+    // The first shot comes round to the player's right front, in their own space.
+    let (position, yaw) = origin.expect("it started");
+    let first = position + Quat::from_rotation_y(yaw) * Vec3::new(-1.5, 0.95, 2.0);
+    let settled = frames[at + 34].eye;
+    assert!(settled.distance(first) < 0.6, "the first shot stands at {settled}, its key at {first}");
+
+    let cuts: Vec<usize> =
+        frames.iter().enumerate().filter(|(_, frame)| frame.cut).map(|(at, _)| at).collect();
+    assert_eq!(cuts.len(), 3, "the cinematic's three cuts and nothing else: {cuts:?}");
+    let moved = |at: usize| frames[at + 1].eye - frames[at].eye;
+    let jerk = |at: usize| (moved(at + 1) - moved(at)).length();
+    let smooth = |at: &usize| !frames[at + 1].cut && !frames[at + 2].cut;
+    let blended = (at - 2)..(at + 144 + 60);
+    let fastest = blended.clone().filter(|at| !frames[at + 1].cut).map(|at| moved(at).length());
+    let fastest = fastest.fold(0.0_f32, f32::max);
+    let sharpest = blended.clone().filter(smooth).map(jerk).fold(0.0_f32, f32::max);
+    let fight = (0..at - 2).chain(at + 144 + 60..frames.len() - 2);
+    let fights_sharpest = fight.filter(smooth).map(jerk).fold(0.0_f32, f32::max);
+    assert!(fastest > 0.0 && fastest < 0.35, "the eye moved {fastest} m in a frame of the blends");
+    assert!(
+        sharpest <= fights_sharpest.max(0.05),
+        "the blends turn the eye no more sharply than the fight's own camera, at {fights_sharpest} m a frame: {sharpest}"
+    );
+    println!(
+        "ultimate eye: fastest {fastest} m a frame, sharpest {sharpest}, the fight's own {fights_sharpest}"
+    );
+}

@@ -621,7 +621,7 @@ impl Combat {
         if let Mode::Recording { recording, stopped: None, .. } = &mut self.mode
             && let Err(error) = recording.skip_timeline(at_ms)
         {
-            tracing::warn!(target: LOG_TARGET, %error, "the skip ran out of room to record");
+            tracing::warn!(target: LOG_TARGET, %error, "the skip wasn't recorded");
         }
     }
 

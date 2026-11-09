@@ -205,6 +205,14 @@ pub const SCRIPTS: &[Script] = &[
         ],
     },
     Script {
+        name: "arena-ultimate",
+        about: "the arena's player waits for the warrior to come into reach and presses the ultimate, whose \
+                cinematic holds the warrior while the chop lands, then fights back as `fight-back` does",
+        ticks: ARENA_ULTIMATE_TICKS,
+        actions: arena_ultimate,
+        commands: &[],
+    },
+    Script {
         name: "chase-laps",
         about: "the arena's player runs a lap of the square's clear floor by the stick, and stands, for \
                 whoever's following a path to it",
@@ -545,6 +553,31 @@ pub fn fight_back(tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
     let Some(&player) = cast.first() else { return actions };
     let buttons = on_schedule(tick, FIGHT_BACK_ROUND, &FIGHT_BACK);
+    actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
+    actions
+}
+
+/// The tick [`arena_ultimate`] presses the ultimate: the warrior has come to 2.35 m, inside the chop's
+/// bound and warp, and hasn't yet started its overhead.
+pub const ARENA_ULTIMATE_AT: u64 = 60;
+
+/// When [`arena_ultimate`] takes up [`fight_back`]: once the ultimate's 144 ticks are over.
+const ARENA_ULTIMATE_FIGHTS_AT: u64 = ARENA_ULTIMATE_AT + 150;
+
+/// [`arena_ultimate`]'s length: the ultimate, and a round and a half of the fight after it.
+const ARENA_ULTIMATE_TICKS: u32 = 450;
+
+/// [`SCRIPTS`]' `arena-ultimate` (M3 Q3b): the player stands until the warrior is in reach, presses the
+/// ultimate, and once it's over fights back on [`fight_back`]'s schedule. Its presses under the cinematic
+/// would be held, so it makes none.
+#[must_use]
+pub fn arena_ultimate(tick: u64, cast: &[ActorId]) -> TickActions {
+    if tick >= ARENA_ULTIMATE_FIGHTS_AT {
+        return fight_back(tick - ARENA_ULTIMATE_FIGHTS_AT, cast);
+    }
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let buttons = if tick == ARENA_ULTIMATE_AT { Buttons::ULTIMATE } else { Buttons::NONE };
     actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
     actions
 }

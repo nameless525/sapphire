@@ -5,6 +5,9 @@
 mod support;
 
 use sapphire_core::Name;
+use sapphire_gameplay::replay::{
+    ARENA_ULTIMATE_AT, PlayError, Recording, SCENARIOS, arena_ultimate, find_scenario,
+};
 use sapphire_gameplay::{
     ActorId, ActorSpawn, Buttons, CinematicError, SimConfig, Simulation, TickActions, TimelineProgress,
 };
@@ -17,6 +20,8 @@ use support::{SLICE, press};
 const CINEMATIC_DOCUMENT: &str = include_str!("../../sapphire_timeline/test_content/cinematic.timeline.ron");
 /// How long `CINEMATIC_DOCUMENT` runs, in steps.
 const CINEMATIC_TICKS: u32 = 150;
+/// How long the player's ultimate's cinematic runs, in steps: 2.4 s.
+const ULTIMATE_TICKS: u32 = 144;
 /// What the test content's `spin` names, in the tests below.
 const FINISHER: &str = "finisher";
 
@@ -166,4 +171,50 @@ fn a_cinematic_that_cannot_start_is_counted_and_moves_the_checksum() {
     assert_eq!(current(&plain, plain_owner), Some(Name::intern("spin")));
     assert_eq!(plain.cinematics_refused(), 0);
     assert_ne!(plain.checksum(), unloaded.checksum());
+}
+
+/// The player's ultimate in the arena (M3 Q3b), as `arena-ultimate` records it: the cinematic starts on the
+/// move's first step with the player as its owner, holds the warrior at a fifth of its speed while the chop
+/// lands for the move's 60, can't be skipped, and lets everyone go at its end.
+#[test]
+fn the_players_ultimate_holds_the_warrior_while_its_chop_lands() {
+    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
+    let player = recording.cast()[0];
+    let warrior =
+        recording.simulation().actors().map(|view| view.id).find(|&id| id != player).expect("a foe");
+    let ultimate = recording.simulation().timelines_played();
+    assert_eq!(ultimate, 0);
+    let mut source = arena_ultimate;
+    let at = ARENA_ULTIMATE_AT as u32;
+    while recording.recorded_ticks() <= at {
+        recording.step(&mut source).expect("short");
+    }
+    let run = recording.simulation().timeline().expect("the ultimate's cinematic plays");
+    assert_eq!((run.tick, run.ticks, run.owner), (0, ULTIMATE_TICKS, Some(player)), "2.4 s on its steps");
+    assert_eq!(
+        recording.simulation().actor(player).expect("alive").moves.current.map(|mv| mv.name),
+        Some(Name::intern("ultimate"))
+    );
+    let health = recording.simulation().actor(warrior).expect("alive").fighter.health();
+    assert!(
+        matches!(recording.skip_timeline(500), Err(PlayError::Unskippable { .. })),
+        "it can't be skipped"
+    );
+
+    let mut held = 0;
+    while recording.simulation().timeline().is_some() {
+        recording.step(&mut source).expect("short");
+        held += u32::from(delta(recording.simulation(), warrior) < 1000);
+        assert!(
+            delta(recording.simulation(), player).abs_diff(1000) <= 1
+                || delta(recording.simulation(), player) == 0,
+            "the player plays at its own speed, or a hit's freeze holds it"
+        );
+    }
+    assert_eq!(recording.recorded_ticks(), at + 1 + ULTIMATE_TICKS);
+    assert!(held > 100, "the warrior was held for {held} steps");
+    let landed = health - recording.simulation().actor(warrior).expect("alive").fighter.health();
+    assert_eq!(landed, 60, "the chop landed, once");
+    assert_eq!(recording.simulation().cinematics_refused(), 0);
 }

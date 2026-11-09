@@ -156,8 +156,9 @@ pub struct Scene {
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
-/// cutscene (M3 Q3), and only they play a cutscene from a fight.
-pub fn scenes() -> [Scene; 158] {
+/// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
+/// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
+pub fn scenes() -> [Scene; 159] {
     [
         Scene {
             name: "turntable-start",
@@ -2485,6 +2486,30 @@ pub fn scenes() -> [Scene; 158] {
                 "tests/replays/ward-court-watched.sreplay",
                 "--time-of-day",
                 "17.5",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The player's ultimate (M3 Q3b) on `arena-ultimate`, which presses it on frame 60: 1.1 s into its
+        // cinematic, the wide shot from the character's right as the chop lands on the warrior, the flash on
+        // the landing and the bloom up, the vignette closed in, and the warrior held at a fifth of its speed.
+        Scene {
+            name: "arena-ultimate-chop",
+            args: &[
+                "--capture-ticks",
+                "126",
+                "--arena",
+                "--replay",
+                "tests/replays/arena-ultimate.sreplay",
+                "--time-of-day",
+                "10",
                 "--tier",
                 "desktop-high",
                 "--ao",

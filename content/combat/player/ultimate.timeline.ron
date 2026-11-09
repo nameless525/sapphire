@@ -1,0 +1,54 @@
+// The player's ultimate (M3 Q3b): the cinematic `ultimate` in `player.moves.ron` names, which plays beneath that
+// move from its first tick, in whatever arena or zone the fight is in. It can't be skipped: it is the move's
+// own steps, and the move has no way out.
+//
+// Space: the character's, as the move began: it stands at the origin facing +Z, its left along +X. The move's
+// bound carries it about 1.4 m along +Z, and its warp up to 1.2 m more toward what it's aimed at, so the shots
+// are wide enough to keep it. The eye keeps clear of the collision, as anywhere a fight happens.
+//
+// Steps: the simulation runs beneath it with input held. Everyone but the character is slowed to a fifth from
+// its first steps, so the ceremony plays out over a fight that waits for it, and they come back to speed over
+// its last half second. The character's own clock is scaled back up, and its move plays at its speed.
+//
+// Four shots, cut on the move's beats: round from its right to low in front as the sword rises and the hands
+// close on it, close from behind and below as it's held over the shoulder, wide from the side for the bound and
+// the chop, and from behind the character as the view goes back to the fight's camera.
+(
+    type: "sapphire::timeline::TimelineDocument",
+    version: 1,
+    data: (
+        length: 2.4,
+        clock: Steps,
+        camera: Some((
+            blend_in: 0.3,
+            blend_out: 0.4,
+            eye: Clear,
+            keys: [
+                // From the character's right, a little behind, round to low on its right front as the sword rises.
+                (at: 0.0, eye: (-2.1, 1.5, -1.2), look_at: (0.0, 1.3, 0.5), fov_degrees: 44.0),
+                (at: 0.58, eye: (-1.5, 0.95, 2.0), look_at: (0.0, 1.35, 0.0), fov_degrees: 36.0, ease: Smooth),
+                // Close behind and below, up at the blade held over the shoulder.
+                (at: 0.6, eye: (0.9, 0.7, -1.4), look_at: (0.0, 1.8, 1.0), roll_degrees: 3.0, fov_degrees: 42.0, ease: Cut),
+                (at: 0.96, eye: (1.1, 0.75, -1.2), look_at: (0.0, 1.8, 1.2), roll_degrees: 4.0, fov_degrees: 40.0, ease: Smooth),
+                // Wide from the right for the bound and the chop, then the landing held.
+                (at: 0.98, eye: (-3.6, 1.3, 1.6), look_at: (0.0, 1.0, 1.4), fov_degrees: 45.0, ease: Cut),
+                (at: 1.73, eye: (-3.3, 1.2, 1.7), look_at: (0.0, 0.95, 1.5), fov_degrees: 43.0, ease: Smooth),
+                // From behind the character, where the fight's camera takes it back.
+                (at: 1.75, eye: (0.6, 2.0, -2.4), look_at: (0.0, 1.2, 2.6), fov_degrees: 46.0, ease: Cut),
+                (at: 2.4, eye: (0.5, 2.1, -2.8), look_at: (0.0, 1.2, 2.6), fov_degrees: 48.0, ease: Smooth),
+            ],
+        )),
+        time_scale: [
+            (at: 0.0, per_mille: 200, ramp: 0.1),
+            (at: 1.9, per_mille: 1000, ramp: 0.45),
+        ],
+        post: [
+            // A frame closing in for the length of it, gone by the time the fight's back.
+            (parameter: Vignette, keys: [(at: 0.0, value: 0.0), (at: 0.4, value: 0.3), (at: 1.9, value: 0.3), (at: 2.4, value: 0.0)]),
+            // A little darker while the sword is held, and a flash on the chop that fades with the landing.
+            (parameter: Exposure, keys: [(at: 0.0, value: 0.0), (at: 0.5, value: -0.25), (at: 0.98, value: -0.25), (at: 1.05, value: 0.15), (at: 1.6, value: 0.0), (at: 2.4, value: 0.0)]),
+            (parameter: Bloom, keys: [(at: 0.0, value: 0.0), (at: 1.0, value: 0.0), (at: 1.05, value: 0.4), (at: 1.7, value: 0.0)]),
+            (parameter: Diffusion, keys: [(at: 0.0, value: 0.0), (at: 1.0, value: 0.0), (at: 1.06, value: 0.3), (at: 1.8, value: 0.0)]),
+        ],
+    ),
+)

@@ -21,7 +21,7 @@ use sapphire_physics::{
 };
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
-use sapphire_timeline::{TimelineDocument, TimelineError};
+use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
 
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
@@ -54,6 +54,13 @@ const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
 /// from their clips, which takes the pipeline, and nothing that runs a replay links that, so the
 /// simulation keeps a copy. `tools/sapphire_pipeline/tests/player_moves.rs` holds it to the document.
 const PLAYER_MOVES: &[u8] = include_bytes!("../../baked/player.smoves");
+
+/// The cinematic the player's ultimate names (M3 Q3b), as this build holds it: every fight on the player's
+/// moves loads it under [`ULTIMATE_CINEMATIC`], wherever it is.
+const ULTIMATE: &str = include_str!("../../../../content/combat/player/ultimate.timeline.ron");
+
+/// The name the player's `ultimate` move gives its cinematic.
+pub const ULTIMATE_CINEMATIC: &str = "ultimate";
 
 /// That document, from the repository's root.
 const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
@@ -271,6 +278,12 @@ pub fn player_moves() -> Result<MoveSet, MoveSetError> {
     MoveSet::from_cooked(&bytes)
 }
 
+/// The simulation half of the player's ultimate's cinematic, which a fight on the player's moves loads
+/// before them under [`ULTIMATE_CINEMATIC`].
+pub fn ultimate_cinematic() -> Result<TimelineSimulation, ScenarioError> {
+    Ok(TimelineDocument::from_ron(ULTIMATE)?.cook()?.simulation)
+}
+
 /// What the [`party`] scenario's swap takes: a second on the field, and two and a half off it.
 pub const PARTY_TUNING: PartyTuning = PartyTuning { swap_cooldown: 60, rest: 150 };
 
@@ -453,6 +466,7 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
 /// world; preparation belongs to the combat session, so a restart never reparses its built-in content.
 pub struct PreparedFight {
     player: MoveSet,
+    ultimate: TimelineSimulation,
     warrior: MoveSet,
     colliders: AlignedVec,
     spawns: crate::arena::ArenaSpawns,
@@ -463,6 +477,7 @@ impl PreparedFight {
     pub fn new(party: bool) -> Result<Self, ScenarioError> {
         Ok(Self {
             player: player_moves()?,
+            ultimate: ultimate_cinematic()?,
             warrior: warrior_moves()?,
             colliders: crate::arena::cooked_colliders()?,
             spawns: crate::arena::spawns(),
@@ -479,8 +494,15 @@ impl PreparedFight {
         let mut sim = Simulation::new(config);
         let player = live.latest(document_file_name(PLAYER_MOVES_PATH)).unwrap_or(&self.player);
         let warrior = live.latest(document_file_name(WARRIOR_MOVES_PATH)).unwrap_or(&self.warrior);
-        let cast =
-            fight_on(&mut sim, player.clone(), warrior.clone(), &self.colliders, self.spawns, self.party)?;
+        let cast = fight_on(
+            &mut sim,
+            player.clone(),
+            &self.ultimate,
+            warrior.clone(),
+            &self.colliders,
+            self.spawns,
+            self.party,
+        )?;
         sim.check_cinematics()?;
         Ok((sim, cast))
     }
@@ -593,19 +615,29 @@ impl PreparedFight {
 /// [`arena_fight`], with `warrior` for the warrior's moves.
 pub(super) fn arena_fight_on(sim: &mut Simulation, warrior: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
     let cooked = crate::arena::cooked_colliders()?;
-    fight_on(sim, player_moves()?, warrior, &cooked, crate::arena::spawns(), false)
+    fight_on(sim, player_moves()?, &ultimate_cinematic()?, warrior, &cooked, crate::arena::spawns(), false)
 }
 
 /// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point,
 /// the first on the field. The other two members come after the warrior in actor ID order.
 pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cooked = crate::arena::cooked_colliders()?;
-    fight_on(sim, player_moves()?, warrior_moves()?, &cooked, crate::arena::spawns(), true)
+    fight_on(
+        sim,
+        player_moves()?,
+        &ultimate_cinematic()?,
+        warrior_moves()?,
+        &cooked,
+        crate::arena::spawns(),
+        true,
+    )
 }
 
+/// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded.
 pub(super) fn fight_on(
     sim: &mut Simulation,
     player: MoveSet,
+    ultimate: &TimelineSimulation,
     warrior: MoveSet,
     cooked: &[u8],
     spawns: crate::arena::ArenaSpawns,
@@ -613,6 +645,7 @@ pub(super) fn fight_on(
 ) -> Result<Vec<ActorId>, ScenarioError> {
     let set = ColliderSet::read(cooked)?;
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
+    sim.add_cinematic(ULTIMATE_CINEMATIC, ultimate.clone())?;
     let actors = FightActors {
         spawns,
         controller: sim.add_controller_profile(&crate::arena::profile())?,

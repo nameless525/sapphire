@@ -65,7 +65,9 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 // After those comes a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press
 // that brings it. Only a party reads either: with no party, the button does nothing.
 //
-// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony.
+// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
+// it names. Every fight that loads these moves loads `ultimate.timeline.ron`, beside this file, under that
+// name, or refuses to start.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -304,8 +306,9 @@ LATER = [
     ),
     dict(
         name='ultimate',
-        say=["2.4 s: the ultimate (M3 Q3b), the finisher's chop made a ceremony. Untouchable from start",
-             "to end, with no way out: the hit is on tick 62, homing in a little on what it's aimed at."],
+        say=["2.4 s: the ultimate (M3 Q3b), the finisher's chop made a ceremony, beneath the cinematic it",
+             "names, which holds everyone else while it plays. Untouchable from start to end, with no way",
+             "out: the hit is on tick 62, homing in a little on what it's aimed at."],
         frames=(62, 4, 78),
         hitboxes=[('ultimate_hit', 62, 66, 'Capsule(radius: 0.45, length: 0.9)',
                    'damage: 60, poise: 80, weight: Heavy, hitstop: 10, finish_freeze: 24, '
@@ -315,6 +318,7 @@ LATER = [
         warps=[(0, 62, 1.2, 1.2, 1.0)],
         cues=[('skill_flash', 0), ('swing_windup', 12), ('swing', 62), ('finisher_land', 65)],
         active=(62, 66),
+        cinematic='ultimate',
     ),
 ]
 

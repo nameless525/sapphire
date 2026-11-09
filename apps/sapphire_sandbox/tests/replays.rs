@@ -359,6 +359,38 @@ fn the_wards_gate_plays_between_its_steps_and_streams_nothing_late() {
     }
 }
 
+/// The player's ultimate (M3 Q3b) in the arena, from the committed replay that fires it: on a desktop's tier
+/// and a phone's, its cinematic starts on the move's first step, never holds the fight, can't be skipped and
+/// so ends by itself, and the run reaches a headless run's checksums with no allocation in a fixed step and
+/// nothing streamed late.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_players_ultimate_plays_its_cinematic_on_its_steps() {
+    let replay = workspace().join("tests").join("replays").join("arena-ultimate.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let temp = Temp::new("ultimate");
+    let capture = temp.path("drawn.png");
+    for tier in ["desktop-low", "mobile-low"] {
+        let output = run_app(&[
+            "--capture",
+            capture.to_str().expect("UTF-8"),
+            "--arena",
+            "--replay",
+            replay.to_str().expect("UTF-8"),
+            "--tier",
+            tier,
+        ]);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{tier}: {log}");
+        assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{tier}: {log}");
+        assert!(log.contains("allocations=0"), "{tier}: {log}");
+        let started = log.lines().find(|line| line.contains("a timeline started")).expect("it started");
+        assert!(started.contains("id=0") && started.contains("tick=61"), "{tier}: {started}");
+        let ended = log.lines().find(|line| line.contains("a timeline ended")).expect("it ended");
+        assert!(ended.contains("state=Finished") && ended.contains("stream_misses=0"), "{tier}: {ended}");
+    }
+}
+
 /// One `a fight ended` line of a log, as the numbers it gives.
 struct FightEnded {
     ticks: u32,

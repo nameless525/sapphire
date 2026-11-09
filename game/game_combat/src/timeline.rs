@@ -37,11 +37,22 @@ pub(crate) struct TimelineShow {
     dt: f32,
     /// The steps the simulation's run has taken, while it has one.
     steps_taken: Option<u32>,
+    /// Whether a skip may let it go: not a move's cinematic (M3 Q3b), which is the move's own steps.
+    skippable: bool,
 }
 
 impl TimelineShow {
     pub(crate) fn new(timeline: Arc<Timeline>, origin: Origin) -> Self {
-        Self { player: TimelinePlayer::new(timeline, origin), dt: 0.0, steps_taken: None }
+        Self { player: TimelinePlayer::new(timeline, origin), dt: 0.0, steps_taken: None, skippable: true }
+    }
+
+    /// The same, for a move's cinematic: placed on its owner, and with no skip.
+    pub(crate) fn of_move(timeline: Arc<Timeline>, origin: Origin) -> Self {
+        Self { skippable: false, ..Self::new(timeline, origin) }
+    }
+
+    pub(crate) fn skippable(&self) -> bool {
+        self.skippable
     }
 
     pub(crate) fn player(&self) -> &TimelinePlayer {

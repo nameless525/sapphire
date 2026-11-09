@@ -23,7 +23,9 @@
 // After those comes a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press
 // that brings it. Only a party reads either: with no party, the button does nothing.
 //
-// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony.
+// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
+// it names. Every fight that loads these moves loads `ultimate.timeline.ron`, beside this file, under that
+// name, or refuses to start.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -449,8 +451,9 @@
                 ],
             ),
             (
-                // 2.4 s: the ultimate (M3 Q3b), the finisher's chop made a ceremony. Untouchable from start
-                // to end, with no way out: the hit is on tick 62, homing in a little on what it's aimed at.
+                // 2.4 s: the ultimate (M3 Q3b), the finisher's chop made a ceremony, beneath the cinematic it
+                // names, which holds everyone else while it plays. Untouchable from start to end, with no way
+                // out: the hit is on tick 62, homing in a little on what it's aimed at.
                 name: "ultimate",
                 startup: 62,
                 active: 4,
@@ -486,6 +489,7 @@
                     (name: "swing", at: 62),
                     (name: "finisher_land", at: 65),
                 ],
+                cinematic: "ultimate",
             ),
         ],
     ),

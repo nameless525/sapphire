@@ -2642,9 +2642,30 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
   - **Can't do:**
     - Subtitles are resolved, not drawn: U7 and Q2 draw them.
     - The cutscene plays at a fixed tick, not at the court's threshold, which needs B2's encounter documents.
-    - The ultimate's cinematic was cut.
+    - The ultimate's cinematic was cut here, and Q3b builds it.
     - `game_app` still has no way to ask for a timeline.
     - A live `--fight` in the ward isn't supported (`PreparedFight` is the arena's).
+- **As built (M3 Q3b):**
+  - **The seam:** a move document's `cinematic:` names a timeline, as authoring data like the rest of the move. It cooks into `MoveSet` 6 (`Move::cinematic`), so it reaches `tables_hash` like any other part of a move. The name resolves against the fight's own timelines when the fight is prepared: `Simulation::add_cinematic` loads one under a name, and `check_cinematics` refuses a set that names one the fight hasn't loaded (`CinematicError::Missing`, naming the set, the move and the name). `Scenario::start`, `PreparedFight::start` and the editor's live moves all call it, so nothing skips one quietly. A script hook was the other way. It would have made every character's ultimate depend on the script VM, so it isn't used.
+  - **Where it runs:** a new `CombatSet::Cinematics` in the chain, after `Cancels` and before `Moves`: Timeline, Intents, Party, Cancels, Cinematics, Moves, Movement, Hits, Resolve, TimeScale, Cues. `timeline::start_cinematics` starts the run on the move's first tick, with the actor as its owner (`TimelineProgress::owner`), from a table filled when the fight was prepared, with no heap. Its beats fire from the next step's `Timeline` set. A start that finds a run already going is refused and counted (`cinematics_refused`, in the checksum only once it's more than 0). A time-scale beat of an owned run scales everyone else and counter-scales the owner's clock (`ScaleSource::Cinematic`), so the move plays at its own speed under it.
+  - **The ultimate:** `ultimate` in `content/combat/player/player.moves.ron` (Ultimate button, 144 ticks). It's the finisher's chop made a ceremony: a held sword over the shoulder, a bound with a warp of up to 1.2 m, and one heavy hit of 60 on ticks 62–66. It's invulnerable from start to end with no way out, on a clip `tools/motion/moves.py` writes from the finisher's keys. Its cinematic, `content/combat/player/ultimate.timeline.ron`, is in the shared pack, so it plays in any arena or zone. It lasts 2.4 s on the `Steps` clock: four shots and three cuts in the character's own space as the move began, everyone else held to a fifth of their speed until 1.9 s and back by its end, and vignette, exposure, a flash of bloom and diffusion on the chop. Moves have no cooldown or resource, so the ultimate has no gate and no meter. An ultimate meter is a package of its own, because it would move every checksum.
+  - **Unskippable:** a run with an owner is the move's own steps. `Recording::skip_timeline` refuses it (`PlayError::Unskippable`), and `FightShow::skip_timeline` answers `None`. On a stage, `TimelineShow::of_move` places it at its owner's position and yaw on its first step.
+  - **Found and fixed:** `melee_buttons` and `apply_hits` both set a button in `CombatSet::Resolve` with no order between them, so adding a set could flip the order they ran in, and the replays with it. `add_melee_buttons` puts the buttons after `fire_perfect_dodges`, which is the order the recordings were made in. No checksum moved.
+  - **Proved:**
+    - The cinematic starts on the move's first step with the player as its owner, can't be skipped, holds the warrior for more than 100 of its steps while the chop lands once, and lets everyone go at its end: `tests/cinematics.rs`, on `arena-ultimate`'s script. The same file proves a missing name is refused as the fight is prepared, and a start that can't happen is counted and moves the checksum.
+    - No step allocates from the first tick of a move's cinematic (`fixed_step_allocations`).
+    - The tables hash moved in every replay, because of the version. In the ones that play the shipped moves (`arena-fight-still`, `arena-fight-won`, `party-swap` and the three `ward-court` ones), it moved again because of the player's set and the loaded timeline. No state checksum moved. `arena-ultimate` is new.
+    - The eye blends in from the fight's camera and back out to it at under 0.35 m a frame (0.33 at most), and turns at most 0.031 m a frame², against the fight's own 0.030 (`game_combat`'s scene tests).
+    - In the sandbox on Desktop-Low and Mobile-Low, `arena-ultimate` reaches its checksums with no allocation in a step, starts the run on tick 61, and ends it by itself, with nothing streamed late. No pipeline is built on first use.
+    - CPU frame, from a release `--bench` trace on an M5 at a load average of 11–17, the cinematic's frames against the rest of the fight's, the lowest p50 of four rounds:
+      - Desktop-Low at 1920×1080: p50 3.6 ms against 3.6 ms.
+      - Mobile-Low at its 1049×590 scene: p50 3.3 ms against 3.5 ms.
+      - Budgets are 12 and 22 ms. p99 swings with the load, 5–17 ms, in both kinds of frame.
+    - The golden `arena-ultimate-chop` is 1.1 s in, on the chop.
+  - **Can't do:**
+    - The editor's live run plays a set without loading its cinematic.
+    - A run goes on if its owner's move is cut short. The ultimate can't be, being invulnerable with no way out, but a later move with a cinematic and no i-frames would need its run to end with the move.
+    - A freeze (`per_mille` 0) can't be counter-scaled, so a cinematic's time scale stays above 0.
 
 ### 5.24 `sapphire_script` (L4)
 

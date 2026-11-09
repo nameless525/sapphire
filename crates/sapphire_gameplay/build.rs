@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{env, fs};
 
 /// The strings in a RON document that name a `.ron` file. Comments are skipped, since one may hold anything.
@@ -54,7 +54,8 @@ fn main() {
     };
     for relative in &named {
         embed(relative, &mut code);
-        if Path::new(&format!("{}/{relative}.meta", root.display())).is_file() {
+        // `root` is canonical, which on Windows is a `\\?\` path, where `/` isn't a separator: so join.
+        if root.join(format!("{relative}.meta")).is_file() {
             embed(&format!("{relative}.meta"), &mut code);
         }
         let stem = relative.rsplit('/').next().and_then(|file| file.strip_suffix(".moves.ron"));

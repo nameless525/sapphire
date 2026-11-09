@@ -18,6 +18,11 @@
 //! tick only when asked. It fails if a step allocates: a counting allocator only costs what's allocated,
 //! so it adds nothing to steps that don't.
 //!
+//! The `16 metered` row is the busy fight's with an energy meter on everyone (M3 Q3c) and a cost on the
+//! skill, the meters starting empty: hits fill them, a skill press made short is refused and stays
+//! buffered, and one made full spends. It runs alternately with the plain row, so the two differ only
+//! by what the gate and the meter cost a step.
+//!
 //! Its last row is a party's (M2 G7): three members and an opponent, on the same rhythm, with the party
 //! swapping every second and a half, so every swap takes one member's capsule and hurtboxes out of the
 //! world and puts another's in. Its worst step is a swap's, or a swap under the rest of the step's work.
@@ -52,6 +57,21 @@ fn slice() -> MoveSet {
     MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles")
 }
 
+/// [`slice`] with a meter that fills by a tenth a hit landed and a twentieth a hit taken, and a skill
+/// that costs two fifths of it.
+fn metered_slice() -> MoveSet {
+    let lasting = SLICE
+        .replacen(
+            "health: 300,",
+            "health: 4000000000,\n            energy: (max: 100, landed: 10, taken: 5),",
+            1,
+        )
+        .replacen("name: \"skill\",\n", "name: \"skill\",\n                cost: 40,\n", 1);
+    let set = MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles");
+    assert!(set.fighter().and_then(|fighter| fighter.energy).is_some(), "the meter went in");
+    set
+}
+
 /// A simulation of this size on a floor, with a profile for everyone on it.
 fn on_floor(actors: u32) -> (Simulation, Option<sapphire_gameplay::ProfileId>) {
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors, ..SimConfig::default() });
@@ -67,9 +87,9 @@ fn on_floor(actors: u32) -> (Simulation, Option<sapphire_gameplay::ProfileId>) {
     (sim, controller)
 }
 
-fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
+fn world(actors: u32, set: MoveSet) -> (Simulation, Vec<ActorId>) {
     let (mut sim, controller) = on_floor(actors);
-    let moves = Some(sim.add_move_set(slice()));
+    let moves = Some(sim.add_move_set(set));
     let ids: Vec<ActorId> = (0..actors)
         .map(|index| {
             let position = Vec3::new(index as f32, 0.0, 0.0);
@@ -159,7 +179,12 @@ fn party_actions(tick: u64, ids: &[ActorId]) -> TickActions {
 }
 
 fn round(actors: u32, steps: u64) -> Round {
-    let (sim, ids) = world(actors);
+    let (sim, ids) = world(actors, slice());
+    run(sim, &ids, steps, actions)
+}
+
+fn metered_round(actors: u32, steps: u64) -> Round {
+    let (sim, ids) = world(actors, metered_slice());
     run(sim, &ids, steps, actions)
 }
 
@@ -223,6 +248,7 @@ fn main() {
     let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(20_000);
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;
+    const METERED: u32 = 16;
 
     let keep = |row: &mut Row, round: Round| {
         row.rounds.add(round.times);
@@ -231,9 +257,13 @@ fn main() {
     };
     let mut rows = SIZES.map(|_| Row::default());
     let mut party = Row::default();
+    let mut metered = Row::default();
     for _ in 0..ROUNDS {
         for (size, row) in SIZES.iter().zip(&mut rows) {
             keep(row, round(*size, steps));
+            if *size == METERED {
+                keep(&mut metered, metered_round(METERED, steps));
+            }
         }
         keep(&mut party, party_round(steps));
     }
@@ -246,8 +276,9 @@ fn main() {
     println!("creating a simulation with 128 pooled actors: {:.0} µs", creation.as_secs_f64() * 1e6);
     println!("{steps} steps a round, {ROUNDS} alternating rounds, in µs, with the least checksum of them");
     let rows = SIZES.iter().map(|size| format!("{size:6}")).zip(&mut rows);
+    let metered_row = std::iter::once((format!("{METERED:6} metered"), &mut metered));
     let party_row = std::iter::once(("party4".to_owned(), &mut party));
-    for (size, row) in rows.chain(party_row) {
+    for (size, row) in rows.chain(metered_row).chain(party_row) {
         let work = row.work;
         println!(
             "{size}: {}; checksum {:.2}; {} moves, {} cancels, {} cues, {} hits, {} perfect, {} counters",

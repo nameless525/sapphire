@@ -1,0 +1,87 @@
+// The Lancer as a kind of enemy (M3 C2): a spear flanker that runs in, stabs and hops back out while the
+// warriors hold the front. Its moves are `lancer.moves.ron`; its brain presses their intents, by name.
+(
+    type: "sapphire::moves::EnemyDocument",
+    version: 1,
+    data: (
+        // `lancer.moves.ron`.
+        moves: "17e486c0-c303-4c48-9d99-4b5230722eee",
+        brains: {
+            "darting": (
+                // A first guess, for Feel review to move. It keeps out past a thrust's reach, where a warrior
+                // would stand, circles quickly, and darts in: a stab when someone is close, a sweep when they
+                // are closer, the vault from further, and a hop back out when they swing.
+                spacing: (near: 2.4, far: 3.6),
+                pace: (
+                    // About 5.4 m/s in, under a player's 6 m/s run. A step back at 1.4 m/s, and a quick
+                    // circle at 3.1 m/s, much of the time: it's the one that goes round.
+                    approach: 0.8,
+                    retreat: 0.35,
+                    circle: 0.6,
+                    circle_share: 0.85,
+                    // Half the player's turn: quicker than the warrior.
+                    turn_rate_degrees: 540.0,
+                ),
+                // 0.5 to 1.5 s of keeping its distance before it looks for an attack: impatient.
+                patience: (min: 30, max: 90),
+                // 0.25 to 0.8 s standing after an attack ends.
+                rest: (min: 15, max: 48),
+                recover: (min: 2, max: 8),
+                attacks: [
+                    (
+                        // Its quick stab, from where the spear just reaches: best on an opening.
+                        intent: "thrust",
+                        reach: (near: 0.6, best: 1.7, far: 2.3),
+                        against: (swinging: 0.5, opening: 1.8, reacting: 1.2, untouchable: 0.0),
+                        recent: (ticks: 120, floor: 0.4),
+                    ),
+                    (
+                        // The low sweep, for someone close: rarely twice running.
+                        intent: "sweep",
+                        weight: 0.8,
+                        reach: (near: 0.0, best: 1.2, far: 1.9),
+                        against: (swinging: 0.6, opening: 1.4, reacting: 1.0, untouchable: 0.0),
+                        recent: (ticks: 240, floor: 0.25),
+                    ),
+                    (
+                        // The gap closer, from where nothing else reaches: its jump lands it about 3.4 m on,
+                        // and warp bends that by up to 1.8 m.
+                        intent: "vault",
+                        weight: 0.9,
+                        reach: (near: 2.6, best: 4.0, far: 5.4),
+                        against: (swinging: 0.4, reacting: 1.2, untouchable: 0.0),
+                        recent: (ticks: 300, floor: 0.2),
+                    ),
+                    (
+                        // Out of reach when someone close swings: a hop back, no blow.
+                        intent: "backstep",
+                        weight: 0.6,
+                        reach: (near: 0.0, best: 0.8, far: 1.8),
+                        against: (free: 0.2, swinging: 2.5, opening: 0.0, reacting: 0.0, untouchable: 0.6),
+                        recent: (ticks: 180, floor: 0.3),
+                    ),
+                ],
+                // Up in the knockdown's last third, not always at its first moment.
+                rise: (intent: "rise", during: "knockdown", from: 42, to: 56),
+            ),
+        },
+        brain: "darting",
+        // Its health's quarters, as every common enemy's: none changes how it fights.
+        phases: [(at: 750), (at: 500), (at: 250), (at: 0)],
+        look: (
+            // `lancer.glb`, from `tools/figures/lancer.figure.ron`.
+            mesh: "41e229ad-28a3-41f9-aeb8-ba214e06be6a",
+            // `lancer.animgraph.ron`.
+            graph: "ec1ef970-3f50-4c8e-b384-211f064ced66",
+            // Its spear is skinned to its right hand's slot, so it holds nothing else.
+            // Built at its own size: 1.45 m to the top of its head and 1.62 m to its hat's crown, against the
+            // character's 1.62 m and the warrior's 1.87 m.
+            scale: 1.0,
+            height: 1.62,
+            // Its mask's eyes, under the hat's brim.
+            eyes_below_crown: 0.3,
+            // Its sleeves and the spear held low before it, for what a camera frames.
+            framed_radius: 0.42,
+        ),
+    ),
+)

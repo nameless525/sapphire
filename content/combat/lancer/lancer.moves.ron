@@ -1,0 +1,334 @@
+// The Lancer's moves (M3 C2): a slim spear flanker, a little shorter than the character, that runs in,
+// stabs and hops back while the warriors hold the front. Quicker to come out than the warrior's, and
+// lighter: its blows chip, and a fight's light string flinches it. Frame data in 60 Hz ticks. Each move
+// lasts as long as its clip in `tools/motion/lancer.py`, which posed them to these numbers, and
+// `lancer.animgraph.ron` names the clip each plays, at the move's own ticks.
+//
+// Root and spear are keyed by hand from those clips (`tools/motion/lancer.py --motion` prints them): in
+// root space +Z is forward and +X the Lancer's left, and the `spear` path is a point a quarter of a metre
+// behind the tip, among the blade's edges, its +Y running along the shaft toward the tip.
+//
+// A brain presses the attacks (`lancer.enemy.ron`), and the hop back is one of them: it has no blow, and
+// a brain picks it against someone swinging. The reactions have the warrior's names, which a hit forces.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            (name: "thrust", buffer: 8, priority: 1),
+            (name: "sweep", buffer: 8, priority: 1),
+            (name: "vault", buffer: 8, priority: 2),
+            (name: "backstep", buffer: 6, priority: 2),
+            // Getting up from a knockdown once it has lain there. Nothing starts it from neutral.
+            (name: "rise", buffer: 15),
+        ],
+        neutral: [
+            (intent: "thrust", move: "thrust"),
+            (intent: "sweep", move: "sweep"),
+            (intent: "vault", move: "vault"),
+            (intent: "backstep", move: "backstep"),
+        ],
+        fighter: (
+            // Under the warrior's 240 and 60: about five of the player's three-hit strings to fell, and one
+            // to break. Four seconds without a hit that takes poise, and the meter is full again.
+            health: 150,
+            poise: 30,
+            poise_refill: 240,
+            hurtboxes: [
+                // From the ground to the hat's crown at 1.62 m, slim: the hat's brim isn't something to hit.
+                (name: "body", offset: (0.0, 0.81, 0.0), shape: Capsule(radius: 0.3, length: 1.0)),
+            ],
+            reactions: (
+                light: "stagger_light",
+                medium: "stagger_light",
+                heavy: "knockdown",
+                poise_break: "stagger_heavy",
+                defeat: "death",
+            ),
+            // How it moves: as the warrior, a little quicker on its feet. Metres, seconds and degrees, and
+            // sapphire_moves' `MOVEMENT_LIMITS` says what each may be. Its brain's `pace` is how far it tilts
+            // the stick, so its speeds on the ground come from these two together.
+            movement: (
+                run_speed: 6.5,
+                walk_speed: 2.0,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                acceleration: 100.0,
+                deceleration: 70.0,
+                turn_rate_degrees: 1080.0,
+                jump_speed: 7.0,
+                gravity: 22.0,
+                air_acceleration: 18.0,
+                max_fall_speed: 30.0,
+                coyote_ticks: 5,
+                slope_limit_degrees: 50.0,
+                step_height: 0.3,
+                ground_snap: 0.3,
+                stance_radius: 0.15,
+                max_slide_speed: 8.0,
+                // The capsule, under its hat's crown: its hurtbox above is what a hit reads.
+                height: 1.45,
+                radius: 0.26,
+                skin: 0.01,
+            ),
+        ),
+        moves: [
+            (
+                // 683 ms. A straight stab from its stance: the spear drawn back, a step in on the left foot,
+                // and the point out to about 1.85 m. Its answer to someone in reach, and it can hop back out
+                // of the recovery, or sweep.
+                name: "thrust",
+                startup: 16,
+                active: 5,
+                recovery: 20,
+                motion: (
+                    root: [
+                        (at: 16, offset: (0.0, 0.0, 0.0)),
+                        (at: 19, offset: (0.0, 0.0, 0.22)),
+                        (at: 30, offset: (0.0, 0.0, 0.3)),
+                    ],
+                    paths: [
+                        (
+                            name: "spear",
+                            keys: [
+                                (at: 0, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                                (at: 12, offset: (-0.11, 0.91, 1.07), rotation: (0.7278, 0.0137, -0.0146, 0.6855)),
+                                (at: 16, offset: (-0.12, 0.92, 1.03), rotation: (0.7278, 0.0137, -0.0146, 0.6855)),
+                                (at: 19, offset: (-0.05, 0.95, 1.57), rotation: (0.7211, 0.0, 0.0, 0.6928)),
+                                (at: 21, offset: (-0.04, 0.95, 1.6), rotation: (0.7211, 0.0, 0.0, 0.6928)),
+                                (at: 23, offset: (-0.04, 0.93, 1.57), rotation: (0.7246, 0.0009, -0.0009, 0.6892)),
+                                (at: 30, offset: (-0.08, 0.79, 1.36), rotation: (0.748, 0.0066, -0.0075, 0.6636)),
+                                (at: 41, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "thrust_hit",
+                        from: 16,
+                        to: 21,
+                        path: "spear",
+                        shape: Capsule(radius: 0.14, length: 0.5),
+                        attack: (damage: 16, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.4, ticks: 8)),
+                    ),
+                ],
+                cancels: [
+                    (from: 28, to: 41, allow: [
+                        (intent: "backstep", move: "backstep"),
+                        (intent: "sweep", move: "sweep"),
+                    ]),
+                ],
+                warps: [
+                    // It tracks through the draw, and the stab commits.
+                    (from: 0, to: 16, max_distance: 0.8, max_turn: 1.0, keep: 1.5),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 16),
+                ],
+            ),
+            (
+                // 933 ms. A low sweep at the knees: wound far to its right, the spear swung flat round its
+                // front from its right to its left, reaching about 1.6 m all round.
+                name: "sweep",
+                startup: 22,
+                active: 8,
+                recovery: 26,
+                motion: (
+                    paths: [
+                        (
+                            name: "spear",
+                            keys: [
+                                (at: 0, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                                (at: 14, offset: (-1.4, 0.66, -0.6), rotation: (0.4185, -0.537, 0.644, 0.349)),
+                                (at: 22, offset: (-1.37, 0.6, -0.7), rotation: (0.3978, -0.5389, 0.6701, 0.3199)),
+                                (at: 24, offset: (-1.12, 0.51, 0.95), rotation: (0.729, -0.2409, 0.3146, 0.5582)),
+                                (at: 25, offset: (-0.66, 0.47, 1.27), rotation: (0.7826, -0.1285, 0.1721, 0.5843)),
+                                (at: 26, offset: (-0.14, 0.48, 1.44), rotation: (0.7964, -0.0151, 0.0199, 0.6042)),
+                                (at: 27, offset: (0.37, 0.47, 1.36), rotation: (0.7904, 0.0967, -0.1293, 0.591)),
+                                (at: 28, offset: (0.84, 0.5, 1.13), rotation: (0.746, 0.2078, -0.2712, 0.5716)),
+                                (at: 29, offset: (1.24, 0.55, 0.57), rotation: (0.6485, 0.3496, -0.4458, 0.5085)),
+                                (at: 30, offset: (1.31, 0.58, 0.37), rotation: (0.6057, 0.3943, -0.4925, 0.4849)),
+                                (at: 40, offset: (0.63, 0.63, 1.19), rotation: (0.747, 0.1677, -0.2055, 0.6096)),
+                                (at: 48, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "sweep_hit",
+                        from: 22,
+                        to: 30,
+                        path: "spear",
+                        shape: Capsule(radius: 0.16, length: 0.8),
+                        attack: (damage: 22, poise: 18, weight: Medium, hitstop: 6, knockback: (distance: 0.9, ticks: 12)),
+                    ),
+                ],
+                cancels: [
+                    (from: 44, to: 56, allow: [(intent: "backstep", move: "backstep")]),
+                ],
+                warps: [
+                    (from: 0, to: 22, max_distance: 0.5, max_turn: 1.2, keep: 1.2),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 22),
+                ],
+            ),
+            (
+                // 1.17 s. The gap closer: half a second crouched with the spear drawn high, a jump of 3.4 m,
+                // and the point driven down on landing. Warp bends the jump toward a target by up to 1.8 m
+                // either way, landing it 1.1 m short. It can't get out of the recovery: this is its opening.
+                name: "vault",
+                startup: 30,
+                active: 6,
+                recovery: 34,
+                // A light hit lands and doesn't stop the crouch.
+                armour: [(from: 0, to: 30, threshold: 12)],
+                motion: (
+                    root: [
+                        (at: 27, offset: (0.0, 0.0, 0.5)),
+                        (at: 30, offset: (0.0, 0.0, 1.7)),
+                        (at: 32, offset: (0.0, 0.0, 2.13)),
+                        (at: 33, offset: (0.0, 0.0, 2.66)),
+                        (at: 34, offset: (0.0, 0.0, 3.4)),
+                    ],
+                    paths: [
+                        (
+                            name: "spear",
+                            keys: [
+                                (at: 0, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                                (at: 18, offset: (-0.16, 1.42, 1.05), rotation: (0.6154, 0.0, 0.0, 0.7882)),
+                                (at: 27, offset: (-0.12, 1.36, 1.24), rotation: (0.671, 0.0, 0.0, 0.7415)),
+                                (at: 30, offset: (-0.08, 0.9, 1.26), rotation: (0.8281, 0.0, 0.0, 0.5606)),
+                                (at: 32, offset: (-0.08, 0.6, 1.25), rotation: (0.8638, 0.0, 0.0, 0.5039)),
+                                (at: 33, offset: (-0.07, 0.25, 1.21), rotation: (0.9044, 0.0, 0.0, 0.4268)),
+                                (at: 34, offset: (-0.06, -0.2, 1.11), rotation: (0.9487, 0.0, 0.0, 0.3162)),
+                                (at: 36, offset: (-0.06, -0.23, 1.13), rotation: (0.9487, 0.0, 0.0, 0.3162)),
+                                (at: 52, offset: (-0.08, 0.6, 1.33), rotation: (0.7882, 0.0062, -0.0079, 0.6154)),
+                                (at: 70, offset: (-0.06, 0.78, 1.3), rotation: (0.7545, 0.0066, -0.0075, 0.6562)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "vault_hit",
+                        from: 30,
+                        to: 36,
+                        path: "spear",
+                        shape: Capsule(radius: 0.2, length: 0.6),
+                        attack: (damage: 30, poise: 25, weight: Medium, hitstop: 8, knockback: (distance: 1.2, ticks: 14)),
+                    ),
+                ],
+                warps: [
+                    (from: 6, to: 34, max_distance: 1.8, max_turn: 1.2, keep: 1.1),
+                ],
+                cues: [
+                    (name: "telegraph", at: 0),
+                    (name: "swing", at: 30),
+                    (name: "lunge_land", at: 34),
+                ],
+            ),
+            (
+                // 533 ms. A hop back two metres out of reach, the spear kept between it and the foe: no blow,
+                // and a brain picks it against someone swinging, or strings it after a stab.
+                name: "backstep",
+                startup: 0,
+                active: 0,
+                recovery: 32,
+                motion: (
+                    root: [
+                        (at: 10, offset: (0.0, 0.0, -0.25)),
+                        (at: 16, offset: (0.0, 0.0, -1.3)),
+                        (at: 21, offset: (0.0, 0.0, -2.0)),
+                    ],
+                ),
+            ),
+            (
+                // 400 ms: a flinch, the head snapping back and the spear jerking up, for a hit that doesn't
+                // break its poise. Unlike the warrior's, any hit starts it over: it's light on its feet.
+                name: "stagger_light",
+                startup: 0,
+                active: 0,
+                recovery: 24,
+                cues: [(name: "stagger", at: 0)],
+            ),
+            (
+                // 733 ms: knocked reeling two stumbling steps back, for a hit that breaks it. A hit takes its
+                // numbers and can't cut this short: it's the opening a break earns.
+                name: "stagger_heavy",
+                startup: 0,
+                active: 0,
+                recovery: 44,
+                armour: [(from: 0, to: 44, threshold: 1000)],
+                motion: (
+                    root: [
+                        (at: 6, offset: (0.0, 0.0, -0.12)),
+                        (at: 10, offset: (0.0, 0.0, -0.18)),
+                        (at: 16, offset: (0.0, 0.0, -0.3)),
+                        (at: 24, offset: (0.0, 0.0, -0.4)),
+                    ],
+                ),
+                cues: [(name: "stagger_heavy", at: 0)],
+            ),
+            (
+                // 1 s: thrown down on its back, landing at 400 ms and lying there. It gets up when `rise` is
+                // pressed in the last third or `recover` is forced. A hit takes its numbers and can't flinch it
+                // back onto its feet.
+                name: "knockdown",
+                startup: 0,
+                active: 0,
+                recovery: 60,
+                armour: [(from: 0, to: 60, threshold: 1000)],
+                motion: (
+                    root: [
+                        (at: 8, offset: (0.0, 0.0, -0.2)),
+                        (at: 18, offset: (0.0, 0.0, -0.6)),
+                        (at: 24, offset: (0.0, 0.0, -0.8)),
+                    ],
+                ),
+                cancels: [
+                    (from: 40, to: 60, allow: [(intent: "rise", move: "recover")]),
+                ],
+                cues: [
+                    (name: "knockdown", at: 0),
+                    (name: "body_land", at: 24),
+                ],
+            ),
+            (
+                // 833 ms: a roll to a knee, the spear planted, and up into the stance, untouchable until it
+                // nearly is.
+                name: "recover",
+                startup: 0,
+                active: 0,
+                recovery: 50,
+                invulnerable: [(from: 0, to: 36)],
+                cues: [(name: "recover", at: 0)],
+            ),
+            (
+                // 1.33 s: it buckles to its knees and topples onto its back, and nothing can hit it any more.
+                name: "death",
+                startup: 0,
+                active: 0,
+                recovery: 80,
+                motion: (
+                    root: [
+                        (at: 56, offset: (0.0, 0.0, -0.1)),
+                    ],
+                ),
+                hurtboxes: [
+                    (name: "body", from: 0, to: 80, state: Off),
+                ],
+                invulnerable: [(from: 0, to: 80)],
+                cues: [
+                    (name: "death", at: 0),
+                    (name: "body_land", at: 56),
+                    (name: "death_fade", at: 60),
+                ],
+            ),
+        ],
+    ),
+)

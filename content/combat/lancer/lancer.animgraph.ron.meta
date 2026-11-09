@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "ec1ef970-3f50-4c8e-b384-211f064ced66",
+        importer: AnimGraph(()),
+    ),
+)

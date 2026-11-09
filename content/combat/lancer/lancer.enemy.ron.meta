@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "3c2d6f15-fd0a-4a93-bbfd-cc73b2bafecb",
+        importer: Enemy(()),
+    ),
+)

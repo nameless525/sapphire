@@ -1,0 +1,64 @@
+// How the Lancer's clips play (M3 C2). Its guard and strides are KayKit's, retargeted onto its own
+// lengths by the pack's sidecars; its attacks, hop back and reactions are its own key-pose documents,
+// each as long as the move in `lancer.moves.ron` that plays it.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            // Rig_Medium_CombatMelee, Rig_Medium_MovementBasic and Rig_Medium_MovementAdvanced.
+            (name: "guard", source: "aa00c3be-b36a-477a-95a2-deb148f75ff8", clip: "Melee_2H_Idle", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            (name: "advance", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Walking_B", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            (name: "charge", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Running_B", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            (name: "retreat", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Walking_Backwards", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            (name: "circle_left", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Left", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            (name: "circle_right", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Right", target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            // Its own key-pose documents, beside this file.
+            (name: "thrust", source: "99cd4c5a-fdc8-527b-81fb-dcbec9db71df"),
+            (name: "sweep", source: "b8ca02f8-2a4f-5033-8599-49a584a36cad"),
+            (name: "vault", source: "429336f0-5d11-55e6-acdd-705cd8d46a5c"),
+            (name: "backstep", source: "6ffaacb9-cdac-56c1-9d5c-186414b39ecf"),
+            (name: "stagger_light", source: "eda77716-99ed-583f-8631-edaf4a494363"),
+            (name: "stagger_heavy", source: "cf447828-ffb5-5d9f-b552-0aefdc35fa10"),
+            (name: "knockdown", source: "3c2a6e27-178a-50b6-9a71-f75a950febf9"),
+            (name: "recover", source: "884ce7e0-a9e3-5ce3-8c5b-65a795337263"),
+            (name: "death", source: "08d967ca-0eb6-56fb-8f67-7c8b5864d716"),
+        ],
+        locomotion: (
+            start: "ground",
+            smoothing: 6.0,
+            states: [
+                (name: "ground", plays: Blend((
+                    // Each speed is the support foot's travel per second, measured on the pack's chibi rig
+                    // and scaled by the Lancer's legs, 1.89 times as long. The strafes run a little
+                    // forward as well as sideways; they sit at their sideways speed. The guard breathes at
+                    // its own rate.
+                    samples: [
+                        (clip: "guard", at: (0.0, 0.0), sync: false),
+                        (clip: "advance", at: (0.0, 1.5)),
+                        (clip: "charge", at: (0.0, 8.0)),
+                        (clip: "retreat", at: (0.0, -1.36)),
+                        (clip: "circle_left", at: (5.8, 0.0)),
+                        (clip: "circle_right", at: (-5.8, 0.0)),
+                    ],
+                    rate: (0.5, 1.6),
+                ))),
+            ],
+        ),
+        combat: (
+            decay: 5,
+            exit: 8,
+            moves: [
+                (move: "thrust", clip: "thrust", decay: 3),
+                (move: "sweep", clip: "sweep", decay: 4),
+                (move: "vault", clip: "vault", decay: 4),
+                (move: "backstep", clip: "backstep", decay: 3),
+                (move: "stagger_light", clip: "stagger_light", decay: 2),
+                (move: "stagger_heavy", clip: "stagger_heavy", decay: 3),
+                (move: "knockdown", clip: "knockdown", decay: 4),
+                (move: "recover", clip: "recover", decay: 4),
+                (move: "death", clip: "death", decay: 4),
+            ],
+        ),
+    ),
+)

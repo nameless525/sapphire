@@ -162,6 +162,8 @@ sapphire_editor = { kind = "tool" }
 sapphire_pipeline = { kind = "tool" }
 # The headless replay runner (M2 D2): what `cargo xtask replay` and CI's Replays job build.
 sapphire_replay = { kind = "tool" }
+# Generates the placeholder music stems and voice lines under `content/audio/generated/` (M3 A1).
+sapphire_soundgen = { kind = "tool" }
 sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
 
@@ -267,7 +269,7 @@ forbidden = ["cpal", "kira", "parry3d", "rapier3d", "sapphire_physics", "sapphir
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax", "skera", "fdsm", "nalgebra"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax", "skera", "fdsm", "nalgebra", "vorbis_rs"]
 
 # Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
 # other than through a dev-only crate would link it into builds without `dev`.

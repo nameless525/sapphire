@@ -311,6 +311,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::Score(_)
+        | ImportSettings::VoiceLines(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::GltfClips(_)

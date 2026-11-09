@@ -138,7 +138,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim_graph::{self, AnimGraphSettings};
 use crate::assembly;
-use crate::audio::{self, CueSettings, SoundSettings};
+use crate::audio::{self, CueSettings, ScoreSettings, SoundSettings, VoiceLinesSettings};
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
@@ -233,6 +233,10 @@ pub enum ImportSettings {
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
     Cue(CueSettings),
+    /// A score document (`.score.ron`), music as stems by a fight's phase (M3 A1).
+    Score(ScoreSettings),
+    /// A voice-line document (`.voice.ron`), one language's lines by key (M3 A1).
+    VoiceLines(VoiceLinesSettings),
     /// A font file (`.ttf`, `.otf`), cut down for each pack that shows it (M3 U3).
     Font(FontSettings),
     /// A font chains document (`.fontchains.ron`): which fonts answer for each use and script (M3 U3).
@@ -310,6 +314,12 @@ impl ImportSettings {
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
         }
+        if audio::is_score_source(source) {
+            return Some(Self::Score(ScoreSettings::default()));
+        }
+        if audio::is_voice_source(source) {
+            return Some(Self::VoiceLines(VoiceLinesSettings::default()));
+        }
         if font::is_chains_source(source) {
             return Some(Self::FontChains(FontChainsSettings::default()));
         }
@@ -374,6 +384,8 @@ impl ImportSettings {
             | Self::Enemy(_)
             | Self::Sound(_)
             | Self::Cue(_)
+            | Self::Score(_)
+            | Self::VoiceLines(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)
@@ -406,6 +418,8 @@ impl ImportSettings {
             | Self::Enemy(_)
             | Self::Sound(_)
             | Self::Cue(_)
+            | Self::Score(_)
+            | Self::VoiceLines(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)

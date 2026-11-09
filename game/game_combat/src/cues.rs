@@ -32,7 +32,7 @@ use sapphire_cues::{
 };
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::WorldClock;
-use sapphire_gameplay::{ActorView, CueEvent, Simulation};
+use sapphire_gameplay::{ActorView, CueEvent, EncounterPhase, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::{GamepadId, Platform};
 use sapphire_render::{PostVariants, VfxFrame};
@@ -42,7 +42,7 @@ use sapphire_vfx::{EffectLibrary as VfxLibrary, OwnerSteps, VfxBudget, VfxWorld}
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
 use crate::trails::BladeTrails;
-use sapphire_stage::audio::CueSounds;
+use sapphire_stage::audio::{CueSounds, ShowSounds};
 
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
 const SEED: u64 = 0x5EED;
@@ -56,6 +56,23 @@ const ON_THE_CHARACTER: Vec3 = Vec3::new(0.5, 0.88, 0.5);
 /// `presented_ticks` does.
 pub(crate) fn behind_latest(alpha: f32) -> f32 {
     (1.0 - if alpha >= 0.0 { alpha.min(1.0) } else { 0.0 }) / TICK_HZ as f32
+}
+
+/// The phase a fight's score plays (M3 A1): `running` while any of its zone's encounters runs, `cleared`
+/// once every one has cleared, and `waiting` before and between. A fight with no zone is a duel, which
+/// always runs. Boss phases (B3) will be further names a score can list, said through here.
+fn music_phase(sim: &Simulation) -> &'static str {
+    let Some(zone) = sim.zone() else { return "running" };
+    let encounters = zone.encounters();
+    if encounters.iter().any(|encounter| encounter.phase() == EncounterPhase::Running) {
+        "running"
+    } else if !encounters.is_empty()
+        && encounters.iter().all(|encounter| encounter.phase() == EncounterPhase::Cleared)
+    {
+        "cleared"
+    } else {
+        "waiting"
+    }
 }
 
 /// Where a fight's cues land.
@@ -116,6 +133,8 @@ pub struct CueShow {
     stepping: Duration,
     /// A new fight began since the last frame ended.
     started_over: bool,
+    /// The phase the score plays, as of the latest step: none before one.
+    music_phase: Option<&'static str>,
 }
 
 impl CueShow {
@@ -156,6 +175,7 @@ impl CueShow {
             tick: None,
             stepping: Duration::ZERO,
             started_over: false,
+            music_phase: None,
         })
     }
 
@@ -174,6 +194,15 @@ impl CueShow {
     /// The table, for what an app loads for it.
     pub fn table(&self) -> &CueTable {
         &self.table
+    }
+
+    /// What an app that plays sound loads for the table: its cues, its score and its voice lines.
+    pub fn sounds_to_load(&self) -> ShowSounds {
+        ShowSounds {
+            cues: self.table.sound_cues(),
+            score: self.table.music(),
+            voices: self.table.voices().to_vec(),
+        }
     }
 
     /// Fires what the simulation's latest step published, and moves the effects by its clocks: call it
@@ -223,6 +252,7 @@ impl CueShow {
             Emitter { position: stand.unwrap_or(emitter.position), ..emitter }
         }));
         self.world_time_scale = sim.world().resource::<WorldClock>().0.effective_scale();
+        self.music_phase = Some(music_phase(sim));
         self.stepping += stopwatch.elapsed();
     }
 
@@ -291,9 +321,11 @@ impl CueShow {
     pub(crate) fn sounds(&self) -> CueSounds<'_> {
         CueSounds {
             requests: self.dispatcher.sounds(),
+            lines: self.dispatcher.lines(),
             emitters: &self.emitters,
             world_time_scale: self.world_time_scale,
             started_over: self.started_over,
+            music_phase: self.music_phase,
         }
     }
 

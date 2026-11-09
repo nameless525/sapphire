@@ -152,10 +152,12 @@ use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::rig::{CharacterRig, HumanBone, RigError};
+use sapphire_assets::score::{SCORE_EXTENSION, Score};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
+use sapphire_assets::voice::{VOICE_LINES_EXTENSION, VoiceLines};
 use sapphire_assets::{AssetId, AssetKind};
 use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
@@ -378,6 +380,18 @@ impl Recipe {
                 format: Cue::VERSION,
                 extension: CUE_EXTENSION,
             },
+            ImportSettings::Score(_) => Self {
+                importer: audio::SCORE_IMPORTER,
+                cooker: audio::SCORE_COOKER,
+                format: Score::VERSION,
+                extension: SCORE_EXTENSION,
+            },
+            ImportSettings::VoiceLines(_) => Self {
+                importer: audio::VOICE_IMPORTER,
+                cooker: audio::VOICE_COOKER,
+                format: VoiceLines::VERSION,
+                extension: VOICE_LINES_EXTENSION,
+            },
             ImportSettings::Font(_) => Self {
                 importer: font::IMPORTER,
                 cooker: font::COOKER,
@@ -505,6 +519,10 @@ impl Recipe {
             enemy::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
+        } else if audio::is_score_source(relative) {
+            audio::score_output_path(relative, self.extension)
+        } else if audio::is_voice_source(relative) {
+            audio::voice_output_path(relative, self.extension)
         } else if font::is_chains_source(relative) {
             font::chains_output_path(relative, self.extension)
         } else if ui::is_source(relative) {
@@ -677,7 +695,7 @@ pub enum CookError {
     },
     #[error("a screen can't ship as it is")]
     Screen(#[from] Box<ScreenError>),
-    #[error("failed to cook sound or cue {}", path.display())]
+    #[error("failed to cook sound, cue, score or voice lines {}", path.display())]
     Audio {
         path: PathBuf,
         /// Boxed, as material errors are.
@@ -686,6 +704,10 @@ pub enum CookError {
     },
     #[error("cue {} names {id}, which is not a sound of this content tree that cooks", path.display())]
     NotASound { path: PathBuf, id: AssetId },
+    #[error("score {} has stem `{stem}` play {id}, which is not a sound of this content tree that cooks", path.display())]
+    NotAStem { path: PathBuf, stem: String, id: AssetId },
+    #[error("voice lines {} say `{key}` with {id}, which is not a cue of this content tree that cooks", path.display())]
+    NotALine { path: PathBuf, key: String, id: AssetId },
     #[error("failed to cook zone {}", path.display())]
     Zone {
         path: PathBuf,
@@ -1534,6 +1556,8 @@ fn sub_assets(
         | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::Score(_)
+        | ImportSettings::VoiceLines(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
@@ -1751,6 +1775,10 @@ impl Planned {
 
     fn is_font(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Font(_))
+    }
+
+    fn is_cue(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::Cue(_))
     }
 
     /// Whether it cooks to a clip: a sub-asset of an animation source, or a key-pose document.
@@ -2426,6 +2454,8 @@ fn cook_source(
             .map_err(|source| CookError::Dialogue { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
+        ImportSettings::Score(_) => audio::cook_score(bytes).map_err(audio_error(path)),
+        ImportSettings::VoiceLines(_) => audio::cook_voice_lines(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
             font::cook(path, bytes, settings, font_subset_of(part), screens_of(assets))
                 .map_err(font_error(path))
@@ -2774,6 +2804,11 @@ fn audio_error(path: &Path) -> impl Fn(AudioCookError) -> CookError + '_ {
     move |source| CookError::Audio { path: path.to_owned(), source: Box::new(source) }
 }
 
+/// Reads a source another document's checks look into.
+fn read_source(path: &Path) -> Result<Vec<u8>, CookError> {
+    fs::read(path).map_err(|error| CookError::Read { path: path.to_owned(), source: error })
+}
+
 /// Wraps a font error as the cook error for the file at `path`.
 fn font_error(path: &Path) -> impl Fn(FontCookError) -> CookError + '_ {
     move |source| CookError::Font { path: path.to_owned(), source: Box::new(source) }
@@ -3029,6 +3064,38 @@ fn source_dependencies(
                 if !assets.get(id).is_some_and(Planned::is_sound) {
                     return Err(CookError::NotASound { path: path.to_owned(), id });
                 }
+            }
+            Ok(Vec::new())
+        }
+        // A score holds only its stems' IDs, but each stem is held to the loop's length, from its source.
+        ImportSettings::Score(_) => {
+            let score = audio::read_score(bytes).map_err(audio_error(path))?;
+            for stem in &score.stems {
+                let Some(planned) = assets.get(stem.sound).filter(|planned| planned.is_sound()) else {
+                    return Err(CookError::NotAStem {
+                        path: path.to_owned(),
+                        stem: stem.name.clone(),
+                        id: stem.sound,
+                    });
+                };
+                let vorbis = read_source(&planned.asset.path)?;
+                audio::check_stem(&score, &stem.name, &vorbis).map_err(audio_error(path))?;
+            }
+            Ok(Vec::new())
+        }
+        // Voice lines hold only their cues' IDs, but each cue is held to the voice bus, from its source.
+        ImportSettings::VoiceLines(_) => {
+            let lines = audio::read_voice_lines(bytes).map_err(audio_error(path))?;
+            for line in &lines.lines {
+                let Some(planned) = assets.get(line.cue).filter(|planned| planned.is_cue()) else {
+                    return Err(CookError::NotALine {
+                        path: path.to_owned(),
+                        key: line.key.clone(),
+                        id: line.cue,
+                    });
+                };
+                let cue = read_source(&planned.asset.path)?;
+                audio::check_line(&line.key, &cue).map_err(audio_error(path))?;
             }
             Ok(Vec::new())
         }
@@ -3396,6 +3463,8 @@ fn imported_mesh(
         | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::Score(_)
+        | ImportSettings::VoiceLines(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)

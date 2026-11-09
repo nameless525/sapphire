@@ -1,7 +1,7 @@
 //! [`CueDispatcher`]: a table's names resolved, and each step's cues fired through it.
 
 use sapphire_assets::AssetId;
-use sapphire_audio::{CueRequest, CueTarget, Emitter, EmitterId};
+use sapphire_audio::{CueRequest, CueTarget, Emitter, EmitterId, LineKey, LineRequest};
 use sapphire_camera::{CameraDirector, CameraTuning, ShakeId};
 use sapphire_core::Name;
 use sapphire_ecs::prelude::{EntityClock, WorldClock};
@@ -21,6 +21,10 @@ use crate::table::{
 /// The most sounds a frame can start. [`sapphire_audio::MAX_VOICES`] is all that can play, and a frame
 /// of two steps fills it only if every voice starts at once. Past it they're counted and dropped.
 pub const MAX_FRAME_SOUNDS: usize = sapphire_audio::MAX_VOICES;
+
+/// The most voice lines a frame can start: more at once is a crowd, not a voice. Past it they're
+/// counted and dropped.
+pub const MAX_FRAME_LINES: usize = 4;
 
 /// Whose clock an actor's effects run on.
 #[must_use]
@@ -96,6 +100,10 @@ pub struct CueStats {
     pub sounds: u64,
     /// Sounds past [`MAX_FRAME_SOUNDS`] in a frame.
     pub sounds_dropped: u64,
+    /// Voice lines asked for (M3 A1).
+    pub lines: u64,
+    /// Lines past [`MAX_FRAME_LINES`] in a frame.
+    pub lines_dropped: u64,
     pub shakes: u64,
     pub screens: u64,
     pub rumbles: u64,
@@ -115,6 +123,7 @@ struct Row {
     weight: Option<Weight>,
     effects: [Option<RowEffect>; MAX_ROW_EFFECTS],
     sounds: [Option<AssetId>; MAX_ROW_SOUNDS],
+    line: Option<LineKey>,
     shake: Option<(ShakeId, f32)>,
     screen: Option<(EffectPresetId, ScreenCenter)>,
     rumble: Option<Rumble>,
@@ -132,6 +141,7 @@ impl Row {
             weight: row.weight,
             effects: [None; MAX_ROW_EFFECTS],
             sounds: [None; MAX_ROW_SOUNDS],
+            line: row.line.as_deref().map(LineKey::of),
             shake: None,
             screen: None,
             rumble: row.rumble,
@@ -173,6 +183,8 @@ pub struct CueDispatcher {
     rows: Vec<Row>,
     /// This frame's sounds. Reserved, and never grown past that.
     sounds: Vec<CueRequest>,
+    /// This frame's voice lines, the same.
+    lines: Vec<LineRequest>,
     mixer: RumbleMixer,
     /// The tick last read, so a step with nothing after it isn't read twice.
     read_tick: Option<u64>,
@@ -192,6 +204,7 @@ impl CueDispatcher {
         let mut dispatcher = Self {
             rows: Vec::new(),
             sounds: Vec::with_capacity(MAX_FRAME_SOUNDS),
+            lines: Vec::with_capacity(MAX_FRAME_LINES),
             mixer: RumbleMixer::new(),
             read_tick: None,
             owners: Vec::new(),
@@ -282,6 +295,9 @@ impl CueDispatcher {
         for sound in row.sounds.iter().flatten() {
             self.queue_sound(*sound, site);
         }
+        if let Some(line) = row.line {
+            self.queue_line(line);
+        }
         if let Some((id, strength)) = row.shake {
             step.shakes.fire_shake(id, strength);
             self.stats.shakes += 1;
@@ -340,6 +356,17 @@ impl CueDispatcher {
         self.stats.sounds += 1;
     }
 
+    /// A line is spoken flat, as the player's ear hears a voice: it names no emitter, so a fighter gone
+    /// before the frame's audio still has it said.
+    fn queue_line(&mut self, line: LineKey) {
+        if self.lines.len() == MAX_FRAME_LINES {
+            self.stats.lines_dropped += 1;
+            return;
+        }
+        self.lines.push(LineRequest { line, target: CueTarget::Flat });
+        self.stats.lines += 1;
+    }
+
     /// Moves `vfx` by the step `sim` just took: the world's effects by the world clock, and each
     /// actor's by its own, so its hitstop holds them. Allocates nothing once it has seen every actor.
     pub fn advance_effects(&mut self, sim: &Simulation, vfx: &mut VfxWorld) {
@@ -360,11 +387,18 @@ impl CueDispatcher {
         &self.sounds
     }
 
-    /// Once a frame, after the frame's `AudioSystem::update` took [`Self::sounds`], `dt` real seconds
-    /// after the last: forgets the sounds, so a capture or a bench with no audio just never hears them,
+    /// The voice lines this frame's steps asked for: [`AudioFrame::lines`](sapphire_audio::AudioFrame::lines).
+    #[must_use]
+    pub fn lines(&self) -> &[LineRequest] {
+        &self.lines
+    }
+
+    /// Once a frame, after the frame's `AudioSystem::update` took [`Self::sounds`] and [`Self::lines`], `dt`
+    /// real seconds after the last: forgets them, so a capture or a bench with no audio just never hears them,
     /// and tells `rumble` what changed. `()` is no rumble.
     pub fn end_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) {
         self.sounds.clear();
+        self.lines.clear();
         self.mixer.update(dt, rumble);
     }
 
@@ -384,10 +418,11 @@ impl CueDispatcher {
         self.owners.reserve(actors);
     }
 
-    /// Forgets the sounds this frame's steps asked for, before any of them started: a fight started over
-    /// after they fired.
+    /// Forgets the sounds and lines this frame's steps asked for, before any of them started: a fight
+    /// started over after they fired.
     pub fn forget_sounds(&mut self) {
         self.sounds.clear();
+        self.lines.clear();
     }
 
     /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored). What's playing takes it
@@ -518,6 +553,7 @@ mod tests {
             shake: None,
             screen: None,
             rumble: None,
+            line: None,
         }
     }
 
@@ -664,6 +700,21 @@ mod tests {
         assert_eq!((stats.sounds, stats.sounds_dropped), (MAX_FRAME_SOUNDS as u64, 3));
         dispatcher.end_frame(TICK, &mut ());
         assert!(dispatcher.sounds().is_empty(), "with no audio, quietly gone");
+    }
+
+    #[test]
+    fn a_rows_line_is_asked_for_by_its_key_and_a_crowd_of_them_is_counted() {
+        let mut dispatcher =
+            dispatcher(vec![CueRow { line: Some("perfect-dodge".to_owned()), ..row("dodge") }]);
+        let mut sinks = Sinks::new();
+        sinks.read(&mut dispatcher, 1, &vec![event("dodge", None); MAX_FRAME_LINES + 2]);
+        assert_eq!(dispatcher.lines().len(), MAX_FRAME_LINES);
+        let said = LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat };
+        assert!(dispatcher.lines().iter().all(|line| *line == said));
+        let stats = dispatcher.stats();
+        assert_eq!((stats.lines, stats.lines_dropped), (MAX_FRAME_LINES as u64, 2));
+        dispatcher.end_frame(TICK, &mut ());
+        assert!(dispatcher.lines().is_empty());
     }
 
     /// A fight starting over takes back what it hadn't started, and goes on from there.

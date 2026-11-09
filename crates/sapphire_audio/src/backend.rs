@@ -7,6 +7,7 @@
 //! project, m2-plan §3) needs only these calls.
 
 use std::fmt;
+use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
@@ -38,6 +39,15 @@ pub struct BusParams {
 impl BusParams {
     /// The filter out of the signal.
     pub const OPEN: Self = Self { low_pass_hz: f32::INFINITY };
+}
+
+/// One of a score's stems, as [`AudioBackend::load_music`] readies it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StemStart {
+    pub sound: AssetId,
+    /// The gain it starts at: [`SILENCE_DB`](sapphire_assets::cue::SILENCE_DB) for a stem the phase
+    /// doesn't play.
+    pub gain_db: f32,
 }
 
 /// Where the output stands.
@@ -160,6 +170,31 @@ pub trait AudioBackend {
 
     /// Sets what a bus does to its voices, smoothly enough not to click.
     fn set_bus(&mut self, bus: Bus, params: BusParams);
+
+    /// Fades a bus's gain to `gain_db` over `fade`: the music, ducked under a voice line.
+    fn set_bus_gain(&mut self, bus: Bus, gain_db: f32, fade: Duration);
+
+    /// Readies `stems` to loop together on the [`Music`](Bus::Music) bus, on a clock that will count
+    /// `tempo_bpm` beats a minute from their first frame, and ends any music playing over `fade`. They
+    /// wait for [`Self::play_music`], in a later frame, so that they and the clock reach the mixer
+    /// together however its callbacks fall. Made as a fight starts, not in its frames: the mixer
+    /// allocates for each stem.
+    fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError>;
+
+    /// Starts the music [`Self::load_music`] readied, from the mixer's next buffer.
+    fn play_music(&mut self);
+
+    /// Fades the stem at `stem` in the last [`Self::load_music`] to `gain_db` over `fade`, beginning
+    /// on the music clock's beat `beat`, or as soon as the command lands if that's past. A fade not yet
+    /// begun is replaced.
+    fn fade_stem(&mut self, stem: usize, gain_db: f32, beat: u64, fade: Duration);
+
+    /// Fades the music out over `fade`, and stops its clock.
+    fn stop_music(&mut self, fade: Duration);
+
+    /// Beats since the music's first frame, as the mixer last counted them: `None` while no clock
+    /// runs, before the first buffer and after [`Self::stop_music`].
+    fn music_beats(&mut self) -> Option<f64>;
 
     /// Stops asking the device for audio, keeping every voice where it is (spec §6.5).
     fn suspend(&mut self);

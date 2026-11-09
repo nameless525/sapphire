@@ -22,10 +22,12 @@ use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
 use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use crate::probes::{PROBE_GRID_EXTENSION, ProbeGrid, ProbeGridError};
 use crate::rig::{CharacterRig, RIG_EXTENSION, RigError};
+use crate::score::{SCORE_EXTENSION, Score, ScoreError};
 use crate::skeleton::{SKELETON_EXTENSION, Skeleton, SkeletonError};
 use crate::sound::{SOUND_EXTENSION, Sound, SoundError};
 use crate::texture::{TEXTURE_EXTENSION, Texture, TextureFormatError};
 use crate::ui::{UI_EXTENSION, UiDocument, UiError};
+use crate::voice::{VOICE_LINES_EXTENSION, VoiceLines, VoiceLinesError};
 
 /// The kinds of cooked asset. Each is also a residency category with a budget of its own
 /// ([`AssetBudgets`](crate::AssetBudgets)).
@@ -90,11 +92,15 @@ pub enum AssetKind {
     /// One kind of enemy (`.senemy`, M3 B3): [`Enemy`], its brains and phases for the simulation beside its
     /// move set, which it depends on, and its look for the stage. CPU data, never uploaded.
     Enemy = 23,
+    /// A score (`.sscore`, M3 A1): [`Score`], naming the stems it plays.
+    Score = 24,
+    /// One language's voice lines (`.svoice`, M3 A1): [`VoiceLines`], naming the cues they play.
+    VoiceLines = 25,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 25] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -118,6 +124,8 @@ impl AssetKind {
         Self::Script,
         Self::Dialogue,
         Self::Enemy,
+        Self::Score,
+        Self::VoiceLines,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -152,6 +160,8 @@ impl AssetKind {
             Self::Script => SCRIPT_EXTENSION,
             Self::Dialogue => DIALOGUE_EXTENSION,
             Self::Enemy => ENEMY_EXTENSION,
+            Self::Score => SCORE_EXTENSION,
+            Self::VoiceLines => VOICE_LINES_EXTENSION,
         }
     }
 
@@ -181,6 +191,8 @@ impl AssetKind {
             Self::Script => "script",
             Self::Dialogue => "dialogue",
             Self::Enemy => "enemy",
+            Self::Score => "score",
+            Self::VoiceLines => "voice lines",
         }
     }
 
@@ -210,6 +222,8 @@ impl AssetKind {
                 | Self::Script
                 | Self::Dialogue
                 | Self::Enemy
+                | Self::Score
+                | Self::VoiceLines
         )
     }
 
@@ -241,6 +255,8 @@ impl AssetKind {
                 | Self::Script
                 | Self::Dialogue
                 | Self::Enemy
+                | Self::Score
+                | Self::VoiceLines
         )
     }
 
@@ -265,7 +281,8 @@ impl AssetKind {
             (Self::Mesh, Self::Material | Self::Skeleton)
                 | (Self::Material, Self::Texture)
                 | (Self::Clip, Self::Skeleton)
-                | (Self::Cue, Self::Sound)
+                | (Self::Cue | Self::Score, Self::Sound)
+                | (Self::VoiceLines, Self::Cue)
                 | (Self::AnimGraph, Self::Clip)
                 | (Self::Zone, Self::Colliders | Self::NavMesh | Self::Encounter)
                 | (Self::FontChains, Self::Font)
@@ -299,6 +316,8 @@ impl AssetKind {
             21 => Some(Self::Script),
             22 => Some(Self::Dialogue),
             23 => Some(Self::Enemy),
+            24 => Some(Self::Score),
+            25 => Some(Self::VoiceLines),
             _ => None,
         }
     }
@@ -358,6 +377,8 @@ impl AssetKind {
                 Vec::new()
             }
             Self::Cue => Cue::read(bytes)?.sounds.iter().copied().collect(),
+            Self::Score => Score::read(bytes)?.stems.iter().map(|stem| stem.sound).collect(),
+            Self::VoiceLines => VoiceLines::read(bytes)?.lines.iter().map(|line| line.cue).collect(),
             // A move set's tables are baked into it, and it refers to nothing else.
             Self::MoveSet => {
                 MoveSet::from_cooked(bytes)?;
@@ -486,6 +507,10 @@ pub enum AssetError {
     Sound(#[from] SoundError),
     #[error("invalid cue")]
     Cue(#[from] CueError),
+    #[error("invalid score")]
+    Score(#[from] ScoreError),
+    #[error("invalid voice lines")]
+    VoiceLines(#[from] VoiceLinesError),
     #[error("invalid move set")]
     MoveSet(#[from] MoveSetError),
     #[error("invalid animation graph")]

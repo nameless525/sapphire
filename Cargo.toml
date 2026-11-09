@@ -70,6 +70,7 @@ members = [
     "tools/sapphire_editor",
     "tools/sapphire_pipeline",
     "tools/sapphire_replay",
+    "tools/sapphire_soundgen",
     "tools/sapphire_testkit",
     "xtask",
 ]
@@ -287,6 +288,10 @@ cpal = { version = "0.18.2", features = ["realtime"] }
 # Pure Rust Ogg Vorbis decoding, no unsafe code, MIT or Apache-2.0: the cooker's check and the
 # runtime's decode are the same code (`sapphire_assets::sound`).
 lewton = { version = "0.10.2", default-features = false, features = ["ogg"] }
+# Ogg Vorbis encoding, for the placeholder music and voice `sapphire_soundgen` makes (M3 A1): libvorbis
+# (aoTuV), BSD-3-Clause, built from source by its -sys crates. A tool's only. `stream-serial-rng` is off,
+# since a random stream serial would change the bytes each run.
+vorbis_rs = { version = "0.5.6", default-features = false }
 # iOS's audio session and its interruptions (`sapphire_platform`). In the tree through cpal.
 objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
 block2 = "0.6"

@@ -1,0 +1,21 @@
+[package]
+name = "sapphire_soundgen"
+description = "Makes the placeholder music stems and voice lines (M3 A1): synthesized here, encoded to Ogg Vorbis, the same bytes every run. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sapphire_soundgen"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+# The decoder the cook and the runtime use, to hold what's written to the length it must be.
+sapphire_assets.workspace = true
+vorbis_rs.workspace = true
+
+[lints]
+workspace = true

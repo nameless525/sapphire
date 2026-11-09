@@ -1,0 +1,11 @@
+// `perfect-dodge` in Japanese: a placeholder voice `sapphire_soundgen` synthesized, with no words.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: ["87e3bd86-d202-4d31-ba26-4c7f18da2a8c"],
+        volume_db: (-4.0, -4.0),
+        pitch: (1.0, 1.0),
+        bus: Voice,
+    ),
+)

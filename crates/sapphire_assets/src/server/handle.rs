@@ -22,10 +22,12 @@ use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
+use crate::score::{ArchivedScore, Score};
 use crate::skeleton::{ArchivedSkeleton, Skeleton};
 use crate::sound::{ArchivedSound, Sound};
 use crate::texture::Texture;
 use crate::ui::{ArchivedUiDocument, UiDocument};
+use crate::voice::{ArchivedVoiceLines, VoiceLines};
 use crate::{AssetId, AssetKind};
 
 slotmap::new_key_type! {
@@ -71,6 +73,8 @@ mod sealed {
     impl Sealed for sapphire_moves::Enemy {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
+    impl Sealed for crate::score::Score {}
+    impl Sealed for crate::voice::VoiceLines {}
     impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for crate::graph::AnimGraph {}
     impl Sealed for sapphire_strings::StringTable {}
@@ -220,6 +224,28 @@ impl Asset for Sound {
         // SAFETY: as for meshes: `Sound::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Sound>(bytes) }
             .expect("the envelope was checked when the sound was decoded")
+    }
+}
+
+impl Asset for Score {
+    const KIND: AssetKind = AssetKind::Score;
+    type View<'a> = &'a ArchivedScore;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedScore {
+        // SAFETY: as for meshes: `Score::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Score>(bytes) }
+            .expect("the envelope was checked when the score was decoded")
+    }
+}
+
+impl Asset for VoiceLines {
+    const KIND: AssetKind = AssetKind::VoiceLines;
+    type View<'a> = &'a ArchivedVoiceLines;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedVoiceLines {
+        // SAFETY: as for meshes: `VoiceLines::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<VoiceLines>(bytes) }
+            .expect("the envelope was checked when the voice lines were decoded")
     }
 }
 

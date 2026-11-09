@@ -338,9 +338,9 @@ pub(crate) fn run(
     let rate = stage.quality.frame_rate().map_or(TICK_HZ, std::num::NonZero::get);
     let steps = steps_a_frame(rate);
     let settings = options.render_settings(stage.quality.render_settings());
-    let audio = match stage.show.fight.show.cue_show().map(|show| show.table().sound_cues()) {
-        Some(cues) => {
-            Some(OfflineAudio::for_cues(&cues, &mut stage.content, &mut stage.renderer, &stage.gpu)?)
+    let audio = match stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::sounds_to_load) {
+        Some(sounds) => {
+            Some(OfflineAudio::for_show(&sounds, &mut stage.content, &mut stage.renderer, &stage.gpu)?)
         }
         None => None,
     };

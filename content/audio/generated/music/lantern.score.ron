@@ -1,0 +1,27 @@
+// The fight's placeholder score (M3 A1): four stems `sapphire_soundgen` synthesized, a loop of four
+// bars at 120 beats a minute. Nobody has heard it: every level here is a guess for someone who can.
+(
+    type: "sapphire::assets::Score",
+    version: 1,
+    data: (
+        tempo_bpm: 120.0,
+        beats_per_bar: 4,
+        bars: 4,
+        stems: [
+            (name: "pad", sound: "29ffa8d4-b916-4d46-8b8f-cb8f0af76cb7"), // lantern_pad
+            (name: "pulse", sound: "42cf919e-36b4-4d9c-add5-9b9b0949ad18"), // lantern_pulse
+            (name: "drums", sound: "5c40acf9-f47f-4cea-9a41-cf89f8e0b90d"), // lantern_drums
+            (name: "bells", sound: "a7e89534-a6cb-455f-8d08-2a40d683a6f8"), // lantern_bells
+        ],
+        // An encounter's phases, as the fight folds them: calm before and between, everything while it
+        // runs, and the bells over the pad once it's won.
+        phases: [
+            (name: "waiting", play: ["pad"]),
+            (name: "running", play: ["pad", "pulse", "drums", "bells"]),
+            (name: "cleared", play: ["pad", "bells"]),
+        ],
+        fade_beats: 2.0,
+        volume_db: -12.0,
+        duck_db: -9.0,
+    ),
+)

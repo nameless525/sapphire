@@ -110,6 +110,8 @@ impl TextureKind {
             | ImportSettings::Enemy(_)
             | ImportSettings::Sound(_)
             | ImportSettings::Cue(_)
+            | ImportSettings::Score(_)
+            | ImportSettings::VoiceLines(_)
             | ImportSettings::Font(_)
             | ImportSettings::FontChains(_)
             | ImportSettings::MoveSet(_)

@@ -44,6 +44,12 @@ sapphire_livelink = { workspace = true, optional = true }
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 # A zone with no art, for streaming's tests.
 sapphire_synthetic_zone.workspace = true
+# The player's languages through a real settings file, to show the voice's survives a save apart from
+# the text's. The test's settings type derives `TypePath`, which finds `bevy_reflect` by name.
+bevy_reflect.workspace = true
+sapphire_reflect.workspace = true
+sapphire_save.workspace = true
+serde.workspace = true
 
 [features]
 # Development builds: the hooks hot reload and live link reach a stage by. An app's `dev` forwards it.

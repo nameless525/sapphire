@@ -14,17 +14,25 @@
 //! Slow motion (`Space`) bends and darkens what's playing, and hitstop (`H`) freezes `--cue swing`,
 //! both through the scene's own clocks ([`Scene::sound`](crate::scene::Scene::sound)). A sound
 //! recooked while the app runs isn't picked up: the mixer holds what was decoded at startup.
+//!
+//! A fight's table can name a score and voice lines (M3 A1, [`ShowSounds`]): the score follows the
+//! fight's phase ([`CueSounds::music_phase`]) and the lines are spoken in the voice language
+//! ([`DeviceAudio::set_voice_language`]), which starts as `LocaleSettings`' default and is the
+//! player's to change, apart from the text's.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
+use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
+use sapphire_assets::voice::VoiceLines;
 use sapphire_audio::{
-    AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
-    KiraBackend, Listener, OfflineOutput,
+    AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
+    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput,
 };
+use sapphire_loc::LocaleSettings;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::Renderer;
@@ -46,17 +54,37 @@ const CUES: [(&str, AssetId); 3] = [
 #[derive(Clone, Copy, Debug)]
 pub struct CueSounds<'a> {
     pub requests: &'a [CueRequest],
+    /// Voice lines, by key, spoken in the voice language.
+    pub lines: &'a [LineRequest],
     pub emitters: &'a [Emitter],
     /// The world clock's speed where they fire, which a slow motion turns down.
     pub world_time_scale: f32,
     /// A new fight began this frame, so what the last one left playing ends before these start.
     pub started_over: bool,
+    /// The phase the fight's score plays, by name: none, and the music fades out.
+    pub music_phase: Option<&'a str>,
 }
 
 impl CueSounds<'_> {
     /// Nothing: there's no fight.
-    pub const NONE: CueSounds<'static> =
-        CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0, started_over: false };
+    pub const NONE: CueSounds<'static> = CueSounds {
+        requests: &[],
+        lines: &[],
+        emitters: &[],
+        world_time_scale: 1.0,
+        started_over: false,
+        music_phase: None,
+    };
+}
+
+/// What an app loads for a fight's sound: the cues its table plays, and the score and voice lines it
+/// names.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShowSounds {
+    pub cues: Vec<AssetId>,
+    pub score: Option<AssetId>,
+    /// One `VoiceLines` a language.
+    pub voices: Vec<AssetId>,
 }
 
 /// The emitter cues play on: the scene's character.
@@ -109,6 +137,8 @@ struct Repeating {
 pub struct DeviceAudio {
     system: AudioSystem<KiraBackend<CpalOutput>>,
     random: CueRng,
+    /// The score a fight's phase plays.
+    score: Option<AssetId>,
     /// `--cue`'s.
     repeating: Option<Repeating>,
     /// This frame's, the character's and a fight's.
@@ -126,33 +156,35 @@ impl DeviceAudio {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
-        let audio = Self::for_cues(&[option.id], platform, content, renderer, gpu)?;
+        let sounds = ShowSounds { cues: vec![option.id], ..ShowSounds::default() };
+        let audio = Self::for_show(&sounds, platform, content, renderer, gpu)?;
         Ok(audio.map(|audio| Self {
             repeating: Some(Repeating { cue: option.id, repeat: option.repeat, next_play: Some(0.0) }),
             ..audio
         }))
     }
 
-    /// Loads `cues` and opens the device, with nothing due to play. `None`, logged, if the OS won't set
-    /// up audio.
-    pub fn for_cues(
-        cues: &[AssetId],
+    /// Loads `sounds` and opens the device, with nothing due to play. `None`, logged, if the OS won't
+    /// set up audio.
+    pub fn for_show(
+        sounds: &ShowSounds,
         platform: &mut Platform,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
-        let loaded = load_cues(cues, content, renderer, gpu)?;
+        let loaded = load(sounds, content, renderer, gpu)?;
         if let Err(error) = platform.prepare_audio() {
             tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
             return Ok(None);
         }
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
-        add_cues(&mut system, loaded);
+        add_loaded(&mut system, loaded)?;
         Ok(Some(Self {
             system,
             random: CueRng::new(CUE_SEED),
+            score: sounds.score,
             repeating: None,
             emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
@@ -187,6 +219,8 @@ impl DeviceAudio {
             world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
             emitters: &self.emitters,
             cues: requests.as_ref().map_or(fight.requests, |requests| requests.as_slice()),
+            lines: fight.lines,
+            music: music(self.score, fight.music_phase),
         };
         self.system.update(&frame, &mut self.random);
         self.report_in -= dt;
@@ -199,6 +233,12 @@ impl DeviceAudio {
     /// The player's volume, a share of full.
     pub fn set_volume(&mut self, volume: f32) {
         self.system.set_volume(volume);
+    }
+
+    /// Chooses the language voice lines are spoken in, a BCP 47 tag, apart from the text's: whether the
+    /// fight's lines are in it.
+    pub fn set_voice_language(&mut self, locale: &str) -> bool {
+        self.system.set_voice_language(locale)
     }
 
     /// The app went to the background, or came back, where it asks the OS for audio again first.
@@ -235,6 +275,9 @@ impl DeviceAudio {
             dropped_no_output = stats.dropped_no_output,
             dropped_voice_limit = stats.dropped_voice_limit,
             dropped_unknown = stats.dropped_unknown,
+            lines = stats.lines_asked,
+            lines_missing = stats.lines_missing,
+            phase_changes = stats.music_phase_changes,
             update_us = stats.update.as_micros() as u64,
             update_peak_us = peak.as_micros() as u64,
             mix_load = format_args!("{:.4}", device.mix_load()),
@@ -244,39 +287,91 @@ impl DeviceAudio {
     }
 }
 
-/// Loads `cues` and decodes their sounds: what a mixer holds from then on.
-fn load_cues(
-    cues: &[AssetId],
+/// The music `score` plays in `phase`, if there's both.
+fn music(score: Option<AssetId>, phase: Option<&str>) -> Option<MusicRequest<'_>> {
+    Some(MusicRequest { score: score?, phase: phase? })
+}
+
+/// Loads `sounds` and decodes theirs, the voice lines' cues with the table's: what a mixer holds from
+/// then on.
+fn load(
+    sounds: &ShowSounds,
     content: &mut Content,
     renderer: &mut Renderer,
     gpu: &GpuContext,
-) -> Result<Vec<LoadedCue>, AppInitError> {
+) -> Result<Loaded, AppInitError> {
     let stopwatch = Stopwatch::start();
     let mut decoded = HashSet::new();
-    let loaded = cues
+    let voices = sounds
+        .voices
+        .iter()
+        .map(|&id| content.load_voice_lines(id, renderer, gpu))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut cues = sounds.cues.clone();
+    cues.extend(voices.iter().flat_map(|lines| lines.lines.iter().map(|line| line.cue)));
+    cues.sort_unstable();
+    cues.dedup();
+    let cues = cues
         .iter()
         .map(|&id| content.load_cue(id, &mut decoded, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
         .collect::<Result<Vec<_>, _>>()?;
-    let sounds = loaded.iter().map(|(_, _, sounds)| sounds.len()).sum::<usize>();
-    let frames =
-        loaded.iter().flat_map(|(_, _, sounds)| sounds).map(|(_, sound)| sound.frames()).sum::<usize>();
+    let score = match sounds.score {
+        Some(id) => Some(
+            content.load_score(id, &mut decoded, renderer, gpu).map(|(score, stems)| (id, score, stems))?,
+        ),
+        None => None,
+    };
+    let all =
+        cues.iter().flat_map(|(_, _, sounds)| sounds).chain(score.iter().flat_map(|(_, _, stems)| stems));
+    let (count, frames) =
+        all.fold((0, 0), |(count, frames), (_, sound)| (count + 1, frames + sound.frames()));
     let load_and_decode = stopwatch.elapsed();
-    tracing::info!(target: LOG_TARGET, cues = cues.len(), sounds, frames, ?load_and_decode, "cues ready");
-    Ok(loaded)
+    tracing::info!(
+        target: LOG_TARGET,
+        cues = cues.len(),
+        score = score.is_some(),
+        languages = voices.len(),
+        sounds = count,
+        frames,
+        ?load_and_decode,
+        "sounds ready"
+    );
+    Ok(Loaded { cues, score, voices })
 }
 
-/// Gives `system` what [`load_cues`] loaded.
-fn add_cues<B: sapphire_audio::AudioBackend>(system: &mut AudioSystem<B>, loaded: Vec<LoadedCue>) {
-    for (id, cue, sounds) in loaded {
+/// Gives `system` what [`load`] loaded.
+fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> Result<(), AppInitError> {
+    for (id, cue, sounds) in loaded.cues {
         system.add_cue(id, cue);
         for (id, sound) in &sounds {
             system.add_sound(*id, sound);
         }
     }
+    if let Some((id, score, stems)) = loaded.score {
+        for (id, stem) in &stems {
+            system.add_sound(*id, stem);
+        }
+        system.add_score(id, score);
+    }
+    for lines in &loaded.voices {
+        system.add_voice_lines(lines).map_err(|error| AppInitError::msg(format!("voice lines: {error}")))?;
+    }
+    system.set_voice_language(&LocaleSettings::default().voice);
+    Ok(())
+}
+
+/// What [`load`] loaded.
+struct Loaded {
+    cues: Vec<LoadedCue>,
+    score: Option<LoadedScore>,
+    voices: Vec<VoiceLines>,
 }
 
 /// A cue and those of its sounds no cue before it brought, decoded.
 type LoadedCue = (AssetId, Cue, Vec<(AssetId, DecodedSound)>);
+
+/// A score and its stems, decoded.
+type LoadedScore = (AssetId, Score, Vec<(AssetId, DecodedSound)>);
 
 /// The rate [`OfflineAudio`] mixes at: a phone's and most devices' own.
 const OFFLINE_RATE: u32 = 48_000;
@@ -287,26 +382,28 @@ const OFFLINE_RATE: u32 = 48_000;
 pub struct OfflineAudio {
     system: AudioSystem<KiraBackend<OfflineOutput>>,
     random: CueRng,
+    score: Option<AssetId>,
     emitters: Vec<Emitter>,
     /// A frame's samples, interleaved, which nothing reads.
     block: Vec<f32>,
 }
 
 impl OfflineAudio {
-    /// Loads `cues`, as the windowed app does for a fight.
-    pub fn for_cues(
-        cues: &[AssetId],
+    /// Loads `sounds`, as the windowed app does for a fight.
+    pub fn for_show(
+        sounds: &ShowSounds,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Self, AppInitError> {
-        let loaded = load_cues(cues, content, renderer, gpu)?;
+        let loaded = load(sounds, content, renderer, gpu)?;
         let Ok(backend) = KiraBackend::<OfflineOutput>::new(OFFLINE_RATE);
         let mut system = AudioSystem::new(backend);
-        add_cues(&mut system, loaded);
+        add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
+            score: sounds.score,
             emitters: Vec::with_capacity(8),
             block: vec![0.0; OFFLINE_RATE as usize],
         })
@@ -326,8 +423,15 @@ impl OfflineAudio {
             world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
             emitters: &self.emitters,
             cues: fight.requests,
+            lines: fight.lines,
+            music: music(self.score, fight.music_phase),
         };
         self.system.update(&frame, &mut self.random);
+    }
+
+    /// As [`DeviceAudio::set_voice_language`].
+    pub fn set_voice_language(&mut self, locale: &str) -> bool {
+        self.system.set_voice_language(locale)
     }
 
     /// Mixes `dt` seconds of sound, and says how long that took.
@@ -378,5 +482,80 @@ mod tests {
     fn an_opened_device_fails_an_offscreen_run() {
         assert_eq!(stayed_shut(0), Ok(()));
         assert!(stayed_shut(1).unwrap_err().contains("audio device"));
+    }
+
+    /// A game's settings, as far as languages go.
+    #[derive(Debug, Default, PartialEq, bevy_reflect::TypePath, serde::Serialize, serde::Deserialize)]
+    #[type_path = "sapphire::stage_test"]
+    #[serde(default)]
+    struct Settings {
+        locale: LocaleSettings,
+    }
+
+    impl sapphire_reflect::Versioned for Settings {
+        const VERSION: u32 = 1;
+    }
+
+    #[test]
+    fn the_voice_language_survives_a_save_apart_from_the_texts() {
+        use sapphire_assets::cue::{Bus, HitstopResponse};
+        use sapphire_assets::voice::VoiceLine;
+        use sapphire_audio::{LineKey, MockBackend, MockCall};
+        use sapphire_save::{SettingsFile, SettingsOutcome};
+
+        let dir = std::env::temp_dir().join(format!("sapphire_stage_voice_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = SettingsFile::<Settings>::new(&dir, "settings", sapphire_platform::durable_replace);
+        let chosen = Settings { locale: LocaleSettings { text: "en".to_owned(), voice: "ja".to_owned() } };
+        file.write(&file.snapshot(&chosen).unwrap()).unwrap();
+        let loaded = file.load();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(loaded.outcome, SettingsOutcome::Read), "{:?}", loaded.outcome);
+        assert_eq!(loaded.value, chosen, "English menus over Japanese voices, as saved");
+
+        // A fight with the line in both languages, each its own cue and sound.
+        let ids = ["5c0e0000-0000-4000-8000-0000000000e0", "5c0e0000-0000-4000-8000-0000000000e1"];
+        let [english, japanese] = ids.map(AssetId::from_text);
+        let sound = DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.25; 480] };
+        let line = |id| {
+            let cue = Cue {
+                sounds: vec![id],
+                volume_db: [0.0, 0.0],
+                pitch: [1.0, 1.0],
+                attenuation: None,
+                bus: Bus::Voice,
+                hitstop: HitstopResponse::Ignore,
+            };
+            (id, cue, vec![(id, sound.clone())])
+        };
+        let voices = [("en", english), ("ja", japanese)].map(|(locale, cue)| VoiceLines {
+            locale: locale.to_owned(),
+            lines: vec![VoiceLine { key: "perfect-dodge".to_owned(), cue }],
+        });
+        let mut system = AudioSystem::new(MockBackend::new());
+        let fight =
+            Loaded { cues: vec![line(english), line(japanese)], score: None, voices: voices.to_vec() };
+        add_loaded(&mut system, fight).unwrap();
+        assert_eq!(system.voice_route().language(), Some("en"), "the default until the player's is read");
+
+        assert!(system.set_voice_language(&loaded.value.locale.voice));
+        let dodge = [LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat }];
+        let frame = AudioFrame {
+            dt: 1.0 / 60.0,
+            listener: Listener::default(),
+            world_time_scale: 1.0,
+            emitters: &[],
+            cues: &[],
+            lines: &dodge,
+            music: None,
+        };
+        system.backend_mut().take_calls();
+        system.update(&frame, &mut CueRng::new(1));
+        let spoken = system.backend().calls().iter().find_map(|call| match *call {
+            MockCall::StartVoice { sound, .. } => Some(sound),
+            _ => None,
+        });
+        assert_eq!(spoken, Some(japanese), "the line is in the voice language, not the text's");
+        assert_eq!(loaded.value.locale.text, "en");
     }
 }

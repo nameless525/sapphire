@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_audio"
-description = "Audio: the backend trait, kira on cpal, a mock for tests, cue playback, 3D voices and clock-aware mixing."
+description = "Audio: the backend trait, kira on cpal, a mock for tests, cue playback, 3D voices, clock-aware mixing, music by phase and voice lines by language."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ sapphire_assets.workspace = true
 sapphire_math.workspace = true
 # The budget's counter, and the mix's time on the audio callback (rule R2).
 sapphire_time.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

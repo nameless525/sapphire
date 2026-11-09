@@ -1,0 +1,12 @@
+// The fight's voice lines in English (M3 A1), by the keys the cue table's rows speak.
+(
+    type: "sapphire::assets::VoiceLines",
+    version: 1,
+    data: (
+        locale: "en",
+        lines: [
+            (key: "perfect-dodge", cue: "55b6e700-7e93-4896-b46f-988dfc34dba9"), // en/perfect-dodge
+            (key: "swap-in", cue: "661e7d90-924b-4d7b-98ca-ec20556fff2c"), // en/swap-in
+        ],
+    ),
+)

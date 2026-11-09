@@ -46,7 +46,8 @@
 //! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
-//!   linking a mixer (`sapphire_audio`, which plays them).
+//!   linking a mixer (`sapphire_audio`, which plays them). Music and voice (M3 A1) likewise: [`score`],
+//!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`).
 //! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
 //!   how a character's clips play: which layers, which states, what plays for which move. Plain
 //!   data, with its clips as dependencies; `sapphire_anim` runs it.
@@ -120,11 +121,13 @@ pub mod pack;
 mod pipeline_key;
 pub mod probes;
 pub mod rig;
+pub mod score;
 mod server;
 pub mod skeleton;
 pub mod sound;
 pub mod texture;
 pub mod ui;
+pub mod voice;
 
 pub use kind::{AssetError, AssetKind};
 pub use pipeline_key::{PipelineKey, SlotMaterial};

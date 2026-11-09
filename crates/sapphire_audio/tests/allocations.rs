@@ -1,13 +1,15 @@
 //! What a cue costs the allocator. Cues come from gameplay every frame, so this is measured rather
 //! than assumed, with the counting allocator every app installs (spec R6; `sapphire_core::alloc`).
 //! One test, since the counts are of this thread and a harness thread of its own keeps them honest.
+//! Music's phase changes (M3 A1) are held to none, once a score plays, in the same test.
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
-    MockBackend, MockCall, OfflineOutput,
+    MockBackend, MockCall, MusicRequest, OfflineOutput,
 };
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
 use sapphire_math::Vec3;
@@ -48,6 +50,8 @@ fn frame<'a>(emitters: &'a [Emitter], cues: &'a [CueRequest]) -> AudioFrame<'a> 
         world_time_scale: 1.0,
         emitters,
         cues,
+        lines: &[],
+        music: None,
     }
 }
 
@@ -118,4 +122,57 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     assert_eq!(moving.allocations, 0, "moving a voice allocated");
     assert_eq!(mixing.allocations, 0, "the mix allocated, which the audio callback must never do");
     assert_eq!(converting.allocations, 0, "converting the mix allocated, on the audio callback");
+
+    music_changes_phase_with_no_allocation();
+}
+
+const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-000000000001");
+
+/// Four stems of a bar at 120 beats a minute, each in its own phase, so every change fades two.
+fn music_changes_phase_with_no_allocation() {
+    let stems: Vec<AssetId> =
+        (0..4).map(|n| format!("5c0e0000-0000-4000-8000-0000000000a{n}").parse().unwrap()).collect();
+    let score = Score {
+        tempo_bpm: 120.0,
+        beats_per_bar: 4,
+        bars: 1,
+        stems: stems.iter().enumerate().map(|(n, &sound)| Stem { name: format!("s{n}"), sound }).collect(),
+        phases: (0..4).map(|n| Phase { name: format!("p{n}"), play: vec![format!("s{n}")] }).collect(),
+        fade_beats: 1.0,
+        volume_db: 0.0,
+        duck_db: -10.0,
+    };
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    let stem = DecodedSound { sample_rate: RATE, channels: 1, samples: vec![0.1; 2 * RATE as usize] };
+    for &id in &stems {
+        system.add_sound(id, &stem);
+    }
+    system.add_score(SCORE, score);
+    let mut rng = CueRng::new(1);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    let phases = ["p0", "p1", "p2", "p3"];
+    let mut frame_at = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, phase: &str| {
+        let music = Some(MusicRequest { score: SCORE, phase });
+        system.update(&AudioFrame { music, ..frame(&[], &[]) }, &mut rng);
+        system.backend_mut().output_mut().render_into(&mut buffer);
+    };
+    // Started, and round every phase twice: warm.
+    for phase in phases.iter().cycle().take(8) {
+        for _ in 0..30 {
+            frame_at(&mut system, phase);
+        }
+    }
+    let ((), changing) = count_in_scope(|| {
+        for phase in phases.iter().cycle().take(8) {
+            for _ in 0..30 {
+                frame_at(&mut system, phase);
+            }
+        }
+    });
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!("eight phase changes and 240 frames of music: {} allocations", changing.allocations);
+    }
+    assert_eq!(system.stats().music_phase_changes, 15);
+    assert_eq!(changing.allocations, 0, "a phase change or the music's mix allocated");
 }

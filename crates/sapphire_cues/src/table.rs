@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use bevy_reflect::TypePath;
 use sapphire_assets::AssetId;
+use sapphire_assets::voice::is_line_key;
 use sapphire_moves::Weight;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
@@ -117,6 +118,10 @@ pub struct CueRow {
     pub screen: Option<ScreenFire>,
     #[serde(default)]
     pub rumble: Option<Rumble>,
+    /// A voice line to speak, by its key, in the voice language: one of the table's
+    /// [`CueTable::voices`] (M3 A1).
+    #[serde(default)]
+    pub line: Option<String>,
 }
 
 impl CueRow {
@@ -144,6 +149,11 @@ impl CueRow {
             && !(shake.strength > 0.0 && shake.strength <= MAX_SHAKE_STRENGTH)
         {
             return Err(invalid("shake.strength", "must be above 0 and at most 4"));
+        }
+        if let Some(line) = &self.line
+            && !is_line_key(line)
+        {
+            return Err(invalid("line", "isn't a key: a letter, then letters, digits, `-` and `_`"));
         }
         if let Some(rumble) = &self.rumble {
             if !(0.0..=1.0).contains(&rumble.low) {
@@ -185,13 +195,20 @@ pub enum CueTableError {
 
 /// What each gameplay cue fires (a `CueTable` document, schema 1): one row per cue, or per cue and hit
 /// weight. A cue with no row fires nothing and is counted ([`crate::CueStats::unmatched`]); a row that
-/// fires nothing says so on purpose.
+/// fires nothing says so on purpose. With the rows, the fight's score and its voice lines' tables
+/// (M3 A1), which the rows' lines and the fight's phase play.
 ///
 /// A table's rows are valid and distinct however it was made, deserialization included.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
 #[type_path = "sapphire::cues"]
 #[serde(try_from = "UncheckedTable")]
 pub struct CueTable {
+    /// A `Score` document's ID: the stems the fight's phase plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    music: Option<AssetId>,
+    /// `VoiceLines` documents' IDs, one a language: what the rows' lines say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    voices: Vec<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -203,6 +220,10 @@ impl Versioned for CueTable {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UncheckedTable {
+    #[serde(default)]
+    music: Option<AssetId>,
+    #[serde(default)]
+    voices: Vec<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -210,7 +231,7 @@ impl TryFrom<UncheckedTable> for CueTable {
     type Error = CueTableError;
 
     fn try_from(table: UncheckedTable) -> Result<Self, CueTableError> {
-        Self::new(table.rows)
+        Ok(Self::new(table.rows)?.with_music(table.music, table.voices))
     }
 }
 
@@ -230,7 +251,25 @@ impl CueTable {
             }
             row.validate()?;
         }
-        Ok(Self { rows })
+        Ok(Self { music: None, voices: Vec::new(), rows })
+    }
+
+    /// The table, with the score `music` plays and the voice lines' tables `voices`.
+    #[must_use]
+    pub fn with_music(self, music: Option<AssetId>, voices: Vec<AssetId>) -> Self {
+        Self { music, voices, ..self }
+    }
+
+    /// The `Score` the fight's phase plays, if any.
+    #[must_use]
+    pub fn music(&self) -> Option<AssetId> {
+        self.music
+    }
+
+    /// The `VoiceLines` the rows' lines are said from, one a language.
+    #[must_use]
+    pub fn voices(&self) -> &[AssetId] {
+        &self.voices
     }
 
     /// The shipped table (`default_cues.ron` beside this crate's manifest), compiled in like the
@@ -289,6 +328,7 @@ mod tests {
             shake: None,
             screen: None,
             rumble: None,
+            line: None,
         }
     }
 
@@ -329,6 +369,36 @@ mod tests {
             let id = cue.to_string();
             assert!(sidecars.iter().any(|sidecar| sidecar.contains(&id)), "{id} has no cue document");
         }
+    }
+
+    /// The shipped table's score and voice lines are documents in `content/audio/generated`, by their
+    /// sidecars' IDs, and its rows speak lines.
+    #[test]
+    fn the_music_and_voices_are_documents() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated");
+        let sidecar = |path: &str| std::fs::read_to_string(folder.join(path)).expect("reads");
+        let table = CueTable::default_table();
+        let score = table.music().expect("the fight has a score").to_string();
+        assert!(sidecar("music/lantern.score.ron.meta").contains(&score));
+        let voices: Vec<String> = table.voices().iter().map(ToString::to_string).collect();
+        assert_eq!(voices.len(), 2);
+        assert!(sidecar("voice/en.voice.ron.meta").contains(&voices[0]));
+        assert!(sidecar("voice/ja.voice.ron.meta").contains(&voices[1]));
+        assert!(table.rows().iter().any(|row| row.line.is_some()));
+    }
+
+    #[test]
+    fn music_and_voices_read_and_write_back() {
+        let id = |n: u8| format!("11111111-2222-4333-8444-5555555555{n:02x}");
+        let text = format!(
+            "(type: \"sapphire::cues::CueTable\", version: 1, data: (music: Some(\"{}\"), voices: [\"{}\"], rows: []))",
+            id(1),
+            id(2)
+        );
+        let table = CueTable::from_ron(&text).expect("reads");
+        assert_eq!(table.music(), Some(id(1).parse().unwrap()));
+        assert_eq!(table.voices(), [id(2).parse::<AssetId>().unwrap()]);
+        assert_eq!(CueTable::from_ron(&table.to_ron().expect("writes")).expect("reads back"), table);
     }
 
     #[test]
@@ -392,6 +462,7 @@ mod tests {
         assert_eq!(field_of(effects), "effects");
         let id = AssetId::from_text("11111111-2222-4333-8444-555555555555");
         assert_eq!(field_of(CueRow { sounds: vec![id; MAX_ROW_SOUNDS + 1], ..row("a") }), "sounds");
+        assert_eq!(field_of(CueRow { line: Some("perfect dodge".to_owned()), ..row("a") }), "line");
 
         let text =
             |data: &str| format!(r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [{data}]))"#);

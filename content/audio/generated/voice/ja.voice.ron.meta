@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "f654779f-b76d-405b-92c8-588b3064b11d",
+        importer: VoiceLines(()),
+    ),
+)

@@ -112,10 +112,7 @@ impl App for GameApp {
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         let mut audio = match show.shown.fight.show.cue_show() {
-            Some(cues) => {
-                let cues = cues.table().sound_cues();
-                DeviceAudio::for_cues(&cues, platform, content, renderer, gpu)?
-            }
+            Some(cues) => DeviceAudio::for_show(&cues.sounds_to_load(), platform, content, renderer, gpu)?,
             None => None,
         };
         if let Some(audio) = &mut audio {

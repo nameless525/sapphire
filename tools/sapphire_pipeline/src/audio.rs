@@ -1,5 +1,6 @@
-//! Cooking sound (M2 E1, spec §5.15, §5.27): `.ogg` files to `.ssound` and `.cue.ron` documents to
-//! `.scue`. The formats are `sapphire_assets`' plain data, so no mixer is linked here.
+//! Cooking sound (M2 E1, spec §5.15, §5.27): `.ogg` files to `.ssound`, `.cue.ron` documents to
+//! `.scue`, and music and voice (M3 A1): `.score.ron` to `.sscore` and `.voice.ron` to `.svoice`. The
+//! formats are `sapphire_assets`' plain data, so no mixer is linked here.
 //!
 //! A sound's cook copies the Ogg Vorbis file, the target format on every platform, after decoding
 //! all of it with the runtime's decoder, so a file the runtime couldn't play fails the cook. Desktop
@@ -7,14 +8,17 @@
 //!
 //! A cue's cook checks the document's values ([`Cue::from_document`]), and its references are
 //! checked on every cook, cached or not, by [`dependencies`](crate::cook): each must be a sound of
-//! this content tree that cooks.
+//! this content tree that cooks. A score's stems must be sounds as long as its loop, to the frame, and
+//! a voice line's cue must play on the voice bus; both are read from their sources on every cook too.
 //!
-//! Sounds and cues go in a pack of their own ([`crate::pack::AUDIO`]).
+//! Sounds, cues, scores and voice lines go in a pack of their own ([`crate::pack::AUDIO`]).
 
 use std::path::{Path, PathBuf};
 
-use sapphire_assets::cue::{Cue, CueError};
+use sapphire_assets::cue::{Bus, Cue, CueError};
+use sapphire_assets::score::{Score, ScoreError};
 use sapphire_assets::sound::{Sound, SoundError};
+use sapphire_assets::voice::{VoiceLines, VoiceLinesError};
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
@@ -32,8 +36,21 @@ pub const CUE_IMPORTER: Stage = Stage { name: "cue document", version: 1 };
 /// The cue cooker. Bump it whenever it changes output for the same document.
 pub const CUE_COOKER: Stage = Stage { name: "scue", version: 1 };
 
+/// The score importer as cache keys know it.
+pub const SCORE_IMPORTER: Stage = Stage { name: "score document", version: 1 };
+/// The score cooker. Bump it whenever it changes output for the same document.
+pub const SCORE_COOKER: Stage = Stage { name: "sscore", version: 1 };
+/// The voice-line importer as cache keys know it.
+pub const VOICE_IMPORTER: Stage = Stage { name: "voice lines document", version: 1 };
+/// The voice-line cooker. Bump it whenever it changes output for the same document.
+pub const VOICE_COOKER: Stage = Stage { name: "svoice", version: 1 };
+
 /// What a cue document's file name ends with.
 const CUE_SOURCE_SUFFIX: &str = ".cue.ron";
+/// What a score document's file name ends with.
+const SCORE_SOURCE_SUFFIX: &str = ".score.ron";
+/// What a voice-line document's file name ends with.
+const VOICE_SOURCE_SUFFIX: &str = ".voice.ron";
 
 /// Import settings for sounds, none yet: an empty struct rather than `()`, so settings can join
 /// without changing existing sidecars.
@@ -46,6 +63,16 @@ pub struct SoundSettings {}
 #[serde(default)]
 pub struct CueSettings {}
 
+/// Import settings for scores, as for sounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScoreSettings {}
+
+/// Import settings for voice lines, as for sounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceLinesSettings {}
+
 /// A sound or cue that won't cook.
 #[derive(Debug, thiserror::Error)]
 pub enum AudioCookError {
@@ -53,6 +80,18 @@ pub enum AudioCookError {
     Sound(#[from] SoundError),
     #[error(transparent)]
     Cue(#[from] CueError),
+    #[error(transparent)]
+    Score(#[from] ScoreError),
+    #[error(transparent)]
+    VoiceLines(#[from] VoiceLinesError),
+    /// A stem that wouldn't loop in step with its score's bars.
+    #[error(
+        "stem `{stem}` is {frames} frames at {sample_rate} Hz, and the loop is {loop_seconds} s: {expected}"
+    )]
+    StemLength { stem: String, frames: u32, sample_rate: u32, loop_seconds: f64, expected: String },
+    /// A voice line whose cue plays somewhere music wouldn't duck for it.
+    #[error("line `{key}`'s cue plays on the {bus:?} bus, not Voice")]
+    LineBus { key: String, bus: Bus },
     #[error(transparent)]
     Cooked(#[from] CookedError),
     #[error("the document isn't UTF-8")]
@@ -66,10 +105,40 @@ pub fn is_cue_source(path: &Path) -> bool {
         .is_some_and(|name| name.to_ascii_lowercase().ends_with(CUE_SOURCE_SUFFIX))
 }
 
+/// Whether `path` names a score document.
+pub fn is_score_source(path: &Path) -> bool {
+    ends_with(path, SCORE_SOURCE_SUFFIX)
+}
+
+/// Whether `path` names a voice-line document.
+pub fn is_voice_source(path: &Path) -> bool {
+    ends_with(path, VOICE_SOURCE_SUFFIX)
+}
+
+fn ends_with(path: &Path, suffix: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(suffix))
+}
+
 /// The cooked file a cue document at `relative` writes: `hit.cue.ron` → `hit.scue`.
 pub fn cue_output_path(relative: &Path, extension: &str) -> PathBuf {
+    output_path(relative, CUE_SOURCE_SUFFIX, extension)
+}
+
+/// The cooked file a score at `relative` writes: `ward.score.ron` → `ward.sscore`.
+pub fn score_output_path(relative: &Path, extension: &str) -> PathBuf {
+    output_path(relative, SCORE_SOURCE_SUFFIX, extension)
+}
+
+/// The cooked file voice lines at `relative` write: `ja.voice.ron` → `ja.svoice`.
+pub fn voice_output_path(relative: &Path, extension: &str) -> PathBuf {
+    output_path(relative, VOICE_SOURCE_SUFFIX, extension)
+}
+
+fn output_path(relative: &Path, suffix: &str, extension: &str) -> PathBuf {
     let name = relative.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    let stem = &name[..name.len().saturating_sub(CUE_SOURCE_SUFFIX.len())];
+    let stem = &name[..name.len().saturating_sub(suffix.len())];
     relative.with_file_name(format!("{stem}.{extension}"))
 }
 
@@ -83,6 +152,56 @@ pub fn cook_cue(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
     let cooked = read_cue(bytes)?.to_cooked()?;
     Cue::read(&cooked)?;
     Ok(cooked.into_vec())
+}
+
+/// Reads and checks a score document.
+pub fn read_score(bytes: &[u8]) -> Result<Score, AudioCookError> {
+    Ok(Score::from_document(std::str::from_utf8(bytes)?)?)
+}
+
+/// The bytes of a score's cooked file, read back through the runtime's check.
+pub fn cook_score(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
+    let cooked = read_score(bytes)?.to_cooked()?;
+    Score::read(&cooked)?;
+    Ok(cooked.into_vec())
+}
+
+/// Holds the stem `stem` of `score`, whose `.ogg` is `vorbis`, to the loop's length: a stem a frame off
+/// drifts from the bars a little more each time round.
+pub fn check_stem(score: &Score, stem: &str, vorbis: &[u8]) -> Result<(), AudioCookError> {
+    let sound = Sound::from_vorbis(vorbis.to_vec())?;
+    let expected = score.stem_frames(sound.sample_rate);
+    if expected == Some(u64::from(sound.frames)) {
+        return Ok(());
+    }
+    Err(AudioCookError::StemLength {
+        stem: stem.to_owned(),
+        frames: sound.frames,
+        sample_rate: sound.sample_rate,
+        loop_seconds: score.loop_seconds(),
+        expected: match expected {
+            Some(frames) => format!("it must be {frames}"),
+            None => "no stem at that rate can be a whole number of frames that long".to_owned(),
+        },
+    })
+}
+
+/// Reads and checks a voice-line document.
+pub fn read_voice_lines(bytes: &[u8]) -> Result<VoiceLines, AudioCookError> {
+    Ok(VoiceLines::from_document(std::str::from_utf8(bytes)?)?)
+}
+
+/// The bytes of a voice-line table's cooked file, read back through the runtime's check.
+pub fn cook_voice_lines(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
+    let cooked = read_voice_lines(bytes)?.to_cooked()?;
+    VoiceLines::read(&cooked)?;
+    Ok(cooked.into_vec())
+}
+
+/// Holds the line `key` to its cue's document, `cue`: it plays on the voice bus, which music ducks for.
+pub fn check_line(key: &str, cue: &[u8]) -> Result<(), AudioCookError> {
+    let bus = read_cue(cue)?.bus;
+    if bus == Bus::Voice { Ok(()) } else { Err(AudioCookError::LineBus { key: key.to_owned(), bus }) }
 }
 
 /// The bytes of a sound's cooked file, decoded whole on the way and read back through the runtime's
@@ -221,6 +340,8 @@ mod tests {
     fn a_kinds_group_decides_its_pack() {
         assert_eq!(pack::group(Some(AssetKind::Sound)), pack::AUDIO);
         assert_eq!(pack::group(Some(AssetKind::Cue)), pack::AUDIO);
+        assert_eq!(pack::group(Some(AssetKind::Score)), pack::AUDIO);
+        assert_eq!(pack::group(Some(AssetKind::VoiceLines)), pack::AUDIO);
         for kind in
             [AssetKind::Mesh, AssetKind::Texture, AssetKind::Material, AssetKind::Rig, AssetKind::ProbeGrid]
         {
@@ -254,6 +375,123 @@ mod tests {
         fs::write(tree.content().join("hit.cue.ron"), text).unwrap();
         let error = anyhow_chain(&tree.cook().unwrap_err());
         assert!(error.contains("hit.cue.ron") && error.contains("pitch"), "{error}");
+    }
+
+    /// A sound half a second long from the third-party folder: long enough to be a bar.
+    fn stem_ogg() -> Vec<u8> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/third_party/kenney_interface_sounds/Audio/confirmation_002.ogg");
+        fs::read(path).expect("the stem")
+    }
+
+    /// A score of the one stem `sound`, [`stem_ogg`], one bar of one beat at the tempo that makes it
+    /// that bar, looping `bars` bars.
+    fn score_document(sound: AssetId, bars: u32) -> String {
+        let stem = Sound::from_vorbis(stem_ogg()).unwrap();
+        let tempo = (60.0 * f64::from(stem.sample_rate) / f64::from(stem.frames)) as f32;
+        let beats = 1;
+        format!(
+            "(\n    type: \"sapphire::assets::Score\",\n    version: 1,\n    data: (\n        tempo_bpm: {tempo:?},\n        \
+             beats_per_bar: {beats},\n        bars: {bars},\n        stems: [(name: \"click\", sound: \"{sound}\")],\n        \
+             phases: [(name: \"running\", play: [\"click\"])],\n    ),\n)\n"
+        )
+    }
+
+    fn voice_document(key: &str, cue: AssetId) -> String {
+        format!(
+            "(\n    type: \"sapphire::assets::VoiceLines\",\n    version: 1,\n    data: (\n        locale: \"ja\",\n        \
+             lines: [(key: \"{key}\", cue: \"{cue}\")],\n    ),\n)\n"
+        )
+    }
+
+    /// A tree with a score of `stem.ogg` and Japanese lines speaking `line.cue.ron`, a cue of it on
+    /// the voice bus, all with their sidecars, beside the tree's own `source.ogg`.
+    fn music_tree(name: &str) -> (Tree, AssetId, AssetId) {
+        let tree = Tree::new(name);
+        fs::write(tree.content().join("stem.ogg"), stem_ogg()).unwrap();
+        tree.cook().unwrap();
+        let sound = tree.id_of("stem.ogg");
+        fs::write(
+            tree.content().join("line.cue.ron"),
+            cue_document(&[sound]).replace("bus: Ui", "bus: Voice"),
+        )
+        .unwrap();
+        fs::write(tree.content().join("fight.score.ron"), score_document(sound, 1)).unwrap();
+        tree.cook().unwrap();
+        let cue = tree.id_of("line.cue.ron");
+        fs::write(tree.content().join("ja.voice.ron"), voice_document("perfect-dodge", cue)).unwrap();
+        (tree, sound, cue)
+    }
+
+    #[test]
+    fn scores_and_voice_lines_are_found_by_their_suffixes() {
+        assert_eq!(
+            ImportSettings::for_source(Path::new("a/fight.score.ron")),
+            Some(ImportSettings::Score(ScoreSettings::default()))
+        );
+        assert_eq!(
+            ImportSettings::for_source(Path::new("a/ja.voice.ron")),
+            Some(ImportSettings::VoiceLines(VoiceLinesSettings::default()))
+        );
+        let recipe = Recipe::for_settings(&ImportSettings::Score(ScoreSettings::default()));
+        assert_eq!(recipe.output_path(Path::new("a/fight.score.ron")), Path::new("a/fight.sscore"));
+        let recipe = Recipe::for_settings(&ImportSettings::VoiceLines(VoiceLinesSettings::default()));
+        assert_eq!(recipe.output_path(Path::new("a/ja.voice.ron")), Path::new("a/ja.svoice"));
+    }
+
+    #[test]
+    fn a_score_and_voice_lines_cook_pack_and_load_with_what_they_name() {
+        let (tree, sound, cue) = music_tree("audio_music_round_trip");
+        let report = tree.cook().unwrap();
+        let (score_id, lines_id) = (tree.id_of("fight.score.ron"), tree.id_of("ja.voice.ron"));
+        assert_eq!(report.assets.len(), 5);
+
+        let packs = tree.dir.path().join("packs");
+        let packed = pack_cooked(&report, &packs, None).unwrap();
+        let names: BTreeSet<&str> = packed.packs.iter().map(|pack| pack.name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from([pack::AUDIO]), "music and voice go with the sounds");
+        let source = Arc::new(MemoryPackSource::new());
+        source.insert(pack::AUDIO, fs::read(packs.join("audio.spack")).unwrap());
+        let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
+        server.mount_now(pack::AUDIO).unwrap();
+        let score: Handle<Score> = server.load(score_id).unwrap();
+        server.finish(&score, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
+        assert_eq!(server.get(&score).expect("loaded").to_owned_score().stems[0].sound, sound);
+        let stem: Handle<Sound> = server.load(sound).unwrap();
+        assert!(server.get(&stem).is_some(), "the stem came with it");
+        let lines: Handle<VoiceLines> = server.load(lines_id).unwrap();
+        server.finish(&lines, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
+        let lines = server.get(&lines).expect("loaded").to_owned_lines();
+        assert_eq!((lines.locale.as_str(), lines.lines[0].cue), ("ja", cue));
+    }
+
+    #[test]
+    fn a_stem_that_isnt_whole_bars_fails_the_cook_naming_it() {
+        let (tree, sound, _) = music_tree("audio_stem_length");
+        fs::write(tree.content().join("fight.score.ron"), score_document(sound, 2)).unwrap();
+        let error = anyhow_chain(&tree.cook().unwrap_err());
+        assert!(error.contains("fight.score.ron") && error.contains("stem `click`"), "{error}");
+    }
+
+    #[test]
+    fn a_line_whose_cue_isnt_on_the_voice_bus_fails_the_cook_naming_it() {
+        let (tree, sound, _) = music_tree("audio_line_bus");
+        fs::write(tree.content().join("line.cue.ron"), cue_document(&[sound])).unwrap();
+        let error = anyhow_chain(&tree.cook().unwrap_err());
+        assert!(
+            error.contains("ja.voice.ron") && error.contains("`perfect-dodge`") && error.contains("Ui"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_score_or_lines_naming_the_wrong_kind_fail_the_cook_by_name() {
+        let (tree, sound, cue) = music_tree("audio_wrong_kind");
+        fs::write(tree.content().join("fight.score.ron"), score_document(cue, 1)).unwrap();
+        assert!(matches!(tree.cook(), Err(CookError::NotAStem { .. })));
+        fs::write(tree.content().join("fight.score.ron"), score_document(sound, 1)).unwrap();
+        fs::write(tree.content().join("ja.voice.ron"), voice_document("perfect-dodge", sound)).unwrap();
+        assert!(matches!(tree.cook(), Err(CookError::NotALine { .. })));
     }
 
     /// An error and what caused it, as a cook prints them.

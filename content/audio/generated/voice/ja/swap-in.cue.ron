@@ -1,0 +1,11 @@
+// `swap-in` in Japanese: a placeholder voice `sapphire_soundgen` synthesized, with no words.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: ["8b3529b7-72fd-4c9a-b105-a0665d2999fc"],
+        volume_db: (-4.0, -4.0),
+        pitch: (1.0, 1.0),
+        bus: Voice,
+    ),
+)

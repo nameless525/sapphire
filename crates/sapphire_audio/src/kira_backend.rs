@@ -1,26 +1,34 @@
 //! [`KiraBackend`]: the [`AudioBackend`] on kira's mixer, over whichever [`Output`] pulls its audio.
 //!
-//! The mix is three sub-tracks, one a [`Bus`], each with room for every voice; the world's buses
+//! The mix is a sub-track for each [`Bus`], each with room for every voice; the world's buses
 //! carry a low-pass filter, out of the signal until a snapshot asks for it. A voice is a kira
 //! static sound on its bus's track.
+//!
+//! Music (M3 A1) is a score's stems, looping static sounds on the music track, all started by one
+//! kira clock that counts the score's beats: a stem's fade waits on the clock for its beat, so it
+//! lands on the bar in the mixer's own time, to within one internal buffer, however late the frame
+//! that asked.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
 use kira::sound::PlaybackState;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings};
 use kira::track::{MainTrackBuilder, TrackBuilder, TrackHandle};
 use kira::{
-    AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Mix, Panning, PlaybackRate, Tween,
+    AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Mix, Panning, PlaybackRate, StartTime,
+    Tween,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
+use sapphire_assets::score::MAX_STEMS;
 use sapphire_assets::sound::DecodedSound;
 
 use crate::LOG_TARGET;
-use crate::backend::{AudioBackend, BusParams, DeviceStatus, StartError, VoiceParams, VoiceSlot};
+use crate::backend::{AudioBackend, BusParams, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot};
 use crate::output::Output;
 use crate::system::MAX_VOICES;
 
@@ -42,12 +50,30 @@ struct BusTrack {
     open: bool,
 }
 
+/// The music: the clock its stems start on and their fades wait on, and the stems.
+struct Music {
+    clock: ClockHandle,
+    stems: Vec<StaticSoundHandle>,
+}
+
+impl Music {
+    /// Ends the stems over `fade`. A dropped handle would leave its stem looping.
+    fn end(&mut self, fade: Duration) {
+        for stem in &mut self.stems {
+            stem.stop(tween(fade));
+        }
+        self.stems.clear();
+        self.clock.stop();
+    }
+}
+
 /// The [`AudioBackend`] on kira. See the [crate docs](crate).
 pub struct KiraBackend<O: Output> {
     manager: AudioManager<O>,
     buses: Vec<BusTrack>,
     sounds: HashMap<AssetId, StaticSoundData>,
     voices: Vec<Option<StaticSoundHandle>>,
+    music: Music,
 }
 
 impl<O: Output> KiraBackend<O> {
@@ -61,22 +87,28 @@ impl<O: Output> KiraBackend<O> {
         })?;
         let mut buses = Vec::with_capacity(Bus::ALL.len());
         for bus in Bus::ALL {
-            let mut builder = TrackBuilder::new().sound_capacity(MAX_VOICES).sub_track_capacity(0);
+            // A score's stems, and the last one's fading out.
+            let stems = if bus == Bus::Music { 2 * MAX_STEMS } else { 0 };
+            let mut builder = TrackBuilder::new().sound_capacity(MAX_VOICES + stems).sub_track_capacity(0);
             let filter = bus.follows_world_clock().then(|| {
                 builder
                     .add_effect(FilterBuilder::new().mode(FilterMode::LowPass).cutoff(20_000.0).mix(Mix::DRY))
             });
             match manager.add_sub_track(builder) {
                 Ok(track) => buses.push(BusTrack { track, filter, open: true }),
-                // There is room for far more than three in a new mixer.
+                // There is room for far more than five in a new mixer.
                 Err(_) => unreachable!("a new mixer has room for its buses"),
             }
         }
+        let Ok(clock) = manager.add_clock(ClockSpeed::TicksPerMinute(120.0)) else {
+            unreachable!("a new mixer has room for a clock")
+        };
         Ok(Self {
             manager,
             buses,
             sounds: HashMap::new(),
             voices: std::iter::repeat_with(|| None).take(MAX_VOICES).collect(),
+            music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
         })
     }
 
@@ -192,6 +224,56 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         if !open {
             filter.set_cutoff(f64::from(params.low_pass_hz), moving);
         }
+    }
+
+    fn set_bus_gain(&mut self, bus: Bus, gain_db: f32, fade: Duration) {
+        self.buses[bus.index()].track.set_volume(Decibels(gain_db), tween(fade));
+    }
+
+    fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError> {
+        // Stopped before the stems go in, so none can start on the last score's clock.
+        self.music.end(fade);
+        self.music.clock.set_speed(ClockSpeed::TicksPerMinute(f64::from(tempo_bpm)), tween(Duration::ZERO));
+        let first_beat = StartTime::ClockTime(ClockTime::from_ticks_u64(&self.music.clock, 0));
+        for stem in stems {
+            let Some(data) = self.sounds.get(&stem.sound) else {
+                self.music.end(Duration::ZERO);
+                return Err(StartError::UnknownSound(stem.sound));
+            };
+            let data = data.loop_region(..).start_time(first_beat).volume(Decibels(stem.gain_db));
+            match self.buses[Bus::Music.index()].track.play(data) {
+                Ok(handle) => self.music.stems.push(handle),
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, %error, "the mixer refused a stem");
+                    self.music.end(Duration::ZERO);
+                    return Err(StartError::MixerFull);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn play_music(&mut self) {
+        self.music.clock.start();
+    }
+
+    fn fade_stem(&mut self, stem: usize, gain_db: f32, beat: u64, fade: Duration) {
+        let at = StartTime::ClockTime(ClockTime::from_ticks_u64(&self.music.clock, beat));
+        if let Some(stem) = self.music.stems.get_mut(stem) {
+            stem.set_volume(Decibels(gain_db), Tween { start_time: at, duration: fade, ..Tween::default() });
+        }
+    }
+
+    fn stop_music(&mut self, fade: Duration) {
+        self.music.end(fade);
+    }
+
+    fn music_beats(&mut self) -> Option<f64> {
+        let clock = &self.music.clock;
+        clock.ticking().then(|| {
+            let time = clock.time();
+            time.ticks as f64 + time.fraction
+        })
     }
 
     fn suspend(&mut self) {

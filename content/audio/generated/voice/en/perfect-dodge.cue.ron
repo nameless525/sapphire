@@ -1,0 +1,11 @@
+// `perfect-dodge` in English: a placeholder voice `sapphire_soundgen` synthesized, with no words.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: ["868d5969-ea82-4ac9-836e-8a63a5daef19"],
+        volume_db: (-4.0, -4.0),
+        pitch: (1.0, 1.0),
+        bus: Voice,
+    ),
+)

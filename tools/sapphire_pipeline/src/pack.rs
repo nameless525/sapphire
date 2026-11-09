@@ -31,8 +31,9 @@
 //! it's always in that zone's pack. So are its shapes' meshes in an editor's cook, which nothing names but
 //! an editor that knows the zone: whatever a zone's source cooks to is a root of its pack, as the zone is.
 //!
-//! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
-//! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
+//! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1), and scores and voice lines with them (M3 A1).
+//! The content tree holds about 280 sounds, about 3 MB against the shared pack's 23 MB, and nothing
+//! yet says which a game needs. A pack of their own
 //! leaves the shared pack byte for byte as it was, so a capture or a bench mounts and reads none of
 //! it: an app that plays no sound pays for none but the file's place in its bundle. When cues have
 //! roots, the sounds nothing reaches drop out.
@@ -149,7 +150,7 @@ pub const NOTICES: &str = "NOTICES.txt";
 /// file of no kind goes where the packer reports it.
 pub fn group(kind: Option<AssetKind>) -> &'static str {
     match kind {
-        Some(AssetKind::Sound | AssetKind::Cue) => AUDIO,
+        Some(AssetKind::Sound | AssetKind::Cue | AssetKind::Score | AssetKind::VoiceLines) => AUDIO,
         Some(AssetKind::Strings) => LOC,
         Some(AssetKind::Font | AssetKind::FontChains) => FONTS,
         Some(AssetKind::Ui) => UI,
@@ -177,8 +178,10 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Ui
         | AssetKind::Encounter
         | AssetKind::Script
-        | AssetKind::Dialogue => Codec::Lz4,
-        AssetKind::Enemy => Codec::Lz4,
+        | AssetKind::Dialogue
+        | AssetKind::Enemy
+        | AssetKind::Score
+        | AssetKind::VoiceLines => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

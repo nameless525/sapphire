@@ -1,18 +1,22 @@
-//! [`AudioSystem`]: cues in, voices out, once a frame.
+//! [`AudioSystem`]: cues, lines and music in, voices out, once a frame.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, SILENCE_DB};
+use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
+use sapphire_assets::voice::VoiceLines;
 use sapphire_math::Vec3;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::backend::{AudioBackend, DeviceState, DeviceStatus, StartError, VoiceParams, VoiceSlot};
+use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
 use crate::snapshot::{ClockSnapshot, SnapshotMix, SnapshotTuning};
+use crate::voice::{LineKey, VoiceRoute, VoiceRouteError};
 
 /// Voices playing at once. A duel's sounds are short and few; past this a request is dropped and
 /// counted, rather than cutting off what is already playing.
@@ -28,6 +32,11 @@ const PAN_STEP: f32 = 0.005;
 /// ... or its pitch by this: smaller steps are all smoothed away, and each costs the audio thread a
 /// command.
 const PITCH_STEP: f32 = 0.001;
+
+/// How fast the music goes down under a voice line, ...
+pub(crate) const DUCK_ATTACK: Duration = Duration::from_millis(80);
+/// ... and comes back after it: slower, so that a pause between two lines doesn't pump.
+pub(crate) const DUCK_RELEASE: Duration = Duration::from_millis(400);
 
 /// An actor sounds can be attached to, named however the caller likes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -80,6 +89,14 @@ pub struct CueRequest {
     pub target: CueTarget,
 }
 
+/// One voice line to speak, in the chosen voice language: a cue that language's
+/// [`VoiceLines`] name for its key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineRequest {
+    pub line: LineKey,
+    pub target: CueTarget,
+}
+
 /// Everything a frame tells the audio system.
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame<'a> {
@@ -92,6 +109,10 @@ pub struct AudioFrame<'a> {
     pub emitters: &'a [Emitter],
     /// The cues to start this frame.
     pub cues: &'a [CueRequest],
+    /// The voice lines to start this frame, after the cues.
+    pub lines: &'a [LineRequest],
+    /// The score and phase to play, or none: what played fades out.
+    pub music: Option<MusicRequest<'a>>,
 }
 
 /// The system's counters (rule R9). [`Self::update`] is what spec §3.2's "Audio update" row budgets.
@@ -111,6 +132,14 @@ pub struct AudioStats {
     pub dropped_voice_limit: u64,
     /// Cues dropped for naming a cue, a sound or an emitter nobody added.
     pub dropped_unknown: u64,
+    /// Lines asked for that the voice language has, all told: each plays as a cue does.
+    pub lines_asked: u64,
+    /// Lines the voice language lacks, or asked for with no language chosen.
+    pub lines_missing: u64,
+    /// Changes to a phase the score has, all told.
+    pub music_phase_changes: u64,
+    /// Changes to a phase the score lacks, which leave the stems as they were.
+    pub music_unknown_phases: u64,
     /// The output's own counters.
     pub device: DeviceStatus,
 }
@@ -160,6 +189,10 @@ pub struct AudioSystem<B: AudioBackend> {
     emitters: Vec<Tracked>,
     snapshot: ClockSnapshot,
     mix: SnapshotMix,
+    music: Music,
+    voice: VoiceRoute,
+    /// The music bus's gain, as last sent: down under a voice line.
+    music_gain_db: f32,
     background: bool,
     interrupted: bool,
     /// What the player's volume takes off every voice.
@@ -185,6 +218,9 @@ impl<B: AudioBackend> AudioSystem<B> {
             emitters: Vec::with_capacity(MAX_EMITTERS),
             snapshot: ClockSnapshot::new(tuning),
             mix: SnapshotMix::NEUTRAL,
+            music: Music::default(),
+            voice: VoiceRoute::new(),
+            music_gain_db: 0.0,
             background: false,
             interrupted: false,
             volume_db: 0.0,
@@ -210,6 +246,26 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// Makes a decoded sound playable.
     pub fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {
         self.backend.add_sound(id, sound);
+    }
+
+    /// Makes a score playable, once its stems' sounds are added. Load-time work.
+    pub fn add_score(&mut self, id: AssetId, score: Score) {
+        self.music.add_score(id, score);
+    }
+
+    /// Makes one language's voice lines speakable, once their cues are added. Load-time work.
+    pub fn add_voice_lines(&mut self, lines: &VoiceLines) -> Result<(), VoiceRouteError> {
+        self.voice.add(lines)
+    }
+
+    /// Chooses the voice language, apart from the text's; whether any lines are in it.
+    pub fn set_voice_language(&mut self, locale: &str) -> bool {
+        self.voice.set_language(locale)
+    }
+
+    /// The lines by language, and the one chosen.
+    pub fn voice_route(&self) -> &VoiceRoute {
+        &self.voice
     }
 
     /// The app went to the background or came back (spec §6.5): the mixer stops or starts asking
@@ -264,9 +320,10 @@ impl<B: AudioBackend> AudioSystem<B> {
         std::mem::take(&mut self.stats.update_peak)
     }
 
-    /// One frame: takes the emitters, moves the snapshot, starts the frame's cues and brings every
-    /// voice up to date. Picks come from `random`, in request order: one number for the sound, one
-    /// for the volume, one for the pitch, whatever the cue's ranges.
+    /// One frame: takes the emitters, moves the snapshot, starts the frame's cues and lines, follows
+    /// the music's phase, and brings every voice and the ducking up to date. Picks come from `random`,
+    /// in request order, lines after cues: one number for the sound, one for the volume, one for the
+    /// pitch, whatever the cue's ranges.
     pub fn update(&mut self, frame: &AudioFrame<'_>, random: &mut impl CueRandom) {
         profiling::scope!("AudioSystem::update");
         let timer = Stopwatch::start();
@@ -293,9 +350,25 @@ impl<B: AudioBackend> AudioSystem<B> {
                 }
             }
         }
+        for request in frame.lines {
+            let Some(cue) = self.voice.line(request.line) else {
+                self.stats.lines_missing += 1;
+                continue;
+            };
+            self.stats.lines_asked += 1;
+            if state.plays() {
+                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random);
+            } else {
+                self.stats.dropped_no_output += 1;
+            }
+        }
+        self.music.update(frame.music, state.plays(), &mut self.backend);
+        self.stats.music_phase_changes = self.music.counts.phase_changes;
+        self.stats.music_unknown_phases = self.music.counts.unknown_phases;
         if state.plays() {
             self.update_voices(&frame.listener);
         }
+        self.duck_music();
 
         self.stats.voices = self.voices.len() as u32;
         self.stats.update = timer.elapsed();
@@ -436,6 +509,17 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
+    /// Takes the music down while a voice line plays, and back after.
+    fn duck_music(&mut self) {
+        let speaking = self.voices.iter().any(|voice| voice.bus == Bus::Voice && !voice.stopped);
+        let gain_db = if speaking { self.music.duck_db() } else { 0.0 };
+        if gain_db != self.music_gain_db {
+            let fade = if gain_db < self.music_gain_db { DUCK_ATTACK } else { DUCK_RELEASE };
+            self.backend.set_bus_gain(Bus::Music, gain_db, fade);
+            self.music_gain_db = gain_db;
+        }
+    }
+
     fn in_hitstop(&self, voice: &Voice) -> bool {
         let Place::On(id) = voice.place else { return false };
         self.emitters.iter().any(|tracked| tracked.emitter.id == id && tracked.emitter.hitstop)
@@ -536,7 +620,15 @@ mod tests {
 
     /// A frame at normal speed, with a listener at the origin facing -Z.
     fn frame<'a>(emitters: &'a [Emitter], cues: &'a [CueRequest]) -> AudioFrame<'a> {
-        AudioFrame { dt: FRAME, listener: Listener::default(), world_time_scale: 1.0, emitters, cues }
+        AudioFrame {
+            dt: FRAME,
+            listener: Listener::default(),
+            world_time_scale: 1.0,
+            emitters,
+            cues,
+            lines: &[],
+            music: None,
+        }
     }
 
     fn play(target: CueTarget) -> [CueRequest; 1] {

@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "16bcae3e-67db-4450-93d3-5fce402743e4",
+        importer: Score(()),
+    ),
+)

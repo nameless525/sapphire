@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::{DecodedSound, decode_vorbis};
 use sapphire_audio::{
     AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
-    MAX_VOICES, OfflineOutput,
+    MAX_VOICES, MusicRequest, OfflineOutput,
 };
 use sapphire_math::Vec3;
 use sapphire_time::Stopwatch;
@@ -59,7 +60,15 @@ fn frame_at<'a>(tick: usize, emitters: &'a mut [Emitter; 1], cues: &'a [CueReque
     let angle = tick as f32 * 0.5;
     emitters[0].position = Vec3::new(angle.sin() * 6.0, 1.0, angle.cos() * 6.0);
     let listener = Listener { position: Vec3::new(0.0, 1.6, angle.cos()), ..Listener::default() };
-    AudioFrame { dt: 1.0 / 60.0, listener, world_time_scale: 0.6 + 0.4 * angle.sin(), emitters, cues }
+    AudioFrame {
+        dt: 1.0 / 60.0,
+        listener,
+        world_time_scale: 0.6 + 0.4 * angle.sin(),
+        emitters,
+        cues,
+        lines: &[],
+        music: None,
+    }
 }
 
 fn micros(duration: Duration) -> f64 {
@@ -176,4 +185,94 @@ fn what_audio_costs() {
             seconds / best.as_secs_f64()
         );
     }
+
+    music_costs();
+}
+
+const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-000000000001");
+
+/// The shipped placeholder score's four stems (24 kHz, resampled by the mixer), its phases changing
+/// every frame for the update's worst, and eight voices beside it for the mix's.
+fn music_costs() {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated/music");
+    let names = ["pad", "pulse", "drums", "bells"];
+    let mut decoding = Duration::ZERO;
+    let stems: Vec<(AssetId, DecodedSound)> = names
+        .iter()
+        .enumerate()
+        .map(|(n, name)| {
+            let vorbis =
+                std::fs::read(folder.join(format!("lantern_{name}.ogg"))).expect("the stem is in the tree");
+            let timer = Stopwatch::start();
+            let decoded = decode_vorbis(&vorbis).expect("it decodes");
+            decoding += timer.elapsed();
+            (format!("5c0e0000-0000-4000-8000-0000000000a{n}").parse().unwrap(), decoded)
+        })
+        .collect();
+    println!("decode the four stems, 8 s each: {:.1} ms", decoding.as_secs_f64() * 1e3);
+    let score = Score {
+        tempo_bpm: 120.0,
+        beats_per_bar: 4,
+        bars: 4,
+        stems: stems
+            .iter()
+            .zip(names)
+            .map(|((id, _), name)| Stem { name: name.to_owned(), sound: *id })
+            .collect(),
+        phases: vec![
+            Phase { name: "waiting".to_owned(), play: vec!["pad".to_owned()] },
+            Phase { name: "running".to_owned(), play: names.iter().map(|&name| name.to_owned()).collect() },
+        ],
+        fade_beats: 2.0,
+        volume_db: -6.0,
+        duck_db: -10.0,
+    };
+    let sound = sound();
+    let music_system = || {
+        let mut system = system(&sound);
+        for (id, stem) in &stems {
+            system.add_sound(*id, stem);
+        }
+        system.add_score(SCORE, score.clone());
+        system
+    };
+    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    let start = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
+    let (mut updates, mut mixes) = (Vec::new(), Vec::new());
+    for _ in 0..ROUNDS {
+        let mut system = music_system();
+        let mut random = CueRng::new(7);
+        let mut emitters = start;
+        let mut block = vec![0.0; BLOCK * 2];
+        for tick in 0..8 {
+            let music = Some(MusicRequest { score: SCORE, phase: "waiting" });
+            system.update(&AudioFrame { music, ..frame_at(tick, &mut emitters, &requests) }, &mut random);
+            system.backend_mut().output_mut().render_into(&mut block);
+        }
+        for tick in 8..72 {
+            let phase = if tick % 2 == 0 { "running" } else { "waiting" };
+            let music = Some(MusicRequest { score: SCORE, phase });
+            let timer = Stopwatch::start();
+            system.update(&AudioFrame { music, ..frame_at(tick, &mut emitters, &[]) }, &mut random);
+            updates.push(timer.elapsed());
+            let timer = Stopwatch::start();
+            system.backend_mut().output_mut().render_into(&mut block);
+            mixes.push(timer.elapsed());
+        }
+        assert_eq!(system.stats().music_phase_changes, 64);
+    }
+    let (fastest, median) = min_and_median(&mut updates);
+    println!(
+        "update, 8 voices moving and the phase changing: {:.2} us, median {:.2} us",
+        micros(fastest),
+        micros(median)
+    );
+    let length = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+    let (fastest, median) = min_and_median(&mut mixes);
+    println!(
+        "mix of {BLOCK} frames, four stems and 8 voices: {:.1} us, median {:.1} us, {:.2}% of real time at the median",
+        micros(fastest),
+        micros(median),
+        median.as_secs_f64() / length.as_secs_f64() * 100.0
+    );
 }

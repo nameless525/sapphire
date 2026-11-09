@@ -11,9 +11,10 @@
 //!
 //! - **The table** ([`CueTable`], a `CueTable` document, schema 1): a cue's name, optionally a hit's
 //!   weight, and what fires: `sapphire_vfx` effects, `sapphire_audio` cues, a camera shake, a screen
-//!   effect preset and a [`Rumble`]. [`CueTable::default_table`] is `default_cues.ron`, compiled in
-//!   like the presets it names, so a capture needs no pack mounted to fire one, and an app's load
-//!   checks every name at once.
+//!   effect preset, a [`Rumble`] and a voice line by its key (M3 A1). [`CueTable::default_table`] is
+//!   `default_cues.ron`, compiled in like the presets it names, so a capture needs no pack mounted to
+//!   fire one, and an app's load checks every name at once. The table also names the fight's score and
+//!   its voice lines' tables, for the app to load.
 //! - **The dispatcher** ([`CueDispatcher`]): resolves those names once, at load and after a reload, then
 //!   fires rows with no allocation. [`CueStep`] is what a step fires into.
 //! - **Rumble's mixing** ([`RumbleMixer`]): SDL holds one rumble per pad, so overlapping hits meet here.
@@ -24,7 +25,8 @@
 //! - Hitstop, which G3 applies in the same step that publishes the cue: it's simulated, and in the
 //!   checksum.
 //! - What a row fires: effects' documents are `sapphire_vfx`'s, presets are `sapphire_world`'s, shakes
-//!   are `sapphire_camera`'s and sounds are `Cue` documents in `audio.spack`.
+//!   are `sapphire_camera`'s, and sounds, scores and voice lines are documents in `audio.spack`.
+//! - Which phase a fight's music is in: the app says, from the simulation's encounters.
 //! - Live tuning (T2).
 //! - A phone's haptics: a touch device has no pad, and an app there hands the dispatcher `()`.
 //!
@@ -77,6 +79,8 @@
 //!         world_time_scale: 1.0,
 //!         emitters: &[],
 //!         cues: cues.sounds(),
+//!         lines: cues.lines(),
+//!         music: None, // A score's phase, if the table names a score.
 //!     },
 //!     &mut random,
 //! );
@@ -113,7 +117,8 @@ mod rumble;
 mod table;
 
 pub use dispatch::{
-    CueDispatcher, CueStats, CueStep, MAX_FRAME_SOUNDS, ShakeSink, actor_emitter, emitter_of, owner_of,
+    CueDispatcher, CueStats, CueStep, MAX_FRAME_LINES, MAX_FRAME_SOUNDS, ShakeSink, actor_emitter,
+    emitter_of, owner_of,
 };
 pub use rumble::{MAX_RUMBLES, Rumble, RumbleMixer, RumbleSink};
 pub use table::{

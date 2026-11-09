@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "89a1fa3b-c243-4a85-a8ee-27ccebdbf5ed",
+        importer: Cue(()),
+    ),
+)

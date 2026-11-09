@@ -396,8 +396,8 @@ impl App for SandboxApp {
                 DeviceAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?
             }
             (None, Some(show)) => {
-                let cues = show.table().sound_cues();
-                DeviceAudio::for_cues(&cues, platform, &mut content, &mut renderer.renderer, &device.gpu)?
+                let sounds = show.sounds_to_load();
+                DeviceAudio::for_show(&sounds, platform, &mut content, &mut renderer.renderer, &device.gpu)?
             }
             (None, None) => None,
         };

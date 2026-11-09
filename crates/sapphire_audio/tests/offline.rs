@@ -362,6 +362,8 @@ mod through_the_system {
                     world_time_scale: time_scale,
                     emitters: &[],
                     cues,
+                    lines: &[],
+                    music: None,
                 },
                 &mut rng,
             );

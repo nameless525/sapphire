@@ -163,6 +163,8 @@ impl Fight {
                 world_time_scale: 1.0,
                 emitters: &self.emitters,
                 cues: self.cues.sounds(),
+                lines: self.cues.lines(),
+                music: None,
             },
             &mut self.random,
         );

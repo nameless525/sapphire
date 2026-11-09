@@ -12,12 +12,21 @@
 //   hit's point on screen.
 // - `rumble`: `low` and `high` motors from 0 to 1 and a length in real seconds. A flat pulse, so nobody
 //   here can feel it: every number is a guess for someone with a pad.
+// - `line`: a voice line by its key, said in the player's voice language from one of `voices` (M3 A1).
+//
+// `music` is the fight's `Score`, whose phase the fight's encounters choose, and `voices` its
+// `VoiceLines`, one a language, all in `content/audio/generated/` by their sidecars' IDs.
 //
 // Every number is a starting point for T2's tuning, and nobody here can hear or feel the last two.
 (
     type: "sapphire::cues::CueTable",
     version: 1,
     data: (
+        music: Some("16bcae3e-67db-4450-93d3-5fce402743e4"), // lantern
+        voices: [
+            "2d8dee05-24de-455d-87e8-b9aec0658ed6", // en
+            "f654779f-b76d-405b-92c8-588b3064b11d", // ja
+        ],
         rows: [
             // A hit, by its weight: the cue a move's attack publishes unless it names its own.
             (
@@ -93,6 +102,7 @@
                 sounds: ["7c4b1877-4c0e-4c33-8464-e902aa20c871"], // perfect_dodge
                 screen: Some((preset: "perfect_dodge", center: Preset)),
                 rumble: Some((low: 0.0, high: 0.35, seconds: 0.06)),
+                line: Some("perfect-dodge"),
             ),
             // M2 G4's counter: a flash as it starts, then a blow with a cue of its own.
             (
@@ -174,7 +184,7 @@
                 effects: [(effect: "dust_puff", at: Feet)],
                 sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
             ),
-            (cue: "swap_in"),
+            (cue: "swap_in", line: Some("swap-in")),
             (cue: "party_defeated"),
             // The Lantern Ward's gate cutscene (M3 Q3), at the places its timeline names: the warden's blade
             // striking the paving, and the character's blade turning into guard.

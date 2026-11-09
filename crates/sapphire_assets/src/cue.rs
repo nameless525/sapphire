@@ -43,7 +43,7 @@ pub const CUE_EXTENSION: &str = "scue";
 pub const SILENCE_DB: f32 = -60.0;
 
 /// The loudest a cue may ask for, in decibels.
-const MAX_VOLUME_DB: f32 = 24.0;
+pub(crate) const MAX_VOLUME_DB: f32 = 24.0;
 
 /// The playback rates a cue may ask for: a tenth of the speed to eight times it.
 const PITCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=8.0;
@@ -172,7 +172,7 @@ pub enum AttenuationCurve {
     Inverse,
 }
 
-/// A mixer bus. The world's buses follow the world clock's snapshot; interface sounds don't.
+/// A mixer bus. The world's buses follow the world clock's snapshot; the interface, music and voice don't.
 #[derive(
     Reflect,
     Clone,
@@ -198,11 +198,15 @@ pub enum Bus {
     Ambience,
     /// The interface: heard the same whatever the world's clock does.
     Ui,
+    /// A score's stems ([`Score`](crate::score::Score), M3 A1), which go down under a voice line.
+    Music,
+    /// Voice lines ([`VoiceLines`](crate::voice::VoiceLines), M3 A1), in the voice language.
+    Voice,
 }
 
 impl Bus {
-    /// Every bus, in a stable order. New buses (music and voice, M3) join at the end.
-    pub const ALL: [Self; 3] = [Self::Sfx, Self::Ambience, Self::Ui];
+    /// Every bus, in a stable order. New buses join at the end.
+    pub const ALL: [Self; 5] = [Self::Sfx, Self::Ambience, Self::Ui, Self::Music, Self::Voice];
 
     /// The bus's position in [`Self::ALL`].
     pub const fn index(self) -> usize {
@@ -357,6 +361,8 @@ impl ArchivedCue {
                 ArchivedBus::Sfx => Bus::Sfx,
                 ArchivedBus::Ambience => Bus::Ambience,
                 ArchivedBus::Ui => Bus::Ui,
+                ArchivedBus::Music => Bus::Music,
+                ArchivedBus::Voice => Bus::Voice,
             },
             hitstop: match self.hitstop {
                 ArchivedHitstopResponse::Ignore => HitstopResponse::Ignore,
@@ -482,7 +488,7 @@ mod tests {
             ("        volum_db: (-1.0, 0.0),", &["volum_db"]),
             ("        volume_db: \"loud\",", &["volume_db", "line 6"]),
             ("        pitch: 1.0,", &["pitch"]),
-            ("        bus: Music,", &["bus", "Music"]),
+            ("        bus: Choir,", &["bus", "Choir"]),
             ("        hitstop: Duck(\"lots\"),", &["hitstop"]),
             ("        attenuation: Some((near: 1.0)),", &["attenuation", "far"]),
             // Values that parse but can't be played.
@@ -551,9 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_interface_leaves_the_world_clock() {
+    fn only_the_worlds_buses_follow_the_world_clock() {
         for bus in Bus::ALL {
-            assert_eq!(bus.follows_world_clock(), bus != Bus::Ui, "{bus:?}");
+            assert_eq!(bus.follows_world_clock(), matches!(bus, Bus::Sfx | Bus::Ambience), "{bus:?}");
         }
         for (index, bus) in Bus::ALL.into_iter().enumerate() {
             assert_eq!(bus.index(), index);

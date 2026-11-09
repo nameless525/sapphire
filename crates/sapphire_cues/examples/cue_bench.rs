@@ -183,6 +183,8 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
             world_time_scale: 1.0,
             emitters: &sinks.emitters,
             cues: cues.sounds(),
+            lines: cues.lines(),
+            music: None,
         };
         let timer = Stopwatch::start();
         let ((), update) = count_in_scope(|| sinks.audio.update(&audio_frame, &mut sinks.random));

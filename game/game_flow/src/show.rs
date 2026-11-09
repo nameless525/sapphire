@@ -31,6 +31,7 @@ use sapphire_platform::{AppInitError, ContentFs, Event, GamepadEvent, Os, Timest
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
+use sapphire_stage::audio::CueSounds;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{ContentChanges, FrameLaps, SceneShow};
@@ -140,7 +141,9 @@ impl GameShow {
         let Some(flow) = FlowContent::read(&read).map_err(AppInitError::msg)? else {
             return Ok((show, CombatOption::Fight { script: setup.script, party: false }));
         };
-        let mut show = show.with_game(Game::new(flow, setup));
+        let game =
+            Game::new(flow, setup).map_err(|error| AppInitError::msg(format!("the game's flow: {error}")))?;
+        let mut show = show.with_game(game);
         let first = show.opening_run().ok_or_else(|| AppInitError::msg("a game with no run to stand"))?;
         Ok((show, first))
     }
@@ -149,6 +152,24 @@ impl GameShow {
     #[must_use]
     pub fn game(&self) -> Option<&Game> {
         self.game.as_ref()
+    }
+
+    /// The score's phase the game's flow asks for, where it has a say (M3 G1): at the title, in a defeat and
+    /// in a win. Elsewhere, and with no game, the fight's encounters choose it.
+    #[must_use]
+    pub fn music_phase(&self) -> Option<&str> {
+        self.game.as_ref()?.flow().music_phase()
+    }
+
+    /// What the fight's cues ask of an app's audio this frame, with the score's phase the flow's where it has a
+    /// say ([`Self::music_phase`]): what the app's audio takes after the frame's steps.
+    #[must_use]
+    pub fn cue_sounds(&self) -> CueSounds<'_> {
+        let mut sounds = self.shown.fight.show.cue_sounds();
+        if let Some(phase) = self.music_phase() {
+            sounds.music_phase = Some(phase);
+        }
+        sounds
     }
 
     /// The run a game stands first, behind its title: what [`Self::stand`] takes. Nothing for a show with no
@@ -619,6 +640,10 @@ impl SceneShow for GameShow {
         let mut bindings = self.controls.source(self.camera_yaw);
         read_bindings(self.shown.fight.combat.as_mut(), &mut bindings, PLAYER);
         laps.simulation += stopwatch.lap();
+        // The flow acts on the step before the stage follows it: a beat's timeline starts between this step
+        // and the next, and the stage starts a run only on the step it came after, so one that holds the
+        // simulation is held from its first frame rather than ended by the next step.
+        self.follow_game_step();
         let followed = self.shown.fight.follow_step(scene, laps);
         self.shown.hear(followed);
         self.shown.show_damage(scene);
@@ -628,7 +653,6 @@ impl SceneShow for GameShow {
         {
             tracing::warn!(target: LOG_TARGET, %error, "a trigger's conversation didn't open");
         }
-        self.follow_game_step();
     }
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {

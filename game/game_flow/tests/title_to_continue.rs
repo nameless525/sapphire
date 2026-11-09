@@ -59,6 +59,7 @@ fn game(dir: &Scratch) -> Game {
         FlowContent { document: FlowDocument::from_ron(FLOW).expect("reads"), registered: Vec::new() };
     let store = progress_store(&dir.0, |path, bytes| std::fs::write(path, bytes));
     Game::new(content, GameSetup { store: Some(store), ..GameSetup::default() })
+        .expect("the game has what it names")
 }
 
 /// `steps` of the run with nobody pressing anything, each followed by the flow, as the show does: none

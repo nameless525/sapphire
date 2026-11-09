@@ -204,7 +204,7 @@ impl App for GameApp {
         let view_dt = stage.show.drive_view(dt);
         let dt = dt.as_secs_f32();
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, platform, stage.scene.sound(), stage.show.shown.fight.show.cue_sounds());
+            audio.update(dt, platform, stage.scene.sound(), stage.show.cue_sounds());
         }
         let pad = stage.show.controls.input().active_gamepad().filter(|_| self.rumble);
         stage.show.shown.fight.show.end_cue_frame(

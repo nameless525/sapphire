@@ -46,8 +46,10 @@ profiling.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# The conversation's IDs, for `opens_the_guide`.
+# The conversation's IDs, for `opens_the_guide`, and a save's place for `plays_the_ward`.
 sapphire_gameplay.workspace = true
+# The ward's documents' IDs, for `plays_the_ward`.
+sapphire_serialize.workspace = true
 
 [features]
 # What the crates under it have for development builds. The game adds no tools of its own.
@@ -68,7 +70,7 @@ name = "opens_the_guide"
 harness = false
 
 [[test]]
-name = "plays_the_flow"
+name = "plays_the_ward"
 harness = false
 
 [lints]

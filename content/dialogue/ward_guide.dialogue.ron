@@ -5,8 +5,8 @@
     version: 1,
     data: (
         start: "greet",
-        // As someone walks through the gate of the Lantern Ward's Temple Court (M3 Q2b).
-        opens_on: "court_entered",
+        // It opens from the game's flow (M3 G1), after the court's gate cutscene: no trigger opens it, since
+        // the court's gate, which used to (M3 Q2b), starts the cutscene before it.
         nodes: [
             (name: "greet", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-greet", vo: "guide_greet"), next: "ask"),
             (name: "ask", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-ask"), choices: [

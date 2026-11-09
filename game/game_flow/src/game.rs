@@ -16,17 +16,17 @@
 
 use std::path::PathBuf;
 
-use game_combat::combat::{Combat, CombatOption};
+use game_combat::combat::{Combat, CombatOption, SCENARIOS};
 use sapphire_assets::documents::{GameDocuments, MANIFEST_FILE, SHIPPED_DIR, shipped_path};
 use sapphire_core::Name;
 use sapphire_dialogue::FlagRegistry;
-use sapphire_gameplay::replay::RunStart;
+use sapphire_gameplay::replay::{RunStart, find_scenario};
 use sapphire_gameplay::{ActorId, DialogueId, EncounterPhase, Simulation, TimelineId};
 use sapphire_save::ProgressStore;
 use sapphire_serialize::AssetId;
 
 use crate::LOG_TARGET;
-use crate::document::FlowDocument;
+use crate::document::{FlowDocument, Then, When};
 use crate::flow::{Flow, FlowAction, FlowCommand, FlowState, FlowView, Run};
 use crate::kept::{Kept, KeptStats};
 use crate::progress::{self, Progress};
@@ -109,6 +109,11 @@ struct RunSeen {
     ended: u64,
     /// The timeline a beat played, by place in [`Game::timelines`], until it ends.
     playing: Option<usize>,
+    /// By encounter, one bit each, those cleared before the run's first step, as a save's are: they didn't
+    /// begin in this run, so a beat waiting on one beginning doesn't fire for them.
+    cleared_before: u64,
+    /// Whether a step has been looked at, which [`Self::cleared_before`] is taken at.
+    looked: bool,
 }
 
 /// A run's simulation, as the flow reads it.
@@ -121,7 +126,12 @@ struct RunView<'a> {
 
 impl FlowView for RunView<'_> {
     fn encounter_started(&self, encounter: AssetId) -> bool {
-        self.phase(encounter).is_some_and(|phase| phase != EncounterPhase::Waiting)
+        let Some(zone) = self.sim.zone() else { return false };
+        let Some(place) = zone.encounters().iter().position(|held| held.id() == encounter) else {
+            return false;
+        };
+        let before = place < 64 && self.seen.cleared_before & (1 << place) != 0;
+        !before && zone.encounters()[place].phase() != EncounterPhase::Waiting
     }
 
     fn encounter_cleared(&self, encounter: AssetId) -> bool {
@@ -171,11 +181,11 @@ pub struct Game {
     progress: Option<Progress>,
     kept: Option<Kept<ProgressStore<Progress>>>,
     setup: GameSetup,
-    /// The timelines a beat can play, by their documents' IDs, and where the run's scenario loads each.
-    /// Nothing yet: a scenario lists its timelines with the Lantern Ward's walk (G1's eighth commit).
+    /// The timelines a beat can play, by their documents' IDs, and where the run's scenario loads each: its
+    /// document's `timelines`.
     timelines: Vec<(AssetId, TimelineId)>,
-    /// The dialogues a beat can open, by their documents' IDs, and where the run loads each: which the show
-    /// opens on the fight's runner. Nothing yet, as with the timelines.
+    /// The dialogues a beat can open, by their documents' IDs, and where the run loads each: its document's
+    /// `dialogues`, which the show opens on the fight's runner.
     dialogues: Vec<(AssetId, DialogueId)>,
     seen: RunSeen,
     stats: GameStats,
@@ -190,8 +200,13 @@ impl std::fmt::Debug for Game {
 impl Game {
     /// The game at its title, over the save its store holds if it's one of the flow's zone, else over a new
     /// game's run.
-    #[must_use]
-    pub fn new(content: FlowContent, setup: GameSetup) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// What the flow names that the game hasn't got, which only the game can check: a scenario it doesn't
+    /// hold, a timeline or dialogue the scenario doesn't load, a flag the registry doesn't name.
+    pub fn new(content: FlowContent, setup: GameSetup) -> Result<Self, String> {
+        let (timelines, dialogues) = check(&content)?;
         let zone = content.document.zone;
         let saved = setup.store.as_ref().and_then(progress::load).filter(|saved| {
             let ours = saved.zone == zone;
@@ -206,17 +221,17 @@ impl Game {
             ours
         });
         let kept = setup.store.clone().map(Kept::new);
-        Self {
+        Ok(Self {
             flow: Flow::new(content.document, saved.is_some()),
             registered: content.registered,
             progress: saved,
             kept,
             setup,
-            timelines: Vec::new(),
-            dialogues: Vec::new(),
+            timelines,
+            dialogues,
             seen: RunSeen::default(),
             stats: GameStats::default(),
-        }
+        })
     }
 
     #[must_use]
@@ -286,6 +301,16 @@ impl Game {
     /// dialogue a beat opened, for the caller to show.
     pub fn after_step(&mut self, combat: &mut Combat) -> Option<AssetId> {
         let sim = combat.simulation();
+        if !self.seen.looked {
+            self.seen.looked = true;
+            let encounters = sim.zone().map_or(&[][..], |zone| zone.encounters());
+            for (place, encounter) in encounters.iter().enumerate().take(64) {
+                // Cleared on its first step is cleared before it: a fight takes longer than a step.
+                if encounter.phase() == EncounterPhase::Cleared {
+                    self.seen.cleared_before |= 1 << place;
+                }
+            }
+        }
         if let Some(zone) = sim.zone()
             && let Some(latest) = zone.latest_checkpoint()
             && latest.raw() < 64
@@ -405,4 +430,43 @@ impl Game {
             kept.finish();
         }
     }
+}
+
+/// What a scenario loads that a beat can name: its timelines and its dialogues, each by its document's ID
+/// and where the run holds it.
+type Loads = (Vec<(AssetId, TimelineId)>, Vec<(AssetId, DialogueId)>);
+
+/// What a flow names that only the game can say it has: its scenario, and in it each beat's timeline and
+/// dialogue; and in the registry, each beat's `unless`. Returns what the scenario loads.
+fn check(content: &FlowContent) -> Result<Loads, String> {
+    let document = &content.document;
+    let scenario = find_scenario(&SCENARIOS, &document.scenario)
+        .ok_or_else(|| format!("the flow's scenario `{}` isn't one this build holds", document.scenario))?;
+    let timelines = scenario.timelines().map_err(|error| format!("`{}`: {error}", document.scenario))?;
+    let dialogues = scenario.dialogues().map_err(|error| format!("`{}`: {error}", document.scenario))?;
+    for (index, beat) in document.beats.iter().enumerate() {
+        let missing = match beat.then {
+            Then::Timeline(id) => {
+                (!timelines.iter().any(|&(held, _)| held == id)).then_some(("timeline", id))
+            }
+            Then::Dialogue(id) => {
+                (!dialogues.iter().any(|&(held, _)| held == id)).then_some(("dialogue", id))
+            }
+            Then::Victory => None,
+        };
+        if let Some((kind, id)) = missing {
+            return Err(format!("beats[{index}]: `{}` loads no {kind} {id}", document.scenario));
+        }
+        if let When::Ended(id) = beat.when
+            && !timelines.iter().any(|&(held, _)| held == id)
+        {
+            return Err(format!("beats[{index}]: `{}` loads no timeline {id}", document.scenario));
+        }
+        if let Some(flag) = &beat.unless
+            && !content.registered.contains(&Name::new(flag))
+        {
+            return Err(format!("beats[{index}]: the registry names no flag `{flag}`"));
+        }
+    }
+    Ok((timelines, dialogues))
 }

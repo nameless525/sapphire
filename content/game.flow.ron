@@ -1,16 +1,34 @@
-// The game's flow (M3 G1), until the Lantern Ward's walk replaces it: a run in the square, from short of its
-// waves, which wins once they're cleared. A save holds the square's latest checkpoint and what's cleared.
+// The game's flow (M3 G1): the Lantern Ward from its start, room by room. The court's encounter brings the
+// gate's cutscene and then the guide, until the guide's been met; the boss on the terrace, once beaten, wins.
+// A save holds the ward's latest checkpoint, what's cleared and the story's flags.
 (
     type: "sapphire::game::FlowDocument",
     version: 1,
     data: (
-        scenario: "square-run",
-        // content/zones/square/square.zone.ron
-        zone: "c17be04f-2a65-4e3d-8b90-6df1a4c3e752",
+        scenario: "ward-run",
+        // content/zones/lantern_ward/lantern_ward.zone.ron
+        zone: "f15b7d04-631d-59b5-8c42-338147fc4e86",
         beats: [
-            // content/zones/square/square_waves.encounter.ron
-            (when: Cleared("8e62f1d9-b3c7-4a58-a14e-37c90d5fb186"), then: Victory),
+            // content/zones/lantern_ward/court.encounter.ron starts: the gate's cutscene, framed from the
+            // court's checkpoint, with its first wave on the way.
+            (
+                when: Started("3e7d6965-beed-4aee-86c8-ea292239a816"),
+                unless: Some("met_guide"),
+                align: Some("court"),
+                // content/zones/lantern_ward/court_gate.timeline.ron
+                then: Timeline("7c42b73f-d94d-4eb2-b064-2637819640a8"),
+            ),
+            // Then the guide, whose choice lights the ward.
+            (
+                when: Ended("7c42b73f-d94d-4eb2-b064-2637819640a8"),
+                unless: Some("met_guide"),
+                // content/dialogue/ward_guide.dialogue.ron
+                then: Dialogue("7b3a0339-b2a1-4ac8-9cfa-458d4b0134a7"),
+            ),
+            // content/zones/lantern_ward/terrace.encounter.ron, the boss's.
+            (when: Cleared("a03f7333-c342-4c3b-bbc4-dd3a096e9297"), then: Victory),
         ],
+        // Phases of the fight's score, content/audio/generated/music/lantern.score.ron.
         music: (title: "waiting", victory: "cleared", defeat: "waiting"),
         holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
     ),

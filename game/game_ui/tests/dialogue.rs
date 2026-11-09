@@ -1,6 +1,7 @@
 //! The dialogue panel on a real conversation (M3 Q2b): the Lantern Ward's guide, opened by the court's gate
 //! trigger as the ward's walk goes through it, on the real documents and tables, walked by a pad, a keyboard
-//! and a finger through `MenuControls`. A choice's effect is recorded as the app records commands, and the
+//! and a finger through `MenuControls`. The game opens the guide from its flow after the gate's cutscene
+//! (M3 G1), so its document names no trigger: here it's given the gate's, as Q2b's had it. A choice's effect is recorded as the app records commands, and the
 //! recording replays to the same checksums; no step allocates. No GPU and no cooked content.
 
 mod support;
@@ -11,6 +12,7 @@ use game_combat::dialogue::{DialogueEnded, DialogueRunner};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::menus::{DialogueModel, MenuScreen};
 use sapphire_core::Name;
+use sapphire_dialogue::Dialogue;
 use sapphire_gameplay::replay::{
     LiveMoves, Player, Recording, ReplayCommand, RunStart, SCENARIOS, Scenario, ScenarioError, ScenarioSetup,
     Trail, find_scenario, find_script,
@@ -35,6 +37,13 @@ fn ward_with_the_guide(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioErr
     sim.add_dialogue(ward_guide().simulation).expect("the guide's effects are valid");
     attach(sim, ScriptHost::new(Limits::default()).expect("a VM starts"));
     Ok(cast)
+}
+
+/// The guide, opened by the court's gate trigger rather than by a game's flow.
+fn guide_on_the_gate() -> Arc<Dialogue> {
+    let mut guide = ward_guide();
+    guide.presentation.opens_on = Some(Name::new("court_entered").as_u64());
+    Arc::new(guide)
 }
 
 fn lantern() -> &'static Scenario {
@@ -65,7 +74,7 @@ impl Visit {
             |_, _, _| Ok(()),
         )
         .expect("starts");
-        let runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+        let runner = DialogueRunner::new(vec![guide_on_the_gate()]);
         let mut walk = Walk::new(assets(), locale, false, SIZE, device);
         walk.menus.open_under(MenuScreen::Hud);
         walk.settle();
@@ -252,7 +261,7 @@ fn a_replay_opens_no_conversation() {
     visit.walk_on(AFTER);
     let (replay, _) = visit.finish();
     let mut player = Player::new(replay, &[scenario()]).expect("starts");
-    let mut runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+    let mut runner = DialogueRunner::new(vec![guide_on_the_gate()]);
     struct Played<'a>(&'a mut Player);
     impl game_combat::dialogue::DialogueHost for Played<'_> {
         fn simulation(&self) -> &Simulation {

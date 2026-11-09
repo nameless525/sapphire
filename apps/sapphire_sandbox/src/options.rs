@@ -228,7 +228,7 @@ pub(crate) struct Options {
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
     /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
     pub look_dev: Option<Shot>,
-    /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
+    /// `--hud fixed|live`, `--hud-insets`, `--hud-scale`, `--hud-paused` and `--hud-energy`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
     /// `--ui-game`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-plain`, `--ui-time`, `--ui-walk`,
@@ -628,6 +628,7 @@ impl Options {
         let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut hud_paused = false;
+        let mut hud_energy = None;
         let (mut ui_game, mut ui_time, mut ui_walk) = (None, None, Vec::new());
         let (mut ui_locale, mut ui_scale, mut ui_pseudo) = (None, None, false);
         let (mut ui_turn, mut ui_spin) = (None, None);
@@ -804,6 +805,13 @@ impl Options {
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
+                "--hud-energy" => {
+                    let energy: f32 = number(&value("--hud-energy")?, "--hud-energy")?;
+                    if !(0.0..=1.0).contains(&energy) {
+                        return Err(format!("--hud-energy expects 0 to 1, got {energy}"));
+                    }
+                    hud_energy = Some(energy);
+                }
                 "--ui-game" => {
                     let stem = value("--ui-game")?;
                     let names = || MenuScreen::ALL.map(MenuScreen::stem).join(", ");
@@ -1094,11 +1102,16 @@ impl Options {
                 return Err(format!("{name} takes no value, got {value:?}"));
             }
         }
-        options.hud = match (hud_mode, hud_insets, hud_scale, hud_paused) {
-            (None, None, None, false) => None,
-            (None, ..) => return Err("--hud-insets, --hud-scale and --hud-paused need --hud".to_owned()),
-            (Some(mode), insets, scale, paused) => {
-                Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0), paused })
+        options.hud = match (hud_mode, hud_insets, hud_scale, hud_paused, hud_energy) {
+            (None, None, None, false, None) => None,
+            (None, ..) => {
+                return Err("--hud-insets, --hud-scale, --hud-paused and --hud-energy need --hud".to_owned());
+            }
+            (Some(HudMode::Live), .., Some(_)) => {
+                return Err("--hud-energy is the fixed frame's: a live HUD reads the fight's".to_owned());
+            }
+            (Some(mode), insets, scale, paused, energy) => {
+                Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0), paused, energy })
             }
         };
         let companions = ui_locale.is_some()
@@ -2059,15 +2072,22 @@ mod tests {
         assert_eq!(options.hud, Some(HudOptions::default()));
         let (options, _) = parse(&["--hud-scale", "3", "--hud=live", "--hud-insets", "62, 0,62,21"]).unwrap();
         let insets = Insets { left: 62.0, top: 0.0, right: 62.0, bottom: 21.0 };
-        let live = HudOptions { mode: HudMode::Live, insets: Some(insets), scale: 3.0, paused: false };
+        let live =
+            HudOptions { mode: HudMode::Live, insets: Some(insets), scale: 3.0, paused: false, energy: None };
         assert_eq!(options.hud, Some(live));
         let (options, _) = parse(&["--hud", "live", "--hud-paused"]).unwrap();
         assert!(options.hud.is_some_and(|hud| hud.paused));
+        let (options, _) = parse(&["--hud", "fixed", "--hud-energy", "0.5"]).unwrap();
+        assert_eq!(options.hud.and_then(|hud| hud.energy), Some(0.5));
         for wrong in [
             &["--hud", "maybe"][..],
             &["--hud-insets", "1,2,3,4"],
             &["--hud-scale", "2"],
             &["--hud-paused"],
+            &["--hud-energy", "1"],
+            &["--hud", "live", "--hud-energy", "1"],
+            &["--hud", "fixed", "--hud-energy", "1.5"],
+            &["--hud", "fixed", "--hud-energy", "full"],
             &["--hud", "fixed", "--hud-insets", "1,2,3"],
             &["--hud", "fixed", "--hud-insets", "1,2,3,-4"],
             &["--hud", "fixed", "--hud-scale", "0"],

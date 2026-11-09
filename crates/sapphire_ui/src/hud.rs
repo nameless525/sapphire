@@ -6,8 +6,18 @@
 //! so the whole frame reads as moving forward. Buttons are near-square with two corners cut hard,
 //! inked nearly black with a crisp pale edge and a white glyph, so they read over a bright sky or a
 //! dark street alike. Color is rationed and always means something: mint for the player's health,
-//! rose for the enemy's, amber for poise and anything charging, ember for health just lost. Damage
-//! numbers are large, heavy and slanted with a dark outline, and they punch in and float off.
+//! rose for the enemy's, amber for poise and anything charging, ember for health just lost, violet for
+//! the ultimate's energy, which goes nearly white once it's full. Damage numbers are large, heavy and
+//! slanted with a dark outline, and they punch in and float off.
+//!
+//! # The ultimate (M3 Q3c)
+//!
+//! A fighter with an energy meter has [`HudValues::ultimate`]. Its meter is a violet bar under the
+//! player's health digits, drawn whenever the bars are, and its button stands at the top of the right
+//! thumb's cluster: the buttons' cut shape with an eight-point burst, ringed by its energy filling
+//! clockwise from the top. Full, the ring closes and goes nearly white, the button's ink turns violet
+//! and a violet halo breathes behind it; it flashes once as it gets there. With no ultimate nothing of
+//! it draws, and `game_ui`'s zones don't take a finger there.
 //!
 //! # Time
 //!
@@ -44,6 +54,12 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 const MINT: [u8; 4] = [96, 243, 212, 255];
 const ROSE: [u8; 4] = [255, 66, 92, 255];
 const AMBER: [u8; 4] = [255, 192, 56, 255];
+/// The ultimate's energy, charging.
+const VIOLET: [u8; 4] = [152, 120, 255, 255];
+/// The ultimate's energy, full: violet gone nearly white.
+const LIT: [u8; 4] = [236, 228, 255, 255];
+/// The ultimate's button's ink once it's ready.
+const VIOLET_INK: [u8; 4] = [44, 26, 92, 240];
 /// The shipped layout (see [`HudDesign::shipped`]).
 const SHIPPED_DESIGN: &str = include_str!("../default_hud.ron");
 
@@ -84,6 +100,14 @@ const PRESS_EASE: f32 = 0.07;
 const READY_FLASH: f32 = 0.45;
 /// How much of the skill's icon shows while it cools down.
 const COOLING_ICON: f32 = 0.3;
+/// How much of the ultimate's icon shows while it charges.
+const CHARGING_ICON: f32 = 0.45;
+/// One breath of a ready ultimate's halo, on the real clock, in nanoseconds.
+const BREATH_NANOS: u64 = 1_400_000_000;
+/// How far outside the ultimate's button its energy ring stands, as a share of the button's size.
+const ULTIMATE_RING: f32 = 1.18;
+/// The ready halo's size, as a share of the button's.
+const ULTIMATE_HALO: f32 = 1.36;
 
 /// A button's place: where it draws and where a finger takes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -136,10 +160,14 @@ pub struct HudLayout {
     pub attack: ButtonLayout,
     pub dodge: ButtonLayout,
     pub skill: ButtonLayout,
+    /// Only drawn and hit-tested while the HUD has an ultimate (M3 Q3c).
+    pub ultimate: ButtonLayout,
     pub player: BarsLayout,
     pub enemy: BarsLayout,
     /// The row under the enemy's bars that the other foes' small ones share, from its middle out.
     pub others: Rect,
+    /// The player's energy meter, under its bars: drawn while the HUD has an ultimate.
+    pub energy: Rect,
     /// Everything scales by this: 1 unless the frame is smaller than a phone.
     pub scale: f32,
 }
@@ -169,6 +197,7 @@ impl HudLayout {
         let attack = around(&design.attack);
         let dodge = around(&design.dodge);
         let skill = around(&design.skill);
+        let ultimate = around(&design.ultimate);
 
         // The left thumb's zone: the frame's left side, under the bars.
         let radius = points(design.stick.radius);
@@ -185,6 +214,11 @@ impl HudLayout {
         let player_width = (safe.width() * design.player.width).min(points(design.player.max_width));
         let left = Anchor::TOP_LEFT.place(safe, Vec2::new(margin, top_margin));
         let player = design.player.bars.place(left, player_width, Align::Left, &points);
+        let meter = &design.energy;
+        let energy = Rect::new(
+            left + Vec2::new(player_width * meter.from, points(meter.top)),
+            left + Vec2::new(player_width * meter.to, points(meter.bottom)),
+        );
         let free = safe.width() - 2.0 * (margin + player_width + points(design.bars_gap));
         let enemy_width = free.min(points(design.enemy.max_width)).max(0.0);
         let top = Anchor::TOP_CENTER.place(safe, Vec2::new(-enemy_width * 0.5, top_margin));
@@ -201,9 +235,11 @@ impl HudLayout {
             attack,
             dodge,
             skill,
+            ultimate,
             player,
             enemy,
             others,
+            energy,
             scale,
         }
     }
@@ -214,6 +250,7 @@ impl HudLayout {
             Button::Attack => &self.attack,
             Button::Dodge => &self.dodge,
             Button::Skill => &self.skill,
+            Button::Ultimate => &self.ultimate,
         }
     }
 }
@@ -234,6 +271,9 @@ pub struct HudDesign {
     /// Around the attack.
     pub dodge: ButtonDesign,
     pub skill: ButtonDesign,
+    /// The ultimate's button (M3 Q3c). A design written before it had one gets the shipped one.
+    #[serde(default = "ButtonDesign::shipped_ultimate")]
+    pub ultimate: ButtonDesign,
     pub stick: StickDesign,
     /// How far under the safe area's top the bars hang.
     pub bars_top: f32,
@@ -241,6 +281,10 @@ pub struct HudDesign {
     pub bars_gap: f32,
     pub player: PlayerBarsDesign,
     pub enemy: EnemyBarsDesign,
+    /// The player's energy meter, under where the player's bars hang (M3 Q3c). A design written before it
+    /// had one gets the shipped one.
+    #[serde(default = "MeterDesign::shipped_energy")]
+    pub energy: MeterDesign,
 }
 
 /// A button: where it stands from the attack's corner place, how far it's drawn and how far it takes a touch.
@@ -250,6 +294,31 @@ pub struct ButtonDesign {
     pub offset: [f32; 2],
     pub half: f32,
     pub hit: f32,
+}
+
+impl ButtonDesign {
+    /// The ultimate's place in `default_hud.ron`: what a design with none gets.
+    pub const fn shipped_ultimate() -> Self {
+        Self { offset: [-112.0, -112.0], half: 32.0, hit: 40.0 }
+    }
+}
+
+/// A meter under the player's bars: its top and bottom in points under where they hang, and where it runs
+/// as shares of their width.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeterDesign {
+    pub top: f32,
+    pub bottom: f32,
+    pub from: f32,
+    pub to: f32,
+}
+
+impl MeterDesign {
+    /// The energy meter's place in `default_hud.ron`: what a design with none gets.
+    pub const fn shipped_energy() -> Self {
+        Self { top: 52.0, bottom: 58.0, from: 0.0, to: 0.62 }
+    }
 }
 
 /// The left thumb's stick.
@@ -354,7 +423,20 @@ impl HudDesign {
         const PLACE: &str = "isn't a finite number";
         const SHARE: &str = "isn't a share, 0 to 1";
         let fail = |field, value, wanted| Err(HudDesignError::Field { field, value, wanted });
-        let Self { full_size, margin, attack, dodge, skill, stick, bars_top, bars_gap, player, enemy } = self;
+        let Self {
+            full_size,
+            margin,
+            attack,
+            dodge,
+            skill,
+            ultimate,
+            stick,
+            bars_top,
+            bars_gap,
+            player,
+            enemy,
+            energy,
+        } = self;
         let sizes = [
             ("full_size.0", full_size[0]),
             ("full_size.1", full_size[1]),
@@ -364,6 +446,8 @@ impl HudDesign {
             ("dodge.hit", dodge.hit),
             ("skill.half", skill.half),
             ("skill.hit", skill.hit),
+            ("ultimate.half", ultimate.half),
+            ("ultimate.hit", ultimate.hit),
             ("stick.radius", stick.radius),
             ("player.max_width", player.max_width),
             ("player.hp_height", player.bars.hp_height),
@@ -385,6 +469,8 @@ impl HudDesign {
             ("dodge.offset.1", dodge.offset[1]),
             ("skill.offset.0", skill.offset[0]),
             ("skill.offset.1", skill.offset[1]),
+            ("ultimate.offset.0", ultimate.offset[0]),
+            ("ultimate.offset.1", ultimate.offset[1]),
             ("stick.rest.0", stick.rest[0]),
             ("stick.rest.1", stick.rest[1]),
             ("bars_top", *bars_top),
@@ -397,6 +483,8 @@ impl HudDesign {
             ("enemy.digits_top", enemy.bars.digits_top),
             ("enemy.others_top", enemy.others_top),
             ("enemy.others_bottom", enemy.others_bottom),
+            ("energy.top", energy.top),
+            ("energy.bottom", energy.bottom),
         ];
         for (field, value) in places {
             if !value.is_finite() {
@@ -413,6 +501,8 @@ impl HudDesign {
             ("enemy.poise_from", enemy.bars.poise_from),
             ("enemy.poise_to", enemy.bars.poise_to),
             ("enemy.digits_along", enemy.bars.digits_along),
+            ("energy.from", energy.from),
+            ("energy.to", energy.to),
         ];
         for (field, value) in shares {
             if !(0.0..=1.0).contains(&value) {
@@ -469,6 +559,15 @@ impl OtherFoes {
     }
 }
 
+/// The player's ultimate (M3 Q3c): its energy meter and whether it can start.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UltimateValues {
+    /// The meter's share, 0 (empty) to 1 (full).
+    pub energy: f32,
+    /// It has the energy to start: its button lights.
+    pub ready: bool,
+}
+
 /// What the HUD shows, from the app each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HudValues {
@@ -478,6 +577,9 @@ pub struct HudValues {
     /// Who else stands against the player.
     pub others: OtherFoes,
     pub skill: SkillValues,
+    /// The player's ultimate, for a player with an energy meter: its meter and its button. With none
+    /// (the default), neither draws, and the button takes no finger.
+    pub ultimate: Option<UltimateValues>,
 }
 
 /// How heavy a damage number reads.
@@ -554,6 +656,8 @@ pub struct CombatHud {
     pause_shown: bool,
     /// When the skill last came off cooldown.
     ready_at: Option<Timestamp>,
+    /// When the ultimate last became ready.
+    ultimate_ready_at: Option<Timestamp>,
     damage: [Option<DamageNumber>; MAX_DAMAGE_NUMBERS],
     /// The next damage number's `order`.
     next_damage: u64,
@@ -584,6 +688,7 @@ impl CombatHud {
             controls_shown: true,
             pause_shown: false,
             ready_at: None,
+            ultimate_ready_at: None,
             damage: [None; MAX_DAMAGE_NUMBERS],
             next_damage: 0,
         }
@@ -619,9 +724,19 @@ impl CombatHud {
         self.now = now;
 
         let was_cooling = self.values.skill.cooldown > 0.0;
+        let was_charging = self.values.ultimate.is_some_and(|ultimate| !ultimate.ready);
         self.values = sanitized(values);
         if was_cooling && self.values.skill.cooldown <= 0.0 {
             self.ready_at = Some(now);
+        }
+        // It flashes as it gets there, not when it first shows up ready.
+        match self.values.ultimate {
+            Some(ultimate) if ultimate.ready => {
+                if was_charging {
+                    self.ultimate_ready_at = Some(now);
+                }
+            }
+            _ => self.ultimate_ready_at = None,
         }
         self.player_trail.update(self.values.player.hp, dt);
         if let Some(enemy) = self.values.enemy {
@@ -691,6 +806,9 @@ impl CombatHud {
             MINT,
             layout.scale,
         );
+        if let Some(ultimate) = &self.values.ultimate {
+            self.draw_energy(&mut painter, layout.energy, ultimate, layout.scale);
+        }
         if let Some(enemy) = &self.values.enemy {
             self.draw_fighter(&mut painter, &layout.enemy, enemy, &self.enemy_trail, ROSE, layout.scale);
         }
@@ -699,8 +817,13 @@ impl CombatHud {
         if self.controls_shown {
             draw_stick(&mut painter, layout, &actions.stick);
             let sprites = painter.sprites();
-            let icons = [sprites.sword, sprites.chevrons, sprites.spark];
-            for ((button, icon), &press) in Button::ALL.into_iter().zip(icons).zip(&self.press) {
+            let icons = [
+                (Button::Attack, sprites.sword),
+                (Button::Dodge, sprites.chevrons),
+                (Button::Skill, sprites.spark),
+            ];
+            for (button, icon) in icons {
+                let press = self.press[button.index()];
                 // A skill cooling down gives its middle to the seconds.
                 let cooling = button == Button::Skill && self.values.skill.cooldown > 0.0;
                 let icon_share = if cooling { COOLING_ICON } else { 1.0 };
@@ -715,6 +838,11 @@ impl CombatHud {
                 );
             }
             self.draw_skill_state(&mut painter, &layout.skill, scale);
+            if let Some(ultimate) = &self.values.ultimate {
+                let press = self.press[Button::Ultimate.index()];
+                let state = actions.button(Button::Ultimate);
+                self.draw_ultimate(&mut painter, &layout.ultimate, state, press, ultimate, scale);
+            }
         }
         let mut numbers = 0;
         for number in self.damage.iter().flatten() {
@@ -795,6 +923,83 @@ impl CombatHud {
         }
     }
 
+    /// The player's energy meter: violet as it charges, nearly white with a violet glow once full.
+    fn draw_energy(&self, painter: &mut Painter<'_>, rect: Rect, ultimate: &UltimateValues, scale: f32) {
+        painter.bar(rect, SLANT, (0.0, 1.0), Paint::outlined(INK, faded(PALE, 0.7), scale));
+        let fill = if ultimate.ready {
+            Paint::outlined(LIT, faded(VIOLET, self.breath()), 1.6 * scale).soft(0.6 * scale)
+        } else {
+            Paint::fill(VIOLET)
+        };
+        painter.bar(rect, SLANT, (0.0, ultimate.energy), fill);
+    }
+
+    /// The ultimate's button: the buttons' shape with an eight-point burst, its energy a ring around it
+    /// filling clockwise from the top. Ready, the ring closes nearly white, the ink turns violet and a
+    /// halo breathes behind it.
+    fn draw_ultimate(
+        &self,
+        painter: &mut Painter<'_>,
+        layout: &ButtonLayout,
+        state: &ButtonState,
+        press: f32,
+        ultimate: &UltimateValues,
+        scale: f32,
+    ) {
+        let sprites = painter.sprites();
+        let center = layout.center;
+        let size = Vec2::splat(layout.half * 2.0 * (1.0 - 0.08 * press));
+        if ultimate.ready {
+            let halo = Paint::fill(faded(VIOLET, 0.25 + 0.35 * self.breath())).soft(5.0 * scale);
+            painter.sprite(sprites.button, center, size * ULTIMATE_HALO, SLANT, halo);
+        }
+        let shadow = Paint::fill(SHADOW).grown(2.0 * scale).soft(4.0 * scale);
+        painter.sprite(sprites.button, center, size, SLANT, shadow);
+        let (ink, edge) = match (state.down, ultimate.ready) {
+            (true, _) => ([38, 42, 56, 245], WHITE),
+            (false, true) => (VIOLET_INK, LIT),
+            (false, false) => (INK, PALE),
+        };
+        painter.sprite(sprites.button, center, size, SLANT, Paint::outlined(ink, edge, 1.8 * scale));
+        // The burst: the skill's spark, and a smaller one turned an eighth behind its points.
+        let (glyph, share) = if ultimate.ready { (LIT, 1.0) } else { (WHITE, CHARGING_ICON) };
+        let glyph = Paint::fill(faded(glyph, share));
+        let diagonal = Vec2::new(std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2);
+        painter.turned(sprites.spark, center, size * 0.44, diagonal, glyph);
+        painter.sprite(sprites.spark, center, size * 0.62, SLANT * 0.5, glyph);
+
+        // The energy: a faint track all round, and what's held over it.
+        let ring = size * ULTIMATE_RING;
+        let width = 3.0 * scale;
+        if ultimate.ready {
+            painter.sprite(sprites.button, center, ring, SLANT, Paint::ring(LIT, width));
+        } else {
+            painter.sprite(sprites.button, center, ring, SLANT, Paint::ring(faded(PALE, 0.3), width));
+            if ultimate.energy > 0.0 {
+                let held = Paint::ring(VIOLET, width).swept(ultimate.energy);
+                painter.sprite(sprites.button, center, ring, SLANT, held);
+            }
+        }
+        if let Some(ready_at) = self.ultimate_ready_at {
+            let age = seconds_since(self.now, ready_at);
+            if age < READY_FLASH {
+                let share = 1.0 - age / READY_FLASH;
+                let flash = Paint::outlined([0; 4], faded(LIT, share), 3.0 * scale)
+                    .soft(1.5 * scale)
+                    .grown(age / READY_FLASH * 8.0 * scale);
+                painter.sprite(sprites.button, center, ring, SLANT, flash);
+            }
+        }
+    }
+
+    /// A ready ultimate's glow, 0.4 to 1 and back once a breath, on the real clock: arithmetic alone, so
+    /// every platform draws the same frame.
+    fn breath(&self) -> f32 {
+        let phase = (self.now.as_nanos() % BREATH_NANOS) as f32 / BREATH_NANOS as f32;
+        let rise = 1.0 - (2.0 * phase - 1.0).abs();
+        0.4 + 0.6 * rise * rise * (3.0 - 2.0 * rise)
+    }
+
     /// Draws `number`, returning whether it still shows.
     fn draw_damage(&self, painter: &mut Painter<'_>, number: &DamageNumber, scale: f32) -> bool {
         let age = seconds_since(self.now, number.born);
@@ -834,6 +1039,9 @@ fn sanitized(values: &HudValues) -> HudValues {
             count: values.others.count.min(MAX_OTHER_FOES as u8),
         },
         skill: SkillValues { cooldown: share(values.skill.cooldown), ..values.skill },
+        ultimate: values
+            .ultimate
+            .map(|ultimate| UltimateValues { energy: share(ultimate.energy), ..ultimate }),
     }
 }
 

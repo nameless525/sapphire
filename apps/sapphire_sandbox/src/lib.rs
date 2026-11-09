@@ -175,6 +175,8 @@
 //!   player's UI scale on top of the display's in a window. 1 without it.
 //! - `--hud-paused`: draws the pause's veil and mark, to look at them in a capture, which has no input
 //!   to pause it.
+//! - `--hud-energy <share>` (with `--hud fixed`): the fixed frame's player has an ultimate (M3 Q3c), its
+//!   energy meter this full, 0 to 1, and ready at 1: the meter and the ultimate's button draw.
 //! - `--display-text latin|japanese`: a title in the display chain's face at 12, 24, 48 and 96 points
 //!   over the frame, 360 points tall (`display_text.rs`, M3 U8): the smaller two from the glyph pages,
 //!   the larger two from the face's cooked field. The golden scenes `display-text-latin` and

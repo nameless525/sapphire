@@ -178,7 +178,8 @@ macro_rules! game_scene {
 /// on a made-up clock; no other scene has any, and a frame with no quads builds and draws nothing,
 /// so nothing earlier needs pinning), over the look-dev stage, pinned as its scenes are but with 4×
 /// MSAA in place of temporal AA, which needs no warm-up frames: the backdrop is a backdrop. Their
-/// `--size`, after the runner's, sets each one's aspect ratio.
+/// `--size`, after the runner's, sets each one's aspect ratio. `hud-energy-*` add the player's ultimate
+/// (`--hud-energy`, M3 Q3c), its meter empty and full, on the wide frame and on the iPhone's.
 ///
 /// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier
 /// scene plays one, and a character without a clip is never sampled) and pin what the look-dev
@@ -199,7 +200,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 193] {
+pub fn scenes() -> [Scene; 197] {
     [
         Scene {
             name: "turntable-start",
@@ -3995,6 +3996,104 @@ pub fn scenes() -> [Scene; 193] {
                 "off",
                 "--display-text",
                 "japanese",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The fixed frame with the player's ultimate (M3 Q3c): its energy meter empty and its button
+        // charging, then full with the button lit, on the wide frame and on the iPhone's.
+        Scene {
+            name: "hud-energy-empty-wide",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+                "--hud-energy",
+                "0",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "hud-energy-full-wide",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+                "--hud-energy",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "hud-energy-empty-notch",
+            args: &[
+                "--size",
+                "874x402",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+                "--hud-insets",
+                "62,0,62,21",
+                "--hud-energy",
+                "0",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "hud-energy-full-notch",
+            args: &[
+                "--size",
+                "874x402",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+                "--hud-insets",
+                "62,0,62,21",
+                "--hud-energy",
+                "1",
             ],
             thresholds: Thresholds::default(),
         },

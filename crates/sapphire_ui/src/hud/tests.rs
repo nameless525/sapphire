@@ -55,7 +55,13 @@ fn problems(name: &str, layout: &HudLayout) -> String {
         ("attack", leaned(layout.attack.rect())),
         ("dodge", leaned(layout.dodge.rect())),
         ("skill", leaned(layout.skill.rect())),
+        // With its energy's ring around it.
+        (
+            "ultimate",
+            leaned(Rect::around(layout.ultimate.center, Vec2::splat(layout.ultimate.half * ULTIMATE_RING))),
+        ),
         ("player's health", leaned(layout.player.hp)),
+        ("player's energy", leaned(layout.energy)),
         ("player's poise", leaned(layout.player.poise)),
         ("enemy's health", leaned(layout.enemy.hp)),
         ("enemy's poise", leaned(layout.enemy.poise)),
@@ -71,7 +77,12 @@ fn problems(name: &str, layout: &HudLayout) -> String {
             }
         }
     }
-    let buttons = [("attack", &layout.attack), ("dodge", &layout.dodge), ("skill", &layout.skill)];
+    let buttons = [
+        ("attack", &layout.attack),
+        ("dodge", &layout.dodge),
+        ("skill", &layout.skill),
+        ("ultimate", &layout.ultimate),
+    ];
     for (index, (what, button)) in buttons.iter().enumerate() {
         if !safe.contains_rect(hit_circle(button)) {
             fail(format!("{what}'s hit circle {:?} leaves the safe area", hit_circle(button)));
@@ -125,6 +136,8 @@ fn anchors_keep_each_widget_s_distance_from_its_edge_across_aspect_ratios() {
             assert_eq!(safe.max - layout.attack.center, first_safe.max - first.attack.center);
             assert_eq!(safe.max - layout.dodge.center, first_safe.max - first.dodge.center);
             assert_eq!(safe.max - layout.skill.center, first_safe.max - first.skill.center);
+            assert_eq!(safe.max - layout.ultimate.center, first_safe.max - first.ultimate.center);
+            assert_eq!(layout.energy.min - safe.min, first.energy.min - first_safe.min);
             assert_eq!(layout.stick.rest - safe.min, first.stick.rest - first_safe.min);
             // The player's bars on the top left, the enemy's on the middle of the top.
             assert_eq!(layout.player.hp.min - safe.min, first.player.hp.min - first_safe.min);
@@ -540,6 +553,7 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
             others.push(7.0);
             others
         },
+        ultimate: Some(UltimateValues { energy: f32::NAN, ready: false }),
     };
     let good = sanitized(&bad);
     assert_eq!(good.others.bars(), &[0.0, 1.0]);
@@ -547,6 +561,12 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
     let enemy = good.enemy.unwrap();
     assert_eq!((enemy.hp, enemy.poise), (0.0, 1.0));
     assert_eq!(good.skill.cooldown, 0.0);
+    assert_eq!(good.ultimate.map(|ultimate| ultimate.energy), Some(0.0));
+    let full = sanitized(&HudValues {
+        ultimate: Some(UltimateValues { energy: 3.0, ready: true }),
+        ..HudValues::default()
+    });
+    assert_eq!(full.ultimate, Some(UltimateValues { energy: 1.0, ready: true }));
 }
 
 #[test]
@@ -565,6 +585,132 @@ fn a_design_with_a_field_it_doesnt_know_or_a_number_it_cant_lay_out_is_refused_b
         let refused = HudDesign::from_ron(&shipped.replacen(from, to, 1)).expect_err(from);
         assert!(refused.to_string().contains(named), "{from}: {refused}");
     }
+}
+
+/// A design from before the ultimate (M3 Q3c) has no ultimate's button or energy meter, and lays them out
+/// where the shipped one does: what's shipped is what a design with none gets.
+#[test]
+fn a_design_with_no_ultimate_gets_the_shipped_one() {
+    let shipped = include_str!("../../default_hud.ron");
+    let design = HudDesign::shipped();
+    assert_eq!(design.ultimate, ButtonDesign::shipped_ultimate());
+    assert_eq!(design.energy, MeterDesign::shipped_energy());
+    let older: String = shipped
+        .lines()
+        .filter(|line| {
+            !line.trim_start().starts_with("ultimate:") && !line.trim_start().starts_with("energy:")
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_ne!(older, shipped, "both lines went");
+    assert_eq!(&HudDesign::from_ron(&older).expect("reads"), design);
+    for (from, to, named) in [
+        (
+            "ultimate: (offset: (-112.0, -112.0), half: 32.0",
+            "ultimate: (offset: (-112.0, -112.0), half: -1.0",
+            "ultimate.half",
+        ),
+        ("energy: (top: 52.0", "energy: (top: inf", "energy.top"),
+        ("to: 0.62", "to: 1.62", "energy.to"),
+    ] {
+        let refused = HudDesign::from_ron(&shipped.replacen(from, to, 1)).expect_err(from);
+        assert!(refused.to_string().contains(named), "{from}: {refused}");
+    }
+}
+
+/// What the HUD draws of an ultimate: nothing without one; a violet meter and a ring swept as far as
+/// it's full while it charges; a closed ring nearly white, the ink violet, once it's ready. The meter
+/// draws with the bars, and the button only with the controls.
+#[test]
+fn an_ultimate_draws_its_meter_and_button_only_when_there_is_one() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let with = |ultimate| HudValues { ultimate, ..values() };
+    let violet = |quads: &[UiQuad]| quads.iter().filter(|quad| quad.color == VIOLET).count();
+    let swept = |quads: &[UiQuad]| -> Vec<f32> {
+        quads.iter().map(|quad| quad.sweep).filter(|&sweep| sweep > 0.0).collect()
+    };
+    let outlined =
+        |quads: &[UiQuad], color: [u8; 4]| quads.iter().filter(|quad| quad.outline_color == color).count();
+
+    let none = draw(&layout, &with(None)).quads;
+    assert_eq!(violet(&none), 0);
+    assert_eq!(outlined(&none, VIOLET) + outlined(&none, LIT), 0);
+
+    let charging = draw(&layout, &with(Some(UltimateValues { energy: 0.4, ready: false }))).quads;
+    assert_eq!(violet(&charging), 1, "the meter's fill");
+    // The skill's cooldown is the other wedge.
+    assert_eq!(swept(&charging), [0.5, 0.4], "the ring, as far as it's full");
+    assert_eq!(outlined(&charging, VIOLET), 1, "the ring");
+    assert_eq!(outlined(&charging, LIT), 0, "not ready");
+    assert!(charging.len() > none.len());
+    // Everything else is the same quads with or without it, in the same order.
+    let mut rest = charging.iter();
+    assert!(none.iter().all(|quad| rest.any(|other| other == quad)), "it only adds");
+
+    let empty = draw(&layout, &with(Some(UltimateValues { energy: 0.0, ready: false }))).quads;
+    assert_eq!(violet(&empty), 0, "no fill for an empty meter");
+    assert_eq!(swept(&empty), [0.5], "no arc either");
+
+    let ready = draw(&layout, &with(Some(UltimateValues { energy: 1.0, ready: true }))).quads;
+    assert_eq!(swept(&ready), [0.5], "the ring is closed");
+    assert!(ready.iter().any(|quad| quad.color == LIT), "the meter's full and lit");
+    assert!(ready.iter().any(|quad| quad.color == VIOLET_INK), "the button's ink is violet");
+    assert!(outlined(&ready, LIT) >= 2, "the ring and the button's edge");
+
+    // A pad in use: the meter stays, the button goes.
+    let mut hud = CombatHud::new();
+    let actions = TouchActions::default();
+    hud.show_controls(false);
+    hud.update(ms(0), &with(Some(UltimateValues { energy: 0.4, ready: false })), &actions);
+    let mut list = UiDrawList::default();
+    hud.draw(&layout, &actions, &mut list);
+    assert_eq!(violet(&list.quads), 1, "the meter");
+    assert_eq!(swept(&list.quads), Vec::<f32>::new(), "no button");
+}
+
+/// It flashes as it fills, as the skill does coming off cooldown, and not when it first shows up full.
+#[test]
+fn an_ultimate_flashes_as_it_becomes_ready_and_its_halo_breathes() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let actions = TouchActions::default();
+    let at = |hud: &mut CombatHud, time: u64, energy: f32| {
+        let values = HudValues {
+            ultimate: Some(UltimateValues { energy, ready: energy >= 1.0 }),
+            ..HudValues::default()
+        };
+        hud.update(ms(time), &values, &actions);
+        let mut list = UiDrawList::default();
+        hud.draw(&layout, &actions, &mut list);
+        list.quads
+    };
+    // A flash is the one quad outlined in a faded white.
+    let flashes = |quads: &[UiQuad]| {
+        let flash = |quad: &&UiQuad| {
+            quad.outline_color[..3] == LIT[..3] && quad.color == [0; 4] && quad.softness > 0.0
+        };
+        quads.iter().filter(flash).count()
+    };
+    let mut hud = CombatHud::new();
+    assert_eq!(flashes(&at(&mut hud, 0, 1.0)), 0, "already full: no flash");
+    let mut hud = CombatHud::new();
+    assert_eq!(flashes(&at(&mut hud, 0, 0.9)), 0);
+    assert_eq!(flashes(&at(&mut hud, 16, 1.0)), 1, "it got there");
+    assert_eq!(flashes(&at(&mut hud, 16 + (READY_FLASH * 1000.0) as u64 + 1, 1.0)), 0, "over");
+
+    // The halo breathes on the real clock, between its ends.
+    let halo = |quads: &[UiQuad]| {
+        quads
+            .iter()
+            .find(|quad| quad.color[..3] == VIOLET[..3] && quad.color[3] < 255)
+            .map(|quad| quad.color[3])
+    };
+    let breaths: Vec<u8> = [0, 350, 700, 1050, 1400]
+        .into_iter()
+        .map(|time| halo(&at(&mut hud, 5600 + time, 1.0)).expect("a halo"))
+        .collect();
+    assert_eq!(breaths[0], breaths[4], "one breath");
+    assert!(breaths[2] > breaths[1] && breaths[1] > breaths[0], "{breaths:?}");
+    assert_eq!(breaths[1], breaths[3], "it falls as it rose");
 }
 
 /// A game moves a button by a document, and what's drawn and what takes a touch move with it.

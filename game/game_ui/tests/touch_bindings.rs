@@ -109,6 +109,28 @@ fn every_button_presses_a_verb_of_the_bindings() {
     }
 }
 
+/// The ultimate's button, while the HUD shows it, presses the ultimate as a pad's trigger does; until then
+/// a thumb there presses nothing.
+#[test]
+fn the_ultimate_s_button_presses_the_ultimate_once_it_is_shown() {
+    let mut phone = Phone::new();
+    phone.press(1, THUMB, Button::Ultimate);
+    phone.frame();
+    assert_eq!(phone.rig.steps(2), [N, N], "not there yet");
+    phone.lift(1, THUMB, Button::Ultimate);
+    phone.frame();
+    assert_eq!(phone.presses(), 0);
+
+    phone.zones.show_ultimate(true);
+    phone.press(1, THUMB, Button::Ultimate);
+    phone.frame();
+    assert_eq!(phone.rig.steps(2), [Buttons::ULTIMATE, Buttons::ULTIMATE]);
+    assert_eq!(phone.presses(), 1);
+    phone.lift(1, THUMB, Button::Ultimate);
+    phone.frame();
+    assert_eq!(phone.rig.steps(1), [N]);
+}
+
 #[test]
 fn a_button_held_is_one_press_of_its_verb() {
     for (button, verb) in [(Button::Attack, L), (Button::Dodge, D), (Button::Skill, SKILL)] {

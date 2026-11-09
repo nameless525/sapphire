@@ -47,8 +47,12 @@ pub const MOVE_ACTION: &str = "move";
 /// Each on-screen button and the verb it presses, through the
 /// [`Source::Virtual`](sapphire_input::Source::Virtual) of that name. The attack's hold is the
 /// button's own business: nothing in a tick follows it until a fighter has a move for it.
-pub const TOUCH_BUTTONS: [(Button, &str); Button::ALL.len()] =
-    [(Button::Attack, "light"), (Button::Dodge, "dodge"), (Button::Skill, "skill")];
+pub const TOUCH_BUTTONS: [(Button, &str); Button::ALL.len()] = [
+    (Button::Attack, "light"),
+    (Button::Dodge, "dodge"),
+    (Button::Skill, "skill"),
+    (Button::Ultimate, "ultimate"),
+];
 
 const LOOK_ACTION: &str = "look";
 const ZOOM_ACTION: &str = "camera_zoom";

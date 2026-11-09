@@ -12,10 +12,13 @@ pub enum Button {
     Attack,
     Dodge,
     Skill,
+    /// The ultimate (M3 Q3c): only there while the HUD has an ultimate to show
+    /// ([`HudValues::ultimate`](crate::HudValues::ultimate)). Last, so the others keep their indices.
+    Ultimate,
 }
 
 impl Button {
-    pub const ALL: [Self; 3] = [Self::Attack, Self::Dodge, Self::Skill];
+    pub const ALL: [Self; 4] = [Self::Attack, Self::Dodge, Self::Skill, Self::Ultimate];
 
     pub const fn index(self) -> usize {
         self as usize

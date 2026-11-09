@@ -95,7 +95,7 @@ use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::RootSample;
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
 use sapphire_time::TICK_HZ;
-use sapphire_ui::{FighterValues, HudValues, OtherFoes, SkillValues};
+use sapphire_ui::{FighterValues, HudValues, OtherFoes, SkillValues, UltimateValues};
 
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
@@ -450,6 +450,20 @@ fn stands_against(view: &ActorView, side: Faction) -> bool {
     !view.fighter.is_defeated() && view.fighter.faction().is_hostile_to(side)
 }
 
+/// The move a player's set names for its ultimate (M3 Q3b), which the HUD's button stands for.
+const ULTIMATE: sapphire_core::Name = sapphire_core::Name::new("ultimate");
+
+/// The player's ultimate, for the HUD: its energy meter's share, and whether it has what the set's
+/// `ultimate` costs, which is nothing without one. A fighter with no meter has none.
+fn ultimate_values(view: &ActorView, cost: u32) -> Option<UltimateValues> {
+    let fighter = &view.fighter;
+    let max = fighter.max_energy();
+    (max > 0).then(|| UltimateValues {
+        energy: fighter.energy() as f32 / max as f32,
+        ready: fighter.can_afford(cost),
+    })
+}
+
 /// One fighter's bars, for the HUD: `points` asks for its health in digits.
 fn fighter_values(view: &ActorView, points: bool) -> FighterValues {
     let share = |left: u32, whole: u32| if whole == 0 { 1.0 } else { left as f32 / whole as f32 };
@@ -531,6 +545,8 @@ pub struct ArenaActors {
     hand: usize,
     /// The foe the player has now, which the HUD shows and the character looks at.
     shown: Option<ActorId>,
+    /// What the player's set's `ultimate` costs, as of the last step: nothing without one.
+    ultimate_cost: u32,
     /// Whether the player's lock-on is on.
     locked_on: bool,
     /// The world, retained-storage run and tick last followed. None before observing a fight.
@@ -560,6 +576,7 @@ impl ArenaActors {
             seen: vec![None; 2],
             hand: enemy.hand,
             shown: None,
+            ultimate_cost: 0,
             locked_on: false,
             followed_run: None,
             follows: shot == ArenaShot::Follow,
@@ -770,7 +787,13 @@ impl ArenaActors {
                 others.push(fighter_values(view, false).hp);
             }
         }
-        Some(HudValues { player: fighter_values(player, true), enemy, others, skill: SkillValues::default() })
+        Some(HudValues {
+            player: fighter_values(player, true),
+            enemy,
+            others,
+            skill: SkillValues::default(),
+            ultimate: ultimate_values(player, self.ultimate_cost),
+        })
     }
 
     /// How long the fight's gone on, for a HUD with no clock of its own.
@@ -839,6 +862,11 @@ impl ArenaActors {
                 fighter.root.advance(actor.position, actor.yaw);
             }
         }
+        // Whoever's on the field now, by their set as it stands: a swap or a tuned set changes it.
+        self.ultimate_cost = self.seen[0]
+            .and_then(|player| simulation.move_library().current(player.moves.set?))
+            .and_then(|set| set.find(ULTIMATE))
+            .map_or(0, |(_, ultimate)| ultimate.cost());
         if started_over && let Some(camera) = &mut self.camera {
             camera.start_over();
         }
@@ -1349,6 +1377,17 @@ mod tests {
         assert_eq!(values.player.hp_points, Some(300));
         let enemy = values.enemy.expect("there");
         assert_eq!((enemy.hp, enemy.poise, enemy.hp_points), (1.0, 1.0, None));
+        // A built-in fight starts the player's meter full, with what its set's ultimate costs.
+        let player = sim.actor(cast[0]).expect("alive");
+        let set = sim.move_library().current(player.moves.set.expect("a set")).expect("loaded");
+        let (_, ultimate) = set.find(ULTIMATE).expect("the player has an ultimate");
+        assert!(ultimate.cost() > 0 && player.fighter.max_energy() >= ultimate.cost());
+        assert_eq!(actors.ultimate_cost, ultimate.cost());
+        assert_eq!(values.ultimate, Some(UltimateValues { energy: 1.0, ready: true }));
+        // Nobody with no meter has one.
+        let enemy = sim.actor(cast[1]).expect("there");
+        assert_eq!(enemy.fighter.max_energy(), 0);
+        assert_eq!(ultimate_values(&enemy, 0), None);
         for _ in 0..240 {
             step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
         }

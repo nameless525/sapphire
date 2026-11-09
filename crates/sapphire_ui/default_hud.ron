@@ -13,6 +13,8 @@
         attack: (offset: (0.0, 0.0), half: 46.0, hit: 62.0),
         dodge: (offset: (-22.0, -100.0), half: 30.0, hit: 38.0),
         skill: (offset: (-104.0, -30.0), half: 30.0, hit: 38.0),
+        // The ultimate's, at the cluster's top: drawn and pressed only while there's an ultimate to show.
+        ultimate: (offset: (-112.0, -112.0), half: 32.0, hit: 40.0),
         // The left thumb's zone: its rest from the bottom left, and how much of the safe area it takes,
         // from under the bars' share of the height across the width's.
         stick: (radius: 52.0, rest: (92.0, -84.0), zone_top: 0.28, zone_width: 0.46),
@@ -49,5 +51,8 @@
             others_top: 29.0,
             others_bottom: 34.0,
         ),
+        // The player's energy meter, for the ultimate: its top and bottom under where the player's bars hang,
+        // and where it runs as shares of their width.
+        energy: (top: 52.0, bottom: 58.0, from: 0.0, to: 0.62),
     ),
 )

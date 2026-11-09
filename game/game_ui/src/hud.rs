@@ -28,7 +28,7 @@ use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, W
 use sapphire_time::Stopwatch;
 use sapphire_ui::{
     Atlas, Button, ButtonEventKind, CombatHud, DamageKind, FighterValues, HudDesign, HudLayout, HudStats,
-    HudValues, Insets, SkillValues, TouchActions, UiDrawList, UiMetrics,
+    HudValues, Insets, SkillValues, TouchActions, UiDrawList, UiMetrics, UltimateValues,
 };
 
 use crate::LOG_TARGET;
@@ -59,11 +59,14 @@ pub struct HudOptions {
     pub scale: f32,
     /// `--hud-paused`: draws a pause whatever the input says, since a capture has no input to pause it.
     pub paused: bool,
+    /// `--hud-energy <share>`: the fixed frame's player has an ultimate, its energy meter this full (0 to
+    /// 1), and a full one is ready. With none, the fixed frame has no ultimate, as it had none before.
+    pub energy: Option<f32>,
 }
 
 impl Default for HudOptions {
     fn default() -> Self {
-        Self { mode: HudMode::default(), insets: None, scale: 1.0, paused: false }
+        Self { mode: HudMode::default(), insets: None, scale: 1.0, paused: false, energy: None }
     }
 }
 
@@ -190,6 +193,10 @@ impl FightHud {
     /// there's no other clock.
     pub(crate) fn show_fight(&mut self, values: HudValues, time: Duration) {
         self.fight = Some(values);
+        // The ultimate's button takes a thumb while it's drawn: a live frame draws these values.
+        if self.options.mode == HudMode::Live {
+            self.controls.show_ultimate(values.ultimate.is_some());
+        }
         self.stand_in = None;
         self.fight_time(time);
     }
@@ -401,18 +408,20 @@ impl FightHud {
     fn pose_fixed(&mut self) {
         let layout = self.layout;
         self.controls = TouchControls::new(layout);
+        self.controls.show_ultimate(self.options.energy.is_some());
         self.hud = CombatHud::with_atlas(self.atlas.clone());
         let before = HudValues {
             player: FighterValues { hp: 0.78, poise: 0.82, hp_points: Some(5054) },
             enemy: Some(FighterValues { hp: 0.83, poise: 0.35, hp_points: None }),
             skill: SkillValues { cooldown: 0.7, seconds: Some(5) },
+            ultimate: self.options.energy.map(|energy| UltimateValues { energy, ready: energy >= 1.0 }),
             ..HudValues::default()
         };
         let after = HudValues {
             player: FighterValues { hp: 0.64, poise: 0.46, hp_points: Some(4147) },
             enemy: Some(FighterValues { hp: 0.71, poise: 0.62, hp_points: None }),
             skill: SkillValues { cooldown: 0.62, seconds: Some(4) },
-            ..HudValues::default()
+            ..before
         };
         let actions = self.controls.update(ms(900));
         self.hud.update(ms(900), &before, actions);

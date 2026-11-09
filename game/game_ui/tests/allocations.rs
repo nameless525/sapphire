@@ -11,6 +11,7 @@ use sapphire_platform::Timestamp;
 use sapphire_platform::{FingerId, TouchDeviceId, TouchPhase};
 use sapphire_ui::{
     CombatHud, DamageKind, FighterValues, HudLayout, HudValues, Insets, SkillValues, UiDrawList, UiMetrics,
+    UltimateValues,
 };
 
 #[global_allocator]
@@ -69,6 +70,7 @@ fn frame(frame: u64, controls: &mut TouchControls, hud: &mut CombatHud, list: &m
         player: FighterValues { hp: 1.0 - share, poise: share, hp_points: Some(6480 - frame as u32 % 100) },
         enemy: Some(FighterValues { hp: share, poise: 1.0 - share, hp_points: Some(frame as u32 % 100) }),
         skill: SkillValues { cooldown: 1.0 - share, seconds: Some(frame as u32 % 7) },
+        ultimate: Some(UltimateValues { energy: share, ready: frame % 100 >= 90 }),
         ..HudValues::default()
     };
     hud.update(now, &values, actions);

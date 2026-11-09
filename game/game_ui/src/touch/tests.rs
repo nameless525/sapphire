@@ -703,14 +703,61 @@ fn every_landing_inside_the_safe_area_goes_somewhere_sensible() {
             let mut controls = TouchControls::new(layout);
             controls.touch(ms(0), finger(1), TouchPhase::Down, at);
             let actions = controls.update(ms(1));
+            // The ultimate's isn't there: no ultimate was shown.
             let on_button = Button::ALL
                 .into_iter()
+                .filter(|&button| button != Button::Ultimate)
                 .any(|button| layout.button(button).center.distance(at) <= layout.button(button).hit);
             let any_down = Button::ALL.into_iter().any(|button| actions.button(button).down);
             assert_eq!(any_down, on_button, "{at}");
             assert_eq!(actions.stick.active, !on_button && layout.stick.zone.contains(at), "{at}");
         }
     }
+}
+
+/// The ultimate's button is only there while the HUD shows an ultimate: until then a landing on it is the
+/// camera's, and once it's shown it presses and lets go as any button does. Hidden under a thumb, it keeps
+/// that thumb until it lifts, and takes no new one.
+#[test]
+fn the_ultimate_takes_a_thumb_only_while_it_is_shown() {
+    let layout = layout();
+    let ultimate = layout.ultimate.center;
+    assert!(!layout.stick.zone.contains(ultimate));
+    let mut controls = TouchControls::new(layout);
+    assert!(!controls.takes(Button::Ultimate));
+    assert!([Button::Attack, Button::Dodge, Button::Skill].into_iter().all(|button| controls.takes(button)));
+    controls.touch(ms(1), finger(1), TouchPhase::Down, ultimate);
+    controls.touch(ms(2), finger(1), TouchPhase::Moved, ultimate + Vec2::new(-30.0, 0.0));
+    let actions = controls.update(ms(3));
+    assert!(!actions.button(Button::Ultimate).down);
+    assert_eq!(actions.events, vec![]);
+    assert_eq!(actions.camera_delta, Vec2::new(-30.0, 0.0), "the camera's");
+    assert!(!controls.holds_control(finger(1)));
+    controls.touch(ms(4), finger(1), TouchPhase::Up, ultimate);
+
+    controls.show_ultimate(true);
+    controls.touch(ms(10), finger(2), TouchPhase::Down, ultimate + Vec2::new(0.0, layout.ultimate.hit - 1.0));
+    let actions = controls.update(ms(11));
+    assert!(actions.button(Button::Ultimate).down);
+    assert_eq!(
+        actions.events.iter().map(|event| (event.button, event.kind)).collect::<Vec<_>>(),
+        [(Button::Ultimate, ButtonEventKind::Pressed)]
+    );
+    assert!(controls.holds_control(finger(2)));
+
+    // Gone with the thumb still on it: it keeps the press, and a second thumb there takes nothing of it.
+    controls.show_ultimate(false);
+    controls.touch(ms(12), finger(3), TouchPhase::Down, ultimate);
+    let actions = controls.update(ms(13));
+    assert!(actions.button(Button::Ultimate).down);
+    assert!(!controls.holds_control(finger(3)));
+    controls.touch(ms(14), finger(2), TouchPhase::Up, ultimate);
+    let actions = controls.update(ms(15));
+    assert!(!actions.button(Button::Ultimate).down);
+    assert_eq!(
+        actions.events.iter().map(|event| (event.button, event.kind)).collect::<Vec<_>>(),
+        [(Button::Ultimate, ButtonEventKind::Released)]
+    );
 }
 
 /// What else counts fingers (the debug overlay's two-finger hold) asks this, so a thumb playing the game

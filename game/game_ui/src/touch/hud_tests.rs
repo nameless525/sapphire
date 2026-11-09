@@ -7,6 +7,7 @@ use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
 use sapphire_ui::{
     CombatHud, FighterValues, HudLayout, HudValues, Insets, Rect, SkillValues, UiDrawList, UiMetrics,
+    UltimateValues,
 };
 
 use super::TouchControls;
@@ -45,6 +46,7 @@ fn values() -> HudValues {
         player: FighterValues { hp: 0.8, poise: 0.5, hp_points: Some(6480) },
         enemy: Some(FighterValues { hp: 0.6, poise: 0.3, hp_points: None }),
         skill: SkillValues { cooldown: 0.5, seconds: Some(3) },
+        ultimate: Some(UltimateValues { energy: 1.0, ready: true }),
         ..HudValues::default()
     }
 }
@@ -73,11 +75,10 @@ fn every_quad_stays_on_the_frame_with_nothing_held_or_with_everything_held() {
     for (name, metrics) in frames() {
         let layout = HudLayout::new(metrics);
         let held = |controls: &mut TouchControls| {
-            for (id, position) in
-                [layout.stick.rest, layout.attack.center, layout.dodge.center, layout.skill.center]
-                    .into_iter()
-                    .enumerate()
-            {
+            controls.show_ultimate(true);
+            let buttons =
+                [layout.attack.center, layout.dodge.center, layout.skill.center, layout.ultimate.center];
+            for (id, position) in [layout.stick.rest].into_iter().chain(buttons).enumerate() {
                 let finger = sapphire_platform::FingerId::new(
                     sapphire_platform::TouchDeviceId::from_raw(1),
                     id as u64,

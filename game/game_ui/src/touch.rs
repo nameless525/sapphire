@@ -5,7 +5,8 @@
 //!
 //! A finger belongs to what it landed on until it lifts:
 //!
-//! - **Buttons first.** A landing inside a button's hit circle takes the nearest such button. A
+//! - **Buttons first.** A landing inside a button's hit circle takes the nearest such button, of those
+//!   there: the ultimate's is only while the HUD shows one ([`TouchControls::show_ultimate`]). A
 //!   thumb that slides off keeps it: `over` says where the thumb is, the press holds, and sliding
 //!   back changes nothing. A second finger on a held button takes nothing.
 //! - **Then the stick,** a landing in its zone while no finger has it. The floating stick appears
@@ -94,6 +95,8 @@ pub struct TouchControls {
     /// The state as input arrives, published by [`Self::update`].
     pending: TouchActions,
     actions: TouchActions,
+    /// The ultimate's button takes a landing ([`Self::show_ultimate`]).
+    ultimate_shown: bool,
 }
 
 impl TouchControls {
@@ -108,6 +111,7 @@ impl TouchControls {
             touches: [None; MAX_TOUCHES],
             pending: TouchActions::default(),
             actions: TouchActions::default(),
+            ultimate_shown: false,
         }
     }
 
@@ -147,6 +151,18 @@ impl TouchControls {
 
     pub fn layout(&self) -> &HudLayout {
         &self.layout
+    }
+
+    /// Whether the ultimate's button is there to press, as the HUD draws it while it has an ultimate
+    /// (`HudValues::ultimate`): from the next landing on. Off until told otherwise, so its zone is the
+    /// camera's or the stick's as if it weren't laid out. A finger already on it keeps it until it lifts.
+    pub fn show_ultimate(&mut self, shown: bool) {
+        self.ultimate_shown = shown;
+    }
+
+    /// Whether `button` takes a landing: every one but the ultimate's, and that one while it's shown.
+    pub fn takes(&self, button: Button) -> bool {
+        button != Button::Ultimate || self.ultimate_shown
     }
 
     /// Takes a platform event. Returns whether it was a touch the controls took, which nothing
@@ -262,6 +278,7 @@ impl TouchControls {
         let layout = &self.layout;
         let on_button = Button::ALL
             .into_iter()
+            .filter(|&button| self.takes(button))
             .filter_map(|button| {
                 let zone = layout.button(button);
                 let distance = zone.center.distance(position);

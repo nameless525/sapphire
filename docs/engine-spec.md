@@ -204,7 +204,7 @@ ms, p50 / p99 / peak @ tick, with the budget in brackets (§3.1 to §3.3; §3.2 
   - **TAA's p99 on Desktop-Low** isn't a repeatable cost: its peak is 0.603 ms and no tick's least passes the row. The frames that read high are at different ticks each round, with a longer GPU frame; another process's GPU work or overlap, unresolved.
   - **Desktop-High's GPU p99** passes the low end of §3.1's 8–12 ms, so this M5 doesn't hold 120 fps through a fight at 1440p; it holds 60 with room.
   - **One-off frames, at no repeatable tick:** at this load the CPU frame's worst any round saw was 88 ms on Desktop-High, 63 on Desktop-Low, 31 on Mobile-High and 48 on Mobile-Low, with a median round's worst at 21, and a median round's p99 is about 11, against Z1's worsts of 10.0 on Desktop-High, 10.5 on Desktop-Low and 8.0 on Mobile-Low at load 4–8. 410cf24b's binary reads the same beside this one. They cluster near 10 and 20 ms, which looks like a thread losing its core to the OS, though nothing here proves it. On 410cf24b every frame over 2 ms, but one in `prepare`, was in `record`, and they came more often the busier the machine: with the load at 3, Mobile-Low's worst was 1.0 ms, though the desktop tiers still saw some. Recording on one encoder changed their shape without ending them: at Mobile-Low `record`'s p50 rose from 197 to 230 µs, its worst fell from 20.5 to 13.2 ms, and more frames passed 1 ms while fewer passed 3. Not taken again. Left as it is until a phone can judge it.
-- **Rows with no figure here:** §3.2's streaming row is read over a walk (§5.21, As built M3 W2), and the script row has its own bench since M3 L2 (`hook_cost`, [m3-plan.md](m3-plan.md)), with no game fight behind it until L3. The platform row's events and input aren't in a bench with no window; `sapphire_controls`' own bench reads 0.38 µs a frame with no input and 2.38 µs with five inputs and a step. Mixing happens outside the CPU frame, on the audio callback: 0.031–0.060 ms a frame in this fight, and 1.17% of real time at 32 voices (`sapphire_audio`'s `costs`).
+- **Rows with no figure here:** §3.2's streaming row is read over a walk (§5.21, As built M3 W2), and the script row has its own bench since M3 L2 (`hook_cost`, [m3-plan.md](m3-plan.md)), with no game fight behind it until L3. Both are read on a zone walk in §3.6. The platform row's events and input aren't in a bench with no window; `sapphire_controls`' own bench reads 0.38 µs a frame with no input and 2.38 µs with five inputs and a step. Mixing happens outside the CPU frame, on the audio callback: 0.031–0.060 ms a frame in this fight, and 1.17% of real time at 32 voices (`sapphire_audio`'s `costs`).
 - **Allocations a frame:** 745.9 on Desktop-High (worst 797, 382 KiB), 745.6 on Desktop-Low, 607.3 on Mobile-High, 480.8 on Mobile-Low (worst 545, 265 KiB). These count, so load doesn't move them, and 410cf24b's binary still reads Z1's 799.5, 799.3, 658.5 and 483.0: 54 fewer on the desktop tiers and 51 on Mobile-High are real. None in a fixed step, by rule R6's count, and none in animation, the packet or prepare. On Desktop-Low 181–336 by round are on the frame's thread in `record`, and the rest on recording's workers: wgpu's.
 
 **The worst moments.** ms, CPU peak and GPU mean / peak, on each tick's least across rounds. Screen layers reach 8 in the finish freeze and 9 for a moment at ticks 803 and 1103, and effects' sprites are at their most in the freeze (107). Against the fight's median tick (6.70, 4.09, 1.97 and 1.12 ms) the costliest moments' means add 11–21% to the GPU frame, and their peaks 19% and 15% on the desktop tiers and 47% and 60% on the mobile ones, where the frame is smallest and other agents' GPU work shows most.
@@ -248,6 +248,77 @@ Two runs of each tier at load 30–38, the ranges their last readings. Against 4
 - Whether memory stays out of the OS's way on a 4 GB phone, with a texture cook held to §3.4.
 - Present, vsync and the frame pacer under load, the composite at native output on a real tile GPU, the audio callback at real-time priority, and touch.
 - A first launch's cold pipeline caches, which every run here had warm.
+
+### 3.6 Measured on a zone walk (M3 Z1)
+
+**Exit test 8's first clause, on a Mac, as §3.5's numbers are.** §3.2's script and streaming rows read within budget on every tier (below). Two caveats: the ward's walk has no script yet, so the script row is read on L3's scripted fight until the boss's script reaches the ward (B3, C2); and on the tiers' own radii the ward is placed whole at its load, so the streaming row is also read with a 48 m radius, where cells come and go. Read both again on the walk once G1 makes it the game's flow.
+
+- **Hardware and code:** Apple M5 (4 performance and 6 efficiency cores, 10-core GPU, 24 GB), macOS 27.0.1, on AC power, Metal. `main` at d45f041a with Z1's bench on it, which steps nothing differently (every run reached its replay's checksums), in release builds, taken on 2026-11-09. Each tier at its own size and cook, as §3.5: 2560×1440, 1920×1080 and the desktop cook; 1600×740, 1280×590 and the mobile cook.
+- **The loads,** each `SAPPHIRE_CONTENT_DIR=target/content/<cook> sapphire_sandbox --bench 1 --tier <tier> --size <size> --arena --replay <replay> --cues --hud live --blade on --time-of-day 10`:
+  - **The walk,** `tests/replays/walk-the-ward.sreplay`: B4's 4,298 ticks through the Lantern Ward's four checkpoints and a return to its court, a real body on the ward's colliders, the stage standing in the ward and streaming it on the tier's settings (§5.21). The fight bench plays it as it plays a fight (`apps/sapphire_sandbox/src/fight_bench.rs`, and `fight_bench/zone.rs` for memory and trips), since a scenario that walks a zone on the zone's own ground stands on a stage since C2. A G1 flow's replay benches the same way.
+  - **Streaming as cells come and go:** the walk again with `--stream 64:48` on Desktop-Low and `--stream 32:48` on Mobile-Low, each tier's entity budget and a 48 m radius.
+  - **Trips:** `tests/replays/zone-trip.sreplay`, W4's 720 ticks from the arena to the hub and the proving ground and back, five trips under the wipe.
+  - **Scripts:** `tests/replays/arena-scripted.sreplay`, L3's 1,700-tick fight whose warrior answers hooks.
+- **How it was read:** a discarded round, then three rounds alternating the four tiers, and the two other loads likewise on Desktop-Low and Mobile-Low, with other agents building beside them: load average 3.4 to 16.4 for the walks and trips, at a median of 9.3, 6.8 to 8.8 for the scripts and 4.4 to 20.5 (median 14.9) for streaming. Each figure is the least across rounds, as in §3.5, but **worst** is the least of the rounds' worst frames, not §3.5's per-tick peak. CPU rows move together with the machine's load, so the margins say more than the figures.
+
+ms, p50 / p99 / worst, on the walk unless named, with §3.2's budget in brackets on Desktop-Low and Mobile-Low. **Bold is over.**
+
+| Row | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| CPU frame | 3.176 / 6.756 / **25.90** [8] | 2.572 / 4.019 / **25.93** [12] | 2.072 / 4.400 / 9.69 [12] | 1.929 / 2.472 / 5.97 [22] |
+| Game side | 2.281 / 4.685 / 14.37 | 2.018 / 2.958 / **17.71** [6] | 1.579 / 3.230 / 5.01 | 1.571 / 2.034 / 4.20 [13.6] |
+| Simulation, a frame's steps | 0.034 / 0.065 / 0.926 | 0.025 / 0.048 / 0.203 [1] | 0.014 / 0.053 / 0.141 | 0.009 / 0.040 / 0.086 [3] |
+| Physics, inside it | 0.006 / 0.011 / 0.041 | 0.004 / 0.009 / 0.038 [0.7] | 0.003 / 0.009 / 0.021 | 0.002 / 0.008 / 0.013 [2.4] |
+| Animation + IK | 0.021 / 0.048 / 0.594 | 0.016 / 0.033 / 0.457 [1.5] | 0.011 / 0.037 / 0.659 | 0.008 / 0.026 / 0.089 [3] |
+| Secondary motion | 2.173 / 4.484 / 10.76 | **1.947 / 2.808 / 16.37** [0.5] | 1.523 / 3.082 / 4.822 | **1.535 / 1.956 / 3.949** [1] |
+| VFX simulation | 0.003 / 0.005 / 0.021 | 0.002 / 0.003 / 0.076 [0.3] | 0.001 / 0.003 / 0.011 | 0.001 / 0.002 / 0.004 [0.6] |
+| **Script events + Luau GC**, on the walk | not exercised | not exercised [0.3] | not exercised | not exercised [0.5] |
+| … on L3's scripted fight | | 0.005 / 0.022 / 0.058 [0.3] | | 0.011 / 0.030 / 0.039 [0.5] |
+| **Streaming activation**, the tier's radius | 0.001 / 0.002 / 0.157 | 0.001 / 0.001 / 0.005 [0.5] | 0.000 / 0.001 / 0.022 | 0.000 / 0.001 / 0.001 [1] |
+| … with a 48 m radius | | 0.001 / 0.003 / 0.050 [0.5] | | 0.001 / 0.005 / 0.048 [1] |
+| Audio update | 0.001 / 0.002 / 0.029 | 0.001 / 0.002 / 0.006 [0.2] | 0.001 / 0.002 / 0.014 | 0.000 / 0.001 / 0.014 [0.3] |
+| Extract | 0.019 / 0.046 / 0.173 | 0.014 / 0.026 / 0.073 [0.7] | 0.007 / 0.031 / 0.157 | 0.004 / 0.019 / 0.066 [1.2] |
+| Render prepare + record | 0.840 / 2.118 / 21.72 | 0.571 / 1.164 / 2.865 [4] | 0.508 / 1.436 / 6.866 | 0.341 / 0.636 / 1.771 [8] |
+| Main pass (GPU) | 5.426 / 9.511 / 11.00 | **5.596 / 8.448 / 11.66** [4.9] | 1.653 / 3.857 / 5.752 | 2.198 / 5.134 / 7.627 [11.5] |
+| Post (GPU) | 1.249 / 3.037 / 4.374 | **1.178 / 3.706 / 6.535** [0.7] | 0.322 / 2.230 / 4.160 | 0.518 / 2.009 / **3.414** [2.5] |
+| TAA (GPU) | 1.711 / 3.069 / 4.144 | **1.341 / 3.080 / 4.564** [0.8] | none | none [1] |
+
+- **Streaming at 48 m is the first play's.** The bench plays a replay three times without reloading the zone, so only the first play brings cells in, and that row's figures are from it. Its worsts across rounds were 0.05 to 0.55 ms on Desktop-Low and 0.05 to 0.18 on Mobile-Low; one, at tick 4,065 in the round at load 19.8, was over Desktop-Low's 0.5. No p50 or p99 came near a budget.
+- **The GPU frame isn't read here.** Since 9d2efd9e (2026-11-05) a frame's span counts only when every one of its passes' timestamp pairs decodes, and on Metal no frame of the walk, the trips or §3.5's own fight does, so the row is "not exercised" on all of them. The passes above read, but on Metal they overlap and each is timed alone; with other agents' GPU work on the same M5 they read well above §3.5's for the same passes. GPU rows here are for their shape, not their size, until the span is back.
+- **What's over:**
+  - **Secondary motion, on every tier,** 1.5–2.2 ms a frame where §3.5 read 0.017–0.034, and it's most of the game side. §3.5's own fight reads the same on this `main` (`arena-fight-won`, Desktop-Low: 2.37 ms p50), so it isn't the walk's. It came with the springs' clearance work, most likely 6d848f63 (2026-11-08, `springs/clearance.rs`), which this reading hasn't isolated. L3's fight, which stands still most of the time, reads 0 at its p50 and 2.5 at its p99: the cost is a moving character's.
+  - **Desktop-Low's GPU passes,** main, post and TAA, and Mobile-Low's worst post frame, against figures inflated by the shared GPU (above).
+  - **One-off CPU frames:** the desktop tiers' worst CPU frame passes its row in every round, 26 to 58 ms, each at a different tick (806 to 4,225). The springs' worst frame reaches 16 ms and `record`'s 22, so the stalls fall in those, as §3.5's did; what's known of them is there.
+- **Allocations a frame on the walk:** 764 on Desktop-High, 763 on Desktop-Low, 637 on Mobile-High, 506 on Mobile-Low, and none in a fixed step. On `zone-trip`, 17 in fixed steps each play: 12 at the frame a replay starts over (its new `Combat`, as §3.5 says) and one a trip, from the stage's `Fight::holds_step` copying the next zone's pack name as a trip begins. The simulation's step allocates nothing.
+
+**Memory across the walk,** start / most / end in MB, the least across rounds of each, from the engine's own accounting after every frame and the process's footprint as `sapphire_platform::process_memory` reads it (`proc_pid_rusage`, what §3.5's `footprint` reads), with the OS's own most for the process.
+
+| | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Asset server, cooked | 59.6 / 59.6 / 59.6 | 59.6 / 59.6 / 59.6 | 47.7 / 47.7 / 47.7 | 47.7 / 47.7 / 47.7 |
+| … of it meshes, of 384 | 15.8 | 15.8 | 9.7 | 9.7 |
+| … of it textures, of 2,560 | 37.5 | 37.5 | 36.1 | 36.1 |
+| Meshes, materials, entities | 107, 50, 512 | 107, 50, 512 | 107, 50, 512 | 107, 50, 512 |
+| Heap | 63.9 / 63.9 / 63.9 | 63.8 / 63.8 / 63.8 | 55.2 / 55.2 / 55.2 | 43.9 / 43.9 / 43.9 |
+| Process footprint | 775 / 777 / 773 | 590 / 593 / 588 | 412 / 419 / 416 | 404 / 407 / 404 |
+| The OS's most | 799–810 | 615–629 | 442–456 | 419–421 |
+
+- **Nothing grows across the walk:** every reading's end is its start, within 3 MB of footprint, and the asset server's and renderer's figures don't move at all, since on the tiers' radii the ward is all placed at its load. With a 48 m radius the ward comes in as the walk reaches it: its entities go from 256 to 512 by tick 1,889, and its meshes from 91 to 107 by tick 3,420 (resident meshes 14.1 to 15.8 MiB on Desktop-Low, 8.7 to 9.7 on Mobile-Low), and the asset server's and the scene's counts hold all of it to the walk's end: cells leaving the radius (C1 read 165 removed) give back no resident mesh or entity. The footprint swings about 30 MB inside each round. The asset budgets are the server's defaults on every tier (384 MiB of meshes, 2,560 of textures), not §3.1's memory column.
+- **Against §3.5:** the walk's footprint reads 40–70 MB above §3.5's fight on each tier. The ward's meshes and entities and everything since 69d58dc2 lie between them, and this reading doesn't separate them.
+
+**A trip's time,** on `zone-trip`, from the frame its exit was taken. Frames are what a player sees, since the wipe runs on the frames' steps (a frame is 1/60 s, and 1/30 s on Mobile-Low); ms are the bench's, whose frames aren't paced and so run faster than real time. The least across rounds, the range across the five trips:
+
+| Step | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| The wipe covers | 34 frames, 211–257 ms | 34, 173–241 | 34, 80–134 | 18, 36–61 |
+| The swap: the zone ready, the simulation in it | 35, 218–263 | 35, 178–247 | 35, 82–139 | 19, 39–66 |
+| Its first cells placed | 36, 228–270 | 36, 184–252 | 36, 86–141 | 20, 42–70 |
+| The wipe gone | 69, 534–574 | 69, 425–497 | 69, 254–297 | 37, 110–168 |
+| A frame inside the trip, p50 / p99 | 7.4–8.2 / 11.0–14.0 | 6.2–7.2 / 8.5–12.3 | 3.4–4.3 / 6.0–7.6 | 2.9–4.5 / 5.4–9.0 |
+
+- **The load itself** (the stage's `arrived in a zone`): a cold trip, the hub's first and the ground's first, is ready in 5 frames and 8–84 ms (a median of 57, 46, 29 and 20 ms by tier), under a wipe that covers in 34; every later one is warm, the hub's exits having been prefetched behind it, and ready at once. The swap waits for the wipe, not the zone.
+- **Prefetch,** the zones on their way and their pipelines, costs a median of 0.7–1.1 µs a frame, a p99 of 4–6 and at worst 22 µs, on the 400–840 frames a play has one coming.
+- **What it can't see:** a phone's storage, since every pack read here comes from a Mac's SSD and its page cache; and the wipe's look, whose timing is its own (W4).
 
 ---
 
@@ -502,7 +573,7 @@ pub struct FramePacket {
 - **The sandbox** reaches the fight by depending on `game_combat` and `game_ui`, with `ShownFight` as its show, and keeps its flags, captures, benches and `SandboxInput`. Only one whole fight, `Fight::stand`, is in `game_combat`, for `game_app` and its test.
 - **What a show draws through:** `Scene::declared_pipelines` is the scene's post variants, effects and sky plus what its show declares: a fight its cues' effects, a HUD or a title the interface. The screen effects a show fires still go through the scene's stack, so their variants reach it by `will_push_effects`. `fight_stage` asks for the packs' prewarm, and `GameShow::stand` prewarms the rest, so a game's first frame builds nothing; `say_first_uses` logs a warning naming any build a frame does. A cold load blocks before the title for 4.0 s on an emulator and 5.7 s on a simulator, with nothing on screen; warm, 77 ms and 33 ms.
 - **Glyph pages:** `begin_interface` hands a show `Renderer::ui_page_state` before a frame that draws, because `draw_interface` runs inside the scene's packet, where there's no renderer. Every show that draws text takes it: `ShownFight` passes it to its retained screens, to whatever an app draws over them and to the zone wipe (`follow_pages`), `game_app`'s show to its menus (U7), and the editor's viewport to its screen. `FightHud` draws atlas quads alone and needs none.
-- **`pub` lines:** 596 in `sapphire_stage` after M3 W5, E5 and Z1, as `git grep -h -P "^\s*pub " -- crates/sapphire_stage/src | wc -l` counts them. A game names about 220. The rest are only what the sandbox's scene flags build (`spawn_swatches`, the `set_*_mesh` calls, `FaceLayout`, `RimLayout`, `studio`).
+- **`pub` lines:** 608 in `sapphire_stage` after M3 W5, E5, the B3 to C2 chain and Z1, as `git grep -h -P "^\s*pub " -- crates/sapphire_stage/src | wc -l` counts them. A game names about 220. The rest are only what the sandbox's scene flags build (`spawn_swatches`, the `set_*_mesh` calls, `FaceLayout`, `RimLayout`, `studio`).
 - **What it costs:** every golden and replay is byte-identical, and the fight's rows read as before (the whole fight's bench at Desktop-High and Desktop-Low, alternating rounds against the base's binary on an M5). 745 allocations a frame, 0 in a step. The sandbox's binary grows from 28.71 MB to 29.10 MB, and the game's is 27.53 MB.
 - **What it can't do:** `game_app` has one scene, no scene flags, no recovery from a lost device (it logs and fails), no tier following, no dev overlay, no saves and no words on its title. `tests/outside_caller.rs` holds the surface for what it names and no more. Two fighters are still the fight's shape until B1.
 

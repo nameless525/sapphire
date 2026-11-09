@@ -18,8 +18,12 @@ pub enum Pane {
     Browser,
     /// The moves of the document on the timeline.
     Moves,
+    /// The placements of the zone being edited.
+    Zone,
     /// T3's timeline.
     Timeline,
+    /// The tracks of the timeline document being edited, and its playhead.
+    Sequencer,
     /// The simulation's run of the selected move.
     Preview,
     /// The real renderer, on the arena.
@@ -35,10 +39,12 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Browser,
         Self::Moves,
+        Self::Zone,
         Self::Timeline,
+        Self::Sequencer,
         Self::Preview,
         Self::Viewport,
         Self::Inspector,
@@ -53,7 +59,9 @@ impl Pane {
         match self {
             Self::Browser => "Assets",
             Self::Moves => "Moves",
+            Self::Zone => "Zone",
             Self::Timeline => "Timeline",
+            Self::Sequencer => "Sequencer",
             Self::Preview => "Preview",
             Self::Viewport => "Viewport",
             Self::Inspector => "Inspector",
@@ -87,8 +95,8 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// The first layout: documents and moves on the left, the preview over the timeline, and what's selected
-    /// and what the device says on the right.
+    /// The first layout: documents, and moves or a zone's placements, on the left, the preview over the timeline
+    /// or the sequencer, and what's selected and what the device says on the right.
     #[must_use]
     pub fn new() -> Self {
         const LEFT: f32 = 0.16;
@@ -97,12 +105,16 @@ impl Shell {
         let mut tiles = Tiles::default();
         let browser = tiles.insert_pane(Pane::Browser);
         let moves = tiles.insert_pane(Pane::Moves);
-        let left = tiles.insert_vertical_tile(vec![browser, moves]);
+        let zone = tiles.insert_pane(Pane::Zone);
+        let lists = tiles.insert_tab_tile(vec![moves, zone]);
+        let left = tiles.insert_vertical_tile(vec![browser, lists]);
         // The preview stays in front: a viewport makes a stage when it's first shown, and no sooner.
         let preview = tiles.insert_pane(Pane::Preview);
         let viewport = tiles.insert_pane(Pane::Viewport);
         let preview = tiles.insert_tab_tile(vec![preview, viewport]);
         let timeline = tiles.insert_pane(Pane::Timeline);
+        let sequencer = tiles.insert_pane(Pane::Sequencer);
+        let timeline = tiles.insert_tab_tile(vec![timeline, sequencer]);
         let middle = tiles.insert_vertical_tile(vec![preview, timeline]);
         share(&mut tiles, middle, &[(preview, 1.0 - TIMELINE), (timeline, TIMELINE)]);
         let side = vec![

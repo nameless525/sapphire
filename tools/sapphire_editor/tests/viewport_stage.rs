@@ -17,9 +17,13 @@ use egui_wgpu::RendererOptions;
 use game_combat::combat::{CombatOption, no_bindings};
 use game_combat::fight::Fight;
 use sapphire_editor::edits::{EntryRef, Track, set_window};
+use sapphire_editor::gizmo::{Axis, Gizmo};
 use sapphire_editor::recovery::Recovery;
 use sapphire_editor::shell::Pane;
-use sapphire_editor::viewport::{OutsideView, SETTLING_FRAMES, StageView, ViewShow, on_pixels, stand};
+use sapphire_editor::viewport::{
+    OutsideView, SETTLING_FRAMES, StageView, TimelineShown, ViewShow, on_pixels, play_frames, play_timeline,
+    stand, stand_zone_stage,
+};
 use sapphire_editor::{Editor, Options};
 use sapphire_gameplay::replay::LiveMoves;
 use sapphire_gameplay::{ActorId, Simulation};
@@ -1089,4 +1093,373 @@ fn a_lost_device_ends_a_run() {
     drop(view);
     assert!(!harness.state_mut().viewport().is_playing());
     assert_eq!(documents_as_they_are(harness.state()), before);
+}
+
+// The zone panel and the gizmo (M3 E5).
+
+/// The editor's cook: the desktop one, and each zone's shapes.
+fn editor_cook() -> PathBuf {
+    root().join("target/content/editor")
+}
+
+/// The proving ground in a folder of its own, with its sidecar, so nothing a test does reaches the repository's. It's
+/// outside the repository, whose roots would otherwise hold two files of one ID.
+fn proving_ground(name: &str) -> PathBuf {
+    let from = root().join("content/zones/proving_ground");
+    let dir = std::env::temp_dir().join(format!("sapphire_editor_{name}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a folder");
+    for file in ["proving_ground.zone.ron", "proving_ground.zone.ron.meta"] {
+        std::fs::copy(from.join(file), dir.join(file)).expect("copied");
+    }
+    dir.join("proving_ground.zone.ron")
+}
+
+/// An editor on a copy of the proving ground, with the viewport's tab in front.
+fn zone_harness(
+    painter: &Painter,
+    name: &str,
+    size: (f32, f32),
+    scale: f32,
+) -> (Harness<'static, Editor>, PathBuf) {
+    let path = proving_ground(name);
+    let options = Options { file: Some(path.clone()), content: Some(editor_cook()), link: None };
+    let mut editor = Editor::new(options);
+    editor.shell_mut().open(Pane::Viewport);
+    (harness_on(painter, editor, size, scale), path)
+}
+
+/// The cart the tests move, turned 30 degrees, and where the file has it.
+const CART: usize = 2;
+const CART_AT: &str = "at: (9.0, 0.0, 10.0)";
+
+/// Where on the screen the gizmo's arrow along `axis` is, `along` metres past where the selection stands: a point
+/// of the pane, in points.
+fn on_arrow(
+    harness: &mut Harness<'_, Editor>,
+    origin: sapphire_math::Vec3,
+    axis: Axis,
+    along: f32,
+) -> egui::Pos2 {
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let camera = *harness.state_mut().viewport().camera().expect("a frame's camera");
+    let gizmo = Gizmo::at(origin, &camera);
+    let point = origin + axis.direction() * (gizmo.length * 0.6 + along);
+    camera.to_screen(point, rect).expect("in front")
+}
+
+/// A drag of the gizmo's arrow along `axis` from the selection at `origin`, moved `metres` along it, as a person's
+/// hand does it: a press, ten moves, a release. No frame's drawn while the hand moves.
+fn drag_arrow(harness: &mut Harness<'_, Editor>, origin: sapphire_math::Vec3, axis: Axis, metres: f32) {
+    let from = on_arrow(harness, origin, axis, 0.0);
+    let to = on_arrow(harness, origin, axis, metres);
+    harness.hover_at(from);
+    harness.step();
+    harness.drag_at(from);
+    harness.step();
+    for step in 1..=10 {
+        harness.hover_at(from.lerp(to, step as f32 / 10.0));
+        harness.step();
+    }
+    harness.drop_at(to);
+    harness.step();
+}
+
+/// A stage of its own laying out the zone the editor shows, through the layouts in `rounds` in turn, each drawn as
+/// many frames as a change settles for: what a capture of the viewport's frames draws.
+fn capture_zone(
+    gpu: &Arc<GpuContext>,
+    size: (u32, u32),
+    outside: Option<OutsideView>,
+    rounds: &[(Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>)],
+) -> (Stage<ViewShow>, Image) {
+    let mut stage = stand_zone_stage(&Host::with_content_at(&editor_cook()), gpu).expect("stands");
+    stage.show.outside = outside;
+    let pack = sapphire_zone::pack_name("proving_ground");
+    let frame = capture(&mut stage, &vec![size; rounds.len()], |stage, round| {
+        let (laid, gizmo) = &rounds[round];
+        let Stage { scene, content, renderer, gpu, show, .. } = stage;
+        let layout = scene.lay_out_zone(content, &pack, laid, renderer, gpu).expect("laid out");
+        assert!(layout.missing.is_empty(), "{layout:?}");
+        show.gizmo = *gizmo;
+    });
+    (stage, frame)
+}
+
+/// What the viewport has laid out and the gizmo it draws, from the editor's documents as they are.
+fn zone_as_shown(harness: &mut Harness<'_, Editor>) -> (Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>) {
+    let frame = harness.state_mut().viewport_frame();
+    let zone = frame.zone.expect("a zone shown");
+    (zone.laid_out(), zone.gizmo)
+}
+
+/// A drag of the gizmo moves the selected placement in the zone document by exactly the bytes of that one number,
+/// as one step of undo, which takes it back to the file's bytes. The viewport shows it where a capture of the same
+/// layouts does, and nothing's built: opening the zone built what its pack draws through, and a drag moves an
+/// instance.
+#[test]
+#[ignore = "needs a GPU and an editor's cook"]
+fn a_drag_of_the_gizmo_moves_one_number() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let (mut harness, path) = zone_harness(&painter, "gizmo_drag", (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state_mut().viewport().note(), None, "every placement's shape is in the cook");
+    let opened = zone_as_shown(&mut harness);
+    let after_open = view.stage().expect("stood").renderer.stats().pipelines;
+    println!("after opening the zone: {after_open:?}");
+    assert_eq!(
+        after_open.first_use_builds,
+        0,
+        "{}",
+        view.stage().expect("stood").renderer.first_use_report()
+    );
+    let outside = view.stage().expect("stood").show.outside;
+    assert!(outside.is_some(), "a zone's view is from outside");
+
+    harness.state_mut().select_placement(Some(CART));
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let selected = zone_as_shown(&mut harness);
+    assert!(selected.1.is_some(), "the gizmo's on the cart");
+    let before = painter.paint(&gpu, &harness);
+
+    let file = std::fs::read_to_string(&path).expect("the file");
+    let cart = sapphire_math::Vec3::new(9.0, 0.0, 10.0);
+    drag_arrow(&mut harness, cart, Axis::X, 1.0);
+    let text = harness.state().current().expect("open").text().to_owned();
+    assert_eq!(text, file.replacen(CART_AT, "at: (10.0, 0.0, 10.0)", 1), "one number's bytes");
+    let current = harness.state().current().expect("open");
+    assert!(!current.in_gesture(), "the release ended it");
+    assert_eq!(current.undo_label(), Some("move a placement"));
+
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let moved = zone_as_shown(&mut harness);
+    assert_ne!(moved.0[CART], selected.0[CART], "the cart's moved");
+    assert_eq!(
+        moved.0.iter().zip(&selected.0).filter(|(now, was)| now != was).count(),
+        1,
+        "and only the cart"
+    );
+    let pipelines = view.stage().expect("stood").renderer.stats().pipelines;
+    assert_eq!(pipelines, after_open, "a drag built nothing");
+
+    let shell = painter.paint(&gpu, &harness);
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, pixels) = on_pixels(rect, 1.0);
+    let drawn = read_texture(&gpu, view.frame().expect("drawn"));
+    assert_eq!(differences(&drawn, &shell, rect, 1.0, 0).1, 0, "the pane is its frame");
+    let (_, moved_from, _) = differences(&before, &shell, egui::Rect::ZERO, 1.0, 0);
+    assert!(moved_from > 500, "the move shows: {moved_from} pixels differ");
+    let (capture_stage, frame) = capture_zone(&gpu, pixels, outside, &[opened, selected, moved]);
+    is_a_picture(&frame, "zone_moved");
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("after a drag: {count} of {all} pixels differ from a capture, by at most {most}");
+    assert_runs_agree(most, count, "after a drag");
+    assert_eq!(capture_stage.renderer.stats().pipelines.first_use_builds, 0);
+
+    harness.state_mut().undo();
+    harness.step();
+    let current = harness.state().current().expect("open");
+    assert_eq!(current.text().as_bytes(), file.as_bytes(), "undo is the file's bytes");
+    assert!(!current.is_dirty());
+}
+
+/// What the zone panel and a drag of the gizmo cost against the editor's frame: a pass of egui, the stage's frame
+/// and egui's paint, with the GPU's share waited for.
+#[test]
+#[ignore = "needs a GPU and an editor's cook, and prints costs"]
+fn what_the_zone_panel_costs() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let (mut harness, _) = zone_harness(&painter, "zone_costs", (1500.0, 960.0), 2.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    harness.state_mut().select_placement(Some(CART));
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let frames = 300;
+    let cart = sapphire_math::Vec3::new(9.0, 0.0, 10.0);
+    let time = |harness: &mut Harness<'_, Editor>, view: &mut StageView, drag: bool| {
+        let (mut passes, mut all) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+        let (from, past) = (on_arrow(harness, cart, Axis::X, 0.0), on_arrow(harness, cart, Axis::X, 0.5));
+        if drag {
+            harness.hover_at(from);
+            harness.step();
+            harness.drag_at(from);
+            harness.step();
+        }
+        for at in 0..frames {
+            if drag {
+                harness.hover_at(if at % 2 == 0 { past } else { from });
+            }
+            let started = Stopwatch::start();
+            harness.step();
+            passes.push(started.elapsed());
+            view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+            drop(painter.paint_only(harness));
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("polls");
+            all.push(started.elapsed());
+        }
+        if drag {
+            harness.drop_at(from);
+            harness.step();
+        }
+        passes.sort();
+        all.sort();
+        let pick =
+            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        (pick(&passes), pick(&all))
+    };
+    harness.state_mut().shell_mut().open(Pane::Moves);
+    let (pass, idle) = time(&mut harness, &mut view, false);
+    println!(
+        "a zone, nothing changing, its pane behind a tab: the pass {pass:?}, the frame {idle:?} (median, p99, worst)"
+    );
+    harness.state_mut().shell_mut().open(Pane::Zone);
+    let (pass, listed) = time(&mut harness, &mut view, false);
+    println!("with the zone pane in front: the pass {pass:?}, the frame {listed:?}");
+    harness.state_mut().shell_mut().open(Pane::Viewport);
+    let (pass, dragging) = time(&mut harness, &mut view, true);
+    println!("dragging the gizmo, an edit and a frame each: the pass {pass:?}, the frame {dragging:?}");
+    let pipelines = view.stage().expect("stood").renderer.stats().pipelines;
+    assert_eq!(pipelines.first_use_builds, 0);
+}
+
+// The sequencer panel (M3 E5).
+
+fn square_look_path() -> PathBuf {
+    root().join("content/sequences/square_look.timeline.ron")
+}
+
+/// An editor on the square's look, with the viewport's tab in front.
+fn timeline_harness(painter: &Painter, size: (f32, f32), scale: f32) -> Harness<'static, Editor> {
+    let options = Options { file: Some(square_look_path()), content: Some(cook()), link: None };
+    let mut editor = Editor::new(options);
+    editor.shell_mut().open(Pane::Viewport);
+    harness_on(painter, editor, size, scale)
+}
+
+/// The timeline as the editor cooked it.
+fn timeline_shown(harness: &mut Harness<'_, Editor>) -> TimelineShown {
+    harness.state_mut().viewport_frame().timeline.expect("the timeline cooks")
+}
+
+/// A fresh stage playing the timeline the editor has, through `frames` in turn, each round drawn as many frames as a
+/// change settles for and the frames between played with nothing drawn: what a capture at those times draws.
+fn capture_timeline(
+    gpu: &Arc<GpuContext>,
+    timeline: &Arc<sapphire_timeline::Timeline>,
+    size: (u32, u32),
+    frames: &[u32],
+) -> (Stage<ViewShow>, Image) {
+    let mut stage = stand(&host(), gpu).expect("stands");
+    play_timeline(&mut stage, Arc::clone(timeline));
+    let at = std::cell::Cell::new(0);
+    let image = capture(&mut stage, &vec![size; frames.len()], |stage, round| {
+        play_frames(stage, frames[round] - at.get(), size);
+        at.set(frames[round]);
+    });
+    (stage, image)
+}
+
+/// Scrubbing shows the frame a capture at that time does, forward and back, and the timeline's camera at a playhead
+/// is the camera of a stage that drew every frame to it. Nothing's built.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn scrubbing_shows_what_a_capture_at_that_time_does() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = timeline_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state().playhead(), Some(0));
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, pixels) = on_pixels(rect, 1.0);
+    let timeline = timeline_shown(&mut harness).timeline;
+    let at_start = painter.paint(&gpu, &harness);
+
+    // Forward: it plays on from where it was.
+    harness.state_mut().scrub_to(150);
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let shell = painter.paint(&gpu, &harness);
+    let drawn = read_texture(&gpu, view.frame().expect("drawn"));
+    assert_eq!(differences(&drawn, &shell, rect, 1.0, 0).1, 0, "the pane is its frame");
+    let (_, moved, _) = differences(&at_start, &shell, egui::Rect::ZERO, 1.0, 0);
+    assert!(moved > 10_000, "2.5 s in is another shot: {moved} pixels differ");
+    let (capture_stage, frame) = capture_timeline(&gpu, &timeline, pixels, &[0, 150]);
+    is_a_picture(&frame, "timeline_150");
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("at frame 150: {count} of {all} pixels differ from a capture, by at most {most}");
+    assert_runs_agree(most, count, "scrubbed forward");
+    assert_eq!(capture_stage.renderer.stats().pipelines.first_use_builds, 0);
+
+    // Back: it starts over on a fresh stage.
+    harness.state_mut().scrub_to(60);
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let shell = painter.paint(&gpu, &harness);
+    let (_, frame) = capture_timeline(&gpu, &timeline, pixels, &[60]);
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("back at frame 60: {count} of {all} pixels differ from a capture, by at most {most}");
+    assert_runs_agree(most, count, "scrubbed back");
+    let stage = view.stage().expect("stood");
+    assert_eq!(stage.renderer.stats().pipelines.first_use_builds, 0, "{}", stage.renderer.first_use_report());
+
+    // The frames played with nothing drawn leave the camera where drawing every one of them does.
+    let aspect = pixels.0 as f32 / pixels.1 as f32;
+    let seen = view.stage().expect("stood").scene.camera().camera_data(aspect);
+    let mut every = stand(&host(), &gpu).expect("stands");
+    play_timeline(&mut every, Arc::clone(&timeline));
+    let target = every.target(pixels.0, pixels.1, wgpu::TextureUsages::empty());
+    let target = target.create_view(&wgpu::TextureViewDescriptor::default());
+    for _ in 0..60 {
+        every.show.fight.show.drive_camera(1.0 / sapphire_editor::app::RATE, sapphire_math::Vec2::ZERO, 0.0);
+        every.render(&target, 1.0, |_, _| {}).expect("draws");
+        every.scene.end_frame();
+    }
+    let drew = every.scene.camera().camera_data(aspect);
+    assert_eq!((seen.position, seen.view, seen.proj), (drew.position, drew.view, drew.proj));
+}
+
+/// What the sequencer costs against the editor's frame: a pass with its pane in front, Play's frames, and a scrub
+/// back, which stands a fresh stage and plays to the playhead.
+#[test]
+#[ignore = "needs a GPU and a cook, and prints costs"]
+fn what_the_sequencer_costs() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = timeline_harness(&painter, (1500.0, 960.0), 2.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let frames = 120;
+    let time = |harness: &mut Harness<'_, Editor>, view: &mut StageView, act: &dyn Fn(&mut Editor, usize)| {
+        let (mut passes, mut all) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+        for at in 0..frames {
+            act(harness.state_mut(), at);
+            let started = Stopwatch::start();
+            harness.step();
+            passes.push(started.elapsed());
+            view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+            drop(painter.paint_only(harness));
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("polls");
+            all.push(started.elapsed());
+        }
+        passes.sort();
+        all.sort();
+        let pick =
+            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        (pick(&passes), pick(&all))
+    };
+    let (pass, idle) = time(&mut harness, &mut view, &|_, _| {});
+    println!("a timeline, nothing changing: the pass {pass:?}, the frame {idle:?} (median, p99, worst)");
+    let (pass, forward) = time(&mut harness, &mut view, &|editor, at| editor.scrub_to(at as u32 + 1));
+    println!("scrubbing forward a frame a pass: the pass {pass:?}, the frame {forward:?}");
+    harness.state_mut().scrub_to(239);
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    for back in [200, 120, 0] {
+        harness.state_mut().scrub_to(back);
+        harness.step();
+        let started = Stopwatch::start();
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        println!("a scrub back to frame {back}, a fresh stage and the frames to it: {:?}", started.elapsed());
+    }
 }

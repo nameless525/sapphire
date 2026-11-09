@@ -46,6 +46,11 @@ sapphire_serialize.workspace = true
 # The viewport: the real renderer, on the window's device.
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
+# A timeline's document, cooked as the cooker does, and played at its playhead as the game plays it.
+sapphire_sequencer.workspace = true
+sapphire_timeline.workspace = true
+# A zone's placements, and the names of the shapes an editor's cook makes of them.
+sapphire_zone.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

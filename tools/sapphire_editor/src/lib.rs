@@ -25,6 +25,7 @@ pub mod cli;
 pub mod cooked;
 pub mod edits;
 pub mod figure;
+pub mod gizmo;
 pub mod input;
 pub mod judge;
 pub mod link;

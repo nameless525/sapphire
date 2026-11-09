@@ -10,6 +10,17 @@
 //! moves, the game's bindings play it, and stopping it or a tab away stands the viewport again. It holds copies, so
 //! nothing a game does can reach a document.
 //!
+//! A zone (M3 E5) stands another stage, with no fight: each placement drawn on its own as its shape's mesh from an
+//! editor's cook ([`sapphire_stage::scene::Scene::lay_out_zone`]), where the document has it now, and the gizmo on
+//! the one selected, drawn by the stage's debug draws. An edit moves an instance: nothing is cooked, loaded or
+//! built. The character stands at the zone's origin, for a measure of size.
+//!
+//! A timeline (M3 E5) plays on the stage a fight stands on, as the game plays it: cooked from its document,
+//! from its start on a fresh stage, a frame of [`crate::app::RATE`] at a time with nothing drawn, to the
+//! playhead, which then draws as any change does. So the frame at a playhead is the frame a capture at that
+//! time draws. Forward, it plays on; back, or after an edit, it starts over on a fresh stage. The view can't
+//! turn: the timeline's camera is the view.
+//!
 //! Everything on the GPU is the window's to drop: a lost device takes the [`StageView`] with it, and the next
 //! is made from what the editor holds, which is the documents. `tests/viewport.rs` and
 //! `tests/viewport_stage.rs` hold what makes it right, on a real GPU and with no window.
@@ -20,6 +31,7 @@ use std::time::Duration;
 
 use game_combat::combat::{CombatOption, read_bindings};
 use game_combat::fight::{Fight, fight_stage};
+use sapphire_assets::AssetId;
 use sapphire_controls::CombatControls;
 use sapphire_gameplay::ActorId;
 use sapphire_gameplay::replay::LiveMoves;
@@ -30,10 +42,14 @@ use sapphire_render::quality::QualitySettings;
 use sapphire_render::{CameraData, PipelineInventory, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_rhi::wgpu;
-use sapphire_stage::scene::Scene;
+use sapphire_sequencer::Origin;
+use sapphire_stage::scene::{LaidOut, Scene};
 use sapphire_stage::{Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, Stopwatch};
+use sapphire_timeline::Timeline;
+use sapphire_zone::ZoneDocument;
 
+use crate::gizmo::{Gizmo, ViewCamera};
 use crate::play::{PlayRequest, Snapshot};
 
 /// The format a viewport draws in: an sRGB target, which encodes what post returns (`post.wgsl`).
@@ -154,10 +170,24 @@ impl OutsideView {
 
     /// Turns by a drag of `points`, and comes closer by a scroll of `dolly` points.
     pub fn moved(&mut self, points: Vec2, dolly: f32) {
+        self.turned(points);
+        self.distance = (self.distance * (-dolly * Self::DOLLY_PER_POINT).exp()).clamp(0.5, 200.0);
+    }
+
+    /// A view from above and aside of everything `zone` places, whole.
+    #[must_use]
+    pub fn of_zone(zone: &ZoneDocument) -> Self {
+        let points = || zone.placements.iter().map(|placement| Vec3::from(placement.at));
+        let count = zone.placements.len().max(1) as f32;
+        let focus = points().fold(Vec3::ZERO, |sum, at| sum + at) / count;
+        let reach = points().map(|at| at.distance(focus)).fold(0.0_f32, f32::max);
+        Self { focus, yaw: 0.6, pitch: 0.5, distance: ((reach + 3.0) * 1.8).clamp(5.0, 200.0), fov_y: 0.8 }
+    }
+
+    fn turned(&mut self, points: Vec2) {
         self.yaw -= points.x * Self::RADIANS_PER_POINT;
         self.pitch =
             (self.pitch + points.y * Self::RADIANS_PER_POINT).clamp(-Self::PITCH_LIMIT, Self::PITCH_LIMIT);
-        self.distance = (self.distance * (-dolly * Self::DOLLY_PER_POINT).exp()).clamp(0.5, 200.0);
     }
 }
 
@@ -171,6 +201,8 @@ pub struct ViewShow {
     pub controls: Option<CombatControls>,
     /// Where the view looks across the ground, which the next tick's stick turns by.
     camera_yaw: f32,
+    /// The gizmo, on a zone's placement.
+    pub gizmo: Option<Gizmo>,
 }
 
 impl SceneShow for ViewShow {
@@ -217,6 +249,9 @@ impl SceneShow for ViewShow {
 
     fn draw_debug(&mut self) {
         self.fight.draw_debug();
+        if let Some(gizmo) = &self.gizmo {
+            gizmo.draw();
+        }
     }
 }
 
@@ -242,6 +277,78 @@ pub fn stand_fight(
     show.fight.stand_prepared(combat, scene, content, renderer, gpu, quality.active().id)?;
     scene.prewarm(&*show, renderer);
     Ok(stage)
+}
+
+/// A stage on `gpu` with `host`'s content and no fight, for a zone to be laid out on, with what the character draws
+/// through built: [`Scene::lay_out_zone`] builds what the zone's pack does.
+pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
+    let desc = StageDesc::new(host, gpu, VIEWPORT_FORMAT, QualitySettings::default());
+    let content = Content::new(host, desc.character, desc.sky)?;
+    let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(ViewShow::default());
+    let Stage { show, scene, renderer, .. } = &mut stage;
+    scene.prewarm(&*show, renderer);
+    // The gizmo is debug lines, whose pass is built here rather than on the frame the first one shows.
+    renderer.prewarm(&PipelineInventory { debug_draw: true, ..PipelineInventory::default() });
+    sapphire_core::debug_draw::set_enabled(true);
+    Ok(stage)
+}
+
+/// What a viewport shows of a zone being edited.
+#[derive(Clone, Copy)]
+pub struct ZoneShown<'a> {
+    /// The zone's ID, which names its shapes' meshes.
+    pub id: AssetId,
+    /// The zone source's file stem, which names its pack.
+    pub stem: &'a str,
+    /// As it last read.
+    pub document: &'a ZoneDocument,
+    pub gizmo: Option<Gizmo>,
+}
+
+impl ZoneShown<'_> {
+    /// Each placement, as its shape's mesh at the rest of its transform.
+    #[must_use]
+    pub fn laid_out(&self) -> Vec<LaidOut> {
+        let shape = |placement: &sapphire_zone::Placement| LaidOut {
+            mesh: self.id.sub_asset(&placement.shape_name()),
+            transform: placement.shape_transform(),
+        };
+        self.document.placements.iter().map(shape).collect()
+    }
+}
+
+/// What a viewport plays of a timeline being edited.
+#[derive(Clone)]
+pub struct TimelineShown {
+    /// Its document.
+    pub id: AssetId,
+    /// As its document last cooked.
+    pub timeline: Arc<Timeline>,
+    /// The playhead, in frames of [`crate::app::RATE`].
+    pub frame: u32,
+}
+
+/// Plays `timeline` on `stage`'s fight from its start, as the game plays it: what a frame at a playhead plays on
+/// from with [`play_frames`].
+pub fn play_timeline(stage: &mut Stage<ViewShow>, timeline: Arc<Timeline>) {
+    stage.show.outside = None;
+    stage.show.fight.show.play_timeline(timeline, Origin::default());
+}
+
+/// `frames` of [`crate::app::RATE`] of what `stage` plays, framed for a target of `size`, with nothing drawn: what
+/// a game's frames do between two a capture keeps. Each is [`Stage::skip_frame`]'s, with the target's aspect.
+pub fn play_frames(stage: &mut Stage<ViewShow>, frames: u32, size: (u32, u32)) {
+    let dt = 1.0 / crate::app::RATE;
+    let Stage { show, scene, content, renderer, gpu, .. } = stage;
+    for _ in 0..frames {
+        show.fight.show.drive_camera(dt, Vec2::ZERO, 0.0);
+        content.update(renderer, gpu);
+        scene.follow_content(content, show);
+        scene.animate(content, 1.0, show);
+        let packet = scene.frame_packet(1.0, Some(size), show);
+        renderer.prepare(gpu, packet);
+        scene.end_frame();
+    }
 }
 
 /// The part of a viewport a pass of the interface sees, with no GPU behind it.
@@ -274,10 +381,18 @@ pub struct ViewportPane {
     status: Option<String>,
     /// The button's been pressed.
     stop: bool,
+    /// The camera the last frame drew with.
+    camera: Option<ViewCamera>,
 }
 
 impl ViewportPane {
-    pub(crate) fn ui(&mut self, ui: &mut egui::Ui) {
+    /// The pane, with `pointer` taking the pointer first, given the camera the last frame drew with and where the
+    /// frame shows. When it says it took it, the view doesn't turn.
+    pub(crate) fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        pointer: impl FnOnce(&egui::Response, Option<&ViewCamera>, egui::Rect) -> bool,
+    ) {
         ui.horizontal(|ui| {
             if self.playing {
                 self.stop |= ui.button("Stop playing").clicked();
@@ -296,13 +411,14 @@ impl ViewportPane {
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Viewport"));
         self.rect = Some(rect);
         self.wanted = (size.0 > 0 && size.1 > 0).then_some(size);
-        if response.dragged() {
+        let taken = self.texture.is_some() && pointer(&response, self.camera.as_ref(), rect);
+        if response.dragged() && !taken {
             self.dragged += response.drag_delta();
         }
         if response.hovered() {
             self.scrolled += ui.input(|input| input.smooth_scroll_delta.y);
         }
-        self.back_to_game |= response.double_clicked();
+        self.back_to_game |= response.double_clicked() && !taken;
         if let Some(texture) = self.texture {
             let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             ui.painter().image(texture, rect, whole, egui::Color32::WHITE);
@@ -367,6 +483,12 @@ impl ViewportPane {
         self.note.as_deref()
     }
 
+    /// The camera the last frame drew with, if there's been one.
+    #[must_use]
+    pub const fn camera(&self) -> Option<&ViewCamera> {
+        self.camera.as_ref()
+    }
+
     /// Whether more frames are coming with nothing more changing.
     #[must_use]
     pub const fn is_settling(&self) -> bool {
@@ -381,6 +503,7 @@ impl ViewportPane {
         self.playing = false;
         self.stop = false;
         self.status = None;
+        self.camera = None;
         self.note = Some("The GPU went away: the viewport comes back with the next one".to_owned());
     }
 }
@@ -394,6 +517,10 @@ pub struct ViewportFrame<'a> {
     pub content: Option<&'a Path>,
     /// The document of moves it has open, by file name, as it last compiled.
     pub moves: Option<(&'a str, &'a MoveSet)>,
+    /// The zone being edited, if the current document is one: it's what shows, rather than the fight.
+    pub zone: Option<ZoneShown<'a>>,
+    /// The timeline being edited, if the current document is one that cooks: the fight plays it.
+    pub timeline: Option<TimelineShown>,
     /// The time of the pass, in seconds.
     pub now: f64,
 }
@@ -424,6 +551,12 @@ pub struct StageView {
     /// What it was stood from couldn't be, and no one's asked it to try again.
     failed: bool,
     run: Option<Run>,
+    /// The stage stood is a zone's, with no fight.
+    zoned: bool,
+    /// The zone laid out on it, as it was laid out.
+    zone: Option<(AssetId, Vec<LaidOut>)>,
+    /// The timeline the stage plays, and the frame it's played to.
+    sequenced: Option<(Arc<Timeline>, u32)>,
 }
 
 impl StageView {
@@ -481,7 +614,7 @@ impl StageView {
         painter: &mut egui_wgpu::Renderer,
         frame: ViewportFrame<'_>,
     ) {
-        let ViewportFrame { pane, open, content, moves, now } = frame;
+        let ViewportFrame { pane, open, content, moves, zone, timeline, now } = frame;
         if !open {
             self.close(painter, pane);
             return;
@@ -499,11 +632,20 @@ impl StageView {
             pane.settling = false;
             return;
         };
-        if self.stage.is_none() && !self.stood(gpu, content, pane) {
+        let changed = self.zoned != zone.is_some() || self.sequenced.is_some() != timeline.is_some();
+        if self.run.is_none() && self.stage.is_some() && changed {
+            self.stage = None;
+            self.sequenced = None;
+        }
+        if self.stage.is_none() && !self.stood(gpu, content, zone.is_some(), pane) {
             return;
         }
         if self.run.is_none() {
-            self.follow(moves, pane);
+            match (zone, timeline) {
+                (Some(zone), _) => self.follow_zone(zone, pane),
+                (None, Some(timeline)) => self.follow_timeline(gpu, content, timeline, size, pane),
+                (None, None) => self.follow(moves, pane),
+            }
         }
         self.look(pane, size);
         self.advance_run(now);
@@ -521,6 +663,9 @@ impl StageView {
         self.end_run(pane);
         self.stage = None;
         self.moves = None;
+        self.zone = None;
+        self.zoned = false;
+        self.sequenced = None;
         let Some(content) = content else {
             pane.note = Some("No cook to play: `cargo xtask content` makes one".to_owned());
             return;
@@ -590,8 +735,15 @@ impl StageView {
         run.alpha = steps.alpha;
     }
 
-    /// Makes the stage, if that's not failed since a person last asked. Says whether there is one.
-    fn stood(&mut self, gpu: &Arc<GpuContext>, content: Option<&Path>, pane: &mut ViewportPane) -> bool {
+    /// Makes the stage, a zone's if `zoned`, if that's not failed since a person last asked. Says whether there is
+    /// one.
+    fn stood(
+        &mut self,
+        gpu: &Arc<GpuContext>,
+        content: Option<&Path>,
+        zoned: bool,
+        pane: &mut ViewportPane,
+    ) -> bool {
         if self.failed && !std::mem::take(&mut pane.try_again) {
             return false;
         }
@@ -599,10 +751,15 @@ impl StageView {
             pane.note = Some("No cook to draw: `cargo xtask content` makes one".to_owned());
             return false;
         };
-        match stand(&Host::with_content_at(content), gpu) {
+        let host = Host::with_content_at(content);
+        let stood = if zoned { stand_zone_stage(&host, gpu) } else { stand(&host, gpu) };
+        match stood {
             Ok(stage) => {
                 self.stage = Some(stage);
                 self.moves = None;
+                self.zone = None;
+                self.sequenced = None;
+                self.zoned = zoned;
                 self.failed = false;
                 self.settling = SETTLING_FRAMES;
                 pane.note = None;
@@ -639,11 +796,84 @@ impl StageView {
         self.settling = SETTLING_FRAMES;
     }
 
+    /// Lays the zone out again where it's changed, and puts the gizmo where it's asked for. A drag is one
+    /// placement's new transform: one instance moved, with nothing loaded or built.
+    fn follow_zone(&mut self, zone: ZoneShown<'_>, pane: &mut ViewportPane) {
+        let Some(stage) = &mut self.stage else { return };
+        if stage.show.gizmo != zone.gizmo {
+            stage.show.gizmo = zone.gizmo;
+            self.settling = SETTLING_FRAMES;
+        }
+        let laid = zone.laid_out();
+        let first = self.zone.as_ref().is_none_or(|(id, _)| *id != zone.id);
+        if !first && self.zone.as_ref().is_some_and(|(_, was)| *was == laid) {
+            return;
+        }
+        let pack = sapphire_zone::pack_name(zone.stem);
+        let Stage { scene, content, renderer, gpu, show, .. } = stage;
+        match scene.lay_out_zone(content, &pack, &laid, renderer, gpu) {
+            Ok(layout) if layout.missing.is_empty() => pane.note = None,
+            Ok(layout) if zone.document.has_split() => {
+                pane.note = Some(format!(
+                    "{} placements aren't drawn: a zone with a split placement has no shapes",
+                    layout.missing.len()
+                ));
+            }
+            Ok(layout) => {
+                pane.note = Some(format!(
+                    "{} placements aren't drawn: `cargo xtask content --cook editor` cooks their shapes",
+                    layout.missing.len()
+                ));
+            }
+            Err(error) => pane.note = Some(format!("The zone can't be laid out: {error}")),
+        }
+        if first {
+            show.outside = Some(OutsideView::of_zone(zone.document));
+        }
+        self.zone = Some((zone.id, laid));
+        self.settling = SETTLING_FRAMES;
+    }
+
+    /// Plays the timeline to the playhead: on from where it was, or from its start on a fresh stage when the
+    /// playhead's gone back or the timeline's another, as an edit makes it.
+    fn follow_timeline(
+        &mut self,
+        gpu: &Arc<GpuContext>,
+        content: Option<&Path>,
+        shown: TimelineShown,
+        size: (u32, u32),
+        pane: &mut ViewportPane,
+    ) {
+        let TimelineShown { timeline, frame, .. } = shown;
+        let on = self.sequenced.as_ref().is_some_and(|(was, at)| Arc::ptr_eq(was, &timeline) && *at <= frame);
+        if !on {
+            if self.sequenced.is_some() {
+                self.stage = None;
+                if !self.stood(gpu, content, false, pane) {
+                    return;
+                }
+            }
+            let Some(stage) = &mut self.stage else { return };
+            play_timeline(stage, Arc::clone(&timeline));
+            self.sequenced = Some((timeline, 0));
+            self.settling = SETTLING_FRAMES;
+        }
+        let (Some(stage), Some((_, at))) = (&mut self.stage, &mut self.sequenced) else { return };
+        if *at < frame {
+            play_frames(stage, frame - *at, size);
+            *at = frame;
+            self.settling = SETTLING_FRAMES;
+        }
+    }
+
     /// Takes what a person did to the view.
     fn look(&mut self, pane: &mut ViewportPane, (width, height): (u32, u32)) {
         let Some(stage) = &mut self.stage else { return };
         let (dragged, scrolled) = (std::mem::take(&mut pane.dragged), std::mem::take(&mut pane.scrolled));
-        if std::mem::take(&mut pane.back_to_game) {
+        if self.sequenced.is_some() {
+            return;
+        }
+        if std::mem::take(&mut pane.back_to_game) && !self.zoned {
             stage.show.outside = None;
             self.settling = SETTLING_FRAMES;
         }
@@ -699,6 +929,8 @@ impl StageView {
                 self.settling = 0;
             }
             stage.scene.end_frame();
+            let aspect = size.0 as f32 / size.1 as f32;
+            pane.camera = Some(ViewCamera::of(&stage.scene.camera().camera_data(aspect)));
         }
         // A pass that laid out no image has this from the next, which `settling` asks for.
         pane.texture = self.texture;
@@ -716,6 +948,7 @@ impl StageView {
         pane.play = None;
         pane.playing = false;
         pane.status = None;
+        pane.camera = None;
     }
 }
 

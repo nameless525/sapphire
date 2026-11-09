@@ -9,6 +9,11 @@
 mod browser;
 mod cvars;
 mod properties;
+mod sequencer;
+mod zone;
+
+pub use sequencer::RATE;
+pub use zone::SNAP;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -190,6 +195,8 @@ pub struct Editor {
     browser: browser::Browser,
     properties: properties::PropertiesPanel,
     cvar_panel: cvars::CvarPanel,
+    zone: zone::ZonePanel,
+    sequencer: sequencer::SequencerPanel,
     now: f64,
     content: Option<PathBuf>,
     cook: CookState,
@@ -298,6 +305,8 @@ impl Editor {
             browser: browser::Browser::default(),
             properties: properties::PropertiesPanel::default(),
             cvar_panel: cvars::CvarPanel::default(),
+            zone: zone::ZonePanel::default(),
+            sequencer: sequencer::SequencerPanel::default(),
             now: 0.0,
             content: options.content,
             cook: CookState::default(),
@@ -448,6 +457,14 @@ impl Editor {
                 self.say_noticed(noticed);
                 if kind == Kind::Moves {
                     self.show_on_timeline(id, path);
+                }
+                if matches!(kind, Kind::Zone | Kind::Timeline) && self.content.is_none() {
+                    self.content = find_cook(path);
+                }
+                match kind {
+                    Kind::Zone => self.shell.open(Pane::Zone),
+                    Kind::Timeline => self.shell.open(Pane::Sequencer),
+                    _ => {}
                 }
             }
             Err(error) => self.notice = Some(Notice { text: error.to_string(), trouble: true }),
@@ -618,12 +635,17 @@ impl Editor {
     /// What a viewport's engine half takes from a pass that's just run, before egui paints it.
     pub fn viewport_frame(&mut self) -> ViewportFrame<'_> {
         let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
+        let current = self.current;
+        let zone = zone::zone_shown(&self.documents, &self.zone, current, self.viewport.camera());
+        let timeline = sequencer::timeline_shown(&self.documents, &mut self.sequencer, current);
         ViewportFrame {
             open: self.shell.is_open(Pane::Viewport),
             content: self.content.as_deref(),
             moves: moves
                 .and_then(|name| name.to_str())
                 .zip(self.preview.as_ref().map(|preview| &preview.set)),
+            zone,
+            timeline,
             now: self.now,
             pane: &mut self.viewport,
         }
@@ -2157,12 +2179,9 @@ impl PaneUi for Editor {
             Pane::Moves => self.moves_list(ui),
             Pane::Timeline => self.timeline_panel(ui),
             Pane::Preview => self.preview_panel(ui, self.now),
-            Pane::Viewport => {
-                self.viewport.ui(ui);
-                if self.viewport.take_asked_to_play() {
-                    self.play_in_viewport(None);
-                }
-            }
+            Pane::Viewport => self.viewport_pane(ui),
+            Pane::Zone => self.zone_panel(ui),
+            Pane::Sequencer => self.sequencer_panel(ui),
             Pane::Inspector => {
                 egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
                     ui,
@@ -2279,14 +2298,18 @@ fn generated_by(text: &str) -> Option<String> {
     Some(said[..end].trim().to_owned())
 }
 
-/// `target/content/desktop` above a document, if it's there.
+/// The cook above a document, if there's one: an editor's (`cargo xtask content --cook editor`), which has each
+/// zone's shapes, before a desktop one.
 fn find_cook(document: &Path) -> Option<PathBuf> {
     let start = if document.is_absolute() {
         document.to_owned()
     } else {
         std::env::current_dir().ok()?.join(document)
     };
-    start.ancestors().skip(1).map(|dir| dir.join("target/content/desktop")).find(|dir| dir.is_dir())
+    let found = |cook: &str| {
+        start.ancestors().skip(1).map(|dir| dir.join("target/content").join(cook)).find(|dir| dir.is_dir())
+    };
+    found("editor").or_else(|| found("desktop"))
 }
 
 /// Where documents are in a repository.

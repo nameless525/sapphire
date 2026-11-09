@@ -828,3 +828,57 @@ fn cvars_with_no_device_say_so() {
         "the browser's own: there's nothing to find here"
     );
 }
+
+// The zone and sequencer panes (M3 E5), with no GPU: the viewport's half is `tests/viewport_stage.rs`.
+
+const PROVING_GROUND: &str = include_str!("../../../content/zones/proving_ground/proving_ground.zone.ron");
+const SQUARE_LOOK: &str = include_str!("../../../content/sequences/square_look.timeline.ron");
+
+/// A zone opens its pane, which lists its placements where the file has them, and a row selects one.
+#[test]
+fn the_zone_pane_lists_placements_and_a_row_selects_one() {
+    let dir = TestDir::new("zone");
+    let path = dir.write("z/proving_ground.zone.ron", PROVING_GROUND);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_placement(), None);
+    let rows = harness.query_all(By::new().label_contains("(9.00, 0.00, 10.00)")).count();
+    assert_eq!(rows, 1, "the cart, where the file has it");
+    harness.get(By::new().label_contains("(9.00, 0.00, 10.00)")).click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_placement(), Some(2));
+    assert_eq!(text_of(&harness), PROVING_GROUND, "selecting edits nothing");
+    assert!(harness.query(By::new().label_contains("(backdrop)")).is_some(), "the ground says what it is");
+}
+
+/// A timeline opens the sequencer, whose playhead Play moves a frame of a game's at a time on the pass's clock,
+/// stopping at the end, and a press on the tracks puts where it was pressed.
+#[test]
+fn the_sequencer_plays_and_scrubs_its_playhead() {
+    let dir = TestDir::new("sequencer");
+    let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    assert_eq!(harness.state().playhead(), Some(0));
+    let _ = harness.get(By::new().label_contains("frame 0 of 240"));
+
+    harness.get_by_label("Play").click();
+    harness.run_steps(3);
+    let playhead = harness.state().playhead().expect("a timeline");
+    assert!((60..=120).contains(&playhead), "half a second a step: {playhead}");
+    harness.run_steps(12);
+    assert_eq!(harness.state().playhead(), Some(240), "it stops at the end");
+    let _ = harness.get_by_label("Play");
+
+    let tracks = harness.get_by_label("Tracks").rect();
+    harness.state_mut().scrub_to(0);
+    harness.run_steps(1);
+    let names = 120.0;
+    let middle = egui::pos2(tracks.min.x + names + (tracks.width() - names) * 0.5, tracks.center().y);
+    harness.drag_at(middle);
+    harness.run_steps(1);
+    harness.drop_at(middle);
+    harness.run_steps(1);
+    assert_eq!(harness.state().playhead(), Some(120), "the middle of four seconds");
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "scrubbing edits nothing");
+}

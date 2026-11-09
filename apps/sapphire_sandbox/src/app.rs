@@ -408,7 +408,11 @@ impl App for SandboxApp {
         if let Some(shown) = &options.ui_screen {
             let assets = content.load_screens(&[shown.screen.id()], &mut renderer.renderer, &device.gpu)?;
             let atlas = show.hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
-            show.screen = Some(shown.stack(assets, atlas).map_err(AppInitError::msg)?);
+            let dialogue = shown
+                .walks()
+                .map(|id| content.load_dialogue(id, &mut renderer.renderer, &device.gpu))
+                .transpose()?;
+            show.screen = Some(shown.stack(assets, atlas, dialogue.as_deref()).map_err(AppInitError::msg)?);
             if shown.shows_inset() {
                 scene.spawn_showcase(scene.character(), 0);
             }

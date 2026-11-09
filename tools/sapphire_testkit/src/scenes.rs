@@ -200,7 +200,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 199] {
+pub fn scenes() -> [Scene; 205] {
     [
         Scene {
             name: "turntable-start",
@@ -3890,6 +3890,14 @@ pub fn scenes() -> [Scene; 199] {
         game_scene!("game-dialogue-wide-ja", "dialogue", "1280x720", "ja"),
         game_scene!("game-dialogue-ultrawide-en", "dialogue", "1680x720", "en"),
         game_scene!("game-dialogue-ultrawide-ja", "dialogue", "1680x720", "ja"),
+        // The dialogue panel on a real conversation (M3 Q2b): the Lantern Ward guide's question, cooked, its
+        // answers in the panel's slots and its hidden one hidden, at U7's aspects.
+        game_scene!("game-guide-tablet-en", "dialogue", "1024x768", "en", "--ui-dialogue", "1"),
+        game_scene!("game-guide-tablet-ja", "dialogue", "1024x768", "ja", "--ui-dialogue", "1"),
+        game_scene!("game-guide-wide-en", "dialogue", "1280x720", "en", "--ui-dialogue", "1"),
+        game_scene!("game-guide-wide-ja", "dialogue", "1280x720", "ja", "--ui-dialogue", "1"),
+        game_scene!("game-guide-ultrawide-en", "dialogue", "1680x720", "en", "--ui-dialogue", "1"),
+        game_scene!("game-guide-ultrawide-ja", "dialogue", "1680x720", "ja", "--ui-dialogue", "1"),
         game_scene!("game-hud-tablet-en", "hud", "1024x768", "en", "--hud", "fixed"),
         game_scene!("game-hud-tablet-ja", "hud", "1024x768", "ja", "--hud", "fixed"),
         game_scene!("game-hud-wide-en", "hud", "1280x720", "en", "--hud", "fixed"),

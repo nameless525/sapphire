@@ -38,6 +38,8 @@ sapphire_camera.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_controls.workspace = true
 sapphire_crash.workspace = true
+# `--ui-dialogue` (M3 Q2b): a cooked conversation walked onto the dialogue panel.
+sapphire_dialogue.workspace = true
 # The scene, content and the stage's frame, which this app fills from its flags (M3 S1).
 sapphire_stage.workspace = true
 # `--display-text` (M3 U8): shaping, the glyph pages and display faces' fields.

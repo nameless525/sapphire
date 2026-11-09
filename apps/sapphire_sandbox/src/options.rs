@@ -232,7 +232,7 @@ pub(crate) struct Options {
     /// (M2 I2).
     pub hud: Option<HudOptions>,
     /// `--ui-game`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-plain`, `--ui-time`, `--ui-walk`,
-    /// `--ui-turn` and `--ui-spin`: one of the game's screens over the scene (M3 U7, C3).
+    /// `--ui-turn`, `--ui-spin` and `--ui-dialogue`: one of the game's screens over the scene (M3 U7, C3, Q2b).
     pub ui_screen: Option<ScreenOptions>,
     /// `--display-text latin|japanese`: a title in the display face at four sizes over the frame
     /// (M3 U8, `display_text.rs`).
@@ -631,7 +631,7 @@ impl Options {
         let mut hud_energy = None;
         let (mut ui_game, mut ui_time, mut ui_walk) = (None, None, Vec::new());
         let (mut ui_locale, mut ui_scale, mut ui_pseudo) = (None, None, false);
-        let (mut ui_turn, mut ui_spin) = (None, None);
+        let (mut ui_turn, mut ui_spin, mut ui_dialogue) = (None, None, None);
         let mut ui_plain = false;
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
@@ -833,6 +833,7 @@ impl Options {
                     }
                     ui_spin = Some(across);
                 }
+                "--ui-dialogue" => ui_dialogue = Some(number(&value("--ui-dialogue")?, "--ui-dialogue")?),
                 "--ui-time" => {
                     let seconds: f32 = number(&value("--ui-time")?, "--ui-time")?;
                     if !(seconds >= 0.0 && seconds.is_finite()) {
@@ -1121,12 +1122,15 @@ impl Options {
             || ui_time.is_some()
             || !ui_walk.is_empty()
             || ui_turn.is_some()
-            || ui_spin.is_some();
+            || ui_spin.is_some()
+            || ui_dialogue.is_some();
         if ui_game.is_none() && companions {
-            return Err(
-                "--ui-locale, --ui-scale, --ui-pseudo, --ui-plain, --ui-time, --ui-walk, --ui-turn and --ui-spin need --ui-game"
-                    .to_owned(),
-            );
+            return Err("--ui-locale, --ui-scale, --ui-pseudo, --ui-plain, --ui-time, --ui-walk, --ui-turn, --ui-spin \
+                        and --ui-dialogue need --ui-game"
+                .to_owned());
+        }
+        if ui_dialogue.is_some() && ui_game != Some(MenuScreen::Dialogue) {
+            return Err("--ui-dialogue is the dialogue panel's: it needs --ui-game dialogue".to_owned());
         }
         options.ui_screen = ui_game.map(|screen| {
             let shown = ScreenOptions::of(screen);
@@ -1140,6 +1144,7 @@ impl Options {
                 walk: ui_walk,
                 turn: ui_turn.unwrap_or(shown.turn),
                 spin: ui_spin.unwrap_or(shown.spin),
+                dialogue: ui_dialogue,
             }
         });
         options.faces = match (faces, face_layout) {

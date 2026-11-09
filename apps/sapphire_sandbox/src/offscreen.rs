@@ -405,7 +405,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let Some(shown) = &options.ui_screen {
         let assets = content.load_screens(&[shown.screen.id()], renderer, gpu)?;
         let atlas = shown_hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
-        *shown_screen = Some(shown.stack(assets, atlas).map_err(AppInitError::msg)?);
+        let dialogue = shown.walks().map(|id| content.load_dialogue(id, renderer, gpu)).transpose()?;
+        *shown_screen = Some(shown.stack(assets, atlas, dialogue.as_deref()).map_err(AppInitError::msg)?);
         if shown.shows_inset() {
             scene.spawn_showcase(scene.character(), 0);
         }

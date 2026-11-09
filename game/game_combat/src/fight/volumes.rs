@@ -30,7 +30,7 @@
 
 use std::time::Duration;
 
-use sapphire_gameplay::{ActorId, EncounterPhase, Simulation, StartVolume};
+use sapphire_gameplay::{ActorId, EncounterPhase, Simulation, StartVolume, ZoneId};
 use sapphire_math::Vec3;
 use sapphire_stage::scene::Scene;
 use sapphire_time::Stopwatch;
@@ -88,6 +88,9 @@ pub struct VolumeStats {
 pub(super) struct Volumes {
     /// Whether the fight's zone has been looked at, and room made for everyone it'll bring.
     seen: bool,
+    /// The shelf's row it looked at, once a trip has entered one: one entered after brings its own
+    /// encounters (M3 G1), looked at as it arrives.
+    zone: Option<ZoneId>,
     /// Each encounter's, in the zone's order.
     warmth: Vec<Warmth>,
     /// Each encounter's phase as of the last frame, for what's changed.
@@ -155,11 +158,14 @@ impl FightShow {
         let stopwatch = Stopwatch::start();
         let volumes = &mut self.volumes;
         let encounters = zone.encounters();
-        if !volumes.seen {
+        if !volumes.seen || volumes.zone != simulation.current_zone() {
             volumes.seen = true;
-            volumes.warmth = vec![Warmth::Cold; encounters.len()];
-            volumes.phases = vec![EncounterPhase::Waiting; encounters.len()];
-            volumes.stats.encounters = encounters.len() as u32;
+            volumes.zone = simulation.current_zone();
+            volumes.warmth.clear();
+            volumes.warmth.resize(encounters.len(), Warmth::Cold);
+            volumes.phases.clear();
+            volumes.phases.resize(encounters.len(), EncounterPhase::Waiting);
+            volumes.stats.encounters += encounters.len() as u32;
             // Room for everyone, so an arrival grows nothing: a few words a fighter.
             let planned = zone.planned();
             arena.reserve(planned);

@@ -490,6 +490,7 @@ impl ScenarioDocument {
                 sets.push((kind_of(path), set));
             }
         }
+        sim.set_zone_cast(ZoneCast { moves: &sets, controller });
 
         let mut start = None;
         if let Some((document, cooked)) = &zone {

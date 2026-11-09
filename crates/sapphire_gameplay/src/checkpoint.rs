@@ -175,6 +175,12 @@ impl Checkpoints {
         self.latest
     }
 
+    /// None reached, for a fight that starts over.
+    pub(crate) fn restart(&mut self) {
+        self.latest = None;
+        self.reached = 0;
+    }
+
     pub(crate) fn set_latest(&mut self, id: CheckpointId) {
         if self.latest != Some(id) {
             self.latest = Some(id);

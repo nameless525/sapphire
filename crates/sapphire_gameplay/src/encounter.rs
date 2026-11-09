@@ -61,6 +61,26 @@ pub struct ZoneCast<'a> {
     pub controller: Option<ProfileId>,
 }
 
+/// The cast a simulation builds the zones it shelves for: the last one it was given. A resource.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct HeldCast {
+    moves: Vec<(Box<str>, MoveSetId)>,
+    controller: Option<ProfileId>,
+}
+
+impl HeldCast {
+    pub(crate) fn of(cast: ZoneCast<'_>) -> Self {
+        let moves = cast.moves.iter().map(|&(name, id)| (Box::from(name), id)).collect();
+        Self { moves, controller: cast.controller }
+    }
+
+    /// Lends it out as the zone code reads it.
+    pub(crate) fn lend<R>(&self, with: impl FnOnce(ZoneCast<'_>) -> R) -> R {
+        let moves: Vec<(&str, MoveSetId)> = self.moves.iter().map(|(name, id)| (&**name, *id)).collect();
+        with(ZoneCast { moves: &moves, controller: self.controller })
+    }
+}
+
 /// Why a simulation couldn't take a zone. It stays as it was.
 #[derive(Debug, thiserror::Error)]
 pub enum ZoneStartError {
@@ -262,6 +282,18 @@ impl SimEncounter {
             woken: 0,
             slots: [TokenSlot::default(); MAX_TOKENS as usize],
         })
+    }
+
+    /// Where it was before anything happened, in the storage it has.
+    fn restart(&mut self) {
+        self.phase = EncounterPhase::Waiting;
+        self.waves_begun = 0;
+        self.spawned = 0;
+        self.wave_at = 0;
+        self.spawn_at = 0;
+        self.fighters.fill(None);
+        self.woken = 0;
+        self.slots = [TokenSlot::default(); MAX_TOKENS as usize];
     }
 
     /// Its document's ID.
@@ -548,6 +580,21 @@ impl SimZone {
             self.checkpoints.set_latest(id);
             self.checkpoints.place(id).expect("found in the list")
         }))
+    }
+
+    /// Where it was before anything happened, for a fight that starts over: nobody's in a trigger, no
+    /// encounter has begun and no checkpoint's been reached. It takes nothing from the heap.
+    pub(crate) fn restart(&mut self) {
+        for trigger in &mut self.triggers {
+            trigger.inside = false;
+            trigger.found = false;
+            trigger.fires = 0;
+        }
+        for encounter in &mut self.encounters {
+            encounter.restart();
+        }
+        self.checkpoints.restart();
+        self.stats = ZoneStats::default();
     }
 
     /// What goes in a simulation's `tables_hash`.

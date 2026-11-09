@@ -32,7 +32,7 @@ use crate::controller::{
 };
 use crate::cues::{CueEvent, CueQueue};
 use crate::dialogue::{DialogueEffect, DialogueEffectError, DialogueId, DialogueLibrary};
-use crate::encounter::{self, SimZone, ZoneCast, ZoneStartError};
+use crate::encounter::{self, HeldCast, SimZone, ZoneCast, ZoneStartError};
 use crate::flags::Flags;
 use crate::hits::{self, HitQuery, remove_hurtboxes};
 use crate::intents::{self, IntentRing};
@@ -279,6 +279,11 @@ impl Simulation {
             world.get_resource::<SimNavigation>().is_none()
                 || world.resource::<ZoneShelf>().current().is_some()
         );
+        // A zone a trip brought, and those it shelved, start over with the fight, where they are.
+        if let Some(mut zone) = world.get_resource_mut::<SimZone>() {
+            zone.restart();
+        }
+        world.resource_mut::<ZoneShelf>().restart();
         *world.resource_mut::<WorldClock>() = WorldClock::default();
         *world.resource_mut::<SimRng>() = SimRng(Pcg32::new(config.seed, COMBAT_STREAM));
         *world.resource_mut::<CurrentActions>() = CurrentActions::default();
@@ -637,8 +642,16 @@ impl Simulation {
         if let Some(physics) = SimZone::physics_of(zone, self.body_capacity(), &mut read)? {
             self.set_physics_world(physics)?;
         }
-        self.ecs.world_mut().insert_resource(held);
+        let world = self.ecs.world_mut();
+        world.insert_resource(held);
+        world.insert_resource(HeldCast::of(cast));
         Ok(())
+    }
+
+    /// Says what the zones [`Self::add_zone`] shelves spawn by, for a simulation that wasn't given a zone
+    /// of its own: [`Self::set_zone`] says it for the zones after it.
+    pub fn set_zone_cast(&mut self, cast: ZoneCast<'_>) {
+        self.ecs.world_mut().insert_resource(HeldCast::of(cast));
     }
 
     /// Its zone, if it's been given one.
@@ -648,10 +661,22 @@ impl Simulation {
     }
 
     /// Puts a zone on the shelf, between steps, for [`Self::enter_zone`], and says which row it took. Rows
-    /// count up from the first added: a replay adds the same ones in the same order. Its digest goes in
+    /// count up from the first added: a replay adds the same ones in the same order. It builds the zone's
+    /// triggers, encounters and checkpoints here, for the cast [`Self::set_zone`] or
+    /// [`Self::set_zone_cast`] last gave, so an entry only swaps them in. Its digest goes in
     /// [`Self::tables_hash`].
-    pub fn add_zone(&mut self, zone: ZoneGround) -> ZoneId {
-        self.ecs.world_mut().resource_mut::<ZoneShelf>().add(zone)
+    ///
+    /// # Errors
+    ///
+    /// If its encounters spawn moves the cast doesn't name, in which case the shelf is as it was.
+    pub fn add_zone(&mut self, mut zone: ZoneGround) -> Result<ZoneId, ZoneStartError> {
+        let world = self.ecs.world_mut();
+        let library = world.resource::<MoveLibrary>();
+        match world.get_resource::<HeldCast>() {
+            Some(cast) => cast.lend(|cast| zone.build_zone(cast, library))?,
+            None => zone.build_zone(ZoneCast { moves: &[], controller: None }, library)?,
+        }
+        Ok(world.resource_mut::<ZoneShelf>().add(zone))
     }
 
     /// Takes a zone off the shelf, unless it's the one this is in, and says whether it did: a game that goes

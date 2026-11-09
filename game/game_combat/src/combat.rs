@@ -292,7 +292,7 @@ impl ZoneCopy {
 fn enter_copy(sim: &mut FightWorld, copy: &ZoneCopy) -> Result<(), String> {
     let id = match sim.find_zone(copy.asset) {
         Some(id) => id,
-        None => sim.add_zone(copy.build()?),
+        None => sim.add_zone(copy.build()?).map_err(|error| error.to_string())?,
     };
     let row = sim.zone_ground(id).ok_or("it was just found")?;
     let spawner = row

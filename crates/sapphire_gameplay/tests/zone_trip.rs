@@ -6,7 +6,9 @@ use sapphire_gameplay::replay::{
     PROVING_HUB, Player, PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario,
     ZONE_TRIP_ENTRIES, find_scenario, find_script,
 };
-use sapphire_gameplay::{ActorId, Simulation, TickActions, ZoneEntry, ZoneEntryError, ZoneId};
+use sapphire_gameplay::{
+    ActorId, EncounterPhase, Place, Simulation, TickActions, ZoneEntry, ZoneEntryError, ZoneGround, ZoneId,
+};
 use sapphire_math::Vec3;
 
 fn scenario() -> &'static Scenario {
@@ -130,7 +132,7 @@ fn the_shelf_gives_back_what_it_cant_reach_and_keeps_its_rows() {
     assert!(sim.remove_zone(PROVING_GROUND));
     assert!(!sim.remove_zone(PROVING_GROUND), "gone");
     assert!(matches!(sim.enter_zone(GROUND_START, cast[0]), Err(ZoneEntryError::UnknownZone(_))));
-    let row = sim.add_zone(BAKED_ZONES[1].load().expect("it reads"));
+    let row = sim.add_zone(BAKED_ZONES[1].load().expect("it reads")).expect("it shelves");
     assert_eq!(row, PROVING_GROUND, "the first free row");
     sim.enter_zone(GROUND_START, cast[0]).expect("it can");
     assert!(sim.remove_zone(PROVING_HUB), "it left");
@@ -226,7 +228,7 @@ fn a_resettable_fight_starts_over_at_the_door_it_came_in_by() {
         .start_resettable(arena.config, &LiveMoves::default())
         .expect("starts");
     for baked in &BAKED_ZONES {
-        fight.add_zone(baked.load().expect("loads"));
+        fight.add_zone(baked.load().expect("loads")).expect("it shelves");
     }
     let (player, enemy) = (fight.cast()[0], fight.cast()[1]);
     fight.enter_zone(HUB_FROM_GROUND).expect("it can");
@@ -254,4 +256,41 @@ fn a_resettable_fight_starts_over_at_the_door_it_came_in_by() {
     assert_eq!(fight.actor(player).expect("at the door").position, Vec3::new(0.0, 0.0, 10.0));
     assert_eq!(fight.checksum(), at_door, "it starts as the first did");
     assert_eq!(trail(&mut fight), first, "and plays the same");
+}
+
+/// A zone a trip enters brings its triggers, encounters and checkpoints (M3 G1), which the shelf built as it
+/// took the zone: its encounter starts as the player walks into its trigger, a checkpoint return stands them
+/// in it, and going out and back in finds them as they were left.
+#[test]
+fn a_trip_brings_the_zones_encounters_and_checkpoints() {
+    let (mut sim, cast) = started();
+    let player = cast[0];
+    assert!(sim.zone().is_none(), "the arena has none");
+    let shelved = sim.zone_ground(PROVING_GROUND).and_then(ZoneGround::zone).expect("built on the shelf");
+    assert_eq!(shelved.encounters().len(), 1);
+    assert!(shelved.checkpoint("platform").is_some());
+
+    sim.enter_zone(GROUND_START, player).expect("it can");
+    assert!(sim.zone_ground(PROVING_GROUND).and_then(ZoneGround::zone).is_none(), "it's the one in use");
+    let ground = sim.zone().expect("the ground's");
+    assert_eq!(ground.encounters()[0].phase(), EncounterPhase::Waiting);
+
+    // Into the cart yard's trigger, which starts its encounter.
+    sim.teleport(player, Place { position: Vec3::new(9.0, 0.0, 10.0), yaw: 0.0 }).expect("standing");
+    neutral(&mut sim, 2);
+    let ground = sim.zone().expect("the ground's");
+    assert_eq!(ground.stats().encounters_started, 1);
+    assert_eq!(ground.encounters()[0].phase(), EncounterPhase::Running);
+
+    let platform = ground.checkpoint("platform").expect("the ground's");
+    let place = ground.checkpoint_place(platform).expect("it has one");
+    assert_eq!(sim.return_to_checkpoint(platform), Ok(player));
+    assert_eq!(sim.actor(player).expect("standing").position, place.position, "in the ground, not the arena");
+
+    sim.enter_zone(HUB_START, player).expect("it can");
+    assert!(sim.zone().is_some_and(|hub| hub.checkpoint("platform").is_none()), "the hub's own");
+    let left = sim.zone_ground(PROVING_GROUND).and_then(ZoneGround::zone).expect("back on its row");
+    assert_eq!(left.stats().encounters_started, 1, "as it was left");
+    sim.enter_zone(GROUND_START, player).expect("it can");
+    assert_eq!(sim.zone().expect("the ground's").encounters()[0].phase(), EncounterPhase::Running);
 }

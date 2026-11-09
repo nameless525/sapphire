@@ -32,7 +32,7 @@ use super::document::{KindOfEnemy, ScenarioDocument};
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
-use crate::encounter::ZoneStartError;
+use crate::encounter::{ZoneCast, ZoneStartError};
 use crate::faction::Faction;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
@@ -748,7 +748,11 @@ impl FightWorld {
 
     /// Puts a zone on the shelf between steps, as [`Simulation::add_zone`] does. A restart keeps the shelf,
     /// as it keeps the moves.
-    pub fn add_zone(&mut self, zone: ZoneGround) -> ZoneId {
+    ///
+    /// # Errors
+    ///
+    /// As [`Simulation::add_zone`]'s.
+    pub fn add_zone(&mut self, zone: ZoneGround) -> Result<ZoneId, ZoneStartError> {
         self.simulation.add_zone(zone)
     }
 
@@ -826,7 +830,7 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
 pub fn zone_trip(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = arena_fight(sim)?;
     for baked in &BAKED_ZONES {
-        sim.add_zone(baked.load()?);
+        sim.add_zone(baked.load()?)?;
     }
     Ok(cast)
 }
@@ -854,6 +858,8 @@ pub(super) fn fight_on(
         warrior: sim.add_move_set(warrior),
     };
     sim.add_enemy(actors.warrior, mind.clone())?;
+    let moves = [("player", actors.player), ("warrior", actors.warrior)];
+    sim.set_zone_cast(ZoneCast { moves: &moves, controller: Some(actors.controller) });
     Ok(actors.spawn(sim, party, None)?.to_vec())
 }
 

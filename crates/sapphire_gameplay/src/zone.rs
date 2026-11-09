@@ -7,7 +7,8 @@
 //!
 //! 1. Everyone but the traveller and its party goes. Their IDs are never used again.
 //! 2. The collision world takes the new zone's statics, keeping its bodies, and the navmesh is the new
-//!    zone's, with no paths on it.
+//!    zone's, with no paths on it. So are its triggers, encounters and checkpoints, which the shelf built as
+//!    it took the zone and which keep what they'd done when it was left (M3 G1).
 //! 3. The travellers stand at the spawner, as [`Simulation::teleport`](crate::Simulation::teleport) stands one.
 //!
 //! **It's a pure function of cooked bytes at a tick boundary,** which is why it stays deterministic however
@@ -30,6 +31,7 @@ use sapphire_math::Vec3;
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::{ColliderSet, PhysicsWorld, WorldError};
 use sapphire_serialize::AssetId;
+use sapphire_serialize::cooked::AlignedVec;
 use sapphire_zone::{Zone, ZoneError};
 
 use crate::actions::Controls;
@@ -37,6 +39,7 @@ use crate::actors::{ActorId, ActorTable, Teleports};
 use crate::brain::Brain;
 use crate::checksum::StateHasher;
 use crate::controller::{CharacterController, CharacterWorld, ControllerDrive, ControllerState, actor_body};
+use crate::encounter::{SimZone, ZoneCast, ZoneStartError};
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
@@ -132,6 +135,15 @@ pub struct ZoneGround {
     navigation: Option<SimNavigation>,
     /// By ascending ID, as the cook sorted them, so a row's index doesn't hang on the document's order.
     spawners: Vec<SimSpawner>,
+    /// The zone's cooked bytes, then its encounters', until [`Simulation::add_zone`](crate::Simulation::add_zone)
+    /// builds [`Self::zone`] from them and lets them go.
+    cooked: Vec<(AssetId, AlignedVec<16>)>,
+    /// Its triggers, encounters and checkpoints, built for the simulation's cast as it went on the shelf:
+    /// an entry swaps them in with the statics, and back as it leaves, so they keep what they've done. `None`
+    /// before the shelf has it, and while it's the zone the simulation is in.
+    zone: Option<SimZone>,
+    /// [`SimZone`]'s part of the tables hash, which stays with the row wherever its zone is.
+    tables: u64,
 }
 
 impl std::fmt::Debug for ZoneGround {
@@ -172,6 +184,21 @@ impl ZoneGround {
             }
             None => None,
         };
+        let aligned = |bytes: &[u8]| {
+            let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
+            aligned.extend_from_slice(bytes);
+            aligned
+        };
+        // What its triggers and encounters are built from, and their digest reads: its encounters, and
+        // its colliders.
+        let mut cooked = Vec::with_capacity(simulation.encounters.len() + 2);
+        cooked.push((asset, aligned(zone)));
+        let colliders = simulation.colliders.as_ref().copied().map(|id| (id, "colliders"));
+        let encounters = simulation.encounters.iter().map(|id| (*id, "encounter"));
+        for (id, what) in colliders.into_iter().chain(encounters) {
+            let bytes = read(id).ok_or(ZoneLoadError::NotLoaded { what, id })?;
+            cooked.push((id, aligned(bytes)));
+        }
         let spawners = simulation
             .spawners
             .iter()
@@ -181,7 +208,40 @@ impl ZoneGround {
                 yaw: spawner.yaw(),
             })
             .collect();
-        Ok(Self { asset, pack: pack.to_owned(), digest, physics, navigation, spawners })
+        Ok(Self {
+            asset,
+            pack: pack.to_owned(),
+            digest,
+            physics,
+            navigation,
+            spawners,
+            cooked,
+            zone: None,
+            tables: 0,
+        })
+    }
+
+    /// Builds its triggers, encounters and checkpoints for `cast` from the bytes it kept, and lets those go:
+    /// what [`Simulation::add_zone`](crate::Simulation::add_zone) does as it shelves it.
+    pub(crate) fn build_zone(
+        &mut self,
+        cast: ZoneCast<'_>,
+        library: &MoveLibrary,
+    ) -> Result<(), ZoneStartError> {
+        let Some(((_, own), rest)) = self.cooked.split_first() else { return Ok(()) };
+        let built = SimZone::new(Zone::read(own)?, cast, library, |id| {
+            rest.iter().find(|(held, _)| *held == id).map(|(_, bytes)| bytes.as_slice())
+        })?;
+        self.tables = built.tables();
+        self.zone = Some(built);
+        self.cooked = Vec::new();
+        Ok(())
+    }
+
+    /// Its triggers, encounters and checkpoints, while it waits on the shelf.
+    #[must_use]
+    pub fn zone(&self) -> Option<&SimZone> {
+        self.zone.as_ref()
     }
 
     /// The zone asset it came from.
@@ -225,6 +285,13 @@ pub(crate) struct ZoneShelf {
 }
 
 impl ZoneShelf {
+    /// Every zone on the shelf as it was built, for a fight that starts over: none has done anything.
+    pub(crate) fn restart(&mut self) {
+        for zone in self.rows.iter_mut().flatten().filter_map(|row| row.zone.as_mut()) {
+            zone.restart();
+        }
+    }
+
     pub(crate) fn add(&mut self, zone: ZoneGround) -> ZoneId {
         let at = self.rows.iter().position(Option::is_none).unwrap_or(self.rows.len());
         if at == self.rows.len() {
@@ -257,8 +324,8 @@ impl ZoneShelf {
         u16::try_from(row).ok().map(ZoneId)
     }
 
-    /// For [`Simulation::tables_hash`](crate::Simulation::tables_hash): each row's digest. An empty shelf
-    /// writes nothing.
+    /// For [`Simulation::tables_hash`](crate::Simulation::tables_hash): each row's digest, and what its
+    /// triggers and encounters were built from. An empty shelf writes nothing.
     pub(crate) fn write_digests(&self, hasher: &mut StateHasher) {
         if self.rows.is_empty() {
             return;
@@ -266,6 +333,7 @@ impl ZoneShelf {
         hasher.u32(self.rows.len() as u32);
         for row in &self.rows {
             hasher.u64(row.as_ref().map_or(0, ZoneGround::digest));
+            hasher.u64(row.as_ref().map_or(0, |row| row.tables));
         }
     }
 
@@ -313,6 +381,12 @@ pub(crate) fn swap_in(world: &mut World, entry: ZoneEntry) {
         if let Some(navigation) = incoming.navigation.take() {
             world.insert_resource(navigation);
         }
+        // What the zone left had done goes back to its row with it; a zone the simulation started in, which
+        // no row holds, is done with.
+        let left = world.remove_resource::<SimZone>();
+        if let Some(zone) = incoming.zone.take() {
+            world.insert_resource(zone);
+        }
         if let Some(from) = from {
             let (low, high) = shelf.rows.split_at_mut(from.max(to));
             if let (Some(a), Some(b)) = (low[from.min(to)].as_mut(), high[0].as_mut()) {
@@ -320,6 +394,7 @@ pub(crate) fn swap_in(world: &mut World, entry: ZoneEntry) {
             }
             if let Some(row) = shelf.rows[from].as_mut() {
                 row.navigation = leaving;
+                row.zone = left;
             }
         }
         shelf.current = Some(entry.zone);

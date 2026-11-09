@@ -17,7 +17,8 @@
 
 title-name = Sapphire
 title-tagline = The first fight
-title-start = Start
+title-continue = Continue
+title-new = New game
 title-settings = Settings
 title-leave = Quit
 
@@ -25,6 +26,7 @@ pause-title = Paused
 pause-resume = Resume
 pause-character = Character
 pause-settings = Settings
+pause-to-title = Back to the title
 pause-leave = Quit
 
 settings-title = Settings
@@ -73,3 +75,7 @@ hud-level = Lv. { $level }
 hud-objective = Objective
 hud-objective-arena = Defeat the enemy
 hud-pause = Pause
+hud-skip = Skip
+hud-banner-checkpoint = Checkpoint reached
+hud-banner-victory = Victory
+hud-banner-defeat = Defeated

@@ -105,7 +105,7 @@ impl App for OutsideCaller {
         frame(&mut stage)?;
         stage.show.handle_event(&press);
         let left = stage.show.update_menus(Timestamp::from_nanos(5_000_000_000));
-        assert!(!left && !stage.show.on_title(), "the title's start opens the fight");
+        assert!(!left && !stage.show.on_title(), "the title's new game opens the fight");
         let open = frame(&mut stage)?;
         assert_ne!(title, open, "the title goes");
 

@@ -44,8 +44,10 @@
                 parent: "root",
                 layout: (direction: Column, gap: 8, width: Points(320), max_width: Percent(100)),
             ),
+            // Focus starts on the run there is to go on with, or with none, on a new game: a hidden node
+            // passes focus on to the next.
             (
-                name: "start",
+                name: "continue",
                 parent: "menu",
                 layout: (
                     direction: Row,
@@ -56,6 +58,7 @@
                     padding: (left: 16, right: 16, top: 4, bottom: 4),
                     shrink: 0,
                 ),
+                binds: [(to: Shown, path: "can_continue")],
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
                     first: true,
@@ -72,10 +75,45 @@
                 ),
             ),
             (
-                name: "start-text",
-                parent: "start",
+                name: "continue-text",
+                parent: "continue",
                 text: (
-                    key: "title-start",
+                    key: "title-continue",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "new",
+                parent: "menu",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    fires: "close",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "new-text",
+                parent: "new",
+                text: (
+                    key: "title-new",
                     style: "row",
                     color: (240, 246, 255, 255),
                 ),
@@ -166,8 +204,12 @@
                 ],
             ),
             (
-                name: "focus-start",
-                tracks: [(node: "start", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+                name: "focus-continue",
+                tracks: [(node: "continue", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-new",
+                tracks: [(node: "new", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
                 name: "focus-settings",

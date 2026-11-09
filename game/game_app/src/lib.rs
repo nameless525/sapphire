@@ -8,9 +8,11 @@
 //!
 //! # Controls
 //!
-//! A menu that's up has every press (`game_ui::menus`, `sapphire_controls`' `MenuControls`): the title's start
-//! opens the fight, and Back or `Esc` leaves it. In the fight, it's combat's bindings (`sapphire_controls`'
-//! `combat_bindings.ron`), the HUD's touch zones and its pause button; what pauses opens the pause's screen.
+//! A menu that's up has every press (`game_ui::menus`, `sapphire_controls`' `MenuControls`): the title's new
+//! game opens the fight, and Back or `Esc` leaves it. The pause goes back to the title, and the title's
+//! continue then goes on with the fight where it stood, where a new game starts it over. In the fight, it's
+//! combat's bindings (`sapphire_controls`' `combat_bindings.ron`), the HUD's touch zones and its pause
+//! button; what pauses opens the pause's screen.
 //!
 //! # Arguments
 //!

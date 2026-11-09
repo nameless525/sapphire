@@ -648,4 +648,39 @@ mod tests {
         assert!(matches!(flow.state(), FlowState::Restarting { .. }), "nothing pauses a restart");
         assert_eq!(flow.observe(&seen), None, "nor does a restart observe");
     }
+
+    /// The title offers what there is to continue, and the HUD shows a checkpoint's banner while it holds and
+    /// a skip while a cutscene plays.
+    #[test]
+    fn the_title_and_the_hud_show_what_the_flow_has() {
+        use game_ui::menus::{HudModel, TitleModel};
+
+        use crate::menus::{show_hud, show_title};
+
+        let mut title = TitleModel::default();
+        show_title(&flow(true), &mut title);
+        assert!(title.can_continue);
+        show_title(&flow(false), &mut title);
+        assert!(!title.can_continue);
+
+        let mut flow = playing();
+        let mut hud = HudModel { banner: "hud-banner-defeat".to_owned(), ..HudModel::default() };
+        let mut seen = Seen { reached: vec!["gate"], ..Seen::default() };
+        flow.observe(&seen);
+        show_hud(&flow, &mut hud);
+        assert!(!hud.has_banner && !hud.can_skip);
+        seen.reached.push("terrace");
+        flow.observe(&seen);
+        show_hud(&flow, &mut hud);
+        assert!(hud.has_banner && !hud.can_skip);
+        assert_eq!(hud.banner, "hud-banner-checkpoint");
+        flow.update(2.0);
+        show_hud(&flow, &mut hud);
+        assert!(!hud.has_banner, "its hold is over");
+
+        let mut flow = playing();
+        flow.observe(&Seen { started: vec![id(GATE_FIGHT)], ..Seen::default() });
+        show_hud(&flow, &mut hud);
+        assert!(hud.can_skip, "the gate's cutscene plays");
+    }
 }

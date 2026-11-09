@@ -8,6 +8,7 @@
         styles: [
             (name: "name", role: "body", size: 16, weight: 700),
             (name: "small", role: "body", size: 14, weight: 700),
+            (name: "banner", role: "display", size: 32, weight: 700),
         ],
         nodes: [
             (
@@ -84,10 +85,33 @@
                     shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
+            // The corner's buttons, for a finger or a pointer: a cutscene's way out, and the pause.
+            (
+                name: "corner",
+                parent: "root",
+                layout: (anchored: (right: Points(16), top: Points(14)), direction: Row, align: Center, gap: 8),
+            ),
+            (
+                name: "skip",
+                parent: "corner",
+                layout: (direction: Row, align: Center, justify: Center, min_width: Points(72), height: Points(44), padding: (left: 12, right: 12)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (226, 234, 240, 255), width: 1.5)),
+                binds: [(to: Shown, path: "can_skip")],
+                focus: (pressed: (shape: Slice(sprite: Button, corner: 8), fill: Color((180, 204, 250, 255)))),
+            ),
+            (
+                name: "skip-text",
+                parent: "skip",
+                text: (
+                    key: "hud-skip",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
             (
                 name: "pause",
-                parent: "root",
-                layout: (anchored: (right: Points(16), top: Points(14)), direction: Row, align: Center, justify: Center, min_width: Points(72), height: Points(44), padding: (left: 12, right: 12)),
+                parent: "corner",
+                layout: (direction: Row, align: Center, justify: Center, min_width: Points(72), height: Points(44), padding: (left: 12, right: 12)),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (226, 234, 240, 255), width: 1.5)),
                 binds: [(to: Shown, path: "touch")],
                 focus: (pressed: (shape: Slice(sprite: Button, corner: 8), fill: Color((180, 204, 250, 255)))),
@@ -99,6 +123,30 @@
                     key: "hud-pause",
                     style: "small",
                     color: (240, 246, 255, 255),
+                ),
+            ),
+            // What the flow says for a moment: a checkpoint reached, a victory, a defeat.
+            (
+                name: "banner",
+                parent: "root",
+                layout: (anchored: (left: Points(0), right: Points(0), top: Points(120)), direction: Column, align: Center),
+                binds: [(to: Shown, path: "has_banner")],
+            ),
+            (
+                name: "banner-band",
+                parent: "banner",
+                layout: (direction: Row, align: Center, justify: Center, padding: (left: 32, right: 32, top: 6, bottom: 6)),
+                look: (fill: Color((9, 12, 20, 170))),
+            ),
+            (
+                name: "banner-text",
+                parent: "banner-band",
+                text: (
+                    key: "hud-banner-checkpoint",
+                    style: "banner",
+                    color: (255, 224, 150, 255),
+                    key_from: (path: "banner", prefix: "hud-banner-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (2, 2)),
                 ),
             ),
         ],

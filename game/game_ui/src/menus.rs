@@ -105,12 +105,14 @@ impl MenuScreen {
     #[must_use]
     pub fn sample_model(self) -> Box<dyn PartialReflect> {
         match self {
-            Self::Title => Box::new(TitleModel { can_leave: true }),
+            Self::Title => Box::new(TitleModel { can_leave: true, can_continue: true }),
             Self::Pause => Box::new(PauseModel { can_leave: true }),
             Self::Settings => Box::new(SettingsModel::of(&PlayerSettings::default())),
             Self::Character => Box::new(CharacterModel::default()),
             Self::Dialogue => Box::new(DialogueModel::default()),
-            Self::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
+            Self::Hud => {
+                Box::new(HudModel { touch: true, has_banner: true, can_skip: true, ..HudModel::default() })
+            }
         }
     }
 
@@ -124,6 +126,8 @@ impl MenuScreen {
 pub struct TitleModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
     pub can_leave: bool,
+    /// Whether there's a run to go on with: its row comes first, and with none, focus starts on a new game.
+    pub can_continue: bool,
 }
 
 /// What the pause's paths read.
@@ -237,6 +241,11 @@ pub struct HudModel {
     pub objective: String,
     /// Whether it's played by touch, which has no key to pause with.
     pub touch: bool,
+    /// The banner's key, under `hud-banner-`: a checkpoint reached, a victory, a defeat.
+    pub banner: String,
+    pub has_banner: bool,
+    /// Whether what's playing can be skipped: a cutscene.
+    pub can_skip: bool,
 }
 
 impl Default for HudModel {
@@ -248,6 +257,9 @@ impl Default for HudModel {
             has_enemy: true,
             objective: "hud-objective-arena".to_owned(),
             touch: false,
+            banner: "hud-banner-checkpoint".to_owned(),
+            has_banner: false,
+            can_skip: false,
         }
     }
 }
@@ -315,11 +327,18 @@ pub struct MenuSetup {
     pub pseudo: bool,
 }
 
-/// What the menus ask of whoever holds them.
+/// What the menus ask of whoever holds them. A game's flow takes most of them as its own commands
+/// (`game_flow::flow_command`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
-    /// The title's start: the fight opens.
-    Start,
+    /// The title's new game.
+    NewGame,
+    /// The title's continue: the run there is to go on with.
+    Continue,
+    /// The pause's way back to the title.
+    ToTitle,
+    /// The HUD's skip, of a cutscene.
+    Skip,
     /// The pause is over.
     Resume,
     /// The HUD's pause was pressed.
@@ -361,7 +380,9 @@ pub enum Setting {
 pub fn action_of(screen: MenuScreen, name: &str) -> Option<MenuAction> {
     use MenuAction::{Command, Nothing, Open, Step};
     Some(match (screen, name) {
-        (MenuScreen::Title, "start") => Command(MenuCommand::Start),
+        (MenuScreen::Title, "continue") => Command(MenuCommand::Continue),
+        (MenuScreen::Title, "new") => Command(MenuCommand::NewGame),
+        (MenuScreen::Pause, "to-title") => Command(MenuCommand::ToTitle),
         (MenuScreen::Title | MenuScreen::Pause, "settings") => Open(MenuScreen::Settings),
         (MenuScreen::Title | MenuScreen::Pause, "leave") => Command(MenuCommand::Leave),
         (MenuScreen::Pause, "resume") => Command(MenuCommand::Resume),
@@ -378,6 +399,7 @@ pub fn action_of(screen: MenuScreen, name: &str) -> Option<MenuAction> {
         (MenuScreen::Dialogue, "third") => Command(MenuCommand::DialogueChose(2)),
         (MenuScreen::Dialogue, "fourth") => Command(MenuCommand::DialogueChose(3)),
         (MenuScreen::Hud, "pause") => Command(MenuCommand::Pause),
+        (MenuScreen::Hud, "skip") => Command(MenuCommand::Skip),
         _ => return None,
     })
 }
@@ -441,9 +463,10 @@ impl GameMenus {
 
     fn model_of(&self, screen: MenuScreen) -> Box<dyn PartialReflect> {
         match screen {
-            MenuScreen::Title => Box::new(TitleModel { can_leave: self.can_leave }),
+            MenuScreen::Title => Box::new(TitleModel { can_leave: self.can_leave, can_continue: false }),
             MenuScreen::Pause => Box::new(PauseModel { can_leave: self.can_leave }),
             MenuScreen::Settings => Box::new(SettingsModel::of(&self.settings)),
+            MenuScreen::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
             other => other.sample_model(),
         }
     }
@@ -465,8 +488,9 @@ impl GameMenus {
     /// Takes `screen` out through its machine, if it's showing.
     pub fn close(&mut self, screen: MenuScreen) {
         let Some(index) = self.shown.iter().position(|shown| *shown == screen) else { return };
-        // One that's never been drawn has nothing to leave through, and would open at its first draw.
-        if self.stack.has_opened(index) {
+        // One that's never been drawn has nothing to leave through, and would open at its first draw; one
+        // with no machine, the HUD's, has none at all.
+        if self.stack.has_opened(index) && self.stack.tree(index).state().is_some() {
             self.stack.tree_mut(index).fire("close", self.now);
         } else {
             self.stack.remove(index);

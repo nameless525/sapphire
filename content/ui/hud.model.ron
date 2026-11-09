@@ -5,7 +5,10 @@
     version: 1,
     data: (
         fields: [
+            (path: "banner", kind: Text),
+            (path: "can_skip", kind: Bool),
             (path: "enemy", kind: Text),
+            (path: "has_banner", kind: Bool),
             (path: "has_enemy", kind: Bool),
             (path: "level", kind: Number),
             (path: "objective", kind: Text),

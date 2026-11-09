@@ -10,6 +10,8 @@ license.workspace = true
 [dependencies]
 # The flow document's `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true
+# The menus' commands and the models the flow fills (G1's fifth commit).
+game_ui.workspace = true
 sapphire_jobs.workspace = true
 sapphire_reflect.workspace = true
 sapphire_save.workspace = true

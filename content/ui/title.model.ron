@@ -5,6 +5,7 @@
     version: 1,
     data: (
         fields: [
+            (path: "can_continue", kind: Bool),
             (path: "can_leave", kind: Bool),
         ],
     ),

@@ -1404,6 +1404,7 @@ name = "game_flow"
 version = "0.1.0"
 dependencies = [
  "bevy_reflect",
+ "game_ui",
  "sapphire_assets",
  "sapphire_core",
  "sapphire_jobs",

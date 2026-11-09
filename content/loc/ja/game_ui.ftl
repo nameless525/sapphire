@@ -5,7 +5,8 @@
 
 title-name = サファイア
 title-tagline = はじめての戦い
-title-start = はじめる
+title-continue = つづきから
+title-new = はじめから
 title-settings = 設定
 title-leave = 終了
 
@@ -13,6 +14,7 @@ pause-title = 一時停止
 pause-resume = 再開
 pause-character = キャラクター
 pause-settings = 設定
+pause-to-title = タイトルへ戻る
 pause-leave = 終了
 
 settings-title = 設定
@@ -61,3 +63,7 @@ hud-level = Lv. { $level }
 hud-objective = 目標
 hud-objective-arena = 敵を倒せ
 hud-pause = 一時停止
+hud-skip = スキップ
+hud-banner-checkpoint = チェックポイント到達
+hud-banner-victory = 勝利
+hud-banner-defeat = 敗北

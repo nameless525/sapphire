@@ -26,6 +26,9 @@ fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
     walk.menus.open(MenuScreen::Title);
     walk.settle();
     walk.check(MenuScreen::Title, pseudo);
+    if walk.device != Device::Finger {
+        assert_eq!(walk.tree(MenuScreen::Title).focus_name(), Some("new"), "with nothing to continue");
+    }
 
     // Title to settings, each of its rows, and back.
     walk.choose(MenuScreen::Title, "settings");
@@ -43,10 +46,10 @@ fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
         walk.size
     );
 
-    // Start: the title goes, and the fight's words stand behind it.
+    // A new game: the title goes, and the fight's words stand behind it.
     walk.menus.open_under(MenuScreen::Hud);
-    walk.choose(MenuScreen::Title, "start");
-    assert!(walk.commands.contains(&MenuCommand::Start), "{:?}", walk.commands);
+    walk.choose(MenuScreen::Title, "new");
+    assert!(walk.commands.contains(&MenuCommand::NewGame), "{:?}", walk.commands);
     assert!(walk.menus.tree(MenuScreen::Title).is_none());
     assert!(!walk.menus.is_modal());
     walk.check(MenuScreen::Hud, pseudo);
@@ -73,6 +76,13 @@ fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
     assert!(walk.menus.is_open(MenuScreen::Pause), "and the pause is still there");
     walk.choose(MenuScreen::Pause, "resume");
     assert!(walk.commands.contains(&MenuCommand::Resume));
+    assert!(walk.menus.tree(MenuScreen::Pause).is_none());
+
+    // And once more, back to the title.
+    walk.menus.open(MenuScreen::Pause);
+    walk.settle();
+    walk.choose(MenuScreen::Pause, "to-title");
+    assert!(walk.commands.contains(&MenuCommand::ToTitle), "{:?}", walk.commands);
     assert!(walk.menus.tree(MenuScreen::Pause).is_none());
 
     // The dialogue: answers, then a line to go on from.
@@ -120,14 +130,14 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     let string_of = |walk: &Walk, screen, node: &str| {
         walk.tree(screen).strings().find(|(name, _)| *name == node).unwrap().1.to_owned()
     };
-    assert_eq!(string_of(&walk, MenuScreen::Title, "start-text"), "Start");
+    assert_eq!(string_of(&walk, MenuScreen::Title, "new-text"), "New game");
     assert_eq!(string_of(&walk, MenuScreen::Settings, "language-value"), "English");
     walk.choose(MenuScreen::Settings, "language");
     assert_eq!(walk.menus.settings().language, "ja");
     let locale = walk.menus.settings().locale();
     assert_eq!((locale.text.as_str(), locale.voice.as_str()), ("ja", "ja"), "and the voices with it");
     assert_eq!(string_of(&walk, MenuScreen::Settings, "language-value"), "日本語");
-    assert_eq!(string_of(&walk, MenuScreen::Title, "start-text"), "はじめる", "under it too");
+    assert_eq!(string_of(&walk, MenuScreen::Title, "new-text"), "はじめから", "under it too");
     assert!(walk.commands.contains(&MenuCommand::SettingsChanged));
 
     walk.choose(MenuScreen::Settings, "sound");
@@ -173,6 +183,30 @@ fn a_press_goes_to_the_top_screen_only_and_the_hud_takes_only_its_pause() {
     walk.tap(pause);
     walk.settle();
     assert!(!walk.commands.contains(&MenuCommand::Pause), "{:?}", walk.commands);
+}
+
+/// A cutscene's skip shows only while one can be skipped, and a tap on it asks for the skip; the banner shows
+/// what it's given, from the tables.
+#[test]
+fn the_huds_skip_and_banner_show_when_asked() {
+    let mut walk = Walk::new(assets(), "en", false, (1280, 720), Device::Finger);
+    walk.menus.open(MenuScreen::Hud);
+    walk.settle();
+    let skip = walk.tree(MenuScreen::Hud).find("skip").unwrap();
+    let banner = walk.tree(MenuScreen::Hud).find("banner").unwrap();
+    assert!(!walk.tree(MenuScreen::Hud).is_visible(skip) && !walk.tree(MenuScreen::Hud).is_visible(banner));
+
+    let model = walk.menus.model_mut::<HudModel>(MenuScreen::Hud).unwrap();
+    model.can_skip = true;
+    model.has_banner = true;
+    model.banner = "hud-banner-victory".to_owned();
+    walk.settle();
+    let tree = walk.tree(MenuScreen::Hud);
+    assert!(tree.is_visible(skip) && tree.is_visible(banner));
+    assert!(tree.problems().is_empty(), "{:?}", tree.problems());
+    let at = tree.screen_rect(skip).center();
+    walk.tap(at);
+    assert_eq!(walk.commands, [MenuCommand::Skip]);
 }
 
 #[test]

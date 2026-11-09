@@ -11,14 +11,17 @@
 //!   moves no checksum. Its observation allocates nothing.
 //! - **What's kept** ([`kept`]): [`Kept`](kept::Kept), one writer for the settings and the save alike,
 //!   which snapshots on the frame and writes on a job, the newest winning.
+//! - **The screens** ([`menus`]): what a menu's row asks of the flow ([`flow_command`](menus::flow_command)),
+//!   and the title's and the HUD's models filled from it.
 //!
 //! **Not here:** the simulation, the stage and the interface, which the flow drives through its caller; the
-//! fight (`game_combat`) and the screens (`game_ui`), which know nothing of it. Neither is linked yet: the
-//! flow reaches them as G1's later commits land on what they need.
+//! fight (`game_combat`) and the screens (`game_ui`), which know nothing of it. The screens are linked for
+//! their commands and models; the fight is reached as G1's later commits land on what they need.
 
 pub mod document;
 pub mod flow;
 pub mod kept;
+pub mod menus;
 
 /// Where the flow logs.
 pub(crate) const LOG_TARGET: &str = "game::flow";

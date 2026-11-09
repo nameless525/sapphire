@@ -14,7 +14,7 @@ use game_combat::documents::FightDocuments;
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::menus::{
-    CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings,
+    CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings, TitleModel,
 };
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_ecs::prelude::Entity;
@@ -52,6 +52,8 @@ pub struct GameShow {
     atlas: Atlas,
     /// Whether the title's been left for the fight.
     fight_open: bool,
+    /// Whether the fight's been opened since the app began: from then on the title has it to continue.
+    fight_begun: bool,
     /// What the menus asked this frame.
     commands: Vec<MenuCommand>,
     settings_changed: bool,
@@ -86,6 +88,7 @@ impl GameShow {
             setup,
             atlas: Atlas::paint(),
             fight_open: false,
+            fight_begun: false,
             commands: Vec::with_capacity(8),
             settings_changed: false,
             controls,
@@ -144,12 +147,42 @@ impl GameShow {
         !self.fight_open
     }
 
+    /// The title's new game: the fight from its start, over again if it's been played.
+    fn new_game(&mut self) {
+        if self.fight_begun
+            && let Some(combat) = self.shown.fight.combat.as_mut()
+        {
+            combat.restart();
+        }
+        self.open_fight();
+    }
+
+    /// The pause's way back: the title over the fight, which stands where it was for a continue to go on with.
+    fn back_to_title(&mut self) {
+        if !self.fight_open {
+            return;
+        }
+        self.fight_open = false;
+        self.controls.set_paused(false);
+        self.shown.hud = None;
+        if let Some(menus) = &mut self.menus {
+            menus.close_all();
+            menus.close(MenuScreen::Hud);
+            menus.open(MenuScreen::Title);
+            if let Some(model) = menus.model_mut::<TitleModel>(MenuScreen::Title) {
+                model.can_continue = true;
+            }
+        }
+        tracing::info!(target: LOG_TARGET, "back to the title");
+    }
+
     /// The title goes and the fight begins, with its HUD on, in the player's size.
     pub fn open_fight(&mut self) {
         if self.fight_open {
             return;
         }
         self.fight_open = true;
+        self.fight_begun = true;
         let scale = self.menus.as_ref().map_or(1.0, |menus| menus.settings().scale());
         let options = HudOptions { mode: HudMode::Live, scale, ..HudOptions::default() };
         let mut hud = FightHud::for_fight_with_atlas(options, self.atlas.clone());
@@ -188,7 +221,11 @@ impl GameShow {
         let mut left = false;
         for index in 0..self.commands.len() {
             match self.commands[index] {
-                MenuCommand::Start => self.open_fight(),
+                MenuCommand::NewGame => self.new_game(),
+                MenuCommand::Continue => self.open_fight(),
+                MenuCommand::ToTitle => self.back_to_title(),
+                // The game's flow skips its cutscenes (G1); the arena plays none a player may skip.
+                MenuCommand::Skip => {}
                 MenuCommand::Resume => self.controls.set_paused(false),
                 MenuCommand::Pause => self.controls.set_paused(true),
                 MenuCommand::Leave => left = true,
@@ -623,6 +660,30 @@ mod tests {
         assert!(is_open(&show, MenuScreen::Pause));
         assert!(!press(&mut show, &mut clock, Scancode::J), "no menu row is J, and combat's isn't heard");
         assert!(show.controls.is_paused());
+    }
+
+    /// The pause's way back stands the fight behind the title, whose continue goes on with it.
+    #[test]
+    fn the_pause_goes_back_to_the_title_and_its_continue_goes_on_with_the_fight() {
+        let (mut show, mut clock) = fight();
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        assert!(is_open(&show, MenuScreen::Pause));
+        show.commands.push(MenuCommand::ToTitle);
+        frame(&mut show, &mut clock);
+        frame(&mut show, &mut clock);
+        assert!(show.on_title() && is_open(&show, MenuScreen::Title));
+        assert!(!is_open(&show, MenuScreen::Pause) && !is_open(&show, MenuScreen::Hud));
+        assert!(show.shown.hud.is_none() && !show.controls.is_paused());
+        let menus = show.menus.as_mut().unwrap();
+        assert!(menus.model_mut::<TitleModel>(MenuScreen::Title).unwrap().can_continue);
+        frame(&mut show, &mut clock);
+        let focus = show.menus.as_ref().unwrap().tree(MenuScreen::Title).unwrap().focus_name();
+        assert_eq!(focus, Some("continue"), "focus starts on the run to go on with");
+
+        press(&mut show, &mut clock, Scancode::RETURN);
+        assert!(!show.on_title() && show.shown.hud.is_some());
+        frame(&mut show, &mut clock);
+        assert!(is_open(&show, MenuScreen::Hud) && !is_open(&show, MenuScreen::Title));
     }
 
     #[test]

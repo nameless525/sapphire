@@ -596,7 +596,8 @@ impl InputSystem {
 
     /// Makes the binding named `name` read `source`, recompiling the map, and returns the
     /// source it read before. Enabled contexts and action phases carry over; every binding
-    /// starts afresh, so anything held is ignored until released, as an on-screen control is:
+    /// starts afresh, as on entering a context: edge triggers ignore anything held until it's
+    /// released, and `Down` reads it at once, as a level. An on-screen control is no different:
     /// it keeps what it reads, and its [`VirtualControl`] keeps its meaning, as does input
     /// already queued for it.
     pub fn rebind(&mut self, name: &str, source: Source) -> Result<Source, RebindError> {
@@ -608,8 +609,9 @@ impl InputSystem {
 
     /// Makes `map` what it reads, for an edited document of bindings. Every enabled context stays enabled at
     /// its priority, under its name in `map`, or this refuses and nothing changes. Actions and on-screen
-    /// controls may have new places in `map`, so everything starts afresh: what's held is ignored until
-    /// released, and whatever an update hasn't played that names an on-screen control goes.
+    /// controls may have new places in `map`, so everything starts afresh, as on entering a context: edge
+    /// triggers ignore what's held until it's released, `Down` reads it at once, and whatever an update
+    /// hasn't played that names an on-screen control goes.
     pub fn replace_bindings(&mut self, map: InputMap) -> Result<(), RebindError> {
         let mut contexts = self.contexts.clone();
         for enabled in &mut contexts {

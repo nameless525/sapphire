@@ -42,6 +42,7 @@
 //!   [`ProbeGrid`](sapphire_assets::probes::ProbeGrid)s (M1 W5): sky visibility and bounce light
 //!   per time-of-day key, ray traced on the CPU over the meshes they name.
 //! - [`encounter`]: encounter documents (`.encounter.ron`) cooked to `.sencounter`, a zone's fights (M3 B2).
+//! - [`enemy`]: enemy documents (`.enemy.ron`) cooked to `.senemy`, one kind of enemy (M3 B3).
 //! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
 //!   [`ColliderSet`](sapphire_colliders::ColliderSet)s (M2 D3): a zone's static collision.
 //! - [`timeline`]: timeline documents (`.timeline.ron`) cooked to
@@ -119,6 +120,7 @@ pub mod cook;
 pub mod dialogue;
 pub mod documents;
 pub mod encounter;
+pub mod enemy;
 pub mod extract;
 pub mod figure;
 pub mod font;

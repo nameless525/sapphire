@@ -61,9 +61,6 @@ pub struct MoveSetDocument {
     /// nothing touches them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fighter: Option<FighterDocument>,
-    /// How this set's actors fight on their own. Without it, something else has to press their intents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brain: Option<BrainDocument>,
     pub moves: Vec<MoveDocument>,
 }
 
@@ -1374,7 +1371,6 @@ impl MoveSetDocument {
         }
         let neutral = check.allows("neutral", &self.neutral, &intent_names, &self.moves);
         let fighter = self.fighter.as_ref().map(|fighter| check.fighter(fighter, &self.moves));
-        let brain = self.brain.as_ref().map(|brain| check.brain(brain, self));
 
         let mut names = BTreeSet::new();
         let mut moves = Vec::with_capacity(self.moves.len());
@@ -1401,10 +1397,19 @@ impl MoveSetDocument {
         }
 
         if check.issues.is_empty() {
-            Ok(MoveSet::from_parts(intents, neutral, fighter, brain, moves))
+            Ok(MoveSet::from_parts(intents, neutral, fighter, moves))
         } else {
             Err(MoveSetError::Invalid(check.issues))
         }
+    }
+
+    /// Compiles a brain against this set, as an enemy's document does each of its brains (M3 B3): every
+    /// number holds what [`BrainDef`] says of it, and its intents and rise resolve against this set's
+    /// intents and moves. What it returns holds [`MoveSet::check_brain`] for the set this compiles to.
+    pub fn compile_brain(&self, brain: &BrainDocument) -> Result<BrainDef, MoveSetError> {
+        let mut check = Checker { issues: Vec::new(), in_move: None };
+        let def = check.brain(brain, self);
+        if check.issues.is_empty() { Ok(def) } else { Err(MoveSetError::Invalid(check.issues)) }
     }
 }
 
@@ -1800,8 +1805,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 9,
-                current: 8
+                found: 10,
+                current: 9
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -1814,7 +1819,6 @@ mod tests {
             set.intents().to_vec(),
             vec![Allow::new(Name::new("light"), target, Name::new("x"), CancelMode::Buffered)],
             set.fighter().cloned(),
-            None,
             set.moves().to_vec(),
         );
         let bad = set.to_cooked().unwrap();
@@ -1827,11 +1831,6 @@ mod tests {
         type Edit = fn(&mut MoveSetDocument);
         fn light(document: &mut MoveSetDocument) -> &mut MoveDocument {
             document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("in the content")
-        }
-        /// A good brain, on the test content's moves, for one thing to be wrong with: it gets up from
-        /// `light_1`, whose window 10..24 takes `light`.
-        fn brain(document: &mut MoveSetDocument) -> &mut BrainDocument {
-            document.brain.get_or_insert_with(good_brain)
         }
         fn attack(document: &mut MoveSetDocument) -> &mut AttackDocument {
             light(document).hitboxes[0].attack.as_mut().expect("in the content")
@@ -2270,139 +2269,6 @@ mod tests {
                 |d| light(d).motion.paths[0].keys.clear(),
                 &["light_1", "motion", "blade", "no keys"],
             ),
-            (
-                "a spacing the wrong way round",
-                |d| brain(d).spacing = Spacing { near: 3.0, far: 2.0 },
-                &["`brain`", "spacing 3..2"],
-            ),
-            (
-                "a spacing that isn't finite",
-                |d| brain(d).spacing = Spacing { near: 0.0, far: f32::INFINITY },
-                &["`brain`", "spacing"],
-            ),
-            ("a distance apart below nothing", |d| brain(d).apart = -1.0, &["`brain`", "apart is -1"]),
-            (
-                "a distance apart that's no number",
-                |d| brain(d).apart = f32::NAN,
-                &["`brain`", "apart is NaN"],
-            ),
-            (
-                "a foe lost before it's seen",
-                |d| brain(d).watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }),
-                &["`brain`", "sight 9 and lose 8"],
-            ),
-            (
-                "a sight of nothing",
-                |d| brain(d).watch = Some(BrainWatch { sight: 0.0, lose: 8.0, walk: 0.3 }),
-                &["`brain`", "sight 0"],
-            ),
-            (
-                "a patrol walked at no speed",
-                |d| brain(d).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }),
-                &["`brain`", "walk is 0"],
-            ),
-            (
-                "a patrol walked past the stick",
-                |d| brain(d).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 1.5 }),
-                &["`brain`", "walk is 1.5"],
-            ),
-            ("a tilt past the stick", |d| brain(d).pace.approach = 1.5, &["`brain`", "approach is 1.5"]),
-            ("a tilt that's no number", |d| brain(d).pace.circle = f32::NAN, &["`brain`", "circle is NaN"]),
-            (
-                "a turn that goes nowhere",
-                |d| brain(d).pace.turn_rate_degrees = 0.0,
-                &["`brain`", "turn_rate_degrees"],
-            ),
-            (
-                "a patience the wrong way round",
-                |d| brain(d).patience = TickRange { min: 9, max: 3 },
-                &["`brain`", "patience is 9..=3"],
-            ),
-            (
-                "a rest too long",
-                |d| brain(d).rest = TickRange { min: 0, max: MAX_MOVE_TICKS + 1 },
-                &["`brain`", "rest is"],
-            ),
-            (
-                "a recover the wrong way round",
-                |d| brain(d).recover = TickRange { min: 2, max: 1 },
-                &["`brain`", "recover is"],
-            ),
-            ("a brain with no attacks", |d| brain(d).attacks.clear(), &["`brain`", "needs an attack"]),
-            (
-                "a brain with too many attacks",
-                |d| {
-                    let copy = brain(d).attacks[0].clone();
-                    brain(d).attacks = vec![copy; MAX_BRAIN_ATTACKS + 1];
-                },
-                &["`brain`", "9 attacks", "past the limit"],
-            ),
-            (
-                "an attack twice",
-                |d| {
-                    let copy = brain(d).attacks[0].clone();
-                    brain(d).attacks.push(copy);
-                },
-                &["`brain`", "`light`", "appears twice"],
-            ),
-            (
-                "an attack that's no intent",
-                |d| brain(d).attacks[0].intent = "ghost".to_owned(),
-                &["`brain`", "`ghost`", "not an intent"],
-            ),
-            (
-                "an attack that starts nothing",
-                |d| {
-                    brain(d);
-                    d.neutral.retain(|allow| allow.intent != "light");
-                },
-                &["`brain`", "`light`", "starts nothing from neutral"],
-            ),
-            (
-                "an attack's bad weight",
-                |d| brain(d).attacks[0].weight = -1.0,
-                &["`brain`", "`light`", "weight is -1"],
-            ),
-            (
-                "a reach out of order",
-                |d| brain(d).attacks[0].reach = Reach { near: 2.0, best: 1.0, far: 3.0 },
-                &["`brain`", "`light`", "reach 2, 1, 3"],
-            ),
-            (
-                "a reach with no width",
-                |d| brain(d).attacks[0].reach = Reach { near: 2.0, best: 2.0, far: 2.0 },
-                &["`brain`", "`light`", "reach"],
-            ),
-            (
-                "a multiplier below nothing",
-                |d| brain(d).attacks[0].against.opening = -1.0,
-                &["`brain`", "`light`", "multiplier"],
-            ),
-            (
-                "a recency floor past 1",
-                |d| brain(d).attacks[0].recent = Recent { ticks: 5, floor: 2.0 },
-                &["`brain`", "`light`", "floor is 2"],
-            ),
-            (
-                "a rise pressing no intent",
-                |d| brain(d).rise.as_mut().expect("in this one").intent = "ghost".to_owned(),
-                &["`brain`", "rise presses `ghost`"],
-            ),
-            (
-                "a rise from no move",
-                |d| brain(d).rise.as_mut().expect("in this one").during = "ghost".to_owned(),
-                &["`brain`", "rise happens during `ghost`"],
-            ),
-            (
-                "a rise past its window",
-                |d| brain(d).rise.as_mut().expect("in this one").to = 25,
-                &["`brain`", "rise at 12..25", "cancel window of `light_1`"],
-            ),
-            (
-                "a rise with no room",
-                |d| brain(d).rise.as_mut().expect("in this one").to = 12,
-                &["`brain`", "rise window 12..12 is empty"],
-            ),
         ];
         let baseline = slice();
         for (what, edit, expected) in cases {
@@ -2416,6 +2282,152 @@ mod tests {
                 assert!(text.contains(part), "{what}: no {part:?} in:\n{text}");
             }
             assert_eq!(document.check(), issues, "{what}");
+        }
+    }
+
+    /// One bad brain per check, on the test content's moves: the message must name the thing. The good one
+    /// it starts from gets up from `light_1`, whose window 10..24 takes `light`.
+    #[test]
+    fn bad_brains_name_what_is_wrong() {
+        type Edit = fn(&mut BrainDocument, &mut MoveSetDocument);
+        let cases: &[(&str, Edit, &[&str])] = &[
+            (
+                "a spacing the wrong way round",
+                |b, _| b.spacing = Spacing { near: 3.0, far: 2.0 },
+                &["`brain`", "spacing 3..2"],
+            ),
+            (
+                "a spacing that isn't finite",
+                |b, _| b.spacing = Spacing { near: 0.0, far: f32::INFINITY },
+                &["`brain`", "spacing"],
+            ),
+            ("a distance apart below nothing", |b, _| b.apart = -1.0, &["`brain`", "apart is -1"]),
+            ("a distance apart that's no number", |b, _| b.apart = f32::NAN, &["`brain`", "apart is NaN"]),
+            (
+                "a foe lost before it's seen",
+                |b, _| b.watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }),
+                &["`brain`", "sight 9 and lose 8"],
+            ),
+            (
+                "a sight of nothing",
+                |b, _| b.watch = Some(BrainWatch { sight: 0.0, lose: 8.0, walk: 0.3 }),
+                &["`brain`", "sight 0"],
+            ),
+            (
+                "a patrol walked at no speed",
+                |b, _| b.watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }),
+                &["`brain`", "walk is 0"],
+            ),
+            (
+                "a patrol walked past the stick",
+                |b, _| b.watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 1.5 }),
+                &["`brain`", "walk is 1.5"],
+            ),
+            ("a tilt past the stick", |b, _| b.pace.approach = 1.5, &["`brain`", "approach is 1.5"]),
+            ("a tilt that's no number", |b, _| b.pace.circle = f32::NAN, &["`brain`", "circle is NaN"]),
+            (
+                "a turn that goes nowhere",
+                |b, _| b.pace.turn_rate_degrees = 0.0,
+                &["`brain`", "turn_rate_degrees"],
+            ),
+            (
+                "a patience the wrong way round",
+                |b, _| b.patience = TickRange { min: 9, max: 3 },
+                &["`brain`", "patience is 9..=3"],
+            ),
+            (
+                "a rest too long",
+                |b, _| b.rest = TickRange { min: 0, max: MAX_MOVE_TICKS + 1 },
+                &["`brain`", "rest is"],
+            ),
+            (
+                "a recover the wrong way round",
+                |b, _| b.recover = TickRange { min: 2, max: 1 },
+                &["`brain`", "recover is"],
+            ),
+            ("a brain with no attacks", |b, _| b.attacks.clear(), &["`brain`", "needs an attack"]),
+            (
+                "a brain with too many attacks",
+                |b, _| {
+                    let copy = b.attacks[0].clone();
+                    b.attacks = vec![copy; MAX_BRAIN_ATTACKS + 1];
+                },
+                &["`brain`", "9 attacks", "past the limit"],
+            ),
+            (
+                "an attack twice",
+                |b, _| {
+                    let copy = b.attacks[0].clone();
+                    b.attacks.push(copy);
+                },
+                &["`brain`", "`light`", "appears twice"],
+            ),
+            (
+                "an attack that's no intent",
+                |b, _| b.attacks[0].intent = "ghost".to_owned(),
+                &["`brain`", "`ghost`", "not an intent"],
+            ),
+            (
+                "an attack that starts nothing",
+                |_, d| d.neutral.retain(|allow| allow.intent != "light"),
+                &["`brain`", "`light`", "starts nothing from neutral"],
+            ),
+            (
+                "an attack's bad weight",
+                |b, _| b.attacks[0].weight = -1.0,
+                &["`brain`", "`light`", "weight is -1"],
+            ),
+            (
+                "a reach out of order",
+                |b, _| b.attacks[0].reach = Reach { near: 2.0, best: 1.0, far: 3.0 },
+                &["`brain`", "`light`", "reach 2, 1, 3"],
+            ),
+            (
+                "a reach with no width",
+                |b, _| b.attacks[0].reach = Reach { near: 2.0, best: 2.0, far: 2.0 },
+                &["`brain`", "`light`", "reach"],
+            ),
+            (
+                "a multiplier below nothing",
+                |b, _| b.attacks[0].against.opening = -1.0,
+                &["`brain`", "`light`", "multiplier"],
+            ),
+            (
+                "a recency floor past 1",
+                |b, _| b.attacks[0].recent = Recent { ticks: 5, floor: 2.0 },
+                &["`brain`", "`light`", "floor is 2"],
+            ),
+            (
+                "a rise pressing no intent",
+                |b, _| b.rise.as_mut().expect("in this one").intent = "ghost".to_owned(),
+                &["`brain`", "rise presses `ghost`"],
+            ),
+            (
+                "a rise from no move",
+                |b, _| b.rise.as_mut().expect("in this one").during = "ghost".to_owned(),
+                &["`brain`", "rise happens during `ghost`"],
+            ),
+            (
+                "a rise past its window",
+                |b, _| b.rise.as_mut().expect("in this one").to = 25,
+                &["`brain`", "rise at 12..25", "cancel window of `light_1`"],
+            ),
+            (
+                "a rise with no room",
+                |b, _| b.rise.as_mut().expect("in this one").to = 12,
+                &["`brain`", "rise window 12..12 is empty"],
+            ),
+        ];
+        for (what, edit, expected) in cases {
+            let (mut brain, mut document) = (good_brain(), slice());
+            edit(&mut brain, &mut document);
+            let Err(MoveSetError::Invalid(issues)) = document.compile_brain(&brain) else {
+                panic!("{what}: compiled");
+            };
+            let text = issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            for part in *expected {
+                assert!(text.contains(part), "{what}: no {part:?} in:\n{text}");
+            }
         }
     }
 
@@ -2450,27 +2462,18 @@ mod tests {
         }
     }
 
-    /// A brain's section compiles and cooks with the rest, and a replay's hash sees every number.
+    /// A brain compiles against a set's intents, by their places, and its rise by the move's name.
     #[test]
-    fn a_brain_compiles_and_cooks_by_its_intents_places() {
-        let mut document = slice();
-        document.brain = Some(good_brain());
-        let set = document.compile().expect("a good brain");
-        let brain = set.brain().expect("it's there");
+    fn a_brain_compiles_by_its_intents_places() {
+        let document = slice();
+        let brain = document.compile_brain(&good_brain()).expect("a good brain");
+        let set = document.compile().expect("compiles");
         let (at, intent) = set.intent(Name::new("light")).expect("declared");
         assert_eq!(intent.name(), Name::new("light"));
         assert_eq!(brain.attacks[0].intent() as usize, at);
         assert_eq!(brain.rise.expect("there").intent() as usize, at);
         assert_eq!(brain.rise.expect("there").during(), Name::new("light_1"));
-        let cooked = set.to_cooked().expect("cooks");
-        assert_eq!(MoveSet::from_cooked(&cooked).expect("reads").brain(), set.brain());
-
-        // A number moving moves the bytes.
-        let mut tuned = document.clone();
-        tuned.brain.as_mut().expect("there").patience.max += 1;
-        let other = tuned.compile().expect("still good").to_cooked().expect("cooks");
-        assert_ne!(other.as_slice(), cooked.as_slice());
-        assert!(slice().compile().expect("compiles").brain().is_none(), "the test content has none");
+        assert!(set.check_brain(&brain).is_ok(), "what compiles holds the cooked set's checks");
     }
 
     /// A move of ordinary length whose dodge and i-frames say they run to the end of a `u32`, behind
@@ -2574,24 +2577,15 @@ mod tests {
         assert!(!said.iter().any(|issue| issue.contains(THROUGHOUT)), "{said:?}");
     }
 
-    /// Bytes from anywhere: a brain that points at no intent is damaged, as a move's window would be.
+    /// Bytes from anywhere: a brain that points at no intent is refused, as a move's window would be.
     #[test]
-    fn a_cooked_brain_naming_no_intent_is_refused() {
-        let mut document = slice();
-        document.brain = Some(good_brain());
+    fn a_brain_naming_no_intent_is_refused() {
+        let document = slice();
         let set = document.compile().expect("good");
-        let mut brain = set.brain().expect("there").clone();
+        let mut brain = document.compile_brain(&good_brain()).expect("good");
         brain.attacks[0] =
             BrainAttack::new(99, 1.0, brain.attacks[0].reach, Against::default(), Recent::default());
-        let bad = MoveSet::from_parts(
-            set.intents().to_vec(),
-            set.neutral().to_vec(),
-            set.fighter().cloned(),
-            Some(brain),
-            set.moves().to_vec(),
-        );
-        let bytes = bad.to_cooked().expect("cooks");
-        assert!(matches!(MoveSet::from_cooked(&bytes), Err(MoveSetError::Damaged(_))));
+        assert!(matches!(set.check_brain(&brain), Err(MoveSetError::Damaged(_))));
     }
 
     #[test]
@@ -2605,8 +2599,7 @@ mod tests {
 
     #[test]
     fn an_empty_set_is_refused() {
-        let document =
-            MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, brain: None, moves: vec![] };
+        let document = MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, moves: vec![] };
         assert!(document.check().iter().any(|issue| issue.message.contains("at least one move")));
     }
 
@@ -2697,8 +2690,7 @@ mod tests {
             let mut moves = good.moves().to_vec();
             let mut fighter = good.fighter().cloned();
             edit(&mut moves, &mut fighter);
-            let set =
-                MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, None, moves);
+            let set = MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, moves);
             MoveSet::from_cooked(&set.to_cooked().unwrap())
         };
         assert!(rebuilt(|_, _| {}).is_ok());
@@ -2735,7 +2727,6 @@ mod tests {
                     good.intents().to_vec(),
                     good.neutral().to_vec(),
                     good.fighter().cloned(),
-                    None,
                     moves,
                 )
             };

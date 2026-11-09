@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use sapphire_gameplay::replay::{
-    SCENARIOS, ULTIMATE_CINEMATIC, find_scenario, player_moves, ultimate_cinematic, warrior_moves,
+    SCENARIOS, ULTIMATE_CINEMATIC, add_warrior, find_scenario, player_moves, ultimate_cinematic,
 };
 use sapphire_gameplay::{ActorSpawn, Faction, Simulation, TickActions, ZoneCast};
 use sapphire_pipeline::cook::{Cook, CookOptions, cook_dir};
@@ -63,7 +63,7 @@ fn a_cooked_zone_is_what_a_scenario_reads() {
     cooked.add_cinematic(ULTIMATE_CINEMATIC, ultimate_cinematic().expect("reads")).expect("room");
     let controller = Some(cooked.add_controller_profile(&sapphire_gameplay::arena::profile()).expect("good"));
     let player = cooked.add_move_set(player_moves().expect("reads"));
-    let warrior = cooked.add_move_set(warrior_moves().expect("compiles"));
+    let warrior = add_warrior(&mut cooked).expect("compiles");
     let moves = [("player", player), ("warrior", warrior)];
     let cast = ZoneCast { moves: &moves, controller };
     cooked

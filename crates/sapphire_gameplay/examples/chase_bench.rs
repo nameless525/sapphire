@@ -25,18 +25,21 @@ use rounds::Rounds;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::replay::{SCENARIOS, chase_world, find_scenario, find_script};
-use sapphire_moves::{MoveSet, MoveSetDocument};
+use sapphire_moves::{EnemyDocument, EnemyMind, MoveSet, MoveSetDocument};
 use sapphire_nav::NavStats;
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const CHASER: &str = include_str!("../../sapphire_moves/test_content/chaser.moves.ron");
+const CHASER_KIND: &str = include_str!("../../sapphire_moves/test_content/chaser.enemy.ron");
 
-fn chasers(apart: f32) -> MoveSet {
-    let mut document = MoveSetDocument::parse(CHASER).expect("it parses");
-    document.brain.as_mut().expect("it has one").apart = apart;
-    document.compile().expect("it compiles")
+fn chasers(apart: f32) -> (MoveSet, EnemyMind) {
+    let moves = MoveSetDocument::parse(CHASER).expect("it parses");
+    let mut kind = EnemyDocument::parse(CHASER_KIND).expect("it parses");
+    kind.brains.values_mut().for_each(|brain| brain.apart = apart);
+    let mind = kind.compile(&moves).expect("it compiles").mind;
+    (moves.compile().expect("it compiles"), mind)
 }
 
 /// One run of the script: each step's time, and what the navigation spent.

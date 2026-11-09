@@ -5,7 +5,7 @@
 -- this list, counting from 1.
 export type Hooks = {
     names: { string }?,
-    -- A fighter's health crossed a quarter. The first crossing is phase 1.
+    -- A fighter's health crossed one of its phases: its kind of enemy's own, or a quarter. The first crossing is phase 1.
     on_phase: ((actor: number, phase: number, health: number) -> ())?,
     -- An actor started a move: its place in `names`, or 0 if the chunk doesn't list it.
     on_move: ((actor: number, name: number) -> ())?,
@@ -50,6 +50,8 @@ declare sapphire: {
     force_move: (actor: number, name: number) -> (),
     -- From the next step this actor fights for itself, if its set says how. One already fighting carries on, and a fallen fighter gets no brain.
     give_brain: (actor: number) -> (),
+    -- From the next step this actor fights with its kind of enemy's brain of this name, as a boss's phase can. A name its kind hasn't got does nothing, and neither does an actor with no brain on.
+    set_brain: (actor: number, name: number) -> (),
     -- From the next step this actor chooses who it's aiming at. One already choosing carries on.
     give_soft_lock: (actor: number) -> (),
     -- Sets a flag, by its place in `names`, to a whole number that fits 32 bits, from the next step. Anything else is a fault.

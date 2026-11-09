@@ -124,7 +124,8 @@ mod tests {
     use sapphire_physics::PhysicsWorld;
 
     use super::super::scenario::{
-        PLAYERS, SCENARIOS, ScenarioSetup, WARRIORS, duel_on, find_scenario, player_moves, test_moves,
+        PLAYERS, SCENARIOS, ScenarioSetup, WARRIOR_MOVES, WARRIORS, duel_on, find_scenario, player_moves,
+        test_moves, warrior_enemy,
     };
     use super::super::script::{ATTEMPT_EVERY, attempts, fight};
     use super::super::{PlayError, Player, Recording, Replay};
@@ -386,15 +387,15 @@ mod tests {
         assert!(matches!(refused, Err(PlayError::MovesChanged { .. })), "{:?}", refused.err());
     }
 
-    /// What a setup draws, it draws from the edit: a brain's first wait here, which a replay of the fight
-    /// would otherwise reach on no build at all, its hash saying the edit and its world not having it.
+    /// What a setup spawns, it spawns from the edit: the warrior's health here, which a replay of the fight
+    /// would otherwise reach on no build at all, its hash saying the edit and its world not having it. Its
+    /// brain finds the edit's intents by name, so one that moves them presses what it pressed before.
     #[test]
     fn a_new_fight_sets_up_on_the_edit() {
-        fn patient() -> MoveSet {
-            let text = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
-            let mut document = MoveSetDocument::parse(text).expect("parses");
-            let brain = document.brain.as_mut().expect("it has one");
-            (brain.patience.min, brain.patience.max) = (500, 500);
+        fn edited() -> MoveSet {
+            let mut document = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
+            document.fighter.as_mut().expect("it has one").health = 500;
+            document.intents.reverse();
             document.compile().expect("compiles")
         }
         fn built_with_it(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
@@ -405,7 +406,9 @@ mod tests {
             sim.add_cinematic(super::super::ULTIMATE_CINEMATIC, super::super::ultimate_cinematic()?)?;
             let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
             let moves = Some(sim.add_move_set(player_moves()?));
-            let warrior = Some(sim.add_move_set(patient()));
+            let warrior = sim.add_move_set(edited());
+            sim.add_enemy(warrior, warrior_enemy()?.mind)?;
+            let warrior = Some(warrior);
             let spawns = crate::arena::spawns();
             let player = sim.spawn(ActorSpawn {
                 position: spawns.player.position(),
@@ -429,33 +432,32 @@ mod tests {
         }
         let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let mut live = LiveMoves::default();
-        live.remember("warrior.moves.ron", patient());
+        live.remember("warrior.moves.ron", edited());
         let (tuned, _) = live.start(scenario, scenario.config).expect("sets up");
         let (built, _) = Scenario { setup: ScenarioSetup::Code(built_with_it), ..*scenario }
             .start(scenario.config)
             .expect("sets up");
         assert_eq!(tuned.tables_hash(), built.tables_hash(), "the same tables");
         assert_eq!(tuned.checksum(), built.checksum(), "and the same world, before a step");
+        let warrior = tuned.actors().find(|actor| actor.brain.is_on()).expect("it thinks");
+        assert_eq!(warrior.fighter.max_health(), 500);
     }
 
-    /// The warrior thinks because its document says how, so a fight with an edit that takes that away has
-    /// a warrior who stands there, and no less of a fight to start.
+    /// The warrior's brain presses its moves' intents by name (M3 B3), so an edit that takes one away is one
+    /// a build couldn't cook either: a new fight refuses it, saying so, rather than starting a warrior who
+    /// stands there.
     #[test]
-    fn a_new_fight_starts_without_a_brain_an_edit_took_away() {
+    fn a_new_fight_refuses_an_edit_its_enemy_cannot_fight_with() {
         for name in ["arena-fight", "party"] {
             let scenario = find_scenario(&SCENARIOS, name).expect("listed");
-            let warrior = |sim: &Simulation| sim.actors().find(|actor| actor.brain.is_on()).is_some();
-            let (compiled, _) = scenario.start(scenario.config).expect("sets up");
-            assert!(warrior(&compiled), "{name}: the document as it stands has a brain");
-
-            let text = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
-            let mut document = MoveSetDocument::parse(text).expect("parses");
-            document.brain = None;
+            let text = WARRIOR_MOVES.replace("\"lunge\"", "\"charge\"");
             let mut live = LiveMoves::default();
-            live.remember("warrior.moves.ron", document.compile().expect("compiles"));
-            let (mut edited, cast) = live.start(scenario, scenario.config).expect("sets up");
-            assert!(!warrior(&edited), "{name}");
-            edited.step(&attempts(0, &cast));
+            live.remember(
+                "warrior.moves.ron",
+                MoveSetDocument::parse(&text).expect("parses").compile().expect("compiles"),
+            );
+            let error = live.start(scenario, scenario.config).err().expect("refused").to_string();
+            assert!(error.contains("hasn't got"), "{name}: {error}");
         }
     }
 

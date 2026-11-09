@@ -307,7 +307,8 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
     };
     let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
     let set = ColliderSet::read(&cooked).expect("it reads");
-    let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2 };
+    let sizes = Look::warrior().sizes();
+    let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2, sizes };
     scene.spawn_arena(Arena {
         enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) },
         held,
@@ -664,6 +665,7 @@ pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
         blade: blade_in_model,
         hand: 0,
+        sizes: Look::warrior().sizes(),
     };
     scene.spawn_arena(Arena { enemy, held, shot, look, ground });
     (scene, figure)
@@ -886,7 +888,7 @@ fn the_arena_stands_its_actors_where_the_simulation_has_them() {
     assert_eq!(scene.figure(), figure);
     // Drawn at its own size, with its blade where the model holds it, facing where it faces.
     let (warrior, blade) = scene.show.warriors[0];
-    let scale = enemy::SCALE;
+    let scale = Look::warrior().scale;
     let transform = |scene: &Staged, entity| scene.world().get::<RenderTransform>(entity).expect("placed").0;
     let upright = transform(&scene, warrior).transform_vector3(Vec3::Y).length();
     assert!((upright - scale).abs() < 1e-5, "{upright}");
@@ -973,6 +975,7 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
         figure: warrior_figure,
         blade: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)),
         hand: 0,
+        sizes: Look::warrior().sizes(),
     };
     let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) };
     scene.spawn_enemy(meshes, held);
@@ -984,7 +987,7 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
     assert_eq!(packet.characters.len(), 3, "the character, the warrior and its blade");
     assert_eq!(packet.skinned.iter().filter(|skinned| skinned.id == warrior).count(), 1, "the pose is sent");
     let listed = |id| packet.characters.iter().find(|character| character.id == id).expect("listed");
-    let scale = enemy::SCALE;
+    let scale = Look::warrior().scale;
     assert!(
         (listed(warrior).body.radius - warrior_figure.body_radius * scale).abs() < 1e-4,
         "its own body, placed: {:?}",
@@ -1212,6 +1215,7 @@ fn ward_stage() -> Staged {
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
         blade: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
         hand: 0,
+        sizes: Look::warrior().sizes(),
     };
     let shot = ArenaShot::Director;
     scene.show.spawn_zone_arena(&mut scene.scene, ZoneArena { enemy, held, shot, ground });

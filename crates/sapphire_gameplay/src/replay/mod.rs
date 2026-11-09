@@ -54,9 +54,10 @@ pub use file::{
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
     BAKED_ZONES, BakedZone, FightWorld, PARTY_TUNING, PLAYERS, PreparedFight, RIVALS, SCENARIOS, Scenario,
-    ScenarioError, ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_MOVES, WARRIORS, add_melee_buttons,
-    arena_fight, document_file_name, duel, find_scenario, melee, melee_buttons, party_document, party_moves,
-    player_moves, test_moves, timelines, ultimate_cinematic, warrior_moves,
+    ScenarioError, ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_ENEMY, WARRIOR_MOVES, WARRIORS,
+    add_melee_buttons, add_warrior, arena_fight, document_file_name, duel, find_scenario, melee,
+    melee_buttons, party_document, party_moves, player_moves, test_moves, timelines, ultimate_cinematic,
+    warrior_enemy, warrior_moves,
 };
 pub use script::{
     ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS,

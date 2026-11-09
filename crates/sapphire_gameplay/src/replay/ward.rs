@@ -10,7 +10,9 @@ use sapphire_colliders::ColliderDocument;
 use sapphire_timeline::TimelineDocument;
 use sapphire_zone::ZoneDocument;
 
-use super::scenario::{ScenarioError, fight_on, player_moves, ultimate_cinematic, warrior_moves};
+use super::scenario::{
+    ScenarioError, fight_on, player_moves, ultimate_cinematic, warrior_enemy, warrior_moves,
+};
 use crate::actors::ActorId;
 use crate::arena::{ArenaSpawns, SpawnPoint};
 use crate::simulation::Simulation;
@@ -95,7 +97,8 @@ pub fn ward_court(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let gate = TimelineDocument::from_ron(COURT_GATE)?.cook()?;
     sim.add_timeline(gate.simulation)?;
     let cooked = ward_colliders()?;
-    fight_on(sim, player_moves()?, &ultimate_cinematic()?, warrior_moves()?, &cooked, ward_spawns()?, false)
+    let (player, ultimate, warrior) = (player_moves()?, ultimate_cinematic()?, warrior_moves()?);
+    fight_on(sim, player, &ultimate, warrior, &warrior_enemy()?.mind, &cooked, ward_spawns()?, false)
 }
 
 #[cfg(test)]

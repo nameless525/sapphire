@@ -11,6 +11,7 @@
 //!         zone: Some("content/zones/proving_ground/proving_ground.zone.ron"),
 //!         encounters: ["content/zones/proving_ground/cart_yard.encounter.ron"],
 //!         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+//!         enemies: ["content/combat/enemy/warrior.enemy.ron"],
 //!         cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
 //!     ),
 //! )
@@ -21,8 +22,11 @@
 //! name, and its `tables_hash` holds what that name meant: a moved spawner or a saved encounter says so rather
 //! than playing on. A bad document fails [`super::SCENARIOS`]' first reader, naming the file and the field.
 //!
-//! **A set of moves' name** is its file's, before `.moves.ron`. That's what a cast member's `moves` and a
-//! zone's spawner's `spawns` say.
+//! **A kind's name** is its file's, before `.moves.ron` for a set of moves or `.enemy.ron` for a kind of
+//! enemy (M3 B3). That's what a cast member's `moves` and a zone's spawner's `spawns` say. A kind of enemy
+//! plays the set its document names, which has to be one of `moves`: it's added beside that set, and a second
+//! kind on the same moves adds them again, after the rest, so the sets `moves` lists keep their IDs. Who
+//! thinks for themselves has to be a kind of enemy, whose brains they fight with.
 //!
 //! **Where someone stands:** `at` is one of the zone's spawners or checkpoints, in a scenario that has a
 //! zone, and otherwise one of the arena's spawn points (`player`, `enemy`, `crowd_0`...).
@@ -41,7 +45,7 @@
 use bevy_reflect::Reflect;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_math::Vec3;
-use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
+use sapphire_moves::{EnemyDocument, MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::PhysicsWorld;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
@@ -89,6 +93,9 @@ pub struct ScenarioDocument {
     pub cleared: Vec<String>,
     /// The documents its move sets come from, from the repository's root, in the order they're added.
     pub moves: Vec<String>,
+    /// Its kinds of enemy: `.enemy.ron`s, from the repository's root, each on one of `moves`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enemies: Vec<String>,
     /// Who stands there at the start, in spawn order.
     pub cast: Vec<CastMember>,
     /// Makes some of the cast a party.
@@ -113,7 +120,7 @@ impl Versioned for ScenarioDocument {
 #[type_path = "sapphire::gameplay"]
 #[serde(deny_unknown_fields)]
 pub struct CastMember {
-    /// A set of moves' name: see the [module docs](self).
+    /// A kind's name, a set of moves' or a kind of enemy's: see the [module docs](self).
     pub moves: String,
     /// Where they stand: see the [module docs](self).
     pub at: String,
@@ -123,7 +130,7 @@ pub struct CastMember {
     /// They choose a target as a player does, and a zone's triggers watch them.
     #[serde(default)]
     pub soft_lock: bool,
-    /// They think for themselves.
+    /// They think for themselves, as a kind of enemy.
     #[serde(default)]
     pub brain: bool,
     /// A jump from standing waits out its preparation (`Simulation::prepare_standing_jump`), as the arena's
@@ -196,10 +203,10 @@ const fn side_of(number: u8) -> Option<Faction> {
     if number == 0 { Some(Faction::NONE) } else { Faction::new(number) }
 }
 
-/// A set of moves' name, from its document's path: see the [module docs](self).
+/// A kind's name, from its document's path: see the [module docs](self).
 pub(super) fn kind_of(document: &str) -> &str {
     let file = super::scenario::document_file_name(document);
-    file.strip_suffix(".moves.ron").unwrap_or(file)
+    file.strip_suffix(".moves.ron").or_else(|| file.strip_suffix(".enemy.ron")).unwrap_or(file)
 }
 
 /// The set of moves named `kind`, if this build holds it cooked: a cook bakes tables from clips, which takes
@@ -258,9 +265,14 @@ impl ScenarioDocument {
             }
         }
         for (index, member) in self.cast.iter().enumerate() {
-            if !self.moves.iter().any(|path| kind_of(path) == member.moves) {
-                let problem = format!("`{}` isn't one of `moves`", member.moves);
+            let is_enemy = self.enemies.iter().any(|path| kind_of(path) == member.moves);
+            if !is_enemy && !self.moves.iter().any(|path| kind_of(path) == member.moves) {
+                let problem = format!("`{}` isn't one of `moves` or `enemies`", member.moves);
                 return Err(invalid(format!("cast[{index}].moves"), problem));
+            }
+            if member.brain && !is_enemy {
+                let problem = format!("`{}` isn't one of `enemies`, so it has no brain", member.moves);
+                return Err(invalid(format!("cast[{index}].brain"), problem));
             }
             if side_of(member.faction).is_none() {
                 return Err(invalid(format!("cast[{index}].faction"), "that's no side"));
@@ -303,9 +315,24 @@ impl ScenarioDocument {
             sim.add_cinematic(super::ULTIMATE_CINEMATIC, super::ultimate_cinematic()?)?;
         }
         let controller = Some(sim.add_controller_profile(&ControllerProfile::default())?);
-        let mut sets = Vec::with_capacity(self.moves.len());
+        let mut sets = Vec::with_capacity(self.moves.len() + self.enemies.len());
         for path in &self.moves {
             sets.push((kind_of(path), sim.add_move_set(moves_of(path)?)));
+        }
+        for path in &self.enemies {
+            let document = EnemyDocument::parse(named(path)?)?;
+            let moves = self.moves.iter().find(|moves| id_of(moves).ok() == Some(document.moves));
+            let moves = moves
+                .ok_or_else(|| invalid(format!("enemies: {path}"), "its moves aren't one of `moves`"))?;
+            let enemy = document.compile(&MoveSetDocument::parse(named(moves)?)?)?;
+            let (_, set) = *sets.iter().find(|(kind, _)| *kind == kind_of(moves)).expect("added above");
+            let set =
+                if sim.move_library().mind(set).is_some() { sim.add_move_set(moves_of(moves)?) } else { set };
+            sim.add_enemy(set, enemy.mind)?;
+            // A kind of enemy named as its moves are is those moves, already listed.
+            if !sets.contains(&(kind_of(path), set)) {
+                sets.push((kind_of(path), set));
+            }
         }
 
         let mut start = None;
@@ -364,7 +391,6 @@ impl ScenarioDocument {
                 sim.prepare_standing_jump(actor);
             }
         }
-        // An edit may have taken a brain away (`LiveMoves::start`), and then that one stands there.
         for (member, &actor) in self.cast.iter().zip(&cast) {
             if member.brain {
                 sim.give_brain(actor);
@@ -498,7 +524,7 @@ mod tests {
     /// Each thing that can be wrong says where, and these are what a document's author has to go on.
     #[test]
     fn a_bad_document_is_refused_naming_the_field() {
-        let cases: [Spoiled; 7] = [
+        let cases: [Spoiled; 8] = [
             ("about", |d| d.about.clear()),
             ("max_actors", |d| d.max_actors = 0),
             ("moves", |d| d.moves.clear()),
@@ -506,6 +532,7 @@ mod tests {
             ("encounters", |d| d.encounters = vec!["x.encounter.ron".to_owned()]),
             ("cast[1].moves", |d| d.cast[1].moves = "dancer".to_owned()),
             ("cast[1].faction", |d| d.cast[1].faction = 17),
+            ("cast[0].brain", |d| d.cast[0].brain = true),
         ];
         for (field, spoil) in cases {
             let mut document = arena_fight();
@@ -558,7 +585,7 @@ mod tests {
         for (name, text) in SCENARIO_DOCUMENTS {
             let document: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
             document.check().unwrap_or_else(|error| panic!("{name}: {error}"));
-            for path in document.moves.iter().chain([&document.colliders]) {
+            for path in document.moves.iter().chain(&document.enemies).chain([&document.colliders]) {
                 assert!(named(path).is_ok(), "{name}: {path}");
             }
         }

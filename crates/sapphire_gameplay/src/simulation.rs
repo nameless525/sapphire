@@ -10,7 +10,7 @@ use sapphire_core::alloc::AllocScope;
 use sapphire_dialogue::{DialogueError, DialogueSimulation};
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
-use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_moves::{EnemyError, EnemyMind, MoveSet, MoveSetError};
 use sapphire_nav::Path;
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
@@ -418,6 +418,14 @@ impl Simulation {
     /// same sets in the same order.
     pub fn add_move_set(&mut self, set: MoveSet) -> MoveSetId {
         self.ecs.world_mut().resource_mut::<MoveLibrary>().add(set)
+    }
+
+    /// Makes the set `id` a kind of enemy's, between steps (M3 B3): its fighters fight with `mind`'s brains
+    /// and have its phases. Again for the same set, a new mind, as an edit of its document makes: a fighter
+    /// on a brain the new one hasn't got fights with its first. Refused if a brain presses what the set
+    /// hasn't got. A replay's `tables_hash` holds it.
+    pub fn add_enemy(&mut self, id: MoveSetId, mind: EnemyMind) -> Result<(), EnemyError> {
+        self.ecs.world_mut().resource_mut::<MoveLibrary>().set_mind(id, mind)
     }
 
     /// [`Self::add_move_set`], from a cook's bytes, which must start 16-byte aligned.
@@ -1068,14 +1076,17 @@ impl Simulation {
         true
     }
 
-    /// Gives a live actor a brain, from its next step, between steps: it picks its own foes. Returns whether
-    /// the actor's set says how it fights ([`sapphire_moves::MoveSet::brain`]). See [`crate::brain`].
+    /// Gives a live actor a brain, from its next step, between steps: it picks its own foes, with the brain
+    /// its kind of enemy's phases name for its health, or the kind's first. Returns whether its set is a kind
+    /// of enemy's ([`Self::add_enemy`]). See [`crate::brain`].
     pub fn give_brain(&mut self, id: ActorId) -> bool {
         let world = self.ecs.world_mut();
         let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
         let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
         let library = world.resource::<MoveLibrary>();
-        let Some(def) = set.and_then(|set| library.current(set)).and_then(MoveSet::brain) else {
+        let fighter = world.get::<Fighter>(entity).expect("every pooled entity is a fighter");
+        let Some(def) = set.and_then(|set| library.brain_for(set, fighter.health(), fighter.max_health()))
+        else {
             return false;
         };
         let now = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.now();
@@ -1109,15 +1120,15 @@ impl Simulation {
 
     /// Sets a live actor with a brain walking `patrol` from its nearest point, between steps, with no foe
     /// until it notices one. Returns whether it can: it needs a brain whose document has a `watch`, since
-    /// that says how. See [`crate::brain`].
+    /// that says how, on the brain it fights with now. See [`crate::brain`].
     pub fn give_patrol(&mut self, id: ActorId, patrol: PatrolId) -> bool {
         let world = self.ecs.world_mut();
         let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
-        let on = world.get::<Brain>(entity).is_some_and(Brain::is_on);
+        let (on, mind) = world.get::<Brain>(entity).map_or((false, 0), |brain| (brain.is_on(), brain.mind));
         let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
         let watches = set
-            .and_then(|set| world.resource::<MoveLibrary>().current(set))
-            .and_then(MoveSet::brain)
+            .and_then(|set| world.resource::<MoveLibrary>().mind(set))
+            .and_then(|kind| kind.brain(mind))
             .is_some_and(|def| def.watch.is_some());
         if !(on && watches) {
             return false;
@@ -1138,6 +1149,19 @@ impl Simulation {
         let world = self.ecs.world();
         let entity = world.resource::<ActorTable>().entity(id)?;
         world.get::<WalkPath>(entity).map(WalkPath::path)
+    }
+
+    /// Has a live actor fight with its kind of enemy's brain of this name, from its next step, between steps,
+    /// as a phase or a script's `set_brain` does. Returns whether its kind has that brain. One with no brain
+    /// on keeps none, and is given the one its phase names when it's given one.
+    pub fn set_brain(&mut self, id: ActorId, name: Name) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
+        let place = set.and_then(|set| world.resource::<MoveLibrary>().mind(set)?.brain_named(name));
+        let Some(place) = place else { return false };
+        world.get_mut::<Brain>(entity).expect("every pooled entity has a brain").change_mind(place);
+        true
     }
 
     /// Makes `members` a party, between steps: the first stays on the field where it stands, and its ID is

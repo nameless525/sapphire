@@ -6,6 +6,7 @@
         max_actors: 8,
         colliders: "content/arena/square.colliders.ron",
         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
         // Each actor's ID is what it is in an `arena-fight`, and the other two members come after.
         cast: [
             (moves: "player", at: "player", faction: 1, soft_lock: true),

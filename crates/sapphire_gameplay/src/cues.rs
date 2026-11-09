@@ -75,7 +75,8 @@ pub struct CueEvent {
 }
 
 /// One step's cues: a swap's first, then its moves' in the order they fired, each actor's in time order, then
-/// its perfect dodges' by dodger, then its hits' in the order they applied. Nothing in the simulation reads it back.
+/// its perfect dodges' by dodger, then its hits' in the order they applied, each with the phases it crossed.
+/// Nothing in the simulation reads it back.
 #[derive(Resource, Debug)]
 pub struct CueQueue {
     events: [Option<CueEvent>; CUE_QUEUE_LEN],

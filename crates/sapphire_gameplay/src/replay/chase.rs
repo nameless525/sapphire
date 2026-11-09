@@ -9,13 +9,13 @@
 
 use sapphire_core::Name;
 use sapphire_math::Vec3;
-use sapphire_moves::{MoveSet, MoveSetDocument};
+use sapphire_moves::{EnemyDocument, EnemyMind, MoveSet, MoveSetDocument};
 use sapphire_nav::NavGraph;
 use sapphire_physics::{ColliderSet, PhysicsWorld};
 
 use super::scenario::{
-    CHASER_MOVES, PLAYERS, ScenarioError, ULTIMATE_CINEMATIC, WARRIORS, player_moves, test_moves,
-    ultimate_cinematic, warrior_moves,
+    CHASER_ENEMY, CHASER_MOVES, PLAYERS, ScenarioError, ULTIMATE_CINEMATIC, WARRIORS, add_warrior,
+    player_moves, test_moves, ultimate_cinematic,
 };
 use crate::actors::{ActorId, ActorSpawn};
 use crate::simulation::Simulation;
@@ -43,17 +43,19 @@ fn spots(graph: &NavGraph, count: usize) -> Vec<Vec3> {
         .collect()
 }
 
-/// The chasers' document, as a set.
-fn chaser_moves() -> Result<MoveSet, ScenarioError> {
-    Ok(MoveSetDocument::parse(CHASER_MOVES)?.compile()?)
+/// The chasers' documents, as a set and the kind of enemy on it (M3 B3).
+fn chaser() -> Result<(MoveSet, EnemyMind), ScenarioError> {
+    let moves = MoveSetDocument::parse(CHASER_MOVES)?;
+    let mind = EnemyDocument::parse(CHASER_ENEMY)?.compile(&moves)?.mind;
+    Ok((moves.compile()?, mind))
 }
 
-/// The `nav-chase` world, with `moves` for the chasers: the player, who's the one input drives, and the
+/// The `nav-chase` world, with `moves` and their kind's `mind` for the chasers: the player, who's the one input drives, and the
 /// chasers, each with a brain, in ID order. `in_reverse` starts them on each other's spots, for a test of
 /// what depends on who's first.
 pub fn chase_world(
     sim: &mut Simulation,
-    moves: MoveSet,
+    (moves, mind): (MoveSet, EnemyMind),
     in_reverse: bool,
 ) -> Result<(ActorId, Vec<ActorId>), ScenarioError> {
     let colliders = crate::arena::cooked_colliders()?;
@@ -62,7 +64,9 @@ pub fn chase_world(
     sim.set_navigation(&crate::arena::cooked_navmesh())?;
     let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
     let player_set = Some(sim.add_move_set(test_moves()?));
-    let chaser_set = Some(sim.add_move_set(moves));
+    let chaser_set = sim.add_move_set(moves);
+    sim.add_enemy(chaser_set, mind)?;
+    let chaser_set = Some(chaser_set);
 
     let start = crate::arena::spawns().player;
     let player = sim.spawn(ActorSpawn {
@@ -88,7 +92,7 @@ pub fn chase_world(
 
 /// The `nav-chase` scenario's setup: the cast is the player alone, since the chasers think for themselves.
 pub(super) fn nav_chase(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    Ok(vec![chase_world(sim, chaser_moves()?, false)?.0])
+    Ok(vec![chase_world(sim, chaser()?, false)?.0])
 }
 
 /// The `nav-patrol` scenario's setup: the cast is the player, then the guards, each on the first point of
@@ -102,7 +106,7 @@ pub(super) fn nav_patrol(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioE
     // The player's moves name their ultimate's cinematic, which loads before them, as `fight_on` does.
     sim.add_cinematic(ULTIMATE_CINEMATIC, ultimate_cinematic()?)?;
     let player_set = Some(sim.add_move_set(player_moves()?));
-    let warrior_set = Some(sim.add_move_set(warrior_moves()?));
+    let warrior_set = Some(add_warrior(sim)?);
 
     let spawns = crate::arena::spawns();
     let player = sim.spawn(ActorSpawn {
@@ -141,10 +145,10 @@ mod tests {
     use crate::actions::TickActions;
     use crate::brain::BrainState;
 
-    fn start(moves: MoveSet, in_reverse: bool) -> (Simulation, ActorId, Vec<ActorId>) {
+    fn start(chaser: (MoveSet, EnemyMind), in_reverse: bool) -> (Simulation, ActorId, Vec<ActorId>) {
         let scenario = find_scenario(&SCENARIOS, "nav-chase").expect("listed");
         let mut sim = Simulation::new(scenario.config);
-        let (player, chasers) = chase_world(&mut sim, moves, in_reverse).expect("it sets up");
+        let (player, chasers) = chase_world(&mut sim, chaser, in_reverse).expect("it sets up");
         (sim, player, chasers)
     }
 
@@ -215,10 +219,12 @@ mod tests {
         (spread(sim, player, chasers), searches)
     }
 
-    fn chasers_apart(apart: f32) -> MoveSet {
-        let mut document = MoveSetDocument::parse(CHASER_MOVES).expect("it parses");
-        document.brain.as_mut().expect("it has one").apart = apart;
-        document.compile().expect("it compiles")
+    fn chasers_apart(apart: f32) -> (MoveSet, EnemyMind) {
+        let moves = MoveSetDocument::parse(CHASER_MOVES).expect("it parses");
+        let mut kind = EnemyDocument::parse(CHASER_ENEMY).expect("it parses");
+        kind.brains.values_mut().for_each(|brain| brain.apart = apart);
+        let mind = kind.compile(&moves).expect("it compiles").mind;
+        (moves.compile().expect("it compiles"), mind)
     }
 
     /// What P3 is for: the old queue, with `apart` at 0, against a crowd, on one real run.

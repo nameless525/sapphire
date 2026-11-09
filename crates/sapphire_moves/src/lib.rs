@@ -9,9 +9,11 @@
 //!
 //! - [`MoveSetDocument`], the RON a person or the timeline editor writes, checked with messages
 //!   naming the move and track ([`Issue`]);
-//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`], a
-//!   [`BrainDef`] and each [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and
-//!   what a dodge through one does ([`PerfectDodgeWindow`]);
+//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`] and
+//!   each [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and what a dodge
+//!   through one does ([`PerfectDodgeWindow`]);
+//! - [`EnemyDocument`] and [`Enemy`], one kind of enemy (M3 B3): its [`BrainDef`]s, compiled against
+//!   its moves, its health's phases ([`EnemyMind`]), and its look ([`EnemyLook`]);
 //! - [`ControllerProfile`], how a fighter moves, as numbers, and what a document may hold of them
 //!   ([`MOVEMENT_LIMITS`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
@@ -234,6 +236,7 @@
 
 mod brain;
 mod document;
+mod enemy;
 mod movement;
 mod set;
 
@@ -248,6 +251,11 @@ pub use document::{
     IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey,
     PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument,
     WarpDocument,
+};
+pub use enemy::{
+    ArchivedEnemy, BossDocument, ENEMY_EXTENSION, Enemy, EnemyDocument, EnemyError, EnemyLook,
+    EnemyLookDocument, EnemyMind, EnemyPhase, EnemyPhaseDocument, HeldDocument, HeldLook, MAX_BRAINS,
+    MAX_ENEMY_PHASES, NamedBrain, PER_MILLE, QUARTERS, phase_of,
 };
 pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
 pub use set::{

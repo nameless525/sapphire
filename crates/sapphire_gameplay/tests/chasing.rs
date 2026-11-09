@@ -12,7 +12,9 @@ use sapphire_gameplay::{
     PatrolId, ProfileId, SimConfig, Simulation, Stick, TickActions,
 };
 use sapphire_math::Vec3;
-use sapphire_moves::{BrainWatch, MoveSet, MoveSetDocument, TickRange};
+use sapphire_moves::{
+    BrainDocument, BrainWatch, EnemyDocument, EnemyMind, MoveSet, MoveSetDocument, TickRange,
+};
 use sapphire_navmesh::{NO_NEIGHBOUR, NavMesh};
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use serde::Deserialize;
@@ -21,6 +23,7 @@ use serde::Deserialize;
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const CHASER: &str = include_str!("../../sapphire_moves/test_content/chaser.moves.ron");
+const CHASER_KIND: &str = include_str!("../../sapphire_moves/test_content/chaser.enemy.ron");
 
 /// The floor's side, in metres, from the origin along +X and +Z.
 const SIDE: i32 = 40;
@@ -91,22 +94,33 @@ fn collider(id: u32, centre: Vec3, half_extents: Vec3) -> StaticCollider {
     }
 }
 
-/// The chaser's document, with whatever a test wants of it.
-fn moves(edit: impl FnOnce(&mut MoveSetDocument)) -> MoveSet {
-    let mut document = MoveSetDocument::parse(CHASER).expect("it parses");
-    edit(&mut document);
-    document.compile().expect("it compiles")
+/// The chaser's documents, as a set and its kind of enemy (M3 B3), with whatever a test wants of its brain.
+fn moves(edit: impl FnOnce(&mut BrainDocument)) -> Kind {
+    let moves = MoveSetDocument::parse(CHASER).expect("it parses");
+    let mut kind = EnemyDocument::parse(CHASER_KIND).expect("it parses");
+    edit(kind.brains.values_mut().next().expect("it has one"));
+    let mind = kind.compile(&moves).expect("it compiles").mind;
+    (moves.compile().expect("it compiles"), mind)
+}
+
+/// A set and the kind of enemy on it.
+type Kind = (MoveSet, EnemyMind);
+
+/// Loads a set and its kind, between steps.
+fn add_kind(sim: &mut Simulation, (set, mind): Kind) -> Option<MoveSetId> {
+    let id = sim.add_move_set(set);
+    sim.add_enemy(id, mind).expect("it fits its set");
+    Some(id)
 }
 
 /// One that watches, and never finds the time to do anything else.
-fn guard_moves() -> MoveSet {
-    moves(|document| document.brain.as_mut().expect("it has one").watch = Some(WATCH))
+fn guard_moves() -> Kind {
+    moves(|brain| brain.watch = Some(WATCH))
 }
 
 /// One that presses as soon as anything's in reach of 9 m: nothing but a wall would stop it.
-fn eager_moves() -> MoveSet {
-    moves(|document| {
-        let brain = document.brain.as_mut().expect("it has one");
+fn eager_moves() -> Kind {
+    moves(|brain| {
         brain.patience = TickRange { min: 1, max: 1 };
         brain.attacks[0].reach.far = 9.0;
         brain.attacks[0].reach.best = 1.0;
@@ -122,11 +136,11 @@ struct Room {
 }
 
 impl Room {
-    fn new(walled: bool, navigated: bool, set: MoveSet) -> Self {
+    fn new(walled: bool, navigated: bool, set: Kind) -> Self {
         Self::at(walled, navigated, set, Vec3::new(30.0, 0.0, 10.0))
     }
 
-    fn at(walled: bool, navigated: bool, set: MoveSet, foe: Vec3) -> Self {
+    fn at(walled: bool, navigated: bool, set: Kind, foe: Vec3) -> Self {
         let mut sim = Simulation::new(SimConfig { seed: 3, max_actors: 8, ..SimConfig::default() });
         let mut colliders = vec![collider(0, Vec3::new(20.0, -0.5, 20.0), Vec3::new(60.0, 0.5, 60.0))];
         if walled {
@@ -143,8 +157,8 @@ impl Room {
             sim.set_navigation(&aligned(&navmesh(walled))).expect("a good navmesh");
         }
         let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good one"));
-        let target = Some(sim.add_move_set(moves(|_| {})));
-        let moves = Some(sim.add_move_set(set));
+        let target = Some(sim.add_move_set(moves(|_| {}).0));
+        let moves = add_kind(&mut sim, set);
         let foe = sim
             .spawn(ActorSpawn {
                 position: foe,
@@ -308,7 +322,7 @@ fn with_no_way_to_its_foe_it_stands() {
     }
     sim.set_navigation(&mesh.to_cooked().expect("it writes")).expect("a good navmesh");
     let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good one"));
-    let set = Some(sim.add_move_set(moves(|_| {})));
+    let set = add_kind(&mut sim, moves(|_| {}));
     let foe_at = Vec3::new(28.0, 0.0, 12.0);
     let spawn =
         |position, faction| ActorSpawn { position, moves: set, controller, faction, ..ActorSpawn::default() };

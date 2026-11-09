@@ -308,6 +308,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Assembly(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
+        | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Font(_)

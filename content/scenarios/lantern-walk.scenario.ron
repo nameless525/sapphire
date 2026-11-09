@@ -8,6 +8,7 @@
         zone: Some("content/zones/lantern_ward/lantern_ward.zone.ron"),
         encounters: [],
         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
         cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
     ),
 )

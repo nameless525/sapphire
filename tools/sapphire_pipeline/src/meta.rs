@@ -146,6 +146,7 @@ use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
 use crate::dialogue::{self, DialogueSettings};
 use crate::encounter::{self, EncounterSettings};
+use crate::enemy::{self, EnemySettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
@@ -226,6 +227,8 @@ pub enum ImportSettings {
     Colliders(ColliderSettings),
     /// An encounter document (`.encounter.ron`), cooked to `.sencounter` (M3 B2).
     Encounter(EncounterSettings),
+    /// An enemy document (`.enemy.ron`), cooked to `.senemy` against the moves it names (M3 B3).
+    Enemy(EnemySettings),
     /// An Ogg Vorbis file (`.ogg`), copied as the target format once it decodes (M2 E1).
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
@@ -291,6 +294,9 @@ impl ImportSettings {
         }
         if encounter::is_source(source) {
             return Some(Self::Encounter(EncounterSettings::default()));
+        }
+        if enemy::is_source(source) {
+            return Some(Self::Enemy(EnemySettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -365,6 +371,7 @@ impl ImportSettings {
             | Self::KeyPose(_)
             | Self::Colliders(_)
             | Self::Encounter(_)
+            | Self::Enemy(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Font(_)
@@ -396,6 +403,7 @@ impl ImportSettings {
             | Self::KeyPose(_)
             | Self::Colliders(_)
             | Self::Encounter(_)
+            | Self::Enemy(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Font(_)

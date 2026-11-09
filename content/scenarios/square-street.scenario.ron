@@ -8,6 +8,7 @@
         zone: Some("content/zones/square_street/square_street.zone.ron"),
         encounters: ["content/zones/square_street/street_ambush.encounter.ron"],
         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
         cast: [(moves: "player", at: "up_the_street", faction: 1, soft_lock: true)],
     ),
 )

@@ -19,6 +19,12 @@
 //! and a violet halo breathes behind it; it flashes once as it gets there. With no ultimate nothing of
 //! it draws, and `game_ui`'s zones don't take a finger there.
 //!
+//! # A boss
+//!
+//! A foe that's a boss ([`HudValues::boss`]) draws in the boss's place, wider and taller than any other
+//! foe's, with an inked mark across its health where each of its phases falls (M3 B3). Its name, a key in
+//! the game's words that its kind of enemy holds, isn't drawn here yet: the HUD's words come with M3 U7.
+//!
 //! # Time
 //!
 //! Everything animates on the real clock: hitstop and slow motion freeze the world, never the
@@ -164,6 +170,10 @@ pub struct HudLayout {
     pub ultimate: ButtonLayout,
     pub player: BarsLayout,
     pub enemy: BarsLayout,
+    /// Where the enemy's bars go instead, when it's a boss.
+    pub boss: BarsLayout,
+    /// How wide a boss's phase marks are.
+    pub mark_width: f32,
     /// The row under the enemy's bars that the other foes' small ones share, from its middle out.
     pub others: Rect,
     /// The player's energy meter, under its bars: drawn while the HUD has an ultimate.
@@ -223,6 +233,9 @@ impl HudLayout {
         let enemy_width = free.min(points(design.enemy.max_width)).max(0.0);
         let top = Anchor::TOP_CENTER.place(safe, Vec2::new(-enemy_width * 0.5, top_margin));
         let enemy = design.enemy.bars.place(top, enemy_width, Align::Center, &points);
+        let boss_width = free.min(points(design.boss.max_width)).max(0.0);
+        let boss_top = Anchor::TOP_CENTER.place(safe, Vec2::new(-boss_width * 0.5, top_margin));
+        let boss = design.boss.bars.place(boss_top, boss_width, Align::Center, &points);
         let others = Rect::new(
             top + Vec2::new(0.0, points(design.enemy.others_top)),
             top + Vec2::new(enemy_width, points(design.enemy.others_bottom)),
@@ -238,6 +251,8 @@ impl HudLayout {
             ultimate,
             player,
             enemy,
+            boss,
+            mark_width: points(design.boss.mark_width),
             others,
             energy,
             scale,
@@ -285,6 +300,7 @@ pub struct HudDesign {
     /// had one gets the shipped one.
     #[serde(default = "MeterDesign::shipped_energy")]
     pub energy: MeterDesign,
+    pub boss: BossBarsDesign,
 }
 
 /// A button: where it stands from the attack's corner place, how far it's drawn and how far it takes a touch.
@@ -384,9 +400,19 @@ pub struct EnemyBarsDesign {
     pub others_bottom: f32,
 }
 
+/// A boss's bars, in place of the enemy's: in what's left of the middle, up to `max_width`, with a mark
+/// `mark_width` wide across its health where each of its phases falls.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BossBarsDesign {
+    pub max_width: f32,
+    pub bars: BarsDesign,
+    pub mark_width: f32,
+}
+
 impl Versioned for HudDesign {
-    /// 1: M3 S3.
-    const VERSION: u32 = 1;
+    /// 1: M3 S3. 2: M3 B3 added the boss's bars.
+    const VERSION: u32 = 2;
 }
 
 /// A HUD design document that can't be used.
@@ -436,6 +462,7 @@ impl HudDesign {
             player,
             enemy,
             energy,
+            boss,
         } = self;
         let sizes = [
             ("full_size.0", full_size[0]),
@@ -455,6 +482,10 @@ impl HudDesign {
             ("enemy.max_width", enemy.max_width),
             ("enemy.hp_height", enemy.bars.hp_height),
             ("enemy.digit_height", enemy.bars.digit_height),
+            ("boss.max_width", boss.max_width),
+            ("boss.hp_height", boss.bars.hp_height),
+            ("boss.digit_height", boss.bars.digit_height),
+            ("boss.mark_width", boss.mark_width),
         ];
         for (field, value) in sizes {
             if !value.is_finite() || value <= 0.0 {
@@ -485,6 +516,9 @@ impl HudDesign {
             ("enemy.others_bottom", enemy.others_bottom),
             ("energy.top", energy.top),
             ("energy.bottom", energy.bottom),
+            ("boss.poise_top", boss.bars.poise_top),
+            ("boss.poise_bottom", boss.bars.poise_bottom),
+            ("boss.digits_top", boss.bars.digits_top),
         ];
         for (field, value) in places {
             if !value.is_finite() {
@@ -503,6 +537,9 @@ impl HudDesign {
             ("enemy.digits_along", enemy.bars.digits_along),
             ("energy.from", energy.from),
             ("energy.to", energy.to),
+            ("boss.poise_from", boss.bars.poise_from),
+            ("boss.poise_to", boss.bars.poise_to),
+            ("boss.digits_along", boss.bars.digits_along),
         ];
         for (field, value) in shares {
             if !(0.0..=1.0).contains(&value) {
@@ -568,12 +605,44 @@ pub struct UltimateValues {
     pub ready: bool,
 }
 
+/// How many phase marks a boss's bar has room for.
+pub const MAX_PHASE_MARKS: usize = 8;
+
+/// What makes the foe shown a boss's bar: where its phases fall. No list: the values are copied each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BossBar {
+    marks: [f32; MAX_PHASE_MARKS],
+    count: u8,
+}
+
+impl BossBar {
+    /// A mark where a phase falls, a share of its health from 0 to 1. One past [`MAX_PHASE_MARKS`], or at
+    /// an end of the bar, where it would say nothing, isn't drawn.
+    pub fn mark(&mut self, share: f32) {
+        if share > 0.0
+            && share < 1.0
+            && let Some(mark) = self.marks.get_mut(usize::from(self.count))
+        {
+            *mark = share;
+            self.count += 1;
+        }
+    }
+
+    /// Where each mark falls.
+    #[must_use]
+    pub fn marks(&self) -> &[f32] {
+        &self.marks[..usize::from(self.count)]
+    }
+}
+
 /// What the HUD shows, from the app each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HudValues {
     pub player: FighterValues,
     /// The foe the player has now.
     pub enemy: Option<FighterValues>,
+    /// That foe is a boss: its bars draw in the boss's place.
+    pub boss: Option<BossBar>,
     /// Who else stands against the player.
     pub others: OtherFoes,
     pub skill: SkillValues,
@@ -810,7 +879,11 @@ impl CombatHud {
             self.draw_energy(&mut painter, layout.energy, ultimate, layout.scale);
         }
         if let Some(enemy) = &self.values.enemy {
-            self.draw_fighter(&mut painter, &layout.enemy, enemy, &self.enemy_trail, ROSE, layout.scale);
+            let bars = if self.values.boss.is_some() { &layout.boss } else { &layout.enemy };
+            self.draw_fighter(&mut painter, bars, enemy, &self.enemy_trail, ROSE, layout.scale);
+        }
+        if let (Some(_), Some(boss)) = (self.values.enemy, &self.values.boss) {
+            draw_marks(&mut painter, layout, boss);
         }
         self.draw_others(&mut painter, layout);
         let scale = layout.scale;
@@ -1034,6 +1107,7 @@ fn sanitized(values: &HudValues) -> HudValues {
     HudValues {
         player: fighter(&values.player),
         enemy: values.enemy.as_ref().map(fighter),
+        boss: values.boss,
         others: OtherFoes {
             hp: values.others.hp.map(share),
             count: values.others.count.min(MAX_OTHER_FOES as u8),
@@ -1102,6 +1176,17 @@ fn draw_button(
         let center = layout.center + up * (layout.half * 1.32);
         let wedge = Paint::outlined(AMBER, OUTLINE, 1.2 * scale);
         painter.turned(sprites.wedge, center, Vec2::splat(20.0 * scale), up, wedge);
+    }
+}
+
+/// An inked mark across a boss's health where each of its phases falls, leaning as the bar does.
+fn draw_marks(painter: &mut Painter<'_>, layout: &HudLayout, boss: &BossBar) {
+    let hp = layout.boss.hp;
+    let half = layout.mark_width * 0.5;
+    for &share in boss.marks() {
+        let x = hp.min.x + hp.width() * share;
+        let mark = Rect::new(Vec2::new(x - half, hp.min.y), Vec2::new(x + half, hp.max.y));
+        painter.bar(mark, SLANT, (0.0, 1.0), Paint::fill(INK));
     }
 }
 

@@ -53,6 +53,16 @@
 //! own clock, so hitstop delays the slide and costs it nothing. A slide runs its course whatever the
 //! target does next, and a later reaction's replaces it.
 //!
+//! # A boss's phases
+//!
+//! A fighter's health falls through phases (M3 B3): its kind of enemy's, from its document, or the quarters
+//! any other fighter has ([`crate::MoveLibrary::phases`]). [`apply_hits`] notes which a hit took it across,
+//! from its health before and after, so nothing about phases is stored and a fighter's checksum doesn't
+//! move for having them. The last crossed phase that names a brain is the one its brain fights with from
+//! its next tick ([`crate::Brain::mind`]), and each crossed phase with a name is a cue of that name, the
+//! fighter's own, after the hit's ([`publish_hit_cues`]): what a boss's music and screen hang on. A
+//! script's `on_phase` counts the same phases.
+//!
 //! # When hits overlap
 //!
 //! - **On one tick:** every hit in `HitQuery::events` lands, in that order: nearest first, then by
@@ -147,11 +157,12 @@ pub use self::fighter::{Fighter, HitOutcome};
 pub use self::time::SlowMotion;
 pub(crate) use self::time::{apply_time, counter_scale};
 use crate::actors::ActorTable;
+use crate::brain::Brain;
 use crate::controller::CharacterWorld;
 use crate::cues::{CueEvent, CueQueue, DEFEATED, HitCue, POISE_BROKEN};
 use crate::hits::{HitEvent, HitQuery};
 use crate::movement::ActorTransform;
-use crate::moves::{MoveLibrary, MoveOutput, MoveRunner};
+use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, MoveSetId};
 
 /// Under this many metres apart across the ground, two roots give no direction to push along, and a
 /// push goes the way the attacker faces.
@@ -177,6 +188,9 @@ pub(crate) struct AppliedHit {
     pub(crate) outcome: HitOutcome,
     /// When the attacker's move began, on its clock.
     pub(crate) move_started_at: SimTime,
+    /// The phases of the target's health it crossed (M3 B3): from the one the target was in, to the one
+    /// it's in now. The same for none.
+    pub(crate) phases: (u8, u8),
 }
 
 /// This step's applied hits, in the order they applied, for the rest of the step to read. Never grows
@@ -247,7 +261,11 @@ pub(crate) fn apply_hits(
     mut applied: ResMut<'_, AppliedHits>,
     mut stats: ResMut<'_, ResolveStats>,
     attackers: Query<'_, '_, (&MoveOutput, &ActorTransform)>,
-    mut targets: Query<'_, '_, (&EntityClock, &mut Fighter, &mut MoveRunner, &MoveOutput, &ActorTransform)>,
+    mut targets: Query<
+        '_,
+        '_,
+        (&EntityClock, &mut Fighter, &mut MoveRunner, &MoveOutput, &ActorTransform, &mut Brain),
+    >,
     mut characters: ResMut<'_, CharacterWorld>,
 ) {
     applied.0.clear();
@@ -264,13 +282,16 @@ pub(crate) fn apply_hits(
             continue;
         };
         let Some(entity) = table.entity(event.target) else { continue };
-        let Ok((clock, mut fighter, mut runner, output, target_root)) = targets.get_mut(entity) else {
+        let Ok((clock, mut fighter, mut runner, output, target_root, mut brain)) = targets.get_mut(entity)
+        else {
             continue;
         };
         if fighter.is_defeated() || !fighter.is_fighter() {
             continue;
         }
+        let was = fighter.health();
         let outcome = fighter.take_hit(&attack, output.windows.armour, clock.0.now());
+        let phases = cross_phases(&library, runner.set(), was, &fighter, &mut brain);
 
         let strength_of = |hit: &AppliedHit| strength(hit.outcome, hit.attack.weight);
         let same_target = applied.0.iter().filter(|hit| hit.event.target == event.target);
@@ -291,7 +312,7 @@ pub(crate) fn apply_hits(
         if outcome == HitOutcome::Defeated {
             characters.fell(event.target);
         }
-        applied.0.push(AppliedHit { event: *event, attack, outcome, move_started_at });
+        applied.0.push(AppliedHit { event: *event, attack, outcome, move_started_at, phases });
         // The attacker's meter fills for it (M3 Q3c), as the target's did as it took it.
         if let Some(attacker) = table.entity(event.attacker)
             && let Ok((_, mut attacker, ..)) = targets.get_mut(attacker)
@@ -299,6 +320,31 @@ pub(crate) fn apply_hits(
             attacker.landed_a_hit();
         }
     }
+}
+
+/// The phases a hit took a fighter's health across, from `was`, and the last brain one of them names, which
+/// its brain fights with from here. A phase is crossed by the hit that crosses it, so a live edit that
+/// moves health crosses none.
+fn cross_phases(
+    library: &MoveLibrary,
+    set: Option<MoveSetId>,
+    was: u32,
+    fighter: &Fighter,
+    brain: &mut Brain,
+) -> (u8, u8) {
+    let thresholds = library.phases(set);
+    let max = fighter.max_health();
+    let (Some(from), Some(to)) = (thresholds.phase_of(was, max), thresholds.phase_of(fighter.health(), max))
+    else {
+        return (0, 0);
+    };
+    if let Some(mind) = set.and_then(|set| library.mind(set)) {
+        let crossed = mind.phases().get(usize::from(from)..usize::from(to)).unwrap_or_default();
+        if let Some(place) = crossed.iter().rev().find_map(|phase| phase.brain) {
+            brain.change_mind(place);
+        }
+    }
+    (from, to)
 }
 
 /// What the volume behind a hit authored, when its move began, and where its attacker stands. `None` for
@@ -327,6 +373,9 @@ fn attack_of(
 pub(crate) fn publish_hit_cues(
     applied: Res<'_, AppliedHits>,
     world_clock: Res<'_, WorldClock>,
+    table: Res<'_, ActorTable>,
+    library: Res<'_, MoveLibrary>,
+    runners: Query<'_, '_, &MoveRunner>,
     mut cues: ResMut<'_, CueQueue>,
 ) {
     let tick = world_clock.0.ticks();
@@ -355,6 +404,14 @@ pub(crate) fn publish_hit_cues(
             HitOutcome::PoiseBroken => cues.push(cue(POISE_BROKEN)),
             HitOutcome::Defeated => cues.push(cue(DEFEATED)),
             HitOutcome::Flinched | HitOutcome::Absorbed => {}
+        }
+        // Each named phase it crossed, as the target's own cue: what a boss's music and screen hang on.
+        let (from, to) = hit.phases;
+        let target_set = table.entity(event.target).and_then(|entity| runners.get(entity).ok()?.set());
+        let mind = target_set.and_then(|set| library.mind(set));
+        let crossed = mind.and_then(|mind| mind.phases().get(usize::from(from)..usize::from(to)));
+        for name in crossed.unwrap_or_default().iter().filter_map(|phase| phase.name()) {
+            cues.push(CueEvent { actor: event.target, hit: None, ..cue(name) });
         }
     }
 }

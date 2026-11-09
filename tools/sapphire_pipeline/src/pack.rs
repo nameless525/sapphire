@@ -178,6 +178,7 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Encounter
         | AssetKind::Script
         | AssetKind::Dialogue => Codec::Lz4,
+        AssetKind::Enemy => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -604,7 +605,7 @@ struct Packing<'a> {
 /// Whether a kind's assets carry their names into a pack: those a person asks for by name, so the tools can
 /// find them with no list in code. The rest stay IDs (rule R5).
 fn carries_a_name(kind: AssetKind) -> bool {
-    matches!(kind, AssetKind::Clip | AssetKind::MoveSet)
+    matches!(kind, AssetKind::Clip | AssetKind::MoveSet | AssetKind::Enemy)
 }
 
 /// Two move sets with one name can't be told apart by what follows a document's edits by its file's name.

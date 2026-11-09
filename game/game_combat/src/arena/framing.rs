@@ -30,6 +30,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack::PackReader;
@@ -83,8 +84,10 @@ struct Figure {
 }
 
 const PLAYER: Figure = Figure { head: 1.5, hips: 0.85, half_width: 0.3 };
-const WARRIOR: Figure =
-    Figure { head: enemy::CROWN - 0.1, hips: 1.0, half_width: enemy::FRAMED_RADIUS + 0.1 };
+static WARRIOR: LazyLock<Figure> = LazyLock::new(|| {
+    let look = enemy::Look::warrior();
+    Figure { head: look.crown - 0.1, hips: 1.0, half_width: look.framed_radius + 0.1 }
+});
 
 /// What each frame is checked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -999,7 +1002,8 @@ fn run_fight(
     let (player, warrior, blade) = (placed(), placed(), placed());
     let parts = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
     let ground = ArenaGround { world: colliders.ground.share(), spawns: spawns() };
-    let mut actors = ArenaActors::new(player, parts, ArenaShot::Director, ground);
+    let sizes = enemy::Sizes::of(&enemy::Look::warrior());
+    let mut actors = ArenaActors::new(player, parts, sizes, ArenaShot::Director, ground);
     world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
     let director = actors.director().expect("this shot has one");
     director.set_tuning(tuning.clone()).expect("the tuning under test is valid");

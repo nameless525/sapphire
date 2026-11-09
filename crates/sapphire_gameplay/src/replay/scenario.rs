@@ -18,7 +18,7 @@ use sapphire_colliders::{ColliderError, ColliderSet};
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
+use sapphire_moves::{Enemy, EnemyDocument, EnemyError, EnemyMind, MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::{
     ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
 };
@@ -53,7 +53,7 @@ const CUTSCENE: &str = include_str!("../../../sapphire_timeline/test_content/cut
 /// That document, from the repository's root.
 const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
 
-/// The enemy's document (M2 O4), brain and all, as this build holds it: a replay needs no assets.
+/// The enemy's moves (M2 O4), as this build holds them: a replay needs no assets.
 pub const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
 
 /// The player's and the warrior's documents, from the repository's root: what [`PreparedFight`] finds a live
@@ -129,11 +129,17 @@ pub const BAKED_ZONES: [BakedZone; 2] = [
         navmesh: include_bytes!("../../baked/zones/proving_ground.snav"),
     },
 ];
-/// What `nav-chase`'s chasers run: a brain, and an attack it never gets near enough to press.
+
+/// What `nav-chase`'s chasers run: an attack they never get near enough to press.
 pub(super) const CHASER_MOVES: &str = include_str!("../../../sapphire_moves/test_content/chaser.moves.ron");
 
 /// That document, from the repository's root.
 const CHASER_MOVES_PATH: &str = "crates/sapphire_moves/test_content/chaser.moves.ron";
+
+/// Their kind (M3 B3): the brain that chases.
+pub(super) const CHASER_ENEMY: &str = include_str!("../../../sapphire_moves/test_content/chaser.enemy.ron");
+/// The enemy as a kind of enemy (M3 B3): its brain and phases, and its look.
+pub const WARRIOR_ENEMY: &str = include_str!("../../../../content/combat/enemy/warrior.enemy.ron");
 
 /// What the party's tests add to [`TEST_MOVES`]: a swap and three assists.
 const PARTY_MOVES: &str = include_str!("../../../sapphire_moves/test_content/party.moves.ron");
@@ -169,6 +175,8 @@ pub enum ScenarioError {
     RuntimeProfiles(String),
     #[error(transparent)]
     ZoneDocument(#[from] ZoneError),
+    #[error(transparent)]
+    Enemy(#[from] EnemyError),
     #[error(transparent)]
     Zone(#[from] ZoneStartError),
     /// A scenario's document names something it can't have.
@@ -393,9 +401,22 @@ pub fn test_moves() -> Result<MoveSet, MoveSetError> {
     MoveSetDocument::parse(TEST_MOVES)?.compile()
 }
 
-/// The real enemy's moves, fighter and brain: `content/combat/enemy/warrior.moves.ron`.
+/// The real enemy's moves and fighter: `content/combat/enemy/warrior.moves.ron`.
 pub fn warrior_moves() -> Result<MoveSet, MoveSetError> {
     MoveSetDocument::parse(WARRIOR_MOVES)?.compile()
+}
+
+/// The real enemy as a kind of enemy, compiled against its moves: `content/combat/enemy/warrior.enemy.ron`.
+pub fn warrior_enemy() -> Result<Enemy, ScenarioError> {
+    Ok(EnemyDocument::parse(WARRIOR_ENEMY)?.compile(&MoveSetDocument::parse(WARRIOR_MOVES)?)?)
+}
+
+/// Loads the warrior's moves into `sim` as a kind of enemy, between steps: what a fighter given a brain on
+/// them fights with.
+pub fn add_warrior(sim: &mut Simulation) -> Result<MoveSetId, ScenarioError> {
+    let set = sim.add_move_set(warrior_moves()?);
+    sim.add_enemy(set, warrior_enemy()?.mind)?;
+    Ok(set)
 }
 
 /// The player's moves, from the simulation's cooked copy of them.
@@ -580,6 +601,8 @@ pub struct PreparedFight {
     player: MoveSet,
     ultimate: TimelineSimulation,
     warrior: MoveSet,
+    /// The warrior as a kind of enemy (M3 B3): its brains and phases, given its set at each start.
+    warrior_mind: EnemyMind,
     colliders: AlignedVec,
     spawns: crate::arena::ArenaSpawns,
     party: bool,
@@ -591,6 +614,7 @@ impl PreparedFight {
             player: player_moves()?,
             ultimate: ultimate_cinematic()?,
             warrior: warrior_moves()?,
+            warrior_mind: warrior_enemy()?.mind,
             colliders: crate::arena::cooked_colliders()?,
             spawns: crate::arena::spawns(),
             party,
@@ -611,6 +635,7 @@ impl PreparedFight {
             player.clone(),
             &self.ultimate,
             warrior.clone(),
+            &self.warrior_mind,
             &self.colliders,
             self.spawns.clone(),
             self.party,
@@ -775,12 +800,15 @@ pub fn zone_trip(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(cast)
 }
 
-/// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded.
+/// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded. The
+/// warrior's set is a kind of enemy's, with `mind` (M3 B3).
+#[allow(clippy::too_many_arguments, reason = "a fight's inputs, from its two callers")]
 pub(super) fn fight_on(
     sim: &mut Simulation,
     player: MoveSet,
     ultimate: &TimelineSimulation,
     warrior: MoveSet,
+    mind: &EnemyMind,
     cooked: &[u8],
     spawns: crate::arena::ArenaSpawns,
     party: bool,
@@ -794,6 +822,7 @@ pub(super) fn fight_on(
         player: sim.add_move_set(player),
         warrior: sim.add_move_set(warrior),
     };
+    sim.add_enemy(actors.warrior, mind.clone())?;
     Ok(actors.spawn(sim, party, None)?.to_vec())
 }
 
@@ -886,8 +915,9 @@ mod tests {
         assert_eq!(world.checksum(), before, "failed restart is atomic");
         assert_eq!(world.tick(), tick);
 
+        // Its brain is its kind of enemy's (M3 B3), so the edit is of a move.
         let mut warrior = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
-        warrior.brain = None;
+        warrior.moves[0].recovery += 1;
         let warrior = warrior.compile().expect("compiles");
         world.tune_move_set(MoveSetId(1), warrior.clone()).expect("warrior's set");
         live.remember("warrior.moves.ron", warrior);
@@ -916,9 +946,9 @@ mod tests {
             let mut live = super::super::LiveMoves::default();
             for edited in [false, true] {
                 if edited {
+                    // A brain is its kind of enemy's (M3 B3), so the edit is of a move's timing.
                     let mut document = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
-                    document.brain.as_mut().expect("brain").patience =
-                        sapphire_moves::TickRange { min: 500, max: 500 };
+                    document.moves[0].recovery += 2;
                     live.remember("warrior.moves.ron", document.compile().expect("compiles"));
                 }
                 let (mut expected, cast) = live.start(scenario, scenario.config).expect("fresh setup");

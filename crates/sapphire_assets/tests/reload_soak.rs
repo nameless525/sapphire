@@ -133,6 +133,7 @@ impl Gpu {
             AssetKind::Encounter => unreachable!("encounters never go to the uploader"),
             AssetKind::Script => unreachable!("scripts never go to the uploader"),
             AssetKind::Dialogue => unreachable!("dialogues never go to the uploader"),
+            AssetKind::Enemy => unreachable!("enemies never go to the uploader"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -232,7 +233,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         upload_per_frame: 32 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

@@ -10,10 +10,9 @@ use nav_support::{content, proving_ground};
 use sapphire_assets::AssetId;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_core::Name;
-use sapphire_gameplay::replay::WARRIORS;
+use sapphire_gameplay::replay::{WARRIORS, add_warrior};
 use sapphire_gameplay::{ActorSpawn, BrainState, ControllerProfile, SimConfig, Simulation, TickActions};
 use sapphire_math::Vec3;
-use sapphire_moves::MoveSetDocument;
 use sapphire_physics::PhysicsWorld;
 use sapphire_pipeline::zone::{ZoneCookError, ZonePlan, cook_navigation};
 use sapphire_zone::{Zone, ZoneDocument, ZoneGeometry};
@@ -59,9 +58,8 @@ fn the_proving_grounds_guard_walks_the_spline_its_spawner_names() {
     sim.set_physics_world(world).expect("before any spawn");
     sim.set_navigation(&baked.mesh.to_cooked().expect("it writes")).expect("a good navmesh");
     let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good one"));
-    let text = std::fs::read_to_string(content().join("combat/enemy/warrior.moves.ron")).expect("its file");
-    let moves = MoveSetDocument::parse(&text).expect("it parses").compile().expect("it compiles");
-    let moves = Some(sim.add_move_set(moves));
+    // The warrior's moves as its kind (M3 B3): its brain, and the watch it patrols with, are its kind's.
+    let moves = Some(add_warrior(&mut sim).expect("the warrior's kind"));
 
     let spawner = zone.simulation.spawner(Name::new("far_gate")).expect("the zone's");
     let name = spawner.patrol().expect("it names one");

@@ -107,6 +107,7 @@ impl TextureKind {
             | ImportSettings::KeyPose(_)
             | ImportSettings::Colliders(_)
             | ImportSettings::Encounter(_)
+            | ImportSettings::Enemy(_)
             | ImportSettings::Sound(_)
             | ImportSettings::Cue(_)
             | ImportSettings::Font(_)

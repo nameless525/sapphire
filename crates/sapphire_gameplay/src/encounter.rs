@@ -33,7 +33,7 @@ use sapphire_colliders::ColliderSet;
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_moves::MoveSet;
+
 use sapphire_physics::{PhysicsWorld, WorldError};
 use sapphire_serialize::AssetId;
 use sapphire_zone::{
@@ -225,7 +225,7 @@ impl SimEncounter {
                     let (spawner, spawns) = describe();
                     return Err(ZoneStartError::UnknownMoves { spawner, spawns });
                 };
-                if library.current(moves).and_then(MoveSet::brain).is_none() {
+                if library.mind(moves).is_none() {
                     let (spawner, spawns) = describe();
                     return Err(ZoneStartError::NoBrain { spawner, spawns });
                 }
@@ -666,7 +666,9 @@ pub(crate) fn direct(
             encounter.woken += 1;
             let Some(entity) = fighter.and_then(|actor| table.entity(actor)) else { continue };
             let Ok((mut brain, actor_clock, runner)) = minds.get_mut(entity) else { continue };
-            let def = runner.set().and_then(|set| library.current(set)).and_then(MoveSet::brain);
+            let Ok(health) = fighters.get(entity) else { continue };
+            let def =
+                runner.set().and_then(|set| library.brain_for(set, health.health(), health.max_health()));
             if let Some(def) = def {
                 *brain = Brain::fighting(def, actor_clock.0.now(), &mut rng.0);
                 brain.encounter = Some(index as u8);

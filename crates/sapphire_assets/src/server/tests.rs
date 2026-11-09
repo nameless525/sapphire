@@ -208,6 +208,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Encounter => unreachable!("encounters never go to the uploader"),
                 AssetKind::Script => unreachable!("scripts never go to the uploader"),
                 AssetKind::Dialogue => unreachable!("dialogues never go to the uploader"),
+                AssetKind::Enemy => unreachable!("enemies never go to the uploader"),
             }
             Ok(())
         })

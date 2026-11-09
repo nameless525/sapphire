@@ -1,9 +1,9 @@
-//! [`BrainDef`]: how an enemy fights, as numbers a person tunes (M2 G6). It's a section of the same
-//! document as the enemy's moves, for the reasons a [`crate::FighterDef`] is: everything a fight
-//! depends on has to reach a replay's `tables_hash`, a brain is tuned with the moves it presses, and
-//! replacing a set (M2 T2) replaces it too. `sapphire_gameplay`'s `brain` module runs it; the document's
-//! `brain:` section is checked by [`MoveSetDocument::compile`](crate::MoveSetDocument::compile), by
-//! name, so the numbers below hold whichever way a value was made.
+//! [`BrainDef`]: how an enemy fights, as numbers a person tunes (M2 G6). An enemy's document holds its
+//! brains by name (M3 B3, [`crate::EnemyDocument`]), each compiled against its moves by
+//! [`MoveSetDocument::compile_brain`](crate::MoveSetDocument::compile_brain), by name, and held to the
+//! same rules cooked by [`MoveSet::check_brain`](crate::MoveSet::check_brain), so the numbers below hold
+//! whichever way a value was made. `sapphire_gameplay`'s `brain` module runs it, and a replay's
+//! `tables_hash` holds it.
 //!
 //! The arithmetic here is division and multiplication of authored numbers, which rounds the same on
 //! every target, so no reading needs `sapphire_math::det`.
@@ -278,6 +278,11 @@ impl BrainAttack {
         self.intent
     }
 
+    /// Presses the intent at this place instead: an enemy's brain fitted to a set by its intents' names.
+    pub(crate) const fn repoint(&mut self, intent: u32) {
+        self.intent = intent;
+    }
+
     /// How much a brain wants this attack now: its weight, by how well the distance suits it, by what
     /// the target is doing, by how lately it was used. A brain draws among attacks in proportion to
     /// this, and zero is never.
@@ -317,6 +322,11 @@ impl BrainRise {
     #[must_use]
     pub const fn intent(&self) -> u32 {
         self.intent
+    }
+
+    /// Presses the intent at this place instead: see [`BrainAttack`]'s.
+    pub(crate) const fn repoint(&mut self, intent: u32) {
+        self.intent = intent;
     }
 
     /// The move it gets up from.

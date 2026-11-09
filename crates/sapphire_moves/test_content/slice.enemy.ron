@@ -1,0 +1,39 @@
+// A kind of enemy on the test content's moves, for `enemy`'s tests: two brains, a phase that changes
+// brain, and a boss's name. Its IDs name nothing: these tests cook nothing else.
+(
+    type: "sapphire::moves::EnemyDocument",
+    version: 1,
+    data: (
+        moves: "5d2c9a61-0f3e-4b7a-9c1d-2e8f6a4b3c10",
+        brains: {
+            "steady": (
+                spacing: (near: 1.0, far: 2.0),
+                pace: (approach: 0.7, retreat: 0.3, circle: 0.3, circle_share: 0.5, turn_rate_degrees: 300.0),
+                patience: (min: 10, max: 20),
+                rest: (min: 10, max: 20),
+                recover: (min: 5, max: 10),
+                attacks: [(intent: "light", reach: (near: 0.0, best: 1.0, far: 2.0))],
+                rise: (intent: "light", during: "light_1", from: 12, to: 20),
+            ),
+            "fierce": (
+                spacing: (near: 0.5, far: 1.5),
+                pace: (approach: 1.0, retreat: 0.2, circle: 0.5, circle_share: 0.3, turn_rate_degrees: 420.0),
+                patience: (min: 2, max: 6),
+                rest: (min: 4, max: 8),
+                recover: (min: 2, max: 4),
+                attacks: [(intent: "light", reach: (near: 0.0, best: 0.8, far: 1.8))],
+            ),
+        },
+        brain: "steady",
+        phases: [(at: 750), (at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 0)],
+        boss: Some((name: "boss-slice")),
+        look: (
+            mesh: "0b7e4f2a-3c5d-4e6f-8a9b-1c2d3e4f5a60",
+            graph: "6a5f4e3d-2c1b-4a09-8f7e-6d5c4b3a2910",
+            scale: 1.0,
+            height: 2.0,
+            eyes_below_crown: 0.2,
+            framed_radius: 0.45,
+        ),
+    ),
+)

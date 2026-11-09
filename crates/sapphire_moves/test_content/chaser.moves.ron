@@ -2,6 +2,7 @@
 // Its one attack reaches 0.2 m, and it keeps 1.2 m off, so it never lands one, and a replay of it holds
 // paths, a crowd and the controller with no fight to read past. It scores that attack every tick, as any
 // brain whose patience has run out does, so what it costs is the whole of what a brain costs to pace.
+// Its brain is its kind's, `chaser.enemy.ron` (M3 B3).
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -18,18 +19,6 @@
             poise_refill: 240,
             hurtboxes: [
                 (name: "body", offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.3, length: 1.0)),
-            ],
-        ),
-        brain: (
-            spacing: (near: 1.2, far: 2.0),
-            apart: 1.2,
-            // About the warrior's 4 m/s.
-            pace: (approach: 0.7, retreat: 0.3, circle: 0.35, circle_share: 0.0, turn_rate_degrees: 300.0),
-            patience: (min: 20, max: 60),
-            rest: (min: 10, max: 20),
-            recover: (min: 2, max: 10),
-            attacks: [
-                (intent: "poke", reach: (near: 0.0, best: 0.1, far: 0.2)),
             ],
         ),
         moves: [

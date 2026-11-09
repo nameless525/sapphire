@@ -100,7 +100,7 @@ impl Small {
         let controller =
             Some(sim.add_controller_profile(&sapphire_gameplay::arena::profile()).expect("good"));
         let player_moves = sim.add_move_set(replay::player_moves().expect("reads"));
-        let warrior_moves = sim.add_move_set(replay::warrior_moves().expect("compiles"));
+        let warrior_moves = replay::add_warrior(&mut sim).expect("compiles");
         let moves = [("player", player_moves), ("warrior", warrior_moves)];
         let zone = Zone::read(&zone).expect("reads");
         sim.set_zone(zone, ZoneCast { moves: &moves, controller }, |id| {

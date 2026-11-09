@@ -99,6 +99,7 @@ fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
         figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
         blade: blade_in_model,
         hand: 0,
+        sizes: enemy::Look::warrior().sizes(),
     };
     let mut show = ShownFight::default();
     show.fight.show.spawn_arena(&mut scene, Arena { enemy, held, shot, look, ground });

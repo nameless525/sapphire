@@ -3,7 +3,7 @@
 // An offset's y below 0 is up the frame.
 (
     type: "sapphire::ui::HudDesign",
-    version: 1,
+    version: 2,
     data: (
         // Below this the whole HUD shrinks to fit: a phone's frame, wide and short.
         full_size: (470.0, 330.0),
@@ -54,5 +54,21 @@
         // The player's energy meter, for the ultimate: its top and bottom under where the player's bars hang,
         // and where it runs as shares of their width.
         energy: (top: 52.0, bottom: 58.0, from: 0.0, to: 0.62),
+        // A boss's bars, in the enemy's place: wider and taller, with an inked mark across its health
+        // where each of its phases falls.
+        boss: (
+            max_width: 440.0,
+            bars: (
+                hp_height: 14.0,
+                poise_top: 20.0,
+                poise_bottom: 26.0,
+                poise_from: 0.14,
+                poise_to: 0.86,
+                digits_top: 42.0,
+                digits_along: 0.5,
+                digit_height: 16.0,
+            ),
+            mark_width: 2.5,
+        ),
     ),
 )

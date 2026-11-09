@@ -29,7 +29,9 @@ use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::brain::{Seen, SeenTarget, step_brain};
 use sapphire_gameplay::{ActorId, ActorSpawn, Brain, ControllerProfile, SimConfig, Simulation, TickActions};
 use sapphire_math::{Pcg32, Vec3};
-use sapphire_moves::{MoveSet, MoveSetDocument, TargetDoing, TickRange};
+use sapphire_moves::{
+    BrainDocument, EnemyDocument, EnemyMind, MoveSet, MoveSetDocument, TargetDoing, TickRange,
+};
 use sapphire_nav::Way;
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::{SimDuration, SimTime, Stopwatch};
@@ -38,17 +40,20 @@ use sapphire_time::{SimDuration, SimTime, Stopwatch};
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
+const WARRIOR_ENEMY: &str = include_str!("../../../content/combat/enemy/warrior.enemy.ron");
 
-/// The warrior's document, with health enough for a bench.
-fn warrior(edit: impl FnOnce(&mut MoveSetDocument)) -> MoveSet {
+/// The warrior's moves, with health enough for a bench, and its kind of enemy with its brain edited.
+fn warrior(edit: impl FnOnce(&mut BrainDocument)) -> (MoveSet, EnemyMind) {
     let lasting = WARRIOR.replacen("health: 240,", "health: 4000000000,", 1);
-    let mut document = MoveSetDocument::parse(&lasting).expect("parses");
-    edit(&mut document);
-    document.compile().expect("compiles")
+    let moves = MoveSetDocument::parse(&lasting).expect("parses");
+    let mut enemy = EnemyDocument::parse(WARRIOR_ENEMY).expect("parses");
+    edit(enemy.brains.get_mut(&enemy.brain).expect("its first"));
+    let mind = enemy.compile(&moves).expect("compiles").mind;
+    (moves.compile().expect("compiles"), mind)
 }
 
 /// Everyone on a floor, far enough apart to pace and close enough to reach.
-fn world(actors: u32, spacing: f32, set: MoveSet) -> (Simulation, Vec<ActorId>) {
+fn world(actors: u32, spacing: f32, (set, mind): (MoveSet, EnemyMind)) -> (Simulation, Vec<ActorId>) {
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors, ..SimConfig::default() });
     let floor = StaticCollider {
         id: ColliderId(0),
@@ -59,7 +64,9 @@ fn world(actors: u32, spacing: f32, set: MoveSet) -> (Simulation, Vec<ActorId>) 
     let physics = PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("a good world");
     sim.set_physics_world(physics).expect("before any spawn");
     let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good profile"));
-    let moves = Some(sim.add_move_set(set));
+    let moves = sim.add_move_set(set);
+    sim.add_enemy(moves, mind).expect("its brain fits its moves");
+    let moves = Some(moves);
     let ids: Vec<ActorId> = (0..actors)
         .map(|index| {
             let position = Vec3::new(index as f32 * spacing, 0.0, 0.0);
@@ -101,8 +108,7 @@ fn fight(actors: u32, steps: u64) -> (Vec<Duration>, u64) {
 
 /// Brains standing in their bands facing each other, or the same world with them off.
 fn standing(actors: u32, steps: u64, thinking: bool) -> Vec<Duration> {
-    let quiet = warrior(|document| {
-        let brain = document.brain.as_mut().expect("the warrior has one");
+    let quiet = warrior(|brain| {
         brain.patience = TickRange { min: 3600, max: 3600 };
         brain.pace.circle_share = 0.0;
     });
@@ -116,14 +122,13 @@ fn standing(actors: u32, steps: u64, thinking: bool) -> Vec<Duration> {
 /// The ns of one `step_brain` by itself: with its patience out and every attack scoring and a draw, or
 /// with all of that still to wait for.
 fn one_call(deciding: bool, calls: u32) -> f64 {
-    let set = warrior(|document| {
-        let brain = document.brain.as_mut().expect("the warrior has one");
+    let (_, mind) = warrior(|brain| {
         for attack in &mut brain.attacks {
             attack.reach.near = 0.0;
             attack.reach.far = 9.0;
         }
     });
-    let def = set.brain().expect("the warrior has one");
+    let def = mind.brain(0).expect("the warrior has one");
     let mut rng = Pcg32::new(1, 1);
     let until = if deciding { SimTime::ZERO } else { SimTime::from_subticks(u64::MAX / 2) };
     let seen = Seen {

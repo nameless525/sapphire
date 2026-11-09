@@ -44,8 +44,8 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{
-    Allow, BakedTables, CancelMode, Hitbox, HurtboxChange, Move, MoveSet, PathSample, PerfectDodgeWindow,
-    Phase, RootSample, Shape, Span, Stretch, WarpWindow,
+    Allow, BakedTables, BrainDef, CancelMode, EnemyError, EnemyMind, Hitbox, HurtboxChange, Move, MoveSet,
+    PathSample, PerfectDodgeWindow, Phase, QUARTERS, RootSample, Shape, Span, Stretch, WarpWindow,
 };
 use sapphire_time::{SimDuration, SimTime};
 use xxhash_rust::xxh3::xxh3_64;
@@ -168,12 +168,27 @@ impl RootPath {
 
 /// The sets a simulation has loaded. Added and replaced between steps, read in them. A move that's
 /// running goes on reading the revision it started in, and the next to start reads the newest.
+///
+/// **A set can be a kind of enemy's** (M3 B3): its [`EnemyMind`], the brains that press its intents and its
+/// health's phases, goes in beside it ([`crate::Simulation::add_enemy`]), so a kind of enemy is the set its
+/// fighters play. Two kinds on the same moves add those moves twice.
 #[derive(Resource, Debug, Default)]
 pub struct MoveLibrary {
     /// Each set's revisions still in use, oldest first; the last is current.
     sets: Vec<Vec<Revision>>,
+    /// Each set's kind of enemy, by ID.
+    minds: Vec<Option<Mind>>,
     /// What [`Self::add`] takes for these IDs when it reaches them, whatever it's given.
     stand_ins: Vec<(MoveSetId, MoveSet)>,
+}
+
+/// A kind of enemy's mind as it was given, for `tables_hash` and for fitting to a new revision, and fitted to
+/// the set's current one, which is what runs.
+#[derive(Debug)]
+struct Mind {
+    given: EnemyMind,
+    hash: u64,
+    fitted: EnemyMind,
 }
 
 fn revision(number: u32, set: MoveSet) -> Revision {
@@ -207,7 +222,52 @@ impl MoveLibrary {
         let stand_in = self.stand_ins.iter().position(|(stands_for, _)| *stands_for == id);
         let set = stand_in.map_or(set, |index| self.stand_ins.swap_remove(index).1);
         self.sets.push(vec![revision(0, set)]);
+        self.minds.push(None);
         id
+    }
+
+    /// Makes the set `id` a kind of enemy's, or gives it a new mind: its brains must press the set's
+    /// intents, which it finds by their names ([`EnemyMind::fitted_to`]).
+    pub(crate) fn set_mind(&mut self, id: MoveSetId, given: EnemyMind) -> Result<(), EnemyError> {
+        let set = self.current(id).ok_or(EnemyError::Damaged(format!("no set {}", id.raw())))?;
+        let fitted = given.fitted_to(set)?;
+        let hash = xxh3_64(&given.to_cooked()?);
+        self.minds[id.0 as usize] = Some(Mind { given, hash, fitted });
+        Ok(())
+    }
+
+    /// The kind of enemy the set is, if it's one, fitted to the set's current revision.
+    #[must_use]
+    pub fn mind(&self, id: MoveSetId) -> Option<&EnemyMind> {
+        self.minds.get(id.0 as usize)?.as_ref().map(|mind| &mind.fitted)
+    }
+
+    /// The brain at `place` in the set's kind of enemy, or its first for a place a new mind no longer has.
+    #[must_use]
+    pub fn brain(&self, id: MoveSetId, place: u8) -> Option<&BrainDef> {
+        let mind = self.mind(id)?;
+        mind.brain(place).or_else(|| mind.brain(0))
+    }
+
+    /// The brain a fighter playing the set is given at `health` of `max`, and its place: the last one a
+    /// phase it's past names, or its kind's first. `None` for a set no kind of enemy plays.
+    #[must_use]
+    pub fn brain_for(&self, id: MoveSetId, health: u32, max: u32) -> Option<(u8, &BrainDef)> {
+        let mind = self.mind(id)?;
+        let past = self.phases(Some(id)).phase_of(health, max).unwrap_or(0);
+        let crossed = mind.phases().get(..usize::from(past)).unwrap_or_default();
+        let place = crossed.iter().rev().find_map(|phase| phase.brain).unwrap_or(0);
+        Some((place, mind.brain(place)?))
+    }
+
+    /// Where a fighter playing the set has its health's phases, in thousandths: its kind of enemy's, or the
+    /// quarters every other fighter has.
+    #[must_use]
+    pub fn phases(&self, id: Option<MoveSetId>) -> PhaseThresholds<'_> {
+        match id.and_then(|id| self.mind(id)) {
+            Some(mind) => PhaseThresholds::Enemy(mind),
+            None => PhaseThresholds::Quarters,
+        }
     }
 
     /// Has the set that will be added as `id` be `set`, whatever it's added with.
@@ -227,6 +287,16 @@ impl MoveLibrary {
         let number = revisions.last().map_or(0, |current| current.number + 1);
         revisions.retain(|revision| in_use(revision.number));
         revisions.push(revision(number, set));
+        // The mind fits the new revision by its intents' names. One that no longer fits, as when an edit
+        // takes away an intent it presses, goes: its fighters stand there, as a set with no brain's did.
+        let set = &revisions.last().expect("just pushed").set;
+        let slot = &mut self.minds[id.0 as usize];
+        if let Some(mind) = slot {
+            match mind.given.fitted_to(set) {
+                Ok(fitted) => mind.fitted = fitted,
+                Err(_) => *slot = None,
+            }
+        }
         Some(number)
     }
 
@@ -300,6 +370,32 @@ impl MoveLibrary {
     /// The hash of each set's current revision, in ID order.
     pub(crate) fn current_hashes(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
         self.sets.iter().map(|revisions| revisions.last().map_or(0, |revision| revision.hash))
+    }
+
+    /// Each kind of enemy's set and the hash of its mind, in ID order.
+    pub(crate) fn mind_hashes(&self) -> impl Iterator<Item = (MoveSetId, u64)> + '_ {
+        let minds = self.minds.iter().enumerate();
+        minds.filter_map(|(id, mind)| Some((MoveSetId(id as u32), mind.as_ref()?.hash)))
+    }
+}
+
+/// Where a fighter's health's phases fall: see [`MoveLibrary::phases`].
+#[derive(Clone, Copy, Debug)]
+pub enum PhaseThresholds<'a> {
+    Quarters,
+    Enemy(&'a EnemyMind),
+}
+
+impl PhaseThresholds<'_> {
+    /// The phase `health` of `max` is in: [`sapphire_moves::phase_of`].
+    #[must_use]
+    pub fn phase_of(self, health: u32, max: u32) -> Option<u8> {
+        match self {
+            Self::Quarters => sapphire_moves::phase_of(QUARTERS, health, max),
+            Self::Enemy(mind) => {
+                sapphire_moves::phase_of(mind.phases().iter().map(|phase| phase.at), health, max)
+            }
+        }
     }
 }
 

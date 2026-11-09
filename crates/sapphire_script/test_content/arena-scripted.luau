@@ -3,19 +3,21 @@
 
 local LISTED_MOVES, HITS, DAMAGE, DEFEATS, LAST_SIDE, SPREAD, LAST_TARGET, BEATS = 0, 1, 2, 3, 4, 5, 6, 7
 
-local SWIPE, OVERHEAD, LUNGE = 1, 2, 3
+local SWIPE, OVERHEAD, LUNGE, STEADY = 1, 2, 3, 4
 
 local function add(slot, value)
     sapphire.set_board(slot, sapphire.board(slot) + value)
 end
 
 return {
-    names = { "swipe", "overhead", "lunge" },
+    names = { "swipe", "overhead", "lunge", "steady" },
 
     on_phase = function(actor, phase, health)
         sapphire.mark(actor * 100 + phase)
         if phase == 2 and sapphire.max_health(actor) > 0 then
             sapphire.slow_motion(500, 30)
+            -- A boss would change to a fiercer brain here. The warrior has one, so this asks for it again.
+            sapphire.set_brain(actor, STEADY)
         end
         if phase == 3 and health > 0 then
             sapphire.force_move(actor, OVERHEAD)

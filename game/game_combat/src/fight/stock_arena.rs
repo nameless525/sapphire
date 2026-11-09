@@ -7,6 +7,7 @@ use sapphire_gameplay::{
     ActorId, Simulation,
     body::{BodyAssets, BodyGraphAssets},
 };
+use sapphire_moves::Enemy;
 use sapphire_stage::{Content, lookdev};
 use sapphire_time::Stopwatch;
 
@@ -18,32 +19,37 @@ pub(super) struct StockArenaAssets {
     heroine: BodyAssets,
     warrior: BodyGraphAssets,
     weapon: CpuResident<Mesh>,
+    /// What draws the warrior, from its cooked kind (M3 B3).
+    look: enemy::Look,
 }
 
 impl StockArenaAssets {
     pub(super) fn load(content: &mut Content) -> Result<Self, String> {
-        // The first renderer upload may drain this preload before the arena reads the warrior skin.
-        content.keep_mesh_copy(enemy::WARRIOR);
         let stopwatch = Stopwatch::start();
         let remaining = || Duration::from_secs(15).saturating_sub(stopwatch.elapsed());
+        let kind =
+            content.preload_cpu::<Enemy>(enemy::KIND, &remaining).map_err(|error| error.to_string())?;
+        let look = enemy::Look::of(&kind.view().look())?;
+        // The first renderer upload may drain this preload before the arena reads the warrior skin.
+        content.keep_mesh_copy(look.mesh);
         let heroine_mesh =
             content.preload_cpu::<Mesh>(lookdev::CHARACTER, &remaining).map_err(|error| error.to_string())?;
         let warrior_mesh =
-            content.preload_cpu::<Mesh>(enemy::WARRIOR, &remaining).map_err(|error| error.to_string())?;
+            content.preload_cpu::<Mesh>(look.mesh, &remaining).map_err(|error| error.to_string())?;
         let hero_skeleton = skin_skeleton(&heroine_mesh, "the heroine")?;
         let warrior_skeleton = skin_skeleton(&warrior_mesh, "the warrior")?;
         let heroine_graph = content
             .preload_body_graph(lookdev::GRAPH, hero_skeleton, &remaining)
             .map_err(|error| error.to_string())?;
         let warrior = content
-            .preload_body_graph(enemy::GRAPH, warrior_skeleton, &remaining)
+            .preload_body_graph(look.graph, warrior_skeleton, &remaining)
             .map_err(|error| error.to_string())?;
         let rig = content
             .preload_cpu::<CharacterRig>(lookdev::RIG, &remaining)
             .map_err(|error| error.to_string())?;
         let weapon =
-            content.preload_cpu::<Mesh>(enemy::BLADE, &remaining).map_err(|error| error.to_string())?;
-        Ok(Self { heroine_mesh, heroine: BodyAssets { graph: heroine_graph, rig }, warrior, weapon })
+            content.preload_cpu::<Mesh>(look.blade, &remaining).map_err(|error| error.to_string())?;
+        Ok(Self { heroine_mesh, heroine: BodyAssets { graph: heroine_graph, rig }, warrior, weapon, look })
     }
 
     /// Installs both owners and the private contact route before recording or checking a table hash.
@@ -56,15 +62,15 @@ impl StockArenaAssets {
         let heroine = lookdev::arena_body_profile(
             self.heroine.clone(),
             self.heroine_mesh.view(),
-            enemy::EYES,
+            self.look.eyes,
             HERO_HEAD,
         )?;
-        let enemy = enemy::simulation_profile(self.warrior.clone(), PLAYER_EYES)?;
+        let enemy = enemy::simulation_profile(self.warrior.clone(), &self.look, PLAYER_EYES)?;
         let socket = self
             .warrior
             .skeleton
             .view()
-            .find(enemy::HAND_SLOT)
+            .find(&self.look.hand)
             .and_then(|joint| u16::try_from(joint).ok())
             .ok_or("the cooked warrior has no supported hand socket")?;
         let (shape, meshes) = overhead_profile::bind(socket, [&self.heroine_mesh, &self.weapon])?;

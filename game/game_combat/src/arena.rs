@@ -92,10 +92,10 @@ use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profil
 use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
-use sapphire_moves::RootSample;
+use sapphire_moves::{PER_MILLE, RootSample};
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
 use sapphire_time::TICK_HZ;
-use sapphire_ui::{FighterValues, HudValues, OtherFoes, SkillValues, UltimateValues};
+use sapphire_ui::{BossBar, FighterValues, HudValues, OtherFoes, SkillValues, UltimateValues};
 
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
@@ -430,9 +430,9 @@ pub(crate) struct ArenaEnemy {
     pub(crate) hand: usize,
 }
 
-/// A warrior whose feet are at `position`, as the camera frames one.
-fn warrior_subject(position: Vec3) -> Subject {
-    Subject { position, height: enemy::CROWN, radius: enemy::FRAMED_RADIUS }
+/// A warrior of these sizes whose feet are at `position`, as the camera frames one.
+fn warrior_subject(sizes: enemy::Sizes, position: Vec3) -> Subject {
+    Subject { position, height: sizes.crown, radius: sizes.framed_radius }
 }
 
 /// How high the character's eyes stand over its feet, in metres: what the warrior looks at.
@@ -476,6 +476,19 @@ fn ultimate_values(view: &ActorView, cost: u32) -> Option<UltimateValues> {
 }
 
 /// One fighter's bars, for the HUD: `points` asks for its health in digits.
+/// A boss's bar for `actor`, if its kind of enemy is a boss: a mark where each of its phases falls (M3 B3).
+/// Its name's key is `EnemyMind::boss`, for the HUD's words (M3 U7) to draw.
+fn boss_bar(simulation: &Simulation, actor: ActorId) -> Option<BossBar> {
+    let library = simulation.move_library();
+    let mind = library.mind(simulation.actor(actor)?.moves.set?)?;
+    mind.boss()?;
+    let mut bar = BossBar::default();
+    for phase in mind.phases() {
+        bar.mark(f32::from(phase.at) / f32::from(PER_MILLE));
+    }
+    Some(bar)
+}
+
 fn fighter_values(view: &ActorView, points: bool) -> FighterValues {
     let share = |left: u32, whole: u32| if whole == 0 { 1.0 } else { left as f32 / whole as f32 };
     let fighter = &view.fighter;
@@ -569,11 +582,21 @@ pub struct ArenaActors {
     ground: ArenaGround,
     /// Whether a fight has stepped, which draws the colliders itself.
     fighting: bool,
+    /// How big each warrior draws.
+    sizes: enemy::Sizes,
+    /// The foe shown is a boss, as of the last step.
+    boss: Option<BossBar>,
 }
 
 impl ArenaActors {
-    /// The two at their spawn points, drawn by `player` and `enemy`.
-    pub(crate) fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
+    /// The two at their spawn points, drawn by `player` and `enemy`, each warrior at `sizes`.
+    pub(crate) fn new(
+        player: Entity,
+        enemy: ArenaEnemy,
+        sizes: enemy::Sizes,
+        shot: ArenaShot,
+        ground: ArenaGround,
+    ) -> Self {
         let spawns = ground.spawns();
         let fighter = |entity, spawn, blade| StageFighter {
             entity,
@@ -594,6 +617,8 @@ impl ArenaActors {
             camera: (shot == ArenaShot::Director).then(|| ArenaCamera::new(spawns.player.yaw())),
             ground,
             fighting: false,
+            sizes,
+            boss: None,
         }
     }
 
@@ -710,7 +735,7 @@ impl ArenaActors {
             return None;
         }
         let (position, yaw) = authored_root_at(motion.tables.root_samples(), position);
-        let scale = if fighter == 0 { 1.0 } else { enemy::SCALE };
+        let scale = if fighter == 0 { 1.0 } else { self.sizes.scale };
         Some(AuthoredFootMotion {
             serial: current.serial,
             source_from_model: Affine3A::from_scale_rotation_translation(
@@ -731,7 +756,7 @@ impl ArenaActors {
             foe.and_then(|foe| self.place_of(foe)).unwrap_or(0)
         };
         self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
-        let height = if other == 0 { PLAYER_EYES } else { enemy::EYES };
+        let height = if other == 0 { PLAYER_EYES } else { self.sizes.eyes };
         Some(self.drawn(other, alpha).w_axis.truncate() + Vec3::Y * height)
     }
 
@@ -743,7 +768,7 @@ impl ArenaActors {
     /// Where `fighter` draws, `alpha` of the way between its last two steps.
     pub(crate) fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
         let root = self.fighters[fighter].root.transform(alpha);
-        if fighter == 0 { root } else { root * Mat4::from_scale(Vec3::splat(enemy::SCALE)) }
+        if fighter == 0 { root } else { root * Mat4::from_scale(Vec3::splat(self.sizes.scale)) }
     }
 
     /// The entities that draw each fighter's own blade, the player first, which has none here.
@@ -804,9 +829,11 @@ impl ArenaActors {
                 others.push(fighter_values(view, false).hp);
             }
         }
+        let boss = self.boss.filter(|_| enemy.is_some());
         Some(HudValues {
             player: fighter_values(player, true),
             enemy,
+            boss,
             others,
             skill: SkillValues::default(),
             ultimate: ultimate_values(player, self.ultimate_cost),
@@ -901,6 +928,7 @@ impl ArenaActors {
         let shown = self.foe_to_show(started_over);
         came_in[1] = self.shown.zip(shown).is_some_and(|(was, is)| was != is);
         self.shown = shown;
+        self.boss = shown.and_then(|shown| boss_bar(simulation, shown));
         // The press rather than the hold: a button that's held stays locked, and pressing again lets go.
         let pressed = self.seen[0].is_some_and(|player| player.controls.pressed().contains(Buttons::LOCK_ON));
         if pressed {
@@ -988,7 +1016,7 @@ impl ArenaActors {
             let mut distance = (at - feet).with_y(0.0).length_squared();
             for (kept, far) in nearest.iter_mut().zip(&mut distances) {
                 if distance < *far {
-                    let subject = warrior_subject(at);
+                    let subject = warrior_subject(self.sizes, at);
                     let was = kept.replace(subject);
                     std::mem::swap(far, &mut distance);
                     match was {
@@ -1078,7 +1106,8 @@ impl ArenaActors {
             world.resource_mut::<OrbitCamera>().set_target(follow_target(feet));
         }
         let framed = self.framed();
-        let target = framed.map(|place| warrior_subject(self.fighters[place].root.position(alpha)));
+        let target =
+            framed.map(|place| warrior_subject(self.sizes, self.fighters[place].root.position(alpha)));
         let bystanders = self.bystanders(framed, alpha);
         let player_yaw = self.fighters[0].root.yaw(alpha);
         if let (Some(camera), Some(aspect)) = (&mut self.camera, aspect) {
@@ -1252,7 +1281,7 @@ mod tests {
         let mut placed = || world.spawn(RenderTransform::default()).id();
         let (player, warrior, blade) = (placed(), placed(), placed());
         let enemy = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
-        (ArenaActors::new(player, enemy, shot, ground), world)
+        (ArenaActors::new(player, enemy, enemy::Sizes::of(&enemy::Look::warrior()), shot, ground), world)
     }
 
     /// A fight of the `arena-fight` scenario, on a director, and what it does first.

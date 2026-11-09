@@ -16,7 +16,7 @@ use sapphire_assets::{
     AssetBudgets, AssetChange, AssetKind, AssetServer, LoadError, LoadPriority, MemoryPackSource,
 };
 use sapphire_colliders::ColliderSet;
-use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+use sapphire_gameplay::replay::{SCENARIOS, find_scenario, warrior_enemy};
 use sapphire_gameplay::{ActorId, Simulation};
 use sapphire_livelink::LivePacks;
 use sapphire_math::{Affine3A, Mat4, Vec3};
@@ -105,6 +105,11 @@ const ENEMY_SWING: AssetId = AssetId::from_bytes([0x64; 16]);
 
 /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
 /// required humanoid bone a joint of its own under the root, and `extra` joints more.
+/// What draws the enemy: the warrior's look, as its kind's document has it.
+fn look() -> Look {
+    Look::warrior()
+}
+
 fn pack(x: f32, extra: usize) -> Vec<u8> {
     pack_with_decay(x, extra, 5)
 }
@@ -157,7 +162,8 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         influences: Influences::pack(&[held; 3], count),
     });
     // The enemy's own: its rig's names in a chain, and `extra` joints more.
-    let names = enemy::joint_names();
+    let look = look();
+    let names = enemy::joint_names(&look.hand);
     let enemy_count = names.len() + extra;
     let enemy_joints: Vec<Joint> = (0..enemy_count)
         .map(|joint| Joint {
@@ -201,14 +207,14 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         packed_with(OTHER_SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
         packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
         packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
-        // The enemy, as a fight loads it.
-        packed_with(
-            enemy::WARRIOR,
-            AssetKind::Mesh,
-            &warrior.to_cooked().expect("cooked"),
-            vec![ENEMY_SKELETON],
+        // The enemy, as a fight loads it: its kind, then what that names.
+        packed(
+            enemy::KIND,
+            AssetKind::Enemy,
+            &warrior_enemy().expect("compiles").to_cooked().expect("cooked"),
         ),
-        packed(enemy::BLADE, AssetKind::Mesh, &triangle(x).to_cooked().expect("cooked")),
+        packed_with(look.mesh, AssetKind::Mesh, &warrior.to_cooked().expect("cooked"), vec![ENEMY_SKELETON]),
+        packed(look.blade, AssetKind::Mesh, &triangle(x).to_cooked().expect("cooked")),
         packed(
             ENEMY_SKELETON,
             AssetKind::Skeleton,
@@ -221,7 +227,7 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
             vec![ENEMY_SKELETON],
         ),
         packed_with(
-            enemy::GRAPH,
+            look.graph,
             AssetKind::AnimGraph,
             &enemy_graph.to_cooked().expect("cooked"),
             vec![ENEMY_SWING],
@@ -565,7 +571,7 @@ fn a_new_skeleton_under_the_enemy_plays_on() {
     stage.play_fighters();
     let mut fight = stage.start_fight();
     let joints = stage.enemy_joints();
-    assert_eq!(joints, enemy::joint_names().len());
+    assert_eq!(joints, enemy::joint_names(&look().hand).len());
 
     // The character's in the pack too, and while part of it has landed its pose may not fit.
     stage.recook(0.0, 1);
@@ -576,7 +582,8 @@ fn a_new_skeleton_under_the_enemy_plays_on() {
         assert_eq!(stats.ignored_poses, 0, "{stats:?}");
     }
     let hand = stage.show.arena.as_deref_mut().expect("an arena").blade_hand();
-    assert_eq!(enemy::joint_names()[hand], enemy::HAND_SLOT);
+    let look = look();
+    assert_eq!(enemy::joint_names(&look.hand)[hand], look.hand);
 }
 
 /// A skeleton with a joint more, then a clip and a graph for it, with the mesh still to come, as a cook's
@@ -591,9 +598,9 @@ fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
     let _fight = stage.start_fight();
     let joints = stage.enemy_joints();
 
-    stage.recook_all_but(&[enemy::WARRIOR, SWING, OTHER_SWING, GRAPH, ENEMY_SWING, enemy::GRAPH], 1, 7);
+    stage.recook_all_but(&[look().mesh, SWING, OTHER_SWING, GRAPH, ENEMY_SWING, look().graph], 1, 7);
     stage.frames_until(|stage| stage.show.enemy_versions(&stage.content) == Some((0, 1)));
-    stage.recook_all_but(&[enemy::WARRIOR], 1, 7);
+    stage.recook_all_but(&[look().mesh], 1, 7);
     // Revisions identify changed views; readiness is the actual new graph and clip data.
     stage.frames_until(|stage| {
         stage.content.graph_document().is_ok_and(|graph| graph.combat.decay == 7)

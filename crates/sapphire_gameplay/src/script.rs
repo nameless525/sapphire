@@ -45,10 +45,6 @@ pub const QUEUE_LEN: usize = 64;
 /// crowd's hits on one tick with phases and defeats besides.
 pub const MAX_HOOK_EVENTS: usize = 64;
 
-/// How many phases a fighter's health holds: `on_phase` fires as it crosses each quarter. B3's documents
-/// will choose where a boss's fall.
-const PHASES: u32 = 4;
-
 /// The scripts a fight starts from in place of what its scenario compiled in, by source file name: the newest
 /// live edits, which [`LiveMoves::start`](crate::replay::LiveMoves::start) puts in a simulation before its
 /// scenario's setup runs, for whoever binds a script there to read. Text only: cooking it is
@@ -84,7 +80,8 @@ impl ScriptEdits {
 /// Something a hook can answer. Everything it carries is what happened, in the simulation's own terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HookEvent {
-    /// A fighter's health crossed into a later phase, 1 being the first crossing.
+    /// A fighter's health crossed into a later phase, 1 being the first crossing: its kind of enemy's
+    /// phases, or its quarters ([`MoveLibrary::phases`]).
     Phase { actor: ActorId, phase: u8, health: u32 },
     /// An actor started a move.
     MoveStarted { actor: ActorId, name: Name },
@@ -125,6 +122,9 @@ pub enum ScriptCommand {
     GiveSoftLock { actor: ActorId },
     /// Sets a flag (M3 Q2), which the next step's hooks and anything between steps read.
     SetFlag { name: Name, value: i32 },
+    /// From the next step, this actor fights with its kind of enemy's brain of this name
+    /// ([`crate::Simulation::set_brain`]). A name its kind hasn't got does nothing.
+    SetBrain { actor: ActorId, name: Name },
 }
 
 /// An actor's numbers, as a hook's queries read them.
@@ -277,15 +277,6 @@ impl HookFrame {
             self.actors_len += 1;
         }
     }
-}
-
-/// The quarters `health` has fallen through, 0 to [`PHASES`], or `None` for a fighter with no health. In
-/// `u64`, so a health near `u32::MAX` can't overflow; several crossed in one step make one event, at the
-/// latest, so a hook never answers a phase the fighter has already passed.
-fn phase_of(health: u32, max: u32) -> Option<u8> {
-    (u64::from(max - health.min(max)) * u64::from(PHASES))
-        .checked_div(u64::from(max))
-        .map(|phase| phase as u8)
 }
 
 /// What one actor last showed: what events are the differences of.
@@ -475,7 +466,8 @@ pub(crate) fn gather_hook_events(
         let mut watch = seen.unwrap_or(ActorWatch { id, started: 0, phase: 0, defeated: false });
 
         let (health, max) = (fighter.health(), fighter.max_health());
-        if let Some(phase) = phase_of(health, max)
+        // A fighter with no health has no phases.
+        if let Some(phase) = library.phases(runner.set()).phase_of(health, max)
             && phase > watch.phase
         {
             watch.phase = phase;
@@ -580,8 +572,9 @@ pub(crate) fn apply_script_commands(
                     && let Ok((runner, mut brain, _, clock, fighter)) = actors.get_mut(entity)
                     && !brain.is_on()
                     && !fighter.is_defeated()
-                    && let Some(def) =
-                        runner.set().and_then(|set| library.current(set)).and_then(|set| set.brain())
+                    && let Some(def) = runner
+                        .set()
+                        .and_then(|set| library.brain_for(set, fighter.health(), fighter.max_health()))
                 {
                     *brain = Brain::fighting(def, clock.0.now(), &mut rng.0);
                 }
@@ -604,6 +597,17 @@ pub(crate) fn apply_script_commands(
                 hash.u64(name.as_u64());
                 hash.u32(value as u32);
             }
+            ScriptCommand::SetBrain { actor, name } => {
+                if let Some(entity) = table.entity(actor)
+                    && let Ok((runner, mut brain, ..)) = actors.get_mut(entity)
+                    && let Some(place) = runner.set().and_then(|set| library.mind(set)?.brain_named(name))
+                {
+                    brain.change_mind(place);
+                }
+                hash.u8(7);
+                hash.u32(actor.raw());
+                hash.u64(name.as_u64());
+            }
         }
         scripts.commands_hash = hash.finish();
     }
@@ -625,6 +629,7 @@ mod tests {
 
     #[test]
     fn phases_cover_all_of_u32s_health() {
+        let phase_of = |health, max| crate::moves::PhaseThresholds::Quarters.phase_of(health, max);
         assert_eq!(phase_of(u32::MAX, u32::MAX), Some(0));
         assert_eq!(phase_of(u32::MAX / 4 * 3, u32::MAX), Some(1));
         assert_eq!(phase_of(0, u32::MAX), Some(4), "the latest quarter, not four");

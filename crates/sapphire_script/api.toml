@@ -122,6 +122,13 @@ doc = "From the next step this actor fights for itself, if its set says how. One
 
 [[function]]
 kind = "command"
+name = "set_brain"
+args = ["actor", "name"]
+returns = []
+doc = "From the next step this actor fights with its kind of enemy's brain of this name, as a boss's phase can. A name its kind hasn't got does nothing, and neither does an actor with no brain on."
+
+[[function]]
+kind = "command"
 name = "give_soft_lock"
 args = ["actor"]
 returns = []
@@ -137,7 +144,7 @@ doc = "Sets a flag, by its place in `names`, to a whole number that fits 32 bits
 [[hook]]
 name = "on_phase"
 args = ["actor", "phase", "health"]
-doc = "A fighter's health crossed a quarter. The first crossing is phase 1."
+doc = "A fighter's health crossed one of its phases: its kind of enemy's own, or a quarter. The first crossing is phase 1."
 
 [[hook]]
 name = "on_move"

@@ -29,6 +29,7 @@ use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
 use sapphire_gameplay::replay::LiveMoves;
 use sapphire_math::{Mat4, Vec2, Vec3};
+use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
@@ -52,7 +53,7 @@ use crate::combat::SessionRecorder;
 use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
-use crate::enemy::{self, EnemyMeshes};
+use crate::enemy::{self, EnemyMeshes, Look};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
@@ -107,7 +108,9 @@ type GraphPlayers = QueryState<(
 /// What loading has given a fight, which stays loaded for as long as this does.
 #[derive(Default)]
 struct FightAssets {
-    /// The enemy's model and its blade (`--look-dev enemy`, `--arena`).
+    /// The enemy's kind (`--look-dev enemy`, `--arena`), and what draws it, read from that.
+    enemy_kind: Option<(Handle<Enemy>, Look)>,
+    /// The enemy's model and its blade.
     enemy: Option<[Handle<Mesh>; 2]>,
     /// The enemy's skeleton, with those.
     enemy_skeleton: Option<Handle<Skeleton>>,
@@ -320,9 +323,10 @@ pub struct FightShow {
 }
 
 impl FightShow {
-    /// Loads until the enemy and its blade are on `renderer`, with their materials and the maps
-    /// they name, and the warrior's skeleton is resident, and returns their meshes: the load screen
-    /// of `--look-dev enemy` and `--arena`. They stay loaded from then on.
+    /// Loads until the enemy's kind is resident, and the meshes its look names, the enemy and its blade,
+    /// are on `renderer`, with their materials and the maps they name, and the warrior's skeleton is
+    /// resident, and returns their meshes: the load screen of `--look-dev enemy` and `--arena`. They stay
+    /// loaded from then on.
     pub fn load_enemy(
         &mut self,
         content: &mut Content,
@@ -330,17 +334,28 @@ impl FightShow {
         gpu: &GpuContext,
     ) -> Result<EnemyMeshes, AppInitError> {
         let failed = |error: AppInitError| AppInitError::msg(format!("the enemy didn't load: {error}"));
-        content.keep_mesh_copy(enemy::WARRIOR);
-        let warrior = content.hold(enemy::WARRIOR, renderer, gpu).map_err(failed)?;
-        let blade = content.hold(enemy::BLADE, renderer, gpu).map_err(failed)?;
+        let kind: Handle<Enemy> = content.hold(enemy::KIND, renderer, gpu).map_err(failed)?;
+        let look = content.read(&kind).ok_or_else(|| failed(AppInitError::msg("its kind isn't resident")))?;
+        let look = Look::of(&look.look()).map_err(|error| failed(AppInitError::msg(error)))?;
+        content.keep_mesh_copy(look.mesh);
+        let warrior = content.hold(look.mesh, renderer, gpu).map_err(failed)?;
+        let blade = content.hold(look.blade, renderer, gpu).map_err(failed)?;
         let skeleton: Option<AssetId> =
-            content.mesh_copy(enemy::WARRIOR).and_then(|mesh| mesh.skin.as_ref()?.skeleton);
+            content.mesh_copy(look.mesh).and_then(|mesh| mesh.skin.as_ref()?.skeleton);
         let skeleton = skeleton.map(|id| content.hold(id, renderer, gpu)).transpose().map_err(failed)?;
         self.assets.enemy = Some([warrior, blade]);
         self.assets.enemy_skeleton = skeleton;
         self.assets.enemy_versions = self.enemy_versions(content);
         let mesh = |id| content.mesh_on_renderer(id).expect("a ready mesh was uploaded here");
-        Ok(EnemyMeshes { warrior: mesh(enemy::WARRIOR), blade: mesh(enemy::BLADE) })
+        let meshes = EnemyMeshes { warrior: mesh(look.mesh), blade: mesh(look.blade) };
+        self.assets.enemy_kind = Some((kind, look));
+        Ok(meshes)
+    }
+
+    /// What draws the enemy, once [`Self::load_enemy`] has read it.
+    fn enemy_look(&self) -> Result<&Look, AppInitError> {
+        let look = self.assets.enemy_kind.as_ref().map(|(_, look)| look);
+        look.ok_or_else(|| AppInitError::msg("the enemy isn't loaded"))
     }
 
     /// Whether the enemy's mesh or skeleton has a new version since the last call or since
@@ -361,12 +376,13 @@ impl FightShow {
 
     /// The enemy's held pose, from what [`Self::load_enemy`] loaded.
     pub fn held_enemy(&self, content: &Content) -> Result<enemy::Held, AppInitError> {
-        let skin = content.mesh_copy(enemy::WARRIOR).and_then(|mesh| mesh.skin.as_ref());
+        let look = self.enemy_look()?;
+        let skin = content.mesh_copy(look.mesh).and_then(|mesh| mesh.skin.as_ref());
         let skeleton = self.assets.enemy_skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
-        enemy::held(skin, skeleton).map_err(AppInitError::msg)
+        enemy::held(skin, skeleton, look).map_err(AppInitError::msg)
     }
 
     /// Loads the enemy's graph as `Content::load_graph` does the character's.
@@ -377,7 +393,8 @@ impl FightShow {
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
         let skeleton = self.assets.enemy_skeleton.clone();
-        content.load_graph_of(ENEMY_GRAPH, skeleton, enemy::GRAPH, renderer, gpu)
+        let graph = self.enemy_look()?.graph;
+        content.load_graph_of(ENEMY_GRAPH, skeleton, graph, renderer, gpu)
     }
 
     /// A graph driver for the enemy, from what [`Self::load_enemy`] and [`Self::load_enemy_graph`] loaded.
@@ -387,7 +404,7 @@ impl FightShow {
         ground: Arc<PhysicsWorld>,
     ) -> Result<GraphDriver, AppInitError> {
         let binding = self.enemy_binding(content)?;
-        let skin = content.mesh_copy(enemy::WARRIOR).and_then(|mesh| mesh.skin.as_ref());
+        let skin = content.mesh_copy(self.enemy_look()?.mesh).and_then(|mesh| mesh.skin.as_ref());
         let skeleton = self.assets.enemy_skeleton.as_ref().and_then(|skeleton| content.read(skeleton));
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
@@ -504,12 +521,12 @@ impl FightShow {
         scene.world_mut().insert_resource(shot.camera(ground.spawns().player.position()));
         let character = scene.character();
         scene.world_mut().entity_mut(character).remove::<Turntable>();
-        let (blade_in_model, hand) = (held.blade, held.hand);
+        let (blade_in_model, hand, sizes) = (held.blade, held.hand, held.sizes);
         self.stock = Some(WarriorStock { meshes: enemy, held: held.clone(), driver: None });
         self.spawn_enemy(scene, enemy, held);
         let (warrior, blade) = self.warriors[0];
         let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
-        self.arena = Some(Box::new(ArenaActors::new(character, enemy, shot, ground)));
+        self.arena = Some(Box::new(ArenaActors::new(character, enemy, sizes, shot, ground)));
     }
 
     /// Poses the arena's fighters by these graphs from now on, from what the simulation says of them
@@ -1393,7 +1410,7 @@ impl FightShow {
 /// Stands a warrior and its blade as `held` has them, on the look-dev stage's spot until something places
 /// them: its light rigs are those the stage has.
 fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> (Entity, Entity) {
-    let place = enemy::place();
+    let place = enemy::place(held.sizes.scale);
     let rig = LightRigId::DEFAULT;
     let blade_figure = enemy::blade_figure(held);
     let warrior = world

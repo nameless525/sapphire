@@ -1,7 +1,9 @@
 //! An enemy's brain (spec §5.22, "Enemy AI", M2 G6): what presses an enemy's intents and tilts its
 //! stick, so nothing past this file knows it isn't a player. Its moves are documents like anyone's, the
-//! move system runs them, and a brain's tuning is a section of the same document
-//! ([`sapphire_moves::BrainDef`]), so it reaches a replay's `tables_hash` and a set's replacement.
+//! move system runs them, and its tuning ([`sapphire_moves::BrainDef`]) is one of the brains its kind of
+//! enemy's document names (M3 B3), which goes in beside the set its fighters play
+//! ([`crate::Simulation::add_enemy`]) and so reaches a replay's `tables_hash`. A fighter fights with one
+//! of them at a time ([`Brain::mind`]): the first, until a phase of its health or a script says otherwise.
 //!
 //! It has two faces, as the controller does. [`step_brain`] is one brain for one tick, plain values in
 //! and out with no ECS. [`Brain`] is the component every pooled actor carries, off until
@@ -157,6 +159,10 @@ pub struct Brain {
     pub(crate) encounter: Option<u8>,
     /// Its place on its patrol, if it has one: where it goes back to, once it has lost its foe.
     pub(crate) patrol: Option<PatrolWalk>,
+    /// Which of its kind of enemy's brains it fights with, as a place in
+    /// [`sapphire_moves::EnemyMind::brains`]: 0, the one each starts with, until a phase or a script changes
+    /// it (M3 B3).
+    pub(crate) mind: u8,
 }
 
 impl Brain {
@@ -176,6 +182,23 @@ impl Brain {
     #[must_use]
     pub const fn target(&self) -> Option<ActorId> {
         self.target
+    }
+
+    /// Which of its kind's brains it fights with, as a place in `EnemyMind::brains`: a phase or a script's
+    /// `set_brain` changes it.
+    #[must_use]
+    pub const fn mind(&self) -> u8 {
+        self.mind
+    }
+
+    /// Fights with the brain at `place` from its next tick. What it's doing carries on, and so does its
+    /// patience; what it remembers of its attacks goes, since those were another brain's. One that isn't
+    /// thinking keeps none: what it's given is the brain its phase names ([`MoveLibrary::brain_for`]).
+    pub(crate) fn change_mind(&mut self, place: u8) {
+        if self.on && self.mind != place {
+            self.mind = place;
+            self.last_used = [None; MAX_BRAIN_ATTACKS];
+        }
     }
 
     /// What it's doing.
@@ -213,9 +236,10 @@ impl Brain {
         Self { state: BrainState::Pacing, patience_until: until, ..Self::default() }
     }
 
-    /// A brain ready to fight, from its next tick, with its first patience drawn.
-    pub(crate) fn fighting(def: &BrainDef, now: SimTime, rng: &mut Pcg32) -> Self {
-        Self { on: true, patience_until: now + draw_ticks(def.patience, rng), ..Self::default() }
+    /// A brain ready to fight with `def`, at `mind` in its kind of enemy, from its next tick, with its first
+    /// patience drawn.
+    pub(crate) fn fighting((mind, def): (u8, &BrainDef), now: SimTime, rng: &mut Pcg32) -> Self {
+        Self { on: true, mind, patience_until: now + draw_ticks(def.patience, rng), ..Self::default() }
     }
 }
 
@@ -683,7 +707,7 @@ pub(crate) fn think(
         }
         let Ok((transform, runner, _, fighter)) = bodies.get(entity) else { continue };
         let Some(set) = runner.set().and_then(|set| library.current(set)) else { continue };
-        let Some(def) = set.brain() else { continue };
+        let Some(def) = runner.set().and_then(|id| library.brain(id, brain.mind)) else { continue };
 
         let delta = clock.0.last_delta();
         if delta == SimDuration::ZERO {
@@ -802,44 +826,51 @@ pub(crate) fn think(
 #[cfg(test)]
 mod numeric_tests {
     use super::*;
-    use sapphire_moves::{MoveSetDocument, Reach};
+    use sapphire_moves::{BrainDocument, EnemyDocument, EnemyMind, MoveSetDocument, Reach};
+
+    /// The warrior as a kind of enemy (M3 B3), its first brain changed by `edit`.
+    fn warrior_with(edit: impl FnOnce(&mut BrainDocument)) -> EnemyMind {
+        let moves = MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
+            .expect("parses");
+        let mut enemy = EnemyDocument::parse(include_str!("../../../content/combat/enemy/warrior.enemy.ron"))
+            .expect("parses");
+        let first = enemy.brain.clone();
+        edit(enemy.brains.get_mut(&first).expect("its first brain"));
+        enemy.compile(&moves).expect("compiles").mind
+    }
 
     #[test]
     fn a_finite_spacing_band_keeps_its_circling_midpoint_finite() {
-        let mut document =
-            MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
-                .expect("parses");
-        document.brain.as_mut().expect("brain").spacing =
-            sapphire_moves::Spacing { near: 1.0e38, far: 3.0e38 };
-        let set = document.compile().expect("finite ordered spacing is valid");
-        let def = set.brain().expect("brain");
+        let mind =
+            warrior_with(|brain| brain.spacing = sapphire_moves::Spacing { near: 1.0e38, far: 3.0e38 });
+        let def = mind.brain(0).expect("brain");
         assert_eq!(pacing_stick(def, 1, Vec3::Z, 2.0e38), Stick::from_axes(def.pace.circle, 0.0));
     }
 
     #[test]
     fn extreme_finite_weights_sample_in_proportion_with_the_same_rng_draw() {
-        let mut document =
-            MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
-                .expect("parses");
-        let brain = document.brain.as_mut().expect("brain");
-        brain.attacks.truncate(2);
-        for attack in &mut brain.attacks {
-            attack.weight = 1.0;
-            attack.reach = Reach { near: 0.0, best: 2.0, far: 4.0 };
-            attack.against = sapphire_moves::Against::default();
-        }
-        let ordinary = document.compile().expect("ordinary weights");
+        let two_alike = |brain: &mut BrainDocument| {
+            brain.attacks.truncate(2);
+            for attack in &mut brain.attacks {
+                attack.weight = 1.0;
+                attack.reach = Reach { near: 0.0, best: 2.0, far: 4.0 };
+                attack.against = sapphire_moves::Against::default();
+            }
+        };
+        let ordinary = warrior_with(two_alike);
         for (weight, multiplier) in [
             (f32::MAX, 1.0),           // finite scores overflow only when summed
             (f32::MAX, f32::MAX),      // individual score products overflow
             (f32::from_bits(1), 0.25), // individual products underflow
             (f32::from_bits(1), 1.0),  // positive subnormal total quantizes the draw
         ] {
-            for attack in &mut document.brain.as_mut().expect("brain").attacks {
-                attack.weight = weight;
-                attack.against.free = multiplier;
-            }
-            let extreme = document.compile().expect("valid finite weights");
+            let extreme = warrior_with(|brain| {
+                two_alike(brain);
+                for attack in &mut brain.attacks {
+                    attack.weight = weight;
+                    attack.against.free = multiplier;
+                }
+            });
             let mut selected = [false; 2];
             for seed in 0..64 {
                 let mut a = Pcg32::new(seed, 7);
@@ -849,12 +880,12 @@ mod numeric_tests {
                 let choose = |def, rng: &mut Pcg32| {
                     choose_attack(&Brain::default(), def, SimTime::ZERO, 2.0, TargetDoing::Free, rng)
                 };
-                let expected = choose(ordinary.brain().expect("brain"), &mut a);
+                let expected = choose(ordinary.brain(0).expect("brain"), &mut a);
                 if seed == 1 {
                     assert_eq!(expected, Some(0), "fixed replayable selection");
                 }
                 assert_eq!(a.state(), one_draw.state(), "ordinary selection draws once");
-                let actual = choose(extreme.brain().expect("brain"), &mut b);
+                let actual = choose(extreme.brain(0).expect("brain"), &mut b);
                 assert_eq!(actual, expected, "weight={weight}, multiplier={multiplier}, seed={seed}");
                 assert_eq!(a.state(), b.state(), "exactly one draw");
                 selected[actual.expect("both score")] = true;

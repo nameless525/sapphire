@@ -327,7 +327,8 @@ fn write_soft_lock(hasher: &mut StateHasher, lock: &SoftLock) {
 }
 
 fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
-    let Brain { on, target, state, patience_until, circle, stick, last_used, encounter, patrol } = *brain;
+    let Brain { on, target, state, patience_until, circle, stick, last_used, encounter, patrol, mind } =
+        *brain;
     // Nothing for one that's off, which is most actors: their checksums stay what they were.
     if on {
         hasher.u8(1);
@@ -335,6 +336,10 @@ fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
     // Nor for one no encounter spawned.
     if let Some(encounter) = encounter {
         hasher.u8(encounter.wrapping_add(1));
+    }
+    // Nor for one on the brain its kind starts with.
+    if mind != 0 {
+        hasher.u8(mind);
     }
     hasher.u32(target.map_or(0, |id| id.raw()));
     match state {
@@ -501,10 +506,11 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, any patrols,
 /// every loaded timeline's simulation half, if there are any, targeting's weights, every loaded
-/// dialogue's effects if there are any, what a zone says if there's one,
-/// a script's bytecode and cadence, if there's one of those, and last every shelved zone's digest
-/// (M3 W4). Opted-in standing jump preparation contributes the policy and setup actor IDs independently
-/// of any jump's live countdown. Each of those is a resource of `world`, or isn't there.
+/// dialogue's effects if there are any, what a zone says if there's one, a script's bytecode and cadence,
+/// if there's one of those, every shelved zone's digest (M3 W4), and last each kind of enemy's mind, by
+/// its set, if there are any (M3 B3). Opted-in standing jump preparation contributes the policy and setup
+/// actor IDs independently of any jump's live countdown. Each of those is a resource of `world`, or isn't
+/// there.
 pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u64 {
     let library = world.resource::<MoveLibrary>();
     let characters = world.resource::<CharacterWorld>();
@@ -555,6 +561,10 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
         scripts.write_tables(&mut hasher);
     }
     zones.write_digests(&mut hasher);
+    for (set, hash) in world.resource::<MoveLibrary>().mind_hashes() {
+        hasher.u32(set.raw());
+        hasher.u64(hash);
+    }
     hasher.finish()
 }
 
@@ -840,6 +850,7 @@ mod sensitivity_tests {
             ("its target", |b| b.target = ActorId::from_raw(99)),
             ("when its patience runs out", |b| b.patience_until = SimTime::from_subticks(1)),
             ("which way it circles", |b| b.circle = 1),
+            ("which brain it fights with", |b| b.mind = 1),
             ("its stick's x", |b| b.stick = Stick::new(1, 0)),
             ("its stick's y", |b| b.stick = Stick::new(0, 1)),
             ("when it last used its first attack", |b| b.last_used[0] = Some(SimTime::from_subticks(1))),

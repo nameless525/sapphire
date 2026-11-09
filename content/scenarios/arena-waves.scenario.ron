@@ -8,6 +8,7 @@
         zone: Some("content/zones/square/square.zone.ron"),
         encounters: ["content/zones/square/square_waves.encounter.ron"],
         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
         cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
     ),
 )

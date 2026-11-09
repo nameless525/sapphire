@@ -5,8 +5,8 @@
 // goes where its clip's does. In root space +Z is forward and +X the warrior's left, and a blade's +Y
 // runs grip to tip.
 //
-// A brain presses the attacks through `IntentRing::press` (M2 G6), so no intent has a button. It's
-// the `brain` section here, so a replay's hash holds it and replacing the set replaces it.
+// A brain presses the attacks through `IntentRing::press` (M2 G6), so no intent has a button. Its brain
+// is in `warrior.enemy.ron` (M3 B3), with how it's drawn.
 // M2 G3 forces the reactions through `MoveRunner::force`, by name, from any phase: `stagger_light`,
 // `stagger_heavy`, `knockdown`, `recover` and `death`. E3 hangs effects on the cues: `telegraph` opens
 // a long wind-up, on a move's first tick, and `swing` is the blade starting to cut.
@@ -46,7 +46,7 @@
             ),
             // How this enemy moves. Save, and the next step moves by these, with no restart and no cook.
             // Metres, seconds and degrees. A number left out is the controller's default, and
-            // sapphire_moves' `MOVEMENT_LIMITS` says what each may be. Its brain's `pace` below is how far it
+            // sapphire_moves' `MOVEMENT_LIMITS` says what each may be. Its brain's `pace` is how far it
             // tilts the stick, so its speeds on the ground come from these two together.
             movement: (
                 run_speed: 6.0,
@@ -73,62 +73,6 @@
                 radius: 0.3,
                 skin: 0.01,
             ),
-        ),
-        brain: (
-            // A first guess at Zenless Zone Zero's common enemies, for Feel review 3 to move. It stands where
-            // a swipe just reaches and an overhead reaches well, and walks in from further: at the far
-            // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
-            spacing: (near: 1.6, far: 2.6),
-            // A body's width between two of them, so a crowd spreads round whoever it's after.
-            apart: 1.2,
-            pace: (
-                // About 4 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
-                // is what the lunge is for.
-                approach: 0.7,
-                // A step back at 1.2 m/s, and a slow circle at 1.4 m/s.
-                retreat: 0.3,
-                circle: 0.35,
-                circle_share: 0.7,
-                // A third of the player's turn: a big thing, slow to come round.
-                turn_rate_degrees: 300.0,
-            ),
-            // On a patrol, if it's given one: a walk of about 1.5 m/s, a foe noticed from 10 m with a clear
-            // line, and given up on past 20 m.
-            watch: (sight: 9.0, lose: 12.0, walk: 0.25),
-            // 0.7 to 2.2 s of keeping its distance before it looks for an attack.
-            patience: (min: 40, max: 130),
-            // 0.4 to 1.25 s standing after an attack ends: the opening an attack's recovery started.
-            rest: (min: 24, max: 75),
-            // A short beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
-            // doesn't put off its next attack.
-            recover: (min: 2, max: 10),
-            attacks: [
-                (
-                    // Quick and short: its answer to someone standing close or just finished swinging.
-                    intent: "swipe",
-                    reach: (near: 0.0, best: 1.5, far: 2.7),
-                    against: (swinging: 0.7, opening: 1.6, reacting: 0.6, untouchable: 0.0),
-                    recent: (ticks: 200, floor: 0.35),
-                ),
-                (
-                    // The telegraphed heavy: rarely twice running, and best on someone already reeling.
-                    intent: "overhead",
-                    weight: 0.7,
-                    reach: (near: 1.0, best: 2.3, far: 3.2),
-                    against: (swinging: 0.4, reacting: 1.4, untouchable: 0.0),
-                    recent: (ticks: 360, floor: 0.2),
-                ),
-                (
-                    // The gap closer, from where nothing else reaches. Its warp gets it about 6.1 m on a
-                    // target standing still, and less on one walking away.
-                    intent: "lunge",
-                    reach: (near: 3.0, best: 4.6, far: 6.0),
-                    against: (swinging: 0.6, reacting: 0.7, untouchable: 0.0),
-                    recent: (ticks: 240, floor: 0.3),
-                ),
-            ],
-            // Up in the knockdown's last third, not always at its first moment.
-            rise: (intent: "rise", during: "knockdown", from: 58, to: 72),
         ),
         moves: [
             (

@@ -1,0 +1,140 @@
+// A boss on the warrior's moves (M3 B3): the machinery's test kind of enemy, which the `arena-boss` scenario,
+// replay and golden play. Its first brain is the warrior's own; at half health it enrages, changing to a
+// fiercer one and saying `enraged` as a cue, and its bar is a boss's, with a mark at each phase. The game's
+// own bosses are documents like this one on moves of their own.
+(
+    type: "sapphire::moves::EnemyDocument",
+    version: 1,
+    data: (
+        // `warrior.moves.ron`.
+        moves: "c50887be-5ce3-498a-9f28-255e7e372b32",
+        brains: {
+            "steady": (
+                // A first guess at Zenless Zone Zero's common enemies, for Feel review 3 to move. It stands where
+                // a swipe just reaches and an overhead reaches well, and walks in from further: at the far
+                // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
+                spacing: (near: 1.6, far: 2.6),
+                pace: (
+                    // About 4 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
+                    // is what the lunge is for.
+                    approach: 0.7,
+                    // A step back at 1.2 m/s, and a slow circle at 1.4 m/s.
+                    retreat: 0.3,
+                    circle: 0.35,
+                    circle_share: 0.7,
+                    // A third of the player's turn: a big thing, slow to come round.
+                    turn_rate_degrees: 300.0,
+                ),
+                // 0.7 to 2.2 s of keeping its distance before it looks for an attack.
+                patience: (min: 40, max: 130),
+                // 0.4 to 1.25 s standing after an attack ends: the opening an attack's recovery started.
+                rest: (min: 24, max: 75),
+                // A short beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
+                // doesn't put off its next attack.
+                recover: (min: 2, max: 10),
+                attacks: [
+                    (
+                        // Quick and short: its answer to someone standing close or just finished swinging.
+                        intent: "swipe",
+                        reach: (near: 0.0, best: 1.5, far: 2.7),
+                        against: (swinging: 0.7, opening: 1.6, reacting: 0.6, untouchable: 0.0),
+                        recent: (ticks: 200, floor: 0.35),
+                    ),
+                    (
+                        // The telegraphed heavy: rarely twice running, and best on someone already reeling.
+                        intent: "overhead",
+                        weight: 0.7,
+                        reach: (near: 1.0, best: 2.3, far: 3.2),
+                        against: (swinging: 0.4, reacting: 1.4, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                    (
+                        // The gap closer, from where nothing else reaches. Its warp gets it about 6.1 m on a
+                        // target standing still, and less on one walking away.
+                        intent: "lunge",
+                        reach: (near: 3.0, best: 4.6, far: 6.0),
+                        against: (swinging: 0.6, reacting: 0.7, untouchable: 0.0),
+                        recent: (ticks: 240, floor: 0.3),
+                    ),
+                ],
+                // Up in the knockdown's last third, not always at its first moment.
+                rise: (intent: "rise", during: "knockdown", from: 58, to: 72),
+            ),
+            "fierce": (
+                // A first guess at Zenless Zone Zero's common enemies, for Feel review 3 to move. It stands where
+                // a swipe just reaches and an overhead reaches well, and walks in from further: at the far
+                // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
+                spacing: (near: 1.6, far: 2.6),
+                pace: (
+                    // About 4 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
+                    // is what the lunge is for.
+                    approach: 0.7,
+                    // A step back at 1.2 m/s, and a slow circle at 1.4 m/s.
+                    retreat: 0.3,
+                    circle: 0.35,
+                    circle_share: 0.7,
+                    // A third of the player's turn: a big thing, slow to come round.
+                    turn_rate_degrees: 300.0,
+                ),
+                // Enraged: a third of the steady brain's patience and half its rest, so it presses.
+                patience: (min: 14, max: 44),
+                rest: (min: 12, max: 38),
+                // A short beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
+                // doesn't put off its next attack.
+                recover: (min: 2, max: 10),
+                attacks: [
+                    (
+                        // Quick and short: its answer to someone standing close or just finished swinging.
+                        intent: "swipe",
+                        reach: (near: 0.0, best: 1.5, far: 2.7),
+                        against: (swinging: 0.7, opening: 1.6, reacting: 0.6, untouchable: 0.0),
+                        recent: (ticks: 200, floor: 0.35),
+                    ),
+                    (
+                        // The telegraphed heavy: rarely twice running, and best on someone already reeling.
+                        intent: "overhead",
+                        weight: 0.7,
+                        reach: (near: 1.0, best: 2.3, far: 3.2),
+                        against: (swinging: 0.4, reacting: 1.4, untouchable: 0.0),
+                        recent: (ticks: 360, floor: 0.2),
+                    ),
+                    (
+                        // The gap closer, from where nothing else reaches. Its warp gets it about 6.1 m on a
+                        // target standing still, and less on one walking away.
+                        intent: "lunge",
+                        reach: (near: 3.0, best: 4.6, far: 6.0),
+                        against: (swinging: 0.6, reacting: 0.7, untouchable: 0.0),
+                        recent: (ticks: 240, floor: 0.3),
+                    ),
+                ],
+                // Up in the knockdown's last third, not always at its first moment.
+                rise: (intent: "rise", during: "knockdown", from: 58, to: 72),
+            ),
+        },
+        brain: "steady",
+        // `on_phase` fires as it crosses each. The second changes its brain and is the phase a boss's music
+        // and screen hang on, by its name.
+        phases: [(at: 750), (at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 250), (at: 0)],
+        // Its name's key in the game's words, for its boss bar.
+        boss: Some((name: "boss-captain")),
+        look: (
+            // `warrior.glb`, derived from KayKit's skeleton (`sapphire_pipeline::combat::warrior`).
+            mesh: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
+            // `warrior.animgraph.ron`.
+            graph: "175de058-a4cd-4b75-8a04-4884914ac08f",
+            // KayKit's blade (`content/third_party/kaykit_skeletons/assets/Skeleton_Blade.gltf`), in its
+            // right hand.
+            held: Some((mesh: "1a612690-4615-4346-86f0-c903784d2db5", joint: "handslot.r")),
+            // The model stands 2.33 units to its crown and 2.59 to its horns' tips. This puts the crown at
+            // 1.87 m and the horns at 2.07 m against the character's 1.62 m: a head taller, as the reference
+            // fights' common enemies stand, with a blade whose reach, 1.8 m with the arm straight, is about
+            // what its moves author.
+            scale: 0.8,
+            height: 2.33,
+            // About where a face's eyes sit under a crown, for what a foe looks at.
+            eyes_below_crown: 0.2,
+            // Its shoulders and a blade held down, for what a camera frames.
+            framed_radius: 0.45,
+        ),
+    ),
+)

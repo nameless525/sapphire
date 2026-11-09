@@ -43,7 +43,7 @@ impl Floor {
         let world = PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("builds");
         sim.set_physics_world(world).expect("room");
         let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("good"));
-        let moves = Some(sim.add_move_set(warrior()));
+        let moves = Some(replay::add_warrior(&mut sim).expect("the warrior compiles"));
         let frail = Some(sim.add_move_set(frail_warrior()));
         Self { sim, moves, frail, controller }
     }
@@ -105,10 +105,6 @@ impl Floor {
         }
         panic!("it never fell");
     }
-}
-
-fn warrior() -> MoveSet {
-    replay::warrior_moves().expect("compiles")
 }
 
 fn frail_warrior() -> MoveSet {

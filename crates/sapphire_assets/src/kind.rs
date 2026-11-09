@@ -6,7 +6,7 @@ use std::fmt;
 use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk, ScriptError};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderError, ColliderSet};
 use sapphire_dialogue::{DIALOGUE_EXTENSION, Dialogue, DialogueError};
-use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet, MoveSetError};
+use sapphire_moves::{ENEMY_EXTENSION, Enemy, EnemyError, MOVE_SET_EXTENSION, MoveSet, MoveSetError};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
@@ -87,11 +87,14 @@ pub enum AssetKind {
     /// A conversation (`.sdialogue`, M3 Q2): [`Dialogue`], which a game walks and the simulation takes
     /// effects from. It names nothing: lines are keys, and voice lines cues by name.
     Dialogue = 22,
+    /// One kind of enemy (`.senemy`, M3 B3): [`Enemy`], its brains and phases for the simulation beside its
+    /// move set, which it depends on, and its look for the stage. CPU data, never uploaded.
+    Enemy = 23,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -114,6 +117,7 @@ impl AssetKind {
         Self::Encounter,
         Self::Script,
         Self::Dialogue,
+        Self::Enemy,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -147,6 +151,7 @@ impl AssetKind {
             Self::Encounter => ENCOUNTER_EXTENSION,
             Self::Script => SCRIPT_EXTENSION,
             Self::Dialogue => DIALOGUE_EXTENSION,
+            Self::Enemy => ENEMY_EXTENSION,
         }
     }
 
@@ -175,13 +180,14 @@ impl AssetKind {
             Self::Encounter => "encounter",
             Self::Script => "script",
             Self::Dialogue => "dialogue",
+            Self::Enemy => "enemy",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
-    /// string table, a font, font chains, a navmesh, a timeline, a script or a dialogue is ready once it and its
-    /// dependencies are decoded.
+    /// string table, a font, font chains, a navmesh, a timeline, a script, a dialogue or an enemy is ready
+    /// once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -203,14 +209,15 @@ impl AssetKind {
                 | Self::Encounter
                 | Self::Script
                 | Self::Dialogue
+                | Self::Enemy
         )
     }
 
-    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
-    /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
-    /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string
-    /// tables, fonts, font chains, navmeshes, timelines, scripts and dialogues are read on the CPU only, so they stay.
+    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures and probe
+    /// grids are GPU data, so their bytes go once uploaded (a new renderer has them read again). Materials
+    /// are small and CPU code reads them (live link, the editor), and rigs, skeletons, clips, collider sets,
+    /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
+    /// timelines, scripts, dialogues and enemies are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -233,6 +240,7 @@ impl AssetKind {
                 | Self::Encounter
                 | Self::Script
                 | Self::Dialogue
+                | Self::Enemy
         )
     }
 
@@ -244,13 +252,13 @@ impl AssetKind {
         matches!(self, Self::Material)
     }
 
-    /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
-    /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
-    /// clips, zones on collider sets and navmeshes, font chains on fonts, and textures, rigs, probe grids,
-    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines, UI documents,
-    /// scripts and dialogues on nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no
-    /// loop, so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
-    /// takes its place in this order.
+    /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and skeletons,
+    /// materials on textures, clips on skeletons, cues on sounds, animation graphs on clips, zones on
+    /// collider sets and navmeshes, font chains on fonts, enemies on move sets, and textures, rigs, probe
+    /// grids, skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines, UI
+    /// documents, scripts and dialogues on nothing. A zone's meshes and probes and an enemy's look aren't
+    /// dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
+    /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -261,6 +269,7 @@ impl AssetKind {
                 | (Self::AnimGraph, Self::Clip)
                 | (Self::Zone, Self::Colliders | Self::NavMesh | Self::Encounter)
                 | (Self::FontChains, Self::Font)
+                | (Self::Enemy, Self::MoveSet)
         )
     }
 
@@ -289,19 +298,21 @@ impl AssetKind {
             20 => Some(Self::Encounter),
             21 => Some(Self::Script),
             22 => Some(Self::Dialogue),
+            23 => Some(Self::Enemy),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
-    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
-    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
-    /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
-    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `ScriptChunk::read`, `Dialogue::read`), and returns the assets they reference, sorted and without
-    /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's textures,
-    /// a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains'
-    /// fonts. The packer records these as the asset's dependencies, and decode jobs check that a decoded
-    /// asset references exactly what its pack says it does.
+    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`, `Skeleton::read`,
+    /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
+    /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
+    /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `ScriptChunk::read`, `Dialogue::read`,
+    /// `Enemy::from_cooked`), and returns the assets they reference, sorted and without repeats: a mesh's
+    /// material slots bound to material assets and its skeleton, a material's textures, a clip's skeleton, a
+    /// cue's sounds, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
+    /// set. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
+    /// references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -394,6 +405,8 @@ impl AssetKind {
                 Dialogue::read(bytes)?;
                 Vec::new()
             }
+            // Its brains press its set's intents, so the set comes first. Its look is the stage's to load.
+            Self::Enemy => vec![Enemy::from_cooked(bytes)?.moves],
         };
         references.sort_unstable();
         references.dedup();
@@ -401,15 +414,20 @@ impl AssetKind {
     }
 
     /// [`Self::references`], and what an asset names without holding: a zone's cell and instance meshes
-    /// and its probe grid, which loading the zone doesn't load, so they aren't dependencies, but which
-    /// must ship with it. This is what decides which pack an asset goes in.
+    /// and its probe grid, and an enemy's meshes and graph, which loading it doesn't load, so they aren't
+    /// dependencies, but which must ship with it. This is what decides which pack an asset goes in.
     pub fn reach(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
         let mut reach = self.references(bytes)?;
-        if self == Self::Zone {
-            reach.extend(Zone::read(bytes)?.presentation_references());
-            reach.sort_unstable();
-            reach.dedup();
+        match self {
+            Self::Zone => reach.extend(Zone::read(bytes)?.presentation_references()),
+            Self::Enemy => {
+                let look = Enemy::from_cooked(bytes)?.look;
+                reach.extend([look.mesh, look.graph].into_iter().chain(look.held.map(|held| held.mesh)));
+            }
+            _ => {}
         }
+        reach.sort_unstable();
+        reach.dedup();
         Ok(reach)
     }
 }
@@ -488,4 +506,6 @@ pub enum AssetError {
     Script(#[from] ScriptError),
     #[error("invalid dialogue")]
     Dialogue(#[from] DialogueError),
+    #[error("invalid enemy")]
+    Enemy(#[from] EnemyError),
 }

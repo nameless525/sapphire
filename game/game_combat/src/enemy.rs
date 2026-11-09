@@ -6,12 +6,16 @@
 //! On the look-dev stage it holds one pose, as the character does without `--clip` ([`held`]): a
 //! [`CharacterPose`] with the rig's bones turned from its T-pose by [`pose::hold`], found by name rather
 //! than through a VRM's rig. The rig has no twist helpers, so no constraints follow. In a fight its
-//! graph poses it ([`GRAPH`], [`driver`]), on clips that cook onto it by retarget
+//! graph poses it ([`Look::graph`], [`driver`]), on clips that cook onto it by retarget
 //! (`sapphire_pipeline::combat::warrior`), its feet and head solved over that ([`ik_rig`]), and with no
 //! fight it holds that pose.
 //!
-//! - **Scale:** [`SCALE`]: see there.
-//! - **The blade** is a mesh of its own, placed at the rig's right hand slot ([`HAND_SLOT`]). No
+//! - **What draws it** is its kind of enemy's document (`warrior.enemy.ron`'s `look`, M3 B3), cooked, which
+//!   the stage reads as a [`Look`]: its mesh, graph and blade, the joint that holds the blade, its scale
+//!   and the figure a camera frames.
+//! - **Scale:** its document's 0.8, which `it_stands_a_head_taller_than_the_character_at_combat_distance`
+//!   explains.
+//! - **The blade** is a mesh of its own, placed at the rig's right hand slot ([`Look::hand`]). No
 //!   attachment system exists: when clips play, the blade moves by `place × model_from_joint[hand slot]`
 //!   each frame (`ArenaActors::hold_blade`), and each clip's retarget keeps that slot in the clip's grip
 //!   (`follow` in the pack's sidecars), so nothing corrects it here. It draws as a character with no
@@ -29,6 +33,7 @@ use sapphire_assets::mesh::Skin;
 use sapphire_assets::rig::HumanBone;
 use sapphire_gameplay::body::{BodyGraphAssets, BodyProfile, BodyProfileOptions};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_moves::EnemyLook;
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{FaceExpression, MeshHandle};
 
@@ -39,35 +44,69 @@ use sapphire_stage::lookdev::{FigureJoints, FigureShape};
 use sapphire_stage::pose::{self, RigJoints};
 use sapphire_stage::scene::Figure;
 
-/// The warrior, by its sidecar's ID (`content/combat/enemy/warrior.glb.meta`).
-pub(crate) const WARRIOR: AssetId = AssetId::from_text("322aa57e-957d-45f1-8d51-0c1d80f5d1d6");
-/// Its blade, by its sidecar's ID (`content/third_party/kaykit_skeletons/assets/Skeleton_Blade.gltf.meta`).
-pub(crate) const BLADE: AssetId = AssetId::from_text("1a612690-4615-4346-86f0-c903784d2db5");
+/// The warrior as a kind of enemy, by its sidecar's ID (`content/combat/enemy/warrior.enemy.ron.meta`):
+/// what the stage reads its [`Look`] from.
+pub(crate) const KIND: AssetId = AssetId::from_text("0a8af012-0a05-463c-8998-333a9c5d1f42");
 
-/// The graph it plays in a fight, by its sidecar's ID (`content/combat/enemy/warrior.animgraph.ron.meta`).
-pub(crate) const GRAPH: AssetId = AssetId::from_text("175de058-a4cd-4b75-8a04-4884914ac08f");
 /// What its graph draws from, which has nothing to draw for yet: it has no blink.
 const GRAPH_SEED: u32 = 2;
 
-/// The joint the blade grips, in the rig's own names.
-pub(crate) const HAND_SLOT: &str = "handslot.r";
+/// What draws the enemy, resolved from its kind's cooked [`EnemyLook`]. The stage draws one kind, which
+/// holds its weapon as a mesh of its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// Its skinned mesh, whose skin names its skeleton.
+    pub mesh: AssetId,
+    /// The graph it plays in a fight.
+    pub graph: AssetId,
+    /// The blade it holds.
+    pub blade: AssetId,
+    /// The joint the blade grips, in the rig's own names.
+    pub hand: String,
+    /// How much bigger than its mesh it draws.
+    pub scale: f32,
+    /// How far its crown stands over its feet, in metres, as drawn: what a camera frames.
+    pub crown: f32,
+    /// How high its eyes stand over its feet, in metres: what the character looks at in a fight.
+    pub eyes: f32,
+    /// How wide it stands from its middle, in metres, shoulders and all, what a camera fits in its frame.
+    /// Its capsule, which a body meets, is narrower. Clearing takes everyone to draw a tenth wider, for
+    /// arms and blades.
+    pub framed_radius: f32,
+}
 
-/// The derived model (`sapphire_pipeline::combat::warrior`) stands 2.33 units to its crown and 2.59
-/// to its horns' tips. This puts the crown at 1.87 m and the horns at 2.07 m against the character's
-/// 1.62 m: a head taller, as the reference fights' common enemies stand, with a blade whose reach,
-/// 1.8 m with the arm straight, is about what its moves author (`warrior.moves.ron`).
-pub(crate) const SCALE: f32 = 0.8;
+impl Look {
+    /// The stage's copy of `look`. Fails for a kind whose weapon isn't a mesh of its own.
+    pub fn of(look: &EnemyLook) -> Result<Self, String> {
+        let held =
+            look.held.as_ref().ok_or("the stage draws an enemy holding a mesh, and this kind holds none")?;
+        Ok(Self {
+            mesh: look.mesh,
+            graph: look.graph,
+            blade: held.mesh,
+            hand: held.joint.clone(),
+            scale: look.scale,
+            crown: look.crown(),
+            eyes: look.eyes(),
+            framed_radius: look.framed_radius,
+        })
+    }
 
-/// How far its crown stands over its feet, in metres, once it's at [`SCALE`]: what a camera frames.
-pub(crate) const CROWN: f32 = 2.33 * SCALE;
+    /// How big it draws.
+    #[must_use]
+    pub fn sizes(&self) -> Sizes {
+        Sizes::of(self)
+    }
 
-/// How wide it stands from its middle, in metres, shoulders and all, what a camera fits in its frame. Its
-/// capsule, which a body meets, is narrower. Clearing takes everyone to draw a tenth wider, for arms and
-/// blades, which comes to what `arena::framing` reads it as.
-pub(crate) const FRAMED_RADIUS: f32 = 0.45;
-
-/// How high its eyes stand over its feet, in metres: what the character looks at in a fight.
-pub(crate) const EYES: f32 = CROWN - 0.2;
+    /// The warrior's, from its document as this build holds it
+    /// ([`sapphire_gameplay::replay::warrior_enemy`]), for tests that cook nothing. A stage reads the cooked
+    /// one ([`KIND`]).
+    #[must_use]
+    pub fn warrior() -> Self {
+        Self::of(&sapphire_gameplay::replay::warrior_enemy().expect("it compiles").look)
+            .expect("it holds its blade")
+    }
+}
 
 /// Where it stands on the stage, in metres from the character at the origin: to the character's right
 /// and a little in front, at the distance its quick cut reaches from, turned toward the character and
@@ -150,6 +189,22 @@ pub struct EnemyMeshes {
     pub blade: MeshHandle,
 }
 
+/// How big a kind of enemy draws, and where a camera and a foe find it: its [`Look`]'s numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sizes {
+    pub scale: f32,
+    pub crown: f32,
+    pub eyes: f32,
+    pub framed_radius: f32,
+}
+
+impl Sizes {
+    #[must_use]
+    pub fn of(look: &Look) -> Self {
+        Self { scale: look.scale, crown: look.crown, eyes: look.eyes, framed_radius: look.framed_radius }
+    }
+}
+
 /// The enemy, ready to place: its held pose, the figure it makes, and where the pose puts the blade.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Held {
@@ -159,23 +214,25 @@ pub struct Held {
     pub blade: Mat4,
     /// The joint that holds it.
     pub hand: usize,
+    /// How big it draws.
+    pub sizes: Sizes,
 }
 
-/// Where the warrior stands on the stage: the model's space to the world.
-pub(crate) fn place() -> Mat4 {
+/// Where the warrior stands on the stage, at `scale`: the model's space to the world.
+pub(crate) fn place(scale: f32) -> Mat4 {
     Mat4::from_scale_rotation_translation(
-        Vec3::splat(SCALE),
+        Vec3::splat(scale),
         Quat::from_rotation_y(FACES.to_radians()),
         STANDS_AT,
     )
 }
 
-/// The warrior's held pose and what it makes, from its cooked skin and skeleton. Fails if the rig
-/// lacks a joint the pose needs.
-pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, String> {
+/// The warrior's held pose and what it makes, from its cooked skin and skeleton, as `look` holds its blade.
+/// Fails if the rig lacks a joint the pose needs.
+pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton, look: &Look) -> Result<Held, String> {
     check_counts(skin, skeleton)?;
-    let hand_slot =
-        skeleton.find(HAND_SLOT).ok_or_else(|| format!("the warrior's rig has no {HAND_SLOT:?}"))?;
+    let hand = look.hand.as_str();
+    let hand_slot = skeleton.find(hand).ok_or_else(|| format!("the warrior's rig has no {hand:?}"))?;
     let joints = rig_joints(skeleton)?;
     let head_joint = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
     let mut pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
@@ -191,7 +248,8 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, Str
     let blade = Mat4::from(pose.model()[hand_slot]);
     let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
     pose.write_palette(&mut palette);
-    Ok(Held { pose: RenderPose { palette, morph_weights: Vec::new() }, figure, blade, hand: hand_slot })
+    let pose = RenderPose { palette, morph_weights: Vec::new() };
+    Ok(Held { pose, figure, blade, hand: hand_slot, sizes: look.sizes() })
 }
 
 /// A driver for the warrior on `binding`, over its rest pose: what poses it in a fight
@@ -233,7 +291,11 @@ fn ik_bones(skeleton: &ArchivedSkeleton) -> Result<Vec<(HumanBone, usize)>, Stri
     BONES.iter().chain(&LEG_BONES).map(|&(name, bone)| Ok((bone, find(name)?))).collect()
 }
 
-pub(crate) fn simulation_profile(assets: BodyGraphAssets, look_height: f32) -> Result<BodyProfile, String> {
+pub(crate) fn simulation_profile(
+    assets: BodyGraphAssets,
+    look: &Look,
+    look_height: f32,
+) -> Result<BodyProfile, String> {
     let bones = ik_bones(assets.skeleton.view())?;
     BodyProfile::bind_named(
         assets,
@@ -241,9 +303,9 @@ pub(crate) fn simulation_profile(assets: BodyGraphAssets, look_height: f32) -> R
         HEAD_CENTER,
         BodyProfileOptions {
             floor: 0.0,
-            scale: SCALE,
+            scale: look.scale,
             morphs: &[],
-            contact_joints: &[HAND_SLOT],
+            contact_joints: &[look.hand.as_str()],
             seed: GRAPH_SEED,
             ground_turn: false,
             grounded_gather: false,
@@ -265,8 +327,8 @@ fn rig_joints(skeleton: &ArchivedSkeleton) -> Result<RigJoints, String> {
 
 /// Every joint name the warrior's rig needs, the hand slot last: for hot reload's test rigs.
 #[cfg(all(test, feature = "dev"))]
-pub(crate) fn joint_names() -> Vec<&'static str> {
-    BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain([HAND_SLOT]).collect()
+pub(crate) fn joint_names(hand: &str) -> Vec<&str> {
+    BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain([hand]).collect()
 }
 
 /// The figure the blade draws as, in its own space: no body, so it adds no capsule to the character's
@@ -285,7 +347,7 @@ mod tests {
 
     /// The rig's named joints in a chain, each 0.1 up its parent.
     fn rig() -> Vec<Joint> {
-        let names = BONES.iter().map(|&(name, _)| name).chain([HAND_SLOT]);
+        let names = BONES.iter().map(|&(name, _)| name).chain(["handslot.r"]);
         names
             .enumerate()
             .map(|(index, name)| Joint {
@@ -310,7 +372,8 @@ mod tests {
     fn it_holds_a_pose_with_the_blade_at_the_hand_slot() {
         let bytes = sapphire_anim::Skeleton::new(&rig()).to_cooked().expect("cooked");
         let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
-        let held = held(&skin_over(skeleton.len()), skeleton).expect("every joint is there");
+        let held =
+            held(&skin_over(skeleton.len()), skeleton, &Look::warrior()).expect("every joint is there");
         assert_eq!(held.pose.palette.len(), skeleton.len());
         assert_eq!(held.figure.feet.y, 0.0);
         assert!(held.figure.head.y > 0.0);
@@ -328,7 +391,7 @@ mod tests {
         let pose = CharacterPose::new(skeleton, &[], &[], Vec::new());
         let Err(error) = ik_rig(skeleton, &pose) else { panic!("it has only hips") };
         assert!(error.contains("no \"spine\""), "{error}");
-        let error = held(&skin_over(1), skeleton).expect_err("no joints");
+        let error = held(&skin_over(1), skeleton, &Look::warrior()).expect_err("no joints");
         assert!(error.contains("no \"handslot.r\""), "{error}");
     }
 
@@ -337,14 +400,20 @@ mod tests {
     fn a_mesh_for_other_joints_says_so() {
         let bytes = sapphire_anim::Skeleton::new(&rig()).to_cooked().expect("cooked");
         let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
-        let error = held(&skin_over(skeleton.len() + 1), skeleton).expect_err("one joint too many");
+        let error =
+            held(&skin_over(skeleton.len() + 1), skeleton, &Look::warrior()).expect_err("one joint too many");
         assert!(error.contains("joints"), "{error}");
     }
 
-    /// A head taller than the character, and standing within the reach of its quick cut.
+    /// The derived model (`sapphire_pipeline::combat::warrior`) stands 2.33 units to its crown and 2.59 to
+    /// its horns' tips. Its document's scale of 0.8 puts the crown at 1.87 m and the horns at 2.07 m against
+    /// the character's 1.62 m: a head taller, as the reference fights' common enemies stand, with a blade
+    /// whose reach, 1.8 m with the arm straight, is about what its moves author (`warrior.moves.ron`). And
+    /// it stands within the reach of its quick cut.
     #[test]
     fn it_stands_a_head_taller_than_the_character_at_combat_distance() {
-        let (crown, horns) = (CROWN, 2.59 * SCALE);
+        let look = Look::warrior();
+        let (crown, horns) = (look.crown, 2.59 * look.scale);
         assert!((1.75..1.95).contains(&crown) && horns < 2.2, "{crown} and {horns} m against 1.62 m");
         let distance = STANDS_AT.length();
         assert!((1.5..2.6).contains(&distance), "{distance} m from the character");

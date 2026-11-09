@@ -857,6 +857,7 @@ fn a_brains_enemy_moves_by_its_own_numbers() {
     sim.set_physics_world(world).expect("nobody's in it yet");
     let controller = Some(sim.add_controller_profile(&TODAY).expect("a good profile"));
     let warrior_set = sim.add_move_set(warrior(ControllerProfile { run_speed: 3.0, ..TODAY }));
+    sim.add_enemy(warrior_set, replay::warrior_enemy().expect("compiles").mind).expect("it fits");
     let player_set = sim.add_move_set(slice(Some(ControllerProfile { run_speed: 7.0, ..TODAY })));
     let enemy = sim
         .spawn(ActorSpawn {

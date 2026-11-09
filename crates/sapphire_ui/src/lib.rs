@@ -70,9 +70,10 @@ pub mod tree;
 
 pub use atlas::{Atlas, Sprite, Sprites};
 pub use hud::{
-    BarsDesign, BarsLayout, ButtonDesign, ButtonLayout, CombatHud, DamageKind, EnemyBarsDesign,
-    FighterValues, HudDesign, HudDesignError, HudLayout, HudStats, HudValues, MAX_OTHER_FOES, MeterDesign,
-    OtherFoes, PlayerBarsDesign, SkillValues, StickDesign, StickLayout, UltimateValues,
+    BarsDesign, BarsLayout, BossBar, BossBarsDesign, ButtonDesign, ButtonLayout, CombatHud, DamageKind,
+    EnemyBarsDesign, FighterValues, HudDesign, HudDesignError, HudLayout, HudStats, HudValues,
+    MAX_OTHER_FOES, MAX_PHASE_MARKS, MeterDesign, OtherFoes, PlayerBarsDesign, SkillValues, StickDesign,
+    StickLayout, UltimateValues,
 };
 pub use layout::{Anchor, Insets, Rect, UiMetrics};
 pub use paint::{Align, Paint, Painter};

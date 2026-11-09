@@ -192,7 +192,8 @@ pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};
 pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
-    MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, Tuned, WarpTarget,
+    MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, PhaseThresholds, Published, Tuned,
+    WarpTarget,
 };
 pub use navigation::{SimNavigation, WalkPath};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};

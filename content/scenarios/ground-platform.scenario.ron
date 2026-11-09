@@ -8,6 +8,7 @@
         zone: Some("content/zones/proving_ground/proving_ground.zone.ron"),
         encounters: ["content/zones/proving_ground/cart_yard.encounter.ron"],
         moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
         cast: [(moves: "player", at: "platform", faction: 1, soft_lock: true)],
     ),
 )

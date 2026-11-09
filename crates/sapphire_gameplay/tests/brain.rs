@@ -10,8 +10,8 @@ use sapphire_gameplay::{
 };
 use sapphire_math::Vec3;
 use sapphire_moves::{
-    Against, BrainAttackDocument, BrainDocument, BrainPace, BrainRiseDocument, MoveSet, MoveSetDocument,
-    Reach, Recent, Spacing, TickRange,
+    Against, BrainAttackDocument, BrainDocument, BrainPace, BrainRiseDocument, Enemy, EnemyDocument,
+    EnemyMind, MoveSet, MoveSetDocument, Reach, Recent, Spacing, TickRange,
 };
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::SimDuration;
@@ -70,12 +70,30 @@ fn brain_document() -> BrainDocument {
     }
 }
 
-/// The warrior's moves with this brain, as a cook writes them and the game reads them.
-fn warrior_with(brain: BrainDocument) -> MoveSet {
-    let mut document = MoveSetDocument::parse(WARRIOR).expect("parses");
-    document.brain = Some(brain);
-    let set = document.compile().expect("compiles");
-    MoveSet::from_cooked(&set.to_cooked().expect("cooks")).expect("reads back")
+/// A set of moves and the kind of enemy that plays it.
+type Kind = (MoveSet, EnemyMind);
+
+/// `moves` with the warrior's kind of enemy fighting with `brain`, as a cook writes them and the game reads
+/// them.
+fn kind_with(moves: &MoveSetDocument, brain: BrainDocument) -> Kind {
+    let mut enemy = EnemyDocument::parse(replay::WARRIOR_ENEMY).expect("parses");
+    enemy.brains = [(enemy.brain.clone(), brain)].into();
+    let set = moves.compile().expect("compiles");
+    let enemy = enemy.compile(moves).expect("compiles");
+    let set = MoveSet::from_cooked(&set.to_cooked().expect("cooks")).expect("reads back");
+    (set, Enemy::from_cooked(&enemy.to_cooked().expect("cooks")).expect("reads back").mind)
+}
+
+/// The warrior's moves with this brain.
+fn warrior_with(brain: BrainDocument) -> Kind {
+    kind_with(&MoveSetDocument::parse(WARRIOR).expect("parses"), brain)
+}
+
+/// Loads a kind into `sim`.
+fn add_kind(sim: &mut Simulation, (set, mind): Kind) -> sapphire_gameplay::MoveSetId {
+    let id = sim.add_move_set(set);
+    sim.add_enemy(id, mind).expect("its brain fits its moves");
+    id
 }
 
 /// A brain and its target, on flat ground and on their feet: its target is someone on the test moves.
@@ -92,11 +110,11 @@ impl Fight {
         Self::with_set(warrior_with(brain), distance, seed)
     }
 
-    fn with_set(set: MoveSet, distance: f32, seed: u64) -> Self {
-        Self::with_sets(set, replay::test_moves().expect("compiles"), distance, seed)
+    fn with_set(kind: Kind, distance: f32, seed: u64) -> Self {
+        Self::with_sets(kind, replay::test_moves().expect("compiles"), distance, seed)
     }
 
-    fn with_sets(set: MoveSet, target_set: MoveSet, distance: f32, seed: u64) -> Self {
+    fn with_sets(kind: Kind, target_set: MoveSet, distance: f32, seed: u64) -> Self {
         let mut sim = Simulation::new(SimConfig { seed, max_actors: 4, ..SimConfig::default() });
         let floor = StaticCollider {
             id: ColliderId(0),
@@ -107,7 +125,7 @@ impl Fight {
         let world = PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("builds");
         sim.set_physics_world(world).expect("room");
         let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("good"));
-        let warrior = Some(sim.add_move_set(set));
+        let warrior = Some(add_kind(&mut sim, kind));
         let others = Some(sim.add_move_set(target_set));
         let brain = sim
             .spawn(ActorSpawn {
@@ -275,8 +293,8 @@ fn a_score_is_its_weight_by_its_reach_by_its_target_by_its_recency() {
     let mut document = brain_document();
     document.attacks[0].against = Against { opening: 1.6, untouchable: 0.0, ..Against::default() };
     document.attacks[0].recent = Recent { ticks: 200, floor: 0.35 };
-    let set = warrior_with(document);
-    let def = set.brain().expect("it has one");
+    let (_, mind) = warrior_with(document);
+    let def = mind.brain(0).expect("it has one");
     let (swipe, overhead, lunge) = (def.attacks[0], def.attacks[1], def.attacks[2]);
     assert_near("swipe", swipe.score(2.1, Free, None), 0.5);
     assert_near("overhead", overhead.score(2.1, Free, None), 0.59231);
@@ -484,7 +502,7 @@ fn the_order_brains_draw_in_is_their_ids_not_the_pools() {
         let mut brain = brain_document();
         brain.patience = TickRange { min: 20, max: 70 };
         brain.pace.circle_share = 0.8;
-        let moves = Some(sim.add_move_set(warrior_with(brain)));
+        let moves = Some(add_kind(&mut sim, warrior_with(brain)));
         let at = |x: f32, z: f32, yaw: f32| ActorSpawn {
             position: Vec3::new(x, 0.0, z),
             yaw,
@@ -623,12 +641,11 @@ fn it_rises_inside_the_knockdowns_last_third() {
 #[test]
 fn a_poise_break_lying_down_replaces_the_knockdown_and_its_rise() {
     let mut document = MoveSetDocument::parse(WARRIOR).expect("parses");
-    document.brain = Some(brain_document());
     document.fighter.as_mut().expect("a fighter").poise = 10;
-    let set = document.compile().expect("compiles");
+    let kind = kind_with(&document, brain_document());
 
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: 4, ..SimConfig::default() });
-    let moves = Some(sim.add_move_set(set));
+    let moves = Some(add_kind(&mut sim, kind));
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
     // Close enough that a knockdown's 1.4 m back stays in reach.
     let at = Vec3::new(0.0, 0.0, 0.8);
@@ -684,12 +701,11 @@ fn it_stops_when_its_defeated() {
     let mut document = MoveSetDocument::parse(WARRIOR).expect("parses");
     let mut brain = brain_document();
     brain.patience = TickRange { min: 60, max: 60 };
-    document.brain = Some(brain);
     document.fighter.as_mut().expect("a fighter").health = 1;
-    let frail = document.compile().expect("compiles");
+    let frail = kind_with(&document, brain);
 
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: 4, ..SimConfig::default() });
-    let frail = Some(sim.add_move_set(frail));
+    let frail = Some(add_kind(&mut sim, frail));
     let attacker = sim.spawn(ActorSpawn { moves: frail, ..ActorSpawn::default() }).expect("room");
     let at = Vec3::new(0.0, 0.0, 1.5);
     let falling = sim
@@ -827,13 +843,13 @@ fn nothing_about_it_is_special_to_the_move_system() {
     assert!(fight.sim.stats().intents_pressed >= 1, "through the same counter a button goes through");
 }
 
-/// Without a brain section, a set can't be given one, and a live actor on one with a brain does nothing
-/// until it's told who to fight. A brain has no effect on a checksum until then: no draws and no stick.
+/// A set no kind of enemy plays can't be given a brain, and a live actor on one that is does nothing until
+/// it's told who to fight. A brain has no effect on a checksum until then: no draws and no stick.
 #[test]
-fn a_brain_comes_only_from_a_set_that_has_one() {
+fn a_brain_comes_only_from_a_kind_of_enemy() {
     let mut sim = Simulation::new(SimConfig::default());
     let plain = Some(sim.add_move_set(replay::test_moves().expect("compiles")));
-    let warrior = Some(sim.add_move_set(warrior_with(brain_document())));
+    let warrior = Some(add_kind(&mut sim, warrior_with(brain_document())));
     let (no_brain, has_one) = (
         sim.spawn(ActorSpawn { moves: plain, ..ActorSpawn::default() }).expect("room"),
         sim.spawn(ActorSpawn { moves: warrior, ..ActorSpawn::default() }).expect("room"),
@@ -855,14 +871,14 @@ fn a_brain_comes_only_from_a_set_that_has_one() {
 #[test]
 fn each_shipped_attack_lands_from_where_it_says_it_suits() {
     let shipped = replay::warrior_moves().expect("compiles");
-    let def = shipped.brain().expect("the warrior has a brain");
+    let mind = replay::warrior_enemy().expect("compiles").mind;
+    let def = mind.brain(0).expect("the warrior has a brain");
     for attack in &def.attacks {
         let intent = shipped.intents()[attack.intent() as usize].name();
         let (near, best, far) = (attack.reach.near, attack.reach.best, attack.reach.far);
         // Capsules keep them this far apart, so nearer than this can't be asked.
         let closest = near.max(0.7);
         for distance in [closest, (closest + best) * 0.5, best, (best + far) * 0.5, far - 0.05] {
-            let mut document = MoveSetDocument::parse(WARRIOR).expect("parses");
             let mut brain = brain_document();
             brain.patience = TickRange { min: 1, max: 1 };
             brain.attacks = vec![BrainAttackDocument {
@@ -877,8 +893,7 @@ fn each_shipped_attack_lands_from_where_it_says_it_suits() {
                 against: Against::default(),
                 recent: Recent::default(),
             }];
-            document.brain = Some(brain);
-            let mut fight = Fight::with_set(document.compile().expect("compiles"), distance, 1);
+            let mut fight = Fight::with_set(warrior_with(brain), distance, 1);
             let mut landed = false;
             for _ in 0..120 {
                 fight.step();
@@ -898,8 +913,8 @@ fn the_shipped_brain_is_the_one_a_replay_runs_on() {
     let view = sim.actor(cast[1]).expect("alive");
     assert!(view.brain.is_on());
     assert_eq!(view.brain.target(), Some(cast[0]));
-    let set = sim.move_library().current(view.moves.set.expect("a set")).expect("loaded");
-    assert_eq!(set.brain(), replay::warrior_moves().expect("compiles").brain());
+    let mind = sim.move_library().mind(view.moves.set.expect("a set")).expect("a kind of enemy");
+    assert_eq!(mind.brain(0), replay::warrior_enemy().expect("compiles").mind.brain(0));
     assert!(!sim.actor(cast[0]).expect("alive").brain.is_on(), "the player's input is its own");
     assert!(!sim.actor(cast[0]).expect("alive").fighter.is_defeated());
 }
@@ -911,7 +926,7 @@ fn a_tuned_brain_changes_the_hash_a_replay_checks() {
         let mut sim = Simulation::new(SimConfig::default());
         let mut brain = brain_document();
         brain.patience = TickRange { min: patience, max: patience };
-        sim.add_move_set(warrior_with(brain));
+        add_kind(&mut sim, warrior_with(brain));
         sim.tables_hash()
     };
     assert_eq!(hash(40), hash(40));
@@ -1063,7 +1078,8 @@ fn a_perfect_dodge_of_the_warrior_opens_a_counter_into_the_dash_attack() {
 #[test]
 fn every_intent_a_brain_can_press_has_no_button() {
     let shipped = replay::warrior_moves().expect("compiles");
-    let def = shipped.brain().expect("a brain");
+    let mind = replay::warrior_enemy().expect("compiles").mind;
+    let def = mind.brain(0).expect("a brain");
     let rise = def.rise.expect("it gets up").intent();
     for at in def.attacks.iter().map(|attack| attack.intent()).chain([rise]) {
         assert_eq!(shipped.intents()[at as usize].button, None);

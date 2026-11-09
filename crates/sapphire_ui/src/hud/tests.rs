@@ -207,6 +207,37 @@ fn a_fighter_with_no_enemy_draws_fewer_bars() {
     assert!(alone < with);
 }
 
+/// A boss's bars draw in the boss's place, wider than a foe's, with an inked mark across its health for each
+/// phase it has room for, and none at either end of the bar (M3 B3).
+#[test]
+fn a_boss_draws_its_bars_in_its_own_place_with_a_mark_for_each_phase() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(874.0, 402.0), Insets::default()));
+    assert!(layout.boss.hp.width() > layout.enemy.hp.width(), "wider than a foe's");
+    assert!(layout.boss.hp.height() > layout.enemy.hp.height(), "and taller");
+    let foe = draw(&layout, &values()).quads;
+    let mut boss = BossBar::default();
+    for share in [0.75, 0.5, 0.25, 0.0, 1.0, f32::NAN] {
+        boss.mark(share);
+    }
+    assert_eq!(boss.marks(), [0.75, 0.5, 0.25], "an end, or no number, says nothing");
+    let drawn = draw(&layout, &HudValues { boss: Some(boss), ..values() }).quads;
+    assert_eq!(drawn.len(), foe.len() + 3, "a mark each");
+    let inked = drawn.iter().filter(|quad| quad.color[..3] == INK[..3]).count();
+    assert_eq!(inked, foe.iter().filter(|quad| quad.color[..3] == INK[..3]).count() + 3);
+    let alone = draw(&layout, &HudValues { enemy: None, boss: Some(boss), ..values() }).quads;
+    assert_eq!(
+        alone.len(),
+        draw(&layout, &HudValues { enemy: None, ..values() }).quads.len(),
+        "no foe, no marks"
+    );
+
+    let mut full = BossBar::default();
+    for _ in 0..MAX_PHASE_MARKS + 2 {
+        full.mark(0.5);
+    }
+    assert_eq!(full.marks().len(), MAX_PHASE_MARKS, "what it has no room for isn't shown");
+}
+
 /// A small bar for each other foe, in a row under the enemy's, each inside it however narrow the frame. With
 /// none, it draws what it always drew.
 #[test]
@@ -546,6 +577,7 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
     let bad = HudValues {
         player: FighterValues { hp: f32::NAN, poise: 7.0, hp_points: None },
         enemy: Some(FighterValues { hp: -1.0, poise: f32::INFINITY, hp_points: None }),
+        boss: None,
         skill: SkillValues { cooldown: f32::NAN, seconds: None },
         others: {
             let mut others = OtherFoes::default();
@@ -581,6 +613,7 @@ fn a_design_with_a_field_it_doesnt_know_or_a_number_it_cant_lay_out_is_refused_b
         ("attack: (offset: (0.0, 0.0), half: 46.0", "attack: (offset: (0.0, 0.0), half: 0.0", "attack.half"),
         ("rest: (92.0, -84.0)", "rest: (NaN, -84.0)", "stick.rest.0"),
         ("poise_to: 0.86", "poise_to: 1.86", "enemy.poise_to"),
+        ("mark_width: 2.5", "mark_width: 0.0", "boss.mark_width"),
     ] {
         let refused = HudDesign::from_ron(&shipped.replacen(from, to, 1)).expect_err(from);
         assert!(refused.to_string().contains(named), "{from}: {refused}");

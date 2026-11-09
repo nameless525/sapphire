@@ -65,6 +65,8 @@
 //!   keys depend on those assets' keys. Such a mesh cooks before the clips, since a key-pose document
 //!   for its rig reads its morph targets.
 //! - **Encounter documents** cook `.encounter.ron` → `.sencounter` (M3 B2, [`encounter`]): a zone's fights.
+//! - **Enemy documents** cook `.enemy.ron` → `.senemy` (M3 B3, [`enemy`]): one kind of enemy, its brains
+//!   compiled against the `.moves.ron` it names, which is its one input besides itself.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Timelines** cook `.timeline.ron` → `.stimeline` (M3 Q1, [`timeline`]), reading nothing besides
@@ -158,7 +160,7 @@ use sapphire_assets::{AssetId, AssetKind};
 use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_dialogue::{DIALOGUE_EXTENSION, Dialogue};
-use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
+use sapphire_moves::{BakedTables, ClipMotionDocument, ENEMY_EXTENSION, Enemy, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
@@ -177,6 +179,7 @@ use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
 use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
 use crate::encounter::{self, EncounterCookError};
+use crate::enemy::{self, EnemyCookError};
 use crate::font::{self, FontCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
@@ -357,6 +360,12 @@ impl Recipe {
                 format: Encounter::VERSION,
                 extension: ENCOUNTER_EXTENSION,
             },
+            ImportSettings::Enemy(_) => Self {
+                importer: enemy::IMPORTER,
+                cooker: enemy::COOKER,
+                format: Enemy::VERSION,
+                extension: ENEMY_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -492,6 +501,8 @@ impl Recipe {
             colliders::output_path(relative, self.extension)
         } else if encounter::is_source(relative) {
             encounter::output_path(relative, self.extension)
+        } else if enemy::is_source(relative) {
+            enemy::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if font::is_chains_source(relative) {
@@ -621,6 +632,15 @@ pub enum CookError {
         #[source]
         source: Box<EncounterCookError>,
     },
+    #[error("failed to cook enemy document {}", path.display())]
+    Enemy {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<EnemyCookError>,
+    },
+    #[error("enemy {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
+    EnemyReference { path: PathBuf, field: &'static str, what: &'static str, id: AssetId },
     #[error("failed to cook locale {}", path.display())]
     Locale {
         path: PathBuf,
@@ -1511,6 +1531,7 @@ fn sub_assets(
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
+        | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::FontChains(_)
@@ -1700,6 +1721,15 @@ impl Planned {
 
     fn is_move_set(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::MoveSet(_))
+    }
+
+    /// Whether it cooks to a mesh: a mesh source's own asset.
+    fn is_mesh(&self) -> bool {
+        self.part == Part::Own && self.asset.meta.importer.mesh().is_some()
+    }
+
+    fn is_anim_graph(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::AnimGraph(_))
     }
 
     /// Whether it's a zone's `.szone`, which reads its meshes.
@@ -2383,6 +2413,11 @@ fn cook_source(
         }
         ImportSettings::Encounter(_) => encounter::cook(bytes)
             .map_err(|source| CookError::Encounter { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Enemy(_) => {
+            let (moves_path, moves) = enemy_moves(path, bytes, assets)?;
+            enemy::cook(bytes, &moves_path, &moves)
+                .map_err(|source| CookError::Enemy { path: path.to_owned(), source: Box::new(source) })
+        }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -2948,6 +2983,12 @@ fn source_dependencies(
             })
             .collect(),
         ImportSettings::MoveSet(_) => Ok(move_set_dependencies(bytes, assets)),
+        ImportSettings::Enemy(_) => {
+            // Its brains compile against the document, so its bytes are in the key, by the ID it's named by.
+            let (_, moves) = enemy_moves(path, bytes, assets)?;
+            let id = enemy::read(bytes).expect("`enemy_moves` read it").moves;
+            Ok(vec![Dependency::File { path: format!("#moves {id}"), hash: blake3::hash(&moves) }])
+        }
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -3052,6 +3093,29 @@ fn clips_of_set<'a>(bytes: &[u8], assets: &Assets<'a>) -> Vec<&'a Planned> {
     let Ok(document) = moves::read(bytes) else { return Vec::new() };
     let clips = document.moves.iter().filter_map(|mv| mv.motion.clip.as_ref());
     clips.filter_map(|clip| assets.clip_of_move(clip).ok()).collect()
+}
+
+/// An enemy's moves document, where it is and its bytes, once what the enemy names has been held to the
+/// kinds of asset it must be: on every cook, as a zone's references are.
+fn enemy_moves(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result<(PathBuf, Vec<u8>), CookError> {
+    let document = enemy::read(bytes)
+        .map_err(|source| CookError::Enemy { path: path.to_owned(), source: Box::new(source) })?;
+    let reference = |field: &'static str, what, id, good: fn(&Planned) -> bool| {
+        if assets.get(id).is_some_and(good) {
+            Ok(())
+        } else {
+            Err(CookError::EnemyReference { path: path.to_owned(), field, what, id })
+        }
+    };
+    reference("moves", "a move set document", document.moves, Planned::is_move_set)?;
+    reference("look.mesh", "a mesh", document.look.mesh, Planned::is_mesh)?;
+    reference("look.graph", "an animation graph", document.look.graph, Planned::is_anim_graph)?;
+    if let Some(held) = &document.look.held {
+        reference("look.held.mesh", "a mesh", held.mesh, Planned::is_mesh)?;
+    }
+    let source = assets.get(document.moves).expect("just checked").asset.path.clone();
+    let moves = fs::read(&source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
+    Ok((source, moves))
 }
 
 /// What a zone's part reads besides its own document, and the check of what it names, on every cook.
@@ -3329,6 +3393,7 @@ fn imported_mesh(
         | ImportSettings::KeyPose(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
+        | ImportSettings::Enemy(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Font(_)

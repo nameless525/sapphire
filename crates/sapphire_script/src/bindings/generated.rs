@@ -180,6 +180,17 @@ unsafe extern "C-unwind" fn give_brain(state: *mut lua_State) -> c_int {
     0
 }
 
+unsafe extern "C-unwind" fn set_brain(state: *mut lua_State) -> c_int {
+    with_frame(|frame| {
+        // SAFETY: Luau passes a live state, and reading a number can't raise.
+        let actor = unsafe { number(state, 1, frame) };
+        // SAFETY: Luau passes a live state, and reading a number can't raise.
+        let name = unsafe { number(state, 2, frame) };
+        api::set_brain(frame, actor, name)
+    });
+    0
+}
+
 unsafe extern "C-unwind" fn give_soft_lock(state: *mut lua_State) -> c_int {
     with_frame(|frame| {
         // SAFETY: Luau passes a live state, and reading a number can't raise.
@@ -218,6 +229,7 @@ pub const API: &[Declared] = &[
     Declared { binding: Binding { name: "mark", function: mark }, args: &["value"], returns: &[] },
     Declared { binding: Binding { name: "force_move", function: force_move }, args: &["actor", "name"], returns: &[] },
     Declared { binding: Binding { name: "give_brain", function: give_brain }, args: &["actor"], returns: &[] },
+    Declared { binding: Binding { name: "set_brain", function: set_brain }, args: &["actor", "name"], returns: &[] },
     Declared { binding: Binding { name: "give_soft_lock", function: give_soft_lock }, args: &["actor"], returns: &[] },
     Declared { binding: Binding { name: "set_flag", function: set_flag }, args: &["name", "value"], returns: &[] },
 ];

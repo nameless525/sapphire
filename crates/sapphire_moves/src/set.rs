@@ -967,15 +967,14 @@ pub struct MoveSet {
     intents: Vec<IntentDef>,
     neutral: Vec<Allow>,
     fighter: Option<FighterDef>,
-    brain: Option<BrainDef>,
     moves: Vec<Move>,
 }
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
     /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs. 8: M3
-    /// P3's `apart` and `watch` on a brain.
-    const VERSION: u32 = 8;
+    /// P3's `apart` and `watch` on a brain. 9: M3 B3 moved the brain to an enemy's document.
+    const VERSION: u32 = 9;
 }
 
 /// A move set that can't be built, read or written.
@@ -1025,10 +1024,9 @@ impl MoveSet {
         intents: Vec<IntentDef>,
         neutral: Vec<Allow>,
         fighter: Option<FighterDef>,
-        brain: Option<BrainDef>,
         moves: Vec<Move>,
     ) -> Self {
-        Self { intents, neutral, fighter, brain, moves }
+        Self { intents, neutral, fighter, moves }
     }
 
     /// Its fighter, for a test to damage: what no document can make.
@@ -1062,9 +1060,6 @@ impl MoveSet {
         self.check_allows("a neutral start", &self.neutral)?;
         if let Some(fighter) = &self.fighter {
             self.check_fighter(fighter)?;
-        }
-        if let Some(brain) = &self.brain {
-            self.check_brain(brain)?;
         }
         let mut names = BTreeSet::new();
         for mv in &self.moves {
@@ -1153,7 +1148,11 @@ impl MoveSet {
         Ok(())
     }
 
-    fn check_brain(&self, brain: &BrainDef) -> Result<(), MoveSetError> {
+    /// What the simulation relies on of a brain that presses this set's intents, for bytes that may not
+    /// have come from a document (an enemy's cook, M3 B3), and for a set replacing the one a brain was
+    /// compiled against: [`MoveSetDocument::compile_brain`](crate::MoveSetDocument::compile_brain)'s
+    /// checks, of the cooked values. A brain's intents are places in this set's intents.
+    pub fn check_brain(&self, brain: &BrainDef) -> Result<(), MoveSetError> {
         let Spacing { near, far } = brain.spacing;
         if !(near.is_finite() && far.is_finite() && 0.0 <= near && near < far) {
             return damaged(format!("a brain's spacing {near}..{far} isn't a band of distances"));
@@ -1408,12 +1407,6 @@ impl MoveSet {
         self.fighter.as_ref()?.movement.as_ref()
     }
 
-    /// How its actors fight on their own, if they can.
-    #[must_use]
-    pub const fn brain(&self) -> Option<&BrainDef> {
-        self.brain.as_ref()
-    }
-
     /// The moves, in document order: [`Allow::target`] indexes these.
     #[must_use]
     pub fn moves(&self) -> &[Move] {
@@ -1641,23 +1634,26 @@ mod tests {
         assert_eq!(one.sweep(read(Some(0), 9000)), Some((sub(3000), sub(3000))));
     }
 
-    /// The test content with a brain as well, so that every part of a set is there to damage.
+    const SLICE: &str = include_str!("../test_content/slice.moves.ron");
+
+    /// The test content, every part of a set there to damage.
     fn whole() -> MoveSet {
-        const SLICE: &str = include_str!("../test_content/slice.moves.ron");
-        const BRAIN: &str = r#"brain: (
+        crate::MoveSetDocument::parse(SLICE).expect("parses").compile().expect("compiles")
+    }
+
+    /// A brain on the test content's moves.
+    fn good_brain() -> BrainDef {
+        const BRAIN: &str = r#"(
             spacing: (near: 1.0, far: 2.0),
             pace: (approach: 0.7, retreat: 0.3, circle: 0.3, circle_share: 0.5, turn_rate_degrees: 300.0),
             patience: (min: 10, max: 20),
             rest: (min: 10, max: 20),
             recover: (min: 5, max: 10),
             attacks: [(intent: "light", weight: 1.0, reach: (near: 0.0, best: 1.0, far: 2.0))],
-            rise: (intent: "light", during: "light_1", from: 12, to: 20),
-        ),
-        fighter: ("#;
-        crate::MoveSetDocument::parse(&SLICE.replacen("fighter: (", BRAIN, 1))
-            .expect("parses")
-            .compile()
-            .expect("compiles")
+            rise: Some((intent: "light", during: "light_1", from: 12, to: 20)),
+        )"#;
+        let brain: crate::BrainDocument = sapphire_serialize::ron::from_str(BRAIN).expect("parses");
+        crate::MoveSetDocument::parse(SLICE).expect("parses").compile_brain(&brain).expect("compiles")
     }
 
     fn named<'a>(set: &'a mut MoveSet, name: &str) -> &'a mut Move {
@@ -1674,10 +1670,6 @@ mod tests {
 
     fn fighter(set: &mut MoveSet) -> &mut FighterDef {
         set.fighter.as_mut().expect("in the test content")
-    }
-
-    fn brain(set: &mut MoveSet) -> &mut BrainDef {
-        set.brain.as_mut().expect("in the test content")
     }
 
     fn attack(set: &mut MoveSet) -> &mut Attack {
@@ -1715,7 +1707,6 @@ mod tests {
             }, "`light_1`'s phases"),
             ("phases past a move's limit", |s| light(s).recovery = MAX_MOVE_TICKS, "`light_1`'s phases"),
             ("phases of no ticks", |s| {
-                s.brain = None;
                 let mv = light(s);
                 (mv.startup, mv.active, mv.recovery) = (0, 0, 0);
                 mv.hitboxes.clear();
@@ -1750,44 +1741,6 @@ mod tests {
             ("a hurtbox nowhere", |s| fighter(s).hurtboxes[0].local = NOT_FINITE, "hurtbox"),
             ("a hurtbox turned by no rotation", |s| fighter(s).hurtboxes[0].local = NOT_UNIT, "hurtbox"),
             ("a reaction that isn't a move", |s| fighter(s).reactions.light = Some(Name::new("ghost").as_u64()), "reaction"),
-
-            // A brain.
-            ("spacing backwards", |s| brain(s).spacing = Spacing { near: 2.0, far: 1.0 }, "spacing"),
-            ("spacing not finite", |s| brain(s).spacing.far = f32::NAN, "spacing"),
-            ("a distance apart below nothing", |s| brain(s).apart = -1.0, "apart"),
-            ("a distance apart not finite", |s| brain(s).apart = f32::NAN, "apart"),
-            ("a foe lost before it's seen", |s| brain(s).watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }), "watch"),
-            ("a sight not finite", |s| brain(s).watch = Some(BrainWatch { sight: f32::NAN, lose: 8.0, walk: 0.3 }), "watch"),
-            ("a patrol walked at no speed", |s| brain(s).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }), "watch"),
-            ("a tilt past 1", |s| brain(s).pace.approach = 1.5, "pace"),
-            ("a share not finite", |s| brain(s).pace.circle_share = f32::NAN, "pace"),
-            ("a turn of nothing", |s| brain(s).pace.turn_rate_degrees = 0.0, "turn"),
-            ("a range backwards", |s| brain(s).patience = crate::TickRange { min: 2, max: 1 }, "patience"),
-            ("a range that would overflow its draw", |s| brain(s).rest = crate::TickRange { min: 0, max: u32::MAX }, "rest"),
-            ("a recovery past a move's limit", |s| brain(s).recover = crate::TickRange { min: 0, max: MAX_MOVE_TICKS + 1 }, "recover"),
-            ("a brain with no attack", |s| brain(s).attacks.clear(), "attack"),
-            ("an attack twice", |s| {
-                let attack = brain(s).attacks[0];
-                brain(s).attacks.push(attack);
-            }, "attack"),
-            ("an attack nothing starts", |s| {
-                let unstarted = s.intents.iter().position(|intent| intent.label == "light").unwrap();
-                let light = s.intents[unstarted].name();
-                s.neutral.retain(|allow| allow.intent() != light);
-            }, "neutral"),
-            ("an attack weighing nothing it can say", |s| brain(s).attacks[0].weight = f32::NAN, "weight"),
-            ("a reach out of order", |s| brain(s).attacks[0].reach = Reach { near: 2.0, best: 1.0, far: 0.0 }, "reach"),
-            ("a multiplier below zero", |s| brain(s).attacks[0].against.free = -1.0, "multiplier"),
-            ("a memory floor past 1", |s| brain(s).attacks[0].recent = Recent { ticks: 10, floor: 2.0 }, "floor"),
-            ("a rise from no move", |s| {
-                let rise = brain(s).rise.as_mut().unwrap();
-                *rise = crate::brain::BrainRise::new(rise.intent(), Name::new("ghost"), rise.from, rise.to);
-            }, "rise"),
-            ("a rise outside any cancel", |s| brain(s).rise.as_mut().unwrap().to = 900, "rise"),
-            ("a rise of no ticks", |s| {
-                let rise = brain(s).rise.as_mut().unwrap();
-                rise.to = rise.from;
-            }, "rise"),
 
             // Moves' names and root.
             ("a move with no name", |s| light(s).label = String::new(), "move"),
@@ -1914,6 +1867,65 @@ mod tests {
             MoveSet::from_cooked(&equal.to_cooked().expect("writes")).is_ok(),
             "equal-start authored order is valid"
         );
+    }
+
+    /// A brain's bytes can come from anywhere too, and a set can be replaced under one: each value no
+    /// document makes is a named error.
+    #[test]
+    fn a_brain_holds_what_a_document_does_whichever_way_it_was_made() {
+        type Damage = fn(&mut MoveSet, &mut BrainDef);
+        let (good, brain) = (whole(), good_brain());
+        assert!(good.check_brain(&brain).is_ok());
+        #[rustfmt::skip]
+        let rows: &[(&str, Damage, &str)] = &[
+            ("spacing backwards", |_, b| b.spacing = Spacing { near: 2.0, far: 1.0 }, "spacing"),
+            ("spacing not finite", |_, b| b.spacing.far = f32::NAN, "spacing"),
+            ("a distance apart below nothing", |_, b| b.apart = -1.0, "apart"),
+            ("a distance apart not finite", |_, b| b.apart = f32::NAN, "apart"),
+            ("a foe lost before it's seen", |_, b| b.watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }), "watch"),
+            ("a sight not finite", |_, b| b.watch = Some(BrainWatch { sight: f32::NAN, lose: 8.0, walk: 0.3 }), "watch"),
+            ("a patrol walked at no speed", |_, b| b.watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }), "watch"),
+            ("a tilt past 1", |_, b| b.pace.approach = 1.5, "pace"),
+            ("a share not finite", |_, b| b.pace.circle_share = f32::NAN, "pace"),
+            ("a turn of nothing", |_, b| b.pace.turn_rate_degrees = 0.0, "turn"),
+            ("a range backwards", |_, b| b.patience = crate::TickRange { min: 2, max: 1 }, "patience"),
+            ("a range that would overflow its draw", |_, b| b.rest = crate::TickRange { min: 0, max: u32::MAX }, "rest"),
+            ("a recovery past a move's limit", |_, b| b.recover = crate::TickRange { min: 0, max: MAX_MOVE_TICKS + 1 }, "recover"),
+            ("a brain with no attack", |_, b| b.attacks.clear(), "attack"),
+            ("an attack twice", |_, b| {
+                let attack = b.attacks[0];
+                b.attacks.push(attack);
+            }, "attack"),
+            ("an attack nothing starts", |s, _| {
+                let unstarted = s.intents.iter().position(|intent| intent.label == "light").unwrap();
+                let light = s.intents[unstarted].name();
+                s.neutral.retain(|allow| allow.intent() != light);
+            }, "neutral"),
+            ("an attack weighing nothing it can say", |_, b| b.attacks[0].weight = f32::NAN, "weight"),
+            ("a reach out of order", |_, b| b.attacks[0].reach = Reach { near: 2.0, best: 1.0, far: 0.0 }, "reach"),
+            ("a multiplier below zero", |_, b| b.attacks[0].against.free = -1.0, "multiplier"),
+            ("a memory floor past 1", |_, b| b.attacks[0].recent = Recent { ticks: 10, floor: 2.0 }, "floor"),
+            ("a rise from no move", |_, b| {
+                let rise = b.rise.as_mut().unwrap();
+                *rise = crate::brain::BrainRise::new(rise.intent(), Name::new("ghost"), rise.from, rise.to);
+            }, "rise"),
+            ("a rise outside any cancel", |_, b| b.rise.as_mut().unwrap().to = 900, "rise"),
+            ("a rise of no ticks", |_, b| {
+                let rise = b.rise.as_mut().unwrap();
+                rise.to = rise.from;
+            }, "rise"),
+
+        ];
+        let mut unrefused = Vec::new();
+        for &(what, damage, says) in rows {
+            let (mut set, mut brain) = (good.clone(), brain.clone());
+            damage(&mut set, &mut brain);
+            match set.check_brain(&brain) {
+                Err(MoveSetError::Damaged(text)) if text.contains(says) => {}
+                other => unrefused.push(format!("{what}: {:?}", other.err())),
+            }
+        }
+        assert!(unrefused.is_empty(), "{unrefused:#?}");
     }
 
     /// A root that runs out of the world is what the controller's arithmetic can't carry, by a cook's

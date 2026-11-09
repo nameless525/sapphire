@@ -194,13 +194,14 @@ macro_rules! game_scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-/// `arena-skirmish` plays eight fighters (M3 B1), on the director.
+/// `arena-skirmish` plays eight fighters (M3 B1), on the director. `arena-boss` plays a boss (M3 B3), just
+/// past the phase where it enrages, with its bar and phase marks.
 ///
 /// The display text scenes (M3 U8) draw a title in the display face at four sizes over the HUD scenes'
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 205] {
+pub fn scenes() -> [Scene; 206] {
     [
         Scene {
             name: "turntable-start",
@@ -2638,6 +2639,33 @@ pub fn scenes() -> [Scene; 205] {
             ],
             thresholds: Thresholds::default(),
         },
+        // A boss (M3 B3) a few steps past the hit that took it under half its health, at tick 652 of its
+        // replay: the HUD has its bar in the boss's place, wider than a foe's, with an inked mark at each of
+        // its phases, and it fights on with its fiercer brain.
+        Scene {
+            name: "arena-boss",
+            args: &[
+                "--capture-ticks",
+                "670",
+                "--cues",
+                "--hud",
+                "live",
+                "--arena",
+                "--replay",
+                "tests/replays/arena-boss.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
         Scene {
             name: "materials-day",
             args: &[
@@ -4828,10 +4856,10 @@ mod tests {
         let mut sizes = Vec::new();
         for scene in scenes() {
             let hud = scene.args.contains(&"--hud");
-            // `arena-fight-hit` and `arena-skirmish` show the bars reading a real fight.
+            // `arena-fight-hit`, `arena-skirmish` and `arena-boss` show the bars reading a real fight.
             let expected = scene.name.starts_with("hud-")
                 || scene.name.starts_with("game-hud-")
-                || ["arena-fight-hit", "arena-skirmish"].contains(&scene.name);
+                || ["arena-fight-hit", "arena-skirmish", "arena-boss"].contains(&scene.name);
             assert_eq!(hud, expected, "{}", scene.name);
             let display_text = scene.args.contains(&"--display-text");
             assert_eq!(display_text, scene.name.starts_with("display-text-"), "{}", scene.name);

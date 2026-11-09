@@ -328,7 +328,7 @@ pub struct TunedRun<'a> {
 
 /// The animation graph's document (`lookdev::GRAPH`).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
-/// The enemy's animation graph's document (`enemy::GRAPH`).
+/// The enemy's animation graph's document (`enemy::Look::graph`).
 const ENEMY_GRAPH_PATH: &str = "content/combat/enemy/warrior.animgraph.ron";
 /// The camera's tuning document.
 const CAMERA_PATH: &str = "crates/sapphire_camera/default_camera.ron";

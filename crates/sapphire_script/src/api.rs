@@ -142,6 +142,14 @@ pub(crate) fn give_brain(frame: &mut HookFrame, actor: f64) {
     }
 }
 
+pub(crate) fn set_brain(frame: &mut HookFrame, actor: f64, name: f64) {
+    let Some(actor) = actor_id(frame, actor) else { return };
+    match whole(name).and_then(|place| frame.name(place as usize)) {
+        Some(name) => frame.push(ScriptCommand::SetBrain { actor, name }),
+        None => frame.fault = true,
+    }
+}
+
 pub(crate) fn give_soft_lock(frame: &mut HookFrame, actor: f64) {
     if let Some(actor) = actor_id(frame, actor) {
         frame.push(ScriptCommand::GiveSoftLock { actor });
@@ -223,6 +231,22 @@ mod tests {
             force_move(&mut frame, 3.0, place);
             assert!(frame.fault, "{place}");
         }
+    }
+
+    /// A boss's script changes its brain by name, as its phases do (M3 B3).
+    #[test]
+    fn a_brain_is_asked_for_by_name() {
+        let mut frame = frame();
+        frame.set_names(vec![Name::new("fierce")]);
+        set_brain(&mut frame, 3.0, 1.0);
+        assert!(!frame.fault);
+        assert_eq!(
+            frame.queued(),
+            [ScriptCommand::SetBrain { actor: ActorId::from_raw(3).unwrap(), name: Name::new("fierce") }]
+        );
+        let mut frame = self::frame();
+        set_brain(&mut frame, 3.0, 2.0);
+        assert!(frame.fault && frame.queued().is_empty(), "no such name");
     }
 
     #[test]

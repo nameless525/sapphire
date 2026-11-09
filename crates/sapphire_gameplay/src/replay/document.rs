@@ -207,6 +207,18 @@ pub struct KindOfEnemy {
     pub kind: AssetId,
 }
 
+/// A script one of a scenario's kinds of enemy names (M3 C2), which this build holds: what binds it in a
+/// fight is the script crate's, which gameplay can't see ([`super::ScenarioSetup::DocumentAnd`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentScript {
+    /// From the repository's root: what hot reload watches.
+    pub path: &'static str,
+    /// Its file's name: what it's bound by, and what an edit of it goes by.
+    pub file: &'static str,
+    /// Its source, as this build holds it.
+    pub source: &'static str,
+}
+
 /// One of a scenario's `enemies`, read, and where [`ScenarioDocument::set_up`] puts it.
 struct PlannedEnemy {
     document: EnemyDocument,
@@ -325,6 +337,25 @@ impl ScenarioDocument {
         let copies = self.planned_enemies()?.into_iter().filter(|plan| plan.again);
         let copies: Vec<&str> = copies.map(|plan| self.moves[plan.moves].as_str()).collect();
         Ok(self.moves.iter().map(String::as_str).chain(copies).collect())
+    }
+
+    /// The scripts its kinds of enemy name, each once, in the order of `enemies`: what a fight on it binds.
+    pub fn scripts(&self) -> Result<Vec<DocumentScript>, ScenarioError> {
+        let mut scripts: Vec<DocumentScript> = Vec::new();
+        for (path, plan) in self.enemies.iter().zip(self.planned_enemies()?) {
+            let Some(id) = plan.document.script else { continue };
+            let found = NAMED_DOCUMENTS
+                .iter()
+                .find(|(named, _)| named.ends_with(".luau") && id_of(named).ok() == Some(id));
+            let (named, source) = found.ok_or_else(|| {
+                invalid(format!("enemies: {path}"), format!("this build holds no script {id}"))
+            })?;
+            if !scripts.iter().any(|script| script.path == *named) {
+                let file = super::scenario::document_file_name(named);
+                scripts.push(DocumentScript { path: named, file, source });
+            }
+        }
+        Ok(scripts)
     }
 
     /// Where each of `enemies` goes, in a simulation [`Self::set_up`] makes: on the set its moves have, the

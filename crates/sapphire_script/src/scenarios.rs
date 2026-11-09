@@ -1,10 +1,13 @@
 //! Replay scenarios with a script in them. They're here rather than in `sapphire_gameplay`'s list because
 //! gameplay can't see this crate, so whoever plays them chains this list to that one.
+//!
+//! Two ways in: the scenarios of code listed here ([`SCRIPTED`]), and every scenario document whose kinds of
+//! enemy name a script (M3 C2), which [`ALL`] binds after the document's setup with nothing here naming it.
 
 use std::sync::LazyLock;
 
 use sapphire_dialogue::{Dialogue, DialogueDocument, FlagRegistry};
-use sapphire_gameplay::replay::document::ScenarioDocument;
+use sapphire_gameplay::replay::document::{DocumentScript, ScenarioDocument};
 use sapphire_gameplay::replay::{SCENARIOS, Scenario, ScenarioError, ScenarioSetup, find_scenario};
 use sapphire_gameplay::script::ScriptEdits;
 use sapphire_gameplay::{ActorId, Simulation};
@@ -63,10 +66,59 @@ pub static SCRIPTED: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     ]
 });
 
-/// Every scenario a build with a VM plays: gameplay's, then those with a script, which an app and the replay
-/// runner look names up in.
+/// Every scenario a build with a VM plays: gameplay's, each document whose kinds of enemy name a script
+/// binding it after its setup, then those with a script of code, which an app and the replay runner look
+/// names up in.
 pub static ALL: LazyLock<Vec<Scenario>> =
-    LazyLock::new(|| SCENARIOS.iter().chain(SCRIPTED.iter()).copied().collect());
+    LazyLock::new(|| SCENARIOS.iter().map(with_its_script).chain(SCRIPTED.iter().copied()).collect());
+
+/// `scenario`, binding the script its document's kinds of enemy name, if they name one.
+fn with_its_script(scenario: &Scenario) -> Scenario {
+    match scenario.setup {
+        ScenarioSetup::Document(document) if document_scripts(document).next().is_some() => {
+            Scenario { setup: ScenarioSetup::DocumentAnd(document, bind_its_script), ..*scenario }
+        }
+        _ => *scenario,
+    }
+}
+
+/// The scripts `document`'s kinds of enemy name. One that can't say is a scenario that can't start, which
+/// its setup says.
+fn document_scripts(document: &ScenarioDocument) -> impl Iterator<Item = DocumentScript> {
+    document.scripts().unwrap_or_default().into_iter()
+}
+
+/// Binds the script `document`'s kinds of enemy name, or the newest edit of it if the fight is a live one's
+/// ([`ScriptEdits`]). A fight runs one script, so a document whose kinds name two can't start.
+fn bind_its_script(document: &ScenarioDocument, sim: &mut Simulation) -> Result<(), ScenarioError> {
+    let scripts = document.scripts()?;
+    let [script] = scripts.as_slice() else {
+        let names: Vec<&str> = scripts.iter().map(|script| script.file).collect();
+        let problem = format!("a fight binds one script, and its kinds of enemy name {names:?}");
+        return Err(ScenarioError::Script { name: names.join(", "), problem });
+    };
+    bind_source(sim, script.file, script.source, None)
+}
+
+/// Binds `file`, or the newest edit of it, in `sim`, with `beat` if it's given one.
+fn bind_source(
+    sim: &mut Simulation,
+    file: &str,
+    source: &str,
+    beat: Option<u64>,
+) -> Result<(), ScenarioError> {
+    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(file));
+    let source = edit.unwrap_or(source).to_owned();
+    let refused = |problem: String| ScenarioError::Script { name: file.to_owned(), problem };
+    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
+    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
+    host.bind(&cooked, &format!("={file}")).map_err(|error| refused(error.to_string()))?;
+    if let Some(beat) = beat {
+        host.beat_every(beat);
+    }
+    attach(sim, host);
+    Ok(())
+}
 
 /// The script a scenario here binds: a row of [`SCRIPTS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,12 +151,14 @@ pub const SCRIPTS: &[ScriptOf] = &[
 ];
 
 /// Each script a scenario here binds, by its path from the repository's root, once each: what an app's hot
-/// reload watches and live link's status lists. From [`SCRIPTS`].
+/// reload watches and live link's status lists. From [`SCRIPTS`], then from the scenario documents' kinds of
+/// enemy.
 pub static SOURCES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let documents = SCENARIOS.iter().filter_map(Scenario::document).flat_map(document_scripts);
     let mut sources: Vec<&'static str> = Vec::with_capacity(SCRIPTS.len());
-    for script in SCRIPTS {
-        if !sources.contains(&script.path) {
-            sources.push(script.path);
+    for path in SCRIPTS.iter().map(|script| script.path).chain(documents.map(|script| script.path)) {
+        if !sources.contains(&path) {
+            sources.push(path);
         }
     }
     sources
@@ -144,14 +198,7 @@ fn skirmish() -> &'static Scenario {
 /// ([`ScriptEdits`]).
 fn arena_scripted(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = skirmish().set_up(sim)?;
-    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(ARENA_SCRIPTED_FILE));
-    let source = edit.unwrap_or(ARENA_SCRIPTED).to_owned();
-    let refused = |problem: String| ScenarioError::Script { name: ARENA_SCRIPTED_FILE.to_owned(), problem };
-    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
-    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
-    host.bind(&cooked, &format!("={ARENA_SCRIPTED_FILE}")).map_err(|error| refused(error.to_string()))?;
-    host.beat_every(ARENA_SCRIPTED_BEAT);
-    attach(sim, host);
+    bind_source(sim, ARENA_SCRIPTED_FILE, ARENA_SCRIPTED, Some(ARENA_SCRIPTED_BEAT))?;
     Ok(cast)
 }
 
@@ -176,7 +223,9 @@ fn dialogue_flag(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 mod tests {
     use std::path::Path;
 
-    use super::{SCRIPTED, SCRIPTS, SOURCES, document_of};
+    use sapphire_gameplay::replay::ScenarioSetup;
+
+    use super::{ALL, SCRIPTED, SCRIPTS, SOURCES, document_of};
 
     /// Every scenario with a script has its script's row, so hot reload watches it, and every row is a
     /// scenario's, built on a document this build holds, with a file that's there.
@@ -193,6 +242,24 @@ mod tests {
             assert!(script.path.ends_with(&format!("/{}", script.file)), "{script:?}");
             assert!(root.join(script.path).is_file(), "{script:?}");
             assert!(document_of(script.scenario).is_some(), "{script:?}");
+        }
+    }
+
+    /// Every scenario document whose kinds of enemy name a script binds it after its setup, with nothing
+    /// here naming it, and hot reload watches it: a file that's there, holding what this build has.
+    #[test]
+    fn every_script_a_document_names_is_bound_and_watched() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for scenario in ALL.iter() {
+            let Some(document) = scenario.document() else { continue };
+            let scripts = document.scripts().expect("it can say");
+            let binds = matches!(scenario.setup, ScenarioSetup::DocumentAnd(..));
+            assert_eq!(binds, !scripts.is_empty(), "{}", scenario.name);
+            for script in scripts {
+                assert!(SOURCES.contains(&script.path), "{}: {script:?}", scenario.name);
+                let on_disk = std::fs::read_to_string(root.join(script.path)).expect("it's there");
+                assert_eq!(on_disk, script.source, "{}", script.path);
+            }
         }
     }
 }

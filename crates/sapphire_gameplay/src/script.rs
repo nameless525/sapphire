@@ -113,7 +113,7 @@ pub enum ScriptCommand {
     /// Nothing but a number in the checksum: how a hook leaves a mark that it ran.
     Mark(f64),
     /// Starts this move on the next step, whatever's running: [`MoveRunner::force`]. A fallen fighter stays
-    /// down.
+    /// down, and a name its set hasn't got does nothing, not even replace a hit's reaction.
     ForceMove { actor: ActorId, name: Name },
     /// From the next step, this actor's set says how it fights, if it says so at all. One already fighting
     /// keeps its brain as it is, and a fallen fighter gets none.
@@ -557,9 +557,15 @@ pub(crate) fn apply_script_commands(
                 hash.u64(if value.is_nan() { f64::NAN.to_bits() } else { value.to_bits() });
             }
             ScriptCommand::ForceMove { actor, name } => {
+                // A name the set lacks does nothing, and so leaves a hit's reaction, forced earlier in
+                // the step, where it was: a kind's script can ask every fighter for its own move.
                 if let Some(entity) = table.entity(actor)
                     && let Ok((mut runner, .., fighter)) = actors.get_mut(entity)
                     && !fighter.is_defeated()
+                    && runner
+                        .set()
+                        .and_then(|set| library.current(set))
+                        .is_some_and(|set| set.find(name).is_some())
                 {
                     runner.force(name);
                 }

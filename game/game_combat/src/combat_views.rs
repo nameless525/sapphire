@@ -494,6 +494,7 @@ mod tests {
     use sapphire_math::Quat;
     use sapphire_moves::MoveSetDocument;
     use sapphire_physics::{BodyDesc, ColliderId, CollisionGroups, StaticCollider, StaticShape};
+    use sapphire_script::scenarios::ALL;
     use sapphire_time::{ScaleSource, SimDuration};
 
     use super::*;
@@ -1132,7 +1133,7 @@ mod tests {
 
     fn player(name: &str) -> Player {
         let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
-        Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("starts")
+        Player::new(Replay::decode(&bytes).expect("reads"), &ALL).expect("starts")
     }
 
     /// The property: the views look at every tick of the suite's fights, with volumes and the moves and
@@ -1150,12 +1151,7 @@ mod tests {
             .collect();
         assert!(!names.is_empty(), "no replays");
         for name in &names {
-            // One with a script on it is the replay runner's alone, which links a VM.
-            let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
-            let replay = Replay::decode(&bytes).expect("reads");
-            if find_scenario(&SCENARIOS, replay.scenario()).is_none() {
-                continue;
-            }
+            // Scripts included, as the game plays them: a fight whose kinds name a script binds it.
             let mut on = player(name);
             let mut off = player(name);
             let mut drawn = 0;

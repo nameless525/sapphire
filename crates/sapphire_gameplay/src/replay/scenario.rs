@@ -215,6 +215,12 @@ pub enum ScenarioSetup {
     Code(fn(&mut Simulation) -> Result<Vec<ActorId>, ScenarioError>),
     /// By what a document says.
     Document(&'static ScenarioDocument),
+    /// By what a document says, and then by a function given the document: how a crate that can bind what
+    /// gameplay can't see, a script its kinds of enemy name (M3 C2), sets up a document's scenario.
+    DocumentAnd(
+        &'static ScenarioDocument,
+        fn(&ScenarioDocument, &mut Simulation) -> Result<(), ScenarioError>,
+    ),
 }
 
 impl Scenario {
@@ -231,7 +237,7 @@ impl Scenario {
     pub const fn document(&self) -> Option<&'static ScenarioDocument> {
         match self.setup {
             ScenarioSetup::Code(_) => None,
-            ScenarioSetup::Document(document) => Some(document),
+            ScenarioSetup::Document(document) | ScenarioSetup::DocumentAnd(document, _) => Some(document),
         }
     }
 
@@ -241,6 +247,11 @@ impl Scenario {
         match self.setup {
             ScenarioSetup::Code(setup) => setup(sim),
             ScenarioSetup::Document(document) => document.set_up(sim),
+            ScenarioSetup::DocumentAnd(document, then) => {
+                let cast = document.set_up(sim)?;
+                then(document, sim)?;
+                Ok(cast)
+            }
         }
     }
 

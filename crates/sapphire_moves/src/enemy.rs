@@ -80,6 +80,11 @@ pub struct EnemyDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boss: Option<BossDocument>,
     pub look: EnemyLookDocument,
+    /// Its script (M3 C2): a `.luau`'s ID, which a fight with this kind in it binds, as a boss's own way of
+    /// fighting that a brain can't say. Scenario documents read it from here. The cooked kind doesn't hold
+    /// it, so nothing cooked changes, and a game that reads kinds from packs needs it added there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<AssetId>,
 }
 
 impl Versioned for EnemyDocument {
@@ -540,6 +545,21 @@ mod tests {
         assert_eq!(Enemy::from_cooked(&cooked).expect("reads"), enemy);
         assert_eq!(cooked.as_slice(), document().compile(&moves()).unwrap().to_cooked().unwrap().as_slice());
         assert_eq!(enemy.mind.boss(), Some("boss-slice"));
+    }
+
+    /// A kind's script is for whoever sets up its fights: the document reads and writes it, and the kind it
+    /// compiles to cooks the same bytes with it as without.
+    #[test]
+    fn a_kinds_script_reads_and_leaves_its_cooked_bytes_alone() {
+        let script = "a1ff800a-047f-4375-ac6c-aec395df870d";
+        let text =
+            ENEMY.replacen("        look: (", &format!("        script: \"{script}\",\n        look: ("), 1);
+        assert_ne!(text, ENEMY, "the test's kind has a look to put it before");
+        let with = EnemyDocument::parse(&text).expect("parses");
+        assert_eq!(with.script.map(|id| id.to_string()), Some(script.to_owned()));
+        assert_eq!(document().script, None);
+        let cooked = |document: &EnemyDocument| document.compile(&moves()).unwrap().to_cooked().unwrap();
+        assert_eq!(cooked(&with).as_slice(), cooked(&document()).as_slice());
     }
 
     /// A brain presses intents by name, so a set whose intents moved is pressed as meant, and one without an

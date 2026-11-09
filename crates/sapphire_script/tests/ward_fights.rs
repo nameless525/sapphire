@@ -1,9 +1,11 @@
 //! The Lantern Ward's own fights (M3 C2), through their recorded replays: the market's encounter brings
-//! Lancers beside the warriors, who fight. Everyone comes from the zone's documents and the kinds' own.
+//! Lancers beside the warriors, who fight. Everyone comes from the zone's documents and the kinds' own. Here
+//! rather than in gameplay because a scenario whose kinds name a script plays with it bound ([`ALL`]).
 
 use sapphire_core::Name;
-use sapphire_gameplay::replay::{Player, Replay, SCENARIOS, find_scenario};
+use sapphire_gameplay::replay::{Player, Replay, find_scenario};
 use sapphire_gameplay::{ActorId, MoveSetId};
+use sapphire_script::scenarios::ALL;
 
 /// The longest a replay here may play, so a broken one fails rather than hangs.
 const MOST_STEPS: u32 = 10_000;
@@ -15,8 +17,7 @@ struct Played {
 }
 
 fn play(bytes: &[u8]) -> (Player, Played) {
-    let mut player =
-        Player::new(Replay::decode(bytes).expect("reads"), &SCENARIOS).expect("recorded on these");
+    let mut player = Player::new(Replay::decode(bytes).expect("reads"), &ALL).expect("recorded on these");
     let (mut seen, mut cues) = (Vec::new(), Vec::new());
     let mut steps = 0;
     while player.step() {
@@ -51,7 +52,7 @@ impl Played {
 
 #[test]
 fn the_market_brings_lancers_beside_warriors_and_they_fight() {
-    let scenario = find_scenario(&SCENARIOS, "ward-market").expect("listed");
+    let scenario = find_scenario(&ALL, "ward-market").expect("listed");
     let lancer = scenario.set_of("lancer.moves.ron").expect("it loads the Lancer");
     let warrior = scenario.set_of("warrior.moves.ron").expect("and the warrior");
     let (player, played) = play(include_bytes!("../../../tests/replays/ward-market.sreplay"));

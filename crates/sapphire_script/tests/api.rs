@@ -335,6 +335,40 @@ fn a_fallen_fighter_stays_down() {
     assert!(player.simulation().scripts().unwrap().commands_applied() >= 2, "it asked");
 }
 
+/// A move the set hasn't got does nothing, not even take the place of the reaction a hit forced earlier in
+/// the step: a kind's script asks every fighter that crosses a phase for its own move, and a warrior hit
+/// across one still staggers.
+#[test]
+fn forcing_a_move_the_set_lacks_leaves_a_hits_reaction() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let moves_of = |source: &str| {
+        let mut player = support::player_with(
+            support::host_running(source, Limits::default()),
+            support::replay_file("arena-fight-won"),
+        );
+        let mut moves = Vec::new();
+        while player.step() {
+            let warrior = player.simulation().actor(WARRIOR).unwrap();
+            let running = warrior.moves.current.map(|current| current.name);
+            if moves.last() != Some(&running) {
+                moves.push(running);
+            }
+        }
+        (moves, player.simulation().scripts().unwrap().commands_applied())
+    };
+    let (plain, _) = moves_of("return { on_hit = function() end }");
+    let (asked, applied) = moves_of(
+        "return {
+            names = { 'no_such_move' },
+            on_hit = function(attacker, target) sapphire.force_move(target, 1) end,
+        }",
+    );
+    assert!(applied > 0, "it asked");
+    let reacted = ["stagger_light", "stagger_heavy"].map(|name| Some(Name::new(name)));
+    assert!(plain.iter().any(|run| reacted.contains(run)), "the warrior reacted: {plain:?}");
+    assert_eq!(asked, plain);
+}
+
 /// `arena_fight`, with a third who's been given nothing, for a hook to give it.
 fn fight_with_a_bystander(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = arena_fight(sim)?;

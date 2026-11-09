@@ -55,15 +55,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::AssetId;
+use sapphire_dialogue::ConditionId;
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, SCRIPTS, Scenario,
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
-use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
+use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
+use sapphire_script::ConditionSet;
 /// Every scenario a fight here can start from, those with a script among them.
 pub use sapphire_script::scenarios::ALL as SCENARIOS;
 use sapphire_serialize::cooked::AlignedVec;
@@ -649,6 +651,35 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { .. } | Mode::Fighting(_) => None,
             Mode::Recording { recording, .. } => recording.edited_at(),
+        }
+    }
+
+    /// Whether it plays a file: what it does between steps is the file's, so nothing else may.
+    pub fn is_replay(&self) -> bool {
+        matches!(self.mode, Mode::Replaying { .. })
+    }
+
+    /// Asks one of a dialogue's bound conditions of this run's VM, between steps, read-only (M3 Q2b): false
+    /// for a fight with no file, which loads no dialogue, and wherever there's no VM.
+    pub fn ask_condition(&mut self, conditions: &mut ConditionSet, id: ConditionId) -> bool {
+        match &mut self.mode {
+            Mode::Replaying { player, .. } => sapphire_script::ask(player, conditions, id),
+            Mode::Recording { recording, .. } => sapphire_script::ask(recording, conditions, id),
+            Mode::Fighting(_) => false,
+        }
+    }
+
+    /// Applies a dialogue's effect between steps, through the run's command route (M3 Q2b): a recording
+    /// records it as `ReplayCommand::Dialogue`, as it does its script's, so the choice replays. A replay
+    /// applies only what it recorded, and a fight with no file loads no dialogue, so both refuse.
+    pub fn apply_dialogue_effect(&mut self, effect: DialogueEffect) -> Result<(), String> {
+        match &mut self.mode {
+            Mode::Recording { recording, stopped: None, .. } => {
+                recording.apply_dialogue_effect(effect).map_err(|error| error.to_string())
+            }
+            Mode::Recording { .. } => Err("the recording has reached its limit".to_owned()),
+            Mode::Replaying { .. } => Err("a replay applies only the effects it recorded".to_owned()),
+            Mode::Fighting(_) => Err("a fight with no file loads no dialogue".to_owned()),
         }
     }
 

@@ -15,6 +15,7 @@ sapphire_camera.workspace = true
 sapphire_colliders.workspace = true
 sapphire_core.workspace = true
 sapphire_cues.workspace = true
+sapphire_dialogue.workspace = true
 sapphire_ecs.workspace = true
 # bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
 bevy_ecs.workspace = true

@@ -1,0 +1,365 @@
+//! The game's dialogue runner (M3 Q2b): which conversation is open, walking it as a panel says, and what it
+//! does to the simulation.
+//!
+//! A [`DialogueRunner`] holds the cooked dialogues whose simulation halves the run loaded, in the order it
+//! loaded them, so a [`DialogueId`] is a place in both (`Fight::hold_dialogues` finds them in the packs by
+//! the digests the simulation pins). It opens one when a zone's trigger fires the event the dialogue's
+//! `opens_on` names, or when something asks for it by ID ([`DialogueRunner::open`]), and from then on a
+//! panel reads [`DialogueRunner::view`] and drives [`DialogueRunner::next`] and [`DialogueRunner::choose`].
+//!
+//! **What reaches the simulation:** a condition is asked of the run's script VM on a read-only frame, and an
+//! effect goes through [`DialogueHost::apply`], which for a recording records it as
+//! `ReplayCommand::Dialogue`: the app's one route for commands, so what the panel chose replays. A replay
+//! opens nothing, since it applies what it recorded by itself. All of this happens between steps, and the
+//! fight holds its steps while a conversation's open (`Fight::holds_step`), so a choice lands between the
+//! same two ticks it was made between.
+//!
+//! **What ends one:** [`DialogueRunner::take_ended`] says once that the conversation closed, with a
+//! [`DialogueEnded`]: what a game's flow listens for to go on (G1).
+//!
+//! **Voice (A1's seam):** each line a conversation enters moves [`DialogueRunner::lines_shown`] on, and the
+//! view then has its `vo` cue: what a voice player starts a line by. Nothing here plays it.
+
+use std::sync::Arc;
+
+use sapphire_dialogue::{ConditionId, Dialogue, DialogueView, DialogueWalk, DialogueWorld, EffectId};
+use sapphire_gameplay::replay::Recording;
+use sapphire_gameplay::zone::ZoneId;
+use sapphire_gameplay::{DialogueEffect, DialogueId, Simulation};
+use sapphire_platform::AppInitError;
+use sapphire_render::Renderer;
+use sapphire_rhi::GpuContext;
+use sapphire_script::{ConditionSet, ScriptHost, ask};
+use sapphire_stage::content::Content;
+
+use crate::LOG_TARGET;
+use crate::combat::Combat;
+
+/// What a conversation runs against: a run whose simulation loaded the dialogue's effects, and whose VM, if
+/// it has one, asks the conditions. [`Combat`] is the app's; a [`Recording`] is a test's or a tool's.
+pub trait DialogueHost {
+    /// The simulation as it stands.
+    fn simulation(&self) -> &Simulation;
+
+    /// Asks one of a bound set's conditions, between steps, read-only: false where nothing can ask it.
+    fn ask(&mut self, conditions: &mut ConditionSet, id: ConditionId) -> bool;
+
+    /// Applies an effect between steps, through whatever this run records commands by.
+    ///
+    /// # Errors
+    ///
+    /// If this run can't take it, saying why.
+    fn apply(&mut self, effect: DialogueEffect) -> Result<(), String>;
+
+    /// Whether a conversation may open on this run: not on a replay, which applies what it recorded.
+    fn takes_dialogue(&self) -> bool {
+        true
+    }
+}
+
+impl DialogueHost for Recording {
+    fn simulation(&self) -> &Simulation {
+        Recording::simulation(self)
+    }
+
+    fn ask(&mut self, conditions: &mut ConditionSet, id: ConditionId) -> bool {
+        ask(self, conditions, id)
+    }
+
+    fn apply(&mut self, effect: DialogueEffect) -> Result<(), String> {
+        self.apply_dialogue_effect(effect).map_err(|error| error.to_string())
+    }
+}
+
+impl DialogueHost for Combat {
+    fn simulation(&self) -> &Simulation {
+        Combat::simulation(self)
+    }
+
+    fn ask(&mut self, conditions: &mut ConditionSet, id: ConditionId) -> bool {
+        self.ask_condition(conditions, id)
+    }
+
+    fn apply(&mut self, effect: DialogueEffect) -> Result<(), String> {
+        self.apply_dialogue_effect(effect)
+    }
+
+    fn takes_dialogue(&self) -> bool {
+        !self.is_replay()
+    }
+}
+
+/// A conversation that closed: see the [module docs](self).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialogueEnded {
+    /// Which of the run's dialogues it was.
+    pub dialogue: DialogueId,
+    /// The tick it closed before.
+    pub tick: u64,
+}
+
+/// Why a conversation didn't open, or stopped.
+#[derive(Debug, thiserror::Error)]
+pub enum DialogueRunError {
+    #[error("the run loaded no dialogue {}", .0.raw())]
+    Unknown(DialogueId),
+    #[error("dialogue {} asks conditions, and this run has no script VM to ask them", .0.raw())]
+    NoScripts(DialogueId),
+    #[error("dialogue {}'s conditions: {problem}", .dialogue.raw())]
+    Conditions { dialogue: DialogueId, problem: String },
+    #[error("dialogue {}'s effect didn't take: {problem}", .dialogue.raw())]
+    Effect { dialogue: DialogueId, problem: String },
+    #[error("a replay opens no conversation: it applies what it recorded")]
+    Replay,
+}
+
+/// The conversation that's open.
+struct Open {
+    id: DialogueId,
+    dialogue: Arc<Dialogue>,
+    walk: DialogueWalk,
+    conditions: ConditionSet,
+}
+
+/// How far each dialogue's trigger had fired when last looked at, and on what.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Watched {
+    zone: Option<ZoneId>,
+    tick: u64,
+    fires: u32,
+}
+
+/// See the [module docs](self).
+#[derive(Default)]
+pub struct DialogueRunner {
+    /// By [`DialogueId`].
+    dialogues: Vec<Arc<Dialogue>>,
+    /// By [`DialogueId`], for those with an `opens_on`.
+    watched: Vec<Watched>,
+    open: Option<Open>,
+    ended: Option<DialogueEnded>,
+    lines: u64,
+}
+
+/// A walk's view of the run, for as long as one call into the walk lasts.
+struct Asking<'a, H: DialogueHost + ?Sized> {
+    host: &'a mut H,
+    conditions: &'a mut ConditionSet,
+    id: DialogueId,
+    /// The first effect that didn't take.
+    failed: Option<String>,
+}
+
+impl<H: DialogueHost + ?Sized> DialogueWorld for Asking<'_, H> {
+    fn ask(&mut self, condition: ConditionId) -> bool {
+        self.host.ask(self.conditions, condition)
+    }
+
+    fn apply(&mut self, effect: EffectId) {
+        if let Err(problem) = self.host.apply(DialogueEffect { dialogue: self.id, effect }) {
+            self.failed.get_or_insert(problem);
+        }
+    }
+}
+
+impl DialogueRunner {
+    /// A runner over the run's dialogues, by [`DialogueId`]: the cooked dialogue whose simulation half each
+    /// `add_dialogue` loaded. Nothing's open.
+    #[must_use]
+    pub fn new(dialogues: Vec<Arc<Dialogue>>) -> Self {
+        let watched = vec![Watched::default(); dialogues.len()];
+        Self { dialogues, watched, open: None, ended: None, lines: 0 }
+    }
+
+    /// A runner over every dialogue `simulation` loaded, found among the shared pack's and `zone`'s by the
+    /// digest the simulation pins, as a fight's timelines are: the production load. Loads nothing for a
+    /// simulation with none.
+    ///
+    /// # Errors
+    ///
+    /// If a digest has no cooked dialogue: a cook older than the build.
+    pub fn hold(
+        simulation: &Simulation,
+        zone: Option<&str>,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Self, AppInitError> {
+        let digests: Vec<u64> =
+            (0..).map_while(|raw| simulation.dialogue_digest(DialogueId::from_raw(raw))).collect();
+        if digests.is_empty() {
+            return Ok(Self::default());
+        }
+        Ok(Self::new(content.find_dialogues(&digests, zone, renderer, gpu)?))
+    }
+
+    /// The dialogues it holds, by [`DialogueId`].
+    #[must_use]
+    pub fn dialogues(&self) -> &[Arc<Dialogue>] {
+        &self.dialogues
+    }
+
+    /// Whether a conversation's open: the fight holds its steps while one is.
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Which dialogue's open, if one is.
+    #[must_use]
+    pub fn open_dialogue(&self) -> Option<DialogueId> {
+        self.open.as_ref().map(|open| open.id)
+    }
+
+    /// What a panel shows now: `None` with nothing open.
+    #[must_use]
+    pub fn view(&self) -> Option<DialogueView<'_>> {
+        let open = self.open.as_ref()?;
+        open.walk.view(&open.dialogue)
+    }
+
+    /// How many lines conversations have shown, the open one's included: a voice player starts the view's
+    /// `vo` when this moves on.
+    #[must_use]
+    pub const fn lines_shown(&self) -> u64 {
+        self.lines
+    }
+
+    /// The conversation that closed since this was last asked, once.
+    pub fn take_ended(&mut self) -> Option<DialogueEnded> {
+        self.ended.take()
+    }
+
+    /// Between steps: opens the conversation whose trigger has fired since this was last called, if none is
+    /// open, and says what opened. A run that started over or changed zone starts counting again, so only
+    /// someone walking in opens one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`]: the trigger fired and the conversation couldn't open.
+    pub fn follow(
+        &mut self,
+        host: &mut (impl DialogueHost + ?Sized),
+    ) -> Result<Option<DialogueId>, DialogueRunError> {
+        let simulation = host.simulation();
+        let (tick, zone) = (simulation.tick(), simulation.current_zone());
+        let mut fired = None;
+        for (index, (dialogue, watched)) in self.dialogues.iter().zip(&mut self.watched).enumerate() {
+            let Some(event) = dialogue.presentation.opens_on else { continue };
+            let fires = simulation.zone().map_or(0, |held| held.fires(sapphire_core::Name::from_u64(event)));
+            let again = zone != watched.zone || tick < watched.tick || fires < watched.fires;
+            if !again && fires > watched.fires && fired.is_none() {
+                fired = Some(DialogueId::from_raw(index as u16));
+            }
+            *watched = Watched { zone, tick, fires };
+        }
+        match fired {
+            Some(id) if self.open.is_none() && host.takes_dialogue() => {
+                self.open(id, host).map(|()| Some(id))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Opens dialogue `id` between steps: binds its conditions in the run's VM (compiling them, once a
+    /// conversation), runs its branches to the first line and applies what showing that sets. Whatever was
+    /// open closes first, as it would have ended.
+    ///
+    /// # Errors
+    ///
+    /// If the run loaded no such dialogue, or it asks conditions of a run with no VM, or they don't bind, or an
+    /// effect it applied didn't take, or it's a replay's. Nothing's left open.
+    pub fn open(
+        &mut self,
+        id: DialogueId,
+        host: &mut (impl DialogueHost + ?Sized),
+    ) -> Result<(), DialogueRunError> {
+        if !host.takes_dialogue() {
+            return Err(DialogueRunError::Replay);
+        }
+        let dialogue =
+            Arc::clone(self.dialogues.get(usize::from(id.raw())).ok_or(DialogueRunError::Unknown(id))?);
+        self.close(host.simulation().tick());
+        let mut conditions = if dialogue.needs_scripts() {
+            let vm = host
+                .simulation()
+                .world()
+                .get_resource::<ScriptHost>()
+                .ok_or(DialogueRunError::NoScripts(id))?;
+            vm.bind_conditions(&dialogue, &format!("=dialogue {}", id.raw()))
+                .map_err(|error| DialogueRunError::Conditions { dialogue: id, problem: error.to_string() })?
+        } else {
+            ConditionSet::default()
+        };
+        let mut world = Asking { host, conditions: &mut conditions, id, failed: None };
+        let walk = DialogueWalk::begin(&dialogue, &mut world);
+        let failed = world.failed.take();
+        let tick = world.host.simulation().tick();
+        tracing::info!(target: LOG_TARGET, dialogue = id.raw(), tick, "a conversation opens");
+        self.open = Some(Open { id, dialogue, walk, conditions });
+        self.after_move(tick, failed)
+    }
+
+    /// The panel's "next", between steps: goes on from a line with no choices. Says whether it went anywhere.
+    ///
+    /// # Errors
+    ///
+    /// If an effect a line it reached sets didn't take. The conversation closes.
+    pub fn next(&mut self, host: &mut (impl DialogueHost + ?Sized)) -> Result<bool, DialogueRunError> {
+        self.step_walk(host, |walk, dialogue, world| walk.next(dialogue, world))
+    }
+
+    /// The panel's answer in `slot`, between steps: applies what the choice sets, through the run's command
+    /// route, and goes where it leads. Says whether there was such a choice.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::next`].
+    pub fn choose(
+        &mut self,
+        slot: u8,
+        host: &mut (impl DialogueHost + ?Sized),
+    ) -> Result<bool, DialogueRunError> {
+        self.step_walk(host, |walk, dialogue, world| walk.choose(dialogue, slot, world))
+    }
+
+    fn step_walk<H: DialogueHost + ?Sized>(
+        &mut self,
+        host: &mut H,
+        go: impl FnOnce(&mut DialogueWalk, &Dialogue, &mut Asking<'_, H>) -> bool,
+    ) -> Result<bool, DialogueRunError> {
+        let Some(open) = &mut self.open else { return Ok(false) };
+        let mut world = Asking { host, conditions: &mut open.conditions, id: open.id, failed: None };
+        let went = go(&mut open.walk, &open.dialogue, &mut world);
+        let failed = world.failed.take();
+        let tick = world.host.simulation().tick();
+        if went {
+            self.after_move(tick, failed)?;
+        }
+        Ok(went)
+    }
+
+    /// After the walk moved: counts the line it reached, or closes a conversation that's over or failed.
+    fn after_move(&mut self, tick: u64, failed: Option<String>) -> Result<(), DialogueRunError> {
+        let Some(open) = &self.open else { return Ok(()) };
+        if let Some(problem) = failed {
+            let dialogue = open.id;
+            self.close(tick);
+            return Err(DialogueRunError::Effect { dialogue, problem });
+        }
+        if open.walk.is_over() {
+            self.close(tick);
+        } else {
+            self.lines += 1;
+        }
+        Ok(())
+    }
+
+    /// Closes what's open, saying so once through [`Self::take_ended`].
+    fn close(&mut self, tick: u64) {
+        if let Some(open) = self.open.take() {
+            tracing::info!(target: LOG_TARGET, dialogue = open.id.raw(), tick, "a conversation ends");
+            self.ended = Some(DialogueEnded { dialogue: open.id, tick });
+        }
+    }
+}

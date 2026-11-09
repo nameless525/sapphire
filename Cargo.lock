@@ -1362,6 +1362,7 @@ dependencies = [
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_cues",
+ "sapphire_dialogue",
  "sapphire_ecs",
  "sapphire_gameplay",
  "sapphire_hot_reload",

@@ -180,8 +180,9 @@ impl FightShow {
 }
 
 impl Fight {
-    /// Whether this step of the simulation waits: a timeline or a trip holds it. A replay's zone entry due
-    /// before the step starts a trip, which holds it. Every loop that steps a fight asks this first.
+    /// Whether this step of the simulation waits: a timeline, a trip or an open conversation holds it. A
+    /// replay's zone entry due before the step starts a trip, which holds it. Every loop that steps a fight
+    /// asks this first.
     pub fn holds_step(&mut self) -> bool {
         if !self.show.trips.holds_simulation()
             && let Some(combat) = &mut self.combat
@@ -198,7 +199,7 @@ impl Fight {
                 None => tracing::error!(target: LOG_TARGET, ?entry, "a zone entry names no zone"),
             }
         }
-        self.show.holds_simulation()
+        self.show.holds_simulation() || self.dialogue.is_open()
     }
 
     /// Whether this fight goes between zones: its simulation has a zone on its shelf, as a replay of the

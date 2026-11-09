@@ -11,6 +11,7 @@
 mod overhead_profile;
 mod stock_arena;
 
+use crate::dialogue::DialogueRunner;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1546,6 +1547,8 @@ pub struct Fight {
     pub documents: FightDocuments,
     /// The steps [`Self::step_alone`] ran no tick for, while a timeline held the simulation (M3 Q3).
     held_steps: u64,
+    /// The conversations the run holds, and the one that's open (M3 Q2b).
+    pub dialogue: DialogueRunner,
 }
 
 impl Fight {
@@ -1873,6 +1876,13 @@ impl Fight {
             scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
         }
         show.hold_timelines(combat.simulation(), place.zone.map(|(stem, _)| stem), content, renderer, gpu)?;
+        self.dialogue = DialogueRunner::hold(
+            combat.simulation(),
+            place.zone.map(|(stem, _)| stem),
+            content,
+            renderer,
+            gpu,
+        )?;
         show.set_zone_streaming(stream_settings(tier));
 
         content.load_graph(lookdev::GRAPH, renderer, gpu)?;

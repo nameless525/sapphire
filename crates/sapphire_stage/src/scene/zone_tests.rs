@@ -1068,16 +1068,16 @@ fn a_repeated_trip_does_not_grow() {
         walk.trip(1, settings);
         let in_second = walk.holds();
         assert_eq!(in_first, in_second, "{name}: two rooms of a size hold the same");
-        let (capacity, growths) = {
-            let stats = walk.renderer.stats();
-            (stats.mesh_pool_capacity, stats.buffer_growths)
-        };
+        let one_room = walk.renderer.stats().mesh_pool_capacity;
         println!(
-            "{name}: {} cells of {} triangles and a {}px texture, {capacity} B of mesh pool: {in_first:?}",
+            "{name}: {} cells of {} triangles and a {}px texture, {one_room} B of mesh pool: {in_first:?}",
             zone.side * zone.side,
             2 * zone.quads * zone.quads,
             zone.texture,
         );
+        // A hub holds where it is and where it leads at once, so the first round may grow the pool to two
+        // rooms' worth; no round after it grows anything.
+        let mut after_first: Option<(u64, u32)> = None;
         for lap in 0..6 {
             // Warm: the hub says the next is coming, and it's in before the trip.
             walk.scene.prefetch_exits(&mut walk.content, settings);
@@ -1095,15 +1095,24 @@ fn a_repeated_trip_does_not_grow() {
             let cold = walk.trip((lap + 1) % 2, settings);
             let held = walk.holds();
             assert_eq!(held, in_first, "{name}, trip {lap}, cold");
-            let stats = walk.renderer.stats();
-            assert_eq!(stats.mesh_pool_capacity, capacity, "{name}, trip {lap}: the pool grew");
-            assert_eq!(stats.buffer_growths, growths, "{name}, trip {lap}: a buffer grew");
             println!(
                 "{name}, round {lap}: warm {:?} over {} frames, cold {:?} over {} frames, worst upload {:?}",
                 warm.load, warm.frames, cold.load, cold.frames, cold.worst_upload,
             );
             walk.trip(lap % 2, settings);
             assert_eq!(walk.holds(), in_first, "{name}, trip {lap}, back");
+            let stats = walk.renderer.stats();
+            let now = (stats.mesh_pool_capacity, stats.buffer_growths);
+            match after_first {
+                None => {
+                    println!("{name}: {} B of mesh pool after the first round", now.0);
+                    after_first = Some(now);
+                }
+                Some((capacity, growths)) => {
+                    assert_eq!(now.0, capacity, "{name}, trip {lap}: the pool grew");
+                    assert_eq!(now.1, growths, "{name}, trip {lap}: a buffer grew");
+                }
+            }
         }
     }
 }

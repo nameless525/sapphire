@@ -28,6 +28,12 @@
 //! A full screen of new text costs more than a frame on a phone. [`GlyphAtlas::warm`] rasterizes a
 //! screen's glyphs and hands them over without drawing them, up to a budget a frame, for a fade or a
 //! loading frame to spend, so the frame that shows the screen has nothing left to do.
+//!
+//! # Display faces
+//!
+//! A large glyph of a face with a cooked field draws from the field instead ([`crate::field`]): no
+//! page, no rasterizing, nothing to warm, and its quad lands where the pen is, unsnapped, since a
+//! field has no pixel grid to keep to.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -40,6 +46,7 @@ use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::{Format, Vector};
 use swash::{CacheKey, FontRef};
 
+use crate::field::{FieldFace, FieldGlyph};
 use crate::shape::{ShapedGlyph, ShapedText};
 
 /// Empty texels around each glyph, so a page's filter never reads a neighbour.
@@ -192,7 +199,11 @@ impl GlyphAtlas {
         let mut done = true;
         'runs: for run in &text.runs {
             let coords = coords_key(&run.coords);
+            let field = field_of(run);
             for glyph in &text.glyphs[run.glyphs.start as usize..run.glyphs.end as usize] {
+                if field.is_some_and(|field| field.glyph(glyph.id).is_some()) {
+                    continue;
+                }
                 let (_, share, key) = self.key(run, coords, glyph, glyph.x);
                 let known = self.glyphs.contains_key(&key);
                 if !known && *budget == 0 {
@@ -246,11 +257,16 @@ impl GlyphAtlas {
         let origin_px = [(origin[0] * scale).round(), (origin[1] * scale).round()];
         for run in &text.runs {
             let coords = coords_key(&run.coords);
+            let field = field_of(run);
             for glyph in &text.glyphs[run.glyphs.start as usize..run.glyphs.end as usize] {
+                let pen = [origin_px[0] + glyph.x, (origin_px[1] + glyph.y).round()];
+                if let Some((field, cell)) = field.and_then(|field| Some((field, field.glyph(glyph.id)?))) {
+                    self.draw_field_glyph(field, cell, pen, run.ppem, scale, color, list);
+                    continue;
+                }
                 let (whole, share, key) = self.key(run, coords, glyph, origin_px[0] + glyph.x);
                 let Some(place) = self.entry(key, run, share, list) else { continue };
-                let (x0, y0) =
-                    (whole + f32::from(place.left), (origin_px[1] + glyph.y).round() + f32::from(place.top));
+                let (x0, y0) = (whole + f32::from(place.left), pen[1] + f32::from(place.top));
                 let (w, h) = (f32::from(place.width), f32::from(place.height));
                 let uv = [
                     f32::from(place.x) / side,
@@ -263,6 +279,36 @@ impl GlyphAtlas {
             }
         }
         self.publish(list);
+    }
+
+    /// Adds a glyph of `field` with its origin at `pen` pixels, `ppem` pixels to the em.
+    #[expect(clippy::too_many_arguments, reason = "one glyph's place, size and look")]
+    fn draw_field_glyph(
+        &mut self,
+        field: &FieldFace,
+        glyph: &FieldGlyph,
+        pen: [f32; 2],
+        ppem: f32,
+        scale: f32,
+        color: [u8; 4],
+        list: &mut UiDrawList,
+    ) {
+        let [x, y, width, height] = glyph.cell.map(f32::from);
+        if width == 0.0 || height == 0.0 {
+            return;
+        }
+        let atlas = field.atlas();
+        let (side_x, side_y) = (atlas.width as f32, atlas.height as f32);
+        let texel = ppem / field.em();
+        let corner = [pen[0] + glyph.offset[0] * ppem, pen[1] + glyph.offset[1] * ppem];
+        let quad = UiQuad::field_glyph(
+            [corner[0] / scale, corner[1] / scale],
+            [width * texel / scale, height * texel / scale],
+            [x / side_x, y / side_y, (x + width) / side_x, (y + height) / side_y],
+            color,
+        );
+        list.push_field_quad(atlas, quad);
+        self.stats.field_quads += 1;
     }
 
     /// Where `key` is, rasterizing it if it's new. `None` for a glyph with no ink or no room.
@@ -413,6 +459,11 @@ impl GlyphAtlas {
         }
         freed
     }
+}
+
+/// The field `run`'s glyphs draw from, if they do: see [`crate::field`].
+fn field_of(run: &crate::ShapedRun) -> Option<&FieldFace> {
+    run.field.as_deref().filter(|field| field.draws(run.ppem, &run.coords))
 }
 
 /// `coords` as a key: a font's axes seldom number more than a few, and most runs have one set.

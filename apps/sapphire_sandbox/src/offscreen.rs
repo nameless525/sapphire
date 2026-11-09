@@ -202,7 +202,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;
-    let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud, screen: shown_screen } = &mut *show;
+    let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud, screen: shown_screen, .. } =
+        &mut *show;
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -408,6 +409,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         if shown.shows_inset() {
             scene.spawn_showcase(scene.character(), 0);
         }
+    }
+    if let Some(sample) = options.display_text {
+        let text = crate::display_text::DisplayText::load(sample, content, renderer, gpu)?;
+        show.over = Some(Box::new(text));
     }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.

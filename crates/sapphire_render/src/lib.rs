@@ -925,8 +925,8 @@ pub use renderer::{
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
     CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, UiAtlas,
-    UiDrawList, UiGlyphStats, UiPageRun, UiPageState, UiPageUpload, UiQuad, VfxFrame, VfxLight,
-    VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
+    UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, VfxFrame,
+    VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};

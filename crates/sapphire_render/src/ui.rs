@@ -48,10 +48,19 @@
 //! # Insets
 //!
 //! A quad in one of the list's inset runs (M3 U6, `UiDrawList::inset_runs`) reads an inset's picture
-//! in place of the atlas, through the same pipeline: its softness says the texels are a picture
-//! (`UI_PICTURE`), linear color the quad's color tints. The pictures are the renderer's own (the
-//! `inset` module), each with a group of this layout ([`Ui::picture_group`]); a run naming an inset
-//! the frame has no picture for draws nothing.
+//! in place of the atlas, through the same pipeline: its [`UiQuad::texels`] say the texels are a
+//! picture (`UI_PICTURE`), linear color the quad's color tints. The pictures are the renderer's own
+//! (the `inset` module), each with a group of this layout ([`Ui::picture_group`]); a run naming an
+//! inset the frame has no picture for draws nothing.
+//!
+//! # Display faces' fields
+//!
+//! A display face's glyphs come cooked as a multi-channel field ([`UiFieldFormat::Multi`]), which a
+//! list names in [`UiDrawList::fields`]. Each is an atlas like the HUD's, uploaded the first time a
+//! list names it and drawn through the same pipeline and bind group layout: a quad's
+//! [`UiQuad::texels`] says how the shader reads what it samples, so a field adds no pipeline and a
+//! warm-up declares nothing more for it. One stays on the GPU while anything but this renderer holds
+//! its [`Arc`], so a title that comes and goes uploads once, and goes once its face is let go.
 //!
 //! `ui.wgsl` is a program of its own ([`ShaderFile::Ui`](crate::ShaderFile::Ui)): an edit rebuilds
 //! the one pipeline, once built, on the layout it had (`shader_builds`).
@@ -63,7 +72,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_look::{
-    UiAtlas, UiDrawList, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiTreeStats,
+    UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiSource,
+    UiTreeStats,
 };
 use sapphire_rhi::wgpu;
 
@@ -87,7 +97,7 @@ static NEXT_PAGE_STORE: AtomicU64 = AtomicU64::new(1);
 const INITIAL_QUADS: u64 = 256;
 
 /// The vertex layout of [`UiQuad`], attribute by attribute.
-const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 11] = [
+const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 12] = [
     attribute(0, offset_of!(UiQuad, origin), wgpu::VertexFormat::Float32x2),
     attribute(1, offset_of!(UiQuad, axis_x), wgpu::VertexFormat::Float32x2),
     attribute(2, offset_of!(UiQuad, axis_y), wgpu::VertexFormat::Float32x2),
@@ -100,6 +110,7 @@ const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 11] = [
     attribute(8, offset_of!(UiQuad, slice), wgpu::VertexFormat::Float32),
     attribute(9, offset_of!(UiQuad, color_end), wgpu::VertexFormat::Unorm8x4),
     attribute(10, offset_of!(UiQuad, gradient), wgpu::VertexFormat::Float32x3),
+    attribute(11, offset_of!(UiQuad, texels), wgpu::VertexFormat::Uint32),
 ];
 
 const fn attribute(shader_location: u32, offset: usize, format: wgpu::VertexFormat) -> wgpu::VertexAttribute {
@@ -119,6 +130,12 @@ pub struct UiStats {
     pub atlas_bytes: u64,
     /// Times an atlas was uploaded since the renderer was created.
     pub atlas_uploads: u32,
+    /// Display faces' fields on the GPU.
+    pub fields: u32,
+    /// Their size on the GPU.
+    pub field_bytes: u64,
+    /// Times a field was uploaded since the renderer was created.
+    pub field_uploads: u32,
     /// Glyph pages on the GPU.
     pub pages: u32,
     /// Rectangles of glyph pages the last prepared frame wrote, once joined.
@@ -163,15 +180,23 @@ struct PageOnGpu {
     bind_group: wgpu::BindGroup,
 }
 
+/// What a run of quads reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiTexture {
+    Atlas,
+    Page(u16),
+    /// By its place in `Built::fields`.
+    Field(u16),
+    /// The inset whose picture it reads (M3 U6).
+    Inset(u16),
+}
+
 /// A run of quads that reads one texture.
 #[derive(Clone, Copy, Debug)]
 struct UiDraw {
     first: u32,
     count: u32,
-    /// The page, or `None` for the atlas or a picture.
-    page: Option<u16>,
-    /// The inset whose picture it reads (M3 U6), if it reads one.
-    inset: Option<u16>,
+    texture: UiTexture,
     /// The mask in force, in points.
     mask: Option<[f32; 4]>,
 }
@@ -188,6 +213,7 @@ struct Built {
     atlas: Option<AtlasOnGpu>,
     pages: BTreeMap<u16, PageOnGpu>,
     page_size: u32,
+    fields: Vec<AtlasOnGpu>,
 }
 
 /// The interface's GPU half. See the module docs.
@@ -210,6 +236,9 @@ pub(crate) struct Ui {
     page_state: UiPageState,
     /// This frame's uploads, joined. Its capacity stays.
     bands: UiPageBands,
+    /// Where each of this frame's list's fields is in `Built::fields`, if it could be uploaded. Its
+    /// capacity stays.
+    field_slots: Vec<Option<u16>>,
 }
 
 /// What the uploads pass writes for the interface.
@@ -248,6 +277,7 @@ impl Ui {
             max_bytes: device.limits().max_buffer_size,
             page_state: UiPageState { store: NEXT_PAGE_STORE.fetch_add(1, Ordering::Relaxed), batch: 0 },
             bands: UiPageBands::default(),
+            field_slots: Vec::new(),
         }
     }
 
@@ -259,7 +289,7 @@ impl Ui {
     /// Whether `list` draws anything.
     fn draws(list: &UiDrawList) -> bool {
         !list.quads.is_empty()
-            && (list.atlas.is_some() || !list.page_runs.is_empty() || !list.inset_runs.is_empty())
+            && (list.atlas.is_some() || !list.runs.is_empty() || !list.inset_runs.is_empty())
             && list.viewport[0] > 0.0
             && list.viewport[1] > 0.0
     }
@@ -347,6 +377,7 @@ impl Ui {
             atlas: None,
             pages: BTreeMap::new(),
             page_size: 0,
+            fields: Vec::new(),
         }));
         self.stats.pipelines = 1;
     }
@@ -365,11 +396,12 @@ impl Ui {
         self.stats.glyphs = list.glyphs;
         self.stats.tree = list.tree;
         // A list that names no page is nobody's, and says nothing about the pages.
-        let uses_pages = !list.page_runs.is_empty() || !list.page_uploads.is_empty();
+        let page_runs = || list.runs.iter().filter(|run| matches!(run.source, UiSource::Page(_)));
+        let uses_pages = page_runs().next().is_some() || !list.page_uploads.is_empty();
         let ours = list.page_state.store == self.page_state.store;
         if !ours && uses_pages {
             self.stats.stale_page_quads =
-                list.page_runs.iter().fold(0u32, |count, run| count.saturating_add(run.count));
+                page_runs().fold(0u32, |count, run| count.saturating_add(run.count));
             tracing::debug!(
                 target: crate::LOG_TARGET,
                 quads = self.stats.stale_page_quads,
@@ -377,6 +409,9 @@ impl Ui {
             );
         }
         let Some(built) = self.built.as_deref_mut() else { return };
+        // What nothing else holds won't be named again.
+        built.fields.retain(|field| Arc::strong_count(&field.source) > 1);
+        count_fields(&mut self.stats, built);
         let applied = ours
             && write_pages(&self.device, queue, built, list, &mut self.bands, self.labels).is_some_and(
                 |(uploads, bytes)| {
@@ -400,8 +435,21 @@ impl Ui {
                 self.stats.atlas_bytes = atlas.texels.len() as u64;
             }
         }
+        self.field_slots.clear();
+        for field in &list.fields {
+            let slot = match built.fields.iter().position(|on_gpu| Arc::ptr_eq(&on_gpu.source, field)) {
+                Some(slot) => Some(slot),
+                None => upload_atlas(&self.device, queue, built, field, self.labels).map(|on_gpu| {
+                    self.stats.field_uploads += 1;
+                    built.fields.push(on_gpu);
+                    built.fields.len() - 1
+                }),
+            };
+            self.field_slots.push(slot.and_then(|slot| u16::try_from(slot).ok()));
+        }
+        count_fields(&mut self.stats, built);
         let has_atlas = list.atlas.is_some() && built.atlas.is_some();
-        if !has_atlas && list.page_runs.is_empty() && list.inset_runs.is_empty() {
+        if !has_atlas && list.runs.is_empty() && list.inset_runs.is_empty() {
             return;
         }
         let limit = built.quads.max_items(QUAD_BYTES).min(list.quads.len() as u64) as usize;
@@ -409,11 +457,19 @@ impl Ui {
         self.quads.extend_from_slice(&list.quads[..limit]);
         self.stats.quads = limit as u32;
         self.stats.quads_over_limit = (list.quads.len() - limit) as u32;
+        let field_slots = &self.field_slots;
         resolve_draws(
             list,
             limit as u32,
             has_atlas,
-            |page| applied && built.pages.contains_key(&page),
+            |source| match source {
+                UiSource::Page(page) => {
+                    (applied && built.pages.contains_key(&page)).then_some(UiTexture::Page(page))
+                }
+                UiSource::Field(at) => {
+                    field_slots.get(usize::from(at)).copied().flatten().map(UiTexture::Field)
+                }
+            },
             &mut self.draws,
         );
         self.stats.draws = self.draws.len() as u32;
@@ -495,14 +551,15 @@ impl Ui {
                     continue;
                 }
                 let picture = |inset| pictures.iter().flatten().find(|picture| picture.inset == inset);
-                let group = match (draw.inset, draw.page, built.atlas.as_ref()) {
-                    (Some(inset), ..) => match picture(inset) {
+                let group = match (draw.texture, built.atlas.as_ref()) {
+                    (UiTexture::Inset(inset), _) => match picture(inset) {
                         Some(picture) => picture.group,
                         None => continue,
                     },
-                    (None, Some(page), _) => &built.pages[&page].bind_group,
-                    (None, None, Some(atlas)) => &atlas.bind_group,
-                    (None, None, None) => continue,
+                    (UiTexture::Page(page), _) => &built.pages[&page].bind_group,
+                    (UiTexture::Field(at), _) => &built.fields[usize::from(at)].bind_group,
+                    (UiTexture::Atlas, Some(atlas)) => &atlas.bind_group,
+                    (UiTexture::Atlas, None) => continue,
                 };
                 let start = u64::from(draw.first) * QUAD_BYTES;
                 let end = start + u64::from(draw.count) * QUAD_BYTES;
@@ -600,7 +657,13 @@ fn write_pages(
     bands: &mut UiPageBands,
     labels: bool,
 ) -> Option<(u32, u64)> {
-    if list.page_runs.is_empty() && list.page_uploads.is_empty() {
+    let named_pages = || {
+        list.runs.iter().filter_map(|run| match run.source {
+            UiSource::Page(page) => Some(page),
+            UiSource::Field(_) => None,
+        })
+    };
+    if named_pages().next().is_none() && list.page_uploads.is_empty() {
         return Some((0, 0));
     }
     let side = list.page_size;
@@ -612,7 +675,7 @@ fn write_pages(
         built.pages.clear();
         built.page_size = side;
     }
-    let named = list.page_runs.iter().map(|run| run.page).chain(list.page_uploads.iter().map(|up| up.page));
+    let named = named_pages().chain(list.page_uploads.iter().map(|up| up.page));
     for page in named {
         if !built.pages.contains_key(&page) {
             let on_gpu = make_page(device, built, side, labels);
@@ -651,6 +714,12 @@ fn write_pages(
 }
 
 /// Validate the complete batch before allocating pages or acknowledging any of its writes.
+/// The fields on the GPU, for the stats.
+fn count_fields(stats: &mut UiStats, built: &Built) {
+    stats.fields = built.fields.len() as u32;
+    stats.field_bytes = built.fields.iter().map(|field| field.source.texels.len() as u64).sum();
+}
+
 fn valid_page_uploads(list: &UiDrawList, max_side: u32) -> bool {
     let side = list.page_size;
     side > 0
@@ -709,55 +778,42 @@ pub(crate) struct UiPicture<'f> {
     pub texture: TextureId,
 }
 
-/// What a run of quads reads, between the atlas's quads.
-#[derive(Clone, Copy)]
-enum RunTexture {
-    Page(u16),
-    Inset(u16),
-}
-
-/// The first `limit` quads of `list` as runs of one texture and one mask each, in order: the glyph
-/// pages' and insets' runs, which come in order and don't overlap, and the atlas's quads between them.
-/// Quads with nothing to read don't draw.
+/// The first `limit` quads of `list` as runs of one texture and one mask each, in order: the pages'
+/// and fields' runs with each one's source as `texture` finds it, and the insets' runs, which come in
+/// order and don't overlap, and the atlas's quads between them. Quads with nothing to read don't draw.
 fn resolve_draws(
     list: &UiDrawList,
     limit: u32,
     has_atlas: bool,
-    has_page: impl Fn(u16) -> bool,
+    texture: impl Fn(UiSource) -> Option<UiTexture>,
     draws: &mut Vec<UiDraw>,
 ) {
     let mut at = 0;
     let mut masks = Masks { list: &list.masks, next: 0, rect: None };
-    let field = |first: u32, end: u32, masks: &mut Masks<'_>, draws: &mut Vec<UiDraw>| {
+    let atlas = |first: u32, end: u32, masks: &mut Masks<'_>, draws: &mut Vec<UiDraw>| {
         if has_atlas && end > first {
-            masks.split(first, end, None, None, draws);
+            masks.split(first, end, UiTexture::Atlas, draws);
         }
     };
-    let page_runs = list.page_runs.iter().map(|run| (run.first, run.count, RunTexture::Page(run.page)));
-    let inset_runs = list.inset_runs.iter().map(|run| (run.first, run.count, RunTexture::Inset(run.inset)));
-    let (mut page_runs, mut inset_runs) = (page_runs.peekable(), inset_runs.peekable());
+    let runs = list.runs.iter().map(|run| (run.first, run.count, texture(run.source)));
+    let insets = list.inset_runs.iter().map(|run| (run.first, run.count, Some(UiTexture::Inset(run.inset))));
+    let (mut runs, mut insets) = (runs.peekable(), insets.peekable());
     loop {
-        let run = match (page_runs.peek(), inset_runs.peek()) {
-            (Some(page), Some(inset)) if page.0 <= inset.0 => page_runs.next(),
-            (_, Some(_)) => inset_runs.next(),
-            (Some(_), None) => page_runs.next(),
+        let next = match (runs.peek(), insets.peek()) {
+            (Some(run), Some(inset)) if run.0 <= inset.0 => runs.next(),
+            (_, Some(_)) => insets.next(),
+            (Some(_), None) => runs.next(),
             (None, None) => break,
         };
-        let Some((first, count, texture)) = run else { break };
+        let Some((first, count, texture)) = next else { break };
         let (first, end) = (first.min(limit), first.saturating_add(count).min(limit));
-        field(at, first, &mut masks, draws);
-        if end > first {
-            match texture {
-                RunTexture::Page(page) if has_page(page) => {
-                    masks.split(first, end, Some(page), None, draws);
-                }
-                RunTexture::Page(_) => {}
-                RunTexture::Inset(inset) => masks.split(first, end, None, Some(inset), draws),
-            }
+        atlas(at, first, &mut masks, draws);
+        if let Some(texture) = texture.filter(|_| end > first) {
+            masks.split(first, end, texture, draws);
         }
         at = end;
     }
-    field(at, limit, &mut masks, draws);
+    atlas(at, limit, &mut masks, draws);
 }
 
 /// Where a walk through a list's quads is among its masks. Quads that don't draw still pass theirs.
@@ -769,14 +825,7 @@ struct Masks<'a> {
 
 impl Masks<'_> {
     /// Quads `first..end` on one texture, as draws of one mask each.
-    fn split(
-        &mut self,
-        first: u32,
-        end: u32,
-        page: Option<u16>,
-        inset: Option<u16>,
-        draws: &mut Vec<UiDraw>,
-    ) {
+    fn split(&mut self, first: u32, end: u32, texture: UiTexture, draws: &mut Vec<UiDraw>) {
         let mut at = first;
         while at < end {
             while let Some(mask) = self.list.get(self.next).filter(|mask| mask.first <= at) {
@@ -784,7 +833,7 @@ impl Masks<'_> {
                 self.next += 1;
             }
             let until = self.list.get(self.next).map_or(end, |mask| mask.first.min(end));
-            draws.push(UiDraw { first: at, count: until - at, page, inset, mask: self.rect });
+            draws.push(UiDraw { first: at, count: until - at, texture, mask: self.rect });
             at = until;
         }
     }
@@ -799,7 +848,8 @@ fn upload_atlas(
     atlas: &Arc<UiAtlas>,
     labels: bool,
 ) -> Option<AtlasOnGpu> {
-    let bytes = u64::from(atlas.width) * u64::from(atlas.height);
+    let row_bytes = atlas.width * atlas.format.bytes_per_texel();
+    let bytes = u64::from(row_bytes) * u64::from(atlas.height);
     let side = device.limits().max_texture_dimension_2d;
     if bytes == 0 || bytes != atlas.texels.len() as u64 || atlas.width > side || atlas.height > side {
         tracing::warn!(target: crate::LOG_TARGET, ?atlas, "a UI atlas that can't be uploaded");
@@ -812,7 +862,10 @@ fn upload_atlas(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R8Unorm,
+        format: match atlas.format {
+            UiFieldFormat::Single => wgpu::TextureFormat::R8Unorm,
+            UiFieldFormat::Multi => wgpu::TextureFormat::Rgba8Unorm,
+        },
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -821,7 +874,7 @@ fn upload_atlas(
         &atlas.texels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(atlas.width),
+            bytes_per_row: Some(row_bytes),
             rows_per_image: Some(atlas.height),
         },
         size,
@@ -841,14 +894,14 @@ fn upload_atlas(
 
 #[cfg(test)]
 mod tests {
-    use sapphire_look::{UiInsetRun, UiMask, UiPageRun};
+    use sapphire_look::{UiInsetRun, UiMask, UiRun};
 
     use super::*;
 
     #[test]
     fn the_quad_s_layout_is_what_the_vertex_stage_reads() {
         // Holds `UiQuad`, an append-only layout, to the attributes: nothing skipped or overlapped.
-        assert_eq!(QUAD_BYTES, 92);
+        assert_eq!(QUAD_BYTES, 96);
         let mut end = 0;
         for attribute in QUAD_ATTRIBUTES {
             assert_eq!(attribute.offset, end, "location {}", attribute.shader_location);
@@ -868,7 +921,8 @@ mod tests {
         let mut ui =
             Ui::new(gpu.device(), wgpu::TextureFormat::Rgba8UnormSrgb, PipelineBuilds::new(None), false);
         ui.limit_quads(4);
-        let atlas = UiAtlas { width: 1, height: 1, spread: 6.0, texels: vec![255] };
+        let atlas =
+            UiAtlas { width: 1, height: 1, spread: 6.0, format: UiFieldFormat::Single, texels: vec![255] };
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [255; 4]);
         let list = UiDrawList {
             viewport: [8.0, 8.0],
@@ -882,80 +936,111 @@ mod tests {
         assert_eq!(ui.uploads().expect("what fits still draws").quads.len(), 4);
     }
 
+    /// How a test finds a run's texture: pages under 2 and the first field exist.
+    fn known(source: UiSource) -> Option<UiTexture> {
+        match source {
+            UiSource::Page(page) => (page < 2).then_some(UiTexture::Page(page)),
+            UiSource::Field(at) => (at == 0).then_some(UiTexture::Field(7)),
+        }
+    }
+
     #[test]
-    fn runs_of_a_page_split_the_atlas_s_quads_in_order() {
+    fn runs_of_a_page_or_a_field_split_the_atlas_s_quads_in_order() {
+        use UiTexture::{Atlas, Field, Page};
+
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
         let list = UiDrawList {
-            quads: vec![quad; 10],
-            page_runs: vec![
-                UiPageRun { first: 2, count: 3, page: 0 },
-                UiPageRun { first: 5, count: 1, page: 1 },
+            quads: vec![quad; 12],
+            runs: vec![
+                UiRun { first: 2, count: 3, source: UiSource::Page(0) },
+                UiRun { first: 5, count: 1, source: UiSource::Page(1) },
+                UiRun { first: 7, count: 2, source: UiSource::Field(0) },
+                UiRun { first: 9, count: 1, source: UiSource::Field(1) },
             ],
             ..UiDrawList::default()
         };
         let resolved = |limit, has_atlas| {
             let mut draws = Vec::new();
-            resolve_draws(&list, limit, has_atlas, |page| page < 2, &mut draws);
-            draws.iter().map(|d| (d.first, d.count, d.page)).collect::<Vec<_>>()
+            resolve_draws(&list, limit, has_atlas, known, &mut draws);
+            draws.iter().map(|d| (d.first, d.count, d.texture)).collect::<Vec<_>>()
         };
-        assert_eq!(resolved(10, true), [(0, 2, None), (2, 3, Some(0)), (5, 1, Some(1)), (6, 4, None)],);
-        assert_eq!(resolved(10, false), [(2, 3, Some(0)), (5, 1, Some(1))], "no atlas, no field quads");
-        assert_eq!(resolved(3, true), [(0, 2, None), (2, 1, Some(0))], "a run cut at the buffer's limit");
+        assert_eq!(
+            resolved(12, true),
+            [
+                (0, 2, Atlas),
+                (2, 3, Page(0)),
+                (5, 1, Page(1)),
+                (6, 1, Atlas),
+                (7, 2, Field(7)),
+                (10, 2, Atlas)
+            ],
+            "a field that couldn't be uploaded draws nothing, and no other quad in its place",
+        );
+        assert_eq!(
+            resolved(12, false),
+            [(2, 3, Page(0)), (5, 1, Page(1)), (7, 2, Field(7))],
+            "no atlas, no HUD quads"
+        );
+        assert_eq!(resolved(3, true), [(0, 2, Atlas), (2, 1, Page(0))], "a run cut at the buffer's limit");
     }
 
     #[test]
     fn overflowing_trailing_page_range_does_not_duplicate_or_hide_valid_quads() {
+        use UiTexture::{Atlas, Page};
+
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
         let list = UiDrawList {
             quads: vec![quad; 10],
-            page_runs: vec![
-                UiPageRun { first: 2, count: 3, page: 0 },
-                UiPageRun { first: u32::MAX, count: 1, page: 1 },
+            runs: vec![
+                UiRun { first: 2, count: 3, source: UiSource::Page(0) },
+                UiRun { first: u32::MAX, count: 1, source: UiSource::Page(1) },
             ],
             ..UiDrawList::default()
         };
         let mut draws = Vec::new();
-        resolve_draws(&list, 10, true, |_| true, &mut draws);
+        resolve_draws(&list, 10, true, known, &mut draws);
         assert_eq!(
-            draws.iter().map(|draw| (draw.first, draw.count, draw.page)).collect::<Vec<_>>(),
-            [(0, 2, None), (2, 3, Some(0)), (5, 5, None)]
+            draws.iter().map(|draw| (draw.first, draw.count, draw.texture)).collect::<Vec<_>>(),
+            [(0, 2, Atlas), (2, 3, Page(0)), (5, 5, Atlas)]
         );
         draws.clear();
-        resolve_draws(&list, 4, true, |_| true, &mut draws);
+        resolve_draws(&list, 4, true, known, &mut draws);
         assert_eq!(
-            draws.iter().map(|draw| (draw.first, draw.count, draw.page)).collect::<Vec<_>>(),
-            [(0, 2, None), (2, 2, Some(0))]
+            draws.iter().map(|draw| (draw.first, draw.count, draw.texture)).collect::<Vec<_>>(),
+            [(0, 2, Atlas), (2, 2, Page(0))]
         );
     }
 
     #[test]
     fn a_mask_splits_a_run_and_outlasts_quads_that_don_t_draw() {
+        use UiTexture::{Atlas, Page};
+
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
         let mask = Some([1.0, 2.0, 3.0, 4.0]);
         let list = UiDrawList {
             quads: vec![quad; 10],
-            page_runs: vec![UiPageRun { first: 2, count: 4, page: 0 }],
+            runs: vec![UiRun { first: 2, count: 4, source: UiSource::Page(0) }],
             masks: vec![UiMask { first: 1, rect: mask }, UiMask { first: 4, rect: None }],
             ..UiDrawList::default()
         };
         let resolved = |has_atlas| {
             let mut draws = Vec::new();
-            resolve_draws(&list, 10, has_atlas, |page| page < 1, &mut draws);
-            draws.iter().map(|d| (d.first, d.count, d.page, d.mask)).collect::<Vec<_>>()
+            resolve_draws(&list, 10, has_atlas, known, &mut draws);
+            draws.iter().map(|d| (d.first, d.count, d.texture, d.mask)).collect::<Vec<_>>()
         };
         assert_eq!(
             resolved(true),
             [
-                (0, 1, None, None),
-                (1, 1, None, mask),
-                (2, 2, Some(0), mask),
-                (4, 2, Some(0), None),
-                (6, 4, None, None),
+                (0, 1, Atlas, None),
+                (1, 1, Atlas, mask),
+                (2, 2, Page(0), mask),
+                (4, 2, Page(0), None),
+                (6, 4, Atlas, None),
             ],
         );
         assert_eq!(
             resolved(false),
-            [(2, 2, Some(0), mask), (4, 2, Some(0), None)],
+            [(2, 2, Page(0), mask), (4, 2, Page(0), None)],
             "quads with nothing to read keep their mask's place",
         );
     }
@@ -982,30 +1067,34 @@ mod tests {
     }
 
     #[test]
-    fn inset_runs_read_their_pictures_between_pages_and_the_atlas() {
+    fn inset_runs_read_their_pictures_between_pages_fields_and_the_atlas() {
+        use UiTexture::{Atlas, Field, Inset, Page};
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
         let list = UiDrawList {
-            quads: vec![quad; 8],
-            page_runs: vec![
-                UiPageRun { first: 1, count: 2, page: 0 },
-                UiPageRun { first: 6, count: 1, page: 0 },
+            quads: vec![quad; 10],
+            runs: vec![
+                UiRun { first: 1, count: 2, source: UiSource::Page(0) },
+                UiRun { first: 6, count: 1, source: UiSource::Field(0) },
+                UiRun { first: 8, count: 1, source: UiSource::Page(5) },
             ],
             inset_runs: vec![UiInsetRun { first: 3, count: 2, inset: 9 }],
             ..UiDrawList::default()
         };
         let mut draws = Vec::new();
-        resolve_draws(&list, 8, true, |page| page < 1, &mut draws);
-        let resolved: Vec<_> = draws.iter().map(|d| (d.first, d.count, d.page, d.inset)).collect();
+        resolve_draws(&list, 10, true, known, &mut draws);
+        let resolved: Vec<_> = draws.iter().map(|d| (d.first, d.count, d.texture)).collect();
         assert_eq!(
             resolved,
             [
-                (0, 1, None, None),
-                (1, 2, Some(0), None),
-                (3, 2, None, Some(9)),
-                (5, 1, None, None),
-                (6, 1, Some(0), None),
-                (7, 1, None, None),
+                (0, 1, Atlas),
+                (1, 2, Page(0)),
+                (3, 2, Inset(9)),
+                (5, 1, Atlas),
+                (6, 1, Field(7)),
+                (7, 1, Atlas),
+                (9, 1, Atlas),
             ],
+            "a page with nothing on the GPU draws nothing",
         );
     }
 

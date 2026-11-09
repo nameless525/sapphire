@@ -67,6 +67,9 @@ serde_json.workspace = true
 # Fonts cut down to what a pack's strings use (M3 U1). A second fontations line, so tools only.
 read_fonts_for_skera.workspace = true
 skera.workspace = true
+# Display text's distance fields (M3 U8): glyph outlines through `skrifa`, fields from `fdsm`.
+fdsm.workspace = true
+skrifa_for_skera.workspace = true
 thiserror.workspace = true
 # FBX meshes, skins, blend shapes and materials (M1 A10).
 ufbx.workspace = true

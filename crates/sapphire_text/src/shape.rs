@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::families::font_families;
+use crate::field::FieldFace;
 
 use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, SourceCache};
 use parley::style::{FontWeight, LineHeight, StyleProperty};
@@ -26,12 +27,15 @@ const MAX_LAYOUTS: usize = 4096;
 pub const TYPE_SCALE: [f32; 9] = [12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 32.0, 48.0, 64.0];
 
 /// What a font needs besides its bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct FaceOptions {
     /// How far down its lines' baselines move, in ems, from where the font's own metrics put them:
     /// what puts a title in this face on the same baseline as one in another, in the same box. A
     /// line takes it from the face of its first glyph.
     pub baseline_shift: f32,
+    /// A display face's cooked field, which its large glyphs draw from (see [`FieldFace`]). It must
+    /// have been made from these bytes, since it knows glyphs by their ids in them.
+    pub field: Option<Arc<FieldFace>>,
 }
 
 /// How a string looks.
@@ -72,6 +76,8 @@ pub struct ShapedRun {
     pub ppem: f32,
     /// This run's slice of [`ShapedText::glyphs`].
     pub glyphs: Range<u32>,
+    /// Its face's field, if it has one, whatever the size: the atlas decides which glyphs draw from it.
+    pub field: Option<Arc<FieldFace>>,
 }
 
 /// One glyph, in pixels from the text's top-left, its baseline at `y`.
@@ -123,8 +129,8 @@ pub struct TextSystem {
     fonts: FontContext,
     layouts: LayoutContext<()>,
     scratch: Layout<()>,
-    /// Each font's [`FaceOptions::baseline_shift`], by its blob, where it isn't 0.
-    shifts: HashMap<u64, f32>,
+    /// Each font's [`FaceOptions`], by its blob, where they aren't the default.
+    faces: HashMap<u64, FaceOptions>,
     cache: HashMap<u64, CachedLayout>,
     frame: u64,
     stats: ShapeStats,
@@ -151,7 +157,7 @@ impl TextSystem {
             fonts: FontContext { collection, source_cache: SourceCache::default() },
             layouts: LayoutContext::new(),
             scratch: Layout::new(),
-            shifts: HashMap::new(),
+            faces: HashMap::new(),
             cache: HashMap::new(),
             frame: 0,
             stats: ShapeStats::default(),
@@ -167,8 +173,8 @@ impl TextSystem {
     /// how any string shapes, so what's cached goes.
     pub fn register_face(&mut self, data: Arc<Vec<u8>>, options: FaceOptions) -> Vec<FamilyId> {
         let blob = Blob::new(data);
-        if options.baseline_shift != 0.0 {
-            self.shifts.insert(blob.id(), options.baseline_shift);
+        if options.baseline_shift != 0.0 || options.field.is_some() {
+            self.faces.insert(blob.id(), options);
         }
         self.cache.clear();
         let families = self.fonts.collection.register_fonts(blob, None);
@@ -267,11 +273,11 @@ impl TextSystem {
         builder.build_into(&mut self.scratch, text);
         self.scratch.break_all_lines(max_width.map(|width| width * scale));
         self.scratch.align(Alignment::Start, AlignmentOptions::default());
-        flatten(&self.scratch, &self.shifts)
+        flatten(&self.scratch, &self.faces)
     }
 }
 
-fn flatten(layout: &Layout<()>, shifts: &HashMap<u64, f32>) -> ShapedText {
+fn flatten(layout: &Layout<()>, faces: &HashMap<u64, FaceOptions>) -> ShapedText {
     let mut shaped = ShapedText { width: layout.width(), height: layout.height(), ..ShapedText::default() };
     for line in layout.lines() {
         let range = line.text_range();
@@ -280,9 +286,10 @@ fn flatten(layout: &Layout<()>, shifts: &HashMap<u64, f32>) -> ShapedText {
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
             let source = run.run();
+            let face = faces.get(&source.font().data.id());
             // In whole pixels, as a baseline lands on one.
             let shift = *shift.get_or_insert_with(|| {
-                let em = shifts.get(&source.font().data.id()).copied().unwrap_or(0.0);
+                let em = face.map_or(0.0, |face| face.baseline_shift);
                 (em * source.font_size()).round()
             });
             let start = shaped.glyphs.len() as u32;
@@ -296,6 +303,7 @@ fn flatten(layout: &Layout<()>, shifts: &HashMap<u64, f32>) -> ShapedText {
                 coords: source.normalized_coords().iter().map(|coord| coord.to_bits()).collect(),
                 ppem: source.font_size(),
                 glyphs: start..shaped.glyphs.len() as u32,
+                field: face.and_then(|face| face.field.clone()),
             });
         }
         shaped.baselines.push(line.metrics().baseline + shift.unwrap_or(0.0));

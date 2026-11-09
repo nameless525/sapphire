@@ -3,7 +3,9 @@
 //! A [`Font`] (`.sfont`) is a font file cut down to the characters its pack can show, with what the
 //! shaper can't read from the file: how far its baseline shifts, and the license it ships under,
 //! which a credits screen can show and a build's notices repeat. Its axes survive the cut, so a
-//! variable font keeps its weights.
+//! variable font keeps its weights. A display face also carries a [`FontField`] (M3 U8): its display
+//! characters as a multi-channel signed distance field, made from the cut file so its glyph ids are
+//! the ones the shaper finds, which `sapphire_text` draws large text from.
 //!
 //! [`FontChains`] (`.sfontc`, cooked from a `.fontchains.ron` document) says which font files each
 //! use of type, such as `body` or `display`, may need:
@@ -67,10 +69,49 @@ pub struct Font {
     pub license: String,
     /// The font file, cut down.
     pub file: Vec<u8>,
+    /// A display face's field, made from `file`.
+    pub field: Option<FontField>,
 }
 
 impl Versioned for Font {
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
+}
+
+/// A display face's glyphs as one multi-channel signed distance field (`sapphire_look`'s
+/// `UiFieldFormat::Multi`): red, green and blue whose median is the distance, and the true distance in
+/// alpha, each `0.5 + distance / (2 × spread)` with distance in texels, positive inside.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct FontField {
+    /// Texels to the em it was made at.
+    pub em: u16,
+    /// How far from an edge, in texels, the field reaches before it clamps.
+    pub spread: f32,
+    /// The variation it was made at: normalized coordinates as F2Dot14 bits, in the font's axis order,
+    /// empty for a font with no axes.
+    pub coords: Vec<i16>,
+    pub width: u16,
+    pub height: u16,
+    /// `width × height × 4` bytes, row by row from the top.
+    pub texels: Vec<u8>,
+    /// By `id`, ascending.
+    pub glyphs: Vec<FieldGlyph>,
+}
+
+/// Where one glyph is in a [`FontField`].
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct FieldGlyph {
+    /// Its id in the cut font.
+    pub id: u32,
+    /// Its cell, in texels from the top-left: empty for a glyph with no ink.
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// The cell's top-left from the glyph's origin on the baseline, in ems, +y down.
+    pub left: f32,
+    pub top: f32,
 }
 
 /// A font or font chains that can't be read.
@@ -92,6 +133,8 @@ pub enum FontError {
     NotAFont,
     #[error("a baseline shift of {shift} ems")]
     BaselineShift { shift: f32 },
+    #[error("a display field that doesn't describe itself: {problem}")]
+    DisplayField { problem: &'static str },
     #[error(transparent)]
     Cooked(#[from] CookedError),
 }
@@ -117,8 +160,41 @@ impl Font {
         if !shift.is_finite() || shift.abs() > MAX_BASELINE_SHIFT {
             return Err(FontError::BaselineShift { shift });
         }
+        if let Some(field) = font.field.as_ref() {
+            check_field(field).map_err(|problem| FontError::DisplayField { problem })?;
+        }
         Ok(font)
     }
+}
+
+/// What's wrong with a cooked field, if anything: what a renderer would read past or a lookup trip on.
+fn check_field(field: &ArchivedFontField) -> Result<(), &'static str> {
+    let (width, height) = (u32::from(field.width.to_native()), u32::from(field.height.to_native()));
+    let spread = field.spread.to_native();
+    if field.em.to_native() == 0 || spread.is_nan() || spread <= 0.0 {
+        return Err("no size or no spread");
+    }
+    if field.texels.len() as u64 != u64::from(width) * u64::from(height) * 4 {
+        return Err("its texels aren't its size");
+    }
+    let mut last = None;
+    for glyph in field.glyphs.iter() {
+        let id = glyph.id.to_native();
+        if last.is_some_and(|last| last >= id) {
+            return Err("its glyphs aren't in ascending order of id");
+        }
+        last = Some(id);
+        let x_end = u32::from(glyph.x.to_native()) + u32::from(glyph.width.to_native());
+        let y_end = u32::from(glyph.y.to_native()) + u32::from(glyph.height.to_native());
+        if x_end > width
+            || y_end > height
+            || !glyph.left.to_native().is_finite()
+            || !glyph.top.to_native().is_finite()
+        {
+            return Err("a glyph lies outside it");
+        }
+    }
+    Ok(())
 }
 
 /// A use of type, such as `body` or `display`, and the font files it may need.
@@ -218,6 +294,27 @@ impl ArchivedFont {
             baseline_shift: self.baseline_shift.to_native(),
             license: self.license.to_string(),
             file: self.file.to_vec(),
+            field: self.field.as_ref().map(|field| FontField {
+                em: field.em.to_native(),
+                spread: field.spread.to_native(),
+                coords: field.coords.iter().map(|coord| coord.to_native()).collect(),
+                width: field.width.to_native(),
+                height: field.height.to_native(),
+                texels: field.texels.to_vec(),
+                glyphs: field
+                    .glyphs
+                    .iter()
+                    .map(|glyph| FieldGlyph {
+                        id: glyph.id.to_native(),
+                        x: glyph.x.to_native(),
+                        y: glyph.y.to_native(),
+                        width: glyph.width.to_native(),
+                        height: glyph.height.to_native(),
+                        left: glyph.left.to_native(),
+                        top: glyph.top.to_native(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -268,7 +365,47 @@ mod tests {
             baseline_shift: 0.125,
             license: "the license".to_owned(),
             file: vec![0, 1, 0, 0, 9],
+            field: None,
         }
+    }
+
+    fn field() -> FontField {
+        let glyph = |id, x| FieldGlyph { id, x, y: 0, width: 2, height: 2, left: -0.1, top: -0.8 };
+        FontField {
+            em: 48,
+            spread: 4.0,
+            coords: vec![0x1000],
+            width: 4,
+            height: 2,
+            texels: (0..32).collect(),
+            glyphs: vec![glyph(3, 0), glyph(7, 2)],
+        }
+    }
+
+    #[test]
+    fn a_display_face_s_field_reads_back_as_written() {
+        let cooked = Font { field: Some(field()), ..font() }.to_cooked().unwrap();
+        let read = Font::read(&cooked).unwrap().field.as_ref().expect("a field");
+        assert_eq!((read.em.to_native(), read.spread.to_native()), (48, 4.0));
+        assert_eq!(read.coords.iter().map(|c| c.to_native()).collect::<Vec<_>>(), [0x1000]);
+        assert_eq!(read.texels.as_slice(), (0..32).collect::<Vec<u8>>());
+        assert_eq!(read.glyphs[1].id.to_native(), 7);
+        assert_eq!(read.glyphs[1].top.to_native(), -0.8);
+    }
+
+    #[test]
+    fn a_field_that_lies_about_itself_is_refused() {
+        let refused = |field: FontField| {
+            Font::read(&Font { field: Some(field), ..font() }.to_cooked().unwrap()).unwrap_err().to_string()
+        };
+        assert!(refused(FontField { texels: vec![0; 31], ..field() }).contains("texels"));
+        assert!(refused(FontField { em: 0, ..field() }).contains("size"));
+        let mut swapped = field();
+        swapped.glyphs.reverse();
+        assert!(refused(swapped).contains("order"));
+        let mut outside = field();
+        outside.glyphs[1].x = 3;
+        assert!(refused(outside).contains("outside"));
     }
 
     #[test]

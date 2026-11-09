@@ -15,7 +15,7 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, PipelineInventory, PostParams,
     RenderSettings, Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, UI_PASS,
-    UiAtlas, UiDrawList, UiPageUpload, UiQuad, ViewData, Vignette,
+    UiAtlas, UiDrawList, UiFieldFormat, UiPageUpload, UiQuad, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
@@ -589,7 +589,8 @@ fn a_new_renderer_uploads_the_atlas_it_is_handed_and_another_atlas_replaces_it()
 
     // An atlas whose size lies about its bytes draws nothing, with no validation error.
     let mut broken = ui.clone();
-    broken.atlas = Some(Arc::new(UiAtlas { width: 8, height: 8, spread: 6.0, texels: vec![255; 3] }));
+    broken.atlas =
+        Some(Arc::new(UiAtlas { width: 8, height: 8, texels: vec![255; 3], ..(**source).clone() }));
     harness.draw(Some(&broken));
     assert_eq!(harness.renderer.stats().ui.quads, 0);
 
@@ -777,6 +778,53 @@ fn a_sparse_glyph_page_allocates_only_the_page_named() {
     ui.push_page_quad(u16::MAX, page_quad(16.0, (0.0, 0.0), (8.0, 8.0), 16.0, [255; 4]));
     assert_eq!(harness.draw(Some(&ui)).at(16, 16), [255; 4]);
     assert_eq!(harness.renderer.stats().ui.pages, 1);
+}
+
+/// A display face's field (M3 U8): a 16 × 16 multi-channel atlas whose left half's channels agree
+/// two to one on inside, and whose right half's agree two to one on outside, though every texel's red
+/// says inside. Only the median of three tells the halves apart.
+fn split_field() -> Arc<UiAtlas> {
+    let mut texels = Vec::with_capacity(16 * 16 * 4);
+    for _ in 0..16 {
+        for x in 0..16 {
+            texels.extend_from_slice(if x < 8 { &[255, 255, 0, 255] } else { &[255, 0, 0, 0] });
+        }
+    }
+    Arc::new(UiAtlas { width: 16, height: 16, spread: 4.0, format: UiFieldFormat::Multi, texels })
+}
+
+/// Field quads draw through the interface's one pipeline, so a renderer that declared it builds nothing
+/// for them; the field goes up once, however many frames name it, and comes down once nothing does.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_field_draws_by_its_median_through_the_one_pipeline_and_goes_up_once() {
+    let mut harness = Harness::new((32, 32));
+    let inventory = PipelineInventory { ui: true, ..PipelineInventory::default() };
+    assert_eq!(harness.renderer.prewarm(&inventory), 1);
+    harness.draw(None);
+    let builds = harness.renderer.stats().pipelines.first_use_builds;
+    let alive = pipelines(&harness.gpu);
+
+    let field = split_field();
+    let mut ui = UiDrawList { viewport: [32.0, 32.0], ..UiDrawList::default() };
+    ui.push_field_quad(&field, UiQuad::field_glyph([8.0, 8.0], [16.0, 16.0], [0.0, 0.0, 1.0, 1.0], [255; 4]));
+    let pixels = harness.draw(Some(&ui));
+    assert_eq!(pixels.at(10, 16), [255; 4], "the left half's median is inside");
+    assert_eq!(pixels.at(21, 16)[..3], [0; 3], "the right half's is outside, though its red isn't");
+    assert_eq!(pixels.at(4, 16)[..3], [0; 3], "nothing outside the quad");
+    let stats = harness.renderer.stats();
+    assert_eq!(stats.pipelines.first_use_builds, builds, "no first use");
+    assert_eq!(pipelines(&harness.gpu), alive, "no pipeline of its own");
+    assert_eq!((stats.ui.fields, stats.ui.field_uploads, stats.ui.field_bytes), (1, 1, 16 * 16 * 4));
+
+    harness.draw(Some(&ui));
+    assert_eq!(harness.renderer.stats().ui.field_uploads, 1, "a field named again isn't uploaded again");
+
+    drop((ui, field));
+    for _ in 0..4 {
+        harness.draw(None);
+    }
+    assert_eq!(harness.renderer.stats().ui.fields, 0, "what nothing holds comes down");
 }
 
 #[test]

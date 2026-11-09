@@ -143,8 +143,8 @@ pub struct ScreenAssets {
     /// The documents, in the order they were asked for.
     pub documents: Vec<UiDocument>,
     pub tables: Vec<StringTable>,
-    /// Each font's file and baseline shift.
-    pub fonts: Vec<(Arc<Vec<u8>>, f32)>,
+    /// Each font as it's cooked: its file, its baseline shift and, for a display face, its field.
+    pub fonts: Vec<Font>,
 }
 
 /// The pack the sandbox's content ships in.
@@ -1346,6 +1346,17 @@ impl Content {
         })
     }
 
+    /// Mounts the pack `name` unless it is, waiting for its header: one only some apps read, as the
+    /// fonts are, which a load straight after needs mounted.
+    pub fn mount_pack(&mut self, name: &str) -> Result<(), AppInitError> {
+        if !self.server.is_mounted(name) {
+            self.server
+                .mount_now(name)
+                .map_err(|error| AppInitError::msg(format!("the pack {name}: {error}")))?;
+        }
+        Ok(())
+    }
+
     /// Loads the asset `id` until it's resident and on `renderer`, with whatever it names, and returns its
     /// handle, which keeps it loaded for as long as it's held. Asking again tries what failed before, as the
     /// character does.
@@ -1616,7 +1627,7 @@ impl Content {
                 .finish(&font, |upload| assets.upload(upload, renderer, gpu))
                 .map_err(|error| failed(&error))?;
             let font = server.get(&font).ok_or_else(|| failed(&"a font isn't loaded"))?;
-            fonts.push((Arc::new(font.file.to_vec()), font.baseline_shift.to_native()));
+            fonts.push(font.to_owned_font());
         }
         Ok(ScreenAssets { documents, tables, fonts })
     }

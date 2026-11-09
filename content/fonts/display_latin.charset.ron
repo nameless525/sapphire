@@ -1,0 +1,11 @@
+// What a Latin display face's field holds (M3 U8): printable ASCII, which is what a title, a heading
+// or a big number shows. Anything else in the face draws from the glyph pages.
+(
+    type: "sapphire::pipeline::CharacterSet",
+    version: 1,
+    data: (
+        ranges: [
+            (0x20, 0x7e),
+        ],
+    ),
+)

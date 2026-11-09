@@ -6,7 +6,11 @@
         importer: Font((
             license: "OFL.txt",
             baseline_shift: 0.146,
-            subsets: [(pack: "fonts", characters: "../../fonts/ui.charset.ron")],
+            subsets: [(
+                pack: "fonts",
+                characters: "../../fonts/ui.charset.ron",
+                display: (characters: "../../fonts/display_latin.charset.ron", weight: 700),
+            )],
         )),
     ),
 )

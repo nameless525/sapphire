@@ -12,13 +12,17 @@
 //! - **The glyph atlas** ([`GlyphAtlas`]): coverage from `swash` in pages from `etagere`, with the
 //!   new glyphs' texels handed to the frame's [`UiDrawList`](sapphire_look::UiDrawList), which is how
 //!   they reach the renderer (rule R4).
+//! - **Display faces' fields** ([`FieldFace`]): a display face's large glyphs drawn from a
+//!   multi-channel distance field the cooker made, so a title is crisp at any size and rasterizes
+//!   nothing. Which text takes it is in the [`field`] module's docs.
 //!
 //! # Does not own
 //!
 //! - **Where text goes.** Boxes and widgets are `sapphire_ui`'s; this takes an origin in points.
 //! - **What text says:** strings come in already chosen and formatted.
 //! - **Files.** Bytes come from whoever read the pack: a cooked font is `sapphire_assets::font::Font`,
-//!   whose `file` goes to [`TextSystem::register_face`] with its `baseline_shift`.
+//!   whose `file` goes to [`TextSystem::register_face`] with its `baseline_shift` and its field.
+//! - **Making fields,** which is the cooker's (`fdsm`, which never reaches a runtime).
 //! - **HUD digits,** which stay on `sapphire_ui`'s distance field atlas and never shape.
 //!
 //! # Why a crate of its own
@@ -32,10 +36,12 @@
 
 mod atlas;
 mod families;
+pub mod field;
 mod shape;
 
 pub use atlas::{AtlasConfig, GlyphAtlas};
 pub use families::family_list;
+pub use field::{FieldError, FieldFace, FieldGlyph};
 pub use parley::fontique::FamilyId;
 pub use shape::{
     FaceOptions, ShapeStats, ShapedGlyph, ShapedRun, ShapedText, TYPE_SCALE, TextStyle, TextSystem,

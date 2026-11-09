@@ -64,7 +64,7 @@ pub use post::{
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
 pub use ui::{
-    UI_COVERAGE, UI_PICTURE, UiAtlas, UiDrawList, UiGlyphStats, UiInsetRun, UiMask, UiPageBands, UiPageRun,
-    UiPageState, UiPageUpload, UiQuad, UiTreeStats,
+    UI_COVERAGE, UI_FIELD, UI_MULTI_FIELD, UI_PICTURE, UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats,
+    UiInsetRun, UiMask, UiPageBands, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, UiTreeStats,
 };
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

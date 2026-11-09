@@ -234,6 +234,9 @@ pub(crate) struct Options {
     /// `--ui-game`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-plain`, `--ui-time`, `--ui-walk`,
     /// `--ui-turn` and `--ui-spin`: one of the game's screens over the scene (M3 U7, C3).
     pub ui_screen: Option<ScreenOptions>,
+    /// `--display-text latin|japanese`: a title in the display face at four sizes over the frame
+    /// (M3 U8, `display_text.rs`).
+    pub display_text: Option<crate::display_text::DisplaySample>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -792,6 +795,10 @@ impl Options {
                         other => return Err(format!("--hud expects fixed or live, got {other:?}")),
                     };
                     hud_mode = Some(mode);
+                }
+                "--display-text" => {
+                    options.display_text =
+                        Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
                 }
                 "--draw-every" => options.draw_every = Some(number(&value("--draw-every")?, "--draw-every")?),
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),

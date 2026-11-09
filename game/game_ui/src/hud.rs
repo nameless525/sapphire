@@ -524,6 +524,11 @@ pub struct ShownFight {
     /// Retained screens under the HUD (M3 U4), which only the sandbox hangs here: a game's menus take
     /// input, and its show holds them.
     pub screen: Option<ScreenStack>,
+    /// Whatever else an app draws over the frame, after the screens and the HUD: its interface, which
+    /// hears only of the interface ([`SceneShow::declare_pipelines`], [`SceneShow::begin_interface`]
+    /// and [`SceneShow::draw_interface`]). The sandbox's display text sample (M3 U8), which draws
+    /// straight from the shaper with no document, is one.
+    pub over: Option<Box<dyn SceneShow>>,
 }
 
 impl ShownFight {
@@ -576,6 +581,9 @@ impl SceneShow for ShownFight {
         self.fight.declare_pipelines(inventory);
         inventory.ui |= self.hud.is_some() || self.screen.is_some();
         inventory.insets |= self.screen.as_ref().is_some_and(ScreenStack::holds_insets);
+        if let Some(over) = &self.over {
+            over.declare_pipelines(inventory);
+        }
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -598,6 +606,9 @@ impl SceneShow for ShownFight {
     fn begin_interface(&mut self, pages: UiPageState) {
         if let Some(screen) = &mut self.screen {
             screen.follow_pages(pages);
+        }
+        if let Some(over) = &mut self.over {
+            over.begin_interface(pages);
         }
     }
 
@@ -622,6 +633,9 @@ impl SceneShow for ShownFight {
                 hud.show_fight(values, time);
             }
             hud.draw(size, list);
+        }
+        if let Some(over) = &mut self.over {
+            over.draw_interface(size, list);
         }
     }
 

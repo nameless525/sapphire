@@ -7,7 +7,7 @@
 #[path = "../../../crates/sapphire_text/tests/common/mod.rs"]
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,7 +40,13 @@ fn font_tree(name: &str) -> PathBuf {
         let folder = Path::new(font).parent().unwrap().to_str().unwrap();
         copy(format!("third_party/{folder}/OFL.txt"));
     }
-    for file in ["ui.charset.ron", "ui.fontchains.ron", "ui.fontchains.ron.meta"] {
+    for file in [
+        "ui.charset.ron",
+        "ui.fontchains.ron",
+        "ui.fontchains.ron.meta",
+        "display_latin.charset.ron",
+        "display_ja.charset.ron",
+    ] {
         copy(format!("fonts/{file}"));
     }
     root
@@ -59,7 +65,8 @@ fn load_fonts(
             let handle: Handle<Font> = server.load(id).unwrap();
             server.finish(&handle, |upload| panic!("{} was uploaded", upload.kind())).unwrap();
             let font = server.get(&handle).expect("the font loaded");
-            let options = FaceOptions { baseline_shift: font.baseline_shift.to_native() };
+            let options =
+                FaceOptions { baseline_shift: font.baseline_shift.to_native(), ..FaceOptions::default() };
             text.register_face(Arc::new(font.file.to_vec()), options);
             font.family.to_string()
         });
@@ -125,7 +132,10 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     let mut whole = TextSystem::new();
     let shifted = cut_shift(&mut server, &registered, "Oxanium");
     for (font, baseline_shift) in [(MPLUS1, 0.0), (OXANIUM, shifted), (DELA, 0.0)] {
-        whole.register_face(common::read_font(&dir, font), FaceOptions { baseline_shift });
+        whole.register_face(
+            common::read_font(&dir, font),
+            FaceOptions { baseline_shift, ..FaceOptions::default() },
+        );
     }
     let (mut names_cut, mut names_whole) = (cut.family_names(), whole.family_names());
     names_cut.sort();
@@ -162,6 +172,45 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     let display = cut.shape("SETTINGS", &style(&lists["display"]), 1.0, None).baselines[0];
     let body = cut.shape("SETTINGS", &style(&lists["body"]), 1.0, None).baselines[0];
     assert!((display - body).abs() <= 1.0, "Oxanium {display}, M PLUS 1 {body}");
+
+    // A display face's field is made from its cut, at the weight its sidecar names: every display
+    // character, shaped in the face alone at that weight, lands on a glyph the field holds, at the
+    // field's own variation, which is what sends a large run to it.
+    for (family, characters, weight, locale) in [
+        ("Oxanium", "display_latin.charset.ron", 700.0, "en"),
+        ("Dela Gothic One", "display_ja.charset.ron", 400.0, "ja"),
+    ] {
+        let (&id, _) = registered.iter().find(|(_, name)| name.as_str() == family).expect("the family");
+        let handle: Handle<Font> = server.load(id).unwrap();
+        let font = server.get(&handle).expect("loaded");
+        let field = font.field.as_ref().unwrap_or_else(|| panic!("{family} has no display field"));
+        let held: BTreeSet<u32> = field.glyphs.iter().map(|glyph| glyph.id.to_native()).collect();
+        let document = fs::read_to_string(repo_content().join("fonts").join(characters)).unwrap();
+        let shown = sapphire_pipeline::font::Characters::from_document(&document).unwrap().to_text();
+        let mut alone = TextSystem::new();
+        alone.register_font(Arc::new(font.file.to_vec()));
+        let families = family_list([family]);
+        let style =
+            TextStyle { families: &families, size: 48.0, weight, line_height: 1.0, locale: Some(locale) };
+        let shaped = alone.shape(&shown, &style, 1.0, None);
+        let missing: Vec<u32> =
+            shaped.glyphs.iter().map(|glyph| glyph.id).filter(|id| !held.contains(id)).collect();
+        assert!(missing.is_empty(), "{family}: glyphs shaped from its cut that its field lacks: {missing:?}");
+        let field_coords: Vec<i16> = field.coords.iter().map(|coord| coord.to_native()).collect();
+        for run in &shaped.runs {
+            assert_eq!(
+                run.coords, field_coords,
+                "{family}: the shaper's instance at {weight} is the field's"
+            );
+        }
+        println!(
+            "{family}'s field: {} glyphs in {} × {}, {} bytes of texels",
+            field.glyphs.len(),
+            field.width.to_native(),
+            field.height.to_native(),
+            field.texels.len(),
+        );
+    }
 }
 
 /// What the cook said a font's shift is, by the family it says it's in.
@@ -203,8 +252,7 @@ fn two_subsets_of_one_family_answer_together() {
     for sample in ["Ax", "xA", "AxBy"] {
         let shaped = text.shape(sample, &style, 1.0, None);
         assert!(shaped.glyphs.iter().all(|glyph| glyph.id != 0), "{sample}: {:?}", shaped.glyphs);
-        let fonts: std::collections::BTreeSet<u64> =
-            shaped.runs.iter().map(|run| run.font.data.id()).collect();
+        let fonts: BTreeSet<u64> = shaped.runs.iter().map(|run| run.font.data.id()).collect();
         assert_eq!(fonts.len(), 2, "{sample}: a run from each cut");
     }
     // Past both, it's missing, and nothing else answers.

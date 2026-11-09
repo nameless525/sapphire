@@ -42,6 +42,15 @@
 //! A font's subset for [`pack::FONTS`] adds what the tree's screens show in its family
 //! ([`crate::ui`], which is also what refuses a string they can't). A character a font doesn't have is
 //! simply not in its subset: Oxanium has no kana, and a locale's list goes on to a font that does.
+//!
+//! # A display face's field
+//!
+//! A subset may also say what display text in its face shows, as another character set, and at what
+//! weight: `display: (characters: "../../fonts/display_ja.charset.ron", weight: 700)`. Its cooked font
+//! then carries those glyphs as a multi-channel distance field ([`crate::font_field`]), which the
+//! runtime draws large text from. Every display character must be in the cut font, or the cook says
+//! which isn't: a field holds what a title shows, not what a menu might, and what it lacks draws from
+//! the pages as any other text does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -56,6 +65,7 @@ use sapphire_strings::pseudo_characters;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{Dependency, Stage};
+use crate::font_field;
 use crate::font_subset::{self, FontSubsetError};
 use crate::pack;
 use crate::ui::ScreenCharacters;
@@ -63,8 +73,9 @@ use crate::ui::ScreenCharacters;
 /// The font importer as cache keys know it. Its name carries the subsetter's version, which a test
 /// keeps in step with `Cargo.lock`: a new `skera` can cut differently.
 pub const IMPORTER: Stage = Stage { name: "font (skera 0.9.0)", version: 1 };
-/// The font cooker. Bump it whenever it changes output for the same file.
-pub const COOKER: Stage = Stage { name: "sfont", version: 1 };
+/// The font cooker. Bump it whenever it changes output for the same file. Its name carries the field
+/// generator's version, which a test keeps in step with `Cargo.lock`.
+pub const COOKER: Stage = Stage { name: "sfont (fdsm 0.8.0)", version: 2 };
 /// The font chains importer as cache keys know it.
 pub const CHAINS_IMPORTER: Stage = Stage { name: "font chains document", version: 1 };
 /// The font chains cooker. Bump it whenever it changes output for the same document.
@@ -89,12 +100,27 @@ pub struct FontSettings {
 }
 
 /// One cooked font: which pack it goes in, and what it holds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FontSubset {
     pub pack: String,
     /// A [`CharacterSet`] document, relative to the font.
     pub characters: String,
+    /// What a display face's field holds, for a face that has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<FontDisplay>,
+}
+
+/// A display face's field: what it shows, and at what weight. See the [module docs](self).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FontDisplay {
+    /// A [`CharacterSet`] document, relative to the font. Each character must be in the subset.
+    pub characters: String,
+    /// Along a variable font's `wght` axis: the weight display text takes. The font's default when
+    /// it's left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f32>,
 }
 
 /// Import settings for font chains, none yet: an empty struct rather than `()`, so settings can join
@@ -122,6 +148,8 @@ pub enum FontCookError {
     Characters { path: PathBuf, problem: String },
     #[error(transparent)]
     Subset(#[from] FontSubsetError),
+    #[error("its display field: {0}")]
+    Field(#[from] font_field::FontFieldError),
     #[error("the font names no family")]
     NoFamily,
     #[error("the font has none of the characters of its subset for the pack `{pack}`")]
@@ -278,8 +306,10 @@ pub fn dependencies(
 ) -> Result<Vec<Dependency>, FontCookError> {
     let dir = path.parent().unwrap_or(Path::new(""));
     let entry = settings.subsets.get(subset).ok_or(FontCookError::NoSubsets)?;
+    let display = entry.display.as_ref().map(|display| display.characters.as_str());
     let mut dependencies = [settings.license.as_str(), entry.characters.as_str()]
         .into_iter()
+        .chain(display)
         .map(|file| {
             let full = dir.join(file);
             let bytes = std::fs::read(&full).map_err(|source| FontCookError::Read { path: full, source })?;
@@ -334,12 +364,23 @@ pub fn cook(
     if !characters.0.iter().any(|&character| covers(&font, character)) {
         return Err(FontCookError::EmptySubset { pack: entry.pack.clone() });
     }
+    let file = font_subset::subset(bytes, &characters.to_text())?;
+    let field = match &entry.display {
+        Some(display) => {
+            let shown = Characters::from_document(&read(&display.characters)?).map_err(|problem| {
+                FontCookError::Characters { path: dir.join(&display.characters), problem }
+            })?;
+            Some(font_field::field(&file, &shown.to_text(), display.weight)?)
+        }
+        None => None,
+    };
     let cooked = Font {
         family: family_name(bytes)?,
         pack: entry.pack.clone(),
         baseline_shift: settings.baseline_shift,
         license,
-        file: font_subset::subset(bytes, &characters.to_text())?,
+        file,
+        field,
     }
     .to_cooked()?;
     Font::read(&cooked)?;
@@ -414,6 +455,7 @@ mod tests {
                 .map(|&(pack, characters)| FontSubset {
                     pack: pack.to_owned(),
                     characters: characters.to_owned(),
+                    display: None,
                 })
                 .collect();
             let settings = FontSettings { license: "OFL.txt".to_owned(), baseline_shift, subsets };
@@ -649,7 +691,8 @@ mod tests {
 
     #[test]
     fn a_bad_sidecar_says_what_is_wrong_with_it() {
-        let subset = |pack: &str| FontSubset { pack: pack.to_owned(), characters: "c.ron".to_owned() };
+        let subset =
+            |pack: &str| FontSubset { pack: pack.to_owned(), characters: "c.ron".to_owned(), display: None };
         let settings = |subsets| FontSettings { license: "OFL.txt".to_owned(), baseline_shift: 0.0, subsets };
         let refused = |settings: FontSettings| check_settings(&settings).unwrap_err().to_string();
         assert!(refused(settings(Vec::new())).contains("no subsets"));
@@ -728,16 +771,19 @@ mod tests {
     /// `IMPORTER` says which `skera` a cache key's cut came from.
     #[test]
     fn the_importers_name_holds_the_subsetter_in_cargo_lock() {
+        assert_eq!(IMPORTER.name, format!("font (skera {})", locked_version("skera")));
+        assert_eq!(COOKER.name, format!("sfont (fdsm {})", locked_version("fdsm")));
+    }
+
+    fn locked_version(crate_name: &str) -> String {
         let lock = include_str!("../../../Cargo.lock");
-        let version = lock
-            .split("[[package]]")
+        lock.split("[[package]]")
             .find_map(|package| {
                 let mut lines = package.trim().lines();
-                (lines.next()? == "name = \"skera\"").then(|| {
+                (lines.next()? == format!("name = \"{crate_name}\"")).then(|| {
                     lines.next().unwrap().trim_start_matches("version = \"").trim_end_matches('"').to_owned()
                 })
             })
-            .expect("skera in Cargo.lock");
-        assert_eq!(IMPORTER.name, format!("font (skera {version})"));
+            .unwrap_or_else(|| panic!("{crate_name} in Cargo.lock"))
     }
 }

@@ -218,7 +218,7 @@ fn draw_frame(
     Frame {
         ms,
         stats: atlas.stats(),
-        runs: list.page_runs.len(),
+        runs: list.runs.len(),
         quads: list.quads.len(),
         uploads: list.page_uploads.len(),
         writes: {

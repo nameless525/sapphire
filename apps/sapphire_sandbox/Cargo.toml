@@ -40,6 +40,8 @@ sapphire_controls.workspace = true
 sapphire_crash.workspace = true
 # The scene, content and the stage's frame, which this app fills from its flags (M3 S1).
 sapphire_stage.workspace = true
+# `--display-text` (M3 U8): shaping, the glyph pages and display faces' fields.
+sapphire_text.workspace = true
 # `--replay` and `--record`: the simulation beside the renderer (M2 D2).
 sapphire_gameplay.workspace = true
 sapphire_input.workspace = true

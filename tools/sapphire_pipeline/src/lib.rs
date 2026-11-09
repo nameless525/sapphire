@@ -121,6 +121,7 @@ pub mod encounter;
 pub mod extract;
 pub mod figure;
 pub mod font;
+pub mod font_field;
 pub mod font_subset;
 pub mod generators;
 mod gltf_writer;

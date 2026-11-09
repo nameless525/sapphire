@@ -194,7 +194,12 @@ macro_rules! game_scene {
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
 /// `arena-skirmish` plays eight fighters (M3 B1), on the director.
-pub fn scenes() -> [Scene; 191] {
+///
+/// The display text scenes (M3 U8) draw a title in the display face at four sizes over the HUD scenes'
+/// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
+/// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
+/// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
+pub fn scenes() -> [Scene; 193] {
     [
         Scene {
             name: "turntable-start",
@@ -3951,6 +3956,48 @@ pub fn scenes() -> [Scene; 191] {
             ],
             thresholds: Thresholds::default(),
         },
+        Scene {
+            name: "display-text-latin",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "street",
+                "--time-of-day",
+                "21",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--display-text",
+                "latin",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "display-text-japanese",
+            args: &[
+                "--size",
+                "1920x1080",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "street",
+                "--time-of-day",
+                "21",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--display-text",
+                "japanese",
+            ],
+            thresholds: Thresholds::default(),
+        },
     ]
 }
 
@@ -4636,6 +4683,8 @@ mod tests {
                 || scene.name.starts_with("game-hud-")
                 || ["arena-fight-hit", "arena-skirmish"].contains(&scene.name);
             assert_eq!(hud, expected, "{}", scene.name);
+            let display_text = scene.args.contains(&"--display-text");
+            assert_eq!(display_text, scene.name.starts_with("display-text-"), "{}", scene.name);
             if scene.name.starts_with("game-") {
                 continue;
             }
@@ -4643,7 +4692,7 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else {
+            } else if !display_text {
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }

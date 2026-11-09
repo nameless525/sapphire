@@ -5,7 +5,11 @@
         id: "9aab79e6-9051-4121-9a50-e20ce97db8f8",
         importer: Font((
             license: "OFL.txt",
-            subsets: [(pack: "fonts", characters: "../../fonts/ui.charset.ron")],
+            subsets: [(
+                pack: "fonts",
+                characters: "../../fonts/ui.charset.ron",
+                display: (characters: "../../fonts/display_ja.charset.ron"),
+            )],
         )),
     ),
 )

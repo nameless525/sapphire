@@ -601,6 +601,7 @@ fn zones_leave_fonts_in_the_packs_their_sidecars_name() {
     )
     .unwrap();
     let subset = |pack: &str| crate::font::FontSubset {
+        display: None,
         pack: pack.to_owned(),
         characters: "latin.charset.ron".to_owned(),
     };

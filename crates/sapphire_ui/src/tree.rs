@@ -66,6 +66,7 @@ mod style;
 
 use std::any::TypeId;
 
+use sapphire_assets::font::Font;
 use sapphire_assets::ui::{
     UiBindTarget, UiColor, UiDocument, UiLayout, UiLook, UiModel, UiScrollAxis, UiTextStyle, UiValueKind,
 };
@@ -75,7 +76,10 @@ use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
 use sapphire_reflect::PartialReflect;
 use sapphire_reflect::bevy_reflect::ParsedPath;
-use sapphire_text::{AtlasConfig, FaceOptions, GlyphAtlas, TextStyle, TextSystem, family_list};
+use sapphire_text::{
+    AtlasConfig, FaceOptions, FieldError, FieldFace, FieldGlyph, GlyphAtlas, TextStyle, TextSystem,
+    family_list,
+};
 use sapphire_time::Stopwatch;
 use taffy::prelude::{AvailableSpace, Display, NodeId, Size as TaffySize, Style as TaffyStyle, TaffyTree};
 use taffy::{LayoutInput, compute_leaf_layout};
@@ -88,6 +92,34 @@ use self::motion::{Placement, Player, Pose};
 use self::scroll::Scroll;
 use crate::atlas::Atlas;
 use crate::layout::{Insets, Rect, UiMetrics};
+
+/// A cooked font as `sapphire_text` takes it: its file, and its baseline shift and field (M3 U8).
+pub fn face_of(font: Font) -> Result<(std::sync::Arc<Vec<u8>>, FaceOptions), FieldError> {
+    let Font { baseline_shift, file, field, .. } = font;
+    let field = field
+        .map(|field| {
+            let atlas = sapphire_look::UiAtlas {
+                width: u32::from(field.width),
+                height: u32::from(field.height),
+                spread: field.spread,
+                format: sapphire_look::UiFieldFormat::Multi,
+                texels: field.texels,
+            };
+            let glyphs = field
+                .glyphs
+                .iter()
+                .map(|glyph| FieldGlyph {
+                    id: glyph.id,
+                    cell: [glyph.x, glyph.y, glyph.width, glyph.height],
+                    offset: [glyph.left, glyph.top],
+                })
+                .collect();
+            let atlas = std::sync::Arc::new(atlas);
+            FieldFace::new(atlas, f32::from(field.em), field.coords, glyphs).map(std::sync::Arc::new)
+        })
+        .transpose()?;
+    Ok((std::sync::Arc::new(file), FaceOptions { baseline_shift, field }))
+}
 
 /// The color a node with something wrong is framed in: nothing a screen would pick on purpose.
 pub const PROBLEM_COLOR: UiColor = [255, 0, 200, 255];
@@ -134,8 +166,17 @@ impl UiFonts {
     /// Adds a font, as a cooked font's `file` and `baseline_shift` give it. What's laid out lays out
     /// again.
     pub fn register_font(&mut self, file: std::sync::Arc<Vec<u8>>, baseline_shift: f32) {
-        self.text.register_face(file, FaceOptions { baseline_shift });
+        self.text.register_face(file, FaceOptions { baseline_shift, ..FaceOptions::default() });
         self.revision += 1;
+    }
+
+    /// Adds a cooked font with all it carries: its baseline shift and, for a display face, its field
+    /// (M3 U8), which large text in it draws from. What's laid out lays out again.
+    pub fn register(&mut self, font: Font) -> Result<(), FieldError> {
+        let (file, options) = face_of(font)?;
+        self.text.register_face(file, options);
+        self.revision += 1;
+        Ok(())
     }
 
     /// Moves to the next frame, given what the renderer's glyph pages hold and the language in force.

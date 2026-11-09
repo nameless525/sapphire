@@ -7,6 +7,7 @@
 //! the caller's: this reads no device and no clock.
 
 use bevy_reflect::PartialReflect;
+use sapphire_assets::font::Font;
 use sapphire_assets::ui::{UiDocument, UiModel};
 use sapphire_loc::{LocaleSettings, Localizer, StringTable};
 use sapphire_look::{UiDrawList, UiPageState};
@@ -58,11 +59,11 @@ impl std::fmt::Debug for ScreenStack {
 }
 
 impl ScreenStack {
-    /// An empty stack, with the tables of its languages and each font's file and baseline shift, over
-    /// `atlas`: the one the HUD draws with, since a frame's list has one atlas.
+    /// An empty stack, with the tables of its languages and each font as it's cooked (a display face's
+    /// field and all), over `atlas`: the one the HUD draws with, since a frame's list has one atlas.
     pub fn new(
         tables: Vec<StringTable>,
-        fonts: Vec<(std::sync::Arc<Vec<u8>>, f32)>,
+        fonts: Vec<Font>,
         atlas: Atlas,
         setup: StackSetup,
     ) -> Result<Self, String> {
@@ -74,8 +75,9 @@ impl ScreenStack {
         loc.set_text_locale(&locale).map_err(|error| format!("the language `{locale}`: {error}"))?;
         loc.set_pseudo(pseudo);
         let mut shaped = UiFonts::default();
-        for (file, baseline_shift) in fonts {
-            shaped.register_font(file, baseline_shift);
+        for font in fonts {
+            let family = font.family.clone();
+            shaped.register(font).map_err(|error| format!("the font {family}: {error}"))?;
         }
         Ok(Self {
             screens: Vec::new(),

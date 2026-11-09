@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bevy_reflect::Reflect;
 use sapphire_assets::ui::UiDocument;
 use sapphire_loc::{LocaleSettings, Localizer, StringTable};
-use sapphire_look::{UiDrawList, UiPageState, UiQuad};
+use sapphire_look::{UI_COVERAGE, UI_MULTI_FIELD, UiDrawList, UiPageState, UiQuad};
 use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
 use sapphire_ui::{Atlas, Insets, UiFonts, UiFrame, UiMetrics, UiTree};
@@ -102,7 +102,7 @@ pub fn frame_at(
     tree.draw(fonts, atlas, list);
 }
 
-/// The quads that are glyphs: a page's coverage rather than the atlas's field.
+/// The quads that are glyphs: a page's coverage or a display face's field, not the atlas's field or an inset's picture.
 pub fn glyphs(list: &UiDrawList) -> impl Iterator<Item = &UiQuad> {
-    list.quads.iter().filter(|quad| quad.softness < 0.0)
+    list.quads.iter().filter(|quad| matches!(quad.texels, UI_COVERAGE | UI_MULTI_FIELD))
 }

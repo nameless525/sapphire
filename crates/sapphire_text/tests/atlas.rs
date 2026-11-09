@@ -262,7 +262,7 @@ fn a_face_s_baseline_shift_moves_its_lines_and_no_others() {
     let mut plain = TextSystem::new();
     plain.register_font(bytes());
     let mut shifted = TextSystem::new();
-    shifted.register_face(bytes(), FaceOptions { baseline_shift: 0.25 });
+    shifted.register_face(bytes(), FaceOptions { baseline_shift: 0.25, ..FaceOptions::default() });
     for (size, scale, pixels) in [(24.0, 1.0, 6.0), (24.0, 2.0, 12.0), (32.0, 1.5, 12.0)] {
         let style = TextStyle { size, ..STYLE };
         let before = plain.shape("Title", &style, scale, None).clone();

@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use sapphire_look::UiAtlas;
+use sapphire_look::{UiAtlas, UiFieldFormat};
 use sapphire_math::Vec2;
 
 /// The atlas's size. The shelves below fill it nearly to its last row.
@@ -97,8 +97,13 @@ impl Atlas {
         sprites.sword = canvas.polygon([ICON; 2], &sword());
         sprites.chevrons = canvas.polygon([ICON; 2], &chevrons());
         sprites.spark = canvas.polygon([ICON; 2], &[scaled(&SPARK, ICON)]);
-        let image =
-            UiAtlas { width: ATLAS_WIDTH, height: ATLAS_HEIGHT, spread: SPREAD, texels: canvas.texels };
+        let image = UiAtlas {
+            width: ATLAS_WIDTH,
+            height: ATLAS_HEIGHT,
+            spread: SPREAD,
+            format: UiFieldFormat::Single,
+            texels: canvas.texels,
+        };
         Self { image: Arc::new(image), sprites }
     }
 }

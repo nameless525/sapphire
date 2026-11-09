@@ -413,6 +413,15 @@ impl App for SandboxApp {
                 scene.spawn_showcase(scene.character(), 0);
             }
         }
+        if let Some(sample) = options.display_text {
+            let text = crate::display_text::DisplayText::load(
+                sample,
+                &mut content,
+                &mut renderer.renderer,
+                &device.gpu,
+            )?;
+            show.over = Some(Box::new(text));
+        }
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.
         scene.prewarm(&show, &mut renderer.renderer);

@@ -3,9 +3,9 @@
 #![allow(dead_code, reason = "each test binary uses what it needs")]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use game_ui::menus::MenuScreen;
+use sapphire_assets::font::Font;
 use sapphire_assets::ui::UiDocument;
 use sapphire_loc::StringTable;
 use sapphire_pipeline::loc::{self, FluentFile};
@@ -37,12 +37,24 @@ pub fn document(screen: MenuScreen) -> UiDocument {
     UiDocument::from_document(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// The screens' assets, each font whole and uncut, with no display face's field: every glyph draws from
+/// the pages.
 pub fn assets() -> ScreenAssets {
     let dir = content().join("third_party");
-    let fonts =
-        ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"]
-            .map(|font| (Arc::new(std::fs::read(dir.join(font)).unwrap()), 0.0))
-            .to_vec();
+    let fonts = [
+        ("M PLUS 1", "mplus1/MPLUS1[wght].ttf"),
+        ("Oxanium", "oxanium/Oxanium[wght].ttf"),
+        ("Dela Gothic One", "dela_gothic_one/DelaGothicOne-Regular.ttf"),
+    ]
+    .map(|(family, font)| Font {
+        family: family.to_owned(),
+        pack: String::new(),
+        baseline_shift: 0.0,
+        license: String::new(),
+        file: std::fs::read(dir.join(font)).unwrap(),
+        field: None,
+    })
+    .to_vec();
     ScreenAssets {
         documents: MenuScreen::ALL.map(document).to_vec(),
         tables: vec![table("en"), table("ja")],

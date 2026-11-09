@@ -1,0 +1,24 @@
+// What a Japanese display face's field holds (M3 U8): printable ASCII, the punctuation a title
+// takes, hiragana and katakana, and the Han of titles, results and headings. Each must be in the
+// interface's set too (`ui.charset.ron`), since the field is made from the subset. A character
+// outside this list still shows in the face, drawn from the glyph pages.
+(
+    type: "sapphire::pipeline::CharacterSet",
+    version: 1,
+    data: (
+        ranges: [
+            (0x20, 0x7e),
+            (0x3001, 0x3002),
+            (0x300c, 0x300f),
+            (0x3041, 0x3093),
+            (0x30a1, 0x30f6),
+            (0x30fb, 0x30fc),
+            (0xff01, 0xff01),
+            (0xff1f, 0xff1f),
+        ],
+        characters: "
+            勝利敗北設定開始戦闘章任務失敗報酬挑戦撃破終幕選択決定続新蒼宝石
+            音量画面言語記録探索世界王竜魔剣影光闇夜明
+        ",
+    ),
+)

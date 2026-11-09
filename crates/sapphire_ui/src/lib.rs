@@ -78,5 +78,5 @@ pub use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
 pub use touch::{Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions};
 pub use tree::{
     PROBLEM_COLOR, UiEvent, UiFonts, UiFrame, UiHit, UiInput, UiInsetShot, UiNodeId, UiPointer,
-    UiPointerKind, UiPointerPhase, UiProblem, UiStep, UiTree, UiTreeError,
+    UiPointerKind, UiPointerPhase, UiProblem, UiStep, UiTree, UiTreeError, face_of,
 };

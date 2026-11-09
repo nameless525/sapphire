@@ -175,6 +175,10 @@
 //!   player's UI scale on top of the display's in a window. 1 without it.
 //! - `--hud-paused`: draws the pause's veil and mark, to look at them in a capture, which has no input
 //!   to pause it.
+//! - `--display-text latin|japanese`: a title in the display chain's face at 12, 24, 48 and 96 points
+//!   over the frame, 360 points tall (`display_text.rs`, M3 U8): the smaller two from the glyph pages,
+//!   the larger two from the face's cooked field. The golden scenes `display-text-latin` and
+//!   `display-text-japanese` show it, at one and three pixels to the point.
 //! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). A name is what a clip's source calls it among those the packs hold for the character (M3 S3), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
@@ -356,6 +360,7 @@ mod combat_panel;
 mod contact_sheet;
 #[cfg(feature = "dev")]
 mod dev;
+mod display_text;
 mod fight_bench;
 mod input;
 #[cfg(feature = "dev")]

@@ -91,6 +91,11 @@ taffy = { version = "0.15", default-features = false, features = ["std", "taffy_
 # Font subsetting: tools only, a second fontations line the runtime must never link.
 skera = "0.9"
 read_fonts_for_skera = { package = "read-fonts", version = "0.46", default-features = false, features = ["std"] }
+# Glyph outlines for the display text's distance fields (M3 U8), on `skera`'s fontations line, so tools only.
+skrifa_for_skera = { package = "skrifa", version = "0.49", default-features = false, features = ["std"] }
+# Multi-channel signed distance fields for display text, cooked (M3 U8): tools only, since it brings
+# `nalgebra` and `image`.
+fdsm = "0.8"
 # --- Sapphire crates ---
 sapphire_core = { path = "crates/sapphire_core" }
 sapphire_math = { path = "crates/sapphire_math" }

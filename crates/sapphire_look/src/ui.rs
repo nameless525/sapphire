@@ -3,16 +3,17 @@
 //! of widgets, touches or fighters.
 //!
 //! A [`UiDrawList`] is a list of [`UiQuad`]s in UI points, each a parallelogram over one cell of a
-//! [`UiAtlas`], a single-channel signed distance field, or of a glyph page, a single-channel texture
-//! of coverage that the list's own uploads fill in. An empty list costs the renderer nothing: it
-//! builds no pipeline and adds no pass.
+//! [`UiAtlas`], a signed distance field, or of a glyph page, a single-channel texture of coverage that
+//! the list's own uploads fill in. The list's own atlas is the HUD's; a display face's multi-channel
+//! field is another atlas the list names ([`UiDrawList::fields`]). An empty list costs the renderer
+//! nothing: it builds no pipeline and adds no pass.
 
 use std::fmt;
 use std::sync::Arc;
 
-/// A signed distance field atlas, `R8Unorm` with one mip level: a texel holds
-/// `0.5 + distance / (2 × spread)`, distance in texels and positive inside a shape, so 0.5 is the
-/// shape's edge wherever the quad scales or shears it.
+/// A signed distance field atlas with one mip level: a texel holds `0.5 + distance / (2 × spread)`,
+/// distance in texels and positive inside a shape, so 0.5 is the shape's edge wherever the quad scales
+/// or shears it.
 ///
 /// The renderer uploads it the first time a list with quads names it, and again only if a list
 /// names another: the [`Arc`] is what it compares, so a renderer made after device loss or for a
@@ -23,8 +24,30 @@ pub struct UiAtlas {
     pub height: u32,
     /// How far from an edge, in texels, the field reaches before it clamps.
     pub spread: f32,
-    /// `width × height` bytes, row by row from the top.
+    pub format: UiFieldFormat,
+    /// `width × height` texels of [`UiFieldFormat::bytes_per_texel`] each, row by row from the top.
     pub texels: Vec<u8>,
+}
+
+/// What a [`UiAtlas`]'s texels hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiFieldFormat {
+    /// `R8Unorm`: the distance, as the HUD's painted shapes are.
+    #[default]
+    Single,
+    /// `Rgba8Unorm`: a multi-channel field in red, green and blue, whose median is the distance and
+    /// keeps a corner sharp however far a quad magnifies it, and the true distance in alpha, smooth
+    /// where the channels change over, which edges and outlines read. A display face's glyphs, cooked.
+    Multi,
+}
+
+impl UiFieldFormat {
+    pub const fn bytes_per_texel(self) -> u32 {
+        match self {
+            Self::Single => 1,
+            Self::Multi => 4,
+        }
+    }
 }
 
 impl fmt::Debug for UiAtlas {
@@ -33,6 +56,7 @@ impl fmt::Debug for UiAtlas {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("spread", &self.spread)
+            .field("format", &self.format)
             .field("bytes", &self.texels.len())
             .finish()
     }
@@ -83,14 +107,22 @@ pub struct UiQuad {
     /// `local` running 0 to 1 along the quad's own axes. A gradient across several quads gives each
     /// its own piece. All zeros is a plain fill.
     pub gradient: [f32; 3],
+    /// What its texels hold: [`UI_FIELD`], [`UI_COVERAGE`], [`UI_MULTI_FIELD`] or [`UI_PICTURE`].
+    pub texels: u32,
 }
 
-/// A quad's [`UiQuad::softness`] when its texels are coverage, not a field: they draw as they are.
-pub const UI_COVERAGE: f32 = -1.0;
+/// A quad's [`UiQuad::texels`] over a single-channel field ([`UiFieldFormat::Single`]).
+pub const UI_FIELD: u32 = 0;
+/// A quad's [`UiQuad::texels`] over coverage, not a field, as a glyph page holds: they draw as they
+/// are, with no outline or softness.
+pub const UI_COVERAGE: u32 = 1;
+/// A quad's [`UiQuad::texels`] over a multi-channel field ([`UiFieldFormat::Multi`]): the median of
+/// three is its edge, and the true distance its outline and softness.
+pub const UI_MULTI_FIELD: u32 = 2;
 
-/// A quad's [`UiQuad::softness`] when its texels are a picture: an inset's (M3 U6), linear color
-/// premultiplied by its alpha, which the quad's color tints and fades.
-pub const UI_PICTURE: f32 = -2.0;
+/// A quad's [`UiQuad::texels`] over a picture: an inset's (M3 U6), linear color premultiplied by its
+/// alpha, which the quad's color tints and fades.
+pub const UI_PICTURE: u32 = 3;
 
 impl UiQuad {
     /// A quad over `uv` in `color`, the shape as painted, nothing else on.
@@ -116,6 +148,7 @@ impl UiQuad {
             slice: 0.0,
             color_end: [0; 4],
             gradient: [0.0; 3],
+            texels: UI_FIELD,
         }
     }
 
@@ -123,7 +156,15 @@ impl UiQuad {
     /// glyph page, which draws as it is.
     pub const fn glyph(origin: [f32; 2], size: [f32; 2], uv: [f32; 4], color: [u8; 4]) -> Self {
         let mut quad = Self::new(origin, [size[0], 0.0], [0.0, size[1]], uv, color);
-        quad.softness = UI_COVERAGE;
+        quad.texels = UI_COVERAGE;
+        quad
+    }
+
+    /// A display glyph's quad, placed as [`Self::glyph`] places one, over a multi-channel field: crisp
+    /// at any size from one cell, and it takes an outline and softness as the HUD's shapes do.
+    pub const fn field_glyph(origin: [f32; 2], size: [f32; 2], uv: [f32; 4], color: [u8; 4]) -> Self {
+        let mut quad = Self::new(origin, [size[0], 0.0], [0.0, size[1]], uv, color);
+        quad.texels = UI_MULTI_FIELD;
         quad
     }
 
@@ -131,17 +172,26 @@ impl UiQuad {
     /// it, faded by `opacity` (0 to 255).
     pub const fn picture(origin: [f32; 2], axis_x: [f32; 2], axis_y: [f32; 2], opacity: u8) -> Self {
         let mut quad = Self::new(origin, axis_x, axis_y, [0.0, 0.0, 1.0, 1.0], [255, 255, 255, opacity]);
-        quad.softness = UI_PICTURE;
+        quad.texels = UI_PICTURE;
         quad
     }
 }
 
-/// A run of [`UiDrawList::quads`] that reads a glyph page, not the list's atlas.
+/// What a run of quads reads instead of the list's atlas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UiPageRun {
+pub enum UiSource {
+    /// A glyph page, by its number.
+    Page(u16),
+    /// One of [`UiDrawList::fields`], by its place there.
+    Field(u16),
+}
+
+/// A run of [`UiDrawList::quads`] that reads a glyph page or a field, not the list's atlas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiRun {
     pub first: u32,
     pub count: u32,
-    pub page: u16,
+    pub source: UiSource,
 }
 
 /// A run of [`UiDrawList::quads`] that shows an inset's picture (M3 U6): what the frame packet's inset
@@ -203,6 +253,8 @@ pub struct UiGlyphStats {
     pub dropped: u32,
     /// Whether it started over this frame, because the pages it knew were gone.
     pub forgot: bool,
+    /// Glyphs drawn from a display face's field this frame, which take nothing from the pages.
+    pub field_quads: u32,
     /// Pages that exist now.
     pub pages: u32,
     /// Glyphs held now.
@@ -260,11 +312,15 @@ pub struct UiDrawList {
     pub atlas: Option<Arc<UiAtlas>>,
     /// Back to front.
     pub quads: Vec<UiQuad>,
-    /// The quads that read a glyph page, in order and apart. Every other quad reads `atlas`, but
-    /// those of [`Self::inset_runs`].
-    pub page_runs: Vec<UiPageRun>,
-    /// The quads that show an inset's picture, in order and apart from each other and the pages'.
+    /// The quads that read a glyph page or a field, in order and apart. Every other quad reads `atlas`,
+    /// but those of [`Self::inset_runs`].
+    pub runs: Vec<UiRun>,
+    /// The quads that show an inset's picture, in order and apart from each other and the runs'.
     pub inset_runs: Vec<UiInsetRun>,
+    /// The display faces' fields the runs read, each once. The renderer uploads one the first time a
+    /// list names it, compares them by [`Arc`] as it does `atlas`, and lets it go once nothing but the
+    /// renderer holds it.
+    pub fields: Vec<Arc<UiAtlas>>,
     /// Where masks start and stop, by ascending `first`. Empty is no mask at all.
     pub masks: Vec<UiMask>,
     /// A glyph page's side in texels, all of them `R8Unorm` with one mip level.
@@ -292,8 +348,9 @@ impl UiDrawList {
         self.viewport = [0.0; 2];
         self.atlas = None;
         self.quads.clear();
-        self.page_runs.clear();
+        self.runs.clear();
         self.inset_runs.clear();
+        self.fields.clear();
         self.masks.clear();
         self.page_size = 0;
         self.page_uploads.clear();
@@ -380,11 +437,28 @@ impl UiDrawList {
 
     /// Adds a quad over a glyph page, joining the run before it if that's on the same page.
     pub fn push_page_quad(&mut self, page: u16, quad: UiQuad) {
+        self.push_run_quad(UiSource::Page(page), quad);
+    }
+
+    /// Adds a quad over `field`, naming it in [`Self::fields`] if this list doesn't yet, and joining
+    /// the run before it if that reads the same field. Allocates nothing once the vectors have grown.
+    pub fn push_field_quad(&mut self, field: &Arc<UiAtlas>, quad: UiQuad) {
+        let at = match self.fields.iter().position(|named| Arc::ptr_eq(named, field)) {
+            Some(at) => at,
+            None => {
+                self.fields.push(Arc::clone(field));
+                self.fields.len() - 1
+            }
+        };
+        self.push_run_quad(UiSource::Field(at as u16), quad);
+    }
+
+    fn push_run_quad(&mut self, source: UiSource, quad: UiQuad) {
         let at = self.quads.len() as u32;
         self.quads.push(quad);
-        match self.page_runs.last_mut() {
-            Some(run) if run.page == page && run.first + run.count == at => run.count += 1,
-            _ => self.page_runs.push(UiPageRun { first: at, count: 1, page }),
+        match self.runs.last_mut() {
+            Some(run) if run.source == source && run.first + run.count == at => run.count += 1,
+            _ => self.runs.push(UiRun { first: at, count: 1, source }),
         }
     }
 }
@@ -423,16 +497,51 @@ mod tests {
         list.quads.push(quad);
         list.push_page_quad(1, quad);
         assert_eq!(
-            list.page_runs,
+            list.runs,
             [
-                UiPageRun { first: 0, count: 2, page: 0 },
-                UiPageRun { first: 2, count: 1, page: 1 },
-                UiPageRun { first: 4, count: 1, page: 1 },
+                UiRun { first: 0, count: 2, source: UiSource::Page(0) },
+                UiRun { first: 2, count: 1, source: UiSource::Page(1) },
+                UiRun { first: 4, count: 1, source: UiSource::Page(1) },
             ],
             "a field quad between two quads of a page keeps its place",
         );
         list.reset();
-        assert!(list.page_runs.is_empty() && list.quads.is_empty());
+        assert!(list.runs.is_empty() && list.quads.is_empty());
+    }
+
+    #[test]
+    fn a_field_is_named_once_and_its_quads_run_apart_from_a_page_s() {
+        let field = || {
+            Arc::new(UiAtlas {
+                width: 1,
+                height: 1,
+                spread: 4.0,
+                format: UiFieldFormat::Multi,
+                texels: vec![0; 4],
+            })
+        };
+        let (one, two) = (field(), field());
+        let quad = UiQuad::field_glyph([0.0; 2], [1.0; 2], [0.0; 4], [255; 4]);
+        let mut list = UiDrawList::default();
+        list.push_field_quad(&one, quad);
+        list.push_field_quad(&one, quad);
+        list.push_page_quad(0, UiQuad::glyph([0.0; 2], [1.0; 2], [0.0; 4], [255; 4]));
+        list.push_field_quad(&two, quad);
+        list.push_field_quad(&one, quad);
+        assert_eq!(list.fields.len(), 2, "equal fields are still two: a field is its Arc");
+        assert!(Arc::ptr_eq(&list.fields[0], &one) && Arc::ptr_eq(&list.fields[1], &two));
+        assert_eq!(
+            list.runs,
+            [
+                UiRun { first: 0, count: 2, source: UiSource::Field(0) },
+                UiRun { first: 2, count: 1, source: UiSource::Page(0) },
+                UiRun { first: 3, count: 1, source: UiSource::Field(1) },
+                UiRun { first: 4, count: 1, source: UiSource::Field(0) },
+            ],
+        );
+        assert_eq!(list.quads[0].texels, UI_MULTI_FIELD);
+        list.reset();
+        assert!(list.fields.is_empty() && Arc::strong_count(&one) == 1, "a reset list holds no field");
     }
 
     #[test]
@@ -452,7 +561,8 @@ mod tests {
                 UiInsetRun { first: 4, count: 1, inset: 1 },
             ],
         );
-        assert_eq!(list.page_runs, [UiPageRun { first: 2, count: 1, page: 0 }]);
+        assert_eq!(list.runs, [UiRun { first: 2, count: 1, source: UiSource::Page(0) }]);
+        assert_eq!(list.quads[0].texels, UI_PICTURE);
         list.reset();
         assert!(list.inset_runs.is_empty());
     }

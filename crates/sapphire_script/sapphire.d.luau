@@ -38,6 +38,8 @@ declare sapphire: {
     random: () -> number,
     -- A number that lasts, from slot 0 to 63. Any other slot is a fault.
     board: (slot: number) -> number,
+    -- A flag's value as the step began, by its place in `names`, or 0 if nothing has set it. A place the chunk doesn't list is a fault.
+    flag: (name: number) -> number,
     -- Keeps a number from slot 0 to 63, at once. A hook that ends badly puts the board back as it found it.
     set_board: (slot: number, value: number) -> (),
     -- The world's clock runs at this many thousandths for this many steps, starting on the next. A rate that doesn't divide a million, or is over 1000, does nothing.
@@ -50,4 +52,6 @@ declare sapphire: {
     give_brain: (actor: number) -> (),
     -- From the next step this actor chooses who it's aiming at. One already choosing carries on.
     give_soft_lock: (actor: number) -> (),
+    -- Sets a flag, by its place in `names`, to a whole number that fits 32 bits, from the next step. Anything else is a fault.
+    set_flag: (name: number, value: number) -> (),
 }

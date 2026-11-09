@@ -118,6 +118,17 @@ unsafe extern "C-unwind" fn board(state: *mut lua_State) -> c_int {
     1
 }
 
+unsafe extern "C-unwind" fn flag(state: *mut lua_State) -> c_int {
+    let result = with_frame(|frame| {
+        // SAFETY: Luau passes a live state, and reading a number can't raise.
+        let name = unsafe { number(state, 1, frame) };
+        api::flag(frame, name)
+    });
+    // SAFETY: Luau passes a live state and a slot for each result.
+    unsafe { ffi::lua_pushnumber(state, result.unwrap_or_default()) };
+    1
+}
+
 unsafe extern "C-unwind" fn set_board(state: *mut lua_State) -> c_int {
     with_frame(|frame| {
         // SAFETY: Luau passes a live state, and reading a number can't raise.
@@ -178,6 +189,17 @@ unsafe extern "C-unwind" fn give_soft_lock(state: *mut lua_State) -> c_int {
     0
 }
 
+unsafe extern "C-unwind" fn set_flag(state: *mut lua_State) -> c_int {
+    with_frame(|frame| {
+        // SAFETY: Luau passes a live state, and reading a number can't raise.
+        let name = unsafe { number(state, 1, frame) };
+        // SAFETY: Luau passes a live state, and reading a number can't raise.
+        let value = unsafe { number(state, 2, frame) };
+        api::set_flag(frame, name, value)
+    });
+    0
+}
+
 /// Every function a script can call in `sapphire`, as the table declares it.
 pub const API: &[Declared] = &[
     Declared { binding: Binding { name: "tick", function: tick }, args: &[], returns: &["tick"] },
@@ -190,12 +212,14 @@ pub const API: &[Declared] = &[
     Declared { binding: Binding { name: "brain_target", function: brain_target }, args: &["actor"], returns: &["target"] },
     Declared { binding: Binding { name: "random", function: random }, args: &[], returns: &["value"] },
     Declared { binding: Binding { name: "board", function: board }, args: &["slot"], returns: &["value"] },
+    Declared { binding: Binding { name: "flag", function: flag }, args: &["name"], returns: &["value"] },
     Declared { binding: Binding { name: "set_board", function: set_board }, args: &["slot", "value"], returns: &[] },
     Declared { binding: Binding { name: "slow_motion", function: slow_motion }, args: &["per_mille", "steps"], returns: &[] },
     Declared { binding: Binding { name: "mark", function: mark }, args: &["value"], returns: &[] },
     Declared { binding: Binding { name: "force_move", function: force_move }, args: &["actor", "name"], returns: &[] },
     Declared { binding: Binding { name: "give_brain", function: give_brain }, args: &["actor"], returns: &[] },
     Declared { binding: Binding { name: "give_soft_lock", function: give_soft_lock }, args: &["actor"], returns: &[] },
+    Declared { binding: Binding { name: "set_flag", function: set_flag }, args: &["name", "value"], returns: &[] },
 ];
 
 /// Hooks a chunk may hold, by the name it returns them under, with what each is handed.

@@ -67,6 +67,11 @@ pub(crate) fn brain_target(frame: &mut HookFrame, actor: f64) -> f64 {
 }
 
 pub(crate) fn random(frame: &mut HookFrame) -> f64 {
+    // A draw moves the simulation's numbers, which a read-only frame mustn't.
+    if frame.is_read_only() {
+        frame.fault = true;
+        return 0.0;
+    }
     f64::from(frame.rng.unit_f32())
 }
 
@@ -81,9 +86,33 @@ pub(crate) fn board(frame: &mut HookFrame, slot: f64) -> f64 {
 }
 
 pub(crate) fn set_board(frame: &mut HookFrame, slot: f64, value: f64) {
+    if frame.is_read_only() {
+        frame.fault = true;
+        return;
+    }
     match whole(slot).map(|slot| slot as usize).filter(|&slot| slot < BOARD_SLOTS) {
         Some(slot) => frame.board[slot] = value,
         None => frame.fault = true,
+    }
+}
+
+pub(crate) fn flag(frame: &mut HookFrame, name: f64) -> f64 {
+    match whole(name).and_then(|place| frame.name(place as usize)) {
+        Some(name) => f64::from(frame.flag(name)),
+        None => {
+            frame.fault = true;
+            0.0
+        }
+    }
+}
+
+pub(crate) fn set_flag(frame: &mut HookFrame, name: f64, value: f64) {
+    let name = whole(name).and_then(|place| frame.name(place as usize));
+    // Exactly an `i32`, so 1.5, a NaN or 2^31 is the script's mistake rather than a rounding.
+    let value = Some(value as i32).filter(|&whole| f64::from(whole) == value);
+    match (name, value) {
+        (Some(name), Some(value)) => frame.push(ScriptCommand::SetFlag { name, value }),
+        _ => frame.fault = true,
     }
 }
 
@@ -210,6 +239,67 @@ mod tests {
             assert_eq!(board(&mut frame, slot), 0.0);
             assert!(frame.fault, "{slot}");
         }
+    }
+
+    #[test]
+    fn a_flag_is_read_and_set_by_its_place_in_the_chunks_names() {
+        let mut flags = sapphire_gameplay::Flags::default();
+        flags.set(Name::new("ward_lit"), 3);
+        let mut frame = frame();
+        frame.set_names(vec![Name::new("ward_lit"), Name::new("met_guide")]);
+        frame.set_flags(&flags);
+        assert_eq!(flag(&mut frame, 1.0), 3.0);
+        assert_eq!(flag(&mut frame, 2.0), 0.0, "nothing set it");
+        set_flag(&mut frame, 2.0, -4.0);
+        assert!(!frame.fault);
+        assert_eq!(frame.queued(), [ScriptCommand::SetFlag { name: Name::new("met_guide"), value: -4 }]);
+        for (place, value) in [(0.0, 1.0), (3.0, 1.0), (1.0, 1.5), (1.0, f64::NAN), (1.0, 2_147_483_648.0)] {
+            let mut frame = self::frame();
+            frame.set_names(vec![Name::new("ward_lit")]);
+            set_flag(&mut frame, place, value);
+            assert!(frame.fault && frame.queued().is_empty(), "{place} {value}");
+        }
+        let mut frame = self::frame();
+        assert_eq!(flag(&mut frame, 1.0), 0.0);
+        assert!(frame.fault, "a place the chunk doesn't list");
+    }
+
+    /// What a dialogue's condition runs on: everything that would move a checksum is a fault, and does
+    /// nothing.
+    #[test]
+    fn a_read_only_frame_refuses_whatever_would_write() {
+        let mut frame = frame();
+        frame.set_names(vec![Name::new("roar")]);
+        frame.set_read_only(true);
+        let (rng, board) = (frame.rng, frame.board);
+        let writes: [fn(&mut HookFrame); 5] = [
+            |frame| set_board(frame, 0.0, 1.0),
+            |frame| {
+                random(frame);
+            },
+            |frame| mark(frame, 1.0),
+            |frame| force_move(frame, 3.0, 1.0),
+            |frame| set_flag(frame, 1.0, 1.0),
+        ];
+        for write in writes {
+            frame.fault = false;
+            write(&mut frame);
+            assert!(frame.fault);
+        }
+        assert!(frame.queued().is_empty());
+        assert_eq!(
+            (frame.rng.unit_f32(), frame.board),
+            (
+                {
+                    let mut rng = rng;
+                    rng.unit_f32()
+                },
+                board
+            )
+        );
+        frame.fault = false;
+        assert_eq!(health(&mut frame, 3.0), 40.0, "reading is fine");
+        assert!(!frame.fault);
     }
 
     #[test]

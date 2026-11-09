@@ -12,12 +12,18 @@ bevy_ecs.workspace = true
 mlua.workspace = true
 sapphire_bytecode = { workspace = true, features = ["compile"] }
 sapphire_core.workspace = true
+# A dialogue's cooked conditions, which this binds and asks (M3 Q2).
+sapphire_dialogue.workspace = true
 sapphire_ecs.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_math.workspace = true
 # How long a step's hooks took (rule R9). Nothing reads it back.
 sapphire_time.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Q2's proof that a save's flags start a later run where the first left off goes through the real store.
+sapphire_save.workspace = true
 
 [lints]
 workspace = true

@@ -13,10 +13,11 @@ use std::time::Duration;
 use sapphire_bytecode::compile::CookedScript;
 use sapphire_core::Name;
 use sapphire_core::alloc;
+use sapphire_dialogue::{ConditionId, Dialogue};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::script::HookEnding;
 use sapphire_gameplay::{
-    CombatSet, HookEvent, HookFrame, HookWants, ScriptWorld, SimRng, Simulation, StateHasher,
+    CombatSet, HookEvent, HookFrame, HookWants, LendsFrame, ScriptWorld, SimRng, Simulation, StateHasher,
 };
 use sapphire_math::Pcg32;
 use sapphire_time::Stopwatch;
@@ -48,6 +49,32 @@ pub struct ScriptStats {
     pub collections: u64,
     pub last_collection: Duration,
     pub longest_collection: Duration,
+    /// A dialogue's conditions asked between steps ([`ask`]), and those that didn't end well: a fault,
+    /// an error, over budget, or asked by a number its set doesn't have. Those read false.
+    pub conditions_asked: u64,
+    pub conditions_faulted: u64,
+}
+
+/// A dialogue's conditions, bound in a host's VM by [`ScriptHost::bind_conditions`]: functions of no
+/// arguments that read flags by their place in `names`, as hooks read moves. Asked through [`ask`].
+pub struct ConditionSet {
+    functions: Vec<Hook>,
+    /// The chunk's `names`, which [`ask`] puts on the frame for the time of one question.
+    names: Vec<Name>,
+}
+
+impl ConditionSet {
+    /// How many there are.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.functions.len()
+    }
+
+    /// Whether there are none, as for a dialogue with no condition, which binds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.functions.is_empty()
+    }
 }
 
 /// One simulation's VM and what's bound to it, as a resource in its world: a system takes it by `ResMut`,
@@ -125,6 +152,65 @@ impl ScriptHost {
         let mut hash = StateHasher::new();
         hash.bytes(cooked);
         !self.name.is_empty() && hash.finish() == self.chunk
+    }
+
+    /// Runs a dialogue's cooked chunk of conditions, between steps, and keeps what it makes. Nothing about
+    /// the hooks changes, and nothing reaches `tables_hash`: a condition decides only what a dialogue
+    /// shows, never the simulation. A dialogue with no conditions binds nothing.
+    ///
+    /// # Errors
+    ///
+    /// If `chunk` isn't the dialogue's own, doesn't load, isn't a table of `conditions` and `names`, or makes a
+    /// different number of conditions than the graph asks.
+    ///
+    /// `chunk` is the dialogue's `presentation.chunk` as a [`CookedScript`], which says where its bytes came
+    /// from: the compiler, in the same process, as everything [`ScriptVm::load`] runs.
+    pub fn bind_conditions(
+        &self,
+        dialogue: &Dialogue,
+        chunk: &CookedScript,
+        name: &str,
+    ) -> Result<ConditionSet, VmError> {
+        let expected = usize::from(dialogue.presentation.conditions);
+        if chunk.as_ref() != dialogue.presentation.chunk.as_slice() {
+            return Err(VmError::ConditionChunk { name: name.to_owned() });
+        }
+        if expected == 0 {
+            return Ok(ConditionSet { functions: Vec::new(), names: Vec::new() });
+        }
+        let table = self.vm.load(chunk, name)?;
+        let functions = table.conditions()?;
+        if functions.len() != expected {
+            return Err(VmError::ConditionCount { name: name.to_owned(), expected, found: functions.len() });
+        }
+        let names = table.names()?;
+        let _vm = alloc::VmAllocations::enter();
+        Ok(ConditionSet { functions, names: names.iter().map(|name| Name::intern(name)).collect() })
+    }
+
+    /// Asks one condition on a frame lent read-only, with the set's names on it for the time it runs.
+    fn ask_condition(
+        &mut self,
+        conditions: &mut ConditionSet,
+        id: ConditionId,
+        frame: &mut HookFrame,
+    ) -> bool {
+        self.stats.conditions_asked += 1;
+        let Some(function) = conditions.functions.get(usize::from(id.0)) else {
+            self.stats.conditions_faulted += 1;
+            return false;
+        };
+        frame.fault = false;
+        frame.swap_names(&mut conditions.names);
+        let (end, holds) = self.vm.ask(frame, function);
+        frame.swap_names(&mut conditions.names);
+        let faulted = frame.fault;
+        if let HookEnd::Failed(error) = &end {
+            self.error = Some(error.clone());
+        }
+        let well = end == HookEnd::Returned && !faulted;
+        self.stats.conditions_faulted += u64::from(!well);
+        well && holds
     }
 
     /// The VM.
@@ -358,6 +444,16 @@ fn fire_hooks(
 
 fn collect(mut host: ResMut<'_, ScriptHost>) {
     host.collect();
+}
+
+/// Asks one of a dialogue's conditions, between steps, on the flags as they stand: whether a line or a
+/// choice shows. A question never moves the simulation: the frame it runs on is read-only, so a command,
+/// a board write or a draw is a fault, and a condition that faults, fails or runs out of budget doesn't
+/// hold. False on a simulation with no host attached. `on` is a simulation, or a replay's recording or
+/// player of one.
+pub fn ask(on: &mut impl LendsFrame, conditions: &mut ConditionSet, id: ConditionId) -> bool {
+    on.read_only_frame::<ScriptHost, _>(|host, frame| host.ask_condition(conditions, id, frame))
+        .unwrap_or(false)
 }
 
 /// The host [`attach`] put in `sim`, to read: its stats, a collection step between steps.

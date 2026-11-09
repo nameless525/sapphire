@@ -143,6 +143,14 @@ impl HookTable {
         Ok(self.table.raw_get::<Option<Vec<String>>>("names")?.unwrap_or_default())
     }
 
+    /// The chunk's `conditions`, a dialogue's, each a function of no arguments asked through
+    /// [`ScriptVm::ask`], or none if it lists none.
+    pub fn conditions(&self) -> Result<Vec<Hook>, VmError> {
+        let _vm = VmAllocations::enter();
+        let functions = self.table.raw_get::<Option<Vec<Function>>>("conditions")?.unwrap_or_default();
+        Ok(functions.into_iter().map(|function| Hook { function }).collect())
+    }
+
     /// Whether the table is frozen, including after a trusted diagnostic integration.
     #[must_use]
     pub fn is_readonly(&self) -> bool {
@@ -267,6 +275,10 @@ pub enum VmError {
     FreezeStack,
     #[error("the binding `{0}` didn't go through `with_frame`, so what it allocates wouldn't reach gate 4")]
     UnflippedBinding(&'static str),
+    #[error("dialogue `{name}`'s chunk makes {found} conditions where its graph asks {expected}")]
+    ConditionCount { name: String, expected: usize, found: usize },
+    #[error("dialogue `{name}`'s conditions were bound from a chunk that isn't the one it cooked with")]
+    ConditionChunk { name: String },
 }
 
 thread_local! {
@@ -507,6 +519,28 @@ impl ScriptVm {
                 // A yielded thread holds its stack, and all a hook's garbage with it, until the next hook.
                 let _ = thread.reset(hook.clone());
                 HookEnd::OverBudget
+            }
+        }
+    }
+
+    /// Asks a dialogue's condition, with `frame` (read-only, between steps) for its bindings to read: it
+    /// holds only if it returns `true`. Anything else it returns, an error or running out of budget
+    /// doesn't hold.
+    pub fn ask(&self, frame: &mut HookFrame, condition: &Hook) -> (HookEnd, bool) {
+        let _vm = VmAllocations::enter();
+        let _frame = bindings::enter(frame);
+        BUDGET.set(self.limits.interrupts);
+        if let Err(error) = self.thread.reset(condition.function.clone()) {
+            return (HookEnd::Failed(error.to_string()), false);
+        }
+        match self.thread.resume::<Value>(()) {
+            Err(error) => (HookEnd::Failed(error.to_string()), false),
+            Ok(value) if matches!(self.thread.status(), ThreadStatus::Finished) => {
+                (HookEnd::Returned, matches!(value, Value::Boolean(true)))
+            }
+            Ok(_) => {
+                let _ = self.thread.reset(condition.function.clone());
+                (HookEnd::OverBudget, false)
             }
         }
     }

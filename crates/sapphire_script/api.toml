@@ -79,6 +79,13 @@ returns = ["value"]
 doc = "A number that lasts, from slot 0 to 63. Any other slot is a fault."
 
 [[function]]
+kind = "query"
+name = "flag"
+args = ["name"]
+returns = ["value"]
+doc = "A flag's value as the step began, by its place in `names`, or 0 if nothing has set it. A place the chunk doesn't list is a fault."
+
+[[function]]
 kind = "command"
 name = "set_board"
 args = ["slot", "value"]
@@ -119,6 +126,13 @@ name = "give_soft_lock"
 args = ["actor"]
 returns = []
 doc = "From the next step this actor chooses who it's aiming at. One already choosing carries on."
+
+[[function]]
+kind = "command"
+name = "set_flag"
+args = ["name", "value"]
+returns = []
+doc = "Sets a flag, by its place in `names`, to a whole number that fits 32 bits, from the next step. Anything else is a fault."
 
 [[hook]]
 name = "on_phase"

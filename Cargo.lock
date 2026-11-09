@@ -4306,9 +4306,11 @@ dependencies = [
  "mlua",
  "sapphire_bytecode",
  "sapphire_core",
+ "sapphire_dialogue",
  "sapphire_ecs",
  "sapphire_gameplay",
  "sapphire_math",
+ "sapphire_save",
  "sapphire_time",
  "thiserror 2.0.21",
 ]

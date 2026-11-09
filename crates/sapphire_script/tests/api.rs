@@ -19,7 +19,7 @@ use sapphire_gameplay::replay::{
 };
 use sapphire_gameplay::script::BOARD_SLOTS;
 use sapphire_gameplay::{ActorId, ActorSpawn, Faction, HookFrame, ScriptCommand, Simulation, TickActions};
-use sapphire_script::scenarios::{ARENA_SCRIPTED, SCRIPTED};
+use sapphire_script::scenarios::{ARENA_SCRIPTED, DIALOGUE_FLAG, SCRIPTED};
 use sapphire_script::{
     API, CookedScript, Declared, HOOKS, Limits, ScriptHost, ScriptVm, attach, cook, host_of, rebind,
 };
@@ -474,7 +474,8 @@ fn a_world_with_no_scripts_hashes_as_it_did() {
     assert_eq!(once, twice, "asking twice is asking");
 }
 
-/// The committed chunk cooks, loads and uses the lot, and its cooked form reaches a VM by the road a pack's
+/// The committed chunks cook, load and between them use the lot (`arena-scripted` every hook, and every
+/// binding but the flags', which `dialogue-flag` uses), and a cooked form reaches a VM by the road a pack's
 /// does: `sapphire_pipeline` writes this envelope, and `sapphire_assets` reads it.
 #[test]
 fn the_scenarios_chunk_goes_all_the_way() {
@@ -485,10 +486,13 @@ fn the_scenarios_chunk_goes_all_the_way() {
     let chunk = unsafe { CookedScript::from_trusted_bytes(archived.bytecode.to_vec()) };
     host.bind(&chunk, "=arena-scripted").unwrap();
 
+    host.bind(&cook(DIALOGUE_FLAG).unwrap(), "=dialogue-flag").unwrap();
+
     for row in API {
+        let call = format!("sapphire.{}(", row.binding.name);
         assert!(
-            ARENA_SCRIPTED.contains(&format!("sapphire.{}(", row.binding.name)),
-            "`arena-scripted` should use every binding, and doesn't use {}",
+            ARENA_SCRIPTED.contains(&call) || DIALOGUE_FLAG.contains(&call),
+            "a committed chunk should use every binding, and none uses {}",
             row.binding.name
         );
     }

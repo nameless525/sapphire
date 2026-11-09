@@ -22,7 +22,9 @@ pub mod scenarios;
 pub mod vm;
 
 pub use bindings::{API, Binding, Declared, HOOKS};
-pub use host::{ScriptHost, ScriptStats, attach, host_of, host_of_mut, rebind};
+pub use host::{
+    ReloadError, Reloaded, ScriptHost, ScriptStats, attach, host_of, host_of_mut, rebind, reload,
+};
 pub use sapphire_bytecode::compile::{self, CookedScript, cook};
 pub use sapphire_bytecode::{CookError, scan};
 pub use vm::{Hook, HookArgs, HookEnd, HookTable, Limits, ScriptVm, VmError};

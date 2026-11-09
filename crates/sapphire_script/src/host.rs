@@ -60,6 +60,8 @@ pub struct ScriptHost {
     hooks: [Option<Hook>; HOOK_COUNT],
     /// The hash of the bound chunk's bytes.
     chunk: u64,
+    /// The name it was bound by, which a reload goes by.
+    name: String,
     /// The bound chunk's `names`.
     names: Vec<Name>,
     /// See [`ScriptWorld::set_beat_every`].
@@ -80,6 +82,7 @@ impl ScriptHost {
             vm: ScriptVm::with_bindings(limits, more)?,
             hooks: [const { None }; HOOK_COUNT],
             chunk: 0,
+            name: String::new(),
             names: Vec::new(),
             beat_every: 0,
             stats: ScriptStats::default(),
@@ -94,7 +97,8 @@ impl ScriptHost {
     }
 
     /// Runs a cooked chunk and binds what it returns, replacing every hook. Before [`attach`]: on an attached
-    /// host, [`rebind`] is what tells the simulation.
+    /// host, [`rebind`] is what tells the simulation. `name` is its chunk name, which errors show: `=` and the
+    /// source's file name, so that a reload finds it ([`Self::source_name`]).
     pub fn bind(&mut self, cooked: &CookedScript, name: &str) -> Result<(), VmError> {
         let table = self.vm.load(cooked, name)?;
         let mut hooks = [const { None }; HOOK_COUNT];
@@ -106,7 +110,21 @@ impl ScriptHost {
         let mut hash = StateHasher::new();
         hash.bytes(cooked.as_ref());
         self.chunk = hash.finish();
+        name.clone_into(&mut self.name);
         Ok(())
+    }
+
+    /// The bound chunk's source file name: its chunk name without the `=`. Empty if nothing's bound.
+    #[must_use]
+    pub fn source_name(&self) -> &str {
+        self.name.strip_prefix('=').unwrap_or(&self.name)
+    }
+
+    /// Whether `cooked` is what's bound, byte for byte, as far as a hash can say.
+    fn holds(&self, cooked: &[u8]) -> bool {
+        let mut hash = StateHasher::new();
+        hash.bytes(cooked);
+        !self.name.is_empty() && hash.finish() == self.chunk
     }
 
     /// The VM.
@@ -282,6 +300,52 @@ pub fn rebind(sim: &mut Simulation, cooked: &CookedScript, name: &str) -> Result
 /// Installation belongs to the simulation, even when the host resource is replaced.
 #[derive(Resource)]
 struct ScriptAttached;
+
+/// What a [`reload`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reloaded {
+    /// The new chunk is bound, and the simulation's `tables_hash` says so.
+    Replaced,
+    /// It cooked to what's bound already, so nothing changed: no new `tables_hash`, no edit to end a
+    /// recording at.
+    Unchanged,
+}
+
+/// A script's source, cooked as the cooker does it ([`cook`](crate::cook): the pinned compiler, then the scan)
+/// and bound on an attached host between steps: what hot reload and live link bring (M3 L3). `source_name`
+/// is the file's name, which a host's chunk name must be (`=` and it), so an edit can't land on another
+/// script. The board and everything else outside the VM stay, so the fight goes on from the same numbers
+/// with new decisions.
+///
+/// # Errors
+///
+/// If the source doesn't cook, the chunk doesn't load, or the host's script came from another file. What
+/// was bound stays.
+///
+/// # Panics
+///
+/// If nothing's been attached.
+pub fn reload(sim: &mut Simulation, source_name: &str, source: &str) -> Result<Reloaded, ReloadError> {
+    let bound = host_of(sim).source_name();
+    if bound != source_name {
+        return Err(ReloadError::NotBound { pushed: source_name.to_owned(), bound: bound.to_owned() });
+    }
+    let cooked = sapphire_bytecode::compile::cook(source).map_err(VmError::Cook)?;
+    if host_of(sim).holds(cooked.as_ref()) {
+        return Ok(Reloaded::Unchanged);
+    }
+    rebind(sim, &cooked, &format!("={source_name}"))?;
+    Ok(Reloaded::Replaced)
+}
+
+/// Why a [`reload`] kept what was bound.
+#[derive(Debug, thiserror::Error)]
+pub enum ReloadError {
+    #[error("{pushed} isn't the script this fight runs, which is {bound:?}")]
+    NotBound { pushed: String, bound: String },
+    #[error(transparent)]
+    Vm(#[from] VmError),
+}
 
 fn fire_hooks(
     mut host: ResMut<'_, ScriptHost>,

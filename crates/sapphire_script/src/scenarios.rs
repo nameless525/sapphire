@@ -36,7 +36,7 @@ fn arena_scripted(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = skirmish().set_up(sim)?;
     let cooked = cook(ARENA_SCRIPTED).expect("the committed chunk cooks: a test holds it");
     let mut host = ScriptHost::new(Limits::default()).expect("a VM starts");
-    host.bind(&cooked, "=arena-scripted").expect("the committed chunk loads: a test holds it");
+    host.bind(&cooked, "=arena-scripted.luau").expect("the committed chunk loads: a test holds it");
     host.beat_every(ARENA_SCRIPTED_BEAT);
     attach(sim, host);
     Ok(cast)

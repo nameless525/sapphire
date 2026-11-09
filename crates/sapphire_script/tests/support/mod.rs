@@ -42,7 +42,7 @@ pub fn player_with(host: ScriptHost, replay: Replay) -> Player {
 /// A host running `source`.
 pub fn host_running(source: &str, limits: Limits) -> ScriptHost {
     let mut host = ScriptHost::new(limits).expect("the VM starts");
-    host.bind(&cook(source).expect("cooks"), "=test").expect("binds");
+    host.bind(&cook(source).expect("cooks"), "=test.luau").expect("binds");
     host
 }
 

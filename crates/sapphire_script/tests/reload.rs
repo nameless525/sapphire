@@ -1,12 +1,12 @@
-//! A chunk swapped in the middle of a real replay, between steps. The board survives it, and the
-//! checksum follows only what the new chunk means to change.
+//! A script's source reloaded in the middle of a real replay, between steps, as hot reload and live link
+//! bring it. The board survives it, and the checksum follows only what the new chunk means to change.
 
 mod support;
 
 use std::sync::Mutex;
 
 use sapphire_gameplay::script::BOARD_SLOTS;
-use sapphire_script::{CookedScript, Limits, ScriptStats, cook, host_of, rebind};
+use sapphire_script::{CookedScript, Limits, ReloadError, Reloaded, ScriptStats, cook, host_of, reload};
 use support::{finish, host_running, player_with, replay_file};
 
 /// The first chunk. Every number it leaves goes in the digest, and the board keeps a count of hooks.
@@ -82,7 +82,7 @@ struct Run {
     stats: ScriptStats,
 }
 
-fn run(reload: Option<&str>) -> Run {
+fn run(edit: Option<&str>) -> Run {
     let mut host = host_running(FIRST, Limits::default());
     host.beat_every(25);
     let mut player = player_with(host, replay_file("arena-fight-won"));
@@ -93,9 +93,9 @@ fn run(reload: Option<&str>) -> Run {
         sim.push(player.simulation().checksum());
         digest.push(player.simulation().scripts().expect("attached").digest());
         if tick == RELOAD_AT
-            && let Some(source) = reload
+            && let Some(source) = edit
         {
-            rebind(player.simulation_mut(), &cook(source).unwrap(), "=reloaded").unwrap();
+            assert_eq!(reload(player.simulation_mut(), "test.luau", source).unwrap(), Reloaded::Replaced);
         }
     }
     let finished = finish(player);
@@ -142,6 +142,31 @@ fn a_reload_moves_only_what_it_means_to_from_when_it_means_to() {
     assert!(sim_moved.is_none_or(|tick| tick >= RELOAD_AT as usize), "{sim_moved:?}");
     assert_eq!(digest_moved, sim_moved, "the same command moved both, on the same tick");
     assert!(sim_moved.is_some(), "a phase has to come after tick {RELOAD_AT} for this to show anything");
+}
+
+/// A reload that can't land, or lands on what's there, leaves the fight as it was, `tables_hash` and all, so
+/// a recording goes on; one that lands says so in `tables_hash`.
+#[test]
+fn a_reload_that_changes_nothing_or_fails_keeps_what_runs() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let mut player = player_with(host_running(FIRST, Limits::default()), replay_file("arena-fight-won"));
+    for _ in 0..10 {
+        player.step();
+    }
+    let sim = player.simulation_mut();
+    let tables = sim.tables_hash();
+    assert_eq!(reload(sim, "test.luau", FIRST).unwrap(), Reloaded::Unchanged);
+    let breaks_a_rule = "return { on_beat = function(tick) sapphire.mark(tick ^ tick) end }";
+    assert!(matches!(reload(sim, "test.luau", breaks_a_rule), Err(ReloadError::Vm(_))));
+    assert!(matches!(reload(sim, "test.luau", "return {"), Err(ReloadError::Vm(_))));
+    let elsewhere = reload(sim, "boss.luau", TUNED).unwrap_err();
+    assert!(matches!(&elsewhere, ReloadError::NotBound { bound, .. } if bound == "test.luau"), "{elsewhere}");
+    assert_eq!(sim.tables_hash(), tables, "nothing landed");
+    assert_eq!(host_of(sim).source_name(), "test.luau");
+
+    assert_eq!(reload(sim, "test.luau", TUNED).unwrap(), Reloaded::Replaced);
+    assert_ne!(sim.tables_hash(), tables, "a replay recorded before refuses what comes after");
+    assert_eq!(reload(sim, "test.luau", TUNED).unwrap(), Reloaded::Unchanged);
 }
 
 #[test]

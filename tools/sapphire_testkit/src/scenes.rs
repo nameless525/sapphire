@@ -202,7 +202,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 207] {
+pub fn scenes() -> [Scene; 209] {
     [
         Scene {
             name: "turntable-start",
@@ -1361,6 +1361,58 @@ pub fn scenes() -> [Scene; 207] {
                 "14",
                 "--tier",
                 "desktop-high",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The second enemy (M3 C2) in the Lantern Ward's Market Court, whose encounter has brought a warrior and
+        // a Lancer: the Lancer coming down out of its vault, spear first, each drawn from its own kind's look.
+        Scene {
+            name: "fight-ward-market",
+            args: &[
+                "--capture-ticks",
+                "228",
+                "--cues",
+                "--hud",
+                "live",
+                "--arena",
+                "--replay",
+                "tests/replays/ward-market.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The ward's boss (M3 C2) on its terrace, a moment after its second wind's toll threw the character back,
+        // its bar past the mark at half. A replay of a scenario names it, so nothing in code does.
+        Scene {
+            name: "fight-ward-terrace",
+            args: &[
+                "--capture-ticks",
+                "1799",
+                "--cues",
+                "--hud",
+                "live",
+                "--arena",
+                "--replay",
+                "tests/replays/ward-terrace.sreplay",
+                "--time-of-day",
+                "17.5",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
                 "--capture-frames",
                 "32",
             ],
@@ -4883,11 +4935,12 @@ mod tests {
         let mut sizes = Vec::new();
         for scene in scenes() {
             let hud = scene.args.contains(&"--hud");
-            // `arena-fight-hit`, `arena-skirmish`, `arena-boss` and `arena-captain` show the bars reading a
-            // real fight.
+            // `arena-fight-hit`, `arena-skirmish`, `arena-boss`, `arena-captain` and the ward's fights show the
+            // bars reading a real fight.
             let expected = scene.name.starts_with("hud-")
                 || scene.name.starts_with("game-hud-")
-                || ["arena-fight-hit", "arena-skirmish", "arena-boss", "arena-captain"].contains(&scene.name);
+                || ["arena-fight-hit", "arena-skirmish", "arena-boss", "arena-captain"].contains(&scene.name)
+                || ["fight-ward-market", "fight-ward-terrace"].contains(&scene.name);
             assert_eq!(hud, expected, "{}", scene.name);
             let display_text = scene.args.contains(&"--display-text");
             assert_eq!(display_text, scene.name.starts_with("display-text-"), "{}", scene.name);

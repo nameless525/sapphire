@@ -1,0 +1,328 @@
+// The Knell Colossus (弔鐘の巨像, M3 C2): the Lantern Ward's boss, a bronze temple guardian that
+// wakes on the terrace before the hall. It stands 3.18 m to the top of its helm and 3.52 m to its
+// crown's finial, over the character's 1.62 m: broad, its shoulders flared into plates wider than a
+// door, a crown whose eaves turn up as the ward's roofs do, and a 3.4 m staff ending in a bronze
+// bell it brings down like a hammer. Warm dark bronze over charcoal stone, gold trim, vermilion
+// banners, a verdigris bell, and gold-white glowing eyes and inscriptions.
+//
+// `sapphire_pipeline gen-figures --specs tools/figures --out content` writes
+// `content/combat/knell_colossus/` (`sapphire_pipeline::figure`). Metres, +Y up, facing +Z, its left
+// toward +X, in a T-pose. The staff is skinned to `handslot.r`, whose +Y runs along the shaft toward
+// the bell: the bell's mouth is 2.2 m out from the fist.
+(
+    type: "sapphire::pipeline::Figure",
+    version: 1,
+    data: (
+        dir: "combat/knell_colossus",
+        name: "knell_colossus",
+        max_triangles: 20000,
+        joints: [
+            (name: "root", at: (0.0, 0.0, 0.0), aim: Some((0.0, 1.0, 0.0))),
+            (name: "hips", parent: Some("root"), at: (0.0, 1.55, 0.0)),
+            (name: "spine", parent: Some("hips"), at: (0.0, 1.78, 0.0)),
+            (name: "chest", parent: Some("spine"), at: (0.0, 2.15, 0.0)),
+            (name: "head", parent: Some("chest"), at: (0.0, 2.78, 0.06), aim: Some((0.0, 3.2, 0.06))),
+            (name: "upperarm.l", parent: Some("chest"), at: (0.56, 2.58, -0.02)),
+            (name: "lowerarm.l", parent: Some("upperarm.l"), at: (1.12, 2.58, -0.02)),
+            (name: "wrist.l", parent: Some("lowerarm.l"), at: (1.62, 2.58, -0.02)),
+            (name: "hand.l", parent: Some("wrist.l"), at: (1.74, 2.58, -0.02)),
+            (name: "handslot.l", parent: Some("hand.l"), at: (1.84, 2.58, 0.0), aim: Some((1.84, 2.58, 1.0))),
+            (name: "upperarm.r", parent: Some("chest"), at: (-0.56, 2.58, -0.02)),
+            (name: "lowerarm.r", parent: Some("upperarm.r"), at: (-1.12, 2.58, -0.02)),
+            (name: "wrist.r", parent: Some("lowerarm.r"), at: (-1.62, 2.58, -0.02)),
+            (name: "hand.r", parent: Some("wrist.r"), at: (-1.74, 2.58, -0.02)),
+            (name: "handslot.r", parent: Some("hand.r"), at: (-1.84, 2.58, 0.0), aim: Some((-1.84, 2.58, 1.0))),
+            (name: "upperleg.l", parent: Some("hips"), at: (0.3, 1.47, 0.0)),
+            (name: "lowerleg.l", parent: Some("upperleg.l"), at: (0.32, 0.82, 0.03)),
+            (name: "foot.l", parent: Some("lowerleg.l"), at: (0.33, 0.17, -0.02)),
+            (name: "toes.l", parent: Some("foot.l"), at: (0.33, 0.05, 0.26), aim: Some((0.33, 0.04, 0.38))),
+            (name: "upperleg.r", parent: Some("hips"), at: (-0.3, 1.47, 0.0)),
+            (name: "lowerleg.r", parent: Some("upperleg.r"), at: (-0.32, 0.82, 0.03)),
+            (name: "foot.r", parent: Some("lowerleg.r"), at: (-0.33, 0.17, -0.02)),
+            (name: "toes.r", parent: Some("foot.r"), at: (-0.33, 0.05, 0.26), aim: Some((-0.33, 0.04, 0.38))),
+        ],
+        regions: [
+            // 0: warm dark bronze: the plates, helm and crown.
+            (
+                name: "bronze",
+                albedo: [(0.0, "#a08a58"), (0.45, "#6a5638"), (1.0, "#30261e")],
+                specular: 0.8,
+                specular_size: 0.6,
+                matcap: 0.6,
+            ),
+            // 1: charcoal stone: the body under the plates.
+            (name: "stone", albedo: [(0.0, "#62626c"), (0.5, "#3e3e48"), (1.0, "#24242c")], shadow_bias: 0.52),
+            // 2: gold trim: the mask, rims, bands and finial.
+            (
+                name: "gold",
+                albedo: [(0.0, "#ffe496"), (0.5, "#d4a244"), (1.0, "#7a5422")],
+                specular: 1.0,
+                specular_size: 0.8,
+                matcap: 1.0,
+            ),
+            // 3: vermilion banners.
+            (name: "cloth", albedo: [(0.0, "#dc4a3c"), (0.5, "#a2261e"), (1.0, "#5c1218")], shadow_bias: 0.56),
+            // 4: the verdigris bell.
+            (
+                name: "bell",
+                albedo: [(0.0, "#84cab4"), (0.5, "#4c8c7c"), (1.0, "#244a4a")],
+                specular: 0.7,
+                specular_size: 0.55,
+                matcap: 0.7,
+            ),
+            // 5: gold-white glow: its eyes, the inscriptions on its chest, banner and bell.
+            (
+                name: "glow",
+                albedo: [(0.0, "#fff6d6"), (1.0, "#ffd47c")],
+                shadow_bias: 0.75,
+                emission: [(0.0, 1.0)],
+            ),
+        ],
+        shapes: [
+            // The body: a stone waist and chest.
+            Loft((
+                region: "stone", bones: ["hips", "spine"], blend: 0.1, sides: 12,
+                from: (0.0, 1.38, 0.0), to: (0.0, 1.85, 0.0),
+                rings: [(at: 0.0, radius: (0.36, 0.28)), (at: 0.5, radius: (0.32, 0.25)), (at: 1.0, radius: (0.36, 0.28))],
+            )),
+            Loft((
+                region: "stone", bones: ["spine", "chest"], blend: 0.1, sides: 14, v: (0.8, 0.2),
+                from: (0.0, 1.8, 0.0), to: (0.0, 2.64, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.36, 0.28)),
+                    (at: 0.4, radius: (0.46, 0.34)),
+                    (at: 0.75, radius: (0.55, 0.38)),
+                    (at: 0.92, radius: (0.46, 0.32)),
+                    (at: 1.0, radius: (0.22, 0.2)),
+                ],
+            )),
+            // Breast and back plates, faceted bronze.
+            Loft((
+                region: "bronze", bones: ["chest"], sides: 8, faceted: true, v: (0.1, 0.7),
+                from: (0.0, 1.86, 0.0), to: (0.0, 2.56, 0.0),
+                rings: [(at: 0.0, radius: (0.39, 0.31)), (at: 0.5, radius: (0.5, 0.375)), (at: 1.0, radius: (0.57, 0.405))],
+                arc: Some((205.0, 335.0)), thickness: 0.04,
+            )),
+            Loft((
+                region: "bronze", bones: ["chest"], sides: 8, faceted: true, v: (0.1, 0.7),
+                from: (0.0, 1.86, 0.0), to: (0.0, 2.56, 0.0),
+                rings: [(at: 0.0, radius: (0.39, 0.31)), (at: 0.5, radius: (0.5, 0.375)), (at: 1.0, radius: (0.57, 0.405))],
+                arc: Some((25.0, 155.0)), thickness: 0.04,
+            )),
+            // A gold medallion on the chest, its inscription glowing.
+            Slab((
+                region: "gold", bones: ["chest"],
+                origin: (0.0, 2.24, 0.41), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.12),
+                outline: [(0.0, -0.13), (0.092, -0.092), (0.13, 0.0), (0.092, 0.092), (0.0, 0.13), (-0.092, 0.092), (-0.13, 0.0), (-0.092, -0.092)],
+                thickness: 0.04,
+            )),
+            Slab((
+                region: "glow", bones: ["chest"],
+                origin: (0.0, 2.24, 0.433), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.12),
+                outline: [(0.0, -0.07), (0.05, -0.05), (0.07, 0.0), (0.05, 0.05), (0.0, 0.07), (-0.05, 0.05), (-0.07, 0.0), (-0.05, -0.05)],
+                thickness: 0.012,
+            )),
+            // A gold belt.
+            Loft((
+                region: "gold", bones: ["hips"], sides: 12,
+                from: (0.0, 1.6, 0.0), to: (0.0, 1.72, 0.0),
+                rings: [(at: 0.0, radius: (0.395, 0.312)), (at: 1.0, radius: (0.37, 0.292))],
+            )),
+            // Banners front and back, the front's inscription glowing.
+            Slab((
+                region: "cloth", bones: ["hips", "upperleg.l", "upperleg.r"], blend: 0.15, v: (0.1, 1.0),
+                origin: (0.0, 1.12, 0.33), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.1),
+                outline: [(-0.2, -0.5), (0.2, -0.5), (0.17, 0.48), (-0.17, 0.48)],
+                thickness: 0.03,
+            )),
+            Slab((
+                region: "glow", bones: ["hips", "upperleg.l", "upperleg.r"], blend: 0.15,
+                origin: (0.0, 1.15, 0.352), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.1),
+                outline: [(-0.025, -0.38), (0.025, -0.38), (0.025, 0.34), (-0.025, 0.34)],
+                thickness: 0.012,
+            )),
+            Slab((
+                region: "cloth", bones: ["hips", "upperleg.l", "upperleg.r"], blend: 0.15, v: (0.1, 1.0),
+                origin: (0.0, 1.12, -0.33), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, -0.1),
+                outline: [(-0.2, -0.5), (0.2, -0.5), (0.17, 0.48), (-0.17, 0.48)],
+                thickness: 0.03,
+            )),
+            // Bronze plates over the hips' sides.
+            Loft((
+                region: "bronze", bones: ["hips", "upperleg.l", "upperleg.r"], blend: 0.15, sides: 4, faceted: true,
+                from: (0.0, 1.64, 0.0), to: (0.0, 1.15, 0.0),
+                rings: [(at: 0.0, radius: (0.405, 0.325)), (at: 1.0, radius: (0.53, 0.43))],
+                arc: Some((-42.0, 42.0)), thickness: 0.035,
+            )),
+            Loft((
+                region: "bronze", bones: ["hips", "upperleg.l", "upperleg.r"], blend: 0.15, sides: 4, faceted: true,
+                from: (0.0, 1.64, 0.0), to: (0.0, 1.15, 0.0),
+                rings: [(at: 0.0, radius: (0.405, 0.325)), (at: 1.0, radius: (0.53, 0.43))],
+                arc: Some((138.0, 222.0)), thickness: 0.035,
+            )),
+            // The neck and the helm.
+            Loft((
+                region: "stone", bones: ["chest", "head"], sides: 10,
+                from: (0.0, 2.55, 0.02), to: (0.0, 2.85, 0.06),
+                rings: [(at: 0.0, radius: (0.17, 0.16)), (at: 1.0, radius: (0.13, 0.13))],
+            )),
+            Loft((
+                region: "bronze", bones: ["head"], sides: 12,
+                from: (0.0, 2.76, 0.06), to: (0.0, 3.18, 0.06),
+                rings: [
+                    (at: 0.0, radius: (0.17, 0.19)),
+                    (at: 0.3, radius: (0.22, 0.24)),
+                    (at: 0.7, radius: (0.21, 0.23)),
+                    (at: 1.0, radius: (0.12, 0.13)),
+                ],
+            )),
+            // A gold mask, and its eyes.
+            Slab((
+                region: "gold", bones: ["head"],
+                origin: (0.0, 2.93, 0.27), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.15),
+                outline: [(-0.15, -0.14), (0.0, -0.2), (0.15, -0.14), (0.17, 0.08), (0.0, 0.12), (-0.17, 0.08)],
+                thickness: 0.04,
+            )),
+            Slab((
+                region: "glow", bones: ["head"], mirror: true,
+                origin: (0.072, 2.965, 0.298), u: (1.0, 0.0, -0.12), w: (0.0, 1.0, 0.15),
+                outline: [(-0.05, -0.012), (0.05, -0.002), (0.05, 0.011), (-0.05, 0.004)],
+                thickness: 0.012,
+            )),
+            // The crown: a roof over the helm, its gold eaves flaring up and out, and a finial.
+            Loft((
+                region: "bronze", bones: ["head"], sides: 8, faceted: true, across: Some((1.0, 0.0, 1.0)),
+                from: (0.0, 3.1, 0.06), to: (0.0, 3.42, 0.06),
+                rings: [(at: 0.0, radius: (0.38, 0.38)), (at: 0.4, radius: (0.22, 0.22)), (at: 1.0, radius: (0.02, 0.02))],
+            )),
+            Loft((
+                region: "gold", bones: ["head"], sides: 8, faceted: true, across: Some((1.0, 0.0, 1.0)),
+                from: (0.0, 3.07, 0.06), to: (0.0, 3.16, 0.06),
+                rings: [(at: 0.0, radius: (0.36, 0.36)), (at: 1.0, radius: (0.48, 0.48))],
+                thickness: 0.025,
+            )),
+            Loft((
+                region: "gold", bones: ["head"], sides: 8,
+                from: (0.0, 3.4, 0.06), to: (0.0, 3.52, 0.06),
+                rings: [(at: 0.0, radius: (0.035, 0.035)), (at: 0.4, radius: (0.05, 0.05)), (at: 1.0, radius: (0.004, 0.004))],
+            )),
+            // Shoulder plates, wide and faceted, over the top of each arm, with gold rims.
+            Loft((
+                region: "bronze", bones: ["upperarm.l"], mirror: true, sides: 8, faceted: true,
+                from: (0.4, 2.62, -0.02), to: (0.95, 2.6, -0.02),
+                rings: [(at: 0.0, radius: (0.26, 0.26)), (at: 0.5, radius: (0.33, 0.34)), (at: 1.0, radius: (0.36, 0.38), shift: (0.0, 0.04))],
+                arc: Some((150.0, 390.0)), thickness: 0.04,
+            )),
+            Loft((
+                region: "gold", bones: ["upperarm.l"], mirror: true, sides: 8, faceted: true,
+                from: (0.93, 2.6, -0.02), to: (0.97, 2.6, -0.02),
+                rings: [(at: 0.0, radius: (0.37, 0.39), shift: (0.0, 0.04)), (at: 1.0, radius: (0.375, 0.395), shift: (0.0, 0.04))],
+                arc: Some((150.0, 390.0)), thickness: 0.05,
+            )),
+            // Arms: stone, with faceted bronze bracers banded in gold, and great fists.
+            Loft((
+                region: "stone", bones: ["upperarm.l", "lowerarm.l"], blend: 0.08, mirror: true, sides: 10,
+                from: (0.5, 2.58, -0.02), to: (1.13, 2.58, -0.02),
+                rings: [(at: 0.0, radius: (0.17, 0.17)), (at: 1.0, radius: (0.14, 0.14))],
+            )),
+            Loft((
+                region: "stone", bones: ["lowerarm.l", "wrist.l"], blend: 0.08, mirror: true, sides: 10,
+                from: (1.12, 2.58, -0.02), to: (1.63, 2.58, -0.02),
+                rings: [(at: 0.0, radius: (0.14, 0.14)), (at: 1.0, radius: (0.115, 0.115))],
+            )),
+            Loft((
+                region: "bronze", bones: ["lowerarm.l"], mirror: true, sides: 8, faceted: true,
+                from: (1.2, 2.58, -0.02), to: (1.58, 2.58, -0.02),
+                rings: [(at: 0.0, radius: (0.168, 0.168)), (at: 1.0, radius: (0.148, 0.148))],
+            )),
+            Loft((
+                region: "gold", bones: ["lowerarm.l"], mirror: true, sides: 8, faceted: true,
+                from: (1.56, 2.58, -0.02), to: (1.61, 2.58, -0.02),
+                rings: [(at: 0.0, radius: (0.155, 0.155)), (at: 1.0, radius: (0.152, 0.152))],
+            )),
+            Loft((
+                region: "stone", bones: ["wrist.l", "hand.l"], mirror: true, sides: 10,
+                from: (1.6, 2.58, -0.02), to: (1.96, 2.58, 0.0),
+                rings: [(at: 0.0, radius: (0.115, 0.11)), (at: 0.4, radius: (0.155, 0.135)), (at: 1.0, radius: (0.1, 0.09))],
+            )),
+            // Legs: stone thighs, gold knee guards, faceted bronze greaves, stone feet.
+            Loft((
+                region: "stone", bones: ["upperleg.l", "lowerleg.l"], blend: 0.08, mirror: true, sides: 10,
+                from: (0.3, 1.52, 0.0), to: (0.32, 0.82, 0.03),
+                rings: [(at: 0.0, radius: (0.22, 0.22)), (at: 0.5, radius: (0.19, 0.19)), (at: 1.0, radius: (0.15, 0.15))],
+            )),
+            Slab((
+                region: "gold", bones: ["lowerleg.l"], mirror: true,
+                origin: (0.32, 0.83, 0.19), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.0),
+                outline: [(0.0, -0.13), (0.11, 0.0), (0.0, 0.13), (-0.11, 0.0)],
+                thickness: 0.04,
+            )),
+            Loft((
+                region: "bronze", bones: ["lowerleg.l"], mirror: true, sides: 8, faceted: true,
+                from: (0.32, 0.8, 0.03), to: (0.33, 0.2, -0.02),
+                rings: [(at: 0.0, radius: (0.17, 0.17)), (at: 0.4, radius: (0.155, 0.16)), (at: 1.0, radius: (0.13, 0.13))],
+            )),
+            Loft((
+                region: "stone", bones: ["foot.l", "toes.l"], mirror: true, sides: 10, v: (0.5, 0.9),
+                from: (0.33, 0.12, -0.16), to: (0.33, 0.07, 0.42),
+                rings: [
+                    (at: 0.0, radius: (0.13, 0.12)),
+                    (at: 0.3, radius: (0.15, 0.105)),
+                    (at: 0.8, radius: (0.14, 0.077)),
+                    (at: 1.0, radius: (0.1, 0.05)),
+                ],
+            )),
+            // The staff, along +Z from the right fist: a bronze shaft, a gold spike at its butt and
+            // bands at the grip, and the bell, open-mouthed, with a gold lip and a band of glow.
+            Loft((
+                region: "bronze", bones: ["handslot.r"], sides: 8, v: (0.3, 0.7),
+                from: (-1.84, 2.58, -1.25), to: (-1.84, 2.58, 1.56),
+                rings: [(at: 0.0, radius: (0.045, 0.045)), (at: 1.0, radius: (0.05, 0.05))],
+            )),
+            Loft((
+                region: "gold", bones: ["handslot.r"], sides: 8,
+                from: (-1.84, 2.58, -1.42), to: (-1.84, 2.58, -1.24),
+                rings: [(at: 0.0, radius: (0.008, 0.008)), (at: 1.0, radius: (0.065, 0.065))],
+            )),
+            Loft((
+                region: "gold", bones: ["handslot.r"], sides: 8,
+                from: (-1.84, 2.58, -0.3), to: (-1.84, 2.58, -0.22),
+                rings: [(at: 0.0, radius: (0.058, 0.058)), (at: 1.0, radius: (0.058, 0.058))],
+            )),
+            Loft((
+                region: "gold", bones: ["handslot.r"], sides: 8,
+                from: (-1.84, 2.58, 0.22), to: (-1.84, 2.58, 0.3),
+                rings: [(at: 0.0, radius: (0.058, 0.058)), (at: 1.0, radius: (0.058, 0.058))],
+            )),
+            Loft((
+                region: "bell", bones: ["handslot.r"], sides: 14, v: (0.0, 0.9),
+                from: (-1.84, 2.58, 1.5), to: (-1.84, 2.58, 2.16),
+                rings: [
+                    (at: 0.0, radius: (0.09, 0.09)),
+                    (at: 0.1, radius: (0.2, 0.2)),
+                    (at: 0.5, radius: (0.26, 0.26)),
+                    (at: 0.85, radius: (0.33, 0.33)),
+                    (at: 1.0, radius: (0.38, 0.38)),
+                ],
+                thickness: 0.04,
+            )),
+            Loft((
+                region: "bell", bones: ["handslot.r"], sides: 14,
+                from: (-1.84, 2.58, 1.5), to: (-1.84, 2.58, 1.54),
+                rings: [(at: 0.0, radius: (0.095, 0.095)), (at: 1.0, radius: (0.13, 0.13))],
+            )),
+            Loft((
+                region: "gold", bones: ["handslot.r"], sides: 14,
+                from: (-1.84, 2.58, 2.11), to: (-1.84, 2.58, 2.18),
+                rings: [(at: 0.0, radius: (0.37, 0.37)), (at: 1.0, radius: (0.4, 0.4))],
+                thickness: 0.05,
+            )),
+            Loft((
+                region: "glow", bones: ["handslot.r"], sides: 14,
+                from: (-1.84, 2.58, 1.83), to: (-1.84, 2.58, 1.87),
+                rings: [(at: 0.0, radius: (0.278, 0.278)), (at: 1.0, radius: (0.29, 0.29))],
+                thickness: 0.02,
+            )),
+        ],
+    ),
+)

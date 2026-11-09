@@ -1,0 +1,105 @@
+// The Knell Colossus's shadow ramps (M3 C2): every row multiplies the albedo on the shadow side,
+// from the deepest shadow (0) to the terminator (1), in its spec's region order
+// (`tools/figures/knell_colossus.figure.ron`). Bronze and gold fall into a dusky violet, so the warm
+// metal doesn't go muddy, stone into a cool slate, the banners into wine, the verdigris into a deep
+// teal; the glow barely shades. Night rows, which time of day blends in from dusk, lean further blue.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "bronze",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#6c5c84"),
+                        (at: 0.7, color: "#8a7896"),
+                        (at: 1.0, color: "#a490a4"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#5a548c"),
+                        (at: 1.0, color: "#8478a4"),
+                    ],
+                )),
+            ),
+            (
+                name: "stone",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#5e6088"),
+                        (at: 1.0, color: "#7e80a2"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#50548e"),
+                        (at: 1.0, color: "#7074a8"),
+                    ],
+                )),
+            ),
+            (
+                name: "gold",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a6c80"),
+                        (at: 1.0, color: "#b49094"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#706488"),
+                        (at: 1.0, color: "#9a86a2"),
+                    ],
+                )),
+            ),
+            (
+                name: "cloth",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#844068"),
+                        (at: 1.0, color: "#a85c78"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#684080"),
+                        (at: 1.0, color: "#8e5c90"),
+                    ],
+                )),
+            ),
+            (
+                name: "bell",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#4e6c8c"),
+                        (at: 1.0, color: "#7090a8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#44609a"),
+                        (at: 1.0, color: "#6886b4"),
+                    ],
+                )),
+            ),
+            (
+                name: "glow",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#eee6d8"),
+                        (at: 1.0, color: "#f8f2ea"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#e0dce4"),
+                        (at: 1.0, color: "#f0eef4"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

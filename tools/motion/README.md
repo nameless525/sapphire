@@ -31,6 +31,8 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 | `test_writing.py` | Holds who writes what, `movement` included: `python3 -B -m unittest discover -s tools/motion -p 'test_*.py'`. |
 | `rig.py` | Reads the character's rest skeleton from its VRM, so nothing derived from it is committed. |
 | `sheet.py` | Writes the key-pose documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
+| `figure_pose.py` | The same posing for a generated figure (M3 C2, `tools/figures/`): its rest from its `.glb`, a key's feet in the clip's world and its weapon's slot, aim and roll in the model's, a free or holding left hand, and `--write`. A hand lets go of the weapon as a blend starts and takes it again as one ends. |
+| `lancer.py`, `knell_colossus.py` | Each figure's clips as keys, named as its spec: `python3 tools/motion/lancer.py` checks, `--write` writes `content/combat/lancer/`'s documents. `test_figure_pose.py` holds what's committed to them. |
 
 ## Working on a move
 

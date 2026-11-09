@@ -162,6 +162,19 @@
                         "handslot.r",
                     ],
                 ),
+                // The Knell Colossus (M3 C2), on its own lengths, its hands in the clip's grip so its staff is too.
+                (
+                    target: "49e92e56-e2b1-4cb0-93b9-6c7aef439350",
+                    names: [
+                        "Walking_A",
+                    ],
+                    follow: [
+                        "hand.l",
+                        "hand.r",
+                        "handslot.l",
+                        "handslot.r",
+                    ],
+                ),
             ],
         )),
     ),

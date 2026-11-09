@@ -1,0 +1,10 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "ab916bad-82df-5eb1-b362-47678b7e9c9c",
+        importer: KeyPose((
+            rig: "49e92e56-e2b1-4cb0-93b9-6c7aef439350",
+        )),
+    ),
+)

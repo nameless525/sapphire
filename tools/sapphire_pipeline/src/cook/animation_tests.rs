@@ -987,7 +987,7 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
     }
     let rows = [
         ("General", 1, 0, 6),
-        ("MovementBasic", 0, 0, 10),
+        ("MovementBasic", 0, 0, 11),
         ("MovementAdvanced", 0, 0, 13),
         ("CombatMelee", 0, 0, 5),
         ("Special", 0, 0, 0),

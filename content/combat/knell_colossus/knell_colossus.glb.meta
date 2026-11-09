@@ -1,0 +1,58 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "49e92e56-e2b1-4cb0-93b9-6c7aef439350",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.5,
+                        max_error: 0.002,
+                    ),
+                    (
+                        triangle_ratio: 0.25,
+                        max_error: 0.01,
+                    ),
+                    (
+                        triangle_ratio: 0.125,
+                        max_error: 0.03,
+                    ),
+                ],
+                mobile_skip: 1,
+            ),
+            position_format: Unorm16,
+            materials: {
+                "knell_colossus": "82e7f52c-5954-4c00-b433-92726bcb575d",
+            },
+            // Its own skeleton, with KayKit's joint names: clips reach it by retarget, from the pack's
+            // sidecars, and by key-pose documents, and nothing cooks from this file.
+            clips: (
+                names: [],
+                humanoid: {
+                    Hips: "hips",
+                    Spine: "spine",
+                    Chest: "chest",
+                    Head: "head",
+                    LeftUpperLeg: "upperleg.l",
+                    LeftLowerLeg: "lowerleg.l",
+                    LeftFoot: "foot.l",
+                    LeftToes: "toes.l",
+                    RightUpperLeg: "upperleg.r",
+                    RightLowerLeg: "lowerleg.r",
+                    RightFoot: "foot.r",
+                    RightToes: "toes.r",
+                    LeftUpperArm: "upperarm.l",
+                    LeftLowerArm: "lowerarm.l",
+                    LeftHand: "wrist.l",
+                    RightUpperArm: "upperarm.r",
+                    RightLowerArm: "lowerarm.r",
+                    RightHand: "wrist.r",
+                },
+            ),
+        )),
+    ),
+)

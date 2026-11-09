@@ -1,0 +1,25 @@
+// The knell colossus's control map (M3 C2): what `gen-figures` paints from its spec
+// (`knell_colossus_control.png`, `sapphire_pipeline::figure::paint::control_png`), a column for each region,
+// whose material ID picks the region's ramp row, highlight, outline and rim.
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Image(
+            path: "knell_colossus_control.png",
+            channel: R,
+        ),
+        shadow_bias: Image(
+            path: "knell_colossus_control.png",
+            channel: G,
+        ),
+        specular_threshold: Image(
+            path: "knell_colossus_control.png",
+            channel: B,
+        ),
+        material_id: Image(
+            path: "knell_colossus_control.png",
+            channel: A,
+        ),
+    ),
+)

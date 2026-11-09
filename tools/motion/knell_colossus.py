@@ -306,4 +306,5 @@ CLIPS = [
 ]
 
 if __name__ == '__main__':
-    main('knell_colossus.py', FIGURE, RIG_ID, CLIPS, __doc__.splitlines()[0])
+    # The staff's hit path runs along it from the bell's middle, 1.85 m out from the fist.
+    main('knell_colossus.py', FIGURE, RIG_ID, CLIPS, __doc__.splitlines()[0], weapon=('staff', 1.85))

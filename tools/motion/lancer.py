@@ -214,4 +214,5 @@ def death():
 CLIPS = [thrust(), sweep(), vault(), backstep(), stagger_light(), stagger_heavy(), knockdown(), recover(), death()]
 
 if __name__ == '__main__':
-    main('lancer.py', 'lancer', RIG_ID, CLIPS, __doc__.splitlines()[0])
+    # The spear's hit path runs along it from its head's middle, 1.25 m out from the fist.
+    main('lancer.py', 'lancer', RIG_ID, CLIPS, __doc__.splitlines()[0], weapon=('spear', 1.25))

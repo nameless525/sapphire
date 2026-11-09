@@ -375,12 +375,44 @@ def meta(rig_id, figure, name):
 '''
 
 
-def main(tool, figure, rig_id, clips, description):
+def motion(clip, samples, weapon):
+    """A move's `motion` for a clip, in `.moves.ron`'s words: the root where a key moves it, and the
+    weapon's hit path at each authored key and every tick of a dense span. `weapon` is the path's name
+    and how far along the weapon from the slot its middle is; the path's +Y runs along the weapon."""
+    name, along = weapon
+    ticks = {key['tick'] for key in clip.keys}
+    for key in clip.keys:
+        if 'dense' in key:
+            ticks.update(range(key['tick'], key['tick'] + key['dense'] + 1))
+    ticks.add(clip.ticks if clip.ticks in {tick for tick, *_ in samples} else max(tick for tick, *_ in samples))
+    root, path, last = [], [], None
+    for tick, key, pose, _ in samples:
+        if tick not in ticks:
+            continue
+        place = (key['root'][0], key['root'][1], math.radians(key['turn']))
+        if place != last and tick > 0:
+            yaw_text = f', yaw: {number(place[2])}' if place[2] else ''
+            root.append(f'(at: {tick}, offset: ({number(place[0])}, 0.0, {number(place[1])}){yaw_text}),')
+        last = place
+        slot, rotation = pose.slot('Right')
+        point = add(slot, mul(qrot(rotation, Z), along))
+        rotation = qnorm(qmul(rotation, (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))))
+        offset = ', '.join(number(v) for v in point)
+        turn_text = ', '.join(number(v) for v in rotation)
+        path.append(f'(at: {tick}, offset: ({offset}), rotation: ({turn_text})),')
+    lines = [f'// {clip.name}: {clip.ticks} ticks', 'root: [', *('    ' + line for line in root), '],']
+    lines += ['paths: [', f'    (name: "{name}", keys: [', *('        ' + line for line in path), '    ]),', '],']
+    return '\n'.join(lines)
+
+
+def main(tool, figure, rig_id, clips, description, weapon=None):
     """Checks every clip, and writes each with `--write`: `figure` is the folder under
-    `content/combat/` and its model's stem."""
+    `content/combat/` and its model's stem. With `--motion`, prints each clip's root and its weapon's
+    hit path (`weapon`, as [`motion`] takes it) for its move in `<figure>.moves.ron`."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('clips', nargs='*', help='only these clips')
     parser.add_argument('--write', action='store_true', help='write the key-pose documents and their sidecars')
+    parser.add_argument('--motion', action='store_true', help="print each clip's move motion: root and hit path")
     parser.add_argument('-v', '--verbose', action='store_true', help='print each sample')
     args = parser.parse_args()
     folder = REPO / 'content/combat' / figure
@@ -390,6 +422,8 @@ def main(tool, figure, rig_id, clips, description):
         if args.clips and clip.name not in args.clips:
             continue
         samples = sample(rig, clip)
+        if args.motion and weapon is not None:
+            print(motion(clip, samples, weapon))
         problems += check(rig, clip, samples, args.verbose)
         path = folder / f'{clip.name}.keypose.ron'
         for file, contents in ((path, ron(tool, clip, samples)), (path.with_suffix('.ron.meta'), meta(rig_id, figure, clip.name))):

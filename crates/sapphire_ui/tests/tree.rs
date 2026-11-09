@@ -213,6 +213,39 @@ fn opacity_multiplies_down_the_tree() {
 }
 
 #[test]
+fn a_model_of_dynamic_values_reads_once_its_shape_is_declared() {
+    use bevy_reflect::Typed;
+    use bevy_reflect::structs::DynamicStruct;
+    let data = r#"model: "m.model.ron", nodes: [
+        (name: "root"),
+        (name: "panel", parent: "root",
+            layout: (width: Points(50), height: Points(50)),
+            look: (fill: Color((200, 100, 50, 200))),
+            binds: [(to: Opacity, path: "player.health")]),
+    ],"#;
+    let mut player = DynamicStruct::default();
+    player.insert("health", 0.5_f64);
+    let mut model = DynamicStruct::default();
+    model.insert("player", player);
+    let mut tree = UiTree::new(&document(data)).unwrap();
+    let (mut fonts, loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
+    let mut run = |tree: &mut UiTree, list: &mut UiDrawList| {
+        list.reset();
+        fonts.begin_frame(UiPageState::NO_RENDERER, &loc);
+        let frame =
+            UiFrame { metrics: metrics([800.0, 600.0]), now: at(0.0), loc: &loc, model: Some(&model) };
+        tree.update(&frame, &mut fonts);
+        tree.draw(&mut fonts, &atlas, list);
+    };
+    run(&mut tree, &mut list);
+    assert_eq!(tree.problems().len(), 1, "no type to check against: {:#?}", tree.problems());
+    tree.declare_model(ui::UiModel::of_type(Model::type_info()));
+    run(&mut tree, &mut list);
+    assert_eq!(tree.problems(), &[]);
+    assert_eq!(drawn_with(&list, [200, 100, 50, 100]).len(), 1, "{:?}", list.quads);
+}
+
+#[test]
 fn a_path_the_model_lacks_is_something_you_can_see() {
     let data = format!(
         r#"model: "m.model.ron", {STYLES} nodes: [

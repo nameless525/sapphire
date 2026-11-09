@@ -31,7 +31,8 @@
 //! its value would. A cook refuses both before a shipped build can meet them (`sapphire_pipeline::ui`),
 //! so this is what a pushed document or an edit in progress shows. A path that the model's type has and
 //! whose value is absent right now, through an `Option` holding nothing or past a list's end, isn't
-//! wrong: its node reads as hidden, transparent, empty.
+//! wrong: its node reads as hidden, transparent, empty. Paths are checked against the model's type, or,
+//! for a model of dynamic values with no type, the model document it declares ([`UiTree::declare_model`]).
 //!
 //! A key the tables don't hold shows as itself and counts in `LocStats`. Under pseudo-localization,
 //! [`UiTree::unframed`] finds it, along with anything else that didn't come through a message.
@@ -323,6 +324,8 @@ pub struct UiTree {
     problems: Vec<UiProblem>,
     /// The model type the paths were last checked against, or none yet.
     checked_model: Option<Option<TypeId>>,
+    /// What the paths are checked against in place of the model's type, if [`Self::declare_model`] said.
+    declared: Option<UiModel>,
     metrics: Option<UiMetrics>,
     revision: Option<u64>,
     dirty: bool,
@@ -475,6 +478,7 @@ impl UiTree {
             styles: document.styles.clone(),
             problems: Vec::new(),
             checked_model: None,
+            declared: None,
             metrics: None,
             revision: None,
             dirty: true,
@@ -568,6 +572,13 @@ impl UiTree {
     #[must_use]
     pub fn is_visible(&self, node: UiNodeId) -> bool {
         self.nodes[node.0 as usize].visible
+    }
+
+    /// Checks the paths against `model` from the next update, rather than against the model's type: how a
+    /// model of dynamic values, such as an editor's stand-ins, which has no type to read, says what it holds.
+    pub fn declare_model(&mut self, model: UiModel) {
+        self.declared = Some(model);
+        self.checked_model = None;
     }
 
     /// What's wrong with this tree: see the [module docs](self).
@@ -675,7 +686,10 @@ impl UiTree {
         self.checked_model = Some(seen);
         // Everything found last time was about the last model.
         self.problems.retain(|problem| !problem.field.contains("path"));
-        let model = info.map(UiModel::of_type);
+        let model = match (model, &self.declared) {
+            (Some(_), Some(declared)) => Some(declared.clone()),
+            _ => info.map(UiModel::of_type),
+        };
         for node in &mut self.nodes {
             let mut failed = false;
             let mut report = |field: String, problem: String| {

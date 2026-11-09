@@ -14,6 +14,18 @@ use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_platform::Timestamp;
 use sapphire_ui::{Atlas, Insets, UiEvent, UiFonts, UiFrame, UiInput, UiMetrics, UiTree};
 
+/// What [`ScreenStack::push_plain_under`] stands behind a screen. Not cooked: it says nothing, and no game
+/// shows it.
+const PLAIN_BACKDROP: &str = r#"(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (nodes: [(name: "root", look: (fill: Color((74, 88, 112, 255))))]),
+)"#;
+
+/// What the backdrop's paths read: none.
+#[derive(Clone, Debug, Default, bevy_reflect::Reflect)]
+struct NoModel;
+
 /// How a [`ScreenStack`] shows what it's handed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StackSetup {
@@ -110,6 +122,14 @@ impl ScreenStack {
         at: Timestamp,
     ) -> Result<(), String> {
         self.insert(0, document, model, at, Vec::new())
+    }
+
+    /// Puts a flat color under all the rest, in place of the scene, so a capture moves for what the screens show
+    /// and nothing else: what the `game-*` goldens stand behind a screen (the sandbox's `--ui-plain`), and an
+    /// editor's preview.
+    pub fn push_plain_under(&mut self, at: Timestamp) -> Result<(), String> {
+        let backdrop = UiDocument::from_document(PLAIN_BACKDROP).map_err(|error| error.to_string())?;
+        self.push_under(&backdrop, Box::new(NoModel), at)
     }
 
     fn insert(
@@ -220,12 +240,29 @@ impl ScreenStack {
         // What a cook checks with the model's document, from the type itself.
         let info = top.model.get_represented_type_info().ok_or("a model of no known type")?;
         let model = UiModel::of_type(info);
-        if let Some(issue) = document.path_issues(&model).into_iter().next() {
+        self.replace_document(&document, &model)
+    }
+
+    /// Takes `document` for the top screen, read against `model` as a cook reads it, keeping what's on screen
+    /// if a path isn't the model's: an editor's way in, whose model is the document's own model file rather
+    /// than a type.
+    pub fn replace_document(&mut self, document: &UiDocument, model: &UiModel) -> Result<(), String> {
+        let top = self.screens.last_mut().ok_or("no screen is showing")?;
+        if let Some(issue) = document.path_issues(model).into_iter().next() {
             return Err(issue.to_string());
         }
-        top.tree = new_tree(&document)?;
+        top.tree = new_tree(document)?;
+        // An editor's model is dynamic values, with no type for the tree to check its paths against.
+        top.tree.declare_model(model.clone());
         top.opened = false;
         Ok(())
+    }
+
+    /// Has the top screen read `model` from the next draw: an editor's stand-in values, typed in.
+    pub fn set_model(&mut self, model: Box<dyn PartialReflect>) {
+        if let Some(top) = self.screens.last_mut() {
+            top.model = model;
+        }
     }
 
     /// What the renderer's glyph pages hold, for the next [`Self::draw`].

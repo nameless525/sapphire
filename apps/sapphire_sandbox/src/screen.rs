@@ -4,25 +4,11 @@
 //! `--ui-plain` stands a flat color behind it. `game_ui::screen` shows it, and no window's input reaches it: a
 //! game's own menus run in `game_app`.
 
-use bevy_reflect::Reflect;
 use game_ui::menus::MenuScreen;
 use game_ui::screen::{ScreenStack, StackSetup};
-use sapphire_assets::ui::UiDocument;
 use sapphire_platform::Timestamp;
 use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, UiStep};
-
-/// `--ui-plain`: what stands behind a screen in place of the scene, so its golden moves for what it shows and
-/// nothing else. Not cooked: only the sandbox shows it, and it says nothing.
-const PLAIN_BACKDROP: &str = r#"(
-    type: "sapphire::assets::UiDocument",
-    version: 2,
-    data: (nodes: [(name: "root", look: (fill: Color((74, 88, 112, 255))))]),
-)"#;
-
-/// What the backdrop's paths read: none.
-#[derive(Clone, Debug, Default, Reflect)]
-struct NoModel;
 
 /// How `--ui-game` shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,9 +75,7 @@ impl ScreenOptions {
         let model = self.screen.sample_model();
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
         if self.plain {
-            let backdrop =
-                UiDocument::from_document(PLAIN_BACKDROP).map_err(|error| shown(error.to_string()))?;
-            stack.push_under(&backdrop, Box::new(NoModel), start).map_err(shown)?;
+            stack.push_plain_under(start).map_err(shown)?;
         }
         stack.set_now(Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64));
         stack.turn_insets(self.turn);
@@ -101,6 +85,7 @@ impl ScreenOptions {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_assets::ui::UiDocument;
     use sapphire_loc::StringTable;
     use sapphire_look::UiDrawList;
     use sapphire_stage::content::{FONT_CHAINS, LOCALES};

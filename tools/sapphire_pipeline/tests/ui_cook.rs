@@ -81,7 +81,8 @@ impl Tree {
         let _ = fs::remove_dir_all(&root);
         let tree = Self { root };
         let content = tree.content();
-        for file in [OXANIUM.to_owned(), format!("{OXANIUM}.meta"), "fonts/ui.charset.ron".to_owned()] {
+        let fonts = ["fonts/ui.charset.ron", "fonts/display_latin.charset.ron"].map(str::to_owned);
+        for file in [OXANIUM.to_owned(), format!("{OXANIUM}.meta")].into_iter().chain(fonts) {
             fs::create_dir_all(content.join(&file).parent().unwrap()).unwrap();
             fs::copy(repo_content().join(&file), content.join(&file)).unwrap();
         }
@@ -280,6 +281,9 @@ fn a_screen_a_language_cannot_show_says_what_is_missing() {
         fs::create_dir_all(&folder).unwrap();
         fs::copy(repo_content().join("third_party/dela_gothic_one").join(file), folder.join(file)).unwrap();
     }
+    // A display face cooks a field for the characters its charset names.
+    let charset = "fonts/display_ja.charset.ron";
+    fs::copy(repo_content().join(charset), tree.content().join(charset)).unwrap();
     tree.chains("(name: \"display\", fonts: [\"9aab79e6-9051-4121-9a50-e20ce97db8f8\"])");
     says(&tree.refusal(), &["`en`", "`display`", "Oxanium", "chain"]);
     tree.chains("(name: \"other\", fonts: [\"ce9360bf-ac52-4ecc-9e73-75cd14b619d5\"])");
@@ -386,7 +390,13 @@ fn the_game_s_screens_cook_in_both_languages_and_bring_their_characters() {
         copy(format!("third_party/{font}.meta"));
         copy(format!("third_party/{}/OFL.txt", Path::new(font).parent().unwrap().to_str().unwrap()));
     }
-    for file in ["fonts/ui.charset.ron", "fonts/ui.fontchains.ron", "fonts/ui.fontchains.ron.meta"] {
+    for file in [
+        "fonts/ui.charset.ron",
+        "fonts/ui.fontchains.ron",
+        "fonts/ui.fontchains.ron.meta",
+        "fonts/display_latin.charset.ron",
+        "fonts/display_ja.charset.ron",
+    ] {
         copy(file.to_owned());
     }
     for stem in ["title", "pause", "settings", "character", "dialogue", "hud"] {

@@ -26,22 +26,28 @@ pub(super) struct ScreenPanel {
 /// What a screen's paths read: its model file, and what's typed in for each.
 #[derive(Debug)]
 struct Held {
+    /// The model file the document named when this was read: an edit naming another reads that one.
+    named: Option<String>,
     /// The model file it names, as it read, or why it didn't.
     model: Result<UiModel, String>,
     values: Vec<(String, StandIn)>,
 }
 
 impl ScreenPanel {
-    /// Reads the model of `current`, if it's a screen with none held yet. A screen names its model file beside it.
+    /// Reads the model of `current`, if it's a screen with none held yet, or one whose document names another
+    /// model file now. A screen names its model file beside it. One that has never read names none yet, so
+    /// nothing's held for it until it does.
     pub(super) fn follow(&mut self, documents: &DocumentSet, current: Option<AssetId>) {
         let Some(id) = current else { return };
-        if self.screens.contains_key(&id) {
-            return;
-        }
         let (Some(document), Some(path)) = (documents.get::<UiDocument>(id), documents.path(id)) else {
             return;
         };
-        let model = match document.last_good().and_then(|screen| screen.model.as_deref()) {
+        let Some(named) = document.last_good().map(|screen| screen.model.as_deref()) else { return };
+        let held = self.screens.get(&id);
+        if held.is_some_and(|held| held.named.as_deref() == named) {
+            return;
+        }
+        let model = match named {
             None => Ok(UiModel::default()),
             Some(file) => {
                 let at = path.parent().map_or_else(|| file.into(), |dir| dir.join(file));
@@ -51,12 +57,35 @@ impl ScreenPanel {
             }
         };
         let mut values = model.as_ref().map(stand_ins).unwrap_or_default();
-        // One of the game's own screens starts where its goldens do.
-        if let Some(screen) = MenuScreen::ALL.into_iter().find(|screen| screen.id() == id) {
-            read_from(&mut values, &*screen.sample_model());
+        match held {
+            // What was typed in stays, for each path the new model still reads the same kind of value at.
+            Some(held) => {
+                for (path, value) in &mut values {
+                    let typed = held.values.iter().find(|(known, _)| known == path);
+                    if let Some((_, typed)) = typed.filter(|(_, typed)| same_kind(typed, value)) {
+                        value.clone_from(typed);
+                    }
+                }
+            }
+            // One of the game's own screens starts where its goldens do.
+            None => {
+                if let Some(screen) = MenuScreen::ALL.into_iter().find(|screen| screen.id() == id) {
+                    read_from(&mut values, &*screen.sample_model());
+                }
+            }
         }
-        self.screens.insert(id, Held { model, values });
+        let named = named.map(ToOwned::to_owned);
+        self.screens.insert(id, Held { named, model, values });
     }
+
+    /// Lets go of what's held for a screen closed, so opening it again reads its model file again.
+    pub(super) fn forget(&mut self, id: AssetId) {
+        self.screens.remove(&id);
+    }
+}
+
+fn same_kind(a: &StandIn, b: &StandIn) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
 /// What the viewport shows of `current`, if it's a screen that's read and has a model.

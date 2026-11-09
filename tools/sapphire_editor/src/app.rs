@@ -530,6 +530,7 @@ impl Editor {
     fn close(&mut self, id: AssetId) {
         self.closing = None;
         self.documents.close(id);
+        self.screen.forget(id);
         if self.moves == Some(id) {
             self.moves = None;
             self.reset_timeline();

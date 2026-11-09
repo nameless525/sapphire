@@ -918,3 +918,44 @@ fn the_screen_pane_lists_its_paths_and_picks_an_aspect() {
     assert!(!harness.state_mut().set_stand_in("no_such_path", StandIn::Bool(true)));
     assert_eq!(text_of(&harness), CHARACTER_SCREEN, "previewing edits nothing");
 }
+
+const HUD_MODEL: &str = include_str!("../../../content/ui/hud.model.ron");
+
+/// The pane follows the model file the screen names: an edit naming another lists that one's paths, keeping what
+/// was typed for a path both read, and undo brings the first back. A screen that doesn't read yet holds no model
+/// until it does.
+#[test]
+fn the_screen_pane_follows_the_model_its_document_names() {
+    let dir = TestDir::new("screen_model");
+    let path = dir.write("u/character.ui.ron", "(not a screen yet");
+    dir.write("u/character.ui.ron.meta", CHARACTER_SCREEN_META);
+    dir.write("u/character.model.ron", CHARACTER_MODEL);
+    dir.write("u/hud.model.ron", HUD_MODEL);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    assert!(harness.state_mut().viewport_frame().screen.is_none(), "nothing to show yet");
+    fs::write(&path, CHARACTER_SCREEN).expect("the screen, saved");
+    harness.state_mut().documents_mut().refresh();
+    harness.run_steps(2);
+    let values = |harness: &mut Harness<'static, Editor>| {
+        let frame = harness.state_mut().viewport_frame();
+        frame.screen.expect("a screen").values.to_vec()
+    };
+    let reads = |values: &[(String, StandIn)], path: &str| values.iter().any(|(known, _)| known == path);
+    assert!(reads(&values(&mut harness), "crit"), "the character's model, once it reads");
+    assert!(harness.state_mut().set_stand_in("level", StandIn::Number(77.0)));
+
+    let id = harness.state().current().expect("open").id();
+    let document = harness.state_mut().documents_mut().any_mut(id).expect("open");
+    let model = "model".parse().expect("a path");
+    document.set_ron("name another model", &model, "Some(\"hud.model.ron\")").expect("an edit");
+    harness.run_steps(2);
+    let hud = values(&mut harness);
+    assert!(reads(&hud, "touch") && !reads(&hud, "crit"), "the hud's: {hud:?}");
+    assert!(hud.contains(&("level".to_owned(), StandIn::Number(77.0))), "what was typed: {hud:?}");
+
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert!(reads(&values(&mut harness), "crit"), "undo names the character's again");
+    assert_eq!(text_of(&harness), CHARACTER_SCREEN);
+}

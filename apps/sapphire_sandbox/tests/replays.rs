@@ -657,14 +657,17 @@ fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
     sandbox(&args, &content())
 }
 
-/// One frame in this many runs its graph: 17 of the 3,147 frames the four whole plays below take.
+/// One frame in this many runs its graph: 17 of the 3,147 frames two tiers' whole plays below take.
 const DRAW_EVERY: &str = "200";
 
 /// A long fight's frames beside the renderer, one in this many drawn: each is animated, prepared and recorded,
 /// and the rest of lavapipe's second a frame is lost.
 const FIGHT_DRAW_EVERY: &str = "50";
 
-/// The arena's stage draws through this and nothing else does, on either tier.
+/// Every shipped tier, whose settings each build a set of their own: the rule is no first-use build on any of them.
+const TIERS: [&str; 4] = ["desktop-high", "desktop-low", "mobile-high", "mobile-low"];
+
+/// The arena's stage draws through this and nothing else does, on every tier.
 const UNIQUE_KEY: &str = "mesh environment flags 0x0 Float32";
 
 /// A bench of `replay` on `tier` builds nothing after its load, and says so.
@@ -682,13 +685,13 @@ fn assert_no_misses(replay: &str, tier: &str) {
 }
 
 /// Exit test 7: after a load, no frame of the recorded walk builds a pipeline, nor of a recorded fight, whose hits
-/// draw what a walk doesn't, on either tier's settings; and take one entry of what the load declared out and the
-/// same bench fails, naming what it had to build. A key is missed at the load, so it costs no frames on either tier.
+/// draw what a walk doesn't, on every tier's settings; and take one entry of what the load declared out and the
+/// same bench fails, naming what it had to build. A key is missed at the load, so it costs no frames on any tier.
 /// What no table lists doesn't vary by tier, so it runs on one.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
-    for tier in ["desktop-low", "mobile-low"] {
+    for tier in TIERS {
         assert_no_misses("arena-walk", tier);
         assert_no_misses("arena-fight-won", tier);
         assert_inventory_miss("arena-walk", tier, UNIQUE_KEY, UNIQUE_KEY);
@@ -702,7 +705,7 @@ fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
 }
 
 /// Exit test 7 where exit test 1 walks (M3 C1): a zone found by its stem declares its keys and its probe grid
-/// when it opens, so no frame of walking it builds a pipeline on either tier's settings; and leave its grid out
+/// when it opens, so no frame of walking it builds a pipeline on any tier's settings; and leave its grid out
 /// and the same bench fails, naming the ambient pass. `--bench` adds its warm-up to the frames it asks for.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
@@ -726,7 +729,7 @@ fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
         args.extend(without);
         sandbox(&args, &content())
     };
-    for tier in ["desktop-low", "mobile-low"] {
+    for tier in TIERS {
         let output = bench(tier, &[]);
         let log = log_of(&output);
         assert!(output.status.success(), "{tier}: {log}");

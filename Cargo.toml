@@ -57,6 +57,7 @@ members = [
     # L6 the game
     "game/game_app",
     "game/game_combat",
+    "game/game_flow",
     "game/game_ui",
     # Dev-only: development builds, through an app's `dev` feature
     "crates/sapphire_debug",
@@ -142,6 +143,7 @@ sapphire_controls = { path = "crates/sapphire_controls" }
 sapphire_cues = { path = "crates/sapphire_cues" }
 sapphire_stage = { path = "crates/sapphire_stage" }
 game_combat = { path = "game/game_combat" }
+game_flow = { path = "game/game_flow" }
 game_ui = { path = "game/game_ui" }
 sapphire_debug = { path = "crates/sapphire_debug" }
 # Its default `notify` feature is for its own tests: apps turn it on per target.

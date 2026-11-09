@@ -41,10 +41,16 @@ pub struct GameDocuments {
     /// An `EffectLibrary`: what a fight's cues and sword trails play.
     #[serde(default)]
     pub effects: Option<String>,
+    /// A `FlowDocument`: the game's flow, from its title through a run to a win (M3 G1).
+    #[serde(default)]
+    pub flow: Option<String>,
+    /// A `FlagRegistry`: every flag the game's dialogues and flow may read or set (M3 Q2, G1).
+    #[serde(default)]
+    pub flags: Option<String>,
 }
 
 impl Versioned for GameDocuments {
-    /// 1: M3 S3.
+    /// 1: M3 S3. G1's `flow` and `flags` are fields a version 1 manifest leaves out.
     const VERSION: u32 = 1;
 }
 
@@ -73,6 +79,8 @@ impl GameDocuments {
             ("hud", "sapphire::ui::HudDesign", &self.hud),
             ("bindings", "sapphire::input::InputBindings", &self.bindings),
             ("effects", "sapphire::vfx::EffectLibrary", &self.effects),
+            ("flow", "sapphire::game::FlowDocument", &self.flow),
+            ("flags", "sapphire::dialogue::FlagRegistry", &self.flags),
         ]
         .into_iter()
         .filter_map(|(field, type_name, path)| {

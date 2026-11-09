@@ -330,7 +330,7 @@ ms, p50 / p99 / worst, on the walk unless named, with §3.2's budget in brackets
  Tools (never shipped)  tools/: sapphire_pipeline · sapphire_editor · sapphire_livelink's tool · sapphire_testkit · xtask
  ───────────────────────────────────────────────────────────────────────────────
  Apps                   apps/: sapphire_sandbox (engine test bed) · game/: game_app (the game)
- L6  Game               game_combat · game_ui · game_characters · game_ai
+ L6  Game               game_combat · game_ui · game_flow · game_characters · game_ai
  L5  Stage and controls sapphire_stage (a GPU, cooked content and a scene, for an app, a game or the editor's viewport)
                         sapphire_controls · sapphire_cues
  L4  Framework          sapphire_world · sapphire_gameplay · sapphire_camera · sapphire_sequencer · sapphire_script · sapphire_save

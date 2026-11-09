@@ -1,0 +1,16 @@
+// A small flow for game_flow's tests: a gate's cutscene and the conversation after it, a dialogue at a
+// checkpoint, and an encounter whose clearing wins. The IDs stand for content no test loads.
+(type: "sapphire::game::FlowDocument", version: 1, data: (
+    scenario: "duel",
+    zone: "00000000-0000-0000-0000-0000000000f0",
+    beats: [
+        (when: Started("00000000-0000-0000-0000-0000000000e1"), unless: Some("gate_answered"),
+         align: Some("gate"), then: Timeline("00000000-0000-0000-0000-0000000000a1")),
+        (when: Ended("00000000-0000-0000-0000-0000000000a1"), unless: Some("gate_answered"),
+         then: Dialogue("00000000-0000-0000-0000-0000000000d1")),
+        (when: Reached("terrace"), then: Dialogue("00000000-0000-0000-0000-0000000000d2")),
+        (when: Cleared("00000000-0000-0000-0000-0000000000e2"), then: Victory),
+    ],
+    music: (title: "waiting", victory: "cleared", defeat: "waiting"),
+    holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
+))

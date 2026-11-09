@@ -1,0 +1,28 @@
+[package]
+name = "game_flow"
+description = "The game's flow: from the title through runs, beats, defeat and victory, and what it keeps on disk."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The flow document's `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+sapphire_jobs.workspace = true
+sapphire_reflect.workspace = true
+sapphire_save.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The manifest that names the flow document.
+sapphire_assets.workspace = true
+# The counting allocator, for the test that `observe` allocates nothing.
+sapphire_core = { workspace = true, features = ["mimalloc"] }
+
+[lints]
+workspace = true

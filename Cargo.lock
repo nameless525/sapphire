@@ -1400,6 +1400,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "game_flow"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "sapphire_assets",
+ "sapphire_core",
+ "sapphire_jobs",
+ "sapphire_reflect",
+ "sapphire_save",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "game_ui"
 version = "0.1.0"
 dependencies = [

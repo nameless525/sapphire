@@ -86,6 +86,8 @@ impl FightDocuments {
                 "effects" => {
                     documents.effects = Some(EffectLibrary::from_ron(&text).map_err(|error| bad(&error))?);
                 }
+                // The flow's (`game_flow`), which reads them itself: here only that they're there.
+                "flow" | "flags" => {}
                 field => return Err(format!("{manifest_path}: nothing here reads `{field}`")),
             }
         }
@@ -156,6 +158,9 @@ mod tests {
             hud: Some(String::new()),
             bindings: Some(String::new()),
             effects: Some(String::new()),
+            // The flow's own: `game_flow` holds the flow's name, and the flags' joins it when Q2's type lands.
+            flow: None,
+            flags: None,
         };
         let names: Vec<&str> = every.named().map(|named| named.type_name).collect();
         assert_eq!(

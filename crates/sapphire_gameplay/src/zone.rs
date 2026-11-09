@@ -8,7 +8,7 @@
 //! 1. Everyone but the traveller and its party goes. Their IDs are never used again.
 //! 2. The collision world takes the new zone's statics, keeping its bodies, and the navmesh is the new
 //!    zone's, with no paths on it.
-//! 3. The travellers stand at the spawner, through [`Simulation::place_actor`](crate::Simulation::place_actor).
+//! 3. The travellers stand at the spawner, as [`Simulation::teleport`](crate::Simulation::teleport) stands one.
 //!
 //! **It's a pure function of cooked bytes at a tick boundary,** which is why it stays deterministic however
 //! long the load took: no step runs while a wipe covers a load, so nothing the frame does reaches the fixed
@@ -33,10 +33,10 @@ use sapphire_serialize::AssetId;
 use sapphire_zone::{Zone, ZoneError};
 
 use crate::actions::Controls;
-use crate::actors::{ActorId, ActorTable};
+use crate::actors::{ActorId, ActorTable, Teleports};
 use crate::brain::Brain;
 use crate::checksum::StateHasher;
-use crate::controller::{CharacterController, CharacterWorld, ControllerDrive, ControllerState};
+use crate::controller::{CharacterController, CharacterWorld, ControllerDrive, ControllerState, actor_body};
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
@@ -326,9 +326,20 @@ pub(crate) fn swap_in(world: &mut World, entry: ZoneEntry) {
     });
 }
 
-/// Stands an actor at `position`, facing `yaw`, as if it had always been there: see
-/// [`Simulation::place_actor`](crate::Simulation::place_actor).
-pub(crate) fn place(world: &mut World, actor: ActorId, position: Vec3, yaw: f32) -> bool {
+/// What [`place`] does with an actor's capsule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Capsule {
+    /// A new one there, and its hurtboxes gone until its next move asks: a zone's entry, whose collision
+    /// world changed under it. Allocates, as the entry does anyway.
+    Anew,
+    /// The one it has, moved there in the world it's in: a teleport, which takes nothing from the heap
+    /// (M3 B4). Its hurtboxes follow as its next step places them.
+    Moved,
+}
+
+/// Stands an actor at `position`, facing `yaw`, as if it had always been there, and counts it for
+/// presentation; false for one that isn't alive. See [`Simulation::teleport`](crate::Simulation::teleport).
+pub(crate) fn place(world: &mut World, actor: ActorId, position: Vec3, yaw: f32, capsule: Capsule) -> bool {
     let Some(entity) = world.resource::<ActorTable>().entity(actor) else { return false };
     let on_field = !world.resource::<Party>().is_off_field(actor);
     world.resource_mut::<HitQuery>().forget_actor(actor);
@@ -356,11 +367,30 @@ pub(crate) fn place(world: &mut World, actor: ActorId, position: Vec3, yaw: f32)
     if let Some(mut fighter) = entry.get_mut::<Fighter>() {
         fighter.stop_slide();
     }
+    if let Some(mut teleports) = entry.get_mut::<Teleports>() {
+        teleports.0 = teleports.0.wrapping_add(1);
+    }
     let transform = ActorTransform { position, yaw };
     if let Some(mut placed) = entry.get_mut::<ActorTransform>() {
         *placed = transform;
     }
     let profile = entry.get::<CharacterController>().and_then(CharacterController::profile);
+    if capsule == Capsule::Moved {
+        if let Some(mut standing) = entry.get_mut::<CharacterController>() {
+            standing.state = ControllerState::default();
+            standing.drive = ControllerDrive::NONE;
+        }
+        // What moves it, whose capsule this is. One off the field has none to move, and gets one where it
+        // stands as it comes on.
+        let movement = set.and_then(|set| world.resource::<MoveLibrary>().movement(set)).copied();
+        let resolved = movement
+            .or_else(|| profile.and_then(|id| world.resource::<CharacterWorld>().profile(id)).copied());
+        if on_field && let Some(resolved) = resolved {
+            let body = resolved.body(actor_body(actor), position, yaw);
+            let _ = world.resource_mut::<CharacterWorld>().physics_mut().set_body_pose(body.id, body.pose);
+        }
+        return true;
+    }
     world.resource_scope(|world, mut characters: Mut<'_, CharacterWorld>| {
         let library = world.resource::<MoveLibrary>();
         let movement = set.and_then(|set| library.movement(set));

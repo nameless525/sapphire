@@ -371,12 +371,6 @@ impl MoveRunner {
         self.set
     }
 
-    /// Ends whatever's running or waiting to, as of `now` on the owner's clock, as an idle step leaves it:
-    /// a teleport (M3 B4). What it has started, all told, stays counted.
-    pub(crate) fn stop(&mut self, now: SimTime) {
-        *self = Self { set: self.set, cursor: now, started: self.started, ..Self::default() };
-    }
-
     /// Whether a move is playing.
     #[must_use]
     pub const fn is_running(&self) -> bool {

@@ -400,12 +400,15 @@ fn a_return_takes_no_heap() {
     }
     let (mut sim, cast) = walked_out();
     let ticks: Vec<TickActions> = (0..120).map(|tick| walks::from_the_platform(tick, &cast)).collect();
-    let ((), counts) = alloc::count_in_scope(|| {
+    let ((), returned) = alloc::count_in_scope(|| {
         sim.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    });
+    let ((), stepped) = alloc::count_in_scope(|| {
         for actions in &ticks {
             sim.step(actions);
         }
     });
     assert!(alloc::is_installed());
-    assert_eq!(counts.allocations, 0, "a return and 120 steps allocated {} times", counts.allocations);
+    assert_eq!(returned.allocations, 0, "a return allocated {} times", returned.allocations);
+    assert_eq!(stepped.allocations, 0, "120 steps after a return allocated {} times", stepped.allocations);
 }

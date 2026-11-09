@@ -8,7 +8,7 @@ use bevy_ecs::system::SystemState;
 use sapphire_core::Name;
 use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
-use sapphire_math::{Pcg32, Vec3};
+use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
@@ -641,7 +641,7 @@ impl Simulation {
     /// Enters a zone from the shelf, between steps, with `traveller` and its party standing at the entry's
     /// spawner and everyone else gone: see the [`zone`] module's docs for what it does and why it
     /// stays deterministic. Tick, clocks and random stream are untouched, and so are the travellers' health
-    /// and their clocks' hitstop; what they were doing stops ([`Self::place_actor`]).
+    /// and their clocks' hitstop; what they were doing stops, as for [`Self::teleport`].
     ///
     /// Allocates. A paused world is the time for it: a wipe holds the steps.
     ///
@@ -670,21 +670,10 @@ impl Simulation {
         listed.extend(world.resource::<ActorTable>().iter().map(|(actor, _)| actor));
         for &actor in &listed {
             zone::forget_who_stayed(world, actor);
-            zone::place(world, actor, position, yaw);
+            zone::place(world, actor, position, yaw, zone::Capsule::Anew);
         }
         self.travel = listed;
         Ok(())
-    }
-
-    /// Stands an actor somewhere else, between steps, at once, and says whether it's alive: a teleport, a
-    /// checkpoint's return, the one way anything but its own movement moves one. What it was doing stops: its
-    /// move, its presses, its slide, its hurtboxes and what its swings remember having hit, its controller's
-    /// state and motion. Its health and clock go on, and it keeps its aim and its brain.
-    ///
-    /// Moving it is a change of state as any other, so a replay has to make the same call at the same tick:
-    /// nothing records this one by itself. [`Self::enter_zone`] is the one a file holds.
-    pub fn place_actor(&mut self, id: ActorId, position: Vec3, yaw: f32) -> bool {
-        zone::place(self.ecs.world_mut(), id, position, yaw)
     }
 
     /// Starts its zone from what a save holds (M3 B4), after [`Self::set_zone`] and before the first step:
@@ -712,8 +701,17 @@ impl Simulation {
         self.zone().map(SimZone::zone_start)
     }
 
-    /// Puts a live actor at `place` between steps, as a spawn there would stand: see [`crate::checkpoint`]
-    /// for what starts over and what stays. What happens next comes from its next step.
+    /// Stands a live actor at `place` between steps, at once, as a spawn there would stand: a checkpoint's
+    /// return, the one way anything but its own movement or a zone's entry moves one. What it was doing
+    /// stops: its move, its presses, its slide, what its swings remember having hit, its controller's state
+    /// and motion. Its capsule moves with it, its hurtboxes follow on its next step, and it takes nothing
+    /// from the heap. Its health and clock go on, and it keeps its aim and its brain. See
+    /// [`crate::checkpoint`]. What happens next comes from its next step, and presentation sees it counted
+    /// in [`ActorView::teleports`](crate::ActorView::teleports).
+    ///
+    /// Moving it is a change of state as any other, so a replay has to make the same call at the same tick:
+    /// nothing records this one by itself. [`Self::return_to_checkpoint`] and [`Self::enter_zone`] are the
+    /// ones a file holds.
     ///
     /// # Errors
     ///
@@ -722,42 +720,16 @@ impl Simulation {
         if !place.is_finite() {
             return Err(TeleportError::NotFinite);
         }
-        let world = self.ecs.world_mut();
-        let entity =
-            world.resource::<ActorTable>().entity(actor).ok_or(TeleportError::UnknownActor(actor))?;
-        let now = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.now();
-        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
-        let spawned = world.get::<CharacterController>(entity).and_then(CharacterController::profile);
-        // What `move_characters` moves it by, whose capsule this is.
-        let library = world.resource::<MoveLibrary>();
-        let characters = world.resource::<CharacterWorld>();
-        let movement = set.and_then(|set| library.movement(set)).copied();
-        let profile = movement.or_else(|| spawned.and_then(|id| characters.profile(id)).copied());
-        if let Some(profile) = profile {
-            let body = profile.body(controller::actor_body(actor), place.position, place.yaw);
-            let mut characters = world.resource_mut::<CharacterWorld>();
-            // An actor off the field may have no capsule to move, and then has nothing to place.
-            let _ = characters.physics_mut().set_body_pose(body.id, body.pose);
+        if zone::place(self.ecs.world_mut(), actor, place.position, place.yaw, zone::Capsule::Moved) {
+            Ok(())
+        } else {
+            Err(TeleportError::UnknownActor(actor))
         }
-        let mut actor = world.entity_mut(entity);
-        *actor.get_mut::<ActorTransform>().expect("pooled") =
-            ActorTransform { position: place.position, yaw: place.yaw };
-        *actor.get_mut::<Controls>().expect("pooled") = Controls::default();
-        actor.get_mut::<MoveRunner>().expect("pooled").stop(now);
-        actor.get_mut::<IntentRing>().expect("pooled").reset();
-        *actor.get_mut::<MoveOutput>().expect("pooled") = MoveOutput::default();
-        let mut controller = actor.get_mut::<CharacterController>().expect("pooled");
-        controller.state = controller::ControllerState::default();
-        controller.drive = controller::ControllerDrive::NONE;
-        actor.get_mut::<Fighter>().expect("pooled").stop_slide();
-        let mut teleports = actor.get_mut::<Teleports>().expect("pooled");
-        teleports.0 = teleports.0.wrapping_add(1);
-        Ok(())
     }
 
     /// Puts the zone's player back at a checkpoint, between steps, by [`Self::teleport`]: the soft-locked
     /// actor on the field with the lowest ID. Returns who that was. A replay records it as
-    /// [`crate::replay::Command::ReturnTo`].
+    /// [`crate::replay::ReplayCommand::ReturnTo`].
     ///
     /// # Errors
     ///

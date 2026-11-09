@@ -16,9 +16,11 @@
 //!   latest, and it says where the player stands. Spawn them there.
 //! - **A teleport returns to it,** in the same simulation, between steps:
 //!   [`crate::Simulation::return_to_checkpoint`] puts the zone's player at a checkpoint's place. Any actor
-//!   can be put anywhere by [`crate::Simulation::teleport`], which leaves it as a spawn there would: placed,
-//!   turned, its controller, its running move, its intents, its push and its input started over. Its health,
-//!   side, clock, brain and soft lock stay, and so does everything else in the zone. So what it does from
+//!   can be put anywhere by [`crate::Simulation::teleport`], which leaves it as a spawn there would, by what a
+//!   zone entry stands its travellers with (W4's `zone::place`): placed, turned, its controller's state, its
+//!   running move, its intents, its push, its input and what its swings remember having hit started over,
+//!   its capsule moved with it and no heap taken. Its health, side, clock, brain and soft lock stay, and so
+//!   does everything else in the zone. So what it does from
 //!   there can't depend on where it came from, and it walks exactly as the player of a load at that
 //!   checkpoint does.
 //!

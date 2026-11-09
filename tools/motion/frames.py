@@ -23,6 +23,7 @@ IDS = {
     'dash_attack': '997ddfa0-e2bf-4887-94dd-e8f51cb6e958',
     'dodge': '9b5f353a-2c97-45c7-a70f-bcab216de811',
     'skill': '9491f5d1-0c11-45c9-8139-8f54918b25f6',
+    'ultimate': '9f178fb9-f64d-4d78-9854-2fb5fed80dd9',
 }
 
 
@@ -61,8 +62,10 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 // The five moves after those are what a hit forces (M2 G6). They have no clip of their own: the
 // character's graph draws them from its reactions and deaths, and they stand still while it does.
 //
-// The last is a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press that
-// brings it. Only a party reads either: with no party, the button does nothing.
+// After those comes a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press
+// that brings it. Only a party reads either: with no party, the button does nothing.
+//
+// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -76,11 +79,14 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
             (name: "skill", button: Skill, buffer: 10, priority: 2),
             (name: "dodge", button: Dodge, buffer: 8, priority: 3),
             (name: "swap", button: Swap, buffer: 12, priority: 4),
+            // Beats everything: a press of it is the most deliberate a player makes.
+            (name: "ultimate", button: Ultimate, buffer: 10, priority: 5),
         ],
         neutral: [
             (intent: "light", move: "light_1"),
             (intent: "skill", move: "skill"),
             (intent: "dodge", move: "dodge"),
+            (intent: "ultimate", move: "ultimate"),
         ],
         fighter: (
             health: 300,
@@ -279,8 +285,9 @@ MOVES = [
     ),
 ]
 
-# What comes after the reactions, so that adding one moves no other move's place in the set.
-ASSISTS = [
+# What comes after the reactions, so that adding one moves no other move's place in the set: a party's assist,
+# on another move's clip, and the ultimate, on its own.
+LATER = [
     dict(
         name='swap_in',
         clip='dash_attack',
@@ -294,6 +301,20 @@ ASSISTS = [
         warps=[(0, 10, 2.0, 1.2, 1.1)],
         cues=[('swap_in', 0), ('swing', 5), ('skid', 10)],
         active=(5, 10),
+    ),
+    dict(
+        name='ultimate',
+        say=["2.4 s: the ultimate (M3 Q3b), the finisher's chop made a ceremony. Untouchable from start",
+             "to end, with no way out: the hit is on tick 62, homing in a little on what it's aimed at."],
+        frames=(62, 4, 78),
+        hitboxes=[('ultimate_hit', 62, 66, 'Capsule(radius: 0.45, length: 0.9)',
+                   'damage: 60, poise: 80, weight: Heavy, hitstop: 10, finish_freeze: 24, '
+                   'knockback: (distance: 1.6, ticks: 16), cue: "hit_heavy"')],
+        invulnerable=[(0, 144)],
+        cancels=[],
+        warps=[(0, 62, 1.2, 1.2, 1.0)],
+        cues=[('skill_flash', 0), ('swing_windup', 12), ('swing', 62), ('finisher_land', 65)],
+        active=(62, 66),
     ),
 ]
 
@@ -329,7 +350,7 @@ def numbers_text(clips, movement=MOVEMENT):
     for d in MOVES:
         text.append(move_text(d, clips))
     text.append(REACTIONS.rstrip('\n'))
-    for d in ASSISTS:
+    for d in LATER:
         text.append(move_text(d, clips))
     text.append(FOOTER)
     return '\n'.join(text)
@@ -589,7 +610,8 @@ def move_text(d, clips):
         lines.append(f'{i}    counter: (ticks: 45, allow: [(intent: "light", move: "dash_attack")]),')
         lines.append(f"{i})],")
     spans(lines, 'parry', d.get('parry'), i)
-    lines.append(f"{i}cancels: [")
+    if d['cancels']:
+        lines.append(f"{i}cancels: [")
     for a0, b0, allows in d['cancels']:
         if len(allows) == 1:
             lines.append(f"{i}    (from: {a0}, to: {b0}, allow: [{allow_text(allows[0])}]),")
@@ -598,7 +620,8 @@ def move_text(d, clips):
             for allow in allows:
                 lines.append(f"{i}        {allow_text(allow)},")
             lines.append(f"{i}    ]),")
-    lines.append(f"{i}],")
+    if d['cancels']:
+        lines.append(f"{i}],")
     if d.get('warps'):
         lines.append(f"{i}warps: [")
         for a0, b0, dist, turn_, keep in d['warps']:
@@ -608,5 +631,7 @@ def move_text(d, clips):
     for name, at in d['cues']:
         lines.append(f'{i}    (name: "{name}", at: {at}),')
     lines.append(f"{i}],")
+    if d.get('cinematic'):
+        lines.append(f'{i}cinematic: "{d["cinematic"]}",')
     lines.append('            ),')
     return '\n'.join(lines)

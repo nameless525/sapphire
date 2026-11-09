@@ -43,6 +43,7 @@
             (name: "dodge", source: "9b5f353a-2c97-45c7-a70f-bcab216de811"),
             (name: "dash_attack", source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958"),
             (name: "skill", source: "9491f5d1-0c11-45c9-8139-8f54918b25f6"),
+            (name: "ultimate", source: "9f178fb9-f64d-4d78-9854-2fb5fed80dd9"),
             // Cutscene poses (`content/zones/`, M3 Q3), which a timeline's character track plays.
             (name: "court_guard", source: "08570a0b-1c6b-4fb6-873b-bff74e6d2264"),
         ],
@@ -115,6 +116,7 @@
                 (move: "dodge", clip: "dodge", decay: 3),
                 (move: "dash_attack", clip: "dash_attack", decay: 3),
                 (move: "skill", clip: "skill"),
+                (move: "ultimate", clip: "ultimate"),
                 // A party's assist. A swap cuts to it, so there's nothing to blend from.
                 (move: "swap_in", clip: "dash_attack", decay: 3),
                 // A timeline's rows (M3 Q3): no move plays them, a character track does, over what the

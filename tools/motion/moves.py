@@ -866,7 +866,53 @@ then the left leg takes the landing and the sword rolls back into guard.
     return m
 
 
-MOVES = [light_1, light_2, light_3, dash_attack, dodge, skill]
+def ultimate():
+    """The finisher's chop, slowed into a ceremony: what the cinematic plays beneath its cameras."""
+    m = Move('ultimate', 144, """The ultimate (M3 Q3b): the finisher's two-handed chop, made a ceremony for the cinematic that plays
+beneath it. The sword rises up the right side as the right foot steps back, the hands close on it over
+the shoulder and hold while the cameras circle, then the finisher's bound and chop hit on ticks 62 to 65.
+The landing holds low, blade down and outside, before the finisher's own recovery brings it back to guard.
+
+The bound, the chop and the recovery are `light_3`'s keys, unchanged but for their ticks, so a re-pose of
+the finisher reaches this too.
+
+""" + HEADER)
+    finisher = {key['tick']: key for key in light_3().keys}
+
+    def again(tick, at, say=None):
+        key = dict(finisher[at], tick=tick)
+        if say is not None:
+            key['say'] = say
+        m.keys.append(key)
+
+    start(m, "Ready.")
+    lf, rf = AFTER_2_FEET['L'], AFTER_2_FEET['R']
+    m.key(6, "The right foot draws back as the sword hand turns the blade up the right side.",
+          root=(0, 0, -0.01), hips=(0.02, -0.08, -0.03),
+          L=Foot(0.18, 0.1, yaw=10, pitch=0), R=Foot(-0.095, -0.27, yaw=-13, pitch=12, lift=0.03),
+          body=dict(Hips=(5, -8, 1), Spine=(3, -2, 1), Chest=(2, -4, 1), UpperChest=(1, -3, 0)),
+          look=(-2, 1), shoulder_r=(0, -1, -3), shoulder_l=(0, -3, 1),
+          rh=(-50, -10, 0.36), elbow_r=(-0.72, -0.62, -0.3), **sword(-95, 35, -10),
+          lh=(36, -40, 0.33), elbow_l=(0.72, -0.6, -0.24))
+    m.key(12, "The right sole settles behind. The blade stands high on the right, where the second cut leaves it.",
+          root=(0, 0, 0), L=Foot(lf[0], lf[1], yaw=lf[2], pitch=lf[3]), R=Foot(rf[0], rf[1], yaw=rf[2], pitch=rf[3]),
+          **AFTER_2)
+    # The finisher's gathering, at a third of its speed: weight back, ribs up, both hands on the hilt.
+    for at in (2, 4, 6, 8):
+        again(12 + 3 * at, at)
+    again(54, 8, "The hands hold the sword over the shoulder while the cameras circle.")
+    # The bound and the chop, every tick as the finisher keys them.
+    for at in (11, 13, 16, 17, 19, 21, 23):
+        again(46 + at, at)
+    again(104, 23, "The landing holds, the blade down and outside, while the cut's light fades.")
+    # The finisher's recovery.
+    for at in (26, 30, 35, 43):
+        again(82 + at, at)
+    finish(m, 144, "Ready again.", 1.4)
+    return m
+
+
+MOVES = [light_1, light_2, light_3, dash_attack, dodge, skill, ultimate]
 
 SIDECAR = '''(
     type: "sapphire::assets::AssetMeta",

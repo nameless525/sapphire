@@ -21,10 +21,10 @@ use sapphire_pipeline::import::vrm;
 use sapphire_pipeline::keypose::{self, KeyPoseClip};
 use sapphire_pipeline::{meta, moves};
 
-/// The moves, in the order they're fought: the string, then what gets out of it.
-const MOVES: [&str; 6] = ["light_1", "light_2", "light_3", "dodge", "dash_attack", "skill"];
+/// The moves, in the order they're fought: the string, then what gets out of it, then the ultimate.
+const MOVES: [&str; 7] = ["light_1", "light_2", "light_3", "dodge", "dash_attack", "skill", "ultimate"];
 /// The attacks, each with a hit.
-const ATTACKS: [&str; 5] = ["light_1", "light_2", "light_3", "dash_attack", "skill"];
+const ATTACKS: [&str; 6] = ["light_1", "light_2", "light_3", "dash_attack", "skill", "ultimate"];
 /// What a hit forces, with no clip of their own: the character's graph draws them.
 const REACTIONS: [&str; 5] = ["flinch", "stagger", "knockdown", "dazed", "defeat"];
 /// A party's assist, and the clip it plays: it has none of its own (M2 G7).
@@ -550,7 +550,7 @@ fn feet_keep_to_the_ground() {
 #[test]
 fn a_foot_bearing_weight_stays_put() {
     use HumanBone::{LeftToes as L, RightToes as R};
-    const PLANTED: [(&str, HumanBone, usize, usize); 11] = [
+    const PLANTED: [(&str, HumanBone, usize, usize); 14] = [
         ("light_1", L, 0, 11),
         ("light_1", R, 11, 34),
         ("light_2", R, 0, 11),
@@ -562,6 +562,10 @@ fn a_foot_bearing_weight_stays_put() {
         ("dodge", R, 19, 24),
         ("skill", L, 8, 21),
         ("skill", L, 31, 52),
+        // The ultimate: both feet down while the hands gather and hold, then the finisher's landing.
+        ("ultimate", L, 12, 54),
+        ("ultimate", R, 12, 54),
+        ("ultimate", L, 65, 144),
     ];
     let player = player();
     for (mv, bone, from, to) in PLANTED {
@@ -730,6 +734,21 @@ fn a_dodge_gets_out_of_every_attack() {
     }
 }
 
+/// Nothing gets out of the ultimate: it plays to its end beneath its cinematic, whatever is pressed.
+#[test]
+fn nothing_gets_out_of_the_ultimate() {
+    let ticks = u64::from(player().mv("ultimate").ticks());
+    let (mut sim, actor) = lone();
+    let started = press(&mut sim, actor, "ultimate").map(|running| (running.name, running.tick()));
+    assert_eq!(started, Some((name("ultimate"), 1)));
+    let intents = ["dodge", "light", "skill", "ultimate"];
+    for tick in 2..ticks {
+        let intent = intents[tick as usize % intents.len()];
+        let running = press(&mut sim, actor, intent).expect("still in it");
+        assert_eq!((running.name, running.tick()), (name("ultimate"), tick), "{intent} at {tick}");
+    }
+}
+
 /// The dodge's windows are where its leap is, and an attack out of its end is the dash attack, which
 /// homes in on a target.
 #[test]
@@ -805,7 +824,9 @@ fn the_string_lands_on_a_fighter_in_reach() {
 /// character free, standing where its root motion said.
 #[test]
 fn every_move_plays_out_cleanly() {
-    for (mv, intent) in [("light_1", "light"), ("dodge", "dodge"), ("skill", "skill")] {
+    for (mv, intent) in
+        [("light_1", "light"), ("dodge", "dodge"), ("skill", "skill"), ("ultimate", "ultimate")]
+    {
         let (mut sim, actor) = lone();
         let found = player().mv(mv);
         let mut phases: Vec<Phase> = Vec::new();

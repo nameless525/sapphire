@@ -46,7 +46,7 @@ mod tests {
         let [x, y, z, w] = SOCKET_ROTATION;
         let rotation = format!("rotation: ({x}, {y}, {z}, {w})");
         let paths = moves.matches("follows: Bone(\"RightHand\")").count();
-        assert_eq!(paths, 6, "one for each attack, and the assist");
+        assert_eq!(paths, 7, "one for each attack, the assist and the ultimate");
         assert_eq!(moves.matches(&offset).count(), paths, "{offset}");
         assert_eq!(moves.matches(&rotation).count(), paths, "{rotation}");
     }

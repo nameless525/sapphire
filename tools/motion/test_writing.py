@@ -22,7 +22,8 @@ import moves
 
 def clips():
     """Each move's clip, as `frames.py` wants it: only its length counts."""
-    return {d['name']: types.SimpleNamespace(ticks=sum(d['frames'])) for d in frames.MOVES}
+    return {d['name']: types.SimpleNamespace(ticks=sum(d['frames']))
+            for d in frames.MOVES + frames.LATER if 'clip' not in d}
 
 
 class Folder(unittest.TestCase):

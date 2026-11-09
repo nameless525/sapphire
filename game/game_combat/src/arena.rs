@@ -197,9 +197,9 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
 /// The scenario that starts in the arena and goes between the proving zones (M3 W4).
 pub const ZONE_TRIP_SCENARIO: &str = "zone-trip";
 
-/// Refuses a fight that doesn't start from a scenario document on the arena's colliders, or with `party` a
-/// party's: its actors aren't standing here, or there aren't three looks to draw them in. Without `party` a
-/// party has only the one look. A new scenario here takes no Rust.
+/// Refuses a fight that doesn't start from a scenario document on the arena's colliders or in a zone, or with
+/// `party` a party's on the arena's colliders: its actors aren't standing here, or there aren't three looks to
+/// draw them in. Without `party` a party has only the one look. A new scenario here takes no Rust.
 pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
     let scenario = combat.scenario();
     let document = sapphire_script::scenarios::document_of(scenario);
@@ -215,15 +215,18 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
              this one starts from `{scenario}`"
         ));
     }
-    // A fight on the arena's colliders, the one a zone stands (M3 Q3), whose court is code, or the one that
-    // goes between the proving zones (M3 W4), from the arena.
-    if (on_the_stage.is_some() && !has_a_party) || [WARD_COURT, ZONE_TRIP_SCENARIO].contains(&scenario) {
+    // A fight on the arena's colliders, or one a zone stands: the court (M3 Q3), whose scenario is code, or a
+    // document's on its zone's own colliders (M3 C2); or the one that goes between the proving zones (M3 W4),
+    // from the arena.
+    let in_a_zone = scenario == WARD_COURT
+        || document.is_some_and(|document| document.party.is_none() && zone_fight(scenario).is_some());
+    if (on_the_stage.is_some() && !has_a_party) || in_a_zone || scenario == ZONE_TRIP_SCENARIO {
         return Ok(());
     }
     Err(format!(
         "--arena plays a fight of a scenario on the arena's colliders such as `{SCENARIO}`, `{FIGHT_SCENARIO}` \
-         or `{SKIRMISH_SCENARIO}`, `{WARD_COURT}` or `{ZONE_TRIP_SCENARIO}`, and this one starts from \
-         `{scenario}`",
+         or `{SKIRMISH_SCENARIO}`, `{ZONE_TRIP_SCENARIO}`, or one in a zone such as `{WARD_COURT}`, and this one \
+         starts from `{scenario}`",
     ))
 }
 
@@ -678,10 +681,11 @@ impl ArenaActors {
     }
 
     /// The player and the first warrior, each one's entity and what the last step said of it: the two a
-    /// fight's simulation-owned bodies pose. Nothing's said before a fight. Only a fight that starts with
-    /// both asks: once the warrior's left the roster (defeated, or left behind by a zone trip), it's gone.
-    pub(crate) fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
-        [0, 1].map(|place| (self.fighters[place].entity, self.seen[place].as_ref()))
+    /// fight's simulation-owned bodies pose. Nothing's said before a fight. Only the player, while no warrior
+    /// stands here: a zone's encounter takes every one off when a new run starts, until its first wave
+    /// comes (M3 C2), and a warrior left behind by a zone trip is gone.
+    pub(crate) fn fighters(&self) -> impl Iterator<Item = (Entity, Option<&ActorView>)> {
+        self.fighters.iter().zip(&self.seen).take(2).map(|(fighter, seen)| (fighter.entity, seen.as_ref()))
     }
 
     /// The next change a simulation asks of who's on the stage, after each of its steps and before
@@ -1605,6 +1609,25 @@ mod tests {
         assert!(world.get_entity(leaving).is_err());
         assert_eq!(actors.blades().flatten().count(), 6);
         assert_eq!(actors.blades().next(), Some(None), "the player's isn't the stage's");
+    }
+
+    /// With every warrior gone, as when a zone's encounter starts a new run with nobody but the player (M3 C2),
+    /// the stage stands the player alone, and says so, until someone comes again.
+    #[test]
+    fn a_stage_with_every_warrior_gone_stands_the_player_alone() {
+        let (mut actors, mut world, mut sim, cast) = fight_of(SKIRMISH_SCENARIO);
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        for &actor in &cast[1..] {
+            assert!(sim.despawn(actor));
+        }
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(actors.fighter_count(), 1);
+        let alone: Vec<_> =
+            actors.fighters().map(|(entity, seen)| (entity, seen.map(|view| view.id))).collect();
+        assert_eq!(alone, [(actors.entity(0), Some(cast[0]))]);
+        assert!(actors.graph_input(0, 1.0).is_some(), "it still poses the player");
     }
 
     /// Who the HUD shows is the player's lock's, and everyone else standing against it has a small bar. One

@@ -2026,7 +2026,11 @@ impl Fight {
         }
         let arena =
             self.show.arena.as_ref().ok_or_else(|| AppInitError::msg("the body pair needs an arena"))?;
-        let [(hero, _), (warrior, _)] = arena.fighters();
+        let mut fighters = arena.fighters().map(|(entity, _)| entity);
+        let (Some(hero), Some(warrior)) = (fighters.next(), fighters.next()) else {
+            return Err(AppInitError::msg("the body pair needs a warrior on the stage"));
+        };
+        drop(fighters);
         let warrior_versions = self.show.enemy_versions(content).map(|(mesh, skeleton)| (mesh, 0, skeleton));
         let sources = [
             (hero, content.graph_clips(), content.current_character_versions()),

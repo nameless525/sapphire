@@ -22,7 +22,7 @@
 //! bumping one (`Mesh::VERSION`) recooks everything in that format without a stage bump.
 //!
 //! The packer (M1 A4) caches each asset's encoding for packs under [`CacheKey::packed`], over
-//! the cooked bytes' hash, the packer's stage and the codec, and records each pack's hash under
+//! the cooked bytes' hash, their kind, the packer's stage and the codec, and records each pack's hash under
 //! [`CacheKey::pack`], over its assets' IDs and packed keys, in the same store.
 //!
 //! New kinds of asset plug in without changing the key: textures, materials and skinned
@@ -52,8 +52,8 @@ use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::PathBuf;
 
-use sapphire_assets::AssetId;
 use sapphire_assets::pack::Codec;
+use sapphire_assets::{AssetId, AssetKind};
 use serde::Serialize;
 
 use crate::cook::{Cook, Recipe};
@@ -150,11 +150,23 @@ impl CacheKey {
     }
 
     /// The key a cooked asset's encoding for packs is cached under (M1 A4, see [`crate::pack`]):
-    /// the blake3 hash of the cooked bytes it encodes, the packer's stage, and the codec and zstd
-    /// level. Keyed by the bytes rather than the cook's key, so an encoding can never outlive the
-    /// bytes it was made from; the asset's ID is left out, so identical cooks share one.
-    pub fn packed(cooked: &blake3::Hash, packer: Stage, codec: Codec, zstd_level: i32) -> Self {
-        Self::derive(PACKED_CONTEXT, &(cooked.as_bytes(), (packer.name, packer.version), codec, zstd_level))
+    /// the blake3 hash of the cooked bytes it encodes, its kind as the number a pack's table stores, the
+    /// packer's stage, and the codec and zstd level. Keyed by the bytes rather than the cook's key, so an
+    /// encoding can never outlive the bytes it was made from; the asset's ID is left out, so identical cooks
+    /// share one. The encoding holds the kind and the dependencies its kind reads from the bytes, so a kind
+    /// renumbered at landing (`AssetKind::index` has no gaps) encodes again rather than packing its old number.
+    pub fn packed(
+        cooked: &blake3::Hash,
+        kind: AssetKind,
+        packer: Stage,
+        codec: Codec,
+        zstd_level: i32,
+    ) -> Self {
+        let kind = kind as u8;
+        Self::derive(
+            PACKED_CONTEXT,
+            &(cooked.as_bytes(), kind, (packer.name, packer.version), codec, zstd_level),
+        )
     }
 
     /// The key what a cooked asset reaches is cached under ([`crate::pack`]): its bytes' hash and the
@@ -438,15 +450,16 @@ mod tests {
     #[test]
     fn packer_keys_change_with_every_input() {
         let (cooked, packer) = (blake3::hash(b"cooked"), Stage { name: "spack", version: 1 });
-        let key = CacheKey::packed(&cooked, packer, Codec::Zstd, 19);
-        assert_eq!(CacheKey::packed(&cooked, packer, Codec::Zstd, 19), key, "deterministic");
+        let key = CacheKey::packed(&cooked, AssetKind::Mesh, packer, Codec::Zstd, 19);
+        assert_eq!(CacheKey::packed(&cooked, AssetKind::Mesh, packer, Codec::Zstd, 19), key, "deterministic");
         let mut keys = vec![
             key,
-            CacheKey::packed(&blake3::hash(b"recooked"), packer, Codec::Zstd, 19),
-            CacheKey::packed(&cooked, Stage { version: 2, ..packer }, Codec::Zstd, 19),
-            CacheKey::packed(&cooked, Stage { name: "spack2", ..packer }, Codec::Zstd, 19),
-            CacheKey::packed(&cooked, packer, Codec::Lz4, 19),
-            CacheKey::packed(&cooked, packer, Codec::Zstd, 3),
+            CacheKey::packed(&blake3::hash(b"recooked"), AssetKind::Mesh, packer, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, AssetKind::Mesh, Stage { version: 2, ..packer }, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, AssetKind::Mesh, Stage { name: "spack2", ..packer }, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, AssetKind::Mesh, packer, Codec::Lz4, 19),
+            CacheKey::packed(&cooked, AssetKind::Mesh, packer, Codec::Zstd, 3),
+            CacheKey::packed(&cooked, AssetKind::Texture, packer, Codec::Zstd, 19),
         ];
         let (a, b) = (AssetId::from_bytes([1; 16]), AssetId::from_bytes([2; 16]));
         let other = CacheKey([9; 32]);

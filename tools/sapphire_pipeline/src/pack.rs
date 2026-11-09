@@ -72,8 +72,8 @@
 //! # Caching
 //!
 //! Compressing is the slow part (zstd 19 runs at 13–20 MB/s a core), so each asset's encoding is
-//! cached in the content cache under [`CacheKey::packed`]: the cooked bytes' hash, the packer and the
-//! codec. A pack records its own hash under [`CacheKey::pack`], over its assets' IDs and packed
+//! cached in the content cache under [`CacheKey::packed`]: the cooked bytes' hash, their kind, the
+//! packer and the codec. A pack records its own hash under [`CacheKey::pack`], over its assets' IDs and packed
 //! keys, so an unchanged pack is checked by hashing the file, without reading any encoding. A
 //! changed asset re-encodes alone, and a pack deleted or edited by hand is rebuilt from cached
 //! encodings. A pack is written only when its bytes change, and files in the directory that no
@@ -647,7 +647,7 @@ fn pack_group(
                 asset,
                 kind,
                 codec,
-                key: CacheKey::packed(&asset.output_hash, PACKER, codec, ZSTD_LEVEL),
+                key: CacheKey::packed(&asset.output_hash, kind, PACKER, codec, ZSTD_LEVEL),
                 pipeline_keys,
             })
         })

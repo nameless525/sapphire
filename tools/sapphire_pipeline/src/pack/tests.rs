@@ -218,7 +218,7 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
 
         // A damaged shared encoding is regenerated exactly once, not once per duplicate asset.
         let texture = report.assets.iter().find(|asset| asset.id == id(ALBEDO)).unwrap();
-        let key = CacheKey::packed(&texture.output_hash, PACKER, Codec::Zstd, ZSTD_LEVEL);
+        let key = CacheKey::packed(&texture.output_hash, AssetKind::Texture, PACKER, Codec::Zstd, ZSTD_LEVEL);
         fs::write(cache.entry_path(&key), b"damaged entry").unwrap();
         fs::remove_file(&packed.path).unwrap();
         assert_eq!(pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 1);
@@ -267,7 +267,13 @@ fn worker_results_keep_asset_order_when_a_later_failure_finishes_first() {
             asset,
             kind: kind(&asset.output).unwrap(),
             codec: Codec::None,
-            key: CacheKey::packed(&asset.output_hash, PACKER, Codec::None, ZSTD_LEVEL),
+            key: CacheKey::packed(
+                &asset.output_hash,
+                kind(&asset.output).unwrap(),
+                PACKER,
+                Codec::None,
+                ZSTD_LEVEL,
+            ),
             pipeline_keys: Vec::new(),
         })
         .collect();
@@ -319,6 +325,27 @@ fn files_no_pack_claims_are_removed() {
     );
     assert!(!packs.join("samples").exists(), "emptied directories go");
     assert!(packs.join("readme.txt").exists(), "files of other kinds stay");
+}
+
+/// An encoding holds its kind, which a pack's table writes as a number, so one cached for bytes of one kind
+/// is never another kind's: as when the same bytes come back as a kind whose number has moved, a kind being
+/// renumbered at landing (`AssetKind::index` has no gaps), and its table would say the old kind.
+#[test]
+fn an_encoding_cached_for_one_kind_is_never_another_kinds() {
+    let scratch = Scratch::new("pack_kind");
+    let (mut report, _) = scratch.pack(Cook::Desktop, true);
+    let material = report.assets.iter().find(|asset| asset.id == id(HAIR)).unwrap();
+    let mut timeline = material.clone();
+    timeline.id = AssetId::from_bytes([7; 16]);
+    timeline.output = material.output.with_extension(AssetKind::Timeline.extension());
+    fs::copy(&material.output, &timeline.output).unwrap();
+    report.assets.push(timeline);
+    let cache = scratch.cache();
+    let error = pack_cooked(&report, &scratch.packs(Cook::Desktop), Some(&cache)).unwrap_err();
+    assert!(
+        matches!(&error, PackError::Invalid { path, .. } if path.extension().unwrap() == "stimeline"),
+        "a material's bytes aren't a timeline, and the material's encoding doesn't say they are: {error:?}"
+    );
 }
 
 #[test]

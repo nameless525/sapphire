@@ -294,6 +294,7 @@ fn a_zone_builds_what_its_pack_lists_as_it_opens() {
         family: MaterialFamily::Environment,
         flags: MaterialFlags::empty(),
         format: PositionFormat::Float32,
+        reflection: false,
     };
     let prewarmed = |keys: Vec<PipelineKey>, left_out: Option<String>| {
         let walk = Walk::listing(SMALL, small_settings(), Vec3::ZERO, keys, left_out);

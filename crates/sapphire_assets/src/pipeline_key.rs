@@ -1,7 +1,9 @@
 //! What a mesh's material slot draws through, as data (M3 K1, spec §5.12's permutation inventory).
 //!
 //! The renderer builds a mesh's pipelines from three things: its material's family and flags, and the
-//! position format its draws read. [`PipelineKey`] is that triple, here rather than in the renderer because
+//! position format its draws read. [`PipelineKey`] is that triple, and whether the material reads the reflection
+//! cube, whose prefilter its frames run (the ambient pass's pipelines, built once). It's here rather than in the
+//! renderer because
 //! the cooker writes it into a pack's table ([`Toc::pipeline_keys`](crate::pack::Toc::pipeline_keys)) and must
 //! not link the renderer, and this crate already owns all three parts. Render state stays the renderer's: it
 //! derives its variants from a key at load, through the one function its uploads go through, and a test there
@@ -18,6 +20,10 @@ use crate::AssetId;
 use crate::material::{MaterialFamily, MaterialFlags};
 use crate::mesh::{ArchivedMesh, ArchivedSlotMaterial, PositionFormat};
 
+/// What a material asset tells a mesh's key: its family and flags, and whether it reads the reflection cube
+/// ([`ArchivedMaterial::reads_reflection`](crate::material::ArchivedMaterial::reads_reflection)).
+pub type SlotMaterial = (MaterialFamily, MaterialFlags, bool);
+
 /// What one material slot of a mesh draws through. Ordered, so a list of them has one spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PipelineKey {
@@ -25,39 +31,45 @@ pub struct PipelineKey {
     pub flags: MaterialFlags,
     /// What its draws read ([`ArchivedMesh::draw_format`]).
     pub format: PositionFormat,
+    /// Whether its material reads the reflection cube, so that its frames prefilter it (M3 K1): what the
+    /// ambient pass builds for it, once whatever the key.
+    pub reflection: bool,
 }
 
 impl PipelineKey {
     /// The bytes one key takes in a pack's table: a multiple of 16 keeps the data after it aligned.
     pub const ROW_LEN: usize = 16;
 
-    /// One key per material slot of `mesh`, in slot order, with `material` telling the family and flags of
-    /// the material assets its slots bind: every slot, as an upload builds every slot's, and a submesh draws
-    /// exactly one. The asset a slot binds that `material` doesn't know, otherwise.
+    /// One key per material slot of `mesh`, in slot order, with `material` telling what the material assets its
+    /// slots bind are: every slot, as an upload builds every slot's, and a submesh draws exactly one. The asset a
+    /// slot binds that `material` doesn't know, otherwise.
     pub fn of_mesh(
         mesh: &ArchivedMesh,
-        mut material: impl FnMut(AssetId) -> Option<(MaterialFamily, MaterialFlags)>,
+        mut material: impl FnMut(AssetId) -> Option<SlotMaterial>,
     ) -> Result<Vec<Self>, AssetId> {
         let format = mesh.draw_format();
         mesh.materials
             .iter()
             .map(|slot| {
-                let (family, flags) = match &slot.material {
-                    ArchivedSlotMaterial::Embedded(material) => (material.family, material.flags()),
+                let (family, flags, reflection) = match &slot.material {
+                    ArchivedSlotMaterial::Embedded(material) => {
+                        (material.family, material.flags(), material.reads_reflection())
+                    }
                     ArchivedSlotMaterial::Asset(id) => material(*id).ok_or(*id)?,
                 };
-                Ok(Self { family, flags, format })
+                Ok(Self { family, flags, format, reflection })
             })
             .collect()
     }
 
     /// The key as a pack's table stores it: its family and format (a byte each, their positions in
-    /// [`MaterialFamily::ALL`] and [`PositionFormat::ALL`]), 2 reserved bytes, its flags (little-endian) and 8
-    /// reserved bytes.
+    /// [`MaterialFamily::ALL`] and [`PositionFormat::ALL`]), whether it reads the reflection cube (a byte, 0 or
+    /// 1), a reserved byte, its flags (little-endian) and 8 reserved bytes.
     pub fn to_row(self) -> [u8; Self::ROW_LEN] {
         let mut row = [0; Self::ROW_LEN];
         row[0] = self.family.index() as u8;
         row[1] = self.format.index() as u8;
+        row[2] = u8::from(self.reflection);
         row[4..8].copy_from_slice(&self.flags.bits().to_le_bytes());
         row
     }
@@ -66,16 +78,21 @@ impl PipelineKey {
     pub fn from_row(row: &[u8; Self::ROW_LEN]) -> Result<Self, &'static str> {
         let family = *MaterialFamily::ALL.get(usize::from(row[0])).ok_or("unknown material family")?;
         let format = *PositionFormat::ALL.get(usize::from(row[1])).ok_or("unknown position format")?;
-        if row[2..4] != [0; 2] || row[8..] != [0; 8] {
+        let reflection = match row[2] {
+            0 => false,
+            1 => true,
+            _ => return Err("unknown reflection byte"),
+        };
+        if row[3] != 0 || row[8..] != [0; 8] {
             return Err("reserved bytes aren't zero");
         }
         let flags = u32::from_le_bytes(*row[4..8].first_chunk().expect("4 bytes"));
         let flags = MaterialFlags::from_bits(flags).ok_or("unknown material flags")?;
-        Ok(Self { family, flags, format })
+        Ok(Self { family, flags, format, reflection })
     }
 
-    fn order(self) -> (usize, u32, usize) {
-        (self.family.index(), self.flags.bits(), self.format.index())
+    fn order(self) -> (usize, u32, usize, bool) {
+        (self.family.index(), self.flags.bits(), self.format.index(), self.reflection)
     }
 }
 
@@ -93,7 +110,8 @@ impl Ord for PipelineKey {
 
 impl fmt::Display for PipelineKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} flags {:#x} {:?}", self.family, self.flags.bits(), self.format)
+        write!(f, "{} flags {:#x} {:?}", self.family, self.flags.bits(), self.format)?;
+        if self.reflection { f.write_str(" reflection") } else { Ok(()) }
     }
 }
 
@@ -106,6 +124,7 @@ mod tests {
             family: MaterialFamily::AnimeCharacter,
             flags: MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
             format: PositionFormat::Float32,
+            reflection: false,
         }
     }
 
@@ -113,10 +132,14 @@ mod tests {
     fn a_row_says_the_key_it_was_made_from() {
         for family in MaterialFamily::ALL {
             for format in PositionFormat::ALL {
-                let key = PipelineKey { family, format, ..key() };
-                assert_eq!(PipelineKey::from_row(&key.to_row()), Ok(key));
+                for reflection in [false, true] {
+                    let key = PipelineKey { family, format, reflection, ..key() };
+                    assert_eq!(PipelineKey::from_row(&key.to_row()), Ok(key));
+                }
             }
         }
+        // A key that doesn't read the reflection cube has the row it had before the byte.
+        assert_eq!(key().to_row()[2], 0);
     }
 
     #[test]
@@ -129,18 +152,21 @@ mod tests {
         };
         assert_eq!(with(0, 5), Err("unknown material family"));
         assert_eq!(with(1, 2), Err("unknown position format"));
-        assert_eq!(with(2, 1), Err("reserved bytes aren't zero"));
+        assert_eq!(with(2, 2), Err("unknown reflection byte"));
+        assert_eq!(with(3, 1), Err("reserved bytes aren't zero"));
         assert_eq!(with(15, 1), Err("reserved bytes aren't zero"));
         assert_eq!(with(5, 0xff), Err("unknown material flags"));
     }
 
     #[test]
-    fn keys_sort_by_family_then_flags_then_format() {
+    fn keys_sort_by_family_then_flags_then_format_then_reflection() {
         let a = PipelineKey { flags: MaterialFlags::empty(), format: PositionFormat::Float32, ..key() };
         let b = PipelineKey { flags: MaterialFlags::OUTLINE, format: PositionFormat::Unorm16, ..key() };
-        let c = PipelineKey { family: MaterialFamily::Environment, ..a };
-        let mut keys = [c, b, a];
+        let c = PipelineKey { reflection: true, ..b };
+        let d = PipelineKey { family: MaterialFamily::Environment, ..a };
+        let mut keys = [d, c, b, a];
         keys.sort();
-        assert_eq!(keys, [a, b, c]);
+        assert_eq!(keys, [a, b, c, d]);
+        assert_eq!(c.to_string(), format!("{b} reflection"));
     }
 }

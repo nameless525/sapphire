@@ -97,10 +97,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::code_names::CodeName;
 use sapphire_assets::font::{FONTS_PACK, Font};
-use sapphire_assets::material::{Material, MaterialFamily, MaterialFlags};
+use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
-use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey};
+use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey, SlotMaterial};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
 
@@ -111,7 +111,7 @@ use crate::zone;
 /// The packer as cache keys know it. Its name carries the encoders' versions, which a test keeps
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
-pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 3 };
+pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 4 };
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).
@@ -119,7 +119,7 @@ const REACH: Stage = Stage { name: "pack reach", version: 1 };
 
 /// What reads a mesh's pipeline keys, as cache keys know it. Bump the version whenever they change for the
 /// same bytes ([`PipelineKey::of_mesh`]).
-const PIPELINE_KEYS: Stage = Stage { name: "pack pipeline keys", version: 1 };
+const PIPELINE_KEYS: Stage = Stage { name: "pack pipeline keys", version: 2 };
 
 /// zstd's level for pack blocks. Encoding is cached, and decoding speed barely depends on the
 /// level, so packs take the best ratio short of zstd's slower "ultra" levels.
@@ -541,7 +541,7 @@ fn pipeline_keys_of(
     {
         return Ok(keys);
     }
-    let mut materials: HashMap<AssetId, (MaterialFamily, MaterialFlags)> = HashMap::new();
+    let mut materials: HashMap<AssetId, SlotMaterial> = HashMap::new();
     for reference in references {
         if kind(&reference.output) == Some(AssetKind::Material) {
             let bytes = cooked_bytes(reference)?;
@@ -549,7 +549,7 @@ fn pipeline_keys_of(
                 path: reference.output.clone(),
                 source: source.into(),
             })?;
-            materials.insert(reference.id, (material.family, material.flags()));
+            materials.insert(reference.id, (material.family, material.flags(), material.reads_reflection()));
         }
     }
     let bytes = cooked_bytes(asset)?;

@@ -491,6 +491,7 @@ mod tests {
             family: sapphire_assets::material::MaterialFamily::Environment,
             flags: sapphire_assets::material::MaterialFlags::empty(),
             format: sapphire_assets::mesh::PositionFormat::Unorm16,
+            reflection: false,
         };
         builds.unlisted([key, key]);
         builds.unlisted([key]);

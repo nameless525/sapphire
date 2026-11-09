@@ -994,7 +994,8 @@ impl Renderer {
         let (handle, replaced) =
             self.materials.upload(&self.device, &self.queue, &self.layouts.materials, material, textures)?;
         // A reflective character material makes the ambient pass prefilter the reflection cube on the first frame
-        // that draws it (`prepare_drawn_pipelines`): its pipelines build with the upload, as a mesh's do (M3 K1).
+        // that draws it (`prepare_drawn_pipelines`): its pipelines build with the upload, as a mesh's do, unless a
+        // prewarmed key that reads the reflection (`PipelineKey::reflection`) built them (M3 K1).
         if self.materials.record(handle).is_some_and(|record| record.reflects) {
             self.checked_build(|renderer| renderer.ambient.build_reflection_pipelines(&renderer.shaders));
         }
@@ -1442,7 +1443,12 @@ impl Renderer {
             .iter()
             .filter_map(|material| {
                 let record = self.materials.record(material.handle)?;
-                Some(PipelineKey { family: record.family, flags: record.flags, format })
+                Some(PipelineKey {
+                    family: record.family,
+                    flags: record.flags,
+                    format,
+                    reflection: record.reflects,
+                })
             })
             .collect();
         let before = self.pipeline_builds.stats().first_use_builds;
@@ -2877,6 +2883,10 @@ impl Renderer {
         self.shadows.prepare_format(&self.device, format, &self.shaders);
         let draws: Vec<Drawn> = keys.iter().copied().filter_map(Drawn::of_key).collect();
         self.pipelines.prepare_draws(&self.device, format, &draws, on);
+        // What a reflective material's frames prefilter the reflection cube with (M3 K1).
+        if keys.iter().any(|key| key.reflection) {
+            self.ambient.build_reflection_pipelines(&self.shaders);
+        }
     }
 
     /// Builds the pipelines the rebuilt draw list needs that no upload has (M1 C7): a fading

@@ -75,7 +75,9 @@
 //! A mesh's run says what each of its material slots draws through (M3 K1, [`PipelineKey`]), so a load
 //! can build a pack's pipelines before anything draws, with no asset decoded. The table holds them
 //! rather than the mesh because a slot may bind a material asset, whose flags can change without the
-//! mesh's bytes changing. Format 1 had no keys.
+//! mesh's bytes changing. A key says too whether its material reads the reflection cube, whose prefilter is what
+//! such a material's frames build beyond its own pipelines. Format 1 had no keys, and format 3's had no reflection
+//! byte.
 //!
 //! [`PackReader`] reads packs held in memory (tools and tests). The runtime reads ranges through
 //! the asset server's IO ([`crate::PackSource`]) and decodes them with [`Toc::decode_asset`].
@@ -97,7 +99,7 @@ pub use write::{PackAsset, StoredBlock, write_pack};
 /// Conventional file extension for packs.
 pub const PACK_EXTENSION: &str = "spack";
 /// The pack layout this build reads and writes. Readers reject other versions.
-pub const PACK_VERSION: u32 = 3;
+pub const PACK_VERSION: u32 = 4;
 /// Bytes per block of an asset (its last block may be shorter).
 pub const BLOCK_SIZE: usize = 64 * 1024;
 /// Bytes in a pack's header.

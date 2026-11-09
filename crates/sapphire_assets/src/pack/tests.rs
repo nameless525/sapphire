@@ -428,10 +428,15 @@ fn mesh_with_keys(byte: u8, keys: Vec<PipelineKey>) -> PackAsset {
 }
 
 fn two_keys() -> [PipelineKey; 2] {
-    let key = |flags, format| PipelineKey { family: MaterialFamily::AnimeCharacter, flags, format };
+    let key = |flags, format, reflection| PipelineKey {
+        family: MaterialFamily::AnimeCharacter,
+        flags,
+        format,
+        reflection,
+    };
     [
-        key(MaterialFlags::OUTLINE, PositionFormat::Float32),
-        key(MaterialFlags::empty(), PositionFormat::Unorm16),
+        key(MaterialFlags::OUTLINE, PositionFormat::Float32, true),
+        key(MaterialFlags::empty(), PositionFormat::Unorm16, false),
     ]
 }
 
@@ -485,7 +490,8 @@ fn pipeline_keys_a_reader_cant_trust_are_refused() {
     assert_eq!(reason(edit(keys, &[9])), "unknown material family");
     assert_eq!(reason(edit(keys + 1, &[9])), "unknown position format");
     assert_eq!(reason(edit(keys + 4, &[0xff; 4])), "unknown material flags");
-    assert_eq!(reason(edit(keys + 2, &[1])), "reserved bytes aren't zero");
+    assert_eq!(reason(edit(keys + 2, &[2])), "unknown reflection byte");
+    assert_eq!(reason(edit(keys + 3, &[1])), "reserved bytes aren't zero");
     assert_eq!(reason(edit(rig_entry + 18, &[1])), "only a mesh has pipeline keys");
     assert_eq!(reason(edit(mesh_entry + 18, &[3])), "pipeline keys run past the table");
     assert_eq!(reason(edit(mesh_entry + 18, &[1])), "blocks, dependencies or keys belong to no entry");

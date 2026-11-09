@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::{fs, process};
 
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, EnvironmentMaterial, FogCardMaterial, Material, MaterialFamily,
-    MaterialFlags,
+    AlphaMode, AnimeCharacterMaterial, CharacterRegion, EnvironmentMaterial, FogCardMaterial, Material,
+    MaterialFamily, MaterialFlags,
 };
 use sapphire_assets::mesh::{Mesh, PositionFormat};
 use sapphire_assets::pack::PackReader;
@@ -31,6 +31,8 @@ const WALL: &str = "3d4c5b6a-7988-4695-a4b3-c2d1e0f91f2e";
 const WALL_MATERIAL: &str = "4c5b6a79-8896-45a4-b3c2-d1e0f91f2e3d";
 const FOG: &str = "5b6a7988-9695-44b3-82d1-e0f91f2e3d4c";
 const FOG_MATERIAL: &str = "6a798896-95a4-43c2-91e0-f91f2e3d4c5b";
+const MIRROR: &str = "798896a5-a4b3-42d1-80f9-1f2e3d4c5b6a";
+const MIRROR_MATERIAL: &str = "8896a5b4-b3c2-41e0-9f1f-2e3d4c5b6a79";
 
 fn gpu() -> GpuContext {
     let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
@@ -103,8 +105,13 @@ fn cooked_pack(name: &str, cook: Cook) -> Vec<u8> {
     write_card(&source, "wall", (WALL, WALL_MATERIAL), &wall);
     let fog = sapphire_serialize::to_ron(&FogCardMaterial::default()).expect("a material document");
     write_card(&source, "fog", (FOG, FOG_MATERIAL), &fog);
+    shared_pack(&temp, cook)
+}
+
+/// What `temp`'s content cooks and packs to: its shared pack.
+fn shared_pack(temp: &Temp, cook: Cook) -> Vec<u8> {
     let options = CookOptions { cook, cache: None, locked: false };
-    let report = cook_dir(&source, &temp.0.join("loose"), &options).expect("it cooks");
+    let report = cook_dir(&temp.0.join("content"), &temp.0.join("loose"), &options).expect("it cooks");
     let packs = temp.0.join("packs");
     pack_cooked(&report, &packs, None).expect("it packs");
     fs::read(packs.join("shared.spack")).expect("the shared pack")
@@ -239,6 +246,38 @@ fn a_probe_grid_a_load_declares_arrives_with_nothing_to_build() {
     let report = undeclared.first_use_report().to_string();
     assert!(report.contains("ambient: cs_relight"), "{report}");
     assert!(report.contains("AMBIENT_PROBES=1"), "the surfaces it rebuilds are first uses too: {report}");
+}
+
+/// A reflective character material's frames prefilter the reflection cube, through the ambient pass's pipelines
+/// (M3 K1). Its key says so, so a load that prewarms the pack's keys has built them, and the material's upload
+/// builds nothing; a key that didn't say so would leave them to the upload, named as a first use.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_reflective_material_a_load_prewarms_uploads_with_nothing_to_build() {
+    let temp = Temp::new("reflective");
+    let region = CharacterRegion { metallic: 0.91, ..CharacterRegion::default() };
+    let mirror = AnimeCharacterMaterial { regions: vec![region], ..AnimeCharacterMaterial::default() };
+    let mirror = sapphire_serialize::to_ron(&mirror).expect("a material document");
+    write_card(&temp.0.join("content"), "mirror", (MIRROR, MIRROR_MATERIAL), &mirror);
+    let pack = shared_pack(&temp, Cook::Desktop);
+    let keys = keys_of(&pack);
+    assert!(keys.iter().all(|key| key.reflection) && !keys.is_empty(), "{keys:?}");
+    let gpu = gpu();
+
+    let mut declared = renderer(&gpu);
+    let built = declared.prewarm(&PipelineInventory { meshes: keys.clone(), ..PipelineInventory::default() });
+    upload_all(&mut declared, &pack);
+    let report = declared.first_use_report();
+    assert!(report.builds.is_empty() && report.keys.is_empty(), "{report}");
+
+    let unaware = keys.iter().map(|&key| PipelineKey { reflection: false, ..key }).collect();
+    let mut undeclared = renderer(&gpu);
+    let without = undeclared.prewarm(&PipelineInventory { meshes: unaware, ..PipelineInventory::default() });
+    upload_all(&mut undeclared, &pack);
+    let report = undeclared.first_use_report();
+    assert!(!report.builds.is_empty(), "the upload builds the prefilter's pipelines");
+    assert!(report.builds.iter().all(|build| build.family.name() == "ambient"), "{report}");
+    assert_eq!(without + report.builds.len() as u32, built, "the key's pipelines are the upload's: {report}");
 }
 
 /// What no table can say is named by its family when it's left out.

@@ -80,7 +80,7 @@ fn layer(material: &ArchivedMaterial) -> u32 {
 
 /// Whether `material` reads the reflection cube ([`MaterialRecord::reflects`]).
 fn reflects(material: &ArchivedMaterial) -> bool {
-    character_modes(material).is_some_and(|modes| modes[0] & AnimeCharacterParams::FLAG_REFLECTION != 0)
+    material.reads_reflection()
 }
 
 /// Room in each family's buffer before it first grows, in slots.

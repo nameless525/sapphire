@@ -581,6 +581,21 @@ impl ArchivedMaterial {
     pub fn params(&self) -> &[u8] {
         self.params.as_slice()
     }
+
+    /// Whether its draws read the reflection cube: an anime character material with a region metallic enough to
+    /// reflect ([`AnimeCharacterParams::FLAG_REFLECTION`]). A frame that draws one has the ambient pass prefilter
+    /// the cube, so its pipelines are what such a material needs beyond its own ([`crate::PipelineKey::reflection`]).
+    pub fn reads_reflection(&self) -> bool {
+        if self.family != MaterialFamily::AnimeCharacter {
+            return false;
+        }
+        let offset = std::mem::offset_of!(AnimeCharacterParams, modes);
+        // A validated material holds a whole block.
+        self.params().get(offset..offset + 4).is_some_and(|mode| {
+            let mode: u32 = bytemuck::pod_read_unaligned(mode);
+            mode & AnimeCharacterParams::FLAG_REFLECTION != 0
+        })
+    }
 }
 
 /// `params` has already been checked against its family's block size.

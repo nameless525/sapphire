@@ -759,12 +759,21 @@ fn a_meshs_slots_are_listed_by_what_each_draws_through() {
     let material = Material::read(&material).unwrap();
     assert_eq!(
         keys[hair],
-        PipelineKey { family: material.family, flags: material.flags(), format: mesh.draw_format() },
+        PipelineKey {
+            family: material.family,
+            flags: material.flags(),
+            format: mesh.draw_format(),
+            reflection: material.reads_reflection(),
+        },
         "a bound slot, from its material asset",
     );
     for (slot, key) in mesh.materials.iter().zip(&keys) {
         if let sapphire_assets::mesh::ArchivedSlotMaterial::Embedded(material) = &slot.material {
-            assert_eq!((key.family, key.flags), (material.family, material.flags()), "an embedded one");
+            assert_eq!(
+                (key.family, key.flags, key.reflection),
+                (material.family, material.flags(), material.reads_reflection()),
+                "an embedded one"
+            );
         }
     }
 }

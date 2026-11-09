@@ -123,7 +123,7 @@ pub mod texture;
 pub mod ui;
 
 pub use kind::{AssetError, AssetKind};
-pub use pipeline_key::PipelineKey;
+pub use pipeline_key::{PipelineKey, SlotMaterial};
 pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
     Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, CpuResident, Handle, LoadError,

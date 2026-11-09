@@ -3,7 +3,7 @@
 use std::ops::{Deref, DerefMut};
 
 use sapphire_math::{Mat4, Vec3};
-use sapphire_render::{FramePacket, MeshHandle};
+use sapphire_render::{FramePacket, MeshHandle, PostVariants};
 use sapphire_time::TICK_HZ;
 use sapphire_vfx::VfxBudget;
 
@@ -286,5 +286,13 @@ fn a_shown_fight_declares_what_it_plays() {
     let declared = scene.scene.declared_pipelines(&scene.show);
     assert!(declared.effects, "cues play effects");
     assert!(declared.ui, "a HUD draws an interface");
-    assert_ne!(declared.post, bare.post, "the cues' screen effects go through their post variants");
+    // The cues' screen effects go through their post variants. A `dev` build declares every preset's
+    // from the start, since the overlay's effects panel fires any of them (`Scene::effect_variants`),
+    // so there the cues add nothing a preset couldn't already push.
+    assert_ne!(declared.post, PostVariants::NONE, "the cues' screen effects go through their post variants");
+    if cfg!(feature = "dev") {
+        assert_eq!(declared.post, bare.post, "a dev build already declares every preset's variants");
+    } else {
+        assert_eq!(bare.post, PostVariants::NONE, "a fight without cues pushes no screen effect");
+    }
 }

@@ -363,3 +363,57 @@ impl DialogueRunner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use sapphire_core::Name;
+    use sapphire_gameplay::replay::RunStart;
+    use sapphire_script::scenarios::ward_guide;
+
+    use super::*;
+    use crate::combat::CombatOption;
+
+    const GUIDE: DialogueId = DialogueId::from_raw(0);
+
+    /// Walks the open conversation to its end, taking the first answer wherever there's a choice.
+    fn walk(runner: &mut DialogueRunner, host: &mut Combat) {
+        for _ in 0..16 {
+            if !runner.is_open() {
+                return;
+            }
+            if !runner.next(host).expect("goes on") {
+                assert!(runner.choose(0, host).expect("answers"), "a line with no way on");
+            }
+        }
+        panic!("the conversation never ended");
+    }
+
+    /// A game's run is a recording whether it keeps its file or not (M3 G1), so a conversation's conditions
+    /// are asked of its VM and its choices land in it, as they do in a recorded fight. Only a fight with no
+    /// file at all refuses one.
+    #[test]
+    fn a_games_run_takes_a_conversation_with_no_file_kept() {
+        let option = CombatOption::Run {
+            scenario: "dialogue-flag".to_owned(),
+            start: RunStart::default(),
+            script: None,
+            keep: None,
+        };
+        let mut run = Combat::new(&option).expect("sets up");
+        let mut runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+        let ward_lit = Name::new("ward_lit");
+        assert_eq!(run.simulation().flags().get(ward_lit), 0);
+        runner.open(GUIDE, &mut run).expect("a run takes a conversation");
+        walk(&mut runner, &mut run);
+        assert_eq!(run.simulation().flags().get(ward_lit), 1, "the first answer lit the ward");
+        let ended = runner.take_ended().expect("it ended");
+        assert_eq!((ended.dialogue, ended.tick), (GUIDE, 0));
+        run.finish().expect("nothing kept");
+
+        let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("sets up");
+        let refused = fight.apply_dialogue_effect(DialogueEffect::from_raw(0));
+        assert!(refused.expect_err("no file").contains("no dialogue"));
+    }
+}

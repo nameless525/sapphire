@@ -21,7 +21,7 @@ use sapphire_assets::documents::{GameDocuments, MANIFEST_FILE, SHIPPED_DIR, ship
 use sapphire_core::Name;
 use sapphire_dialogue::FlagRegistry;
 use sapphire_gameplay::replay::RunStart;
-use sapphire_gameplay::{ActorId, EncounterPhase, Simulation, TimelineId};
+use sapphire_gameplay::{ActorId, DialogueId, EncounterPhase, Simulation, TimelineId};
 use sapphire_save::ProgressStore;
 use sapphire_serialize::AssetId;
 
@@ -174,6 +174,9 @@ pub struct Game {
     /// The timelines a beat can play, by their documents' IDs, and where the run's scenario loads each.
     /// Nothing yet: a scenario lists its timelines with the Lantern Ward's walk (G1's eighth commit).
     timelines: Vec<(AssetId, TimelineId)>,
+    /// The dialogues a beat can open, by their documents' IDs, and where the run loads each: which the show
+    /// opens on the fight's runner. Nothing yet, as with the timelines.
+    dialogues: Vec<(AssetId, DialogueId)>,
     seen: RunSeen,
     stats: GameStats,
 }
@@ -210,6 +213,7 @@ impl Game {
             kept,
             setup,
             timelines: Vec::new(),
+            dialogues: Vec::new(),
             seen: RunSeen::default(),
             stats: GameStats::default(),
         }
@@ -255,6 +259,12 @@ impl Game {
         let keep =
             self.setup.record.as_ref().map(|dir| dir.join(format!("{scenario}-{}.sreplay", self.stats.runs)));
         CombatOption::Run { scenario, start, script: self.setup.script.clone(), keep }
+    }
+
+    /// Where the run loads the dialogue a beat names by `asset`, if it does.
+    #[must_use]
+    pub fn dialogue_of(&self, asset: AssetId) -> Option<DialogueId> {
+        self.dialogues.iter().find(|&&(held, _)| held == asset).map(|&(_, id)| id)
     }
 
     /// What the player chose. A new game writes a fresh save at once. What's left for the caller: a skip,

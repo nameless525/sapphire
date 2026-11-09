@@ -25,9 +25,9 @@ use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
 use sapphire_gameplay::replay::{KindOfEnemy, LiveMoves};
+use sapphire_gameplay::{DialogueId, Simulation};
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
@@ -2234,6 +2234,18 @@ impl Fight {
             tracing::warn!(target: LOG_TARGET, %error, "the run that ended didn't end well");
         }
         crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        // A game's runs are its one scenario's, which loads the same dialogues each time: the runner starts
+        // over on them, with nothing open and no trigger counted.
+        let held = self.dialogue.dialogues().to_vec();
+        let loads =
+            (0..).map_while(|raw| combat.simulation().dialogue_digest(DialogueId::from_raw(raw))).count();
+        if loads != held.len() {
+            return Err(format!(
+                "the run loads {loads} dialogues, where the one before it held {}",
+                held.len()
+            ));
+        }
+        self.dialogue = DialogueRunner::new(held);
         let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
         Ok(followed)

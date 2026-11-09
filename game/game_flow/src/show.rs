@@ -10,7 +10,7 @@
 //! **Conversations (M3 Q2b):** after each step the fight's dialogue runner looks for a trigger that opens one,
 //! the panel's commands go to it, and the dialogue screen follows it before the menus draw. While one's open
 //! the fight holds its steps, and the panel has the presses. [`GameShow::take_dialogue_ended`] says when one
-//! closed, for a game's flow.
+//! closed. With a game, a beat's dialogue opens on the same runner, and its end is the flow's to go on from.
 
 use std::time::Duration;
 
@@ -82,6 +82,8 @@ pub struct GameShow {
     game: Option<Game>,
     /// Whether the player's left, from the flow.
     left: bool,
+    /// The conversation a beat opened, until it ends.
+    beat_dialogue: Option<DialogueId>,
 }
 
 impl GameShow {
@@ -113,6 +115,7 @@ impl GameShow {
             first_uses: 0,
             game: None,
             left: false,
+            beat_dialogue: None,
         })
     }
 
@@ -232,12 +235,34 @@ impl GameShow {
         self.command_game(command);
     }
 
-    /// After a step of the run: the flow's beats and save. A dialogue a beat opens ends at once, for now:
-    /// the panel that walks one is G1's next commit's.
+    /// After a step of the run: the flow's beats and save. A dialogue a beat opens opens on the fight's
+    /// runner, and the flow waits in it until the runner says it ended ([`Self::follow_dialogue_end`]). One
+    /// the run can't open has ended at once, so the flow goes on.
     fn follow_game_step(&mut self) {
         let (Some(game), Some(combat)) = (&mut self.game, &mut self.shown.fight.combat) else { return };
-        if let Some(dialogue) = game.after_step(combat) {
-            tracing::warn!(target: LOG_TARGET, %dialogue, "a beat opened a dialogue, which nothing shows yet");
+        let Some(asset) = game.after_step(combat) else { return };
+        let opened = match game.dialogue_of(asset) {
+            Some(id) => {
+                self.shown.fight.dialogue.open(id, combat).map(|()| id).map_err(|error| error.to_string())
+            }
+            None => Err("the run loads no such dialogue".to_owned()),
+        };
+        match opened {
+            Ok(id) => self.beat_dialogue = Some(id),
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, %asset, %error, "a beat's dialogue didn't open");
+                game.command(FlowCommand::DialogueEnded);
+            }
+        }
+    }
+
+    /// A conversation a beat opened that's ended, as the fight's runner says once: the flow goes on from it.
+    /// One a trigger opened is the fight's own, and says nothing to the flow. A show with no game leaves the
+    /// end for [`Self::take_dialogue_ended`].
+    fn follow_dialogue_end(&mut self) {
+        let Some(game) = &mut self.game else { return };
+        let Some(ended) = self.shown.fight.dialogue.take_ended() else { return };
+        if self.beat_dialogue.take_if(|&mut id| id == ended.dialogue).is_some() {
             game.command(FlowCommand::DialogueEnded);
         }
     }
@@ -259,6 +284,7 @@ impl GameShow {
             .and_then(|combat| fight.start_run(combat, scene, content));
         match stood {
             Ok(followed) => {
+                self.beat_dialogue = None;
                 self.shown.hear(followed);
                 tracing::info!(target: LOG_TARGET, "a run stands");
             }
@@ -420,6 +446,7 @@ impl GameShow {
             }
         }
         self.commands.clear();
+        self.follow_dialogue_end();
         self.pause_flow();
         self.follow_flow();
         left || std::mem::take(&mut self.left)

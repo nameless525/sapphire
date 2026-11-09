@@ -1,11 +1,13 @@
 //! The game's interface: a fight's HUD and its touch zones, over `sapphire_ui`'s quads and their atlas.
 //!
 //! [`hud::ShownFight`] is a fight with its HUD on it, as a `sapphire_stage::SceneShow`, and [`menus::GameMenus`]
-//! the title, the pause and the rest, on documents, over it.
+//! the title, the pause and the rest, on documents, over it. [`dialogue::DialoguePanel`] puts the dialogue
+//! screen up on a fight's conversation.
 
 // These docs are read with `--document-private-items`, as CI renders them.
 #![allow(rustdoc::private_intra_doc_links)]
 
+pub mod dialogue;
 pub mod hud;
 pub mod menus;
 pub mod screen;

@@ -195,7 +195,8 @@ pub struct DialogueChoice {
 }
 
 /// What the dialogue panel's paths read. Each string is a key under `dialogue-`. With any answer shown there's
-/// no going on without one, so `next` stays off.
+/// no going on without one, so `next` stays off. A conversation fills it from its view ([`Self::show`], M3
+/// Q2b); with none it holds U7's sample.
 #[derive(Clone, Debug, Reflect)]
 pub struct DialogueModel {
     pub speaker: String,

@@ -1,17 +1,24 @@
 //! What stands on the game's stage: a fight, its HUD, the bindings that play it and the menus, with the title
 //! over them all until someone starts.
+//!
+//! **Conversations (M3 Q2b):** after each step the fight's dialogue runner looks for a trigger that opens one,
+//! the panel's commands go to it, and the dialogue screen follows it before the menus draw. While one's open
+//! the fight holds its steps, and the panel has the presses. [`GameShow::take_dialogue_ended`] says when one
+//! closed, for a game's flow.
 
 use std::time::Duration;
 
 use game_combat::combat::{Combat, read_bindings};
+use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::FightDocuments;
+use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::menus::{
     CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings,
 };
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_ecs::prelude::Entity;
-use sapphire_gameplay::ActorId;
+use sapphire_gameplay::{ActorId, DialogueId};
 use sapphire_input::InputMap;
 use sapphire_platform::{AppInitError, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
 use sapphire_render::quality::TierId;
@@ -57,6 +64,8 @@ pub struct GameShow {
     first_uses: u32,
     /// The character standing in the character screen's inset while it's open (M3 U6).
     showcase: Option<Entity>,
+    /// The dialogue screen on the fight's conversation (M3 Q2b).
+    panel: DialoguePanel,
 }
 
 impl GameShow {
@@ -81,6 +90,7 @@ impl GameShow {
             settings_changed: false,
             controls,
             showcase: None,
+            panel: DialoguePanel::default(),
             camera_yaw: 0.0,
             report_in: Duration::ZERO,
             first_uses: 0,
@@ -183,8 +193,12 @@ impl GameShow {
                 MenuCommand::Pause => self.controls.set_paused(true),
                 MenuCommand::Leave => left = true,
                 MenuCommand::SettingsChanged => self.follow_settings(),
-                // The dialogue graph's to hear (Q2).
-                MenuCommand::DialogueNext | MenuCommand::DialogueChose(_) => {}
+                command @ (MenuCommand::DialogueNext | MenuCommand::DialogueChose(_)) => {
+                    let fight = &mut self.shown.fight;
+                    if let Some(combat) = &mut fight.combat {
+                        self.panel.hear(command, &mut fight.dialogue, combat);
+                    }
+                }
             }
         }
         self.commands.clear();
@@ -207,9 +221,30 @@ impl GameShow {
         self.menus.as_ref().map(|menus| menus.settings().clone())
     }
 
-    /// The pause's screen follows the pause, whoever asked for it: a key, the HUD's button, focus going.
+    /// Opens the run's dialogue `id` between steps, as a game's flow or a script's beat asks: the panel comes
+    /// up before the next frame draws, and the fight holds its steps until it closes.
+    ///
+    /// # Errors
+    ///
+    /// As `DialogueRunner::open`; and with no fight standing, as for a dialogue the run never loaded.
+    pub fn open_dialogue(&mut self, id: DialogueId) -> Result<(), DialogueRunError> {
+        let fight = &mut self.shown.fight;
+        let combat = fight.combat.as_mut().ok_or(DialogueRunError::Unknown(id))?;
+        fight.dialogue.open(id, combat)
+    }
+
+    /// The conversation that closed since this was last asked, once: what a game's flow goes on from.
+    pub fn take_dialogue_ended(&mut self) -> Option<DialogueEnded> {
+        self.shown.fight.dialogue.take_ended()
+    }
+
+    /// The pause's screen follows the pause, whoever asked for it: a key, the HUD's button, focus going. A
+    /// conversation's panel is modal too, and stays: it isn't the pause's to close.
     fn follow_pause(&mut self) {
         let Some(menus) = self.menus.as_mut().filter(|_| self.fight_open) else { return };
+        if self.panel.is_up() {
+            return;
+        }
         let paused = self.controls.is_paused() && !self.controls.is_resuming();
         if paused && !menus.is_modal() {
             menus.open(MenuScreen::Pause);
@@ -332,6 +367,12 @@ impl SceneShow for GameShow {
         let followed = self.shown.fight.follow_step(scene, laps);
         self.shown.hear(followed);
         self.shown.show_damage(scene);
+        let fight = &mut self.shown.fight;
+        if let Some(combat) = &mut fight.combat
+            && let Err(error) = fight.dialogue.follow(combat)
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "a trigger's conversation didn't open");
+        }
     }
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
@@ -378,6 +419,7 @@ impl SceneShow for GameShow {
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
         self.shown.draw_interface(size, list);
         if let Some(menus) = &mut self.menus {
+            self.panel.follow(menus, &self.shown.fight.dialogue);
             menus.draw(size, list);
         }
     }

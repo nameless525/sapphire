@@ -2,6 +2,8 @@
 
 #![allow(dead_code, reason = "each test binary uses what it needs")]
 
+pub mod walk;
+
 use std::path::{Path, PathBuf};
 
 use game_ui::menus::MenuScreen;

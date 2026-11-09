@@ -517,9 +517,10 @@ thread_local! {
     static RUNS_THE_APP: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The most events the inbox holds. Past this the newest are dropped and the log says so, as SDL's
-/// own queue does. It takes a thread raising events while the app's thread sleeps: a paused Android
-/// app, or an iOS app in the background.
+/// The most events the inbox holds from other threads. Past this their newest are dropped and the log
+/// says so, as SDL's own queue does. It takes a thread raising events while the app's thread sleeps: a
+/// paused Android app, or an iOS app in the background. The app's own thread's events are always held
+/// ([`Inbox::hold_own`]).
 const MOST_HELD: usize = 4096;
 
 /// An event waiting for the app's thread, owning what it says.
@@ -588,6 +589,13 @@ impl Inbox {
         }
     }
 
+    /// Holds an event SDL handed the app's own thread, past the limit if need be: a backlog other
+    /// threads filled mustn't cost the app a lifecycle event SDL delivers only once. The callback
+    /// holding it delivers it before returning, so this grows the inbox by one at most a callback.
+    fn hold_own(&self, event: HeldEvent) {
+        self.queue().events.push_back(event);
+    }
+
     fn next(&self) -> Option<HeldEvent> {
         self.queue().events.pop_front()
     }
@@ -632,12 +640,12 @@ impl<A: App> Runtime<A> {
 
     fn event(&self, raw: &SDL_Event) -> SDL_AppResult {
         if self.busy.get() {
-            INBOX.hold(HeldEvent::of(raw));
+            INBOX.hold_own(HeldEvent::of(raw));
             return SDL_APP_CONTINUE;
         }
         // Queue even a main-thread event behind the older held events. Otherwise a bounded
         // drain can let this newer callback overtake a backlog.
-        INBOX.hold(HeldEvent::of(raw));
+        INBOX.hold_own(HeldEvent::of(raw));
         self.exclusive(|_| AppControl::Continue)
     }
 
@@ -836,24 +844,26 @@ mod tests {
         }
         // No other unit test touches the global inbox. These 2048 ordinary low-memory
         // events exceed the former 1024 pre-callback drain without reaching queue capacity.
-        for new_event in [true, false] {
+        // A full inbox, which other threads filled while the app's thread slept, still
+        // takes the app's own thread's event, last.
+        for (held, new_event) in [(2048, true), (2048, false), (MOST_HELD as u64, true)] {
             INBOX.clear();
             let seen = Rc::new(RefCell::new(Vec::new()));
             let runtime = Runtime::new(Ordered(Rc::clone(&seen)), Platform::for_callback_test());
-            for stamp in 1..=2048 {
+            for stamp in 1..=held {
                 INBOX.hold(low_memory_at(stamp));
             }
             let result = if new_event {
-                let HeldEvent::Plain(raw) = low_memory_at(2049) else { unreachable!() };
+                let HeldEvent::Plain(raw) = low_memory_at(held + 1) else { unreachable!() };
                 runtime.event(&raw)
             } else {
                 runtime.exclusive(|state| {
-                    state.app.0.borrow_mut().push(2049);
+                    state.app.0.borrow_mut().push(held + 1);
                     AppControl::Continue
                 })
             };
             assert_eq!(result.0, SDL_APP_CONTINUE.0);
-            assert_eq!(*seen.borrow(), (1..=2049).collect::<Vec<_>>());
+            assert_eq!(*seen.borrow(), (1..=held + 1).collect::<Vec<_>>());
             assert!(INBOX.next().is_none());
         }
     }

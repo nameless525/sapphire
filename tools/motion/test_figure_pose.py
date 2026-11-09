@@ -12,6 +12,9 @@ FIGURES = [(importlib.import_module(spec.name.removesuffix('.figure.ron')), spec
 NUMBER = re.compile(r'-?\d+(?:\.\d+)?')
 # Each number is written to 4 decimals, so another machine's libm can round one the other way.
 TOLERANCE = 2e-4
+# An angle on the wrap reads -180 on one machine and 180 on another (Linux's libm put the boss's
+# forearm on the other side), the same turn, so numbers are compared as turns.
+FULL_TURN = 360.0
 # How far a hand or foot may fall short of its target: a first draft's, read against the figures'
 # reach (the Lancer's arm is 0.47 m, the boss's 1.06 m).
 MAX_MISS = 0.06
@@ -30,7 +33,8 @@ class FigureClipTests(unittest.TestCase):
                 self.assertEqual(NUMBER.sub('#', made), NUMBER.sub('#', committed),
                                  f'{path.name}: run tools/motion/{name}.py --write')
                 for a, b in zip(NUMBER.findall(made), NUMBER.findall(committed)):
-                    self.assertLessEqual(abs(float(a) - float(b)), TOLERANCE, path.name)
+                    apart = abs(float(a) - float(b)) % FULL_TURN
+                    self.assertLessEqual(min(apart, FULL_TURN - apart), TOLERANCE, path.name)
                 meta = path.with_suffix('.ron.meta')
                 self.assertEqual(fp.meta(module.RIG_ID, name, clip.name), meta.read_text(), meta.name)
 

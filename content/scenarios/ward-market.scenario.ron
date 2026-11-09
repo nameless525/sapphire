@@ -10,15 +10,18 @@
             "content/zones/lantern_ward/market.encounter.ron",
             "content/zones/lantern_ward/garden.encounter.ron",
             "content/zones/lantern_ward/court.encounter.ron",
+            "content/zones/lantern_ward/terrace.encounter.ron",
         ],
         moves: [
             "content/combat/player/player.moves.ron",
             "content/combat/enemy/warrior.moves.ron",
             "content/combat/lancer/lancer.moves.ron",
+            "content/combat/knell_colossus/knell_colossus.moves.ron",
         ],
         enemies: [
             "content/combat/enemy/warrior.enemy.ron",
             "content/combat/lancer/lancer.enemy.ron",
+            "content/combat/knell_colossus/knell_colossus.enemy.ron",
         ],
         cast: [(moves: "player", at: "market_gate", faction: 1, soft_lock: true)],
     ),

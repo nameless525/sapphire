@@ -1,7 +1,7 @@
 // The Lantern Ward's boss as a kind of enemy (M3 C2): the Knell Colossus, the bronze bell guardian woken on
-// the terrace before the hall. Its moves are beside this file; its brains press their intents, by name. At
-// half health its second wind changes its brain to one that presses harder, adds a double slam and a leap,
-// and starts with the toll of its bell.
+// the terrace before the hall. Its moves are beside this file; its brains press their intents, by name. Its
+// script, beside this file too, is its second wind: at half health it takes up the brain that presses
+// harder, with a double slam and a leap, and tolls its bell.
 (
     type: "sapphire::moves::EnemyDocument",
     version: 1,
@@ -61,7 +61,8 @@
                 ],
             ),
             "tolling": (
-                // Its second wind: half the patience and rest, and two more attacks.
+                // Its second wind, which its script gives it: half the patience and rest, and two more
+                // attacks. The toll that starts it is the script's too.
                 spacing: (near: 1.8, far: 3.0),
                 pace: (
                     approach: 0.6,
@@ -74,18 +75,6 @@
                 rest: (min: 20, max: 50),
                 recover: (min: 4, max: 12),
                 attacks: [
-                    (
-                        // First, and once: the toll of its bell, from as far as anything else it does reaches.
-                        // A phase changes only its brain, so it's this brain's heaviest choice, and after it the
-                        // least: its score climbs back from nothing over four and a half hours. Every other attack
-                        // between them covers its reach, and like theirs it waits out a dodge, so it's never the
-                        // only one left.
-                        intent: "phase_shift",
-                        weight: 50.0,
-                        reach: (near: 0.0, best: 2.0, far: 9.0),
-                        against: (untouchable: 0.0),
-                        recent: (ticks: 1000000000, floor: 0.0),
-                    ),
                     (
                         intent: "slam_double",
                         reach: (near: 1.2, best: 2.3, far: 3.2),
@@ -131,8 +120,9 @@
             ),
         },
         brain: "steady",
-        // The second is the phase its bar marks and its music and screen hang on, by its name.
-        phases: [(at: 500, name: Some("tolling"), brain: Some("tolling")), (at: 0)],
+        // The second is the phase its bar marks and its music and screen hang on, by its name. Its script
+        // changes its brain there.
+        phases: [(at: 500, name: Some("tolling")), (at: 0)],
         // Its name's key in the game's words, for its boss bar.
         boss: Some((name: "boss-knell-colossus")),
         look: (
@@ -150,5 +140,7 @@
             // Its flared shoulders, for what a camera frames.
             framed_radius: 1.1,
         ),
+        // `knell_colossus.luau`: its second wind.
+        script: "a1ff800a-047f-4375-ac6c-aec395df870d",
     ),
 )

@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "a1ff800a-047f-4375-ac6c-aec395df870d",
+        importer: Script(()),
+    ),
+)

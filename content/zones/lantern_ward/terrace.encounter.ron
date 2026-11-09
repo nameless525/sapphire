@@ -1,0 +1,14 @@
+// The terrace's fight (M3 C2): the boss, woken as someone climbs the steps, alone.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "terrace_reached",
+        faction: 2,
+        tokens: 1,
+        token_rest: 30,
+        waves: [
+            (when: Start, spawners: ["boss"]),
+        ],
+    ),
+)

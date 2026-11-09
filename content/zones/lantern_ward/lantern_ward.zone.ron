@@ -351,8 +351,9 @@
             (name: "court_spawn_c", position: (-14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "lancer"),
             (name: "court_spawn_d", position: (14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "lancer"),
             (name: "court_spawn_e", position: (0.0, 0.0, -90.0), yaw_degrees: 0.0, spawns: "warrior"),
-            // Where a boss stands, on the terrace before the hall.
-            (name: "boss", position: (0.0, 1.2, -108.0), yaw_degrees: 0.0, spawns: "boss"),
+            // The top of the terrace's steps, and where its boss stands, before the hall: the Knell Colossus.
+            (name: "terrace_arrive", position: (0.0, 1.2, -101.0), yaw_degrees: 180.0, spawns: "player"),
+            (name: "boss", position: (0.0, 1.2, -108.0), yaw_degrees: 0.0, spawns: "knell_colossus"),
         ],
         triggers: [
             // Each ground-level box reaches a quarter metre under the paving: a trigger holds a character by its
@@ -370,12 +371,13 @@
             (name: "garden", position: (-47.0, 0.0, 0.0), yaw_degrees: 270.0, volume: Box(half_extents: (1.5, 1.5, 4.5))),
             (name: "court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, volume: Box(half_extents: (4.5, 1.5, 1.5))),
         ],
-        // Its fights, each started by a trigger above: `market.encounter.ron`, `garden.encounter.ron` and
-        // `court.encounter.ron`.
+        // Its fights, each started by a trigger above: `market.encounter.ron`, `garden.encounter.ron`,
+        // `court.encounter.ron` and `terrace.encounter.ron`.
         encounters: [
             "9c124ff2-ab3d-4b6c-a281-79dc6eade2ec",
             "f2a2a203-7ac5-4a8b-91ec-4366daa62246",
             "3e7d6965-beed-4aee-86c8-ea292239a816",
+            "a03f7333-c342-4c3b-bbc4-dd3a096e9297",
         ],
         splines: [
             // Through everything once, on foot, at about a character's height: a capture's and a bench's walk.

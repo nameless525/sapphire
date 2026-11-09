@@ -25,6 +25,12 @@
 //! goes on recording and asks to be tried again. Only when the app is already quitting is what came after
 //! the last file lost, and that error says so.
 //!
+//! **A game's run** ([`CombatOption::Run`], M3 G1) is a recording in memory that writes a file only if it's
+//! kept, through the same [`SessionFiles`], and goes on past a file's limit on a run's length, unrecorded
+//! from there (`Recording::go_on_past_limit`). The flow's beats start timelines on it
+//! ([`Combat::play_timeline`]) and a skip ends them ([`Combat::skip_timeline`]), both recorded, so a kept run
+//! replays like any file.
+//!
 //! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window,
 //! and with `--script`, `--offscreen` runs one for hot reload and live link.
 //!
@@ -62,7 +68,7 @@ use sapphire_gameplay::replay::{
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
-use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions};
+use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions, TimelineId};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 use sapphire_script::ConditionSet;
@@ -124,6 +130,12 @@ pub enum CombatOption {
     /// windowed app, on the actions of whoever's playing, so it's `None` there. With `--script <name>`
     /// and `--capture`, `--bench` or `--offscreen`, on the script's.
     Fight { script: Option<String>, party: bool },
+    /// A game's run (M3 G1): the scenario from its start, recorded in memory in case it's kept, and written
+    /// to `keep` only if there's one, when the run ends. It goes on past a file's limit on a run's length,
+    /// unrecorded from there, and its timelines' plays and skips are recorded commands, as a recording's
+    /// are. On the actions of whoever's playing, or with `script` and `--capture`, `--bench` or
+    /// `--offscreen`, on the script's.
+    Run { scenario: String, script: Option<String>, keep: Option<PathBuf> },
 }
 
 /// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
@@ -190,9 +202,27 @@ enum Mode {
         files: SessionFiles,
         /// The timelines its script starts, each at the boundary before the step it names (M3 Q3).
         starts: ScriptStarts,
+        /// What it's for: a file, or a game's run, which may keep none.
+        kind: Kind,
     },
     /// `--fight`: played, and kept nowhere.
     Fighting(LiveFight),
+}
+
+/// What a recording is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// `--record`: a file, which stops at its limit.
+    File,
+    /// A game's run ([`CombatOption::Run`]), which goes on past it, and writes a file only if it `kept` one.
+    Run { kept: bool },
+}
+
+impl Kind {
+    /// Whether the session has a file to write.
+    fn has_file(self) -> bool {
+        matches!(self, Self::File | Self::Run { kept: true })
+    }
 }
 
 /// A fight with no file: see the [module docs](self).
@@ -421,7 +451,32 @@ impl Combat {
             CombatOption::Record { path, scenario, script } => {
                 Self::recording_with_setup(path, scenario, script.as_deref(), live, setup)
             }
+            CombatOption::Run { scenario, script, keep } => {
+                Self::running(scenario, script.as_deref(), keep.as_deref(), live, setup)
+            }
         }
+    }
+
+    /// A game's run: see [`CombatOption::Run`]. A file to keep it in takes the next free name, as a session
+    /// someone plays does: a run is never refused for a file left from the last.
+    fn running(
+        scenario: &str,
+        script: Option<&str>,
+        keep: Option<&Path>,
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        let path = match keep {
+            Some(path)
+                if path.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) =>
+            {
+                return Err(format!("a run's file {}: its directory doesn't exist", path.display()));
+            }
+            Some(path) => free_name(path),
+            None => PathBuf::new(),
+        };
+        let kind = Kind::Run { kept: keep.is_some() };
+        Self::record(path, scenario, script, live, setup, kind).map_err(|error| format!("a run: {error}"))
     }
 
     fn fighting(
@@ -488,6 +543,18 @@ impl Combat {
         if path.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) {
             return Err(format!("--record {}: its directory doesn't exist", path.display()));
         }
+        Self::record(free, scenario, script, live, setup, Kind::File)
+    }
+
+    /// A recording of `scenario` for `kind`, to `path`, which is free to write.
+    fn record(
+        path: PathBuf,
+        scenario: &str,
+        script: Option<&str>,
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+        kind: Kind,
+    ) -> Result<Self, String> {
         let Some(scenario) = find_scenario(&SCENARIOS, scenario) else {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
@@ -496,10 +563,14 @@ impl Combat {
         let script = script.map(script_actions).transpose()?;
         let mut recording = Recording::tuned_with_setup(scenario, scenario.config, live, setup)
             .map_err(|error| format!("--record: {error}"))?;
+        if matches!(kind, Kind::Run { .. }) {
+            recording = recording.go_on_past_limit();
+        }
         starts.clone().apply(&mut recording).map_err(|error| format!("--record: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
-        let mode = Mode::Recording { recording, script, stopped: None, files, starts: starts.after_start() };
-        Ok(Self { path: path.to_owned(), mode, steps_past_end: 0, last_step_allocations: 0 })
+        let mode =
+            Mode::Recording { recording, script, stopped: None, files, starts: starts.after_start(), kind };
+        Ok(Self { path, mode, steps_past_end: 0, last_step_allocations: 0 })
     }
 
     /// The scenario the run starts from.
@@ -802,6 +873,20 @@ impl Combat {
         }
     }
 
+    /// Starts a timeline before the next step, as a beat of a game's flow does: a recording, a game's run
+    /// among them, records it, and the stage plays it as it plays any the simulation starts. A replay plays
+    /// only its own commands, and a fight with no file plays no timelines.
+    pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), String> {
+        match &mut self.mode {
+            Mode::Recording { recording, stopped: None, .. } => {
+                recording.play_timeline(id).map_err(|error| error.to_string())
+            }
+            Mode::Recording { .. } => Err("the recording has stopped at its limit".to_owned()),
+            Mode::Replaying { .. } => Err("a replay plays only the timelines it recorded".to_owned()),
+            Mode::Fighting(_) => Err("a fight with no file plays no timelines".to_owned()),
+        }
+    }
+
     /// Someone skipped the timeline playing, `at_ms` into it, between steps: a recording records it, and runs
     /// the steps a cinematic held, as watching would have. A replay's skip is presentation's alone, and a fight
     /// with no file plays no timelines yet.
@@ -902,6 +987,10 @@ impl Combat {
             Mode::Replaying { player, name, .. } => {
                 CombatStatus::Replaying { name, length: player.replay().ticks() }
             }
+            Mode::Recording { recording, kind: Kind::Run { kept }, .. } => CombatStatus::Running {
+                scenario: recording.scenario(),
+                kept: kept.then_some(self.path.as_path()),
+            },
             Mode::Recording { recording, script, stopped, .. } => CombatStatus::Recording {
                 scenario: recording.scenario(),
                 path: &self.path,
@@ -926,7 +1015,10 @@ impl Combat {
     /// where it's going. A failure is logged and the fight goes on: there's no one to tell, and the next
     /// try, or the end, may do better. Nothing else has a file to keep.
     pub fn keep_so_far(&mut self) {
-        let Mode::Recording { recording, script: None, files, .. } = &mut self.mode else { return };
+        let Mode::Recording { recording, script: None, files, kind, .. } = &mut self.mode else { return };
+        if !kind.has_file() {
+            return;
+        }
         let replay = recording.so_far();
         let bytes = replay.encode();
         let size = bytes.len();
@@ -959,7 +1051,10 @@ impl Combat {
     /// Writes a recording as it stands, with the run going on, so that a session that reaches no file at
     /// all can stay in memory and be tried again. Nothing else has a file to write.
     fn write_recording(&mut self) -> Result<(), Unwritten> {
-        let Mode::Recording { recording, files, .. } = &mut self.mode else { return Ok(()) };
+        let Mode::Recording { recording, files, kind, .. } = &mut self.mode else { return Ok(()) };
+        if !kind.has_file() {
+            return Ok(());
+        }
         files.write(&self.path, recording.so_far().encode())
     }
 
@@ -1012,7 +1107,30 @@ impl Combat {
                     );
                 }
             }
-            Mode::Recording { recording, stopped, .. } => {
+            Mode::Recording { recording, stopped, kind, .. } => {
+                if let Some(tick) = recording.filled_at() {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        tick,
+                        played = recording.simulation().tick(),
+                        "the run went on past the file's limit on a run's length: the file ends there",
+                    );
+                }
+                if !kind.has_file() {
+                    let (ticks, checksum) =
+                        (recording.simulation().tick(), recording.simulation().checksum());
+                    let (replay, played) = recording.finish();
+                    log_gate(&played);
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        scenario = replay.scenario(),
+                        ticks,
+                        checksum = %format_args!("{checksum:016x}"),
+                        allocations = played.stats.allocations,
+                        "a run ended, kept nowhere",
+                    );
+                    return;
+                }
                 if let Some(error) = stopped {
                     tracing::warn!(target: LOG_TARGET, %error, "the recording stopped at its limit");
                 }
@@ -1237,9 +1355,24 @@ fn holds(path: &Path, bytes: &[u8]) -> bool {
 /// What a [`Combat`] is running, as the overlay shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombatStatus<'a> {
-    Replaying { name: &'a str, length: u32 },
-    Recording { scenario: &'a str, path: &'a Path, at_limit: bool, scripted: bool },
-    Fighting { fights: u32 },
+    Replaying {
+        name: &'a str,
+        length: u32,
+    },
+    Recording {
+        scenario: &'a str,
+        path: &'a Path,
+        at_limit: bool,
+        scripted: bool,
+    },
+    Fighting {
+        fights: u32,
+    },
+    /// A game's run, and the file it's kept in, if it's kept.
+    Running {
+        scenario: &'a str,
+        kept: Option<&'a Path>,
+    },
 }
 
 /// The overlay's replay recorder: starts recording the player, and ends it, between frames.
@@ -1556,6 +1689,62 @@ mod tests {
         }
         let plain = Combat::new(&committed("arena-fight-won")).expect("reads");
         assert_eq!(plain.script_time(), None);
+    }
+
+    fn run(scenario: &str, keep: Option<&Path>) -> Combat {
+        let option =
+            CombatOption::Run { scenario: scenario.to_owned(), script: None, keep: keep.map(Path::to_owned) };
+        Combat::new(&option).expect("sets up")
+    }
+
+    /// A game's run writes nothing unless it's kept, and kept, it's a replay like any other, the beats'
+    /// timeline plays and skips among its commands, which plays back to where the run got.
+    #[test]
+    fn a_run_keeps_a_file_only_when_asked_and_records_its_beats_commands() {
+        let mut unkept = run(sapphire_gameplay::replay::WARD_COURT, None);
+        assert_eq!(unkept.status(), CombatStatus::Running { scenario: "ward-court", kept: None });
+        assert!(unkept.is_played());
+        for _ in 0..5 {
+            unkept.step(&mut no_bindings);
+        }
+        unkept.keep_so_far();
+        unkept.finish().expect("nothing to write");
+
+        let scratch = Scratch::new("run-kept");
+        let mut kept = run(sapphire_gameplay::replay::WARD_COURT, Some(&scratch.0));
+        assert_eq!(kept.status(), CombatStatus::Running { scenario: "ward-court", kept: Some(&scratch.0) });
+        for _ in 0..5 {
+            kept.step(&mut no_bindings);
+        }
+        kept.play_timeline(sapphire_gameplay::replay::COURT_GATE_ID).expect("a beat's timeline");
+        assert!(kept.simulation().timeline().is_some());
+        kept.step(&mut no_bindings);
+        kept.skip_timeline(400);
+        for _ in 0..5 {
+            kept.step(&mut no_bindings);
+        }
+        let end = kept.simulation().checksum();
+        kept.finish().expect("written");
+        let replay = Replay::decode(&fs::read(&scratch.0).expect("kept")).expect("a whole file");
+        let commands: Vec<ReplayCommand> = replay.commands().iter().map(|(_, command)| *command).collect();
+        assert_eq!(
+            commands,
+            [
+                ReplayCommand::PlayTimeline(sapphire_gameplay::replay::COURT_GATE_ID),
+                ReplayCommand::SkipTimeline { at_ms: 400 }
+            ]
+        );
+        let mut player = Player::new(replay, &SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.simulation().checksum(), end, "it plays back to where the run got");
+    }
+
+    /// Only what records takes a beat's timeline; a replay and a fight with no file say why not.
+    #[test]
+    fn only_a_recording_takes_a_beats_timeline() {
+        let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("sets up");
+        let refused = fight.play_timeline(sapphire_gameplay::replay::COURT_GATE_ID).expect_err("no file");
+        assert!(refused.contains("no timelines"), "{refused}");
     }
 
     fn recording(path: &Path, script: Option<&str>) -> Combat {

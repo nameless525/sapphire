@@ -593,6 +593,13 @@ impl Recorder {
         Ok(())
     }
 
+    /// Makes the recording as long as a file may be, so the next tick is refused, without stepping a run
+    /// four hours long.
+    #[cfg(test)]
+    pub(crate) fn fill(&mut self) {
+        self.replay.ticks = MAX_TICKS;
+    }
+
     /// Adds a command before the next tick.
     pub fn command(&mut self, command: ReplayCommand) {
         self.replay.commands.push((self.replay.ticks, command));

@@ -44,7 +44,9 @@ pub enum PlayError {
     File(#[from] ReplayError),
     #[error(transparent)]
     Timeline(#[from] TimelinePlayError),
-    #[error("the recording ended at tick {tick} after a live edit; it cannot record more ticks")]
+    #[error(
+        "the recording ended at tick {tick}, at a live edit or its length's limit; it cannot record more ticks"
+    )]
     RecordingEnded { tick: u32 },
     /// A move's cinematic is the move's own steps, and the move has no way out (M3 Q3b).
     #[error("the timeline playing at tick {tick} is a move's cinematic, which can't be skipped")]
@@ -345,12 +347,21 @@ impl Player {
 /// more. Writing each revision into the file would hold the rest too, but at the cost of a new format,
 /// its bytes in every file and a player that replaces sets, for sessions nobody can reproduce once the
 /// documents move on, so that waits for someone who needs them.
+///
+/// **A game's run outlives its file** ([`Self::go_on_past_limit`], M3 G1). A file holds at most
+/// [`MAX_TICKS`]. A recording made to be a file refuses a step there, but a game records every run in
+/// case it's kept, and a player four hours in must play on: so the file ends at the limit, as at a live
+/// edit, and the run goes on unrecorded, its timelines' commands still applying.
 pub struct Recording {
     tracked: Tracked,
     recorder: Recorder,
     cast: Vec<ActorId>,
     /// Where a live edit ended the file.
     edited_at: Option<u32>,
+    /// Where the limit on a run's length ended the file, for a run that goes on past it.
+    filled_at: Option<u32>,
+    /// Whether the run goes on past that limit, rather than refusing a step there.
+    past_limit: bool,
 }
 
 impl Recording {
@@ -404,7 +415,31 @@ impl Recording {
         sim.start_with_flags(flags)?;
         recorder.set_tables_hash(sim.tables_hash());
         recorder.start_with_flags(sim.flags());
-        Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast, edited_at: None })
+        Ok(Self {
+            tracked: Tracked::new(sim, MAX_TICKS),
+            recorder,
+            cast,
+            edited_at: None,
+            filled_at: None,
+            past_limit: false,
+        })
+    }
+
+    /// The same recording, going on past the limit on a run's length: see the [type's docs](Self).
+    #[must_use]
+    pub fn go_on_past_limit(self) -> Self {
+        Self { past_limit: true, ..self }
+    }
+
+    /// The tick the limit on a run's length ended the file at, for a run that went on past it.
+    #[must_use]
+    pub const fn filled_at(&self) -> Option<u32> {
+        self.filled_at
+    }
+
+    /// Whether the file still takes what the run does: no live edit or limit has ended it.
+    const fn keeps(&self) -> bool {
+        self.edited_at.is_none() && self.filled_at.is_none()
     }
 
     /// Replaces a set live, between steps, and ends the file if that changed anything: see the
@@ -465,7 +500,7 @@ impl Recording {
     /// Starts a timeline before the next step, and records that.
     pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
         self.tracked.sim.play_timeline(id)?;
-        if self.edited_at.is_none() {
+        if self.keeps() {
             self.recorder.command(ReplayCommand::PlayTimeline(id));
         }
         Ok(())
@@ -474,7 +509,7 @@ impl Recording {
     /// Applies a dialogue's effect before the next step, and records that.
     pub fn apply_dialogue_effect(&mut self, effect: DialogueEffect) -> Result<(), DialogueEffectError> {
         self.tracked.sim.apply_dialogue_effect(effect)?;
-        if self.edited_at.is_none() {
+        if self.keeps() {
             self.recorder.command(ReplayCommand::Dialogue(effect));
         }
         Ok(())
@@ -487,7 +522,7 @@ impl Recording {
         if self.tracked.sim.timeline().is_some_and(|run| run.owner.is_some()) {
             return Err(PlayError::Unskippable { tick: self.recorded_ticks() });
         }
-        if self.edited_at.is_none() {
+        if self.keeps() {
             self.recorder.command(ReplayCommand::SkipTimeline { at_ms });
         }
         let mut neutral = |_: u64, _: &[ActorId]| TickActions::NEUTRAL;
@@ -501,7 +536,7 @@ impl Recording {
     pub fn enter_zone(&mut self, entry: ZoneEntry) -> Result<(), ZoneEntryError> {
         let traveller = *self.cast.first().expect("a scenario's cast names the player first");
         self.tracked.sim.enter_zone(entry, traveller)?;
-        if self.edited_at.is_none() {
+        if self.keeps() {
             self.recorder.command(ReplayCommand::EnterZone(entry));
         }
         Ok(())
@@ -511,7 +546,7 @@ impl Recording {
     /// [`crate::Simulation::return_to_checkpoint`].
     pub fn return_to_checkpoint(&mut self, checkpoint: CheckpointId) -> Result<ActorId, TeleportError> {
         let player = self.tracked.sim.return_to_checkpoint(checkpoint)?;
-        if self.edited_at.is_none() {
+        if self.keeps() {
             self.recorder.command(ReplayCommand::ReturnTo(checkpoint));
         }
         Ok(player)
@@ -521,13 +556,16 @@ impl Recording {
     /// Refuses to extend a file ended by a live edit, without consuming any actions or commands.
     pub fn run_script(&mut self, script: &Script, ticks: u32) -> Result<(), PlayError> {
         if self.recorded_ticks() < ticks
-            && let Some(tick) = self.edited_at
+            && let Some(tick) = self.edited_at.or(self.filled_at)
         {
             return Err(PlayError::RecordingEnded { tick });
         }
         let mut source = script.actions;
         let mut commands = script.commands.iter().peekable();
         while self.recorded_ticks() < ticks {
+            if let Some(tick) = self.filled_at {
+                return Err(PlayError::RecordingEnded { tick });
+            }
             while let Some(&(_, command)) = commands.next_if(|&&(at, _)| at <= self.recorded_ticks()) {
                 match command {
                     ReplayCommand::PlayTimeline(id) => self.play_timeline(id)?,
@@ -545,16 +583,23 @@ impl Recording {
     }
 
     /// Asks `source` for the next tick's actions, records them and steps. Refuses at the file's limit
-    /// on a run's length, with the recording still good up to there, and no step taken. Past a live
-    /// edit it steps and records nothing: see the [type's docs](Self).
+    /// on a run's length, with the recording still good up to there, and no step taken, unless it
+    /// [goes on past it](Self::go_on_past_limit). Past a live edit, or past the limit, it steps and records
+    /// nothing: see the [type's docs](Self).
     pub fn step(&mut self, source: &mut dyn ActionSource) -> Result<(), ReplayError> {
         let actions = source.actions(self.tracked.sim.tick(), &self.cast);
-        if self.edited_at.is_some() {
+        if !self.keeps() {
             self.tracked.step_unkept(&actions);
             return Ok(());
         }
-        self.recorder.push(&actions)?;
-        self.tracked.step(&actions);
+        match self.recorder.push(&actions) {
+            Ok(()) => self.tracked.step(&actions),
+            Err(ReplayError::TooManyTicks { .. }) if self.past_limit => {
+                self.filled_at = Some(self.recorder.ticks());
+                self.tracked.step_unkept(&actions);
+            }
+            Err(error) => return Err(error),
+        }
         Ok(())
     }
 
@@ -637,6 +682,34 @@ mod tests {
         let (whole, _) = recording.finish();
         let (replay, _) = record(200, melee_sweep);
         assert_eq!(whole.encode(), replay.encode());
+    }
+
+    /// A game's run plays on past the file's limit, unrecorded, and a timeline it starts there still plays;
+    /// one made to be a file refuses the step, as it always has.
+    #[test]
+    fn a_run_that_goes_on_past_the_limit_plays_on_and_its_file_stops_there() {
+        let ward = find_scenario(&SCENARIOS, super::super::WARD_COURT).expect("listed");
+        let mut source = super::super::script::idle;
+
+        let mut file = Recording::new(ward, ward.config).unwrap();
+        file.step(&mut source).unwrap();
+        file.recorder.fill();
+        assert!(matches!(file.step(&mut source), Err(ReplayError::TooManyTicks { .. })));
+        assert_eq!(file.simulation().tick(), 1, "no step taken");
+
+        let mut run = Recording::new(ward, ward.config).unwrap().go_on_past_limit();
+        run.step(&mut source).unwrap();
+        run.recorder.fill();
+        run.step(&mut source).expect("plays on");
+        assert_eq!(run.filled_at(), Some(MAX_TICKS));
+        assert_eq!((run.simulation().tick(), run.recorded_ticks()), (2, MAX_TICKS));
+        run.play_timeline(super::super::COURT_GATE_ID).expect("plays");
+        assert!(run.simulation().timeline().is_some(), "the command applies");
+        run.step(&mut source).expect("plays on");
+        assert_eq!(run.simulation().tick(), 3);
+        assert!(run.so_far().commands().is_empty(), "and the file holds nothing past its end");
+        let script = super::super::find_script("idle").expect("listed");
+        assert!(matches!(run.run_script(script, MAX_TICKS + 5), Err(PlayError::RecordingEnded { .. })));
     }
 
     #[test]

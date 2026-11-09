@@ -60,6 +60,16 @@ fn recorder_state(combat: &Combat) -> RecorderState {
             scripted,
         },
         CombatStatus::Fighting { fights } => RecorderState::Fighting { fight: fights, tick },
+        // A game's run is its flow's to keep or not, so the panel has nothing to do with one but say what
+        // it is: a file the flow writes, or a fight kept nowhere.
+        CombatStatus::Running { scenario, kept: Some(path) } => RecorderState::Recording {
+            scenario: scenario.to_owned(),
+            path: path.display().to_string(),
+            ticks: tick,
+            at_limit: false,
+            scripted: true,
+        },
+        CombatStatus::Running { kept: None, .. } => RecorderState::Fighting { fight: 1, tick },
     }
 }
 

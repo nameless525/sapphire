@@ -292,7 +292,8 @@ fn the_arena_plays_its_committed_replay() {
 
 /// A replay that goes between zones (M3 W4), in the arena, as its goldens play it: each trip holds the fight
 /// under the wipe while the next zone comes in, and every tick reaches the headless run's checksum, with no
-/// allocation in a fixed step. A bench plays it to its end, however long the loads held it.
+/// allocation in a fixed step. A bench plays it to its end, however long the loads held it, and so does a
+/// capture of its end, whose held steps draw the frames a trip waits on (M3 Z2: it never ended before).
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn the_arena_goes_between_zones_and_reaches_its_checksums() {
@@ -316,6 +317,23 @@ fn the_arena_goes_between_zones_and_reaches_its_checksums() {
     let arrivals = log.lines().filter(|line| line.contains("arrived in a zone")).count();
     assert_eq!(arrivals, 5, "each entry a trip: {log}");
     assert!(!log.contains("a trip went wrong"), "{log}");
+
+    let temp = Temp::new("zone_trip_end");
+    let capture = temp.path("end.png");
+    let output = run_app(&[
+        "--capture",
+        capture.to_str().expect("UTF-8"),
+        "--size",
+        "64x36",
+        "--arena",
+        "--replay",
+        replay.to_str().expect("UTF-8"),
+    ]);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{log}");
+    assert_eq!(log.lines().filter(|line| line.contains("arrived in a zone")).count(), 5, "{log}");
+    assert!(capture.exists(), "{log}");
 }
 
 /// The rule that governs a zone's streaming (M3 W2): the simulation streams nothing. The arena's replay

@@ -44,13 +44,26 @@ fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppIn
 
 /// A tick of a capture: a stage's step, a frame's worth. A frame a cutscene holds the fight for is a frame,
 /// so `--capture-ticks` counts it; `to_end`, a capture of a replay's end, steps on through it, since the end
-/// is the replay's last tick (M3 Q3).
-fn step(stage: &mut Stage, to_end: bool) {
+/// is the replay's last tick (M3 Q3). A zone trip holds the fight until its zone has loaded, its first cells
+/// are in and its wipe has covered and cleared, and only a drawn frame moves those on (M3 W4): so a step a
+/// trip holds draws one into `view`, its output discarded where it may be. Without it, a capture of
+/// `zone-trip`'s end never ended (M3 Z2).
+fn step(
+    stage: &mut Stage,
+    to_end: bool,
+    view: &wgpu::TextureView,
+    history_only: bool,
+) -> Result<(), AppInitError> {
     loop {
         let held = stage.show.fight.held_steps();
         stage.step();
         if !to_end || stage.show.fight.held_steps() == held {
-            break;
+            return Ok(());
+        }
+        if stage.show.fight.show.trip_phase().is_some() {
+            stage.render_capture_warmup(view, history_only)?;
+            stage.scene.end_frame();
+            stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         }
     }
 }
@@ -69,15 +82,15 @@ pub(crate) fn run(
     let mut drawn = 1_u32;
     let first =
         frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
+    let target = stage.target(width, height, wgpu::TextureUsages::empty());
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     for _ in 0..first {
-        step(stage, to_end);
+        step(stage, to_end, &view, history_only)?;
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
     // shown, at least its warm-up, redrawing the same scene state at the end.
     let earlier = (frames.count - 1).max(if stage.overlay_visible() { OVERLAY_WARMUP_FRAMES } else { 0 });
     if earlier > 0 {
-        let target = stage.target(width, height, wgpu::TextureUsages::empty());
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let draw_every = draw_every.map(NonZeroU32::get);
         for frame in 0..earlier {
             stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
@@ -90,7 +103,7 @@ pub(crate) fn run(
             // The frames still to come, the captured one included, each this many ticks later.
             if earlier - frame < frames.count {
                 for _ in 0..frames.step {
-                    step(stage, to_end);
+                    step(stage, to_end, &view, history_only)?;
                 }
             }
         }

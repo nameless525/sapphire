@@ -155,7 +155,9 @@ pub struct Scene {
 /// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 155] {
+/// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
+/// cutscene (M3 Q3), and only they play a cutscene from a fight.
+pub fn scenes() -> [Scene; 158] {
     [
         Scene {
             name: "turntable-start",
@@ -2413,6 +2415,76 @@ pub fn scenes() -> [Scene; 155] {
                 "tests/replays/party-swap.sreplay",
                 "--time-of-day",
                 "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The Lantern Ward's gate cutscene (M3 Q3), at fixed times of a replay that watches it, in the zone's
+        // court at its evening hour. A capture's tick is a frame, and the gate holds the fight from frame 30,
+        // so frame 30 + 60t is t seconds in. 3.5 s: the warden close, the exposure down, its overhead
+        // coming down, the vignette in.
+        Scene {
+            name: "cutscene-gate-warden",
+            args: &[
+                "--capture-ticks",
+                "240",
+                "--arena",
+                "--replay",
+                "tests/replays/ward-court-watched.sreplay",
+                "--time-of-day",
+                "17.5",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // 6.2 s: the character close, turning into guard, with the ward's street behind and the bloom up.
+        Scene {
+            name: "cutscene-gate-guard",
+            args: &[
+                "--capture-ticks",
+                "402",
+                "--arena",
+                "--replay",
+                "tests/replays/ward-court-watched.sreplay",
+                "--time-of-day",
+                "17.5",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // 8.6 s: the two of them down the court as the view blends back toward the fight's camera, the
+        // vignette going.
+        Scene {
+            name: "cutscene-gate-return",
+            args: &[
+                "--capture-ticks",
+                "546",
+                "--arena",
+                "--replay",
+                "tests/replays/ward-court-watched.sreplay",
+                "--time-of-day",
+                "17.5",
                 "--tier",
                 "desktop-high",
                 "--ao",

@@ -49,10 +49,10 @@ pub use checksums::{
 };
 pub use document::KindOfEnemy;
 pub use file::{
-    COMMANDS_FORMAT_VERSION, FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION,
-    Recorder, Replay, ReplayCommand, ReplayError, is_valid_name,
+    COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS,
+    PLAIN_FORMAT_VERSION, Recorder, Replay, ReplayCommand, ReplayError, is_valid_name,
 };
-pub use play::{PlayError, Played, Player, Recording, StepAllocated};
+pub use play::{PlayError, Played, Player, Recording, RunStart, StepAllocated};
 pub use scenario::{
     BAKED_ZONES, BakedZone, FightWorld, PARTY_TUNING, PLAYERS, PreparedFight, RIVALS, SCENARIOS, Scenario,
     ScenarioError, ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_ENEMY, WARRIOR_MOVES, WARRIORS,

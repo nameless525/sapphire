@@ -3,10 +3,11 @@
 use std::time::Duration;
 
 use sapphire_core::Name;
+use sapphire_serialize::AssetId;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
-use crate::checkpoint::CheckpointId;
+use crate::checkpoint::{CheckpointId, ZoneStart};
 use crate::dialogue::DialogueEffect;
 use crate::flags::{Flags, MAX_FLAGS};
 use crate::simulation::SimConfig;
@@ -33,18 +34,25 @@ pub enum ReplayCommand {
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
 
-/// The file format's version. A change to its layout takes a new one, and older files are refused.
+/// The file format's newest version, for a run that starts from a save's place in its zone (M3 G1). A change
+/// to its layout takes a new one, and older files are refused.
 ///
-/// A file with no starting flags is written in [`COMMANDS_FORMAT_VERSION`] instead, which is this layout
-/// without that section, and one with no [`ReplayCommand`]s either in [`PLAIN_FORMAT_VERSION`], without
-/// that one: most runs start from no save, play no timeline and teleport nobody, and they keep the bytes
-/// they've always had.
-pub const FORMAT_VERSION: u32 = 3;
+/// A file that starts where its scenario does is written in [`FLAGS_FORMAT_VERSION`] instead, which is this
+/// layout without the zone's start; one with no starting flags either in [`COMMANDS_FORMAT_VERSION`]; and
+/// one with no [`ReplayCommand`]s either in [`PLAIN_FORMAT_VERSION`]: most runs start from no save, play no
+/// timeline and teleport nobody, and they keep the bytes they've always had.
+pub const FORMAT_VERSION: u32 = 4;
 
-/// [`FORMAT_VERSION`]'s layout, without its starting flags (M3 Q1).
+/// [`FORMAT_VERSION`]'s layout, without its zone's start (M3 Q2), whose starting flags are never none.
+pub const FLAGS_FORMAT_VERSION: u32 = 3;
+
+/// The longest checkpoint name a start holds.
+const MAX_CHECKPOINT_NAME: usize = 255;
+
+/// [`FORMAT_VERSION`]'s layout, without its zone's start or its starting flags (M3 Q1).
 pub const COMMANDS_FORMAT_VERSION: u32 = 2;
 
-/// [`FORMAT_VERSION`]'s layout, without its commands or its starting flags.
+/// [`FORMAT_VERSION`]'s layout, without its zone's start, its starting flags or its commands.
 pub const PLAIN_FORMAT_VERSION: u32 = 1;
 
 /// The longest replay: four hours at 60 Hz, past any session anyone would keep. The bound on what a
@@ -119,10 +127,12 @@ pub enum ReplayError {
     )]
     EmptyCommands,
     #[error(
-        "the file is in format version {FORMAT_VERSION} and holds no starting flags, which is version \
+        "the file is in format version {FLAGS_FORMAT_VERSION} and holds no starting flags, which is version \
          {COMMANDS_FORMAT_VERSION} or {PLAIN_FORMAT_VERSION}"
     )]
     EmptyFlags,
+    #[error("the run's start: {problem}")]
+    BadStart { problem: &'static str },
     #[error("the file starts from {count} flags, past the simulation's {MAX_FLAGS}")]
     TooManyFlags { count: u32 },
     #[error(
@@ -233,11 +243,60 @@ fn read_commands(
     Ok(commands)
 }
 
+/// Reads a zone's start section: the checkpoint's name and the cleared encounters, ascending.
+fn read_start(reader: &mut Reader<'_>) -> Result<ZoneStart, ReplayError> {
+    let [len] = reader.array("the start's checkpoint name's length")?;
+    let name = reader.take("the start's checkpoint name", usize::from(len))?;
+    let checkpoint = match std::str::from_utf8(name) {
+        Ok("") => None,
+        Ok(name) => Some(name.to_owned()),
+        Err(_) => return Err(ReplayError::BadStart { problem: "its checkpoint's name isn't UTF-8" }),
+    };
+    let count = u16::from_le_bytes(reader.array("the start's cleared count")?);
+    let mut section = Reader(reader.take("the start's cleared encounters", usize::from(count) * 16)?);
+    let mut cleared: Vec<AssetId> = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let id = AssetId::from_bytes(section.array("an encounter's ID")?);
+        if cleared.last().is_some_and(|&last| last >= id) {
+            return Err(ReplayError::BadStart { problem: "its cleared encounters aren't ascending" });
+        }
+        cleared.push(id);
+    }
+    Ok(ZoneStart { checkpoint, cleared })
+}
+
+/// Writes what [`read_start`] reads.
+fn write_start(out: &mut Vec<u8>, start: &ZoneStart) {
+    let name = start.checkpoint.as_deref().unwrap_or("");
+    // At most MAX_CHECKPOINT_NAME: every way in checks it.
+    out.push(name.len() as u8);
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&(start.cleared.len() as u16).to_le_bytes());
+    for id in &start.cleared {
+        out.extend_from_slice(&id.to_bytes());
+    }
+}
+
+/// Whether a file can hold `start`: a checkpoint named, if at all, in 1 to 255 bytes, and at most
+/// `u16::MAX` cleared encounters, ascending.
+fn check_start(start: &ZoneStart) -> Result<(), ReplayError> {
+    if start.checkpoint.as_ref().is_some_and(|name| name.is_empty() || name.len() > MAX_CHECKPOINT_NAME) {
+        return Err(ReplayError::BadStart { problem: "its checkpoint's name is empty or past 255 bytes" });
+    }
+    if start.cleared.len() > usize::from(u16::MAX) {
+        return Err(ReplayError::BadStart { problem: "it clears more encounters than a file holds" });
+    }
+    if start.cleared.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(ReplayError::BadStart { problem: "its cleared encounters aren't ascending" });
+    }
+    Ok(())
+}
+
 /// Reads the starting flags' section, which holds at least one, each after the one before by name, and
 /// no more than the simulation's table.
-fn read_flags(reader: &mut Reader<'_>) -> Result<Vec<(Name, i32)>, ReplayError> {
+fn read_flags(reader: &mut Reader<'_>, may_be_empty: bool) -> Result<Vec<(Name, i32)>, ReplayError> {
     let count = reader.u32("the starting flags' count")?;
-    if count == 0 {
+    if count == 0 && !may_be_empty {
         return Err(ReplayError::EmptyFlags);
     }
     if count as usize > MAX_FLAGS {
@@ -336,8 +395,12 @@ impl Cursor {
 /// | n | the scenario's name: `a-z`, `0-9`, `-`, `_` |
 /// | 4 | how many commands, never 0 in [`COMMANDS_FORMAT_VERSION`] (that and [`FORMAT_VERSION`]) |
 /// | 9 each | a command: its tick, 1 byte for its kind, 4 for its argument (likewise) |
-/// | 4 | how many starting flags, from 1 to [`MAX_FLAGS`] ([`FORMAT_VERSION`] alone) |
-/// | 12 each | a flag: its name's hash, then its value, never 0, ascending by hash ([`FORMAT_VERSION`] alone) |
+/// | 4 | how many starting flags, up to [`MAX_FLAGS`], never 0 in [`FLAGS_FORMAT_VERSION`] (that and [`FORMAT_VERSION`]) |
+/// | 12 each | a flag: its name's hash, then its value, never 0, ascending by hash (likewise) |
+/// | 1 | the zone's start: its checkpoint name's length, 0 for none ([`FORMAT_VERSION`] alone) |
+/// | n | the checkpoint's name, UTF-8 ([`FORMAT_VERSION`] alone) |
+/// | 2 | how many encounters it has cleared ([`FORMAT_VERSION`] alone) |
+/// | 16 each | a cleared encounter's ID, ascending ([`FORMAT_VERSION`] alone) |
 ///
 /// A command's kind is 0 for a timeline played (its argument the timeline's ID), 1 for one skipped (how far
 /// in, in milliseconds), 2 for a return to a checkpoint (the checkpoint's place in its zone's list), 3 for
@@ -357,7 +420,11 @@ impl Cursor {
 /// story so far, which isn't anything anyone did in the run, so it's the header's and not a command. A
 /// flag of 0 is one nobody set, so it isn't written.
 ///
-/// A file with no flags is in [`COMMANDS_FORMAT_VERSION`], and with no commands either in
+/// The zone's start is a save's place in the scenario's zone (B4's [`ZoneStart`], M3 G1): its latest
+/// checkpoint and the encounters it has cleared, which the scenario's setup takes before the first step.
+///
+/// A file with no zone's start is in [`FLAGS_FORMAT_VERSION`], with no flags either in
+/// [`COMMANDS_FORMAT_VERSION`]. /// A file with no flags is in [`COMMANDS_FORMAT_VERSION`], and with no commands either in
 /// [`PLAIN_FORMAT_VERSION`], so each run has one encoding.
 ///
 /// The magic and both versions come first and never move, so any later format is refused by name.
@@ -376,6 +443,8 @@ pub struct Replay {
     ticks: u32,
     commands: Vec<(u32, ReplayCommand)>,
     flags: Vec<(Name, i32)>,
+    /// Where in its zone it starts, if not where the scenario does.
+    start: Option<ZoneStart>,
     body: Vec<u8>,
 }
 
@@ -431,7 +500,12 @@ impl Replay {
             COMMANDS_FORMAT_VERSION => read_commands(&mut reader, ticks, false)?,
             _ => read_commands(&mut reader, ticks, true)?,
         };
-        let flags = if version == FORMAT_VERSION { read_flags(&mut reader)? } else { Vec::new() };
+        let flags = match version {
+            FLAGS_FORMAT_VERSION => read_flags(&mut reader, false)?,
+            FORMAT_VERSION => read_flags(&mut reader, true)?,
+            _ => Vec::new(),
+        };
+        let start = if version == FORMAT_VERSION { Some(read_start(&mut reader)?) } else { None };
         validate_body(reader.0, ticks)?;
 
         let config = SimConfig { seed, max_actors, step_budget, ..SimConfig::default() };
@@ -442,6 +516,7 @@ impl Replay {
             ticks,
             commands,
             flags,
+            start,
             body: reader.0.to_vec(),
         })
     }
@@ -452,10 +527,11 @@ impl Replay {
         const HEADER_LEN: usize = 49;
         let mut out = Vec::with_capacity(HEADER_LEN + self.scenario.len() + self.body.len() + DIGEST_LEN);
         out.extend_from_slice(&MAGIC);
-        let version = match (self.commands.is_empty(), self.flags.is_empty()) {
-            (_, false) => FORMAT_VERSION,
-            (false, true) => COMMANDS_FORMAT_VERSION,
-            (true, true) => PLAIN_FORMAT_VERSION,
+        let version = match (self.start.is_some(), self.flags.is_empty(), self.commands.is_empty()) {
+            (true, _, _) => FORMAT_VERSION,
+            (false, false, _) => FLAGS_FORMAT_VERSION,
+            (false, true, false) => COMMANDS_FORMAT_VERSION,
+            (false, true, true) => PLAIN_FORMAT_VERSION,
         };
         out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&TickActions::LAYOUT_VERSION.to_le_bytes());
@@ -483,17 +559,26 @@ impl Replay {
                 out.extend_from_slice(&argument.to_le_bytes());
             }
         }
-        if version == FORMAT_VERSION {
+        if version >= FLAGS_FORMAT_VERSION {
             out.extend_from_slice(&(self.flags.len() as u32).to_le_bytes());
             for &(name, value) in &self.flags {
                 out.extend_from_slice(&name.as_u64().to_le_bytes());
                 out.extend_from_slice(&value.to_le_bytes());
             }
         }
+        if let Some(start) = &self.start {
+            write_start(&mut out, start);
+        }
         out.extend_from_slice(&self.body);
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
         out
+    }
+
+    /// Where in its zone it starts, if not where its scenario does.
+    #[must_use]
+    pub fn zone_start(&self) -> Option<&ZoneStart> {
+        self.start.as_ref()
     }
 
     /// The name of the scenario it starts from.
@@ -572,6 +657,7 @@ impl Recorder {
             ticks: 0,
             commands: Vec::new(),
             flags: Vec::new(),
+            start: None,
             body: Vec::new(),
         };
         Ok(Self { replay, run: TickActions::NEUTRAL, run_len: 0 })
@@ -609,6 +695,17 @@ impl Recorder {
     /// none that's 0, since that's what a flag nobody set reads.
     pub(crate) fn start_with_flags(&mut self, flags: &Flags) {
         self.replay.flags = flags.iter().filter(|&(_, value)| value != 0).collect();
+    }
+
+    /// Says where in its zone the run starts, before its first tick: a save's place (M3 G1).
+    ///
+    /// # Errors
+    ///
+    /// For a start a file can't hold, in which case it keeps none.
+    pub fn start_at(&mut self, start: ZoneStart) -> Result<(), ReplayError> {
+        check_start(&start)?;
+        self.replay.start = Some(start);
+        Ok(())
     }
 
     /// Stamps the recording with the move data's hash, once its world is set up.

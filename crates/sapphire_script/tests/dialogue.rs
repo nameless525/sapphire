@@ -5,8 +5,9 @@
 use sapphire_core::Name;
 use sapphire_dialogue::{ConditionId, Dialogue, DialogueWalk, DialogueWorld, EffectId, FlagRegistry};
 use sapphire_gameplay::replay::{
-    CHOICE_AT, COMMANDS_FORMAT_VERSION, FORMAT_VERSION, LIGHT_THE_WARD, LiveMoves, Player, Recording, Replay,
-    ReplayCommand, Scenario, ScenarioError, ScenarioSetup, Script, Trail, find_scenario, find_script,
+    CHOICE_AT, COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, LIGHT_THE_WARD, LiveMoves, Player, Recording,
+    Replay, ReplayCommand, RunStart, Scenario, ScenarioError, ScenarioSetup, Script, Trail, find_scenario,
+    find_script,
 };
 use sapphire_gameplay::{ActorId, DialogueEffect, DialogueId, FlagValues, Simulation};
 use sapphire_save::ProgressStore;
@@ -289,9 +290,14 @@ fn a_save_made_mid_quest_replays_as_never_having_stopped() {
     let starting = loaded.starting(&registered);
     assert!(starting.ignored.is_empty());
 
-    let mut second =
-        Recording::starting_from(scenario(), scenario().config, &LiveMoves::default(), &starting.flags)
-            .expect("starts");
+    let mut second = Recording::starting_from(
+        scenario(),
+        scenario().config,
+        &LiveMoves::default(),
+        &RunStart { zone: None, flags: starting.flags.clone() },
+        |_, _, _| Ok(()),
+    )
+    .expect("starts");
     let script = no_choice();
     first.run_script(&script, script.ticks).expect("runs");
     second.run_script(&script, script.ticks).expect("runs");
@@ -307,7 +313,7 @@ fn a_save_made_mid_quest_replays_as_never_having_stopped() {
     let first_bytes = first_replay.encode();
     assert_eq!(u32::from_le_bytes(first_bytes[8..12].try_into().unwrap()), COMMANDS_FORMAT_VERSION);
     let second_bytes = second_replay.encode();
-    assert_eq!(u32::from_le_bytes(second_bytes[8..12].try_into().unwrap()), FORMAT_VERSION);
+    assert_eq!(u32::from_le_bytes(second_bytes[8..12].try_into().unwrap()), FLAGS_FORMAT_VERSION);
     let decoded = Replay::decode(&second_bytes).expect("reads");
     assert_eq!(decoded.starting_flags(), starting.flags.as_slice());
     assert!(decoded.commands().is_empty());

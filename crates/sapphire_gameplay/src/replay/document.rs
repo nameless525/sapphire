@@ -53,6 +53,7 @@ use sapphire_serialize::cooked::AlignedVec;
 use sapphire_zone::{EncounterDocument, Zone, ZoneDocument, ZonePresentation};
 use serde::{Deserialize, Serialize};
 
+use super::play::RunStart;
 use super::scenario::ScenarioError;
 use crate::actors::{ActorId, ActorSpawn};
 use crate::arena::SpawnPoint;
@@ -219,7 +220,7 @@ pub struct DocumentScript {
     pub source: &'static str,
 }
 
-/// One of a scenario's `enemies`, read, and where [`ScenarioDocument::set_up`] puts it.
+/// One of a scenario's `enemies`, read, and where [`ScenarioDocument::set_up_from`] puts it.
 struct PlannedEnemy {
     document: EnemyDocument,
     /// Its moves' place in `moves`.
@@ -358,7 +359,7 @@ impl ScenarioDocument {
         Ok(scripts)
     }
 
-    /// Where each of `enemies` goes, in a simulation [`Self::set_up`] makes: on the set its moves have, the
+    /// Where each of `enemies` goes, in a simulation [`Self::set_up_from`] makes: on the set its moves have, the
     /// first kind on them, or on a copy added after everything before it.
     fn planned_enemies(&self) -> Result<Vec<PlannedEnemy>, ScenarioError> {
         let mut taken = vec![false; self.moves.len()];
@@ -456,8 +457,24 @@ impl ScenarioDocument {
     }
 
     /// Makes a world of it, the same way every run, and returns who input drives: the cast, without a
-    /// party's members past the first.
+    /// party's members past the first. A scenario sets one up through [`Self::set_up_from`].
+    #[cfg(test)]
     pub(super) fn set_up(&self, sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+        self.set_up_from(sim, &RunStart::default())
+    }
+
+    /// Makes a world of it, the same way every run, and returns who input drives, as a scenario sets one
+    /// up; from a save's place in its zone (M3 G1) rather than its own `cast[0].at` and `cleared`, if
+    /// `start` has one: the first of the cast stands at its checkpoint, or the zone's spawner
+    /// for none, and its encounters stay cleared. One with no zone refuses a place in one.
+    pub(super) fn set_up_from(
+        &self,
+        sim: &mut Simulation,
+        run: &RunStart,
+    ) -> Result<Vec<ActorId>, ScenarioError> {
+        if run.zone.is_some() && self.zone.is_none() {
+            return Err(invalid("zone", "a save's place needs a zone, and this names none"));
+        }
         let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
 
         let zone = self.zone.as_deref().map(zone_of).transpose()?;
@@ -495,7 +512,10 @@ impl ScenarioDocument {
         let mut start = None;
         if let Some((document, cooked)) = &zone {
             self.give_zone(sim, document, cooked, &colliders, ZoneCast { moves: &sets, controller })?;
-            start = self.start_zone(sim, document)?;
+            start = match &run.zone {
+                Some(saved) => sim.start_at(saved)?,
+                None => self.start_zone(sim, document)?,
+            };
         }
 
         let mut cast = Vec::with_capacity(self.cast.len());

@@ -29,6 +29,7 @@ use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
 use sapphire_zone::{Zone, ZoneError};
 
 use super::document::{KindOfEnemy, ScenarioDocument};
+use super::play::RunStart;
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
@@ -244,21 +245,31 @@ impl Scenario {
     /// Loads its move sets and spawns its actors in `sim`, and returns the actors input drives, the player
     /// first, for an [`ActionSource`](super::ActionSource).
     pub fn set_up(&self, sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-        match self.setup {
-            ScenarioSetup::Code(setup) => setup(sim),
-            ScenarioSetup::Document(document) => document.set_up(sim),
-            ScenarioSetup::DocumentAnd(document, then) => {
-                let cast = document.set_up(sim)?;
-                then(document, sim)?;
-                Ok(cast)
-            }
-        }
+        self.set_up_from(sim, &RunStart::default())
     }
 
     /// Its kinds of enemy, and the sets their fighters play, in the simulations it sets up: what a stage draws
     /// each as (M3 B3b). A scenario of code has none, and its fighters draw as the warrior.
     pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
         self.document().map_or(Ok(Vec::new()), ScenarioDocument::kinds_of_enemy)
+    }
+
+    /// [`Self::set_up`], from `start` (M3 G1): a document's first cast member stands at the save's checkpoint,
+    /// and the encounters it cleared stay cleared. A scenario made by code refuses a place in a zone.
+    pub fn set_up_from(&self, sim: &mut Simulation, start: &RunStart) -> Result<Vec<ActorId>, ScenarioError> {
+        match (self.setup, &start.zone) {
+            (ScenarioSetup::Code(setup), None) => setup(sim),
+            (ScenarioSetup::Code(_), Some(_)) => Err(ScenarioError::Document {
+                field: "zone".to_owned(),
+                problem: format!("scenario `{}` is made by code, which starts in no zone's place", self.name),
+            }),
+            (ScenarioSetup::Document(document), _) => document.set_up_from(sim, start),
+            (ScenarioSetup::DocumentAnd(document, then), _) => {
+                let cast = document.set_up_from(sim, start)?;
+                then(document, sim)?;
+                Ok(cast)
+            }
+        }
     }
 
     /// The first set that plays the document with this file name, in this scenario's simulations.

@@ -12,7 +12,7 @@ use super::script::{ActionSource, Script};
 use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
-use crate::checkpoint::{CheckpointId, TeleportError};
+use crate::checkpoint::{CheckpointId, TeleportError, ZoneStart};
 use crate::dialogue::{DialogueEffect, DialogueEffectError};
 use crate::moves::{MoveSetId, Tuned};
 use crate::script::HookFrame;
@@ -131,6 +131,16 @@ impl Tracked {
     }
 }
 
+/// What a run starts from besides its scenario: a save's story so far (M3 Q2's flags) and its place in the
+/// scenario's zone (M3 G1), its latest checkpoint and the encounters it cleared. A replay's file holds it, so a run continued from a save
+/// replays from there. `RunStart::default()` starts where the scenario does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunStart {
+    pub zone: Option<ZoneStart>,
+    /// The story so far (M3 Q2): flags by name, as [`Simulation::start_with_flags`] takes them.
+    pub flags: Vec<(Name, i32)>,
+}
+
 /// Runs a [`Replay`] from its scenario, one tick at a time.
 pub struct Player {
     tracked: Tracked,
@@ -206,10 +216,11 @@ impl Player {
             let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
             return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
         };
+        let start = RunStart { zone: replay.zone_start().cloned(), flags: replay.starting_flags().to_vec() };
         let (mut sim, cast) = live
-            .start(scenario, replay.config())
+            .start_from(scenario, replay.config(), &start)
             .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
-        sim.start_with_flags(replay.starting_flags())?;
+        sim.start_with_flags(&start.flags)?;
         Ok((scenario, sim, cast))
     }
 
@@ -384,35 +395,29 @@ impl Recording {
         live: &LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, PlayError> {
-        Self::begin(scenario, config, live, &[], setup)
+        Self::starting_from(scenario, config, live, &RunStart::default(), setup)
     }
 
-    /// [`Self::tuned`], starting from `flags`, as a save's story so far: the file keeps them in its header,
-    /// and a [`Player`] starts from them too ([`Simulation::start_with_flags`]).
+    /// [`Self::tuned_with_setup`], from `start` (M3 G1): a save's place in the scenario's zone, which the
+    /// file holds so its replay starts there too.
     pub fn starting_from(
         scenario: &Scenario,
         config: SimConfig,
         live: &LiveMoves,
-        flags: &[(Name, i32)],
-    ) -> Result<Self, PlayError> {
-        Self::begin(scenario, config, live, flags, |_, _, _| Ok(()))
-    }
-
-    fn begin(
-        scenario: &Scenario,
-        config: SimConfig,
-        live: &LiveMoves,
-        flags: &[(Name, i32)],
+        start: &RunStart,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, PlayError> {
         // Before the world, so a pool too big for a file is refused before it's built.
         let mut recorder = Recorder::new(scenario.name, config, 0)?;
+        if let Some(zone) = &start.zone {
+            recorder.start_at(zone.clone())?;
+        }
         let (mut sim, cast) = live
-            .start(scenario, config)
+            .start_from(scenario, config, start)
             .map_err(|source| PlayError::Setup { name: scenario.name.to_owned(), source })?;
         setup(scenario, &mut sim, &cast)
             .map_err(|reason| PlayError::Configure { name: scenario.name.to_owned(), reason })?;
-        sim.start_with_flags(flags)?;
+        sim.start_with_flags(&start.flags)?;
         recorder.set_tables_hash(sim.tables_hash());
         recorder.start_with_flags(sim.flags());
         Ok(Self {

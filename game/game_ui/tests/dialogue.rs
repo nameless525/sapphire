@@ -12,8 +12,8 @@ use game_ui::dialogue::DialoguePanel;
 use game_ui::menus::{DialogueModel, MenuScreen};
 use sapphire_core::Name;
 use sapphire_gameplay::replay::{
-    LiveMoves, Player, Recording, ReplayCommand, SCENARIOS, Scenario, ScenarioError, ScenarioSetup, Trail,
-    find_scenario, find_script,
+    LiveMoves, Player, Recording, ReplayCommand, RunStart, SCENARIOS, Scenario, ScenarioError, ScenarioSetup,
+    Trail, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, DialogueId, Simulation};
 use sapphire_script::scenarios::ward_guide;
@@ -57,8 +57,14 @@ struct Visit {
 impl Visit {
     fn new(locale: &str, device: Device, flags: &[(Name, i32)]) -> Self {
         let scenario = scenario();
-        let recording = Recording::starting_from(&scenario, scenario.config, &LiveMoves::default(), flags)
-            .expect("starts");
+        let recording = Recording::starting_from(
+            &scenario,
+            scenario.config,
+            &LiveMoves::default(),
+            &RunStart { zone: None, flags: flags.to_vec() },
+            |_, _, _| Ok(()),
+        )
+        .expect("starts");
         let runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
         let mut walk = Walk::new(assets(), locale, false, SIZE, device);
         walk.menus.open_under(MenuScreen::Hud);

@@ -64,11 +64,11 @@ use sapphire_assets::AssetId;
 use sapphire_dialogue::ConditionId;
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, KindOfEnemy, LiveMoves, Played, Player,
-    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, SCRIPTS, Scenario,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, RunStart, SCRIPTS, Scenario,
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
-use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions, TimelineId};
+use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions, TimelineId, ZoneStart};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 use sapphire_script::ConditionSet;
@@ -135,7 +135,10 @@ pub enum CombatOption {
     /// unrecorded from there, and its timelines' plays and skips are recorded commands, as a recording's
     /// are. On the actions of whoever's playing, or with `script` and `--capture`, `--bench` or
     /// `--offscreen`, on the script's.
-    Run { scenario: String, script: Option<String>, keep: Option<PathBuf> },
+    ///
+    /// `start` is where in the scenario's zone it starts: a save's place, for a run continued, which its
+    /// file holds too.
+    Run { scenario: String, start: RunStart, script: Option<String>, keep: Option<PathBuf> },
 }
 
 /// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
@@ -451,8 +454,8 @@ impl Combat {
             CombatOption::Record { path, scenario, script } => {
                 Self::recording_with_setup(path, scenario, script.as_deref(), live, setup)
             }
-            CombatOption::Run { scenario, script, keep } => {
-                Self::running(scenario, script.as_deref(), keep.as_deref(), live, setup)
+            CombatOption::Run { scenario, start, script, keep } => {
+                Self::running(scenario, start, script.as_deref(), keep.as_deref(), live, setup)
             }
         }
     }
@@ -461,6 +464,7 @@ impl Combat {
     /// someone plays does: a run is never refused for a file left from the last.
     fn running(
         scenario: &str,
+        start: &RunStart,
         script: Option<&str>,
         keep: Option<&Path>,
         live: &LiveMoves,
@@ -476,7 +480,7 @@ impl Combat {
             None => PathBuf::new(),
         };
         let kind = Kind::Run { kept: keep.is_some() };
-        Self::record(path, scenario, script, live, setup, kind).map_err(|error| format!("a run: {error}"))
+        Self::record(path, scenario, start, script, live, setup, kind)
     }
 
     fn fighting(
@@ -543,30 +547,32 @@ impl Combat {
         if path.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) {
             return Err(format!("--record {}: its directory doesn't exist", path.display()));
         }
-        Self::record(free, scenario, script, live, setup, Kind::File)
+        Self::record(free, scenario, &RunStart::default(), script, live, setup, Kind::File)
     }
 
     /// A recording of `scenario` for `kind`, to `path`, which is free to write.
     fn record(
         path: PathBuf,
         scenario: &str,
+        start: &RunStart,
         script: Option<&str>,
         live: &LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
         kind: Kind,
     ) -> Result<Self, String> {
+        let what = if matches!(kind, Kind::Run { .. }) { "a run" } else { "--record" };
         let Some(scenario) = find_scenario(&SCENARIOS, scenario) else {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
-            return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
+            return Err(format!("{what}: no scenario `{scenario}`; there's {known:?}"));
         };
         let starts = ScriptStarts::new(script.and_then(find_script).map_or(&[], |script| script.commands));
         let script = script.map(script_actions).transpose()?;
-        let mut recording = Recording::tuned_with_setup(scenario, scenario.config, live, setup)
-            .map_err(|error| format!("--record: {error}"))?;
+        let mut recording = Recording::starting_from(scenario, scenario.config, live, start, setup)
+            .map_err(|error| format!("{what}: {error}"))?;
         if matches!(kind, Kind::Run { .. }) {
             recording = recording.go_on_past_limit();
         }
-        starts.clone().apply(&mut recording).map_err(|error| format!("--record: {error}"))?;
+        starts.clone().apply(&mut recording).map_err(|error| format!("{what}: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
         let mode =
             Mode::Recording { recording, script, stopped: None, files, starts: starts.after_start(), kind };
@@ -885,6 +891,26 @@ impl Combat {
             Mode::Replaying { .. } => Err("a replay plays only the timelines it recorded".to_owned()),
             Mode::Fighting(_) => Err("a fight with no file plays no timelines".to_owned()),
         }
+    }
+
+    /// Puts the player back at the zone's checkpoint `name` before the next step, as a beat's `align` does
+    /// (M3 G1), so they stand where its shots are framed: a recording, a game's run among them, records it
+    /// (B4's `ReturnTo`). A replay returns only where it recorded, and a fight with no file in no zone
+    /// returns nowhere.
+    pub fn return_to_checkpoint(&mut self, name: &str) -> Result<(), String> {
+        let Mode::Recording { recording, stopped: None, .. } = &mut self.mode else {
+            return Err("only a recording that's still going returns to a checkpoint".to_owned());
+        };
+        let zone = recording.simulation().zone().ok_or("the run is in no zone")?;
+        let checkpoint =
+            zone.checkpoint(name).ok_or_else(|| format!("the zone has no checkpoint `{name}`"))?;
+        recording.return_to_checkpoint(checkpoint).map(|_| ()).map_err(|error| error.to_string())
+    }
+
+    /// What a save written now would hold of the run's zone (B4's `ZoneStart`), if it's in one.
+    #[must_use]
+    pub fn zone_start(&self) -> Option<ZoneStart> {
+        self.simulation().zone_start()
     }
 
     /// Someone skipped the timeline playing, `at_ms` into it, between steps: a recording records it, and runs
@@ -1692,8 +1718,12 @@ mod tests {
     }
 
     fn run(scenario: &str, keep: Option<&Path>) -> Combat {
-        let option =
-            CombatOption::Run { scenario: scenario.to_owned(), script: None, keep: keep.map(Path::to_owned) };
+        let option = CombatOption::Run {
+            scenario: scenario.to_owned(),
+            start: RunStart::default(),
+            script: None,
+            keep: keep.map(Path::to_owned),
+        };
         Combat::new(&option).expect("sets up")
     }
 
@@ -1745,6 +1775,37 @@ mod tests {
         let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("sets up");
         let refused = fight.play_timeline(sapphire_gameplay::replay::COURT_GATE_ID).expect_err("no file");
         assert!(refused.contains("no timelines"), "{refused}");
+    }
+
+    /// A beat's `align` puts a run's player at a checkpoint by name, recorded as B4's return, and a run
+    /// continued from a save starts there and says so in what it would save next (M3 G1).
+    #[test]
+    fn a_run_returns_to_a_checkpoint_by_name_and_starts_from_a_save() {
+        let mut fresh = run("cart-yard", None);
+        assert_eq!(fresh.zone_start().and_then(|start| start.checkpoint), None);
+        fresh.return_to_checkpoint("platform").expect("the ground has one");
+        assert_eq!(fresh.zone_start().and_then(|start| start.checkpoint), None, "a return reaches nothing");
+        assert!(fresh.return_to_checkpoint("nowhere").expect_err("none").contains("no checkpoint"));
+        let mut arena = run("arena-fight", None);
+        assert!(arena.return_to_checkpoint("platform").expect_err("no zone").contains("no zone"));
+
+        let saved = ZoneStart { checkpoint: Some("platform".to_owned()), cleared: Vec::new() };
+        let option = CombatOption::Run {
+            scenario: "cart-yard".to_owned(),
+            start: RunStart { zone: Some(saved.clone()), flags: Vec::new() },
+            script: None,
+            keep: None,
+        };
+        let continued = Combat::new(&option).expect("sets up");
+        assert_eq!(continued.zone_start(), Some(saved.clone()));
+        let option = CombatOption::Run {
+            scenario: "arena-fight".to_owned(),
+            start: RunStart { zone: Some(saved), flags: Vec::new() },
+            script: None,
+            keep: None,
+        };
+        let refused = Combat::new(&option).err().expect("no zone to start in");
+        assert!(refused.starts_with("a run: "), "{refused}");
     }
 
     fn recording(path: &Path, script: Option<&str>) -> Combat {

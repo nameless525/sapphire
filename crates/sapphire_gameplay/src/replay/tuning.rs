@@ -11,6 +11,7 @@
 
 use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 
+use super::play::RunStart;
 use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
 use crate::moves::MoveSetId;
@@ -98,6 +99,16 @@ impl LiveMoves {
         scenario: &Scenario,
         config: SimConfig,
     ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
+        self.start_from(scenario, config, &RunStart::default())
+    }
+
+    /// [`Self::start`], from `start`: a save's place in the scenario's zone (M3 G1).
+    pub fn start_from(
+        &self,
+        scenario: &Scenario,
+        config: SimConfig,
+        start: &RunStart,
+    ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
         let mut sim = Simulation::new(config);
         if let Some(tuning) = self.targeting {
             sim.tune_targeting(tuning);
@@ -111,7 +122,7 @@ impl LiveMoves {
         if !self.scripts.is_empty() {
             sim.insert_resource(self.scripts.clone());
         }
-        let cast = scenario.set_up(&mut sim)?;
+        let cast = scenario.set_up_from(&mut sim, start)?;
         sim.check_cinematics()?;
         Ok((sim, cast))
     }

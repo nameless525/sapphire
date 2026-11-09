@@ -1928,8 +1928,7 @@ impl Renderer {
             // Edited shaders are checked here too: a variant first drawn now builds from them.
             self.checked_build(Self::prepare_drawn_pipelines);
         }
-        let rebind = lists_replaced || characters_replaced;
-        if rebind {
+        if lists_replaced || characters_replaced {
             self.rebuild_frame_bind_group();
         }
         self.ambient.prepare(packet, self.characters.table());
@@ -2002,7 +2001,7 @@ impl Renderer {
                 ui: &self.ui,
                 labels: self.labels,
             };
-            self.insets.prepare(packet, self.scene.slots(), &world, rebind, &bindings);
+            self.insets.prepare(packet, self.scene.slots(), &world, &bindings);
             if self.insets.any() {
                 self.checked_build(|renderer| {
                     renderer.post.build_inset(BuildOn::sources(renderer.edited_shaders))

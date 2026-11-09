@@ -222,15 +222,14 @@ impl Insets {
 
     /// Takes the packet's insets: makes, resizes or drops their targets, says which instance slots
     /// stand in them, and decides which draw. `world` is the main view's constants, which an inset's
-    /// take but for its ambient light and fog; `rebind` says the world's group 0 was made again, so
-    /// every inset's must be too. Allocates nothing once its targets and vectors have grown, unless a
-    /// target is made or resized.
+    /// take but for its ambient light and fog. The world's group 0 made again makes every inset's again
+    /// there ([`Self::rebind`]), so here only a resize does. Allocates nothing once its targets and
+    /// vectors have grown, unless a target is made or resized.
     pub(crate) fn prepare(
         &mut self,
         packet: &FramePacket,
         slots: &InstanceSlots,
         world: &FrameUniforms,
-        rebind: bool,
         bindings: &InsetBindings<'_>,
     ) {
         profiling::scope!("Insets::prepare");
@@ -256,7 +255,7 @@ impl Insets {
             };
             let target = &mut self.targets[index];
             target.live = true;
-            target.fit(picture, scene, rebind, bindings);
+            target.fit(picture, scene, bindings);
         }
         self.targets.retain(|target| target.live);
 
@@ -423,9 +422,9 @@ impl InsetTarget {
     }
 
     /// Sizes its picture and targets, and makes again the groups that bind what changed.
-    fn fit(&mut self, picture: (u32, u32), scene: (u32, u32), rebind: bool, bindings: &InsetBindings<'_>) {
+    fn fit(&mut self, picture: (u32, u32), scene: (u32, u32), bindings: &InsetBindings<'_>) {
         let resized = self.character_prepass.resize(bindings.device, scene);
-        if resized || rebind {
+        if resized {
             self.frame_group = self.frame_group(bindings);
         }
         if (self.picture.width(), self.picture.height()) != picture {

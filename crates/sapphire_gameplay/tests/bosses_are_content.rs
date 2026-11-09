@@ -7,7 +7,8 @@
 //! 3. the commit that put it in a zone touched only `content/`, `tests/replays/` and `tests/golden/`.
 //!
 //! The third reads the repository's history, so it holds where there's a whole history to read: a checkout,
-//! not CI's shallow clone, where it says so and lets the other two stand.
+//! or CI's Linux leg, whose Test job fetches it all. A shallow clone elsewhere says so and lets the other two
+//! stand; in CI, a Linux leg without the whole history, or no git to ask, fails rather than skips.
 //!
 //! What "reached" means: a document names another by its ID (a `.meta` sidecar's `id`), by its path under
 //! `content/`, or, a spawner, by a kind's name, which is a `<name>.enemy.ron`'s. A source file a document
@@ -260,10 +261,24 @@ fn the_commit_that_put_a_boss_in_its_zone_touched_only_content() {
         let output = Command::new("git").arg("-C").arg(&content.root).args(args).output().ok()?;
         output.status.success().then(|| String::from_utf8(output.stdout).expect("git speaks UTF-8"))
     };
+    // CI's Linux leg checks out the whole history for this (`ci.yml`'s Test job), so there it runs or fails;
+    // other legs' clones are shallow, and a checkout here with no git says so and lets the other two stand.
+    let in_ci = std::env::var_os("CI").is_some();
+    let whole_history_promised = in_ci && std::env::var("RUNNER_OS").is_ok_and(|os| os == "Linux");
     match git(&["rev-parse", "--is-shallow-repository"]).as_deref().map(str::trim) {
         Some("false") => {}
+        Some("true") if !whole_history_promised => {
+            eprintln!(
+                "a shallow clone: clause 3 is checked where there's a whole history, as CI's Linux leg has"
+            );
+            return;
+        }
         other => {
-            eprintln!("no whole history to read ({other:?}): clause 3 is checked where there is one");
+            assert!(
+                !in_ci,
+                "in CI clause 3 runs or fails, and git says {other:?}: Linux's leg has the whole history"
+            );
+            eprintln!("no history to read ({other:?}): clause 3 is checked where there is one");
             return;
         }
     }

@@ -120,6 +120,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Linux's leg takes the whole history (about 370 MiB), so exit test 2's clause 3 reads the commit
+          # that put a boss in its zone (`bosses_are_content.rs`), and fails there rather than skipping.
+          fetch-depth: ${{ matrix.os == 'ubuntu-24.04' && 0 || 1 }}
       - name: Install SDL3 build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS

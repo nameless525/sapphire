@@ -597,6 +597,23 @@ impl SimZone {
         self.stats = ZoneStats::default();
     }
 
+    /// What a zone keeps once a trip has left it, whose fighters the entry despawned: an encounter they
+    /// were fighting is back where it was before its trigger, to start over when someone walks in again,
+    /// rather than counting nobody standing as cleared or calling a wave nobody's there to meet. Nobody's
+    /// in its triggers. What's cleared stays cleared, its checkpoints stay reached, and a trigger keeps
+    /// count of its fires. It takes nothing from the heap.
+    pub(crate) fn left(&mut self) {
+        for trigger in &mut self.triggers {
+            trigger.inside = false;
+            trigger.found = false;
+        }
+        for encounter in &mut self.encounters {
+            if encounter.phase == EncounterPhase::Running {
+                encounter.restart();
+            }
+        }
+    }
+
     /// What goes in a simulation's `tables_hash`.
     pub(crate) const fn tables(&self) -> u64 {
         self.tables

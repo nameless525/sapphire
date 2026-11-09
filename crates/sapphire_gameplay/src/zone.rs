@@ -381,9 +381,12 @@ pub(crate) fn swap_in(world: &mut World, entry: ZoneEntry) {
         if let Some(navigation) = incoming.navigation.take() {
             world.insert_resource(navigation);
         }
-        // What the zone left had done goes back to its row with it; a zone the simulation started in, which
-        // no row holds, is done with.
-        let left = world.remove_resource::<SimZone>();
+        // What the zone left had done goes back to its row with it, less the fights the entry's despawns
+        // ended (`SimZone::left`); a zone the simulation started in, which no row holds, is done with.
+        let left = world.remove_resource::<SimZone>().map(|mut zone| {
+            zone.left();
+            zone
+        });
         if let Some(zone) = incoming.zone.take() {
             world.insert_resource(zone);
         }

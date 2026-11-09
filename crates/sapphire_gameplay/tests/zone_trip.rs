@@ -260,7 +260,9 @@ fn a_resettable_fight_starts_over_at_the_door_it_came_in_by() {
 
 /// A zone a trip enters brings its triggers, encounters and checkpoints (M3 G1), which the shelf built as it
 /// took the zone: its encounter starts as the player walks into its trigger, a checkpoint return stands them
-/// in it, and going out and back in finds them as they were left.
+/// in it, and going out and back in finds them as they were left, but for the fight the trip walked out of,
+/// which neither counts as cleared nor calls its waves into the zone entered: it waits for its trigger
+/// again.
 #[test]
 fn a_trip_brings_the_zones_encounters_and_checkpoints() {
     let (mut sim, cast) = started();
@@ -289,8 +291,22 @@ fn a_trip_brings_the_zones_encounters_and_checkpoints() {
 
     sim.enter_zone(HUB_START, player).expect("it can");
     assert!(sim.zone().is_some_and(|hub| hub.checkpoint("platform").is_none()), "the hub's own");
+    neutral(&mut sim, 120);
+    assert_eq!(sim.actors().len(), 1, "no wave of the ground's comes to the hub");
     let left = sim.zone_ground(PROVING_GROUND).and_then(ZoneGround::zone).expect("back on its row");
     assert_eq!(left.stats().encounters_started, 1, "as it was left");
+    assert_eq!(left.encounters()[0].phase(), EncounterPhase::Waiting, "the fight walked out of waits");
     sim.enter_zone(GROUND_START, player).expect("it can");
-    assert_eq!(sim.zone().expect("the ground's").encounters()[0].phase(), EncounterPhase::Running);
+    neutral(&mut sim, 120);
+    let ground = sim.zone().expect("the ground's");
+    assert_eq!(ground.encounters()[0].phase(), EncounterPhase::Waiting, "not cleared by nobody standing");
+    assert_eq!(ground.zone_start().cleared, [], "and no save says so");
+    assert_eq!(sim.actors().len(), 1, "nor are its waves called");
+
+    // Back into its trigger, and it starts over.
+    sim.teleport(player, Place { position: Vec3::new(9.0, 0.0, 10.0), yaw: 0.0 }).expect("standing");
+    neutral(&mut sim, 2);
+    let ground = sim.zone().expect("the ground's");
+    assert_eq!(ground.encounters()[0].phase(), EncounterPhase::Running);
+    assert_eq!(ground.stats().encounters_started, 2);
 }

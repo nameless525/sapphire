@@ -1,0 +1,10 @@
+// The documents the game ships in place of Sapphire's (M3 S3), each a path under `content/`. The rest stay
+// the compiled-in ones. The flow and its flags are the game's own (M3 G1): nothing compiles one in.
+(
+    type: "sapphire::assets::GameDocuments",
+    version: 1,
+    data: (
+        flow: Some("game.flow.ron"),
+        flags: Some("flags.ron"),
+    ),
+)

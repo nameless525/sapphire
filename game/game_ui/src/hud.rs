@@ -34,7 +34,7 @@ use sapphire_ui::{
 use crate::LOG_TARGET;
 use crate::screen::ScreenStack;
 use crate::touch::TouchControls;
-use crate::wipe::ZoneWipe;
+use crate::wipe::{WipeAsk, ZoneWipe};
 use game_combat::fight::{Fight, Followed};
 use sapphire_stage::FrameLaps;
 use sapphire_stage::content::Content;
@@ -542,6 +542,9 @@ pub struct ShownFight {
     /// What covers a zone trip's load, over all of it ([`crate::wipe`], M3 W4). Install it with
     /// [`Self::wipe_trips`].
     pub wipe: Option<ZoneWipe>,
+    /// What a game's flow asks of the wipe while no trip does, and the real time it's had since the wipe
+    /// last took it (M3 G1): see [`Self::ask_wipe`].
+    pub flow_wipe: (Option<WipeAsk>, f32),
 }
 
 impl ShownFight {
@@ -549,6 +552,12 @@ impl ShownFight {
     pub fn wipe_trips(&mut self, wipe: ZoneWipe) {
         self.fight.show.take_trip_wipe();
         self.wipe = Some(wipe);
+    }
+
+    /// What a game's flow asks of the wipe this frame, `dt` real seconds after the last, which it follows
+    /// while no trip asks anything of it (M3 G1). Once a frame, before the stage's frame.
+    pub fn ask_wipe(&mut self, ask: Option<WipeAsk>, dt: f32) {
+        self.flow_wipe = (ask, self.flow_wipe.1 + dt);
     }
 
     /// Tells the HUD what a step of the fight did.
@@ -617,7 +626,11 @@ impl SceneShow for ShownFight {
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
         if let Some(wipe) = &mut self.wipe {
             let show = &mut self.fight.show;
-            wipe.follow(show.trip_phase(), show.take_trip_time());
+            let (flow, flow_time) = std::mem::take(&mut self.flow_wipe);
+            match show.trip_phase() {
+                Some(phase) => wipe.follow(Some(WipeAsk::of_trip(phase)), show.take_trip_time()),
+                None => wipe.follow(flow, flow_time),
+            }
             show.say_trip_wipe(wipe.covered(), wipe.clear());
         }
         self.fight.follow_content(scene, content, changes);

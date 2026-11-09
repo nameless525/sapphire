@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use game_combat::cues::PadRumble;
-use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
+use game_flow::show::GameShow;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
@@ -23,7 +23,6 @@ use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock, ScaleHandle, Sc
 use crate::LOG_TARGET;
 use crate::options::Options;
 use crate::settings::KeptSettings;
-use crate::show::GameShow;
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -96,15 +95,14 @@ impl App for GameApp {
         let format =
             surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
 
-        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, format, QualitySettings::default()));
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let rumble = chosen.rumble;
         let volume = chosen.volume();
         let voice = chosen.locale().voice;
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents, chosen)?;
-        let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
+        let (mut show, first) = options.show(platform, chosen)?;
+        let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         // Frames are paced to the tier's rate (spec §6.2).
         platform.set_frame_rate(stage.quality.frame_rate());
@@ -120,8 +118,8 @@ impl App for GameApp {
             audio.set_volume(volume);
             speak_in(audio, &voice);
         }
-        if options.open_fight {
-            show.open_fight();
+        if let Some(command) = options.choose {
+            show.choose(command);
         } else {
             tracing::info!(target: LOG_TARGET, "the title is up");
         }
@@ -240,8 +238,9 @@ impl App for GameApp {
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
         self.settings.finish();
-        if let Err(error) = self.stage.show.shown.fight.finish() {
-            tracing::error!(target: LOG_TARGET, %error, "the fight didn't end well");
+        // The run's file, if it keeps one, and the save's last write.
+        if let Err(error) = self.stage.show.finish() {
+            tracing::error!(target: LOG_TARGET, %error, "the run didn't end well");
         }
         tracing::info!(target: LOG_TARGET, "quit");
     }

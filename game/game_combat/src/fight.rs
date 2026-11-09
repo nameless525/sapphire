@@ -2219,6 +2219,26 @@ impl Fight {
         self.show.load_kinds(&kinds, content, renderer, gpu)
     }
 
+    /// Stands `combat`, prepared, on what's stood, in place of the run that's there, which ends, writing its
+    /// file if it keeps one: a game's restart under its wipe (M3 G1). It stands in the place the last one
+    /// did. What can't stand there leaves no run standing, and says why.
+    pub fn start_run(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &Content,
+    ) -> Result<Followed, String> {
+        if let Some(ended) = self.combat.take()
+            && let Err(error) = ended.finish()
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "the run that ended didn't end well");
+        }
+        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
+        self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
+        Ok(followed)
+    }
+
     /// An error if a replay has left its recorded checksums so far.
     pub fn check(&self) -> Result<(), String> {
         self.combat.as_ref().map_or(Ok(()), Combat::check)

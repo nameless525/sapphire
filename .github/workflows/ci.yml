@@ -522,6 +522,7 @@ jobs:
           cargo test --package game_app --features dev --locked --test reaches_the_fight --no-run
           cargo test --package game_app --features dev --locked --test zone_trip --no-run
           cargo test --package game_app --features dev --locked --test opens_the_guide --no-run
+          cargo test --package game_app --features dev --locked --test plays_the_flow --no-run
           cargo test --package sapphire_sandbox --features dev --locked --test replays --no-run
           cargo test --package sapphire_sandbox --features dev --locked --test live_tuning --no-run
           cargo test --package sapphire_editor --locked --test preview --test sandbox_push --test viewport_stage --no-run
@@ -542,6 +543,10 @@ jobs:
       # lights the ward, with no pipeline built and no step allocating (M3 Q2b).
       - name: A conversation in the game
         run: cargo test --package game_app --features dev --locked --test opens_the_guide -- --ignored
+      # The game's flow on its stage: a new game, a checkpoint saved, back to the title under the wipe, and
+      # the title's continue where the save says (M3 G1).
+      - name: The game's flow from its title to a continue
+        run: cargo test --package game_app --features dev --locked --test plays_the_flow -- --ignored
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
       # compares, tick by tick, with what a headless run in the test wrote.
       - name: Replays in the app (dev sandbox, offscreen)

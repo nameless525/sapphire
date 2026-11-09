@@ -71,6 +71,9 @@ impl App for OffscreenApp {
         })?;
         let (width, height) = (offscreen.width, offscreen.height);
         match &offscreen.mode {
+            OffscreenMode::Capture { path, ticks, .. } if let Some(start) = options.game => {
+                crate::capture::game(platform, path, start, *ticks, (width, height))?;
+            }
             OffscreenMode::Capture { path, ticks, frames } => {
                 let mut stage = stage(platform, &options)?;
                 let ticks = match (&stage.show.fight.combat, &options.combat) {

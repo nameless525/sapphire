@@ -1,0 +1,17 @@
+// The game's flow (M3 G1), until the Lantern Ward's walk replaces it: a run in the square, from short of its
+// waves, which wins once they're cleared. A save holds the square's latest checkpoint and what's cleared.
+(
+    type: "sapphire::game::FlowDocument",
+    version: 1,
+    data: (
+        scenario: "square-run",
+        // content/zones/square/square.zone.ron
+        zone: "c17be04f-2a65-4e3d-8b90-6df1a4c3e752",
+        beats: [
+            // content/zones/square/square_waves.encounter.ron
+            (when: Cleared("8e62f1d9-b3c7-4a58-a14e-37c90d5fb186"), then: Victory),
+        ],
+        music: (title: "waiting", victory: "cleared", defeat: "waiting"),
+        holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
+    ),
+)

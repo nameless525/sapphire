@@ -1,6 +1,6 @@
 [package]
 name = "game_app"
-description = "The game: a title that opens the arena's fight."
+description = "The game: its flow from the title through its runs, on a stage."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -29,32 +29,25 @@ path = "src/main.rs"
 
 [dependencies]
 game_combat.workspace = true
+# The flow over the game's runs, and the show that stands on its stage (M3 G1).
+game_flow.workspace = true
 game_ui.workspace = true
-sapphire_controls.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
-# The showcase the character screen's inset stands, which the scene names by entity.
-sapphire_ecs.workspace = true
-sapphire_gameplay.workspace = true
-sapphire_input.workspace = true
 sapphire_jobs.workspace = true
-sapphire_math.workspace = true
 sapphire_platform.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_save.workspace = true
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
-sapphire_ui.workspace = true
 png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-sapphire_assets.workspace = true
-sapphire_loc.workspace = true
-sapphire_math.workspace = true
-sapphire_serialize.workspace = true
+# The conversation's IDs, for `opens_the_guide`.
+sapphire_gameplay.workspace = true
 
 [features]
 # What the crates under it have for development builds. The game adds no tools of its own.
@@ -72,6 +65,10 @@ harness = false
 # A conversation in the show, opened from the pack's dialogue and walked by the keyboard (M3 Q2b).
 [[test]]
 name = "opens_the_guide"
+harness = false
+
+[[test]]
+name = "plays_the_flow"
 harness = false
 
 [lints]

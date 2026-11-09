@@ -10,10 +10,27 @@ license.workspace = true
 [dependencies]
 # The flow document's `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true
-# The menus' commands and the models the flow fills (G1's fifth commit).
+# The fight a run plays, which the flow stands and reads between steps (G1's sixth commit).
+game_combat.workspace = true
+# The menus' commands and the models the flow fills, the HUD and the wipe.
 game_ui.workspace = true
+# The manifest that names the flow document and the flag registry.
+sapphire_assets.workspace = true
+# What the show plays on the stage: its bindings, input, the scene and the frame.
+sapphire_controls.workspace = true
 # Flag names, which a save's flags are kept by.
 sapphire_core.workspace = true
+# The flag registry a save's flags are read against.
+sapphire_dialogue.workspace = true
+sapphire_ecs.workspace = true
+sapphire_input.workspace = true
+sapphire_math.workspace = true
+sapphire_platform.workspace = true
+sapphire_render.workspace = true
+sapphire_rhi.workspace = true
+sapphire_stage.workspace = true
+sapphire_time.workspace = true
+sapphire_ui.workspace = true
 # The save holds B4's `ZoneStart`, and gives the `RunStart` a continued run starts from (G1's third commit).
 sapphire_gameplay.workspace = true
 sapphire_jobs.workspace = true
@@ -25,8 +42,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# The manifest that names the flow document.
-sapphire_assets.workspace = true
+sapphire_loc.workspace = true
 # The counting allocator, for the test that `observe` allocates nothing.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 

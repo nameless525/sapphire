@@ -16,16 +16,26 @@
 //!   from.
 //! - **The screens** ([`menus`]): what a menu's row asks of the flow ([`flow_command`](menus::flow_command)),
 //!   and the title's and the HUD's models filled from it.
+//! - **The game** ([`game`]): [`Game`](game::Game), the flow over a game's runs: which run stands, from a
+//!   new game's start or the save's place, what a step's beats ask of it as recorded commands, and when it's
+//!   saved. [`FlowContent`](game::FlowContent) reads the flow a game's content names.
+//! - **The stage** ([`show`]): [`GameShow`](show::GameShow), what stands on the game's stage: the fight, its
+//!   HUD, the menus and, with a game, its flow deciding which screen is up and which run plays. The game's
+//!   app and the sandbox's `--game` both stand it.
+//! - **With no window** ([`capture`]): a game drawn to a frame it reads back, for the game's `--capture` and
+//!   the sandbox's `--game`.
 //!
-//! **Not here:** the simulation, the stage and the interface, which the flow drives through its caller; the
-//! fight (`game_combat`) and the screens (`game_ui`), which know nothing of it. The screens are linked for
-//! their commands and models; the fight is reached as G1's later commits land on what they need.
+//! **Not here:** the simulation, the fight (`game_combat`) and the screens (`game_ui`), which know nothing of
+//! the flow; the window's loop, which is the app's.
 
+pub mod capture;
 pub mod document;
 pub mod flow;
+pub mod game;
 pub mod kept;
 pub mod menus;
 pub mod progress;
+pub mod show;
 
 /// Where the flow logs.
 pub(crate) const LOG_TARGET: &str = "game::flow";

@@ -1,29 +1,17 @@
-//! `--capture <png>`: the game with no window, for a run nobody's watching. Draws its ticks, writes the last
-//! frame and exits. `main` runs it on desktop and iOS, and Android's `SDL_main` when the launching intent
-//! asks (M3 Z2b), under an activity whose window nothing draws to.
+//! `--capture <png>`: the game with no window, for a run nobody's watching. Draws its ticks
+//! (`game_flow::capture`), writes the last frame and exits. `main` runs it on desktop and iOS, and Android's
+//! `SDL_main` when the launching intent asks (M3 Z2b), under an activity whose window nothing draws to.
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::time::Duration;
 
-use game_combat::documents::FightDocuments;
-use game_combat::fight::fight_stage;
 use game_ui::menus::PlayerSettings;
-use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform, Timestamp,
-};
-use sapphire_render::quality::QualitySettings;
-use sapphire_rhi::wgpu;
-use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
-use sapphire_time::TICK_HZ;
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 
 use crate::LOG_TARGET;
 use crate::app::GameApp;
 use crate::options::Options;
-use crate::show::GameShow;
-
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Does it all in `init`, and the first frame exits.
 pub struct OffscreenGame;
@@ -39,46 +27,12 @@ impl App for OffscreenGame {
         if path.is_relative() && platform.system_info().device_class != DeviceClass::Desktop {
             path = platform.cache_dir().join(path);
         }
-        let gpu = headless_gpu()?;
-        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
-        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
-        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         // A run nobody's playing shows the defaults, whatever whoever's machine this is has chosen.
-        let mut show = GameShow::new(documents, PlayerSettings::default())?;
-        let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
-        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
-        let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
-        if options.open_fight {
-            show.open_fight();
-        }
-
-        let (width, height) = options.size;
-        let target = stage.target(width, height, wgpu::TextureUsages::COPY_SRC);
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame = Duration::from_secs(1) / TICK_HZ;
-        let mut now = Duration::ZERO;
-        for _ in 1..options.ticks {
-            now += frame;
-            stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
-            stage.step();
-            stage.show.drive_view(frame);
-            stage.render(&view, 1.0, |_, _| {})?;
-            stage.show.say_first_uses(&stage.renderer);
-        }
-        now += frame;
-        stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
-        if options.ticks > 0 {
-            stage.step();
-            stage.show.drive_view(frame);
-        }
-        let readback = Readback::new(&stage.gpu, width, height);
-        stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
-        stage.check_gpu()?;
-        stage.show.say_first_uses(&stage.renderer);
-        let pixels = readback.read(&stage.gpu).map_err(AppInitError::msg)?;
-        write_png(&path, width, height, &pixels)?;
-        stage.show.shown.fight.finish().map_err(AppInitError::msg)?;
+        let (show, first) = options.show(platform, PlayerSettings::default())?;
+        let capture = options.capture();
+        let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
+        let (width, height) = capture.size;
+        write_png(&path, width, height, &captured.pixels)?;
         tracing::info!(target: LOG_TARGET, path = %path.display(), "captured");
         Ok(Self)
     }

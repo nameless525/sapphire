@@ -514,8 +514,15 @@ fn a_wave_comes_on_with_no_heap() {
     scene.end_frame();
     assert_eq!(scene.packet().characters.len(), 1 + 2 * planned, "and they're all lit");
 
+    // A timeline's `foe` is the stage's fighter 1 (`TimelineShow::staged_fighters`), which is the encounter's
+    // first spawn, whoever the soft lock picks (M3 G1): a beat's cutscene needs no other fallback.
+    let first = sim.zone().expect("it has one").encounters()[0].fighters().next().expect("came");
+    let arena = scene.show.arena.as_ref().expect("built");
+    let foe = arena.fighters().nth(1).and_then(|(_, seen)| seen).map(|seen| seen.id);
+    assert_eq!(foe, Some(first), "the foe is the first to come");
+
     // One goes, and there's a place for it, heap-free too.
-    let gone = sim.zone().expect("it has one").encounters()[0].fighters().next().expect("came");
+    let gone = first;
     assert!(sim.despawn(gone));
     let counts = steps(&mut scene, &mut sim, 2);
     if sapphire_core::alloc::PER_THREAD_COUNTS {

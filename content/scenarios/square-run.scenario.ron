@@ -1,0 +1,15 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the arena's player at the square's south-east, short of its encounter, with the proving hub on the shelf through the town's exit: the run the game's flow plays until the Lantern Ward's walk",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        zone: Some("content/zones/square/square.zone.ron"),
+        encounters: ["content/zones/square/square_waves.encounter.ron"],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
+        cast: [(moves: "player", at: "south_east", faction: 1, soft_lock: true)],
+        shelf: ["content/zones/proving_hub/proving_hub.zone.ron"],
+    ),
+)

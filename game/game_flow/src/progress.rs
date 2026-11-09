@@ -12,7 +12,7 @@ use std::path::Path;
 use bevy_reflect::TypePath;
 use sapphire_core::Name;
 use sapphire_gameplay::replay::RunStart;
-use sapphire_gameplay::{FlagValues, Flags, ZoneStart};
+use sapphire_gameplay::{EncounterPhase, FlagValues, Flags, SimZone, ZoneStart};
 use sapphire_reflect::Versioned;
 use sapphire_save::ProgressStore;
 use sapphire_serialize::AssetId;
@@ -65,6 +65,34 @@ impl Progress {
             tracing::warn!(target: LOG_TARGET, ignored, "the save has flags the registry no longer names");
         }
         Some(RunStart { zone: Some(self.start.clone()), flags: starting.flags })
+    }
+
+    /// Whether a run in its zone, `zone`, has moved on from this with `flags`: a checkpoint reached, an
+    /// encounter cleared or a flag changed. What a frame asks, so it allocates nothing; [`Self::after`] then
+    /// says what to write.
+    #[must_use]
+    pub fn moved_on(&self, zone: &SimZone, flags: &Flags) -> bool {
+        let checkpoint = zone.latest_checkpoint().and_then(|id| zone.checkpoint_name(id));
+        if checkpoint != self.start.checkpoint.as_deref() {
+            return true;
+        }
+        let mut cleared = 0;
+        for encounter in
+            zone.encounters().iter().filter(|encounter| encounter.phase() == EncounterPhase::Cleared)
+        {
+            if self.start.cleared.binary_search(&encounter.id()).is_err() {
+                return true;
+            }
+            cleared += 1;
+        }
+        if cleared != self.start.cleared.len() {
+            return true;
+        }
+        // A flag the save holds and this run hasn't set stays in the save: only what's set can move it on.
+        flags.iter().any(|(name, value)| {
+            let held = self.flags.flags.binary_search_by_key(&name.as_u64(), |&(hash, _)| hash);
+            held.map_or(true, |at| self.flags.flags[at].1 != value)
+        })
     }
 
     /// The progress a run in its zone has made, if that's moved on from this: `start` and `flags` are what the

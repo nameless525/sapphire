@@ -182,6 +182,9 @@
 //!   over the frame, 360 points tall (`display_text.rs`, M3 U8): the smaller two from the glyph pages,
 //!   the larger two from the face's cooked field. The golden scenes `display-text-latin` and
 //!   `display-text-japanese` show it, at one and three pixels to the point.
+//! - `--game title|new-game|continue` (with `--capture`): the game's own show, as `game_app` stands it, on the
+//!   flow the content names (M3 G1, `game_flow::capture`): its title, or past it as that row would, with no
+//!   save kept. `--capture-ticks` frames, a tick each, and `--size`; the scene's flags don't reach it.
 //! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). A name is what a clip's source calls it among those the packs hold for the character (M3 S3), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.

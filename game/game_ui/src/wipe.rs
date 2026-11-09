@@ -1,6 +1,8 @@
 //! The wipe that hides a zone's load (M3 W4): a retained screen (`content/ui/zone_wipe.ui.ron`) over everything,
 //! its machine driven by where the fight's trip has got (`game_combat::fight::trip`).
 //!
+//! A game's flow asks the same of it for a restart (M3 G1): cover, stand the new run, clear ([`WipeAsk`]).
+//!
 //! The trip asks it to cover as it starts, and waits for its `covered` state before the swap; once the new
 //! zone's first cells are in, it asks it to uncover, and the trip ends when it's back to `clear`. Its clock is
 //! the real time the fight's camera was given ([`FightShow::take_trip_time`](game_combat::fight::FightShow::take_trip_time)),
@@ -46,10 +48,24 @@ pub fn cover_trips(
     if !shown.fight.travels() {
         return Ok(false);
     }
-    let assets = content.load_screens(&[ZONE_WIPE], renderer, gpu)?;
-    shown.wipe_trips(ZoneWipe::new(assets, atlas).map_err(AppInitError::msg)?);
-    renderer.prewarm(&PipelineInventory { ui: true, ..PipelineInventory::default() });
+    shown.wipe_trips(ZoneWipe::load(atlas, content, renderer, gpu)?);
     Ok(true)
+}
+
+/// What a wipe's asked to do: cover the screen, or clear it. A trip asks by its phase ([`Self::of_trip`]),
+/// and a game's flow as it restarts a run (M3 G1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WipeAsk {
+    Cover,
+    Clear,
+}
+
+impl WipeAsk {
+    /// What a trip in `phase` asks: to cover until its new zone's in, then to clear.
+    #[must_use]
+    pub fn of_trip(phase: TripPhase) -> Self {
+        if phase == TripPhase::Uncovering { Self::Clear } else { Self::Cover }
+    }
 }
 
 /// A wipe over a fight's stage: see the [module docs](self).
@@ -59,8 +75,8 @@ pub struct ZoneWipe {
     layer: ScreenStack,
     /// Its clock, in seconds since it was made.
     now: f64,
-    /// The trip's phase as last followed.
-    phase: Option<TripPhase>,
+    /// What it was last asked.
+    asked: Option<WipeAsk>,
     /// What its machine's to be told on the next frame drawn, and when it happened on its clock.
     told: Option<(&'static str, f64)>,
     /// It has something on screen, or is about to.
@@ -74,32 +90,43 @@ impl ZoneWipe {
         let document = assets.documents.first().ok_or("no wipe document")?;
         let mut layer = ScreenStack::new(assets.tables, assets.fonts, atlas, setup)?;
         layer.push(document, Box::new(()), Timestamp::from_nanos(0), Vec::new())?;
-        Ok(Self { layer, now: 0.0, phase: None, told: None, showing: false })
+        Ok(Self { layer, now: 0.0, asked: None, told: None, showing: false })
     }
 
-    /// Takes the trip's phase and the real time since the last call, before the trip's frame. What it's told
-    /// starts when the trip moved, however many steps went by with no frame drawn: a capture's frame shows
-    /// the same wipe whichever frames came before it.
-    pub fn follow(&mut self, phase: Option<TripPhase>, dt: f32) {
+    /// [`ZONE_WIPE`], loaded, over `atlas`, with what it draws through built, so its first frame builds
+    /// nothing.
+    pub fn load(
+        atlas: Atlas,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Self, AppInitError> {
+        let assets = content.load_screens(&[ZONE_WIPE], renderer, gpu)?;
+        let wipe = Self::new(assets, atlas).map_err(AppInitError::msg)?;
+        renderer.prewarm(&PipelineInventory { ui: true, ..PipelineInventory::default() });
+        Ok(wipe)
+    }
+
+    /// Takes what it's asked, by a trip or a game's flow, and the real time since the last call, before the
+    /// frame. What it's told starts when the ask changed, however many steps went by with no frame drawn: a
+    /// capture's frame shows the same wipe whichever frames came before it.
+    pub fn follow(&mut self, ask: Option<WipeAsk>, dt: f32) {
         let at = self.now;
-        if self.showing || phase.is_some() {
+        if self.showing || ask.is_some() {
             self.now += f64::from(dt.max(0.0));
         }
-        match (self.phase, phase) {
-            (None | Some(TripPhase::Uncovering), Some(TripPhase::Covering)) => {
+        match (self.asked, ask) {
+            (None | Some(WipeAsk::Clear), Some(WipeAsk::Cover)) => {
                 self.told = Some(("cover", at));
                 self.showing = true;
             }
-            // A trip that ended at once, with nothing drawn between, too.
-            (
-                Some(TripPhase::Covering | TripPhase::Swapping | TripPhase::Arriving),
-                Some(TripPhase::Uncovering) | None,
-            ) => {
+            // An ask that ended at once, with nothing drawn between, too.
+            (Some(WipeAsk::Cover), Some(WipeAsk::Clear) | None) => {
                 self.told = Some(("uncover", at));
             }
             _ => {}
         }
-        self.phase = phase;
+        self.asked = ask;
     }
 
     /// Whether it covers the screen, as of its last frame.
@@ -132,7 +159,7 @@ impl ZoneWipe {
         if let Some((event, at)) = self.told.take() {
             self.layer.tree_mut(0).fire(event, Timestamp::from_nanos((at * 1e9) as u64));
         }
-        if self.phase.is_none() && self.clear() {
+        if self.asked.is_none() && self.clear() {
             self.showing = false;
         }
     }
@@ -171,7 +198,7 @@ mod tests {
     fn frames(wipe: &mut ZoneWipe, phase: Option<TripPhase>, until: impl Fn(&ZoneWipe) -> bool) -> u32 {
         let mut list = UiDrawList::default();
         for frame in 0..60 {
-            wipe.follow(phase, 1.0 / 60.0);
+            wipe.follow(phase.map(WipeAsk::of_trip), 1.0 / 60.0);
             if until(wipe) {
                 return frame;
             }
@@ -212,7 +239,7 @@ mod tests {
         frames(&mut wipe, Some(TripPhase::Covering), ZoneWipe::covered);
         let mut list = UiDrawList::default();
         for _ in 0..5 {
-            wipe.follow(Some(TripPhase::Uncovering), 1.0 / 60.0);
+            wipe.follow(Some(WipeAsk::Clear), 1.0 / 60.0);
             wipe.draw((320, 180), &mut list);
         }
         assert_eq!(wipe.tree().state(), Some("uncovering"));

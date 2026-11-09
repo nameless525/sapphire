@@ -36,6 +36,12 @@
 //! a game's load makes. So a replay can start from what a save holds, and the walk from there is the walk a
 //! loaded game takes.
 //!
+//! **A trip's zones** (M3 G1): `shelf` lists the zones a run can go to, each put on the simulation's shelf in
+//! that order ([`Simulation::add_zone`]), so a run can go into one and back. Each has to be one the simulation
+//! keeps a copy of ([`super::BAKED_ZONES`]): a zone on the shelf takes its navmesh, and a bake takes the
+//! pipeline. Going back into the zone a run started in goes into its copy on the shelf, which starts that
+//! zone over.
+//!
 //! **A zone here is what the simulation reads of its document** ([`ZoneDocument::simulation`]) with no
 //! navmesh and no presentation, archived as a cook archives it, so it goes in through the same door as a pack's
 //! `.szone` ([`Simulation::set_zone`]), and `tools/sapphire_pipeline/tests/encounters.rs` holds the two to one
@@ -105,6 +111,10 @@ pub struct ScenarioDocument {
     /// Each of the cast aims its warps at the next, round the ring.
     #[serde(default)]
     pub warps_round: bool,
+    /// The zones a trip can go to (M3 W4, G1), `.zone.ron`s from the repository's root, each put on the shelf in
+    /// this order: see the [module docs](self).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shelf: Vec<String>,
 }
 
 fn default_seed() -> u64 {
@@ -310,6 +320,12 @@ impl ScenarioDocument {
             if side_of(member.faction).is_none() {
                 return Err(invalid(format!("cast[{index}].faction"), "that's no side"));
             }
+        }
+        if !self.shelf.is_empty() && self.zone.is_none() {
+            return Err(invalid("shelf", "a trip goes from a zone, and this has none"));
+        }
+        for (index, path) in self.shelf.iter().enumerate() {
+            baked_zone(path).map_err(|problem| invalid(format!("shelf[{index}]"), problem))?;
         }
         if let Some(party) = &self.party {
             for (index, &member) in party.members.iter().enumerate() {
@@ -518,6 +534,11 @@ impl ScenarioDocument {
             };
         }
 
+        for path in &self.shelf {
+            let baked = baked_zone(path).map_err(|problem| invalid("shelf", problem))?;
+            sim.add_zone(baked.load()?)?;
+        }
+
         let mut cast = Vec::with_capacity(self.cast.len());
         for (index, member) in self.cast.iter().enumerate() {
             let field = || format!("cast[{index}].at");
@@ -641,6 +662,17 @@ impl ScenarioDocument {
     }
 }
 
+/// The simulation's copy of the zone at `path`, a `.zone.ron` from the repository's root: a trip's zone is one
+/// of [`super::BAKED_ZONES`], since its navmesh takes a bake, which takes the pipeline.
+fn baked_zone(path: &str) -> Result<&'static super::BakedZone, String> {
+    let file = super::scenario::document_file_name(path);
+    let stem = file.strip_suffix(".zone.ron").ok_or("a zone's document ends `.zone.ron`")?;
+    super::BAKED_ZONES.iter().find(|baked| baked.stem == stem).ok_or_else(|| {
+        let baked: Vec<&str> = super::BAKED_ZONES.iter().map(|baked| baked.stem).collect();
+        format!("the simulation keeps a copy of {baked:?}, and not of `{stem}`")
+    })
+}
+
 /// The arena's spawn point by name.
 fn arena_point(name: &str) -> Option<SpawnPoint> {
     let spawns = crate::arena::spawns();
@@ -744,6 +776,30 @@ mod tests {
         let mut document = waves;
         document.encounters.clear();
         assert!(cant_start(&document).contains("`encounters`"));
+    }
+
+    /// A trip's zones go on the shelf in the document's order (M3 G1), and only from a zone, and only zones
+    /// the simulation keeps a copy of.
+    #[test]
+    fn a_shelf_holds_the_zones_a_run_can_go_to() {
+        let trip = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "ground-trip").expect("held").1;
+        let trip: ScenarioDocument = sapphire_serialize::from_ron(trip).expect("reads");
+        let mut sim = Simulation::new(trip.config());
+        trip.set_up(&mut sim).expect("sets up");
+        let rows: Vec<&str> = (0..2)
+            .map(|row| sim.zone_ground(crate::zone::ZoneId::from_raw(row)).expect("on the shelf").pack())
+            .collect();
+        assert_eq!(rows, ["zone_proving_hub", "zone_proving_ground"]);
+        assert_eq!(sim.current_zone(), None, "it starts in the zone it names, which no row holds");
+
+        let mut document = trip.clone();
+        document.shelf.push("content/zones/town/town.zone.ron".to_owned());
+        let error = document.check().expect_err("no copy of the town");
+        assert!(error.to_string().contains("`shelf[2]`"), "{error}");
+        let mut document = arena_fight();
+        document.shelf = trip.shelf;
+        let error = document.check().expect_err("no zone to go from");
+        assert!(error.to_string().contains("`shelf`"), "{error}");
     }
 
     #[test]

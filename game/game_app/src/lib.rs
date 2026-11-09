@@ -1,24 +1,30 @@
-//! The game: a title over the arena as it stands, and its fight, with the game's menus (M3 S2, U7).
+//! The game: its flow from the title through its runs, with the game's menus (M3 S2, U7, G1).
 //!
-//! Everything it draws is `sapphire_stage`'s and everything it plays `game_combat`'s and `game_ui`'s. This is
-//! the app around them: the window's frame (`app.rs`), what stands on the stage (`show.rs`), where the player's
-//! settings live (`settings.rs`) and what mobile
-//! links. It has one scene and no scene-building flags: those are the sandbox's, which stays the bench and the
-//! goldens' host.
+//! Everything it draws is `sapphire_stage`'s and everything it plays `game_flow`'s, `game_combat`'s and
+//! `game_ui`'s: what stands on the stage is `game_flow`'s [`GameShow`], which the sandbox's `--game` stands
+//! too. This is the app around it: the window's frame (`app.rs`), its flags (`options.rs`), where the player's
+//! settings live (`settings.rs`) and what mobile links. It has no scene-building flags: those are the
+//! sandbox's, which stays the bench and the goldens' host.
+//!
+//! The flow is the one the content names (`content/game.documents.ron`'s `flow`); content that names none
+//! plays the arena's fight alone, as before G1. The save is in the platform's directory for the player's
+//! files.
 //!
 //! # Controls
 //!
 //! A menu that's up has every press (`game_ui::menus`, `sapphire_controls`' `MenuControls`): the title's new
-//! game opens the fight, and Back or `Esc` leaves it. The pause goes back to the title, and the title's
-//! continue then goes on with the fight where it stood, where a new game starts it over. In the fight, it's
-//! combat's bindings (`sapphire_controls`' `combat_bindings.ron`), the HUD's touch zones and its pause
-//! button; what pauses opens the pause's screen.
+//! game starts a run from the scenario's start, its continue from where the save says, and Back or `Esc`
+//! leaves. The pause goes back to the title, under the wipe. In a run, it's combat's bindings
+//! (`sapphire_controls`' `combat_bindings.ron`), the HUD's touch zones and its pause button; what pauses
+//! opens the pause's screen.
 //!
 //! # Arguments
 //!
 //! For runs nobody's playing:
-//! - `--open-fight`: past the title at once.
-//! - `--script <name>`: the fight plays this script, not whoever's there, and logs how it's going.
+//! - `--new-game` or `--continue`: past the title at once, as its row would. `--open-fight` is `--new-game`.
+//! - `--script <name>`: each run plays this script, not whoever's there, and logs how it's going.
+//! - `--save-dir <dir>`: the save's kept here. A capture keeps one only where this says.
+//! - `--record <dir>`: each run's replay is kept here, `<scenario>-<n>.sreplay`.
 //! - `--capture <png>`, with `--size <w>x<h>` and `--ticks <n>`: draws that many steps with no window, writes
 //!   the last frame and exits.
 //!
@@ -30,7 +36,6 @@ mod app;
 mod offscreen;
 mod options;
 mod settings;
-mod show;
 
 use std::sync::{Mutex, Once};
 
@@ -40,8 +45,8 @@ use sapphire_crash::{CrashConfig, CrashGuard};
 use sapphire_platform::{App, DeviceClass, Os, PlatformLogSink};
 
 pub use app::GameApp;
+pub use game_flow::show::GameShow;
 pub use offscreen::OffscreenGame;
-pub use show::GameShow;
 
 /// mimalloc, counted so the R6 check can see allocations.
 #[global_allocator]

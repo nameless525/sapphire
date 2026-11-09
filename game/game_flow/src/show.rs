@@ -1,5 +1,11 @@
-//! What stands on the game's stage: a fight, its HUD, the bindings that play it and the menus, with the title
-//! over them all until someone starts.
+//! What stands on the game's stage (M3 S2, U7, G1): a fight, its HUD, the bindings that play it and the
+//! menus, with the title over them all until someone starts.
+//!
+//! **With a game** ([`GameShow::with_game`]), its flow decides: the title stands the run it would open, a new
+//! game or a continue plays it or restarts under the wipe, a pause can go back to the title, a fall restarts
+//! at the save and a win goes back to the title. The flow acts on a run only between its steps, by what the
+//! run records ([`Game`]). **With none,** the fight that stands is the run, as a replay's is: the title's
+//! new game opens it, from its start if it's been played, and its continue goes on with it.
 //!
 //! **Conversations (M3 Q2b):** after each step the fight's dialogue runner looks for a trigger that opens one,
 //! the panel's commands go to it, and the dialogue screen follows it before the menus draw. While one's open
@@ -8,19 +14,20 @@
 
 use std::time::Duration;
 
-use game_combat::combat::{Combat, read_bindings};
+use game_combat::combat::{Combat, CombatOption, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
-use game_combat::documents::FightDocuments;
+use game_combat::documents::{FightDocuments, error_chain};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::menus::{
     CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings, TitleModel,
 };
+use game_ui::wipe::ZoneWipe;
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_ecs::prelude::Entity;
 use sapphire_gameplay::{ActorId, DialogueId};
 use sapphire_input::InputMap;
-use sapphire_platform::{AppInitError, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
+use sapphire_platform::{AppInitError, ContentFs, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
@@ -33,6 +40,9 @@ use sapphire_math::Vec2;
 use sapphire_ui::{Atlas, UiDrawList};
 
 use crate::LOG_TARGET;
+use crate::flow::{After, FlowAction, FlowCommand, FlowState};
+use crate::game::{FlowContent, Game, GameSetup};
+use crate::menus::{flow_command, show_hud, show_title};
 
 /// Who a step with no fight on it asks the bindings for: see `read_bindings`.
 const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
@@ -68,6 +78,10 @@ pub struct GameShow {
     showcase: Option<Entity>,
     /// The dialogue screen on the fight's conversation (M3 Q2b).
     panel: DialoguePanel,
+    /// The game's flow over its runs, if this is a game's show (M3 G1).
+    game: Option<Game>,
+    /// Whether the player's left, from the flow.
+    left: bool,
 }
 
 impl GameShow {
@@ -97,7 +111,160 @@ impl GameShow {
             camera_yaw: 0.0,
             report_in: Duration::ZERO,
             first_uses: 0,
+            game: None,
+            left: false,
         })
+    }
+
+    /// The show a game's flow decides (M3 G1): see the [module docs](self).
+    #[must_use]
+    pub fn with_game(mut self, game: Game) -> Self {
+        self.game = Some(game);
+        self
+    }
+
+    /// The show a game's `content` makes with `settings`, and the run it stands first: the flow the content
+    /// names over its runs as `setup` says, or, where it names none, the arena's fight alone, played as
+    /// `setup`'s script says.
+    pub fn from_content(
+        content: &ContentFs,
+        settings: PlayerSettings,
+        setup: GameSetup,
+    ) -> Result<(Self, CombatOption), AppInitError> {
+        let documents = FightDocuments::read(content).map_err(AppInitError::msg)?;
+        let show = Self::new(documents, settings)?;
+        let read = |path: &str| content.read(path).map_err(|error| error_chain(&error));
+        let Some(flow) = FlowContent::read(&read).map_err(AppInitError::msg)? else {
+            return Ok((show, CombatOption::Fight { script: setup.script, party: false }));
+        };
+        let mut show = show.with_game(Game::new(flow, setup));
+        let first = show.opening_run().ok_or_else(|| AppInitError::msg("a game with no run to stand"))?;
+        Ok((show, first))
+    }
+
+    /// The game's flow, if this is a game's show.
+    #[must_use]
+    pub fn game(&self) -> Option<&Game> {
+        self.game.as_ref()
+    }
+
+    /// The run a game stands first, behind its title: what [`Self::stand`] takes. Nothing for a show with no
+    /// game, whose fight is its caller's to choose.
+    pub fn opening_run(&mut self) -> Option<CombatOption> {
+        self.game.as_mut().map(Game::first_run)
+    }
+
+    /// What the player chose, as a run nobody's playing chooses it (`--new-game`, `--continue`): as a menu's
+    /// row would. A show with no game opens its fight for either.
+    pub fn choose(&mut self, command: FlowCommand) {
+        if self.game.is_none() {
+            if matches!(command, FlowCommand::NewGame | FlowCommand::Continue) {
+                self.open_fight();
+            }
+            return;
+        }
+        self.command_game(command);
+        self.follow_flow();
+    }
+
+    /// Ends what's playing: the run, writing its file if it keeps one, and the game's save, waiting for its
+    /// writes. What a quit calls.
+    pub fn finish(&mut self) -> Result<(), String> {
+        if let Some(game) = &mut self.game {
+            game.finish();
+        }
+        self.shown.fight.finish()
+    }
+
+    /// A command for the flow, and what it asks of the show.
+    fn command_game(&mut self, command: FlowCommand) {
+        let Some(game) = &mut self.game else { return };
+        match game.command(command) {
+            Some(FlowAction::SkipTimeline) => {
+                self.shown.fight.skip_timeline();
+            }
+            Some(FlowAction::Exit) => self.left = true,
+            _ => {}
+        }
+        if command == FlowCommand::ToTitle {
+            // The pause that asked for it closes as the wipe covers, and nothing steps meanwhile.
+            self.controls.set_paused(false);
+        }
+    }
+
+    /// The screens as the flow has them: the title while it's up, or covered on its way, and the HUD while a
+    /// run plays. What's under a wipe that's covering stays as it was.
+    fn follow_flow(&mut self) {
+        let Some(game) = &self.game else { return };
+        let title = match game.flow().state() {
+            FlowState::Title { .. } | FlowState::Restarting { then: After::Title, covered: true, .. } => true,
+            FlowState::Restarting { covered: false, .. } => return,
+            _ => false,
+        };
+        match (title, self.fight_open) {
+            (true, true) => self.back_to_title(),
+            (false, false) => self.open_fight(),
+            _ => {}
+        }
+        if let (Some(game), Some(menus)) = (&self.game, &mut self.menus) {
+            if let Some(model) = menus.model_mut::<TitleModel>(MenuScreen::Title) {
+                show_title(game.flow(), model);
+            }
+            if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::Hud) {
+                show_hud(game.flow(), model);
+            }
+        }
+    }
+
+    /// The pause, whoever asked for it, reaches the flow, which holds what it paused.
+    fn pause_flow(&mut self) {
+        let Some(game) = &self.game else { return };
+        // A pause on its way out is over, as far as the flow goes: its screen has closed.
+        let paused = self.controls.is_paused() && !self.controls.is_resuming();
+        let state = game.flow().state();
+        let command = match state {
+            FlowState::Playing | FlowState::Cutscene { .. } | FlowState::Dialogue { .. } if paused => {
+                FlowCommand::Pause
+            }
+            FlowState::Paused { .. } if !paused => FlowCommand::Resume,
+            _ => return,
+        };
+        self.command_game(command);
+    }
+
+    /// After a step of the run: the flow's beats and save. A dialogue a beat opens ends at once, for now:
+    /// the panel that walks one is G1's next commit's.
+    fn follow_game_step(&mut self) {
+        let (Some(game), Some(combat)) = (&mut self.game, &mut self.shown.fight.combat) else { return };
+        if let Some(dialogue) = game.after_step(combat) {
+            tracing::warn!(target: LOG_TARGET, %dialogue, "a beat opened a dialogue, which nothing shows yet");
+            game.command(FlowCommand::DialogueEnded);
+        }
+    }
+
+    /// Where the wipe stands, for the flow: once it covers a restart, the run the flow asks for stands, in
+    /// place of the one there, and the screens follow.
+    fn stand_asked_run(&mut self, scene: &mut Scene, content: &mut Content) {
+        let Some(game) = &mut self.game else { return };
+        let (covered, clear) =
+            self.shown.wipe.as_ref().map_or((true, true), |wipe| (wipe.covered(), wipe.clear()));
+        let Some(option) = game.wipe(covered, clear) else {
+            self.follow_flow();
+            return;
+        };
+        let fight = &mut self.shown.fight;
+        let stood = fight
+            .prepare_stock_combat(&option, content)
+            .map_err(|error| error.to_string())
+            .and_then(|combat| fight.start_run(combat, scene, content));
+        match stood {
+            Ok(followed) => {
+                self.shown.hear(followed);
+                tracing::info!(target: LOG_TARGET, "a run stands");
+            }
+            Err(error) => tracing::error!(target: LOG_TARGET, %error, "the run didn't stand"),
+        }
+        self.follow_flow();
     }
 
     /// Stands the fight, which waits at the title until [`Self::open_fight`], and loads the menus.
@@ -118,7 +285,12 @@ impl GameShow {
         menus.open(MenuScreen::Title);
         self.menus = Some(menus);
         // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
-        game_ui::wipe::cover_trips(&mut self.shown, self.atlas.clone(), content, renderer, gpu, tier)?;
+        let trips =
+            game_ui::wipe::cover_trips(&mut self.shown, self.atlas.clone(), content, renderer, gpu, tier)?;
+        // A game's restarts cover theirs with the same wipe (M3 G1).
+        if self.game.is_some() && !trips {
+            self.shown.wipe_trips(ZoneWipe::load(self.atlas.clone(), content, renderer, gpu)?);
+        }
         // The menus' and the HUD's interface with it, though neither's drawn yet.
         scene.prewarm(&*self, renderer);
         let builds = renderer.stats().pipelines;
@@ -142,7 +314,8 @@ impl GameShow {
         }
     }
 
-    /// Whether the title's up: nothing plays while it is.
+    /// Whether the title's up: nothing plays while it is. A game's screens follow its flow, so it's up while the
+    /// flow's there, and while a wipe covers the way to it.
     pub const fn on_title(&self) -> bool {
         !self.fight_open
     }
@@ -220,15 +393,11 @@ impl GameShow {
         self.commands.extend(menus.take_commands());
         let mut left = false;
         for index in 0..self.commands.len() {
-            match self.commands[index] {
-                MenuCommand::NewGame => self.new_game(),
-                MenuCommand::Continue => self.open_fight(),
-                MenuCommand::ToTitle => self.back_to_title(),
-                // The game's flow skips its cutscenes (G1); the arena plays none a player may skip.
-                MenuCommand::Skip => {}
+            let command = self.commands[index];
+            match command {
+                // The pause is the controls', which a game's flow follows (`pause_flow`).
                 MenuCommand::Resume => self.controls.set_paused(false),
                 MenuCommand::Pause => self.controls.set_paused(true),
-                MenuCommand::Leave => left = true,
                 MenuCommand::SettingsChanged => self.follow_settings(),
                 command @ (MenuCommand::DialogueNext | MenuCommand::DialogueChose(_)) => {
                     let fight = &mut self.shown.fight;
@@ -236,10 +405,24 @@ impl GameShow {
                         self.panel.hear(command, &mut fight.dialogue, combat);
                     }
                 }
+                // The rest is a game's flow's, where there's one.
+                _ if self.game.is_some() => {
+                    if let Some(command) = flow_command(command) {
+                        self.command_game(command);
+                    }
+                }
+                MenuCommand::NewGame => self.new_game(),
+                MenuCommand::Continue => self.open_fight(),
+                MenuCommand::ToTitle => self.back_to_title(),
+                // The arena plays no cutscene a player may skip.
+                MenuCommand::Skip => {}
+                MenuCommand::Leave => left = true,
             }
         }
         self.commands.clear();
-        left
+        self.pause_flow();
+        self.follow_flow();
+        left || std::mem::take(&mut self.left)
     }
 
     fn follow_settings(&mut self) {
@@ -323,6 +506,8 @@ impl GameShow {
             }
         }
         controls.update(now);
+        self.pause_flow();
+        self.follow_flow();
         self.follow_pause();
         self.show_fight_on_menus();
         left || self.controls.wants_to_leave()
@@ -348,6 +533,11 @@ impl GameShow {
         let view_dt = if paused { 0.0 } else { dt.as_secs_f32() };
         let (look, zoom) = (self.controls.look(), self.controls.camera_zoom());
         self.shown.fight.show.drive_camera(view_dt, look, zoom);
+        if let Some(game) = &mut self.game {
+            // The flow's holds and banners are on the real clock, and stop with the pause.
+            game.update(view_dt);
+            self.shown.ask_wipe(game.flow().wipe_ask(), dt.as_secs_f32());
+        }
         self.report(dt);
         view_dt
     }
@@ -394,7 +584,8 @@ impl SceneShow for GameShow {
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
-        if self.on_title() || self.shown.fight.holds_step() {
+        let runs = self.game.as_ref().map_or(!self.on_title(), |game| game.flow().runs_steps());
+        if !runs || self.shown.fight.holds_step() {
             return;
         }
         let mut stopwatch = Stopwatch::start();
@@ -410,6 +601,7 @@ impl SceneShow for GameShow {
         {
             tracing::warn!(target: LOG_TARGET, %error, "a trigger's conversation didn't open");
         }
+        self.follow_game_step();
     }
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
@@ -417,6 +609,7 @@ impl SceneShow for GameShow {
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
+        self.stand_asked_run(scene, content);
         self.shown.follow_content(scene, content, changes);
     }
 

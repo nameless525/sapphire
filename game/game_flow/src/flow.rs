@@ -10,6 +10,7 @@
 //! [`Flow::update`] once a frame with the real time that passed, and [`Flow::wipe`] with where the screen's
 //! wipe stands. [`Flow::observe`] allocates nothing: what it remembers is fixed in size.
 
+pub use game_ui::wipe::WipeAsk;
 use sapphire_serialize::AssetId;
 
 use crate::document::{FlowDocument, Then, When};
@@ -100,13 +101,6 @@ pub enum FlowCommand {
     DialogueEnded,
     /// From the title or the pause: quits.
     Leave,
-}
-
-/// What the wipe should do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WipeAsk {
-    Cover,
-    Clear,
 }
 
 /// A banner the HUD shows for [`FlowHolds::banner`](crate::document::FlowHolds::banner) seconds.

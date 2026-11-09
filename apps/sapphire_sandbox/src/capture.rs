@@ -17,11 +17,16 @@ use std::io::BufWriter;
 use std::num::NonZeroU32;
 use std::path::Path;
 
-use sapphire_platform::AppInitError;
+use game_flow::capture::GameCapture;
+use game_flow::game::GameSetup;
+use game_flow::show::GameShow;
+use game_ui::menus::PlayerSettings;
+use sapphire_platform::{AppInitError, Platform};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
+use crate::options::GameStart;
 use game_combat::combat::CaptureFrames;
 use sapphire_stage::Readback;
 use sapphire_stage::gpu_failure;
@@ -66,6 +71,25 @@ fn step(
             stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         }
     }
+}
+
+/// `--game`: the game's own show on the content's flow, from `start`, drawn `ticks` frames with no window and
+/// written as any capture is (M3 G1). It keeps no save and no run's file.
+pub(crate) fn game(
+    platform: &Platform,
+    path: &Path,
+    start: GameStart,
+    ticks: u32,
+    size: (u32, u32),
+) -> Result<(), AppInitError> {
+    let (show, first) =
+        GameShow::from_content(platform.content(), PlayerSettings::default(), GameSetup::default())?;
+    let capture = GameCapture { choose: start.command(), size, ticks };
+    let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
+    write_png(path, size.0, size.1, &captured.pixels)?;
+    write_adapter_info(path, &captured.adapter)?;
+    tracing::info!(target: LOG_TARGET, path = %path.display(), ?start, "the game captured");
+    Ok(())
 }
 
 pub(crate) fn run(

@@ -3,14 +3,26 @@
 use std::path::PathBuf;
 
 use game_combat::combat::CombatOption;
+use game_flow::capture::GameCapture;
+use game_flow::flow::FlowCommand;
+use game_flow::game::GameSetup;
+use game_flow::progress::progress_store;
+use game_flow::show::GameShow;
+use game_ui::menus::PlayerSettings;
+use sapphire_platform::{AppInitError, Platform, durable_replace};
 
 const CAPTURE_FLAG: &str = "--capture";
 
 /// A run's arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Options {
-    pub open_fight: bool,
+    /// What the title's chosen at once: a new game, or a continue.
+    pub choose: Option<FlowCommand>,
     pub script: Option<String>,
+    /// Where the game's save is kept, in place of the platform's directory for it.
+    pub save_dir: Option<PathBuf>,
+    /// Where each run's replay is kept.
+    pub record: Option<PathBuf>,
     pub capture: Option<PathBuf>,
     pub size: (u32, u32),
     pub ticks: u32,
@@ -18,7 +30,15 @@ pub(crate) struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { open_fight: false, script: None, capture: None, size: (1280, 720), ticks: 180 }
+        Self {
+            choose: None,
+            script: None,
+            save_dir: None,
+            record: None,
+            capture: None,
+            size: (1280, 720),
+            ticks: 180,
+        }
     }
 }
 
@@ -37,8 +57,12 @@ impl Options {
             let mut value =
                 || args.next().ok_or_else(|| format!("{arg} needs a value")).map(|value| value.as_str());
             match arg.as_str() {
-                "--open-fight" => options.open_fight = true,
+                // `--open-fight` is M3 S2's name for it, from before the flow.
+                "--new-game" | "--open-fight" => options.choose = Some(FlowCommand::NewGame),
+                "--continue" => options.choose = Some(FlowCommand::Continue),
                 "--script" => options.script = Some(value()?.to_owned()),
+                "--save-dir" => options.save_dir = Some(PathBuf::from(value()?)),
+                "--record" => options.record = Some(PathBuf::from(value()?)),
                 CAPTURE_FLAG => options.capture = Some(PathBuf::from(value()?)),
                 "--size" => {
                     let raw = value()?;
@@ -60,9 +84,32 @@ impl Options {
         Ok(options)
     }
 
-    /// The fight this run stands: the arena's, as whoever's there plays it or as `--script` does.
-    pub(crate) fn fight(&self) -> CombatOption {
-        CombatOption::Fight { script: self.script.clone(), party: false }
+    /// Whether the game keeps a save: always in a window, and in a capture only where `--save-dir` says, so
+    /// a run nobody's watching leaves nobody's save changed.
+    fn saves(&self) -> bool {
+        self.capture.is_none() || self.save_dir.is_some()
+    }
+
+    /// The show this run stands with `settings`, and the run it stands first: the game's flow over its runs
+    /// where the content names one, with its save where `--save-dir` or the platform says, else the arena's
+    /// fight alone.
+    pub(crate) fn show(
+        &self,
+        platform: &Platform,
+        settings: PlayerSettings,
+    ) -> Result<(GameShow, CombatOption), AppInitError> {
+        let dir = self.save_dir.clone().unwrap_or_else(|| platform.user_dir().to_owned());
+        let setup = GameSetup {
+            store: self.saves().then(|| progress_store(&dir, durable_replace)),
+            script: self.script.clone(),
+            record: self.record.clone(),
+        };
+        GameShow::from_content(platform.content(), settings, setup)
+    }
+
+    /// What `--capture` draws.
+    pub(crate) fn capture(&self) -> GameCapture {
+        GameCapture { choose: self.choose, size: self.size, ticks: self.ticks }
     }
 }
 
@@ -78,19 +125,29 @@ mod tests {
     #[test]
     fn a_run_with_no_arguments_waits_at_the_title_for_someone_to_play() {
         let options = parse(&[]).unwrap();
-        assert!(!options.open_fight);
-        assert_eq!(options.fight(), CombatOption::Fight { script: None, party: false });
+        assert_eq!(options.choose, None);
+        assert!(options.saves(), "a window's game keeps its save");
     }
 
     #[test]
-    fn a_capture_says_what_it_draws() {
+    fn a_capture_says_what_it_draws_and_keeps_no_save_unless_told_where() {
         let options =
-            parse(&["--capture", "a.png", "--size", "640x360", "--ticks", "9", "--open-fight"]).unwrap();
+            parse(&["--capture", "a.png", "--size", "640x360", "--ticks", "9", "--new-game"]).unwrap();
         assert_eq!(options.capture, Some(PathBuf::from("a.png")));
         assert_eq!((options.size, options.ticks), ((640, 360), 9));
-        assert!(options.open_fight);
+        assert_eq!(
+            options.capture(),
+            GameCapture { choose: Some(FlowCommand::NewGame), size: (640, 360), ticks: 9 }
+        );
+        assert!(!options.saves());
         assert!(is_offscreen_flag("--capture") && is_offscreen_flag("--capture=a.png"));
         assert!(!is_offscreen_flag("--script"));
+        let options =
+            parse(&["--capture", "a.png", "--save-dir", "saves", "--continue", "--record", "runs"]).unwrap();
+        assert!(options.saves());
+        assert_eq!(options.choose, Some(FlowCommand::Continue));
+        assert_eq!(options.record, Some(PathBuf::from("runs")));
+        assert_eq!(parse(&["--open-fight"]).unwrap().choose, Some(FlowCommand::NewGame));
     }
 
     #[test]
@@ -100,5 +157,6 @@ mod tests {
         assert!(parse(&["--size", "0x10"]).is_err());
         assert!(parse(&["--ticks", "many"]).is_err());
         assert!(parse(&["--script"]).is_err());
+        assert!(parse(&["--save-dir"]).is_err());
     }
 }

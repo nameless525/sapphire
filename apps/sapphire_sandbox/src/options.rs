@@ -14,6 +14,7 @@ use crate::screen::ScreenOptions;
 use game_combat::arena::ArenaShot;
 use game_combat::combat::{CaptureFrames, CombatOption};
 use game_combat::combat_views::CombatViews;
+use game_flow::flow::FlowCommand;
 use game_ui::hud::{HudMode, HudOptions};
 use game_ui::menus::MenuScreen;
 use sapphire_stage::anim_graph::GraphScript;
@@ -237,6 +238,9 @@ pub(crate) struct Options {
     /// `--display-text latin|japanese`: a title in the display face at four sizes over the frame
     /// (M3 U8, `display_text.rs`).
     pub display_text: Option<crate::display_text::DisplaySample>,
+    /// `--game title|new-game|continue` (with `--capture`): the game's own show, its flow on the content's, from
+    /// its title or past it as that row would (M3 G1, `game_flow::capture`). Keeps no save.
+    pub game: Option<GameStart>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -797,6 +801,7 @@ impl Options {
                     };
                     hud_mode = Some(mode);
                 }
+                "--game" => options.game = Some(GameStart::parse(&value("--game")?)?),
                 "--display-text" => {
                     options.display_text =
                         Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
@@ -1305,6 +1310,9 @@ impl Options {
         if fight && (replay.is_some() || record.is_some() || scenario.is_some()) {
             return Err("--fight is a fight of its own: drop --replay, --record and --scenario".to_owned());
         }
+        if options.game.is_some() && (!capturing || fight || replay.is_some() || record.is_some()) {
+            return Err("--game draws the game's own runs with no window: it needs --capture, and no --fight, --replay or --record".to_owned());
+        }
         options.combat = match (replay, record, scenario, script) {
             (None, None, None, script) if fight => Some(CombatOption::Fight { script, party: options.party }),
             (None, None, None, None) => None,
@@ -1569,6 +1577,35 @@ fn parse_size(raw: &str) -> Result<(u32, u32), String> {
         return Err(invalid());
     }
     Ok((width, height))
+}
+
+/// Where `--game` starts: at the title, or past it as its new game or continue would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameStart {
+    Title,
+    NewGame,
+    Continue,
+}
+
+impl GameStart {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "title" => Ok(Self::Title),
+            "new-game" => Ok(Self::NewGame),
+            "continue" => Ok(Self::Continue),
+            other => Err(format!("--game expects title, new-game or continue, got {other:?}")),
+        }
+    }
+
+    /// What the title's chosen at once.
+    #[must_use]
+    pub const fn command(self) -> Option<FlowCommand> {
+        match self {
+            Self::Title => None,
+            Self::NewGame => Some(FlowCommand::NewGame),
+            Self::Continue => Some(FlowCommand::Continue),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2239,6 +2276,11 @@ mod tests {
         unattended.refuse_offscreen().expect("Android's windowed app runs it");
 
         refused(&["--fight"], "--arena");
+        refused(&["--game", "title"], "--capture");
+        refused(&["--game", "title", "--capture", "x", "--replay", "a"], "--replay");
+        refused(&["--game", "over", "--capture", "x"], "--game expects");
+        let (game, _) = parse(&["--game", "continue", "--capture", "x"]).unwrap();
+        assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

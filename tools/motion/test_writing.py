@@ -15,6 +15,7 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import cutscene
 import frames
 import moves
 
@@ -280,6 +281,35 @@ class TheTool(Folder):
         self.addCleanup(frames.MOVES.__setitem__, 0, original)
         said = self.run_tool('--write')
         self.assertIn('frames.py has light_1 at 35 ticks and its clip at 34', said)
+
+
+class Cutscenes(Folder):
+    """`cutscene.py`, the key poses a timeline's character track plays (M3 Q3)."""
+
+    def run_cutscene(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cutscene.main(list(args), folder=self.folder)
+        return out.getvalue()
+
+    def test_it_writes_each_pose_with_its_own_sidecar_and_again_changes_nothing(self):
+        self.run_cutscene('--write')
+        for name, id in cutscene.IDS.items():
+            with open(os.path.join(self.folder, name + '.keypose.ron.meta')) as f:
+                self.assertIn(id, f.read(), name)
+            self.assertTrue(os.path.exists(os.path.join(self.folder, name + '.keypose.ron')), name)
+        paths = [os.path.join(self.folder, name) for name in os.listdir(self.folder)]
+        for path in paths:
+            os.utime(path, ns=(1000000000, 1000000000))
+        self.run_cutscene('--write')
+        self.assertTrue(all(os.stat(path).st_mtime_ns == 1000000000 for path in paths))
+
+    def test_with_no_flag_it_writes_nothing_and_refuses_what_it_doesnt_know(self):
+        self.run_cutscene()
+        self.assertEqual(os.listdir(self.folder), [])
+        with self.assertRaises(SystemExit):
+            self.run_cutscene('--wriet')
+        self.assertEqual(os.listdir(self.folder), [])
 
 
 if __name__ == '__main__':

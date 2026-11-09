@@ -85,6 +85,9 @@ sapphire_document.workspace = true
 sapphire_text.workspace = true
 swash.workspace = true
 sapphire_time.workspace = true
+# A cutscene's subtitles, resolved in each language from tables cooked here (`tests/cutscene_strings.rs`).
+sapphire_loc.workspace = true
+sapphire_sequencer.workspace = true
 
 [lints]
 workspace = true

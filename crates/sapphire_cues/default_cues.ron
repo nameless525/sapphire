@@ -176,6 +176,19 @@
             ),
             (cue: "swap_in"),
             (cue: "party_defeated"),
+            // The Lantern Ward's gate cutscene (M3 Q3), at the places its timeline names: the warden's blade
+            // striking the paving, and the character's blade turning into guard.
+            (
+                cue: "court_stomp",
+                effects: [(effect: "dust_puff"), (effect: "break_ring")],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_heavy")),
+            ),
+            (
+                cue: "court_draw",
+                effects: [(effect: "cut_spark")],
+                sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"], // swing
+            ),
         ],
     ),
 )

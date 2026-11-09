@@ -24,6 +24,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 | File | What it does |
 |---|---|
 | `moves.py` | The six moves, one function each: a key names where the feet stand, where the hand and blade go, how the body turns and where the head looks. |
+| `cutscene.py` | Key poses a timeline's character track plays, not a move (M3 Q3): `court_guard`, for the Lantern Ward's gate. `--write` writes them beside the timeline in `content/zones/lantern_ward/`; each needs a row in the character's graph. |
 | `pose.py` | Solves a key's legs and arms by inverse kinematics, samples between keys as `sapphire_pipeline::keypose` does, checks a move (feet under the ground, slipping feet, the blade through the body, joint turns) and writes the `.keypose.ron`. |
 | `frames.py` | `player.moves.ron` as `--write-numbers` writes it: frame data, cancel windows, hits, combat numbers and cues. `swap_in`, a party's assist, is frames on the dash attack's clip, with no key-pose document of its own. |
 | `player.moves.written` | The digest of what `--write-numbers` last wrote, which tells it whether anything has changed the file since. |

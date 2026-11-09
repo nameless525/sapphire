@@ -3935,6 +3935,7 @@ dependencies = [
  "sapphire_navmesh",
  "sapphire_physics",
  "sapphire_reflect",
+ "sapphire_save",
  "sapphire_serialize",
  "sapphire_time",
  "sapphire_timeline",

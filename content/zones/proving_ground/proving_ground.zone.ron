@@ -58,6 +58,13 @@
         triggers: [
             (name: "cart_yard", position: (9.0, 1.0, 10.0), volume: Box(half_extents: (4.0, 2.0, 4.0)), event: "cart_yard_entered"),
         ],
+        // Along the walking course (M3 B4): at the ramp's foot, on the platform, and at the lane's end,
+        // facing back.
+        checkpoints: [
+            (name: "ramp_foot", position: (-6.0, 0.0, -20.0), yaw_degrees: 270.0, volume: Sphere(radius: 1.5)),
+            (name: "platform", position: (-13.5, 1.0, -20.0), yaw_degrees: 270.0, volume: Box(half_extents: (1.5, 1.0, 2.0))),
+            (name: "lane_end", position: (-28.0, 0.0, -20.0), yaw_degrees: 90.0, volume: Sphere(radius: 1.5)),
+        ],
         encounters: ["5d3a9e21-7c44-4b0e-9f16-0a8ce3b7d214"],
         splines: [
             (name: "overlook", points: [(-10.0, 4.0, 14.0), (8.0, 6.0, 18.0), (26.0, 4.0, 14.0)]),

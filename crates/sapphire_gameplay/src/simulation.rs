@@ -22,6 +22,7 @@ use crate::actors::{
 };
 use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample};
 use crate::brain::{self, Brain};
+use crate::checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
 use crate::checksum;
 use crate::controller::{
     self, CharacterController, CharacterWorld, ControllerProfile, PhysicsWorldError, ProfileError, ProfileId,
@@ -684,6 +685,92 @@ impl Simulation {
     /// nothing records this one by itself. [`Self::enter_zone`] is the one a file holds.
     pub fn place_actor(&mut self, id: ActorId, position: Vec3, yaw: f32) -> bool {
         zone::place(self.ecs.world_mut(), id, position, yaw)
+    }
+
+    /// Starts its zone from what a save holds (M3 B4), after [`Self::set_zone`] and before the first step:
+    /// the encounters it lists stay cleared, and its checkpoint is the latest. Returns where that checkpoint
+    /// stands the player, for the caller to spawn them there, or `None` for a start with no checkpoint. See
+    /// [`crate::checkpoint`].
+    ///
+    /// # Errors
+    ///
+    /// With no zone, after a step, or for a checkpoint or an encounter the zone doesn't have, in which case
+    /// nothing changes.
+    pub fn start_at(&mut self, start: &ZoneStart) -> Result<Option<Place>, ZoneStartError> {
+        let ticks = self.tick();
+        if ticks > 0 {
+            return Err(ZoneStartError::Started { ticks });
+        }
+        let world = self.ecs.world_mut();
+        let mut zone = world.get_resource_mut::<SimZone>().ok_or(ZoneStartError::NoZone)?;
+        zone.start_at(start)
+    }
+
+    /// What a save written now would hold of its zone, if it has one: see [`crate::checkpoint`].
+    #[must_use]
+    pub fn zone_start(&self) -> Option<ZoneStart> {
+        self.zone().map(SimZone::zone_start)
+    }
+
+    /// Puts a live actor at `place` between steps, as a spawn there would stand: see [`crate::checkpoint`]
+    /// for what starts over and what stays. What happens next comes from its next step.
+    ///
+    /// # Errors
+    ///
+    /// For an actor that isn't alive or a place that isn't finite, in which case nothing moves.
+    pub fn teleport(&mut self, actor: ActorId, place: Place) -> Result<(), TeleportError> {
+        if !place.is_finite() {
+            return Err(TeleportError::NotFinite);
+        }
+        let world = self.ecs.world_mut();
+        let entity =
+            world.resource::<ActorTable>().entity(actor).ok_or(TeleportError::UnknownActor(actor))?;
+        let now = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.now();
+        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
+        let spawned = world.get::<CharacterController>(entity).and_then(CharacterController::profile);
+        // What `move_characters` moves it by, whose capsule this is.
+        let library = world.resource::<MoveLibrary>();
+        let characters = world.resource::<CharacterWorld>();
+        let movement = set.and_then(|set| library.movement(set)).copied();
+        let profile = movement.or_else(|| spawned.and_then(|id| characters.profile(id)).copied());
+        if let Some(profile) = profile {
+            let body = profile.body(controller::actor_body(actor), place.position, place.yaw);
+            let mut characters = world.resource_mut::<CharacterWorld>();
+            // An actor off the field may have no capsule to move, and then has nothing to place.
+            let _ = characters.physics_mut().set_body_pose(body.id, body.pose);
+        }
+        let mut actor = world.entity_mut(entity);
+        *actor.get_mut::<ActorTransform>().expect("pooled") =
+            ActorTransform { position: place.position, yaw: place.yaw };
+        *actor.get_mut::<Controls>().expect("pooled") = Controls::default();
+        actor.get_mut::<MoveRunner>().expect("pooled").stop(now);
+        actor.get_mut::<IntentRing>().expect("pooled").reset();
+        *actor.get_mut::<MoveOutput>().expect("pooled") = MoveOutput::default();
+        let mut controller = actor.get_mut::<CharacterController>().expect("pooled");
+        controller.state = controller::ControllerState::default();
+        controller.drive = controller::ControllerDrive::NONE;
+        actor.get_mut::<Fighter>().expect("pooled").stop_slide();
+        Ok(())
+    }
+
+    /// Puts the zone's player back at a checkpoint, between steps, by [`Self::teleport`]: the soft-locked
+    /// actor on the field with the lowest ID. Returns who that was. A replay records it as
+    /// [`crate::replay::Command::ReturnTo`].
+    ///
+    /// # Errors
+    ///
+    /// With no zone, no such checkpoint or nobody playing, in which case nothing moves.
+    pub fn return_to_checkpoint(&mut self, checkpoint: CheckpointId) -> Result<ActorId, TeleportError> {
+        let zone = self.zone().ok_or(TeleportError::NoZone)?;
+        let place = zone.checkpoint_place(checkpoint).ok_or(TeleportError::UnknownCheckpoint(checkpoint))?;
+        let world = self.ecs.world();
+        let party = world.resource::<Party>();
+        let playing = world.resource::<ActorTable>().iter().find(|&(id, entity)| {
+            !party.is_off_field(id) && world.get::<SoftLock>(entity).is_some_and(|lock| lock.on)
+        });
+        let (player, _) = playing.ok_or(TeleportError::NoPlayer)?;
+        self.teleport(player, place)?;
+        Ok(player)
     }
 
     /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,

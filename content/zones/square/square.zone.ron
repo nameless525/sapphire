@@ -1,7 +1,7 @@
 // The arena's square as a zone (M3 B2): only what a fight there reads, with no geometry and no colliders of its
 // own, since the stage's town and `content/arena/square.colliders.ron` are every app's and stay shared. The
 // spawners are the arena's spawn points (`content/arena/square.spawns.ron`). The trigger is round the player's,
-// so it fires on a fight's first step.
+// so it fires on a fight's first step. The checkpoint is on the clear paving south of the fight (M3 B4).
 (
     type: "sapphire::zone::ZoneDocument",
     version: 1,
@@ -19,6 +19,9 @@
         ],
         triggers: [
             (name: "the_square", position: (3.2, 1.0, 5.0), volume: Sphere(radius: 2.0), event: "square_entered"),
+        ],
+        checkpoints: [
+            (name: "south_paving", position: (0.0, 0.0, 12.0), yaw_degrees: 180.0, volume: Sphere(radius: 1.5)),
         ],
         encounters: ["8e62f1d9-b3c7-4a58-a14e-37c90d5fb186"],
     ),

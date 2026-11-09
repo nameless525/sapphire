@@ -39,6 +39,7 @@ mod play;
 mod scenario;
 mod script;
 mod tuning;
+pub mod walks;
 mod ward;
 
 pub use checksums::{

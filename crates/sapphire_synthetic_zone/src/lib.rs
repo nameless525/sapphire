@@ -189,6 +189,7 @@ impl SyntheticZone {
                 colliders: None,
                 spawners: Vec::new(),
                 triggers: Vec::new(),
+                checkpoints: Vec::new(),
                 navigation: None,
                 encounters: Vec::new(),
                 exits,

@@ -46,6 +46,8 @@ xxhash-rust.workspace = true
 [dev-dependencies]
 # A profile read from a document.
 ron.workspace = true
+# A checkpoint's `ZoneStart` through a real save file (M3 B4's `tests/walks.rs`).
+sapphire_save.workspace = true
 
 [lints]
 workspace = true

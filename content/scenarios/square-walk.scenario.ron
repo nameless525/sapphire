@@ -1,0 +1,14 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the square started at its south paving checkpoint with its encounter fought, as a game loaded there starts",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        zone: Some("content/zones/square/square.zone.ron"),
+        encounters: ["content/zones/square/square_waves.encounter.ron"],
+        cleared: ["content/zones/square/square_waves.encounter.ron"],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [(moves: "player", at: "south_paving", faction: 1, soft_lock: true)],
+    ),
+)

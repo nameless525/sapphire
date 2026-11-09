@@ -5,6 +5,7 @@ use std::time::Duration;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
+use crate::checkpoint::CheckpointId;
 use crate::simulation::SimConfig;
 use crate::timeline::TimelineId;
 use crate::zone::ZoneEntry;
@@ -20,6 +21,9 @@ pub enum ReplayCommand {
     SkipTimeline { at_ms: u32 },
     /// [`Simulation::enter_zone`](crate::Simulation::enter_zone), for the cast's first.
     EnterZone(ZoneEntry),
+    /// [`Simulation::return_to_checkpoint`](crate::Simulation::return_to_checkpoint) (M3 B4): the zone's
+    /// player put back at a checkpoint.
+    ReturnTo(CheckpointId),
 }
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
@@ -27,7 +31,8 @@ const MAGIC: [u8; 8] = *b"SREPLAY\0";
 /// The file format's version. A change to its layout takes a new one, and older files are refused.
 ///
 /// A file with no [`ReplayCommand`]s is written in [`PLAIN_FORMAT_VERSION`] instead, which is this
-/// layout without that section: most runs play no timeline, and they keep the bytes they've always had.
+/// layout without that section: most runs play no timeline and teleport nobody, and they keep the bytes
+/// they've always had.
 pub const FORMAT_VERSION: u32 = 2;
 
 /// [`FORMAT_VERSION`]'s layout, without its commands.
@@ -50,7 +55,7 @@ const DIGEST_LEN: usize = 8;
 const COMMAND_LEN: usize = 4 + 1 + 4;
 const COMMAND_PLAY: u8 = 0;
 const COMMAND_SKIP: u8 = 1;
-/// Kind 2 is free: M3 W4's kind is 3 so that its argument can't be read as anything older by a slip of one.
+const COMMAND_RETURN: u8 = 2;
 const COMMAND_ENTER_ZONE: u8 = 3;
 
 /// A run's length takes at most this many LEB128 bytes.
@@ -188,6 +193,7 @@ fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, Replay
         let command = match kind {
             COMMAND_PLAY => ReplayCommand::PlayTimeline(TimelineId::from_raw(argument)),
             COMMAND_SKIP => ReplayCommand::SkipTimeline { at_ms: argument },
+            COMMAND_RETURN => ReplayCommand::ReturnTo(CheckpointId::from_raw(argument)),
             COMMAND_ENTER_ZONE => ReplayCommand::EnterZone(ZoneEntry::from_raw(argument)),
             kind => return Err(ReplayError::BadCommand { index, kind }),
         };
@@ -276,6 +282,10 @@ impl Cursor {
 /// | n | the scenario's name: `a-z`, `0-9`, `-`, `_` |
 /// | 4 | how many commands, never 0 ([`FORMAT_VERSION`] alone) |
 /// | 9 each | a command: its tick, 1 byte for its kind, 4 for its argument ([`FORMAT_VERSION`] alone) |
+///
+/// A command's kind is 0 for a timeline played (its argument the timeline's ID), 1 for one skipped (how far
+/// in, in milliseconds) and 2 for a return to a checkpoint (the checkpoint's place in its zone's list). A
+/// kind this build doesn't know is refused by its index.
 /// | … | the body: runs of equal ticks, up to the digest |
 /// | 8 | XXH3-64 of every byte before it |
 ///
@@ -391,6 +401,7 @@ impl Replay {
                 let (kind, argument) = match command {
                     ReplayCommand::PlayTimeline(id) => (COMMAND_PLAY, id.raw()),
                     ReplayCommand::SkipTimeline { at_ms } => (COMMAND_SKIP, at_ms),
+                    ReplayCommand::ReturnTo(checkpoint) => (COMMAND_RETURN, checkpoint.raw()),
                     ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
                 };
                 out.extend_from_slice(&tick.to_le_bytes());
@@ -561,6 +572,30 @@ mod tests {
             assert!(!is_valid_name(name), "{name:?}");
         }
         assert!(!is_valid_name(&"a".repeat(MAX_NAME_LEN + 1)));
+    }
+
+    /// A return to a checkpoint (M3 B4) is a command of its own kind beside a timeline's, in the same
+    /// section, and a kind no build knows is refused by its index.
+    #[test]
+    fn a_return_reads_back_and_an_unknown_kind_is_refused() {
+        let mut recorder = Recorder::new("s", SimConfig::default(), 0).unwrap();
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        let back = ReplayCommand::ReturnTo(CheckpointId::from_raw(0x0a0b_0c0d));
+        recorder.command(back);
+        recorder.command(ReplayCommand::SkipTimeline { at_ms: 5 });
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        let replay = recorder.finish();
+        let bytes = replay.encode();
+        let read = Replay::decode(&bytes).unwrap();
+        assert_eq!(read.commands(), [(1, back), (1, ReplayCommand::SkipTimeline { at_ms: 5 })]);
+
+        let at =
+            bytes.windows(5).position(|window| window == [COMMAND_RETURN, 0x0d, 0x0c, 0x0b, 0x0a]).unwrap();
+        let mut spoiled = bytes[..bytes.len() - DIGEST_LEN].to_vec();
+        spoiled[at] = u8::MAX;
+        let digest = xxh3_64(&spoiled);
+        spoiled.extend_from_slice(&digest.to_le_bytes());
+        assert_eq!(Replay::decode(&spoiled), Err(ReplayError::BadCommand { index: 0, kind: u8::MAX }));
     }
 
     #[test]

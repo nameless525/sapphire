@@ -10,6 +10,7 @@ use super::script::{ActionSource, Script};
 use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
+use crate::checkpoint::{CheckpointId, TeleportError};
 use crate::moves::{MoveSetId, Tuned};
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::SimStats;
@@ -46,6 +47,8 @@ pub enum PlayError {
     Unskippable { tick: u32 },
     #[error(transparent)]
     Zone(#[from] ZoneEntryError),
+    #[error(transparent)]
+    Teleport(#[from] TeleportError),
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -261,13 +264,16 @@ impl Player {
         {
             match command {
                 ReplayCommand::EnterZone(entry) => return Some(entry),
-                // A recording only holds what started, so a refusal here is a crafted file, and it refuses
-                // the same every run.
+                // A recording only holds what happened, so a refusal here is a crafted file, and it
+                // refuses the same every run.
                 ReplayCommand::PlayTimeline(id) => {
                     let _ = self.tracked.sim.play_timeline(id);
                 }
                 // Presentation's: see the `timeline` module.
                 ReplayCommand::SkipTimeline { .. } => {}
+                ReplayCommand::ReturnTo(checkpoint) => {
+                    let _ = self.tracked.sim.return_to_checkpoint(checkpoint);
+                }
             }
             self.next_command += 1;
         }
@@ -457,6 +463,16 @@ impl Recording {
         Ok(())
     }
 
+    /// Puts the zone's player back at a checkpoint before the next step, and records that. See
+    /// [`crate::Simulation::return_to_checkpoint`].
+    pub fn return_to_checkpoint(&mut self, checkpoint: CheckpointId) -> Result<ActorId, TeleportError> {
+        let player = self.tracked.sim.return_to_checkpoint(checkpoint)?;
+        if self.edited_at.is_none() {
+            self.recorder.command(ReplayCommand::ReturnTo(checkpoint));
+        }
+        Ok(player)
+    }
+
     /// Runs `script`, its commands included, until the file holds at least `ticks` ticks.
     /// Refuses to extend a file ended by a live edit, without consuming any actions or commands.
     pub fn run_script(&mut self, script: &Script, ticks: u32) -> Result<(), PlayError> {
@@ -473,6 +489,9 @@ impl Recording {
                     ReplayCommand::PlayTimeline(id) => self.play_timeline(id)?,
                     ReplayCommand::SkipTimeline { at_ms } => self.skip_timeline(at_ms)?,
                     ReplayCommand::EnterZone(entry) => self.enter_zone(entry)?,
+                    ReplayCommand::ReturnTo(checkpoint) => {
+                        self.return_to_checkpoint(checkpoint)?;
+                    }
                 }
             }
             self.step(&mut source)?;

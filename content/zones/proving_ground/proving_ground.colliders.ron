@@ -1,4 +1,5 @@
-// The proving ground's static collision: the ground, and the pillar the player starts beside.
+// The proving ground's static collision: the ground, the pillar the player starts beside, and a course to
+// walk.
 (
     type: "sapphire::colliders::ColliderDocument",
     version: 1,
@@ -6,6 +7,21 @@
         colliders: [
             (name: "ground", shape: Box(half_extents: (48.0, 0.5, 48.0)), position: (8.0, -0.5, 0.0)),
             (name: "pillar", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (2.0, 2.0, 2.0)),
+
+            // The walking course (M3 B4), along a lane 4 m wide at z -20, run toward -X: a 20° ramp up to a
+            // platform 1 m high, four steps of 20 cm down from it, a 15 cm curb, a wall 60 cm high to jump
+            // at, and a 60° face too steep to stand on, banked behind. Collision alone: nothing draws the
+            // proving ground, and what's here is what the walk's replays cross, so moving any of it moves them.
+            (name: "course_ramp", shape: Box(half_extents: (1.4619, 0.25, 2.0)), position: (-9.4592, 0.2651, -20.0), rotation: AxisAngle(axis: (0.0, 0.0, 1.0), degrees: -20.0)),
+            (name: "course_platform", shape: Box(half_extents: (3.0, 0.5, 2.0)), position: (-13.7475, 0.5, -20.0)),
+            (name: "course_step_1", shape: Box(half_extents: (0.175, 0.4, 2.0)), position: (-16.9225, 0.4, -20.0)),
+            (name: "course_step_2", shape: Box(half_extents: (0.175, 0.3, 2.0)), position: (-17.2725, 0.3, -20.0)),
+            (name: "course_step_3", shape: Box(half_extents: (0.175, 0.2, 2.0)), position: (-17.6225, 0.2, -20.0)),
+            (name: "course_step_4", shape: Box(half_extents: (0.175, 0.1, 2.0)), position: (-17.9725, 0.1, -20.0)),
+            (name: "course_curb", shape: Box(half_extents: (0.15, 0.075, 2.0)), position: (-22.0, 0.075, -20.0)),
+            (name: "course_low_wall", shape: Box(half_extents: (0.2, 0.3, 2.0)), position: (-26.0, 0.3, -20.0)),
+            (name: "course_steep", shape: Box(half_extents: (1.1547, 0.25, 2.0)), position: (-30.7939, 0.875, -20.0), rotation: AxisAngle(axis: (0.0, 0.0, 1.0), degrees: -60.0)),
+            (name: "course_bank", shape: Box(half_extents: (1.0, 1.0, 2.0)), position: (-32.1547, 1.0, -20.0)),
         ],
     ),
 )

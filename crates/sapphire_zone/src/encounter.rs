@@ -374,6 +374,7 @@ mod tests {
                 volume: crate::CookedVolume::Sphere { radius: 1.0 },
                 event: event.to_owned(),
             }],
+            checkpoints: Vec::new(),
             navigation: None,
             encounters: Vec::new(),
             exits: Vec::new(),

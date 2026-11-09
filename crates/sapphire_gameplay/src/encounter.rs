@@ -22,8 +22,12 @@
 //! digest, those names and the cooked encounters go in [`crate::Simulation::tables_hash`], and the director's
 //! state in [`crate::Simulation::checksum`].
 //!
+//! - **Checkpoints** ([`crate::checkpoint`], M3 B4) are reached after the encounters have had their turn, so
+//!   one in a fight that's just ended is reached on the step it ended.
+//!
 //! A trigger's test is the actor's root in the volume, axis-aligned, with no rotation: a zone's document
-//! has none to give. It costs a soft lock's test against every trigger, each step.
+//! has none to give. It costs a soft lock's test against every trigger, each step, and a checkpoint's the
+//! same.
 
 use sapphire_colliders::ColliderSet;
 use sapphire_core::Name;
@@ -38,6 +42,7 @@ use sapphire_zone::{
 
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable};
 use crate::brain::Brain;
+use crate::checkpoint::{self, CheckpointId, Checkpoints, Place, ZoneStart};
 use crate::checksum::StateHasher;
 use crate::controller::{PhysicsWorldError, ProfileId};
 use crate::faction::Faction;
@@ -77,6 +82,18 @@ pub enum ZoneStartError {
     /// One more than a brain's place in a list of them can say.
     #[error("{count} encounters are more than a zone can hold")]
     TooManyEncounters { count: usize },
+    /// A zone start (M3 B4) came for a simulation with no zone.
+    #[error("there's no zone to start")]
+    NoZone,
+    /// A zone start came after the first step: it's what a simulation starts from.
+    #[error("a zone starts before its first step, and this one has taken {ticks}")]
+    Started { ticks: u64 },
+    /// A save names a checkpoint the zone doesn't have, as one saved before the zone changed may.
+    #[error("the zone has no checkpoint `{name}`")]
+    UnknownCheckpoint { name: String },
+    /// A save names an encounter the zone doesn't list.
+    #[error("the zone lists no encounter {id}")]
+    UnknownEncounter { id: AssetId },
 }
 
 /// Where a zone's trigger stands: what starts an encounter, for presentation to warm ahead of (M3 W5).
@@ -114,6 +131,8 @@ pub struct ZoneStats {
     pub tokens_waited: u64,
     /// The most tokens any one encounter has had out at once.
     pub most_tokens_held: u32,
+    /// Times the latest checkpoint changed.
+    pub checkpoints_reached: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,15 +147,9 @@ struct SimTrigger {
 }
 
 impl SimTrigger {
-    /// Whether a root stands in it. Plain comparisons, in scalars.
+    /// Whether a root stands in it.
     fn holds(&self, at: Vec3) -> bool {
-        let (x, y, z) = (at.x - self.position[0], at.y - self.position[1], at.z - self.position[2]);
-        match self.volume {
-            CookedVolume::Box { half_extents } => {
-                x.abs() <= half_extents[0] && y.abs() <= half_extents[1] && z.abs() <= half_extents[2]
-            }
-            CookedVolume::Sphere { radius } => x * x + y * y + z * z <= radius * radius,
-        }
+        checkpoint::holds(self.position, self.volume, at)
     }
 }
 
@@ -166,6 +179,8 @@ struct TokenSlot {
 /// One encounter: what its document said, then where it's got to.
 #[derive(Clone, Debug)]
 pub struct SimEncounter {
+    /// Its `.encounter.ron`'s ID, which a save holds once it's cleared.
+    id: AssetId,
     starts_on: u64,
     tokens: u8,
     token_rest: u64,
@@ -190,6 +205,7 @@ pub struct SimEncounter {
 
 impl SimEncounter {
     fn new(
+        id: AssetId,
         cooked: &ArchivedEncounter,
         zone: &ArchivedZone,
         cast: ZoneCast<'_>,
@@ -232,6 +248,7 @@ impl SimEncounter {
             });
         }
         Ok(Self {
+            id,
             starts_on: Name::new(cooked.starts_on.as_str()).as_u64(),
             tokens: cooked.tokens,
             token_rest: u64::from(cooked.token_rest.to_native()),
@@ -246,6 +263,12 @@ impl SimEncounter {
             woken: 0,
             slots: [TokenSlot::default(); MAX_TOKENS as usize],
         })
+    }
+
+    /// Its document's ID.
+    #[must_use]
+    pub const fn id(&self) -> AssetId {
+        self.id
     }
 
     /// How far along it is.
@@ -361,6 +384,7 @@ pub struct SimZone {
     tables: u64,
     triggers: Box<[SimTrigger]>,
     encounters: Box<[SimEncounter]>,
+    checkpoints: Checkpoints,
     stats: ZoneStats,
 }
 
@@ -392,7 +416,7 @@ impl SimZone {
         let mut encounters = Vec::with_capacity(simulation.encounters.len());
         for id in simulation.encounters.iter() {
             let bytes = read(*id).ok_or(ZoneError::NotLoaded { what: "encounter", id: *id })?;
-            encounters.push(SimEncounter::new(Encounter::read(bytes)?, zone, cast, library)?);
+            encounters.push(SimEncounter::new(*id, Encounter::read(bytes)?, zone, cast, library)?);
         }
         // Which names mean which sets is part of what a run depends on, and the digest can't know it.
         let mut hasher = StateHasher::new();
@@ -405,6 +429,7 @@ impl SimZone {
             tables: hasher.finish(),
             triggers,
             encounters: encounters.into_boxed_slice(),
+            checkpoints: Checkpoints::new(simulation),
             stats: ZoneStats::default(),
         })
     }
@@ -443,7 +468,72 @@ impl SimZone {
 
     #[must_use]
     pub const fn stats(&self) -> ZoneStats {
-        self.stats
+        ZoneStats { checkpoints_reached: self.checkpoints.reached, ..self.stats }
+    }
+
+    /// How many checkpoints it has.
+    #[must_use]
+    pub fn checkpoint_count(&self) -> usize {
+        self.checkpoints.len()
+    }
+
+    /// The checkpoint named `name`.
+    #[must_use]
+    pub fn checkpoint(&self, name: &str) -> Option<CheckpointId> {
+        self.checkpoints.find(name)
+    }
+
+    /// A checkpoint's name.
+    #[must_use]
+    pub fn checkpoint_name(&self, id: CheckpointId) -> Option<&str> {
+        self.checkpoints.name(id)
+    }
+
+    /// Where a checkpoint puts a player.
+    #[must_use]
+    pub fn checkpoint_place(&self, id: CheckpointId) -> Option<Place> {
+        self.checkpoints.place(id)
+    }
+
+    /// The checkpoint reached last, or the one a zone start named until another is.
+    #[must_use]
+    pub const fn latest_checkpoint(&self) -> Option<CheckpointId> {
+        self.checkpoints.latest()
+    }
+
+    /// What a save written now would hold. See [`crate::checkpoint`].
+    #[must_use]
+    pub fn zone_start(&self) -> ZoneStart {
+        let checkpoint =
+            self.checkpoints.latest().and_then(|id| self.checkpoints.name(id)).map(str::to_owned);
+        let cleared = self.encounters.iter().filter(|encounter| encounter.phase == EncounterPhase::Cleared);
+        let mut cleared: Vec<AssetId> = cleared.map(SimEncounter::id).collect();
+        cleared.sort_unstable();
+        ZoneStart { checkpoint, cleared }
+    }
+
+    /// Takes what a save holds, before the first step: see [`crate::Simulation::start_at`].
+    pub(crate) fn start_at(&mut self, start: &ZoneStart) -> Result<Option<Place>, ZoneStartError> {
+        let checkpoint = match &start.checkpoint {
+            Some(name) => Some(
+                self.checkpoints
+                    .find(name)
+                    .ok_or_else(|| ZoneStartError::UnknownCheckpoint { name: name.clone() })?,
+            ),
+            None => None,
+        };
+        if let Some(&id) = start.cleared.iter().find(|&&id| !self.encounters.iter().any(|e| e.id == id)) {
+            return Err(ZoneStartError::UnknownEncounter { id });
+        }
+        for encounter in &mut self.encounters {
+            if start.cleared.contains(&encounter.id) {
+                encounter.phase = EncounterPhase::Cleared;
+            }
+        }
+        Ok(checkpoint.map(|id| {
+            self.checkpoints.set_latest(id);
+            self.checkpoints.place(id).expect("found in the list")
+        }))
     }
 
     /// What goes in a simulation's `tables_hash`.
@@ -470,6 +560,7 @@ impl SimZone {
         for encounter in &self.encounters {
             encounter.write_state(hasher);
         }
+        self.checkpoints.write_state(hasher);
     }
 
     /// Runs each trigger against who's in it, and starts what its firing starts.
@@ -506,6 +597,30 @@ impl SimZone {
                     encounter.wave_at = tick;
                     self.stats.encounters_started += 1;
                 }
+            }
+        }
+    }
+
+    /// The first checkpoint any player stands in, in ID order, becomes the latest, unless a fight's running.
+    fn reach_checkpoints(
+        &mut self,
+        table: &ActorTable,
+        party: &Party,
+        watched: &Query<'_, '_, (&ActorTransform, &SoftLock)>,
+    ) {
+        if self.checkpoints.len() == 0
+            || self.encounters.iter().any(|encounter| encounter.phase == EncounterPhase::Running)
+        {
+            return;
+        }
+        for (id, entity) in table.iter() {
+            let Ok((transform, lock)) = watched.get(entity) else { continue };
+            if !lock.on || party.is_off_field(id) {
+                continue;
+            }
+            if let Some(checkpoint) = self.checkpoints.at(transform.position) {
+                self.checkpoints.set_latest(checkpoint);
+                return;
             }
         }
     }
@@ -584,6 +699,7 @@ pub(crate) fn direct(
             zone.stats.encounters_cleared += 1;
         }
     }
+    zone.reach_checkpoints(&table, &party, &watched);
 }
 
 #[cfg(test)]

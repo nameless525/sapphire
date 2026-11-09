@@ -36,6 +36,8 @@
 //!   ticking, swapping as an ability and a swap-in assist as a move, in the `party` module.
 //! - What a script is to a fight (M3 L2): [`script`], its events, the fixed queue of commands and the board
 //!   of numbers, with no idea of the Luau that `sapphire_script` answers them in.
+//! - Zones (M3 B2, B4): [`encounter`], a zone's triggers and encounters, and [`checkpoint`], where a walk
+//!   through it starts again: what a save holds of it ([`ZoneStart`]), and teleports.
 //!
 //! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
@@ -132,6 +134,7 @@ mod actors;
 pub mod arena;
 pub mod body;
 pub mod brain;
+pub mod checkpoint;
 mod checksum;
 mod controller;
 mod cues;
@@ -155,6 +158,7 @@ pub mod zone;
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
 pub use brain::{Brain, BrainState};
+pub use checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
 pub use checksum::StateHasher;
 pub use controller::{
     CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerInput,

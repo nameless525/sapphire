@@ -1,10 +1,10 @@
 //! Zones as plain data: what the cooker, the simulation and the world agree on (spec §5.21).
 //!
 //! A zone is a cooked level: geometry cut into cells on a grid, the lights and probes that light it,
-//! its spawners, triggers and rails, and references to its collision, navigation and encounters. This
-//! crate holds the document and the cooked form and nothing that acts on them, so the cooker can link
-//! it without a renderer, a world or a physics engine (#74's lesson), and a replay can link it without
-//! a GPU.
+//! its spawners, triggers, checkpoints and rails, and references to its collision, navigation and
+//! encounters. This crate holds the document and the cooked form and nothing that acts on them, so the
+//! cooker can link it without a renderer, a world or a physics engine (#74's lesson), and a replay can
+//! link it without a GPU.
 //!
 //! # Owns
 //!
@@ -49,15 +49,16 @@ pub mod encounter;
 pub mod grid;
 
 pub use cooked::{
-    ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight, ArchivedCookedLightShape,
-    ArchivedCookedSpawner, ArchivedCookedSpline, ArchivedCookedTrigger, ArchivedCookedVolume,
-    ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell, ArchivedZonePresentation, ArchivedZoneSimulation,
-    CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger,
-    CookedVolume, PlaceContents, ZONE_EXTENSION, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
+    ArchivedCookedLightShape, ArchivedCookedSpawner, ArchivedCookedSpline, ArchivedCookedTrigger,
+    ArchivedCookedVolume, ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell, ArchivedZonePresentation,
+    ArchivedZoneSimulation, CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape,
+    CookedSpawner, CookedSpline, CookedTrigger, CookedVolume, PlaceContents, ZONE_EXTENSION, Zone, ZoneCell,
+    ZonePresentation, ZoneSimulation,
 };
 pub use document::{
-    Exit, Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume, ZoneDocument,
-    ZoneError, ZoneGeometry, ZoneNavigation,
+    Checkpoint, Exit, Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume,
+    ZoneDocument, ZoneError, ZoneGeometry, ZoneNavigation,
 };
 pub use encounter::{
     ArchivedCookedWave, ArchivedEncounter, ArchivedWaveStart, CookedWave, ENCOUNTER_EXTENSION, Encounter,

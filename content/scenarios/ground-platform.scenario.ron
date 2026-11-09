@@ -1,0 +1,13 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the proving ground started at its platform checkpoint, as a game loaded there starts",
+        max_actors: 8,
+        colliders: "content/zones/proving_ground/proving_ground.colliders.ron",
+        zone: Some("content/zones/proving_ground/proving_ground.zone.ron"),
+        encounters: ["content/zones/proving_ground/cart_yard.encounter.ron"],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [(moves: "player", at: "platform", faction: 1, soft_lock: true)],
+    ),
+)

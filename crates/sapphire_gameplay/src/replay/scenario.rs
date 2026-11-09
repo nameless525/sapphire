@@ -934,17 +934,21 @@ mod tests {
         assert!(find_scenario(&SCENARIOS, "no-such-scenario").is_none());
     }
 
-    /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick.
+    /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick
+    /// where it stood, which is the floor but for a start at a zone's checkpoint up on something (M3 B4).
     #[test]
     fn the_fights_stand_on_the_ground() {
         for scenario in SCENARIOS.iter() {
             let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+            let stood: Vec<f32> =
+                cast.iter().map(|&actor| sim.actor(actor).expect("alive").position.y).collect();
             sim.step(&crate::actions::TickActions::NEUTRAL);
-            for actor in cast {
+            for (actor, stood) in cast.into_iter().zip(stood) {
                 let view = sim.actor(actor).expect("alive");
                 assert!(view.controller.is_active(), "{}", scenario.name);
                 assert_eq!(view.controller.state.mode, crate::controller::GroundMode::Grounded);
-                assert!(view.position.y.abs() < 1e-5, "{}: {}", scenario.name, view.position.y);
+                assert!((view.position.y - stood).abs() < 1e-5, "{}: {}", scenario.name, view.position.y);
+                assert!(stood == 0.0 || scenario.name == "ground-platform", "{}: {stood}", scenario.name);
             }
         }
     }

@@ -6,6 +6,7 @@
 //! record it with `cargo xtask replay --record`.
 
 use super::file::ReplayCommand;
+use super::walks;
 use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
 use crate::timeline::TimelineId;
@@ -284,6 +285,30 @@ pub const SCRIPTS: &[Script] = &[
             (ZONE_TRIP_ENTRIES[3].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[3].1)),
             (ZONE_TRIP_ENTRIES[4].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[4].1)),
         ],
+    },
+    Script {
+        name: "walk-the-ground",
+        about: "the proving ground's player runs its walking course by the stick and a jump: a ramp, \
+                steps, a curb, a low wall and a face too steep to stand on, then returns to its platform \
+                checkpoint and walks back to the start",
+        ticks: walks::GROUND_WALK_TICKS,
+        actions: walks::walk_the_ground,
+        commands: &walks::GROUND_RETURN,
+    },
+    Script {
+        name: "from-the-platform",
+        about: "`walk-the-ground` from its return on, as a game loaded at the platform checkpoint plays it",
+        ticks: walks::length(&walks::GROUND_ONWARD_LEGS),
+        actions: walks::from_the_platform,
+        commands: &[],
+    },
+    Script {
+        name: "walk-the-square",
+        about: "the square's player, its encounter cleared, from a checkpoint round the square: over a bench \
+                and a planter, along the gate wall, into a lantern post",
+        ticks: walks::length(&walks::SQUARE_LEGS),
+        actions: walks::walk_the_square,
+        commands: &[],
     },
 ];
 

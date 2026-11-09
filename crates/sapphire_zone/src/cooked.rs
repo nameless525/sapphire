@@ -39,8 +39,8 @@ pub struct Zone {
 }
 
 impl Versioned for Zone {
-    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4).
-    const VERSION: u32 = 3;
+    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4).
+    const VERSION: u32 = 4;
 }
 
 /// What the simulation reads of a zone. Everything here, and everything it references, is in a
@@ -54,6 +54,8 @@ pub struct ZoneSimulation {
     pub spawners: Vec<CookedSpawner>,
     /// By ascending ID.
     pub triggers: Vec<CookedTrigger>,
+    /// By ascending ID.
+    pub checkpoints: Vec<CookedCheckpoint>,
     /// The zone's navmesh, one flat graph however many tiles it baked from.
     pub navigation: Option<AssetId>,
     /// Encounters, ascending.
@@ -110,7 +112,22 @@ pub struct CookedTrigger {
     pub event: String,
 }
 
-/// A trigger's volume, about its position.
+/// Somewhere a walk through the zone can start again: see the document's `Checkpoint`.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedCheckpoint {
+    /// The name's hash ([`Name`]). A save holds the name, which outlives any one cook's order.
+    pub id: u64,
+    pub name: String,
+    /// Where a player's feet stand when the zone starts here, in metres.
+    pub position: [f32; 3],
+    /// About +Y, in degrees; 0 faces +Z.
+    pub yaw_degrees: f32,
+    /// What reaches it, about its position.
+    pub volume: CookedVolume,
+}
+
+/// A trigger's or a checkpoint's volume, about its position.
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum CookedVolume {
@@ -282,6 +299,17 @@ impl ArchivedCookedTrigger {
     }
 }
 
+impl ArchivedCookedCheckpoint {
+    pub fn position(&self) -> [f32; 3] {
+        native3(&self.position)
+    }
+
+    /// Its yaw in radians, as `ActorSpawn` takes it: an exact product, with no C math library in it.
+    pub fn yaw(&self) -> f32 {
+        self.yaw_degrees.to_native().to_radians()
+    }
+}
+
 impl ArchivedCookedVolume {
     pub fn to_native(&self) -> CookedVolume {
         match self {
@@ -393,6 +421,13 @@ impl ArchivedZoneSimulation {
         let index = self.triggers.binary_search_by_key(&name.as_u64(), |entry| entry.id.to_native()).ok()?;
         self.triggers.get(index)
     }
+
+    /// The checkpoint named `name`.
+    pub fn checkpoint(&self, name: Name) -> Option<&ArchivedCookedCheckpoint> {
+        let index =
+            self.checkpoints.binary_search_by_key(&name.as_u64(), |entry| entry.id.to_native()).ok()?;
+        self.checkpoints.get(index)
+    }
 }
 
 impl ArchivedZone {
@@ -475,17 +510,15 @@ impl ArchivedZone {
         for trigger in simulation.triggers.iter() {
             digest.u64(trigger.id.to_native());
             digest.floats(&trigger.position());
-            match trigger.volume.to_native() {
-                CookedVolume::Box { half_extents } => {
-                    digest.u32(0);
-                    digest.floats(&half_extents);
-                }
-                CookedVolume::Sphere { radius } => {
-                    digest.u32(1);
-                    digest.floats(&[radius]);
-                }
-            }
+            digest.volume(trigger.volume.to_native());
             digest.bytes(trigger.event.as_bytes());
+        }
+        digest.u32(simulation.checkpoints.len() as u32);
+        for checkpoint in simulation.checkpoints.iter() {
+            digest.u64(checkpoint.id.to_native());
+            digest.floats(&checkpoint.position());
+            digest.floats(&[checkpoint.yaw_degrees.to_native()]);
+            digest.volume(checkpoint.volume.to_native());
         }
         let mut referenced = |what: &'static str, id: AssetId, digest: &mut Digest| {
             digest.bytes(&id.to_bytes());
@@ -543,6 +576,17 @@ impl ArchivedZone {
             check_position(trigger.position()).map_err(invalid)?;
             trigger.volume.to_native().check().map_err(invalid)?;
             check_name(trigger.event.as_str()).map_err(invalid)?;
+        }
+        check_count("checkpoints", simulation.checkpoints.len())?;
+        let checkpoints =
+            simulation.checkpoints.iter().map(|entry| (entry.id.to_native(), entry.name.as_str()));
+        check_ids("checkpoints", checkpoints)?;
+        for checkpoint in simulation.checkpoints.iter() {
+            let invalid =
+                |problem| ZoneError::invalid(format!("checkpoint `{}`", checkpoint.name.as_str()), problem);
+            check_position(checkpoint.position()).map_err(invalid)?;
+            check_finite(checkpoint.yaw_degrees.to_native()).map_err(invalid)?;
+            checkpoint.volume.to_native().check().map_err(invalid)?;
         }
         check_count("encounters", simulation.encounters.len())?;
         check_ascending("encounters", simulation.encounters.as_slice())?;
@@ -712,6 +756,20 @@ impl Digest {
         }
     }
 
+    /// Its shape's tag, then its extents.
+    fn volume(&mut self, volume: CookedVolume) {
+        match volume {
+            CookedVolume::Box { half_extents } => {
+                self.u32(0);
+                self.floats(&half_extents);
+            }
+            CookedVolume::Sphere { radius } => {
+                self.u32(1);
+                self.floats(&[radius]);
+            }
+        }
+    }
+
     /// With their length, so what follows can't read as part of them.
     fn bytes(&mut self, bytes: &[u8]) {
         self.u64(bytes.len() as u64);
@@ -766,6 +824,10 @@ mod tests {
                     triggers: [
                         (name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered"),
                         (name: "well", position: (0.3, 0.1, 0.7), volume: Sphere(radius: 2.5), event: "well_entered"),
+                    ],
+                    checkpoints: [
+                        (name: "gate_steps", position: (3.2, 0.0, -14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0)),
+                        (name: "well_side", position: (1.5, 0.0, 1.0), volume: Box(half_extents: (1.0, 1.5, 1.0))),
                     ],
                     splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0)])],
                     exits: [
@@ -836,6 +898,14 @@ mod tests {
         assert!(trigger.volume.holds([2.9, -1.9, 0.9]) && !trigger.volume.holds([3.1, 0.0, 0.0]));
         let well = read.simulation.trigger(Name::new("well")).expect("there");
         assert!(well.volume.holds([0.0, 2.4, 0.0]) && !well.volume.holds([2.0, 2.0, 0.0]));
+        let steps = read.simulation.checkpoint(Name::new("gate_steps")).expect("there");
+        assert_eq!(steps.position(), [3.2, 0.0, -14.0]);
+        assert_eq!(steps.yaw(), 180f32.to_radians());
+        assert!(steps.volume.holds([0.0, 1.9, 0.0]) && !steps.volume.holds([0.0, 2.1, 0.0]));
+        assert!(
+            read.simulation.checkpoint(Name::new("gate")).is_none(),
+            "a trigger's name isn't a checkpoint's"
+        );
 
         let presentation = &read.presentation;
         assert_eq!(presentation.day.as_ref().map(|day| day.as_str()), Some("a day's text"));
@@ -870,7 +940,7 @@ mod tests {
     #[test]
     fn cooked_data_the_document_would_refuse_is_refused() {
         type Tamper = fn(&mut Zone);
-        let cases: [(&str, &str, Tamper); 22] = [
+        let cases: [(&str, &str, Tamper); 26] = [
             ("cell size", "cell_size", |z| z.presentation.cell_size = 0.0),
             ("spawner order", "out of order", |z| z.simulation.spawners.reverse()),
             ("spawner id", "isn't its name's hash", |z| z.simulation.spawners[0].id ^= 1),
@@ -885,6 +955,14 @@ mod tests {
                 z.simulation.triggers[0].volume = CookedVolume::Sphere { radius: f32::NAN };
             }),
             ("trigger event", "empty", |z| z.simulation.triggers[0].event.clear()),
+            ("checkpoint order", "out of order", |z| z.simulation.checkpoints.reverse()),
+            ("checkpoint id", "isn't its name's hash", |z| z.simulation.checkpoints[0].id ^= 1),
+            ("checkpoint yaw", "finite", |z| z.simulation.checkpoints[1].yaw_degrees = f32::NAN),
+            ("checkpoint volume", "radius", |z| {
+                let gate =
+                    z.simulation.checkpoints.iter_mut().find(|c| c.name == "gate_steps").expect("there");
+                gate.volume = CookedVolume::Sphere { radius: 0.0 };
+            }),
             ("encounters", "out of order", |z| z.simulation.encounters = vec![MESH, MESH]),
             ("cell order", "out of order", |z| z.presentation.cells[1].coord = z.presentation.cells[0].coord),
             ("bounds", "aren't a box", |z| z.presentation.cells[0].contents.bounds_min = [f32::NAN; 3]),
@@ -1035,7 +1113,7 @@ mod tests {
         let base = digest_of(&zone(), &colliders);
 
         type Tamper = fn(&mut Zone);
-        let simulation: [(&str, Tamper); 7] = [
+        let simulation: [(&str, Tamper); 10] = [
             ("a spawner's place", |z| z.simulation.spawners[0].position[1] += 0.25),
             ("a spawner's yaw", |z| z.simulation.spawners[0].yaw_degrees += 1.0),
             ("what spawns", |z| z.simulation.spawners[0].spawns.push('x')),
@@ -1044,6 +1122,11 @@ mod tests {
                 z.simulation.triggers[1].volume = CookedVolume::Sphere { radius: 0.25 }
             }),
             ("a trigger's event", |z| z.simulation.triggers[1].event.push('x')),
+            ("a checkpoint's place", |z| z.simulation.checkpoints[0].position[0] += 0.25),
+            ("a checkpoint's yaw", |z| z.simulation.checkpoints[0].yaw_degrees += 1.0),
+            ("a checkpoint's volume", |z| {
+                z.simulation.checkpoints[1].volume = CookedVolume::Sphere { radius: 0.25 }
+            }),
             ("no colliders", |z| z.simulation.colliders = None),
         ];
         for (what, tamper) in simulation {
@@ -1135,6 +1218,6 @@ mod tests {
             std::env::consts::ARCH
         );
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(digest, 0xd0e1_b4d1_dce4_05c2, "the digest moved; {line}");
+        assert_eq!(digest, 0xb01a_6234_d8d2_2d78, "the digest moved; {line}");
     }
 }

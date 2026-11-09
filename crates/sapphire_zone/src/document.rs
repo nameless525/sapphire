@@ -28,6 +28,7 @@
 //!         colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
 //!         spawners: [(name: "player_start", position: (0.0, 0.0, 3.0), yaw_degrees: 180.0, spawns: "player")],
 //!         triggers: [(name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered")],
+//!         checkpoints: [(name: "gate_steps", position: (3.2, 0.0, -14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0))],
 //!         splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0), (3.2, 3.0, -60.0)])],
 //!         // Where it leads. A trigger whose `event` is `to_market` is its door.
 //!         exits: [(name: "to_market", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true)],
@@ -39,9 +40,10 @@
 //! fields are errors. Everything is plain and reflected, so the editor can edit a document by a
 //! reflection path (`placements[3].at[1]`) and splice the text.
 //!
-//! **Stable IDs:** a spawner's, trigger's, spline's or exit's name is its identity. Its ID is the name's hash
-//! ([`Name`]), which no other entry's addition or order can change, so a replay and a save can name it.
-//! A placement or an instance has no ID: nothing about them that the simulation can see survives cook.
+//! **Stable IDs:** a spawner's, trigger's, checkpoint's, spline's or exit's name is its identity. Its ID
+//! is the name's hash ([`Name`]), which no other entry's addition or order can change, so a replay and
+//! a save can name it. A placement or an instance has no ID: nothing about them that the simulation
+//! can see survives cook.
 //!
 //! **Prefabs** are resolved at cook, so nothing about them reaches the runtime: the pipeline's `zone`
 //! module has what a prefab is. `day` and `rigs` are paths from this document's directory, since those
@@ -58,8 +60,8 @@ use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::cooked::{
-    CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger,
-    CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline,
+    CookedTrigger, CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 
@@ -102,6 +104,9 @@ pub struct ZoneDocument {
     pub spawners: Vec<Spawner>,
     #[serde(default)]
     pub triggers: Vec<Trigger>,
+    /// Where a walk through the zone can start again (M3 B4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<Checkpoint>,
     /// Camera rails.
     #[serde(default)]
     pub splines: Vec<Spline>,
@@ -279,7 +284,25 @@ pub struct Trigger {
     pub event: String,
 }
 
-/// A trigger's volume, about its position.
+/// Somewhere a walk through the zone can start again (M3 B4): what a save names to start the zone there,
+/// and what a teleport puts a player back at. A player standing in its volume with no encounter running
+/// has reached it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::zone"]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    /// Unique among the zone's checkpoints: its identity (see the [module docs](self)), which a save holds.
+    pub name: String,
+    /// Where a player's feet stand when the zone starts here, in metres.
+    pub position: [f32; 3],
+    /// About +Y, in degrees; 0 faces +Z.
+    #[serde(default)]
+    pub yaw_degrees: f32,
+    /// What reaches it, about its position.
+    pub volume: Volume,
+}
+
+/// A trigger's or a checkpoint's volume, about its position.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
@@ -383,6 +406,7 @@ impl ZoneDocument {
             ("lights", self.lights.len()),
             ("spawners", self.spawners.len()),
             ("triggers", self.triggers.len()),
+            ("checkpoints", self.checkpoints.len()),
             ("splines", self.splines.len()),
             ("navigation.seeds", self.navigation.as_ref().map_or(0, |navigation| navigation.seeds.len())),
             ("encounters", self.encounters.len()),
@@ -444,6 +468,13 @@ impl ZoneDocument {
             check_position(trigger.position).map_err(invalid(field("position")))?;
             trigger.volume.cooked().check().map_err(invalid(field("volume")))?;
             check_name(&trigger.event).map_err(invalid(field("event")))?;
+        }
+        check_names("checkpoints", self.checkpoints.iter().map(|checkpoint| checkpoint.name.as_str()))?;
+        for (index, checkpoint) in self.checkpoints.iter().enumerate() {
+            let field = |name: &str| format!("checkpoints[{index}].{name}");
+            check_position(checkpoint.position).map_err(invalid(field("position")))?;
+            check_finite(checkpoint.yaw_degrees).map_err(invalid(field("yaw_degrees")))?;
+            checkpoint.volume.cooked().check().map_err(invalid(field("volume")))?;
         }
         check_names("splines", self.splines.iter().map(|spline| spline.name.as_str()))?;
         for (index, spline) in self.splines.iter().enumerate() {
@@ -515,8 +546,21 @@ impl ZoneDocument {
             })
             .collect();
         triggers.sort_unstable_by_key(|trigger| trigger.id);
+        let mut checkpoints: Vec<CookedCheckpoint> = self
+            .checkpoints
+            .iter()
+            .map(|checkpoint| CookedCheckpoint {
+                id: Name::new(&checkpoint.name).as_u64(),
+                name: checkpoint.name.clone(),
+                position: checkpoint.position,
+                yaw_degrees: checkpoint.yaw_degrees,
+                volume: checkpoint.volume.cooked(),
+            })
+            .collect();
+        checkpoints.sort_unstable_by_key(|checkpoint| checkpoint.id);
         check_distinct("spawners", &spawners, |spawner| (spawner.id, &spawner.name))?;
         check_distinct("triggers", &triggers, |trigger| (trigger.id, &trigger.name))?;
+        check_distinct("checkpoints", &checkpoints, |checkpoint| (checkpoint.id, &checkpoint.name))?;
         let mut exits: Vec<CookedExit> = self
             .exits
             .iter()
@@ -536,6 +580,7 @@ impl ZoneDocument {
             colliders: self.colliders,
             spawners,
             triggers,
+            checkpoints,
             navigation: None,
             encounters: sorted_set(&self.encounters),
             exits,
@@ -903,6 +948,7 @@ mod tests {
                 (name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered"),
                 (name: "well", position: (0.0, 0.0, 0.0), volume: Sphere(radius: 2.0), event: "well_entered"),
             ],
+            checkpoints: [(name: "gate_steps", position: (3.2, 0.0, -14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0))],
             splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0)], closed: true)],
             "#
         ))
@@ -968,7 +1014,7 @@ mod tests {
     #[test]
     fn every_check_names_the_field() {
         type Tamper = fn(&mut ZoneDocument);
-        let cases: [(&str, Tamper); 21] = [
+        let cases: [(&str, Tamper); 26] = [
             ("grid.cell_size", |d| d.grid.cell_size = 1.0),
             ("grid.cell_size", |d| d.grid.cell_size = f32::NAN),
             ("placements[1].at", |d| d.placements[1].at[2] = f32::INFINITY),
@@ -995,6 +1041,13 @@ mod tests {
             ("triggers[1].name", |d| d.triggers[1].name = "gate".to_owned()),
             ("triggers[1].volume", |d| d.triggers[1].volume = Volume::Sphere { radius: 0.0 }),
             ("triggers[0].event", |d| d.triggers[0].event.clear()),
+            ("checkpoints[0].name", |d| d.checkpoints[0].name.clear()),
+            ("checkpoints[0].position", |d| d.checkpoints[0].position[2] = f32::INFINITY),
+            ("checkpoints[0].yaw_degrees", |d| d.checkpoints[0].yaw_degrees = f32::NAN),
+            ("checkpoints[0].volume", |d| {
+                d.checkpoints[0].volume = Volume::Box { half_extents: [1.0, 0.0, 1.0] }
+            }),
+            ("checkpoints[1].name", |d| d.checkpoints.push(d.checkpoints[0].clone())),
             ("splines[0].points", |d| d.splines[0].points.truncate(1)),
         ];
         for (field, tamper) in cases {

@@ -24,8 +24,13 @@
 //! **A set of moves' name** is its file's, before `.moves.ron`. That's what a cast member's `moves` and a
 //! zone's spawner's `spawns` say.
 //!
-//! **Where someone stands:** `at` is one of the zone's spawners, in a scenario that has a zone, and otherwise
-//! one of the arena's spawn points (`player`, `enemy`, `crowd_0`...).
+//! **Where someone stands:** `at` is one of the zone's spawners or checkpoints, in a scenario that has a
+//! zone, and otherwise one of the arena's spawn points (`player`, `enemy`, `crowd_0`...).
+//!
+//! **A scenario can start where a save does** (M3 B4): when the first of its cast stands at a checkpoint, its
+//! zone starts there, with `cleared`'s encounters already fought, through [`Simulation::start_at`], the call
+//! a game's load makes. So a replay can start from what a save holds, and the walk from there is the walk a
+//! loaded game takes.
 //!
 //! **A zone here is what the simulation reads of its document** ([`ZoneDocument::simulation`]) with no
 //! navmesh and no presentation, archived as a cook archives it, so it goes in through the same door as a pack's
@@ -47,6 +52,7 @@ use serde::{Deserialize, Serialize};
 use super::scenario::ScenarioError;
 use crate::actors::{ActorId, ActorSpawn};
 use crate::arena::SpawnPoint;
+use crate::checkpoint::{Place, ZoneStart};
 use crate::controller::ControllerProfile;
 use crate::encounter::ZoneCast;
 use crate::faction::Faction;
@@ -78,6 +84,9 @@ pub struct ScenarioDocument {
     /// The `.encounter.ron`s the zone lists, from the repository's root.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub encounters: Vec<String>,
+    /// Those of `encounters` fought before it starts, as a save says (see the [module docs](self)).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleared: Vec<String>,
     /// The documents its move sets come from, from the repository's root, in the order they're added.
     pub moves: Vec<String>,
     /// Who stands there at the start, in spawn order.
@@ -243,6 +252,11 @@ impl ScenarioDocument {
         if self.zone.is_none() && !self.encounters.is_empty() {
             return Err(invalid("encounters", "an encounter stands in a zone, and this has none"));
         }
+        for (index, path) in self.cleared.iter().enumerate() {
+            if !self.encounters.contains(path) {
+                return Err(invalid(format!("cleared[{index}]"), "that isn't one of `encounters`"));
+            }
+        }
         for (index, member) in self.cast.iter().enumerate() {
             if !self.moves.iter().any(|path| kind_of(path) == member.moves) {
                 let problem = format!("`{}` isn't one of `moves`", member.moves);
@@ -294,21 +308,31 @@ impl ScenarioDocument {
             sets.push((kind_of(path), sim.add_move_set(moves_of(path)?)));
         }
 
+        let mut start = None;
         if let Some((document, cooked)) = &zone {
             self.give_zone(sim, document, cooked, &colliders, ZoneCast { moves: &sets, controller })?;
+            start = self.start_zone(sim, document)?;
         }
 
         let mut cast = Vec::with_capacity(self.cast.len());
         for (index, member) in self.cast.iter().enumerate() {
             let field = || format!("cast[{index}].at");
             let moves = sets.iter().find(|(kind, _)| *kind == member.moves).map(|&(_, id)| id);
-            let (position, yaw) = match zone.as_ref() {
-                Some((document, _)) => {
+            let (position, yaw) = match (zone.as_ref(), start.filter(|_| index == 0)) {
+                (_, Some(place)) => (place.position.to_array(), place.yaw),
+                (Some((document, _)), None) => {
                     let spawner = document.spawners.iter().find(|spawner| spawner.name == member.at);
-                    let spawner = spawner.ok_or_else(|| invalid(field(), "the zone has no such spawner"))?;
-                    (spawner.position, spawner.yaw_degrees.to_radians())
+                    let checkpoint =
+                        document.checkpoints.iter().find(|checkpoint| checkpoint.name == member.at);
+                    let place =
+                        spawner.map(|spawner| (spawner.position, spawner.yaw_degrees)).or_else(|| {
+                            checkpoint.map(|checkpoint| (checkpoint.position, checkpoint.yaw_degrees))
+                        });
+                    let (position, degrees) = place
+                        .ok_or_else(|| invalid(field(), "the zone has no such spawner or checkpoint"))?;
+                    (position, degrees.to_radians())
                 }
-                None => {
+                (None, None) => {
                     let point =
                         arena_point(&member.at).ok_or_else(|| invalid(field(), "no such spawn point"))?;
                     (point.position, point.yaw())
@@ -356,6 +380,25 @@ impl ScenarioDocument {
         let left_out: Vec<usize> = past_the_first.copied().collect();
         let driven = cast.iter().enumerate().filter(|(place, _)| !left_out.contains(place));
         Ok(driven.map(|(_, &actor)| actor).collect())
+    }
+
+    /// Starts the zone as a save would, if the first of the cast stands at a checkpoint or anything's been
+    /// cleared, and says where the first of the cast stands then.
+    fn start_zone(
+        &self,
+        sim: &mut Simulation,
+        document: &ZoneDocument,
+    ) -> Result<Option<Place>, ScenarioError> {
+        let first = self.cast.first().map(|member| member.at.as_str());
+        let checkpoint =
+            document.checkpoints.iter().find(|checkpoint| Some(checkpoint.name.as_str()) == first);
+        if checkpoint.is_none() && self.cleared.is_empty() {
+            return Ok(None);
+        }
+        let mut cleared = self.cleared.iter().map(|path| id_of(path)).collect::<Result<Vec<_>, _>>()?;
+        cleared.sort_unstable();
+        let start = ZoneStart { checkpoint: checkpoint.map(|checkpoint| checkpoint.name.clone()), cleared };
+        Ok(sim.start_at(&start)?)
     }
 
     /// Hands a simulation the zone: its cooked encounters by ID, and the colliders, as a pack would.

@@ -36,6 +36,21 @@
 //!   a strike's active frames can't turn into a fall. Over ground that only drops a little, the feet
 //!   still follow.
 //!
+//! # Nothing in the air lifts anyone
+//!
+//! An airborne or sliding character's speed turns along what it meets, and what it meets never makes it
+//! rise faster than it was, or rise at all if it wasn't (M3 B4). Turned along a curb's edge or a face too
+//! steep to stand on, the speed going across would otherwise go up: a jump into a 60° face rose 2.35 m,
+//! over a bank of 2 m that a jump's 1.11 m can't reach, and the numbers alone once had to be held so a
+//! curb couldn't throw anyone over the arena's walls. A rise or a fall can still be stopped.
+//!
+//! # Teleports
+//!
+//! [`crate::Simulation::teleport`] puts a character somewhere as a spawn there would: the body, the
+//! transform and yaw, and a controller state starting over, airborne until its first tick finds the
+//! ground, with nothing it was doing carried (stick, move, intents, slide). A load at a checkpoint and a
+//! teleport there walk on to the bit alike (`tests/walks.rs`).
+//!
 //! # Time
 //!
 //! Everything runs on the owner's clock: motion by its last delta, coyote time in its sub-ticks. A

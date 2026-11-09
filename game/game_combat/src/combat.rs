@@ -61,7 +61,7 @@ use sapphire_gameplay::replay::{
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
-use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelinePlayError};
+use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 /// Every scenario a fight here can start from, those with a script among them.
@@ -738,7 +738,7 @@ impl Combat {
                 if let Err(error) = recording.step(action_source(script, bindings)) {
                     *stopped = Some(error);
                 } else if let Err(error) = starts.apply(recording) {
-                    tracing::warn!(target: LOG_TARGET, %error, "the script's timeline didn't start");
+                    tracing::warn!(target: LOG_TARGET, %error, "the script's command didn't take");
                 }
                 asks
             }
@@ -1311,9 +1311,9 @@ pub fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSourc
 }
 
 /// A script by name.
-/// A recording script's timeline starts, carried out at their boundaries as the recording goes (M3 Q3). Its
-/// skips and zone entries aren't: on a stage, both are presentation's, which tells the recording
-/// ([`Combat::skip_timeline`]).
+/// A recording script's timeline starts and returns to checkpoints, carried out at their boundaries as the
+/// recording goes (M3 Q3, B4). Its skips and zone entries aren't: on a stage, both are presentation's,
+/// which tells the recording ([`Combat::skip_timeline`]).
 #[derive(Clone, Copy, Debug)]
 struct ScriptStarts {
     commands: &'static [(u32, ReplayCommand)],
@@ -1331,14 +1331,20 @@ impl ScriptStarts {
         Self { next, ..self }
     }
 
-    /// Starts what comes at the boundary `recording` stands on.
-    fn apply(&mut self, recording: &mut Recording) -> Result<(), TimelinePlayError> {
+    /// Carries out what comes at the boundary `recording` stands on.
+    fn apply(&mut self, recording: &mut Recording) -> Result<(), String> {
         while let Some(&(at, command)) = self.commands.get(self.next)
             && at <= recording.recorded_ticks()
         {
             self.next += 1;
-            if let ReplayCommand::PlayTimeline(id) = command {
-                recording.play_timeline(id)?;
+            match command {
+                ReplayCommand::PlayTimeline(id) => {
+                    recording.play_timeline(id).map_err(|error| error.to_string())?;
+                }
+                ReplayCommand::ReturnTo(checkpoint) => {
+                    recording.return_to_checkpoint(checkpoint).map_err(|error| error.to_string())?;
+                }
+                ReplayCommand::SkipTimeline { .. } | ReplayCommand::EnterZone(_) => {}
             }
         }
         Ok(())

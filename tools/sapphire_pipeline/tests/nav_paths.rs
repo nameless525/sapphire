@@ -76,11 +76,13 @@ fn gap_to(set: &ColliderSet, index: usize, foot: Vec3) -> Option<f32> {
     };
     // A body steps over what's under a climb, so that doesn't stand in its way.
     let (low, high) = (foot.y + BakeSettings::CHARACTER.climb, foot.y + CAPSULE_HEIGHT);
+    let [qx, qy, qz, qw] = collider.rotation;
+    if qx != 0.0 || qz != 0.0 {
+        return Some(tilted_gap(collider.rotation, at, across, half_height, foot, low, high));
+    }
     if at.y + half_height < low || at.y - half_height > high {
         return None;
     }
-    let [qx, qy, qz, qw] = collider.rotation;
-    debug_assert!(qx == 0.0 && qz == 0.0, "the arena turns its boxes about y alone");
     let (dx, dz) = (foot.x - at.x, foot.z - at.z);
     // The inverse of a turn about y by this quaternion, on the XZ plane.
     let (c, s) = (qw * qw - qy * qy, 2.0 * qw * qy);
@@ -93,6 +95,31 @@ fn gap_to(set: &ColliderSet, index: usize, foot: Vec3) -> Option<f32> {
         }
         Err(radius) => (lx * lx + lz * lz).sqrt() - radius,
     })
+}
+
+/// A box tilted off upright, as the proving ground's ramp and steep face are: the least distance from
+/// the capsule's standing height, `low` to `high` above the foot, to the box, sampling every 2 cm. That
+/// is never more than the gap across, so it holds a path to no less than an upright box's would.
+fn tilted_gap(
+    rotation: [f32; 4],
+    at: Vec3,
+    across: Result<[f32; 2], f32>,
+    half_height: f32,
+    foot: Vec3,
+    low: f32,
+    high: f32,
+) -> f32 {
+    let [x, z] = across.expect("only boxes are tilted");
+    let half = Vec3::new(x, half_height, z);
+    let inverse = glam::Quat::from_array(rotation).inverse();
+    let steps = ((high - low) / 0.02).ceil() as u32;
+    (0..=steps)
+        .map(|step| {
+            let point = Vec3::new(foot.x, low + (high - low) * step as f32 / steps as f32, foot.z);
+            let local = (inverse * (point - at)).abs() - half;
+            local.max(Vec3::ZERO).length() + local.max_element().min(0.0)
+        })
+        .fold(f32::MAX, f32::min)
 }
 
 /// The least gap along a path to anything solid in the arena, and which collider, sampling every 2 cm.
@@ -275,7 +302,8 @@ const PROVING_GROUND_GOLDEN: &[Golden] = &[
         name: "across the whole ground",
         from: [-30.0, 0.0, -40.0],
         to: [50.0, 0.0, 40.0],
-        corners: &[[-30.0, FLOOR, -40.0], [50.0, FLOOR, 40.0]],
+        // East of the walking course's lane, which stands across the straight line at z -20.
+        corners: &[[-30.0, FLOOR, -40.0], [0.0, FLOOR, -22.0], [32.0, FLOOR, 16.0], [50.0, FLOOR, 40.0]],
     },
 ];
 

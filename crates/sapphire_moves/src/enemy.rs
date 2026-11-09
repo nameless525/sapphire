@@ -1,13 +1,27 @@
 //! One kind of enemy (M3 B3): `<name>.enemy.ron`, cooked to `.senemy`.
 //!
 //! ```ron
-//! ( type: "sapphire::moves::EnemyDocument", version: 1, data: ( // Its `.moves.ron`, by the ID in its
-//! sidecar. moves: "1c2bf2a5-5d7e-4a43-bb4e-0b3a5b7f1d10", // How it fights, by name, and the one it starts
-//! with. brains: { "steady": (spacing: (near: 1.4, far: 2.6), ...) }, brain: "steady", // Where its health's
-//! phases fall, in thousandths of the most it has, first to last. A phase may // change its brain, and one
-//! with a name says so to presentation as it's crossed. phases: [(at: 500, name: Some("enraged"), brain:
-//! Some("fierce")), (at: 0)], boss: Some((name: "boss-warden")), look: (mesh: "...", graph: "...", scale:
-//! 1.0, height: 2.0, eyes_below_crown: 0.2, framed_radius: 0.45), ), )
+//! (
+//!     type: "sapphire::moves::EnemyDocument",
+//!     version: 1,
+//!     data: (
+//!         // Its `.moves.ron`, by the ID in its sidecar.
+//!         moves: "1c2bf2a5-5d7e-4a43-bb4e-0b3a5b7f1d10",
+//!         // How it fights, by name, and the one it starts with.
+//!         brains: { "steady": (spacing: (near: 1.4, far: 2.6), ...), "fierce": (...) },
+//!         brain: "steady",
+//!         // Where its health's phases fall, in thousandths of the most it has, first to last. A phase
+//!         // may change its brain, and one with a name says so to presentation as it's crossed.
+//!         phases: [(at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 0)],
+//!         boss: Some((name: "boss-warden")),
+//!         look: (
+//!             mesh: "...", graph: "...",
+//!             scale: 1.0, height: 2.0, eyes_below_crown: 0.2, framed_radius: 0.45,
+//!         ),
+//!         // If it has one, its script: a `.luau`'s ID (M3 C2).
+//!         script: "...",
+//!     ),
+//! )
 //! ```
 //!
 //! **Two halves.** [`Enemy::mind`] is the simulation's: its brains, compiled against its set of moves, its

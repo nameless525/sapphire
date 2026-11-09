@@ -198,8 +198,8 @@ impl AssetKind {
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
-    /// string table, a font, font chains, a navmesh, a timeline, a script, a dialogue or an enemy is ready
-    /// once it and its dependencies are decoded.
+    /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
+    /// dialogue, an enemy, a score or voice lines is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -231,7 +231,8 @@ impl AssetKind {
     /// grids are GPU data, so their bytes go once uploaded (a new renderer has them read again). Materials
     /// are small and CPU code reads them (live link, the editor), and rigs, skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
-    /// timelines, scripts, dialogues and enemies are read on the CPU only, so they stay.
+    /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores and voice lines are read on
+    /// the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -269,10 +270,10 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and skeletons,
-    /// materials on textures, clips on skeletons, cues on sounds, animation graphs on clips, zones on
-    /// collider sets and navmeshes, font chains on fonts, enemies on move sets, and textures, rigs, probe
-    /// grids, skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines, UI
-    /// documents, scripts and dialogues on nothing. A zone's meshes and probes and an enemy's look aren't
+    /// materials on textures, clips on skeletons, cues and scores on sounds, voice lines on cues, animation
+    /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
+    /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
+    /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts and dialogues on nothing. A zone's meshes and probes and an enemy's look aren't
     /// dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -326,10 +327,11 @@ impl AssetKind {
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`, `Skeleton::read`,
     /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
     /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
-    /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `ScriptChunk::read`, `Dialogue::read`,
-    /// `Enemy::from_cooked`), and returns the assets they reference, sorted and without repeats: a mesh's
-    /// material slots bound to material assets and its skeleton, a material's textures, a clip's skeleton, a
-    /// cue's sounds, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
+    /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
+    /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`), and returns the assets
+    /// they reference, sorted and without repeats: a mesh's material slots bound to material assets and its
+    /// skeleton, a material's textures, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
+    /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
     /// set. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
     /// references exactly what its pack says it does.
     ///

@@ -14,9 +14,10 @@
 //! The target encodes on write ([`Renderer::new`](crate::Renderer::new)), as post assumes, so the
 //! hardware blends in linear light and encodes the result. **Decision: keep that blend and author
 //! around it,** rather than blend in display space, which would need the target's non-sRGB view
-//! (which offscreen targets and some surfaces don't declare) or a read of the frame. The shader
-//! decodes each quad's display-encoded colors, so an opaque color lands on exactly its code, as the
-//! debug overlay's linearized colors do. The cost is what egui's notes describe: translucent colors
+//! (which offscreen targets and some surfaces don't declare) or a read of the frame. Each quad's
+//! display-encoded colors are decoded as it's copied for the GPU, through an exact table of the 256
+//! codes, so an opaque color lands on exactly its code, as the debug overlay's linearized colors do,
+//! and every backend blends the same values. The cost is what egui's notes describe: translucent colors
 //! read differently than in a display-space blend. A 50% black over white shows as code 188, not
 //! 128, so inks that must hold over a bright sky are authored nearly opaque, and an edge's
 //! antialiasing is true coverage, which reads light-on-dark a little bolder and dark-on-light a
@@ -24,12 +25,43 @@
 //!
 //! # Drawing
 //!
-//! One draw of `n` instances of a four-vertex strip for each run of quads that reads one texture,
-//! with the run's quads bound as a vertex buffer at slot 0, so it needs no storage binding, base
-//! instance or anything the iOS Simulator lacks. The quads are
+//! One draw of `n` instances of a four-vertex strip for each run of quads that reads one texture.
+//! The frame's quads are one storage buffer that both stages read, and a run's instances come in
+//! through a vertex stream of indices sliced at its first quad, so a draw never starts its instances
+//! past 0, which the iOS Simulator can't. The quads are
 //! copied at [`Ui::prepare`] and staged in the frame's uploads pass, so a frame that never runs
 //! leaves nothing behind: the next [`Ui::prepare`] writes its own. Past what a buffer holds, quads
 //! don't draw and are counted ([`UiStats::quads_over_limit`]).
+//!
+//! # What a pixel pays for (M3)
+//!
+//! A screen of large panels is mostly pixels of fills, so a pixel pays only for what its own quad
+//! uses. **Decisions:**
+//!
+//! - **Only a quad's corner and its index pass between the stages,** and the fragment stage reads the
+//!   rest from the buffer. A stage pays for every input it declares on every pixel, read or not, and
+//!   a quad's 28 values as flat inputs cost as much as all of its shading.
+//! - **A quad reaches the GPU worked out** ([`GpuUiQuad`]): its colors decoded once, here, rather
+//!   than by three `pow`s on every pixel, and flags saying which of the slice, field, outline,
+//!   gradient, cut and sweep it uses, and what its texels hold ([`UiQuad::texels`]: a field, a glyph
+//!   page's coverage, a display face's multi-channel field or an inset's picture), which the shader
+//!   branches on rather than compare. Every pixel of a quad agrees, so a branch costs nothing, and a
+//!   skipped part is what it would have worked out.
+//! - **A solid quad reads no field** ([`is_solid`]): one of the atlas's single-channel field that
+//!   reads a single point of it, where
+//!   every texel a filtered read blends is full and both its edges have passed, is filled through and
+//!   through, and its pixels come out as the field's path makes them. A rectangle and a nine-slice's
+//!   middle are, and they're most of a screen.
+//!
+//! **What it bought** (release, Apple M5, the sandbox's `--bench` with `--ui-game`): the pass's
+//! share of the rest of its frame halved on both tiers, on the game's character, settings and title
+//! screens as on U4's retired test screen of 719 quads, and every game screen is inside §3.3's
+//! 0.3 ms on Desktop-Low at 1080p (spec §5.17 has the rounds). What remains is about half the cost of
+//! covering these pixels at all: the same quads writing a constant color take roughly half of
+//! today's share.
+//! Rejected: computing the field's slope analytically (it moves every edge pixel), a second
+//! pipeline for solid quads (a split draw for a branch that costs nothing), and drawing opaque quads
+//! unblended (it pays only on GPUs that don't blend in tile memory, and needs the same split).
 //!
 //! # Glyph pages
 //!
@@ -49,7 +81,7 @@
 //!
 //! A quad in one of the list's inset runs (M3 U6, `UiDrawList::inset_runs`) reads an inset's picture
 //! in place of the atlas, through the same pipeline: its [`UiQuad::texels`] say the texels are a
-//! picture (`UI_PICTURE`), linear color the quad's color tints. The pictures are the renderer's own
+//! picture (`UI_PICTURE`, a flag on the GPU), linear color the quad's color tints. The pictures are the renderer's own
 //! (the `inset` module), each with a group of this layout ([`Ui::picture_group`]); a run naming an
 //! inset the frame has no picture for draws nothing.
 //!
@@ -58,7 +90,7 @@
 //! A display face's glyphs come cooked as a multi-channel field ([`UiFieldFormat::Multi`]), which a
 //! list names in [`UiDrawList::fields`]. Each is an atlas like the HUD's, uploaded the first time a
 //! list names it and drawn through the same pipeline and bind group layout: a quad's
-//! [`UiQuad::texels`] says how the shader reads what it samples, so a field adds no pipeline and a
+//! [`UiQuad::texels`], a flag on the GPU, says how the shader reads what it samples, so a field adds no pipeline and a
 //! warm-up declares nothing more for it. One stays on the GPU while anything but this renderer holds
 //! its [`Arc`], so a title that comes and goes uploads once, and goes once its face is let go.
 //!
@@ -66,14 +98,14 @@
 //! the one pipeline, once built, on the layout it had (`shader_builds`).
 
 use std::collections::BTreeMap;
-use std::mem::{offset_of, size_of};
+use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_look::{
-    UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiSource,
-    UiTreeStats,
+    UI_COVERAGE, UI_FIELD, UI_MULTI_FIELD, UI_PICTURE, UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats,
+    UiMask, UiPageBands, UiPageState, UiQuad, UiSource, UiTreeStats,
 };
 use sapphire_rhi::wgpu;
 
@@ -87,8 +119,133 @@ use crate::shaders::{self, Program, ShaderSources};
 /// The frame graph pass that draws the interface, for GPU timings.
 pub const UI_PASS: &str = "ui";
 
-/// Bytes of a quad, as the vertex stage reads it.
-const QUAD_BYTES: u64 = size_of::<UiQuad>() as u64;
+/// Bytes of a quad, as the shader reads it.
+const QUAD_BYTES: u64 = size_of::<GpuUiQuad>() as u64;
+
+/// [`GpuUiQuad::flags`]: the quad reads no field, being inside its shape everywhere ([`is_solid`]).
+pub(crate) const UI_SOLID: u32 = 1;
+/// It's a three-slice: [`UiQuad::slice`] is above 0.
+pub(crate) const UI_SLICED: u32 = 1 << 1;
+/// Its outline shows: its color has alpha, and it isn't solid.
+pub(crate) const UI_OUTLINED: u32 = 1 << 2;
+/// Its fill is a gradient.
+pub(crate) const UI_GRADIENT: u32 = 1 << 3;
+/// It's cut along its width.
+pub(crate) const UI_CUT: u32 = 1 << 4;
+/// It's swept.
+pub(crate) const UI_SWEPT: u32 = 1 << 5;
+/// Its texels are coverage, as a glyph page's are ([`UI_COVERAGE`]).
+pub(crate) const UI_COVERAGE_TEXELS: u32 = 1 << 6;
+/// Its texels are a display face's multi-channel field ([`UI_MULTI_FIELD`]).
+pub(crate) const UI_MULTI_TEXELS: u32 = 1 << 7;
+/// Its texels are an inset's picture ([`UI_PICTURE`]).
+pub(crate) const UI_PICTURE_TEXELS: u32 = 1 << 8;
+
+/// A [`UiQuad`] as the shader reads it, worked out once rather than on each of its pixels: its colors
+/// in linear light, and which of its parts it uses. Field by field with `ui.wgsl`'s `UiQuad`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GpuUiQuad {
+    pub(crate) origin: [f32; 2],
+    pub(crate) axis_x: [f32; 2],
+    pub(crate) axis_y: [f32; 2],
+    pub(crate) clip: [f32; 2],
+    pub(crate) uv: [f32; 4],
+    pub(crate) color: [f32; 4],
+    pub(crate) color_end: [f32; 4],
+    pub(crate) outline_color: [f32; 4],
+    /// Its edge, softness, outline and sweep.
+    pub(crate) shape: [f32; 4],
+    pub(crate) gradient: [f32; 3],
+    pub(crate) slice: f32,
+    pub(crate) flags: u32,
+    pub(crate) padding: [u32; 3],
+}
+
+impl GpuUiQuad {
+    /// `quad`, its colors decoded through `linear`; not solid, which only its draw can say.
+    fn new(quad: &UiQuad, linear: &[f32; 256]) -> Self {
+        // Alpha is a share, not a light: only the color's three channels are encoded.
+        let decode = |[r, g, b, a]: [u8; 4]| {
+            [linear[usize::from(r)], linear[usize::from(g)], linear[usize::from(b)], f32::from(a) / 255.0]
+        };
+        let mut flags = 0;
+        for (on, flag) in [
+            (quad.slice > 0.0, UI_SLICED),
+            (quad.outline_color[3] != 0, UI_OUTLINED),
+            (quad.gradient != [0.0; 3], UI_GRADIENT),
+            (quad.clip[0] > 0.0 || quad.clip[1] < 1.0, UI_CUT),
+            (quad.sweep > 0.0, UI_SWEPT),
+            (quad.texels == UI_COVERAGE, UI_COVERAGE_TEXELS),
+            (quad.texels == UI_MULTI_FIELD, UI_MULTI_TEXELS),
+            (quad.texels == UI_PICTURE, UI_PICTURE_TEXELS),
+        ] {
+            if on {
+                flags |= flag;
+            }
+        }
+        Self {
+            origin: quad.origin,
+            axis_x: quad.axis_x,
+            axis_y: quad.axis_y,
+            clip: quad.clip,
+            uv: quad.uv,
+            color: decode(quad.color),
+            color_end: decode(quad.color_end),
+            outline_color: decode(quad.outline_color),
+            shape: [quad.edge, quad.softness, quad.outline, quad.sweep],
+            gradient: quad.gradient,
+            slice: quad.slice,
+            flags,
+            padding: [0; 3],
+        }
+    }
+
+    /// Marks it solid: it reads no field, and so shows no outline.
+    fn make_solid(&mut self) {
+        self.flags = (self.flags | UI_SOLID) & !UI_OUTLINED;
+    }
+}
+
+/// Each display-encoded code as linear light, exactly: what a quad's colors are decoded through.
+fn linear_codes() -> [f32; 256] {
+    std::array::from_fn(|code| {
+        let display = code as f64 / 255.0;
+        let linear = if display <= 0.04045 { display / 12.92 } else { ((display + 0.055) / 1.055).powf(2.4) };
+        linear as f32
+    })
+}
+
+/// How far past an edge a solid quad's field must be, in field: what keeps the shader's ramp at 1
+/// whatever its last bits.
+const SOLID_MARGIN: f32 = 1e-3;
+
+/// Whether every pixel of `quad` is inside its shape, so its field's path would fill it through:
+/// it reads one point of `atlas`, every texel a filtered read there blends is full, so its field is
+/// 1 with no slope, and both its fill's edge and its outline's are far enough below 1 that their ramps
+/// are 1 at the widest its softness makes them. Only a single-channel field's quad over a
+/// single-channel atlas can be: never a glyph's coverage, a display face's field or a picture.
+fn is_solid(quad: &UiQuad, atlas: &UiAtlas) -> bool {
+    let [u0, v0, u1, v1] = quad.uv;
+    let single = quad.texels == UI_FIELD && atlas.format == UiFieldFormat::Single;
+    if u0 != u1 || v0 != v1 || !single || atlas.width == 0 || atlas.height == 0 {
+        return false;
+    }
+    // Linear filtering blends the texels around `uv - half a texel`, clamped at the edges.
+    let around = |at: f32, side: u32| {
+        let first = (at * side as f32 - 0.5).floor();
+        let clamp = |texel: f32| texel.clamp(0.0, (side - 1) as f32) as usize;
+        [clamp(first), clamp(first + 1.0)]
+    };
+    let full = around(u0, atlas.width).into_iter().all(|x| {
+        around(v0, atlas.height)
+            .into_iter()
+            .all(|y| atlas.texels.get(y * atlas.width as usize + x) == Some(&255))
+    });
+    let width = (quad.softness * 2.0).max(1e-4);
+    let deepest = quad.edge.max(quad.edge - quad.outline);
+    full && (1.0 - deepest) / width >= 0.5 + SOLID_MARGIN
+}
 
 /// The next renderer's [`UiPageState::store`]. Never 0, which is no renderer's.
 static NEXT_PAGE_STORE: AtomicU64 = AtomicU64::new(1);
@@ -96,26 +253,12 @@ static NEXT_PAGE_STORE: AtomicU64 = AtomicU64::new(1);
 /// Quads the buffer holds before it first grows: more than a combat HUD draws.
 const INITIAL_QUADS: u64 = 256;
 
-/// The vertex layout of [`UiQuad`], attribute by attribute.
-const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 12] = [
-    attribute(0, offset_of!(UiQuad, origin), wgpu::VertexFormat::Float32x2),
-    attribute(1, offset_of!(UiQuad, axis_x), wgpu::VertexFormat::Float32x2),
-    attribute(2, offset_of!(UiQuad, axis_y), wgpu::VertexFormat::Float32x2),
-    attribute(3, offset_of!(UiQuad, uv), wgpu::VertexFormat::Float32x4),
-    attribute(4, offset_of!(UiQuad, color), wgpu::VertexFormat::Unorm8x4),
-    attribute(5, offset_of!(UiQuad, outline_color), wgpu::VertexFormat::Unorm8x4),
-    // `edge`, `softness`, `outline` and `sweep`, side by side.
-    attribute(6, offset_of!(UiQuad, edge), wgpu::VertexFormat::Float32x4),
-    attribute(7, offset_of!(UiQuad, clip), wgpu::VertexFormat::Float32x2),
-    attribute(8, offset_of!(UiQuad, slice), wgpu::VertexFormat::Float32),
-    attribute(9, offset_of!(UiQuad, color_end), wgpu::VertexFormat::Unorm8x4),
-    attribute(10, offset_of!(UiQuad, gradient), wgpu::VertexFormat::Float32x3),
-    attribute(11, offset_of!(UiQuad, texels), wgpu::VertexFormat::Uint32),
-];
+/// Bytes of a quad's index in the stream a draw's instances read.
+const INDEX_BYTES: u64 = size_of::<u32>() as u64;
 
-const fn attribute(shader_location: u32, offset: usize, format: wgpu::VertexFormat) -> wgpu::VertexAttribute {
-    wgpu::VertexAttribute { format, offset: offset as u64, shader_location }
-}
+/// The index stream's one attribute: the quad's place in the frame's buffer.
+const INDEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+    [wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 0, shader_location: 0 }];
 
 /// What the interface drew and built, for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -147,6 +290,8 @@ pub struct UiStats {
     pub stale_page_quads: u32,
     /// Draws in the last prepared frame.
     pub draws: u32,
+    /// Quads of the last prepared frame that read no field, being inside their shapes throughout.
+    pub solid_quads: u32,
     /// What the glyph atlas behind the last prepared frame's list did.
     pub glyphs: UiGlyphStats,
     /// What the retained trees behind it did.
@@ -210,6 +355,11 @@ struct Built {
     sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
     quads: GrowableBuffer,
+    /// What reads [`Self::quads`], made again when it grows.
+    quads_layout: wgpu::BindGroupLayout,
+    quads_group: wgpu::BindGroup,
+    /// `0, 1, 2, …`, one for each quad [`Self::quads`] holds: what a draw's instances read, sliced at its first.
+    indices: wgpu::Buffer,
     atlas: Option<AtlasOnGpu>,
     pages: BTreeMap<u16, PageOnGpu>,
     page_size: u32,
@@ -225,7 +375,7 @@ pub(crate) struct Ui {
     labels: bool,
     built: Option<Box<Built>>,
     /// This frame's quads, for the uploads pass. Its capacity stays.
-    quads: Vec<UiQuad>,
+    quads: Vec<GpuUiQuad>,
     /// How they draw, in order.
     draws: Vec<UiDraw>,
     uniforms: UiUniforms,
@@ -239,12 +389,14 @@ pub(crate) struct Ui {
     /// Where each of this frame's list's fields is in `Built::fields`, if it could be uploaded. Its
     /// capacity stays.
     field_slots: Vec<Option<u16>>,
+    /// Each display-encoded code in linear light: [`linear_codes`].
+    linear: Box<[f32; 256]>,
 }
 
 /// What the uploads pass writes for the interface.
 #[derive(Debug)]
 pub(crate) struct UiUploads<'a> {
-    quads: &'a [UiQuad],
+    quads: &'a [GpuUiQuad],
     buffer: &'a wgpu::Buffer,
     uniform_buffer: &'a wgpu::Buffer,
     uniforms: UiUniforms,
@@ -274,10 +426,11 @@ impl Ui {
             draws: Vec::new(),
             uniforms: UiUniforms::default(),
             stats: UiStats::default(),
-            max_bytes: device.limits().max_buffer_size,
+            max_bytes: max_quad_bytes(&device.limits()),
             page_state: UiPageState { store: NEXT_PAGE_STORE.fetch_add(1, Ordering::Relaxed), batch: 0 },
             bands: UiPageBands::default(),
             field_slots: Vec::new(),
+            linear: Box::new(linear_codes()),
         }
     }
 
@@ -342,9 +495,22 @@ impl Ui {
                 },
             ],
         });
+        let quads_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: self.labels.then_some("ui quads"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(QUAD_BYTES),
+                },
+                count: None,
+            }],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: self.labels.then_some("ui"),
-            bind_group_layouts: &[Some(&group_layout)],
+            bind_group_layouts: &[Some(&group_layout), Some(&quads_layout)],
             immediate_size: 0,
         });
         let pipeline = build_pipeline(device, &pipeline_layout, self.color_format, &self.builds, sources);
@@ -363,10 +529,11 @@ impl Ui {
         let quads = GrowableBuffer::new(
             device,
             "ui quads",
-            wgpu::BufferUsages::VERTEX,
+            wgpu::BufferUsages::STORAGE,
             INITIAL_QUADS * QUAD_BYTES,
             self.max_bytes,
         );
+        let (quads_group, indices) = bind_quads(device, &quads_layout, quads.buffer(), self.labels);
         self.built = Some(Box::new(Built {
             pipeline,
             pipeline_layout,
@@ -374,6 +541,9 @@ impl Ui {
             sampler,
             uniforms,
             quads,
+            quads_layout,
+            quads_group,
+            indices,
             atlas: None,
             pages: BTreeMap::new(),
             page_size: 0,
@@ -393,6 +563,7 @@ impl Ui {
         self.stats.page_upload_bytes = 0;
         self.stats.stale_page_quads = 0;
         self.stats.draws = 0;
+        self.stats.solid_quads = 0;
         self.stats.glyphs = list.glyphs;
         self.stats.tree = list.tree;
         // A list that names no page is nobody's, and says nothing about the pages.
@@ -453,8 +624,12 @@ impl Ui {
             return;
         }
         let limit = built.quads.max_items(QUAD_BYTES).min(list.quads.len() as u64) as usize;
-        built.quads.reserve(&self.device, queue, limit as u64 * QUAD_BYTES, 0);
-        self.quads.extend_from_slice(&list.quads[..limit]);
+        if built.quads.reserve(&self.device, queue, limit as u64 * QUAD_BYTES, 0) {
+            (built.quads_group, built.indices) =
+                bind_quads(&self.device, &built.quads_layout, built.quads.buffer(), self.labels);
+        }
+        let linear = &*self.linear;
+        self.quads.extend(list.quads[..limit].iter().map(|quad| GpuUiQuad::new(quad, linear)));
         self.stats.quads = limit as u32;
         self.stats.quads_over_limit = (list.quads.len() - limit) as u32;
         let field_slots = &self.field_slots;
@@ -475,6 +650,19 @@ impl Ui {
         self.stats.draws = self.draws.len() as u32;
         if self.draws.is_empty() {
             self.quads.clear();
+        }
+        // What reads the atlas may be solid; a glyph page is coverage, and a field or a picture is
+        // read whole.
+        if let Some(atlas) = list.atlas.as_deref().filter(|_| has_atlas) {
+            for draw in self.draws.iter().filter(|draw| draw.texture == UiTexture::Atlas) {
+                let range = draw.first as usize..(draw.first + draw.count) as usize;
+                for (gpu, quad) in self.quads[range.clone()].iter_mut().zip(&list.quads[range]) {
+                    if is_solid(quad, atlas) {
+                        gpu.make_solid();
+                        self.stats.solid_quads += 1;
+                    }
+                }
+            }
         }
         self.uniforms = UiUniforms {
             points_to_clip: [2.0 / list.viewport[0], 2.0 / list.viewport[1]],
@@ -539,6 +727,7 @@ impl Ui {
                 ..Default::default()
             });
             pass.set_pipeline(&built.pipeline);
+            pass.set_bind_group(1, &built.quads_group, &[]);
             let mut scissor = None;
             for draw in draws {
                 let wanted = draw.mask.map(|mask| scissor_of(mask, viewport, size));
@@ -561,10 +750,10 @@ impl Ui {
                     (UiTexture::Atlas, Some(atlas)) => &atlas.bind_group,
                     (UiTexture::Atlas, None) => continue,
                 };
-                let start = u64::from(draw.first) * QUAD_BYTES;
-                let end = start + u64::from(draw.count) * QUAD_BYTES;
+                let start = u64::from(draw.first) * INDEX_BYTES;
+                let end = start + u64::from(draw.count) * INDEX_BYTES;
                 pass.set_bind_group(0, group, &[]);
-                pass.set_vertex_buffer(0, built.quads.buffer().slice(start..end));
+                pass.set_vertex_buffer(0, built.indices.slice(start..end));
                 pass.draw(0..4, 0..draw.count);
             }
         });
@@ -619,9 +808,9 @@ fn build_pipeline(
                 entry_point: Some("vs_ui"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: QUAD_BYTES,
+                    array_stride: INDEX_BYTES,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &QUAD_ATTRIBUTES,
+                    attributes: &INDEX_ATTRIBUTES,
                 })],
             },
             primitive: wgpu::PrimitiveState {
@@ -646,6 +835,45 @@ fn build_pipeline(
             cache: builds.cache(),
         },
     )
+}
+
+/// The most bytes of quads a frame can draw: a buffer, bound whole for storage.
+fn max_quad_bytes(limits: &wgpu::Limits) -> u64 {
+    limits.max_buffer_size.min(limits.max_storage_buffer_binding_size)
+}
+
+/// The group that reads `quads`, and the index stream for each quad it holds. The stream never
+/// changes, so it's written once, as it's made.
+fn bind_quads(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    quads: &wgpu::Buffer,
+    labels: bool,
+) -> (wgpu::BindGroup, wgpu::Buffer) {
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: labels.then_some("ui quads"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: quads.as_entire_binding() }],
+    });
+    let count = (quads.size() / QUAD_BYTES).max(1);
+    let indices = device.create_buffer(&wgpu::BufferDescriptor {
+        label: labels.then_some("ui quad indices"),
+        size: count * INDEX_BYTES,
+        usage: wgpu::BufferUsages::VERTEX,
+        mapped_at_creation: true,
+    });
+    {
+        let mut words = indices
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("made mapped, whole and in words, and viewed once");
+        for index in 0..count as u32 {
+            let at = index as usize * INDEX_BYTES as usize;
+            words.slice(at..at + INDEX_BYTES as usize).copy_from_slice(&index.to_le_bytes());
+        }
+    }
+    indices.unmap();
+    (group, indices)
 }
 
 /// Makes the pages `list` names and applies its uploads: the rectangles and bytes written.
@@ -894,20 +1122,98 @@ fn upload_atlas(
 
 #[cfg(test)]
 mod tests {
-    use sapphire_look::{UiInsetRun, UiMask, UiRun};
+    use std::mem::offset_of;
+
+    use sapphire_look::{UI_COVERAGE, UI_MULTI_FIELD, UI_PICTURE, UiInsetRun, UiMask, UiRun};
 
     use super::*;
 
     #[test]
-    fn the_quad_s_layout_is_what_the_vertex_stage_reads() {
-        // Holds `UiQuad`, an append-only layout, to the attributes: nothing skipped or overlapped.
-        assert_eq!(QUAD_BYTES, 96);
-        let mut end = 0;
-        for attribute in QUAD_ATTRIBUTES {
-            assert_eq!(attribute.offset, end, "location {}", attribute.shader_location);
-            end += attribute.format.size();
+    fn a_gpu_quad_is_whole_rows_of_the_storage_array() {
+        // `shaders::tests` holds each field to its place in `ui.wgsl`; here, that the array's stride is
+        // the struct's size, a multiple of its 16-byte alignment.
+        assert_eq!(QUAD_BYTES, 144);
+        assert_eq!(QUAD_BYTES % 16, 0);
+        assert_eq!(offset_of!(GpuUiQuad, uv) % 16, 0);
+    }
+
+    #[test]
+    fn codes_decode_exactly() {
+        let linear = linear_codes();
+        assert_eq!(linear[0], 0.0);
+        assert_eq!(linear[255], 1.0);
+        // The linear segment, and the curve: 50% black over white shows as 188 (the module docs).
+        assert_eq!(linear[10], (10.0 / 255.0 / 12.92) as f32);
+        assert!((linear[188] - 0.5).abs() < 0.003, "{}", linear[188]);
+        assert!(linear.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    fn quad(uv: [f32; 4]) -> UiQuad {
+        UiQuad::new([0.0; 2], [10.0, 0.0], [0.0, 10.0], uv, [200, 100, 50, 255])
+    }
+
+    #[test]
+    fn a_quad_says_which_parts_it_uses() {
+        let linear = linear_codes();
+        let plain = GpuUiQuad::new(&quad([0.5; 4]), &linear);
+        assert_eq!(plain.flags, 0);
+        assert_eq!(plain.color, [linear[200], linear[100], linear[50], 1.0]);
+        let mut parts = quad([0.5; 4]);
+        parts.slice = 0.25;
+        parts.outline_color = [0, 0, 0, 1];
+        parts.gradient = [0.0, 0.0, 0.5];
+        parts.clip = [0.0, 0.5];
+        parts.sweep = 0.75;
+        let all = UI_SLICED | UI_OUTLINED | UI_GRADIENT | UI_CUT | UI_SWEPT;
+        let mut gpu = GpuUiQuad::new(&parts, &linear);
+        assert_eq!(gpu.flags, all);
+        assert_eq!(gpu.shape, [parts.edge, parts.softness, parts.outline, 0.75]);
+        gpu.make_solid();
+        assert_eq!(gpu.flags, (all | UI_SOLID) & !UI_OUTLINED);
+        // What its texels hold becomes a flag too, which the shader branches on.
+        for (texels, flag) in [
+            (UI_COVERAGE, UI_COVERAGE_TEXELS),
+            (UI_MULTI_FIELD, UI_MULTI_TEXELS),
+            (UI_PICTURE, UI_PICTURE_TEXELS),
+        ] {
+            let mut read = quad([0.5; 4]);
+            read.texels = texels;
+            assert_eq!(GpuUiQuad::new(&read, &linear).flags, flag, "texels {texels}");
         }
-        assert_eq!(end, QUAD_BYTES);
+    }
+
+    #[test]
+    fn only_a_point_where_every_blended_texel_is_full_is_solid() {
+        // Full but for the corner texel (0, 0), on a 4 × 4 atlas.
+        let mut texels = vec![255; 16];
+        texels[0] = 200;
+        let atlas = UiAtlas { width: 4, height: 4, spread: 6.0, format: UiFieldFormat::Single, texels };
+        // Between texels 1 and 2 each way: all four full.
+        assert!(is_solid(&quad([0.5, 0.5, 0.5, 0.5]), &atlas));
+        // Between texels 0 and 1 each way: the blend reaches (0, 0).
+        assert!(!is_solid(&quad([0.25, 0.25, 0.25, 0.25]), &atlas));
+        // Past the far edge, clamped onto full texels.
+        assert!(is_solid(&quad([1.0, 1.0, 1.0, 1.0]), &atlas));
+        // A quad that spans the atlas reads its edges.
+        assert!(!is_solid(&quad([0.5, 0.5, 0.75, 0.5]), &atlas));
+        // Anything but a single-channel field (a glyph's coverage, a display face's field, a picture),
+        // an edge at the field's top, softness that reaches it, or an outline out past it.
+        let read = |texels| {
+            let mut quad = quad([0.5; 4]);
+            quad.texels = texels;
+            quad
+        };
+        let mut high = quad([0.5; 4]);
+        high.edge = 0.99999;
+        let mut soft = quad([0.5; 4]);
+        soft.softness = 0.5;
+        let mut outlined = quad([0.5; 4]);
+        outlined.outline = -0.6;
+        for quad in [read(UI_COVERAGE), read(UI_MULTI_FIELD), read(UI_PICTURE), high, soft, outlined] {
+            assert!(!is_solid(&quad, &atlas), "{quad:?}");
+        }
+        let multi = UiAtlas { format: UiFieldFormat::Multi, texels: vec![255; 64], ..atlas };
+        assert!(!is_solid(&quad([0.5; 4]), &multi), "only a single-channel atlas is read for it");
     }
 
     /// Needs a GPU: `cargo test -p sapphire_render --lib ui:: -- --ignored`.

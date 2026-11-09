@@ -311,6 +311,9 @@ pub(crate) fn run(
         vfx_ribbon_points_mean = vfx_points / u64::from(frames),
         hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
+        ui_quads = stage.renderer.stats().ui.quads,
+        ui_draws = stage.renderer.stats().ui.draws,
+        ui_tree_us = stage.renderer.stats().ui.tree.micros,
         clip = ?options.clip,
         anim_graph = ?options.graph,
         ik = ?options.ik.as_ref().map(|ik| ik.ground),
@@ -349,9 +352,25 @@ fn spin_insets(stage: &mut Stage, across: f32) {
     }
 }
 
+/// The UI pass's median exclusive time, and the median of its share of the rest of its frame in
+/// thousandths. The share holds still where other work on the machine moves the GPU's clocks, and
+/// with them every time, from frame to frame by two or three times.
+fn ui_medians(frames: &[(Duration, Duration)]) -> (Duration, f64) {
+    let mut own: Vec<Duration> = frames.iter().map(|frame| frame.0).collect();
+    let mut share: Vec<f64> = frames
+        .iter()
+        .map(|&(ui, span)| ui.as_secs_f64() * 1000.0 / span.saturating_sub(ui).as_secs_f64().max(1e-9))
+        .collect();
+    own.sort_unstable();
+    share.sort_by(f64::total_cmp);
+    let middle = frames.len() / 2;
+    (own.get(middle).copied().unwrap_or_default(), share.get(middle).copied().unwrap_or_default())
+}
+
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's
 /// `exclusive` time (what it added to the frame; see `sapphire_render::graph::PassTime`) and its
-/// start-to-end `duration`, and the frame's span. `bloom_levels` is the renderer's.
+/// start-to-end `duration`, and the frame's span, with the UI pass's medians
+/// ([`ui_medians`]). `bloom_levels` is the renderer's.
 fn gpu_times(
     stage: &mut Stage,
     view: &wgpu::TextureView,
@@ -373,6 +392,8 @@ fn gpu_times(
     let mut effects = zero;
     let mut ui = zero;
     let mut insets = zero;
+    // Each frame's UI pass and its whole span, for medians that other work's swings move less.
+    let mut ui_each: Vec<(Duration, Duration)> = Vec::new();
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -411,6 +432,9 @@ fn gpu_times(
             (&[UI_PASS], &mut ui),
             (&inset::PASSES, &mut insets),
         ];
+        if let Some(pass) = timings.get(UI_PASS) {
+            ui_each.push((pass.exclusive, timings.span()));
+        }
         for (names, sums) in groups {
             let mut ran = false;
             for pass in names.iter().filter_map(|name| timings.get(name)) {
@@ -437,6 +461,7 @@ fn gpu_times(
         }
     }
     let micros = |total: Duration, count: u32| total.as_secs_f64() * 1e6 / f64::from(count.max(1));
+    let (ui_p50, ui_share_p50) = ui_medians(&ui_each);
     tracing::info!(
         target: LOG_TARGET,
         frames = timed,
@@ -484,6 +509,8 @@ fn gpu_times(
         vfx_frames = effects.2,
         gpu_ui_us = format_args!("{:.1}", micros(ui.0, ui.2)),
         gpu_ui_duration_us = format_args!("{:.1}", micros(ui.1, ui.2)),
+        gpu_ui_us_p50 = format_args!("{:.1}", micros(ui_p50, 1)),
+        gpu_ui_share_p50 = format_args!("{:.1}", ui_share_p50),
         ui_frames = ui.2,
         gpu_insets_us = format_args!("{:.1}", micros(insets.0, insets.2)),
         gpu_insets_duration_us = format_args!("{:.1}", micros(insets.1, insets.2)),

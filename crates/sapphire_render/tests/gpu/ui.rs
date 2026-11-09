@@ -611,10 +611,8 @@ fn an_edit_to_its_shader_rebuilds_its_one_pipeline_once_it_is_built() {
     let mut sources = ShaderSources::compiled_in();
     let original = sources.get(ShaderFile::Ui).to_owned();
     // A shader that draws everything half as bright.
-    let dimmed = original.replace(
-        "let shape = vec4<f32>(rgb, fill + line);",
-        "let shape = vec4<f32>(rgb * 0.25, fill + line);",
-    );
+    let dimmed =
+        original.replace("var shaded = vec4<f32>(rgb, alpha);", "var shaded = vec4<f32>(rgb * 0.25, alpha);");
     assert_ne!(dimmed, original);
     sources.set(ShaderFile::Ui, dimmed.clone());
 
@@ -735,6 +733,31 @@ fn a_gradient_mixes_along_its_plane_in_linear_light() {
         assert!((180..=196).contains(&channel), "{middle:?}");
     }
     assert_eq!(pixels.at(50, 30)[..3], [255, 0, 0], "no plane, no gradient");
+}
+
+/// A solid quad skips its field (the module docs, "What a pixel pays for"), and draws exactly what the field's
+/// path does: the same translucent gradient, once read at a point and once across a sliver of the same full
+/// texels, which is no longer solid, comes out byte for byte the same.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_solid_quad_draws_exactly_what_its_field_would() {
+    let mut harness = Harness::new((100, 40));
+    let mut ui = list((100, 40), |_| {});
+    // The middle of the bar's cell, deep inside it, where a tree's rectangles read.
+    let [u0, v0, u1, v1] = Atlas::paint().sprites.bar.uv;
+    let (u, v) = ((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+    for (top, uv) in [(0.0, [u, v, u, v]), (20.0, [u - 1e-4, v, u + 1e-4, v])] {
+        let mut quad = UiQuad::new([0.0, top], [100.0, 0.0], [0.0, 20.0], uv, [200, 120, 40, 180]);
+        quad.color_end = [30, 90, 230, 140];
+        quad.gradient = [0.9, 0.0, 0.05];
+        ui.quads.push(quad);
+    }
+    let pixels = harness.draw(Some(&ui));
+    assert_eq!(harness.renderer.stats().ui.solid_quads, 1);
+    for x in 0..100 {
+        assert_eq!(pixels.at(x, 10), pixels.at(x, 30), "column {x}");
+    }
+    assert_ne!(pixels.at(5, 10), pixels.at(95, 10), "a gradient across it");
 }
 
 /// Masks cut what a quad draws at their rectangle, in the list's order, and in the target's pixels when

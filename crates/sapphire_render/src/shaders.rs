@@ -1112,6 +1112,7 @@ mod tests {
             (Program::Vfx, "VfxRibbonPoint", size_of::<GpuVfxRibbonPoint>()),
             (Program::Vfx, "VfxUniforms", size_of::<GpuVfxUniforms>()),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
+            (Program::Ui, "UiQuad", size_of::<crate::ui::GpuUiQuad>()),
         ];
         let mut layouts = std::collections::HashMap::new();
         for (program, name, rust_size) in expected {
@@ -1305,10 +1306,31 @@ mod tests {
             ("PrefilterUniforms", offsets!(PrefilterUniforms { mip, faces })),
             ("GtaoUniforms", offsets!(GtaoUniforms { size, params })),
         ];
+        // Each quad of the interface's storage buffer.
+        let ui = validate(Program::Ui);
+        let ui_structs = [(
+            "UiQuad",
+            offsets!(crate::ui::GpuUiQuad {
+                origin,
+                axis_x,
+                axis_y,
+                clip,
+                uv,
+                color,
+                color_end,
+                outline_color,
+                shape,
+                gradient,
+                slice,
+                flags,
+                padding,
+            }),
+        )];
         let modules = structs
             .into_iter()
             .map(|s| (&character, s))
-            .chain(ambient_structs.into_iter().map(|s| (&ambient, s)));
+            .chain(ambient_structs.into_iter().map(|s| (&ambient, s)))
+            .chain(ui_structs.into_iter().map(|s| (&ui, s)));
         for (module, (name, rust)) in modules {
             let (_, ty) = module
                 .types
@@ -1334,6 +1356,28 @@ mod tests {
         match module.global_expressions[constant.init] {
             naga::Expression::Literal(naga::Literal::U32(value)) => value,
             ref other => panic!("{name} is {other:?}, not a u32 literal"),
+        }
+    }
+
+    #[test]
+    fn wgsl_ui_flags_match_rust() {
+        use crate::ui::{
+            UI_COVERAGE_TEXELS, UI_CUT, UI_GRADIENT, UI_MULTI_TEXELS, UI_OUTLINED, UI_PICTURE_TEXELS,
+            UI_SLICED, UI_SOLID, UI_SWEPT,
+        };
+        let ui = validate(Program::Ui);
+        for (name, flag) in [
+            ("UI_SOLID", UI_SOLID),
+            ("UI_SLICED", UI_SLICED),
+            ("UI_OUTLINED", UI_OUTLINED),
+            ("UI_GRADIENT", UI_GRADIENT),
+            ("UI_CUT", UI_CUT),
+            ("UI_SWEPT", UI_SWEPT),
+            ("UI_COVERAGE_TEXELS", UI_COVERAGE_TEXELS),
+            ("UI_MULTI_TEXELS", UI_MULTI_TEXELS),
+            ("UI_PICTURE_TEXELS", UI_PICTURE_TEXELS),
+        ] {
+            assert_eq!(wgsl_u32(&ui, name), flag, "{name}");
         }
     }
 

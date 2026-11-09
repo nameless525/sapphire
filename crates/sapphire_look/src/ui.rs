@@ -62,11 +62,11 @@ impl fmt::Debug for UiAtlas {
     }
 }
 
-/// One quad, as the renderer's vertex stage reads it (`shaders/ui.wgsl`, one instance per quad, so
-/// the fields are an append-only layout).
+/// One quad, as a game describes it. The renderer works each one out into its own form for its
+/// shader (`sapphire_render`'s `ui` module), so this layout is the list's and not the GPU's.
 ///
 /// **Colors are display-encoded:** sRGB bytes with straight alpha, as a designer picks them. The
-/// shader decodes them to linear, so an opaque color lands on exactly the code it names through the
+/// renderer decodes them to linear, so an opaque color lands on exactly the code it names through the
 /// target's encode, and blends in linear light (see `sapphire_render`'s `ui` module), which lets
 /// more of a bright background through a translucent dark than a display-space blend does.
 #[repr(C)]

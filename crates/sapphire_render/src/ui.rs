@@ -941,13 +941,14 @@ fn write_pages(
     Some((written, bytes))
 }
 
-/// Validate the complete batch before allocating pages or acknowledging any of its writes.
 /// The fields on the GPU, for the stats.
 fn count_fields(stats: &mut UiStats, built: &Built) {
     stats.fields = built.fields.len() as u32;
     stats.field_bytes = built.fields.iter().map(|field| field.source.texels.len() as u64).sum();
 }
 
+/// Whether `list`'s whole batch of page uploads fits its pages and its bytes: checked before any page
+/// is made or any of its writes acknowledged.
 fn valid_page_uploads(list: &UiDrawList, max_side: u32) -> bool {
     let side = list.page_size;
     side > 0

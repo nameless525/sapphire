@@ -146,6 +146,7 @@ Each figure is wall time on the critical path.
 | Item | Desktop | Mobile |
 |---|---|---|
 | Hero character, LOD0 triangles | 80k | 30k |
+| Enemy, LOD0 triangles (a proposal, M3 C2) | 8k; a boss 20k | The desktop's LOD1: a mesh's mobile cook skips its LOD0 |
 | Bones per character (incl. secondary) | ≤ 200 | ≤ 140 |
 | Materials per character | ≤ 6 | ≤ 4 |
 | Texture size per character part | 2K | 1K (ramps are 256 × N and uncompressed) |
@@ -154,6 +155,15 @@ Each figure is wall time on the critical path.
 | Live GPU particles | 50k | 8k |
 | Draw calls | 2,500 | 700 |
 | Zone texture pool | 2.5 GB | 600 MB (WuWa's mobile pool is reportedly 400 MB) |
+
+**The enemy row is a proposal (M3 C2):** the generated figures sit far under it, measured from each cook's sidecar settings (`every_figure_cooks_under_its_budget` holds it):
+
+| Figure | Height | Desktop LOD0 / LOD1 | Mobile LOD0 | `.smesh` desktop / mobile | Maps, desktop (palette, ILM, layers, ramp, matcap) |
+|---|---|---|---|---|---|
+| The Lancer | 1.62 m to the hat's tip | 3,172 / 2,634 | 2,634 | 250 / 203 KB | 132 + 17 + 17 + 66 + 22 KB |
+| The boss | 3.52 m to the crown's finial | 2,852 / 2,530 | 2,530 | 256 / 217 KB | the same sizes |
+
+Neither simplifies to a third level within its sidecar's error, since both are already low: their lofts have 4 to 16 sides, most 8 to 12. Each has KayKit's 23 joints (24 cooked, with the model's top node, as the warrior's), and one material of six regions.
 
 ### 3.5 Measured in combat (M2 Z1)
 
@@ -3063,6 +3073,8 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 | Strings | `.ftl` | `fluent-syntax` | Binary tables | Same |
 
 - **Blender as the level and modeling tool:** export glTF with custom-property extras (the pattern Bevy's Skein uses). The in-engine editor then only needs to cover gameplay data, combat tuning, VFX timing and cinematics.
+
+- **As built (M3 C2 part 1, `sapphire_pipeline::figure`, `tools/figures/`, `tools/motion/figure_pose.py`):** an enemy's model is a spec, not code. `gen-figures --specs tools/figures --out content` reads each `<name>.figure.ron` (`sapphire::pipeline::Figure`, version 1, unknown fields refused): joints by name, parent and place (KayKit's 23, so the pack's clips retarget onto it by sidecar and what finds the warrior's joints by name finds its), up to six regions (albedo stops down the cell, highlight, shadow bias, matcap, emission stops), and shapes along the bones: lofts (rings along an axis, closed or an arc, solid or a shell, faceted or smooth) and slabs (a star-shaped outline with thickness), each skinned by distance to its bones, mirrored across X on request. It writes `content/combat/<name>/<name>.glb`, its palette, control (ILM) and layer-mask PNGs, and a copy of the anime matcap, since a zone can't reach an asset code names. The weapon is part of the mesh, weighted to `handslot.r`, so drawing one takes no attachment. **Exit test 2:** the specs and their tests name nothing, as tests find specs by glob; no xtask table or golden scene names the boss. **Determinism:** generating twice is byte-identical on one machine (a test); the committed files are compared within 1e-5 for values and 1e-4 for normals, never by bytes, because rings go through each platform's `sin` and `cos`. **Not in xtask's `GENERATORS`:** outputs are committed and a test holds them to their specs, so a cook never regenerates them. Key-posed clips come from `figure_pose.py`, `warrior.py`'s posing made generic (a module per figure, named as its spec); a test holds the committed documents to it within two units of their last decimal, and every sample's limbs within 6 cm of their targets and its soles above the ground. `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]` (`sapphire_stage::lookdev::model`) stands any skinned model with a `head` joint where the warrior stands, in a clip's pose at a tick, holding its own assets.
 
 ### 5.28 `sapphire_editor` (Tools, desktop only)
 

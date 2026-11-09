@@ -270,7 +270,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             );
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
-        if shot == sapphire_stage::lookdev::Shot::Enemy {
+        if let Some(model) = options.model {
+            let held = sapphire_stage::lookdev::model::hold(content, renderer, gpu, model)?;
+            sapphire_stage::lookdev::model::spawn(scene, held);
+        } else if shot == sapphire_stage::lookdev::Shot::Enemy {
             let meshes = fight.load_enemy(content, renderer, gpu)?;
             let held = fight.held_enemy(content)?;
             fight.spawn_enemy(scene, meshes, held);

@@ -306,6 +306,10 @@ impl App for SandboxApp {
                 let held = show.fight.show.held_enemy(&content)?;
                 show.fight.show.spawn_enemy(&mut scene, meshes, held);
             }
+            if let Some(model) = options.model {
+                let held = lookdev::model::hold(&mut content, &mut renderer.renderer, &device.gpu, model)?;
+                lookdev::model::spawn(&mut scene, held);
+            }
         }
         if let (Some(shot), Some(town), Some(enemy)) = (options.arena, renderer.town, renderer.enemy) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
@@ -1540,9 +1544,10 @@ pub(crate) fn create_renderer(
         let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let town = options.in_town().then(|| content.town(&mut renderer, gpu)).transpose()?;
-        let enemy = (options.look_dev == Some(Shot::Enemy) || options.arena.is_some())
-            .then(|| fight.load_enemy(content, &mut renderer, gpu))
-            .transpose()?;
+        let enemy = ((options.look_dev == Some(Shot::Enemy) && options.model.is_none())
+            || options.arena.is_some())
+        .then(|| fight.load_enemy(content, &mut renderer, gpu))
+        .transpose()?;
         let sword = options.blade().then(|| fight.load_sword(content, &mut renderer, gpu)).transpose()?;
         let stage = options.stage.map(|_| content.studio_meshes(&mut renderer)).transpose()?;
         let ik_block = options

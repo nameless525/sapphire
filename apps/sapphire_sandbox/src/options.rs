@@ -239,6 +239,11 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
+    /// `--model <mesh>[:<clip>[@<tick>]]`: a skinned model by its asset ID, standing where the enemy
+    /// shot's warrior does and in its place, at scale 1, in its rest pose or the clip's pose at that
+    /// tick (M3 C2, [`lookdev::model`]): a new enemy, looked at before anything plays it. Needs
+    /// `--look-dev`.
+    pub model: Option<lookdev::model::Model>,
     /// `--blade on|off`: the player's sword in the character's right hand (M2 O3). On for
     /// `--look-dev body` and `--fight`, off anywhere else unless it says, so no older scene draws one.
     /// Needs `--look-dev` or `--arena`. See [`Self::blade`].
@@ -848,6 +853,10 @@ impl Options {
                 }
                 "--clip" => options.clip = Some(lookdev::ClipName::parse(&value("--clip")?)),
                 "--clip-in-place" => options.clip_in_place = true,
+                "--model" => {
+                    options.model =
+                        Some(value("--model")?.parse().map_err(|error| format!("--model: {error}"))?)
+                }
                 "--arena" => arena_flag = true,
                 "--party" => options.party = true,
                 "--timeline" => {
@@ -1175,6 +1184,9 @@ impl Options {
         }
         if options.clip_in_place && options.clip.is_none() {
             return Err("--clip-in-place needs --clip".to_owned());
+        }
+        if options.model.is_some() && options.look_dev.is_none() {
+            return Err("--model stands on the look-dev stage: it needs --look-dev".to_owned());
         }
         if options.graph.is_some() && options.look_dev.is_none() {
             return Err("--graph plays on the look-dev character: it needs --look-dev".to_owned());
@@ -1832,6 +1844,12 @@ mod tests {
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
+        // A model, by asset IDs, on the look-dev stage only.
+        let model = "41e229ad-28a3-41f9-aeb8-ba214e06be6a:0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4@12";
+        let parsed = parse(&["--look-dev", "enemy", "--model", model]).unwrap().0.model.unwrap();
+        assert_eq!((parsed.clip.is_some(), parsed.tick), (true, 12));
+        assert!(parse(&["--model", model]).unwrap_err().contains("--look-dev"));
+        assert!(parse(&["--look-dev", "enemy", "--model", "lancer"]).unwrap_err().contains("--model"));
         // The sword: where a scene asks, and on the shot made for reading moves.
         assert!(!parse(&["--look-dev", "hero"]).unwrap().0.blade());
         assert!(parse(&["--look-dev", "body"]).unwrap().0.blade());

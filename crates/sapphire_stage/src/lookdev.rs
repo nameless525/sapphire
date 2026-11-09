@@ -82,6 +82,8 @@ use crate::orbit::OrbitCamera;
 use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
+pub mod model;
+
 /// The town's zone, by its sidecar's ID (`content/zones/town/town.zone.ron.meta`).
 pub const TOWN_ZONE: AssetId = AssetId::from_text("c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13");
 /// The stem of its source, which names its pack.

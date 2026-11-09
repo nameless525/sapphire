@@ -158,7 +158,7 @@ pub struct Scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-pub fn scenes() -> [Scene; 159] {
+pub fn scenes() -> [Scene; 160] {
     [
         Scene {
             name: "turntable-start",
@@ -3088,6 +3088,29 @@ pub fn scenes() -> [Scene; 159] {
                 "enemy",
                 "--time-of-day",
                 "22",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The Lancer (M3 C2), the generated second enemy, standing where the warrior does by `--model`: its
+        // thrust's wind-up held at the tick it ends, the spear drawn back. Indigo robes and lacquer under a
+        // rain hat, a porcelain mask and jade glow lines on the hems, cuffs and hat band.
+        Scene {
+            name: "lookdev-lancer",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "enemy",
+                "--model",
+                "41e229ad-28a3-41f9-aeb8-ba214e06be6a:99cd4c5a-fdc8-527b-81fb-dcbec9db71df@16",
+                "--time-of-day",
+                "13",
                 "--tier",
                 "desktop-high",
                 "--ao",

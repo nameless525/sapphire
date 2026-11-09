@@ -20,6 +20,8 @@ egui-wgpu.workspace = true
 egui_tiles.workspace = true
 # The viewport stands the game's fight, as the game does. Never with its `dev`: `play.rs` says why.
 game_combat.workspace = true
+# A screen's preview draws through the game's own screen layer. Never with its `dev` either.
+game_ui.workspace = true
 png.workspace = true
 pollster.workspace = true
 ron.workspace = true
@@ -33,6 +35,10 @@ sapphire_core.workspace = true
 sapphire_document.workspace = true
 # The preview is a real run of the simulation.
 sapphire_gameplay.workspace = true
+# A run's bindings, as the game's documents name them.
+sapphire_input.workspace = true
+# The interface a screen draws, as the stage hands it over.
+sapphire_look.workspace = true
 # Save and push.
 sapphire_livelink.workspace = true
 sapphire_math.workspace = true
@@ -49,6 +55,8 @@ sapphire_time.workspace = true
 # A timeline's document, cooked as the cooker does, and played at its playhead as the game plays it.
 sapphire_sequencer.workspace = true
 sapphire_timeline.workspace = true
+# The atlas a screen's previewed with.
+sapphire_ui.workspace = true
 # A zone's placements, and the names of the shapes an editor's cook makes of them.
 sapphire_zone.workspace = true
 serde.workspace = true

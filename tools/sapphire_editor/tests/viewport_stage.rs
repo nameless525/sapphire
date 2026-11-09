@@ -15,18 +15,23 @@ use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, TestRenderer};
 use egui_wgpu::RendererOptions;
 use game_combat::combat::{CombatOption, no_bindings};
+use game_combat::documents::FightDocuments;
 use game_combat::fight::Fight;
+use sapphire_assets::ui::UiDocument;
+use sapphire_document::PropertyPath;
 use sapphire_editor::edits::{EntryRef, Track, set_window};
 use sapphire_editor::gizmo::{Axis, Gizmo};
 use sapphire_editor::recovery::Recovery;
+use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
 use sapphire_editor::viewport::{
     OutsideView, SETTLING_FRAMES, StageView, TimelineShown, ViewShow, on_pixels, play_frames, play_timeline,
     stand, stand_zone_stage,
 };
 use sapphire_editor::{Editor, Options};
-use sapphire_gameplay::replay::LiveMoves;
-use sapphire_gameplay::{ActorId, Simulation};
+use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, find_scenario};
+use sapphire_gameplay::targeting::TargetingTuning;
+use sapphire_gameplay::{ActorId, SimConfig, Simulation};
 use sapphire_platform::{Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_stage::{Content, Readback, Stage, headless_gpu, lookdev};
@@ -34,6 +39,7 @@ use sapphire_time::Stopwatch;
 
 /// Moves that name no clip.
 const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
+const TARGETING: &str = include_str!("../../../crates/sapphire_gameplay/default_targeting.ron");
 
 const PLAIN: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const SRGB: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -269,7 +275,7 @@ fn capture_stage(gpu: &Arc<GpuContext>, harness: &mut Harness<'_, Editor>) -> St
     let mut stage = stand(&host(), gpu).expect("stands");
     let frame = harness.state_mut().viewport_frame();
     let (name, set) = frame.moves.expect("the player's moves compile");
-    let mut live = LiveMoves::default();
+    let mut live = stage.show.fight.documents.live();
     live.remember(name, set.clone());
     let Stage { show, scene, content, .. } = &mut stage;
     show.fight.start_on(&sapphire_editor::viewport::the_fight(), live, scene, content).expect("starts");
@@ -287,6 +293,11 @@ fn is_a_picture(frame: &Image, name: &str) {
     colours.sort_unstable();
     colours.dedup();
     assert!(colours.len() > 2000, "{name}: {} colours", colours.len());
+    keep(frame, name);
+}
+
+/// Keeps a frame to look at, as `viewport_<name>.png`.
+fn keep(frame: &Image, name: &str) {
     let folder = std::env::var_os("SAPPHIRE_EDITOR_CAPTURES")
         .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);
     std::fs::create_dir_all(&folder).expect("a folder for captures");
@@ -699,8 +710,9 @@ fn simulated(view: &mut StageView) -> &Simulation {
 fn headless(moves: &LiveMoves, ticks: u64) -> u64 {
     let mut content = Content::new(&host(), lookdev::CHARACTER, lookdev::SKY).expect("the cook");
     let option = CombatOption::Fight { script: Some(SCRIPT.to_owned()), party: false };
-    let mut combat =
-        Fight::default().prepare_stock_fight_on(&option, moves.clone(), &mut content).expect("sets up");
+    let mut fight = Fight::default();
+    fight.documents = FightDocuments::read(host().content()).expect("the cook's documents");
+    let mut combat = fight.prepare_stock_fight_on(&option, moves.clone(), &mut content).expect("sets up");
     for _ in 0..ticks {
         combat.step(&mut no_bindings);
     }
@@ -776,6 +788,62 @@ fn a_snapshot_is_copies() {
     let request = editor.viewport().asked_for().expect("asked");
     assert_eq!(request.snapshot.text_of("slice.moves.ron"), Some(before.0.as_str()), "it stayed");
     assert!(request.snapshot.moves().latest("slice.moves.ron").is_some());
+}
+
+/// A cook's folder of `documents/` alone, as a cook ships a game's: its manifest naming `targeting`, if it's given.
+fn a_games_documents(name: &str, targeting: Option<&str>) -> PathBuf {
+    let cook = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name).join("cook");
+    let _ = std::fs::remove_dir_all(&cook);
+    std::fs::create_dir_all(cook.join("documents/tuning")).expect("a cook");
+    if let Some(text) = targeting {
+        std::fs::write(cook.join("documents/tuning/my_targeting.ron"), text).expect("written");
+        let manifest = "(type: \"sapphire::assets::GameDocuments\", version: 1, \
+                        data: (targeting: Some(\"tuning/my_targeting.ron\")))";
+        std::fs::write(cook.join("documents/game.documents.ron"), manifest).expect("written");
+    }
+    cook
+}
+
+/// Play starts where the game's fight does: on the targeting weights its cook ships, not Sapphire's, with the moves
+/// open here over them. The run's simulation holds the game's weights.
+#[test]
+fn a_run_starts_on_the_games_own_numbers() {
+    let own = TARGETING.replacen("range: 12.0", "range: 20.0", 1).replacen(
+        "keep_range: 16.0",
+        "keep_range: 24.0",
+        1,
+    );
+    let cook = a_games_documents("play_game_documents", Some(&own));
+    let path = cook.parent().expect("its folder").join("slice.moves.ron");
+    std::fs::write(&path, SLICE).expect("written");
+    let mut editor = Editor::new(Options { file: Some(path), content: Some(cook), link: None });
+    editor.play_in_viewport(None);
+    let note = editor.viewport().note().map(str::to_owned);
+    let request = editor.viewport().asked_for().unwrap_or_else(|| panic!("refused: {note:?}"));
+    let own = TargetingTuning::from_ron(&own).expect("reads");
+    assert_ne!(own, TargetingTuning::shipped(), "the game's own weights");
+    assert_eq!(request.snapshot.fight().targeting, own);
+    let duel = find_scenario(&SCENARIOS, "duel").expect("listed");
+    let (simulation, _) = request.snapshot.moves().start(duel, SimConfig::default()).expect("starts");
+    assert_eq!(simulation.targeting(), own, "the run's simulation holds them");
+    assert!(
+        request.snapshot.moves().latest("slice.moves.ron").is_some(),
+        "with the moves open here over them"
+    );
+}
+
+/// A cook from before a game's documents shipped can't say what its fight starts on, so Play says so, as the game
+/// would, rather than playing Sapphire's numbers as if they were the game's.
+#[test]
+fn a_cook_with_no_manifest_refuses_a_run() {
+    let cook = a_games_documents("play_no_manifest", None);
+    let path = cook.parent().expect("its folder").join("slice.moves.ron");
+    std::fs::write(&path, SLICE).expect("written");
+    let mut editor = Editor::new(Options { file: Some(path), content: Some(cook), link: None });
+    editor.play_in_viewport(None);
+    assert!(editor.viewport().asked_for().is_none());
+    let note = editor.viewport().note().expect("why").to_owned();
+    assert!(note.contains("cook again"), "{note}");
 }
 
 /// What doesn't compile can't be played, and the pane says which and why.
@@ -1462,4 +1530,183 @@ fn what_the_sequencer_costs() {
         view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
         println!("a scrub back to frame {back}, a fresh stage and the frames to it: {:?}", started.elapsed());
     }
+}
+
+// The screen panel (M3 E5).
+
+/// An editor on the game's screen `content/ui/<stem>.ui.ron`, with the viewport's tab in front, its paths reading
+/// the screen's sample model, which its goldens show.
+fn screen_harness(painter: &Painter, stem: &str, size: (f32, f32), scale: f32) -> Harness<'static, Editor> {
+    let file = root().join(format!("content/ui/{stem}.ui.ron"));
+    let options = Options { file: Some(file), content: Some(cook()), link: None };
+    let mut editor = Editor::new(options);
+    editor.shell_mut().open(Pane::Viewport);
+    harness_on(painter, editor, size, scale)
+}
+
+/// A committed golden, as RGBA.
+fn golden(name: &str) -> Image {
+    let path = root().join(format!("tests/golden/{name}.metal.png"));
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).expect("the golden")));
+    let mut reader = decoder.read_info().expect("a png");
+    let mut buffer = vec![0; reader.output_buffer_size().expect("a size")];
+    let info = reader.next_frame(&mut buffer).expect("its pixels");
+    let pixels = match info.color_type {
+        png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => {
+            buffer[..info.buffer_size()].chunks(3).flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255]).collect()
+        }
+        other => panic!("{name}: {other:?}"),
+    };
+    Image { width: info.width, pixels }
+}
+
+/// The largest difference of a channel between two frames of one size, and how many pixels differ at all.
+fn against(frame: &Image, other: &Image) -> (u8, usize) {
+    assert_eq!((frame.width, frame.pixels.len()), (other.width, other.pixels.len()), "one size");
+    let (mut most, mut count) = (0, 0);
+    for (a, b) in frame.pixels.chunks(4).zip(other.pixels.chunks(4)) {
+        let difference = (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0);
+        most = most.max(difference);
+        count += usize::from(difference > 0);
+    }
+    (most, count)
+}
+
+/// What a golden of the game's screens calls an aspect.
+fn golden_aspect(aspect: Aspect) -> &'static str {
+    match aspect {
+        Aspect::Standard => "tablet",
+        Aspect::Wide => "wide",
+        Aspect::Ultrawide => "ultrawide",
+    }
+}
+
+/// Each of the game's screens at each of the pane's three aspects, in English and in Japanese, is what the sandbox's
+/// capture of it at that size is (`--ui-plain --ui-game <screen>`): the committed Metal golden. The title draws its
+/// name from the display face's field (M3 U8), and the character screen shows the character in its inset (M3 U6).
+/// The pane shows the frame whole, its shape kept. Opening a screen built what it draws through, and changing
+/// aspect or language builds nothing more.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_screen_shows_what_its_golden_does() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut differing = Vec::new();
+    for stem in ["title", "pause", "settings", "character", "dialogue"] {
+        let mut harness = screen_harness(&painter, stem, (1200.0, 700.0), 1.0);
+        let mut view = StageView::default();
+        let mut built = None;
+        for language in ["en", "ja"] {
+            for aspect in Aspect::ALL {
+                let name = format!("game-{stem}-{}-{language}", golden_aspect(aspect));
+                harness.state_mut().preview_at(aspect);
+                harness.state_mut().preview_in(language);
+                settle(&mut harness, &mut view, &gpu, &painter);
+                assert_eq!(harness.state_mut().viewport().note(), None, "{name}");
+                let frame = read_texture(&gpu, view.frame().expect("drawn"));
+                // A screen on a flat color has few colours: the golden says what it is.
+                keep(&frame, &name);
+                let (most, count) = against(&frame, &golden(&name));
+                let all = frame.pixels.len() / 4;
+                println!("{name}: {count} of {all} pixels differ from the golden, by at most {most}");
+                if count > 0 {
+                    differing.push(name.clone());
+                }
+                let shown = harness.state_mut().viewport().frame_rect().expect("shown");
+                let (width, height) = aspect.size();
+                let ratio = (shown.width() / shown.height()) / (width as f32 / height as f32);
+                assert!((ratio - 1.0).abs() < 0.01, "{name}: shown whole, its shape kept ({shown:?})");
+                let stage = view.stage().expect("stood");
+                let pipelines = stage.renderer.stats().pipelines;
+                assert_eq!(pipelines.first_use_builds, 0, "{name}: {}", stage.renderer.first_use_report());
+                assert_eq!(*built.get_or_insert(pipelines), pipelines, "{name}: nothing more's built");
+            }
+        }
+    }
+    assert_eq!(differing, Vec::<String>::new(), "each preview is its capture");
+}
+
+/// An edit of the screen's document shows in the preview as the document reads, with nothing loaded or built, and
+/// undo shows what was there to the pixel. A value typed in for a path shows too.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn an_edit_shows_in_the_preview() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = screen_harness(&painter, "settings", (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let before = read_texture(&gpu, view.frame().expect("drawn"));
+    let opened = view.stage().expect("stood").renderer.stats().pipelines;
+
+    let id = harness.state().current().expect("open").id();
+    let gap: PropertyPath = "nodes[1].layout.gap".parse().expect("a path");
+    let document = harness.state_mut().documents_mut().get_mut::<UiDocument>(id).expect("a screen");
+    document.set_text("an edit", &gap, "24.0").expect("taken");
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state_mut().viewport().note(), None);
+    let edited = read_texture(&gpu, view.frame().expect("drawn"));
+    let (_, moved) = against(&edited, &before);
+    println!("a wider gap moves {moved} pixels");
+    assert!(moved > 1000, "the edit shows: {moved} pixels differ");
+    assert_eq!(view.stage().expect("stood").renderer.stats().pipelines, opened, "an edit built nothing");
+
+    harness.state_mut().undo();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let undone = read_texture(&gpu, view.frame().expect("drawn"));
+    assert_eq!(against(&undone, &before), (0, 0), "undo shows what was there");
+
+    assert!(harness.state_mut().set_stand_in("sound", StandIn::Number(30.0)));
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let typed = read_texture(&gpu, view.frame().expect("drawn"));
+    let (_, changed) = against(&typed, &before);
+    assert!(changed > 0, "a typed value shows");
+    assert_eq!(view.stage().expect("stood").renderer.stats().pipelines, opened, "and builds nothing");
+}
+
+/// What the screen pane and its preview cost against the editor's frame: a pass of egui, the stage's frame and
+/// egui's paint, with the GPU's share waited for; at rest, and with the document edited every frame.
+#[test]
+#[ignore = "needs a GPU and a cook, and prints costs"]
+fn what_the_screen_panel_costs() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = screen_harness(&painter, "settings", (1500.0, 960.0), 2.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let id = harness.state().current().expect("open").id();
+    let gap: PropertyPath = "nodes[1].layout.gap".parse().expect("a path");
+    let frames = 300;
+    let time = |harness: &mut Harness<'_, Editor>, view: &mut StageView, edit: bool| {
+        let (mut passes, mut all) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+        for at in 0..frames {
+            if edit {
+                let document =
+                    harness.state_mut().documents_mut().get_mut::<UiDocument>(id).expect("a screen");
+                let gap_now = if at % 2 == 0 { "24.0" } else { "8.0" };
+                document.set_text("an edit", &gap, gap_now).expect("taken");
+            }
+            let started = Stopwatch::start();
+            harness.step();
+            passes.push(started.elapsed());
+            view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+            drop(painter.paint_only(harness));
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("polls");
+            all.push(started.elapsed());
+        }
+        passes.sort();
+        all.sort();
+        let pick =
+            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        (pick(&passes), pick(&all))
+    };
+    harness.state_mut().shell_mut().open(Pane::Screen);
+    let (pass, idle) = time(&mut harness, &mut view, false);
+    println!(
+        "a screen at rest, its pane in front: the pass {pass:?}, the frame {idle:?} (median, p99, worst)"
+    );
+    let (pass, editing) = time(&mut harness, &mut view, true);
+    println!("an edit every frame, a new tree and a frame each: the pass {pass:?}, the frame {editing:?}");
+    assert_eq!(view.stage().expect("stood").renderer.stats().pipelines.first_use_builds, 0);
 }

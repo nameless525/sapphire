@@ -24,6 +24,8 @@ pub enum Pane {
     Timeline,
     /// The tracks of the timeline document being edited, and its playhead.
     Sequencer,
+    /// How the screen being edited previews, and what its paths read.
+    Screen,
     /// The simulation's run of the selected move.
     Preview,
     /// The real renderer, on the arena.
@@ -39,12 +41,13 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Browser,
         Self::Moves,
         Self::Zone,
         Self::Timeline,
         Self::Sequencer,
+        Self::Screen,
         Self::Preview,
         Self::Viewport,
         Self::Inspector,
@@ -62,6 +65,7 @@ impl Pane {
             Self::Zone => "Zone",
             Self::Timeline => "Timeline",
             Self::Sequencer => "Sequencer",
+            Self::Screen => "Screen",
             Self::Preview => "Preview",
             Self::Viewport => "Viewport",
             Self::Inspector => "Inspector",
@@ -95,7 +99,7 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// The first layout: documents, and moves or a zone's placements, on the left, the preview over the timeline
+    /// The first layout: documents, and moves, a zone's placements or a screen's preview, on the left, the preview over the timeline
     /// or the sequencer, and what's selected and what the device says on the right.
     #[must_use]
     pub fn new() -> Self {
@@ -106,7 +110,8 @@ impl Shell {
         let browser = tiles.insert_pane(Pane::Browser);
         let moves = tiles.insert_pane(Pane::Moves);
         let zone = tiles.insert_pane(Pane::Zone);
-        let lists = tiles.insert_tab_tile(vec![moves, zone]);
+        let screen = tiles.insert_pane(Pane::Screen);
+        let lists = tiles.insert_tab_tile(vec![moves, zone, screen]);
         let left = tiles.insert_vertical_tile(vec![browser, lists]);
         // The preview stays in front: a viewport makes a stage when it's first shown, and no sooner.
         let preview = tiles.insert_pane(Pane::Preview);

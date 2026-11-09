@@ -4,8 +4,8 @@
 //! It's a docked shell ([`shell`]) of panes over `sapphire_document`, which owns the text, its history, saving
 //! and changes on disk. This crate owns the timeline ([`edits`], [`timeline`]), the preview ([`run`],
 //! [`figure`], [`preview`]), an asset browser, a reflection inspector and a cvar panel (all in [`app`]),
-//! talking to a device ([`link`]), the real renderer in a pane ([`viewport`]) and a run from a snapshot of the
-//! documents ([`play`]). [`app::Editor`] holds them
+//! talking to a device ([`link`]), the real renderer in a pane ([`viewport`]), a screen's preview on values typed
+//! in ([`screen`]) and a run from a snapshot of the documents ([`play`]). [`app::Editor`] holds them
 //! together, and [`app::Editor::ui`] is the whole interface.
 //!
 //! It owns no rules. What's wrong with a document is what `sapphire_moves`' `check` and `compile` say; what
@@ -33,6 +33,7 @@ pub mod play;
 pub mod preview;
 pub mod recovery;
 pub mod run;
+pub mod screen;
 pub mod shell;
 pub mod timeline;
 pub mod viewport;

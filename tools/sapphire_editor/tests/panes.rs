@@ -15,6 +15,7 @@ use sapphire_assets::MemoryPackSource;
 use sapphire_core::cvar::{Cvar, CvarRegistry};
 use sapphire_editor::capture::{self, Textures};
 use sapphire_editor::edits;
+use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
 use sapphire_editor::{Editor, Options};
 use sapphire_livelink::protocol::{DeviceStatus, ReplyBody};
@@ -881,4 +882,39 @@ fn the_sequencer_plays_and_scrubs_its_playhead() {
     harness.run_steps(1);
     assert_eq!(harness.state().playhead(), Some(120), "the middle of four seconds");
     assert_eq!(text_of(&harness), SQUARE_LOOK, "scrubbing edits nothing");
+}
+
+const CHARACTER_SCREEN: &str = include_str!("../../../content/ui/character.ui.ron");
+const CHARACTER_SCREEN_META: &str = include_str!("../../../content/ui/character.ui.ron.meta");
+const CHARACTER_MODEL: &str = include_str!("../../../content/ui/character.model.ron");
+
+/// A screen opens its pane, which lists what its model file's paths read, starting at the game's sample model for
+/// one of the game's own, and picks the aspect and language the viewport previews it at. None of it edits the
+/// document.
+#[test]
+fn the_screen_pane_lists_its_paths_and_picks_an_aspect() {
+    let dir = TestDir::new("screen");
+    let path = dir.write("u/character.ui.ron", CHARACTER_SCREEN);
+    dir.write("u/character.ui.ron.meta", CHARACTER_SCREEN_META);
+    dir.write("u/character.model.ron", CHARACTER_MODEL);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    for field in ["attack", "crit", "defense", "detail", "hp", "level", "max_hp", "name"] {
+        let _ = harness.get_by_label(field);
+    }
+    let shown = |harness: &mut Harness<'static, Editor>| {
+        let frame = harness.state_mut().viewport_frame();
+        frame.screen.map(|screen| (screen.aspect, screen.language.to_owned(), screen.values.to_vec()))
+    };
+    let (aspect, language, values) = shown(&mut harness).expect("a screen");
+    assert_eq!((aspect, language.as_str(), values.len()), (Aspect::Wide, "en", 8));
+    assert!(values.contains(&("level".to_owned(), StandIn::Number(12.0))), "the sample's: {values:?}");
+    harness.get_by_label("4:3").click();
+    harness.get_by_label("ja").click();
+    harness.run_steps(2);
+    let (aspect, language, _) = shown(&mut harness).expect("a screen");
+    assert_eq!((aspect, language.as_str()), (Aspect::Standard, "ja"));
+    assert!(harness.state_mut().set_stand_in("hp", StandIn::Number(6240.0)));
+    assert!(!harness.state_mut().set_stand_in("no_such_path", StandIn::Bool(true)));
+    assert_eq!(text_of(&harness), CHARACTER_SCREEN, "previewing edits nothing");
 }

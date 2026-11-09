@@ -9,6 +9,7 @@
 mod browser;
 mod cvars;
 mod properties;
+mod screen;
 mod sequencer;
 mod zone;
 
@@ -197,6 +198,7 @@ pub struct Editor {
     cvar_panel: cvars::CvarPanel,
     zone: zone::ZonePanel,
     sequencer: sequencer::SequencerPanel,
+    screen: screen::ScreenPanel,
     now: f64,
     content: Option<PathBuf>,
     cook: CookState,
@@ -307,6 +309,7 @@ impl Editor {
             cvar_panel: cvars::CvarPanel::default(),
             zone: zone::ZonePanel::default(),
             sequencer: sequencer::SequencerPanel::default(),
+            screen: screen::ScreenPanel::default(),
             now: 0.0,
             content: options.content,
             cook: CookState::default(),
@@ -458,12 +461,13 @@ impl Editor {
                 if kind == Kind::Moves {
                     self.show_on_timeline(id, path);
                 }
-                if matches!(kind, Kind::Zone | Kind::Timeline) && self.content.is_none() {
+                if matches!(kind, Kind::Zone | Kind::Timeline | Kind::Ui) && self.content.is_none() {
                     self.content = find_cook(path);
                 }
                 match kind {
                     Kind::Zone => self.shell.open(Pane::Zone),
                     Kind::Timeline => self.shell.open(Pane::Sequencer),
+                    Kind::Ui => self.shell.open(Pane::Screen),
                     _ => {}
                 }
             }
@@ -638,6 +642,8 @@ impl Editor {
         let current = self.current;
         let zone = zone::zone_shown(&self.documents, &self.zone, current, self.viewport.camera());
         let timeline = sequencer::timeline_shown(&self.documents, &mut self.sequencer, current);
+        self.screen.follow(&self.documents, current);
+        let screen = screen::screen_shown(&self.documents, &self.screen, current);
         ViewportFrame {
             open: self.shell.is_open(Pane::Viewport),
             content: self.content.as_deref(),
@@ -646,6 +652,7 @@ impl Editor {
                 .zip(self.preview.as_ref().map(|preview| &preview.set)),
             zone,
             timeline,
+            screen,
             now: self.now,
             pane: &mut self.viewport,
         }
@@ -658,7 +665,9 @@ impl Editor {
             self.viewport.refuse("What's being typed doesn't fit, so it can't be played".to_owned());
             return;
         }
-        match Snapshot::take(&self.documents, self.cook.cook.as_ref()) {
+        let taken = crate::play::fight_documents(self.content.as_deref())
+            .and_then(|fight| Snapshot::take(&self.documents, self.cook.cook.as_ref(), fight));
+        match taken {
             Ok(snapshot) => self.viewport.ask(PlayRequest { snapshot, script }),
             Err(why) => self.viewport.refuse(format!("Can't play {why}")),
         }
@@ -2182,6 +2191,7 @@ impl PaneUi for Editor {
             Pane::Viewport => self.viewport_pane(ui),
             Pane::Zone => self.zone_panel(ui),
             Pane::Sequencer => self.sequencer_panel(ui),
+            Pane::Screen => self.screen_panel(ui),
             Pane::Inspector => {
                 egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
                     ui,

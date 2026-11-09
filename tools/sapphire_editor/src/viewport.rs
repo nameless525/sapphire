@@ -15,6 +15,13 @@
 //! the one selected, drawn by the stage's debug draws. An edit moves an instance: nothing is cooked, loaded or
 //! built. The character stands at the zone's origin, for a measure of size.
 //!
+//! A screen (M3 E5) stands a stage with no fight, and draws over it as the game does, through `game_ui`'s
+//! [`ScreenStack`], loaded from the cook and then shown as its document reads now, with the stand-in values the
+//! screen pane holds ([`crate::screen`]), over the flat color the game's screens' goldens stand behind them. A
+//! screen with a 3D inset shows the stage's character in it, as the character screen does. Its frame is the
+//! aspect's size, not the pane's, shown whole in the pane: what a capture at that size draws. An edit makes a
+//! new tree, and nothing's loaded or built.
+//!
 //! A timeline (M3 E5) plays on the stage a fight stands on, as the game plays it: cooked from its document,
 //! from its start on a fresh stage, a frame of [`crate::app::RATE`] at a time with nothing drawn, to the
 //! playhead, which then draws as any change does. So the frame at a playhead is the frame a capture at that
@@ -30,16 +37,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use game_combat::combat::{CombatOption, read_bindings};
+use game_combat::documents::FightDocuments;
 use game_combat::fight::{Fight, fight_stage};
+use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
+use sapphire_assets::ui::UiDocument;
 use sapphire_controls::CombatControls;
 use sapphire_gameplay::ActorId;
 use sapphire_gameplay::replay::LiveMoves;
+use sapphire_input::InputMap;
+use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::{Vec2, Vec3};
 use sapphire_moves::MoveSet;
 use sapphire_platform::{AppInitError, Event, Host, Timestamp, WindowEvent};
-use sapphire_render::quality::QualitySettings;
-use sapphire_render::{CameraData, PipelineInventory, VfxFrame};
+use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
+use sapphire_render::{CameraData, Msaa, PipelineInventory, PostVariants, RenderSettings, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_rhi::wgpu;
 use sapphire_sequencer::Origin;
@@ -47,10 +59,12 @@ use sapphire_stage::scene::{LaidOut, Scene};
 use sapphire_stage::{Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, Stopwatch};
 use sapphire_timeline::Timeline;
+use sapphire_ui::Atlas;
 use sapphire_zone::ZoneDocument;
 
 use crate::gizmo::{Gizmo, ViewCamera};
 use crate::play::{PlayRequest, Snapshot};
+use crate::screen::{ScreenShown, StandIn, model_of};
 
 /// The format a viewport draws in: an sRGB target, which encodes what post returns (`post.wgsl`).
 pub const VIEWPORT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -68,6 +82,21 @@ pub fn on_pixels(pane: egui::Rect, pixels_per_point: f32) -> (egui::Rect, (u32, 
     let rect = pane.round_to_pixels(pixels_per_point);
     let size = rect.size() * pixels_per_point;
     (rect, (size.x.round() as u32, size.y.round() as u32))
+}
+
+/// A frame of `size` pixels in `pane`, whole: centred, as large as fits, its shape kept.
+#[must_use]
+pub fn fit(pane: egui::Rect, (width, height): (u32, u32)) -> egui::Rect {
+    let scale = (pane.width() / width as f32).min(pane.height() / height as f32);
+    egui::Rect::from_center_size(pane.center(), egui::vec2(width as f32, height as f32) * scale)
+}
+
+/// What a viewport stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stood {
+    Fight,
+    Zone,
+    Screen,
 }
 
 /// The texture a viewport's frame draws into.
@@ -122,6 +151,17 @@ pub const SETTLING_FRAMES: u32 = 16;
 #[must_use]
 pub fn the_fight() -> CombatOption {
     CombatOption::Fight { script: None, party: false }
+}
+
+/// A run's controls, on the bindings `documents` name, or Sapphire's own, as the game takes them.
+pub fn controls_of(documents: &FightDocuments) -> Result<CombatControls, String> {
+    let controls = match &documents.bindings {
+        Some(bindings) => InputMap::new(bindings.clone())
+            .map_err(|error| error.to_string())
+            .and_then(|map| CombatControls::new(map).map_err(|error| error.to_string())),
+        None => CombatControls::with_default_bindings().map_err(|error| error.to_string()),
+    };
+    controls.map_err(|error| format!("the game's bindings: {error}"))
 }
 
 /// A camera from outside the game: looks at `focus` from `distance` away.
@@ -203,11 +243,15 @@ pub struct ViewShow {
     camera_yaw: f32,
     /// The gizmo, on a zone's placement.
     pub gizmo: Option<Gizmo>,
+    /// A screen over it all.
+    pub screen: Option<ScreenStack>,
 }
 
 impl SceneShow for ViewShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         self.fight.declare_pipelines(inventory);
+        inventory.ui |= self.screen.is_some();
+        inventory.insets |= self.screen.as_ref().is_some_and(ScreenStack::holds_insets);
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -247,6 +291,24 @@ impl SceneShow for ViewShow {
         self.fight.write_effects(frame, alpha);
     }
 
+    fn begin_interface(&mut self, pages: UiPageState) {
+        if let Some(screen) = &mut self.screen {
+            screen.follow_pages(pages);
+        }
+    }
+
+    fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        if let Some(screen) = &mut self.screen {
+            screen.draw(size, list);
+        }
+    }
+
+    fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
+        if let Some(screen) = &self.screen {
+            screen.inset_shots(visit);
+        }
+    }
+
     fn draw_debug(&mut self) {
         self.fight.draw_debug();
         if let Some(gizmo) = &self.gizmo {
@@ -257,20 +319,26 @@ impl SceneShow for ViewShow {
 
 /// A stage on `gpu` with `host`'s content, and the game's fight stood on it, with everything it can draw built.
 pub fn stand(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
-    stand_fight(host, gpu, &the_fight(), LiveMoves::default())
+    // Read first, so a missing cook says how to make one here rather than in `Content::new`.
+    let documents = FightDocuments::read(host.content())
+        .map_err(|error| AppInitError::msg(format!("{error} (cook it with `cargo xtask content`)")))?;
+    let moves = documents.live();
+    stand_fight(host, gpu, &the_fight(), documents, moves)
 }
 
-/// [`stand`] with `option`'s fight on `moves`, as a run plays it: set up as the game's own is, before its first
-/// tick, from a snapshot's moves rather than the build's.
+/// [`stand`] with `option`'s fight on `documents` and `moves`, as a run plays it: set up as the game's own is,
+/// before its first tick, from a snapshot's moves over the game's documents rather than the build's.
 pub fn stand_fight(
     host: &Host,
     gpu: &Arc<GpuContext>,
     option: &CombatOption,
+    documents: FightDocuments,
     moves: LiveMoves,
 ) -> Result<Stage<ViewShow>, AppInitError> {
     let desc = fight_stage(StageDesc::new(host, gpu, VIEWPORT_FORMAT, QualitySettings::default()));
     let mut content = Content::new(host, desc.character, desc.sky)?;
     let mut show = ViewShow::default();
+    show.fight.documents = documents;
     let combat = show.fight.prepare_stock_fight_on(option, moves, &mut content)?;
     let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(show);
     let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
@@ -292,6 +360,54 @@ pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<View
     sapphire_core::debug_draw::set_enabled(true);
     Ok(stage)
 }
+
+/// A stage on `gpu` with `host`'s content and no fight, for a screen to draw over, with the interface's pipeline
+/// and an inset's resolve built: a screen stands on a flat color, so what's behind it shows only in an inset. It
+/// draws as the game's screens' goldens capture them (`desktop-high`, 4× MSAA, no shadows, occlusion or fog, the
+/// plain sky and post), so an inset's character is theirs too.
+pub fn stand_screen_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
+    let quality = QualitySettings {
+        tier: Some(TierId::DesktopHigh),
+        shadows: Switch::Off,
+        ambient_occlusion: OcclusionSetting::Off,
+        ..QualitySettings::default()
+    };
+    let mut desc = StageDesc::new(host, gpu, VIEWPORT_FORMAT, quality);
+    let msaa = if desc.settings.msaa == Msaa::Off { Msaa::X4 } else { desc.settings.msaa };
+    desc.settings =
+        RenderSettings { msaa, temporal: false, post_variants: PostVariants::NONE, ..desc.settings };
+    let content = Content::new(host, desc.character, desc.sky)?;
+    let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(ViewShow::default());
+    let Stage { show, scene, renderer, .. } = &mut stage;
+    scene.set_plain_sky(true);
+    scene.set_fog(false);
+    scene.set_plain_post(true);
+    scene.prewarm(&*show, renderer);
+    renderer.prewarm(&PipelineInventory { ui: true, insets: true, ..PipelineInventory::default() });
+    Ok(stage)
+}
+
+/// The screens for `shown`, from the cook's screen of its ID, showing what its document reads now over the flat
+/// color the game's screens' goldens stand behind them: as the sandbox shows the game's screens (`--ui-plain`), on a
+/// clock standing well past anything a screen does as it opens.
+pub fn screen_stack(stage: &mut Stage<ViewShow>, shown: &ScreenShown<'_>) -> Result<ScreenStack, String> {
+    let Stage { content, renderer, gpu, .. } = stage;
+    let assets = content
+        .load_screens(&[shown.id], renderer, gpu)
+        .map_err(|error| format!("{error}: a screen shows once it's cooked (`cargo xtask content`)"))?;
+    let setup = StackSetup { locale: shown.language.to_owned(), pseudo: false, scale: 1.0 };
+    let mut stack = ScreenStack::new(assets.tables, assets.fonts, Atlas::paint(), setup)?;
+    let start = Timestamp::from_nanos(0);
+    let cooked = assets.documents.first().ok_or("the cook has no such screen")?;
+    stack.push(cooked, model_of(shown.values), start, Vec::new())?;
+    stack.push_plain_under(start)?;
+    stack.replace_document(shown.document, shown.model)?;
+    stack.set_now(Timestamp::from_nanos(SCREEN_CLOCK_NANOS));
+    Ok(stack)
+}
+
+/// Where a screen's clock stands: what the sandbox's does with no `--ui-time`.
+const SCREEN_CLOCK_NANOS: u64 = 60_000_000_000;
 
 /// What a viewport shows of a zone being edited.
 #[derive(Clone, Copy)]
@@ -383,6 +499,8 @@ pub struct ViewportPane {
     stop: bool,
     /// The camera the last frame drew with.
     camera: Option<ViewCamera>,
+    /// The frame's size, when it's a screen's rather than the pane's.
+    fixed: Option<(u32, u32)>,
 }
 
 impl ViewportPane {
@@ -421,7 +539,11 @@ impl ViewportPane {
         self.back_to_game |= response.double_clicked() && !taken;
         if let Some(texture) = self.texture {
             let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(texture, rect, whole, egui::Color32::WHITE);
+            let shown = self.fixed.map_or(rect, |size| fit(rect, size));
+            if shown != rect {
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(24));
+            }
+            ui.painter().image(texture, shown, whole, egui::Color32::WHITE);
             if let Some(note) = &self.note {
                 ui.painter().text(
                     rect.left_top() + egui::vec2(6.0, 6.0),
@@ -483,6 +605,13 @@ impl ViewportPane {
         self.note.as_deref()
     }
 
+    /// Where a frame of `size` pixels shows whole in the pane, if it's a screen's: centred, as large as fits.
+    #[must_use]
+    pub fn frame_rect(&self) -> Option<egui::Rect> {
+        let rect = self.rect?;
+        Some(self.fixed.map_or(rect, |size| fit(rect, size)))
+    }
+
     /// The camera the last frame drew with, if there's been one.
     #[must_use]
     pub const fn camera(&self) -> Option<&ViewCamera> {
@@ -521,6 +650,8 @@ pub struct ViewportFrame<'a> {
     pub zone: Option<ZoneShown<'a>>,
     /// The timeline being edited, if the current document is one that cooks: the fight plays it.
     pub timeline: Option<TimelineShown>,
+    /// The screen being edited, if the current document is one with a model that reads.
+    pub screen: Option<ScreenShown<'a>>,
     /// The time of the pass, in seconds.
     pub now: f64,
 }
@@ -557,6 +688,21 @@ pub struct StageView {
     zone: Option<(AssetId, Vec<LaidOut>)>,
     /// The timeline the stage plays, and the frame it's played to.
     sequenced: Option<(Arc<Timeline>, u32)>,
+    /// The stage stood is a screen's, with no fight.
+    screened: bool,
+    /// The screen drawn over it, as it was shown.
+    screen: Option<ScreenState>,
+    /// The stage's character stands in an inset, for a screen that has one.
+    showcase: bool,
+}
+
+/// What a screen on the stage shows.
+#[derive(Debug, PartialEq)]
+struct ScreenState {
+    id: AssetId,
+    language: String,
+    document: UiDocument,
+    values: Vec<(String, StandIn)>,
 }
 
 impl StageView {
@@ -614,7 +760,7 @@ impl StageView {
         painter: &mut egui_wgpu::Renderer,
         frame: ViewportFrame<'_>,
     ) {
-        let ViewportFrame { pane, open, content, moves, zone, timeline, now } = frame;
+        let ViewportFrame { pane, open, content, moves, zone, timeline, screen, now } = frame;
         if !open {
             self.close(painter, pane);
             return;
@@ -626,25 +772,39 @@ impl StageView {
         if let Some(request) = pane.play.take() {
             self.start_run(gpu, content, request, pane);
         }
-        let Some(size) = pane.wanted.take() else {
+        let Some(wanted) = pane.wanted.take() else {
             // A run behind another tab holds the keys, with its Stop out of reach.
             self.end_run(pane);
             pane.settling = false;
             return;
         };
-        let changed = self.zoned != zone.is_some() || self.sequenced.is_some() != timeline.is_some();
+        // A run has the pane's size; a screen, its aspect's.
+        let screen = screen.filter(|_| self.run.is_none());
+        let size = screen.map_or(wanted, |screen| screen.aspect.size());
+        pane.fixed = screen.map(|screen| screen.aspect.size());
+        let stood = if screen.is_some() {
+            Stood::Screen
+        } else if zone.is_some() {
+            Stood::Zone
+        } else {
+            Stood::Fight
+        };
+        let changed = self.zoned != (stood == Stood::Zone)
+            || self.screened != (stood == Stood::Screen)
+            || self.sequenced.is_some() != timeline.is_some();
         if self.run.is_none() && self.stage.is_some() && changed {
             self.stage = None;
             self.sequenced = None;
         }
-        if self.stage.is_none() && !self.stood(gpu, content, zone.is_some(), pane) {
+        if self.stage.is_none() && !self.stood(gpu, content, stood, pane) {
             return;
         }
         if self.run.is_none() {
-            match (zone, timeline) {
-                (Some(zone), _) => self.follow_zone(zone, pane),
-                (None, Some(timeline)) => self.follow_timeline(gpu, content, timeline, size, pane),
-                (None, None) => self.follow(moves, pane),
+            match (screen, zone, timeline) {
+                (Some(screen), _, _) => self.follow_screen(&screen, pane),
+                (None, Some(zone), _) => self.follow_zone(zone, pane),
+                (None, None, Some(timeline)) => self.follow_timeline(gpu, content, timeline, size, pane),
+                (None, None, None) => self.follow(moves, pane),
             }
         }
         self.look(pane, size);
@@ -665,6 +825,8 @@ impl StageView {
         self.moves = None;
         self.zone = None;
         self.zoned = false;
+        self.screened = false;
+        self.screen = None;
         self.sequenced = None;
         let Some(content) = content else {
             pane.note = Some("No cook to play: `cargo xtask content` makes one".to_owned());
@@ -672,13 +834,14 @@ impl StageView {
         };
         let PlayRequest { snapshot, script } = request;
         let option = CombatOption::Fight { script, party: false };
-        let started = stand_fight(&Host::with_content_at(content), gpu, &option, snapshot.moves().clone())
-            .map_err(|error| error.to_string())
-            .and_then(|mut stage| {
-                stage.show.controls =
-                    Some(CombatControls::with_default_bindings().map_err(|error| error.to_string())?);
-                Ok(stage)
-            });
+        let host = Host::with_content_at(content);
+        let documents = snapshot.fight().clone();
+        let started = controls_of(&documents).and_then(|controls| {
+            let mut stage = stand_fight(&host, gpu, &option, documents, snapshot.moves().clone())
+                .map_err(|error| error.to_string())?;
+            stage.show.controls = Some(controls);
+            Ok(stage)
+        });
         match started {
             Ok(stage) => {
                 self.stage = Some(stage);
@@ -741,7 +904,7 @@ impl StageView {
         &mut self,
         gpu: &Arc<GpuContext>,
         content: Option<&Path>,
-        zoned: bool,
+        what: Stood,
         pane: &mut ViewportPane,
     ) -> bool {
         if self.failed && !std::mem::take(&mut pane.try_again) {
@@ -752,14 +915,21 @@ impl StageView {
             return false;
         };
         let host = Host::with_content_at(content);
-        let stood = if zoned { stand_zone_stage(&host, gpu) } else { stand(&host, gpu) };
+        let stood = match what {
+            Stood::Fight => stand(&host, gpu),
+            Stood::Zone => stand_zone_stage(&host, gpu),
+            Stood::Screen => stand_screen_stage(&host, gpu),
+        };
         match stood {
             Ok(stage) => {
                 self.stage = Some(stage);
                 self.moves = None;
                 self.zone = None;
                 self.sequenced = None;
-                self.zoned = zoned;
+                self.screen = None;
+                self.zoned = what == Stood::Zone;
+                self.screened = what == Stood::Screen;
+                self.showcase = false;
                 self.failed = false;
                 self.settling = SETTLING_FRAMES;
                 pane.note = None;
@@ -785,7 +955,7 @@ impl StageView {
             return;
         }
         let Some(stage) = &mut self.stage else { return };
-        let mut live = LiveMoves::default();
+        let mut live = stage.show.fight.documents.live();
         if let Some((name, set)) = moves {
             live.remember(name, set.clone());
         }
@@ -849,7 +1019,7 @@ impl StageView {
         if !on {
             if self.sequenced.is_some() {
                 self.stage = None;
-                if !self.stood(gpu, content, false, pane) {
+                if !self.stood(gpu, content, Stood::Fight, pane) {
                     return;
                 }
             }
@@ -866,11 +1036,56 @@ impl StageView {
         }
     }
 
+    /// Shows `shown` over the stage: loaded from the cook when it's a new screen or language, and as its document
+    /// and values read now when they've changed. What doesn't show says why, and what showed stays.
+    fn follow_screen(&mut self, shown: &ScreenShown<'_>, pane: &mut ViewportPane) {
+        let Some(stage) = &mut self.stage else { return };
+        let new =
+            self.screen.as_ref().is_none_or(|state| state.id != shown.id || state.language != shown.language);
+        if new {
+            match screen_stack(stage, shown) {
+                Ok(stack) => {
+                    if stack.holds_insets() && !std::mem::replace(&mut self.showcase, true) {
+                        let character = stage.scene.character();
+                        stage.scene.spawn_showcase(character, 0);
+                    }
+                    stage.show.screen = Some(stack);
+                }
+                Err(why) => {
+                    pane.note = Some(why);
+                    stage.show.screen = None;
+                    self.screen = None;
+                    return;
+                }
+            }
+            pane.note = None;
+            self.screen = Some(ScreenState {
+                id: shown.id,
+                language: shown.language.to_owned(),
+                document: shown.document.clone(),
+                values: shown.values.to_vec(),
+            });
+            self.settling = SETTLING_FRAMES;
+            return;
+        }
+        let (Some(state), Some(stack)) = (&mut self.screen, &mut stage.show.screen) else { return };
+        if state.document != *shown.document {
+            pane.note = stack.replace_document(shown.document, shown.model).err();
+            state.document = shown.document.clone();
+            self.settling = SETTLING_FRAMES;
+        }
+        if state.values != shown.values {
+            stack.set_model(model_of(shown.values));
+            state.values = shown.values.to_vec();
+            self.settling = SETTLING_FRAMES;
+        }
+    }
+
     /// Takes what a person did to the view.
     fn look(&mut self, pane: &mut ViewportPane, (width, height): (u32, u32)) {
         let Some(stage) = &mut self.stage else { return };
         let (dragged, scrolled) = (std::mem::take(&mut pane.dragged), std::mem::take(&mut pane.scrolled));
-        if self.sequenced.is_some() {
+        if self.sequenced.is_some() || self.screened {
             return;
         }
         if std::mem::take(&mut pane.back_to_game) && !self.zoned {
@@ -949,6 +1164,7 @@ impl StageView {
         pane.playing = false;
         pane.status = None;
         pane.camera = None;
+        pane.fixed = None;
     }
 }
 

@@ -1332,7 +1332,8 @@ impl Editor {
         self.set_tick(from);
     }
 
-    /// Looks at the file and the cook again, and takes what live link has reported.
+    /// Looks at the files (the documents and the screens' model files) and the cook again, and takes what live
+    /// link has reported.
     pub fn poll(&mut self, now: f64) {
         self.link.poll();
         if now - self.last_poll < POLL_SECONDS {
@@ -1343,6 +1344,7 @@ impl Editor {
             let noticed = self.documents.refresh();
             self.say_noticed(noticed);
         }
+        self.screen.poll_models(&self.documents);
         let in_gesture =
             self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture()));
         if now >= self.next_rescan && !in_gesture && self.typed.is_none() {

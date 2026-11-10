@@ -1,8 +1,17 @@
 //! The screen pane (M3 E5): the current `.ui.ron`'s preview at an aspect and in a language, and the values its
 //! paths read, typed in. The viewport draws it through the game's own screens ([`crate::viewport`]); an edit
 //! anywhere else, the Properties pane's or a typed one, shows there as the document reads.
+//!
+//! The pane follows the model file a screen names, and the file itself: each [`Editor::poll`] reads every held
+//! model file again and compares its bytes, by their hash, with what it read last (M3 Z5c). Not the file's
+//! modification time and length: the usual edit to a model renames a path or changes a kind, often keeping the
+//! length, and a time coarser than the edit (a second, on some file systems and shares) would miss it for good.
+//! Reading is cheap at this size, a few hundred bytes a second for each screen open, which is what the document
+//! set already does for every document.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
 
 use egui::{RichText, Ui};
 use game_ui::menus::MenuScreen;
@@ -28,8 +37,12 @@ pub(super) struct ScreenPanel {
 struct Held {
     /// The model file the document named when this was read: an edit naming another reads that one.
     named: Option<String>,
+    /// The hash of the model file's bytes as last read, or `None` if it named none or none read: other bytes
+    /// on disk read it again.
+    read: Option<u64>,
     /// The model file it names, as it read, or why it didn't.
     model: Result<UiModel, String>,
+    /// What each path of the last model that read reads, kept while one doesn't.
     values: Vec<(String, StandIn)>,
 }
 
@@ -47,41 +60,88 @@ impl ScreenPanel {
         if held.is_some_and(|held| held.named.as_deref() == named) {
             return;
         }
-        let model = match named {
-            None => Ok(UiModel::default()),
+        let (model, read) = match named {
+            None => (Ok(UiModel::default()), None),
             Some(file) => {
-                let at = path.parent().map_or_else(|| file.into(), |dir| dir.join(file));
-                std::fs::read_to_string(&at).map_err(|error| format!("{}: {error}", at.display())).and_then(
-                    |text| UiModel::from_document(&text).map_err(|error| format!("{file}: {error}")),
-                )
+                let at = model_path(path, file);
+                let bytes = std::fs::read(&at).map_err(|error| format!("{}: {error}", at.display()));
+                let read = bytes.as_deref().ok().map(hash);
+                (bytes.and_then(|bytes| parse(file, &bytes)), read)
             }
         };
-        let mut values = model.as_ref().map(stand_ins).unwrap_or_default();
-        match held {
-            // What was typed in stays, for each path the new model still reads the same kind of value at.
-            Some(held) => {
-                for (path, value) in &mut values {
-                    let typed = held.values.iter().find(|(known, _)| known == path);
-                    if let Some((_, typed)) = typed.filter(|(_, typed)| same_kind(typed, value)) {
-                        value.clone_from(typed);
-                    }
-                }
-            }
-            // One of the game's own screens starts where its goldens do.
-            None => {
-                if let Some(screen) = MenuScreen::ALL.into_iter().find(|screen| screen.id() == id) {
-                    read_from(&mut values, &*screen.sample_model());
-                }
-            }
-        }
+        let held = held.map(|held| held.values.as_slice());
+        let values = match &model {
+            Ok(model) => values_for(id, model, held),
+            // A model that doesn't read lists no paths: what was typed waits for one that does.
+            Err(_) => held.map(<[_]>::to_vec).unwrap_or_default(),
+        };
         let named = named.map(ToOwned::to_owned);
-        self.screens.insert(id, Held { named, model, values });
+        self.screens.insert(id, Held { named, read, model, values });
+    }
+
+    /// Reads again each held screen's model file whose bytes on disk aren't those it read last: an edit made
+    /// outside the editor. What was typed stays, as for a model named anew, and through an edit that doesn't
+    /// parse. A file that doesn't read just now (an outside save between its truncation and its write, or a
+    /// rename) waits, keeping the model it had; one that reads and doesn't parse says why, as when first read.
+    pub(super) fn poll_models(&mut self, documents: &DocumentSet) {
+        for (&id, held) in &mut self.screens {
+            let (Some(file), Some(path)) = (held.named.as_deref(), documents.path(id)) else { continue };
+            let Ok(bytes) = std::fs::read(model_path(path, file)) else { continue };
+            let read = Some(hash(&bytes));
+            if read == held.read {
+                continue;
+            }
+            let model = parse(file, &bytes);
+            if let Ok(new) = &model {
+                held.values = values_for(id, new, Some(&held.values));
+            }
+            (held.read, held.model) = (read, model);
+        }
     }
 
     /// Lets go of what's held for a screen closed, so opening it again reads its model file again.
     pub(super) fn forget(&mut self, id: AssetId) {
         self.screens.remove(&id);
     }
+}
+
+/// Where a screen at `screen` finds the model file it names: beside it.
+fn model_path(screen: &Path, file: &str) -> PathBuf {
+    screen.parent().map_or_else(|| file.into(), |dir| dir.join(file))
+}
+
+fn parse(file: &str, bytes: &[u8]) -> Result<UiModel, String> {
+    let text = std::str::from_utf8(bytes).map_err(|error| format!("{file}: {error}"))?;
+    UiModel::from_document(text).map_err(|error| format!("{file}: {error}"))
+}
+
+fn hash(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The values screen `id`'s paths read under `model`. What was `typed` in stays, for each path the new model
+/// still reads the same kind of value at. With nothing held yet (a first model), one of the game's own screens
+/// starts where its goldens do.
+fn values_for(id: AssetId, model: &UiModel, typed: Option<&[(String, StandIn)]>) -> Vec<(String, StandIn)> {
+    let mut values = stand_ins(model);
+    match typed.filter(|typed| !typed.is_empty()) {
+        Some(typed) => {
+            for (path, value) in &mut values {
+                let known = typed.iter().find(|(known, _)| known == path);
+                if let Some((_, typed)) = known.filter(|(_, typed)| same_kind(typed, value)) {
+                    value.clone_from(typed);
+                }
+            }
+        }
+        None => {
+            if let Some(screen) = MenuScreen::ALL.into_iter().find(|screen| screen.id() == id) {
+                read_from(&mut values, &*screen.sample_model());
+            }
+        }
+    }
+    values
 }
 
 fn same_kind(a: &StandIn, b: &StandIn) -> bool {

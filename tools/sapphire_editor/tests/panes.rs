@@ -959,3 +959,53 @@ fn the_screen_pane_follows_the_model_its_document_names() {
     assert!(reads(&values(&mut harness), "crit"), "undo names the character's again");
     assert_eq!(text_of(&harness), CHARACTER_SCREEN);
 }
+
+/// The pane notices its model file changing on disk (M3 Z5c): an outside edit to it reads at the next poll,
+/// keeping what was typed, even one that keeps the file's length. A file gone just now keeps the model held; one
+/// that doesn't parse holds the preview back until it does again. None of it edits the screen.
+#[test]
+fn the_screen_pane_reads_its_model_file_again_when_it_changes_on_disk() {
+    let dir = TestDir::new("screen_model_disk");
+    let path = dir.write("u/character.ui.ron", CHARACTER_SCREEN);
+    dir.write("u/character.ui.ron.meta", CHARACTER_SCREEN_META);
+    let model = dir.write("u/character.model.ron", CHARACTER_MODEL);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    let shown = |harness: &mut Harness<'static, Editor>| {
+        let frame = harness.state_mut().viewport_frame();
+        frame.screen.map(|screen| screen.values.to_vec())
+    };
+    let reads = |values: &[(String, StandIn)], path: &str| values.iter().any(|(known, _)| known == path);
+    let mut now = 10.0;
+    let mut poll = |harness: &mut Harness<'static, Editor>| {
+        now += 10.0;
+        harness.state_mut().poll(now);
+        harness.run_steps(1);
+    };
+    assert!(reads(&shown(&mut harness).expect("a screen"), "crit"));
+    assert!(harness.state_mut().set_stand_in("level", StandIn::Number(77.0)));
+
+    // The same length: only the bytes tell.
+    let renamed = CHARACTER_MODEL.replace("\"crit\"", "\"luck\"");
+    assert_eq!(renamed.len(), CHARACTER_MODEL.len());
+    fs::write(&model, &renamed).expect("an outside edit");
+    poll(&mut harness);
+    let values = shown(&mut harness).expect("a screen");
+    assert!(reads(&values, "luck") && !reads(&values, "crit"), "the edit: {values:?}");
+    assert!(values.contains(&("level".to_owned(), StandIn::Number(77.0))), "what was typed: {values:?}");
+
+    fs::remove_file(&model).expect("gone just now");
+    poll(&mut harness);
+    assert!(reads(&shown(&mut harness).expect("still a screen"), "luck"), "a missing file waits");
+
+    fs::write(&model, "(not a model").expect("a broken edit");
+    poll(&mut harness);
+    assert!(shown(&mut harness).is_none(), "a model that doesn't parse holds the preview back");
+
+    fs::write(&model, CHARACTER_MODEL).expect("put back");
+    poll(&mut harness);
+    let values = shown(&mut harness).expect("a screen again");
+    assert!(reads(&values, "crit"), "{values:?}");
+    assert!(values.contains(&("level".to_owned(), StandIn::Number(77.0))), "typed, all along: {values:?}");
+    assert_eq!(text_of(&harness), CHARACTER_SCREEN, "following the model edits nothing");
+}

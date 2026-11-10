@@ -230,11 +230,17 @@ macro_rules! gate_scene {
 /// past the phase where it enrages, with its bar and phase marks. `arena-captain` draws two kinds of enemy at
 /// once, each as itself (M3 B3b).
 ///
+/// The tier scenes (M4 T0) draw three shots as each tier ships, AO and all, at the tier's own scale and
+/// at its dynamic floor: the face's close-up on every tier, and the ward's street and a hit's post on the
+/// low tiers. The phone tiers' set a `--size`, as the HUD scenes do, a phone's shape, and draw at the
+/// scales a 1170-row phone draws, so their bilinear upscale is a phone's. They pin nothing else, and
+/// keep their frames few, for the CPU rasterizers.
+///
 /// The display text scenes (M3 U8) draw a title in the display face at four sizes over the HUD scenes'
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 217] {
+pub fn scenes() -> [Scene; 229] {
     [
         Scene {
             name: "turntable-start",
@@ -4330,6 +4336,228 @@ pub fn scenes() -> [Scene; 217] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The look at each tier and at its dynamic floor (M4 T0): the close-up of the character's face at noon, on
+        // each tier as it ships, AO and all. The desktop tiers draw 640×360 at scale 1 and at 0.7; the phones'
+        // draw 1280×592 at the scales a 1170-row phone draws, their own (740 or 590 rows) and 0.75 of it, so
+        // the bilinear upscale is a phone's. The thermal ladder's rungs (M4 T2) compare against these.
+        Scene {
+            name: "tier-face-desktop-high",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--capture-frames",
+                "12",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-desktop-high-floor",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--render-scale",
+                "0.7",
+                "--capture-frames",
+                "12",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-desktop-low",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-low",
+                "--capture-frames",
+                "12",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-desktop-low-floor",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-low",
+                "--render-scale",
+                "0.7",
+                "--capture-frames",
+                "12",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-mobile-high",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "mobile-high",
+                "--render-scale",
+                "0.632479",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-mobile-high-floor",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "mobile-high",
+                "--render-scale",
+                "0.474359",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-mobile-low",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "mobile-low",
+                "--render-scale",
+                "0.504274",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-face-mobile-low-floor",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "mobile-low",
+                "--render-scale",
+                "0.378205",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The Lantern Ward's street from where a game starts, and a medium hit's spark and aberration on the
+        // look-dev character, on the low tiers that the ladder's passes are measured on.
+        Scene {
+            name: "tier-ward-desktop-low",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--zone",
+                "lantern_ward:player_start",
+                "--time-of-day",
+                "14",
+                "--tier",
+                "desktop-low",
+                "--capture-frames",
+                "12",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-ward-mobile-low",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "90",
+                "--zone",
+                "lantern_ward:player_start",
+                "--time-of-day",
+                "14",
+                "--tier",
+                "mobile-low",
+                "--render-scale",
+                "0.504274",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-hit-desktop-low",
+            args: &[
+                "--capture-ticks",
+                "71",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "12",
+                "--replay",
+                "tests/replays/fight.sreplay",
+                "--cues",
+                "--tier",
+                "desktop-low",
+                "--capture-frames",
+                "12",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "tier-hit-mobile-low",
+            args: &[
+                "--size",
+                "1280x592",
+                "--capture-ticks",
+                "71",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "12",
+                "--replay",
+                "tests/replays/fight.sreplay",
+                "--cues",
+                "--tier",
+                "mobile-low",
+                "--render-scale",
+                "0.504274",
+            ],
+            thresholds: Thresholds::default(),
+        },
     ]
 }
 
@@ -5002,6 +5230,9 @@ mod tests {
                 // The game as it ships, on the zone's own look, at a tier no device chooses for it.
                 assert!(scene.args.contains(&"--game"), "{}", scene.name);
                 assert!(pinned("--tier", "desktop-high"), "{}", scene.name);
+            } else if scene.name.starts_with("tier-") {
+                // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed.
+                assert!(scene.args.contains(&"--tier") && !scene.args.contains(&"--ao"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);
@@ -5030,7 +5261,8 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else if !display_text {
+            } else if !display_text && !scene.name.starts_with("tier-") {
+                // The tier scenes (M4 T0) draw a phone's frame at a phone's shape.
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }

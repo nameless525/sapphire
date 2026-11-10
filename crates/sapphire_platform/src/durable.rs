@@ -27,6 +27,9 @@ use std::path::Path;
 /// | Linux, Android | `fsync` on the temp and the directory | The same, and a filesystem that refuses a directory's `fsync`, which is taken as done: the rename may then be lost, though never torn |
 /// | Windows | `FlushFileBuffers` on the temp, then `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, since a directory has no handle to flush | The same, and Microsoft documents write-through's flush but not the replace's atomicity across a power cut; NTFS's journal is what provides it |
 ///
+/// On Windows the rename also waits about a third of a second for another process that has the
+/// temp or `target` open to let go, as an indexer or a virus scanner does for a moment.
+///
 /// No test here can cut the power: what's proved is a kill at every step, by fault injection and
 /// by `SIGKILL`.
 pub fn durable_replace(target: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -97,8 +100,21 @@ fn rename_over(temp: &Path, target: &Path) -> io::Result<()> {
     fs::rename(temp, target)
 }
 
+/// The waits before each new try at the rename while another process has the temp or the target
+/// open, as an indexer or a virus scanner does for a moment after a file's written: about a third
+/// of a second in all, and then its error stands.
+#[cfg(target_os = "windows")]
+const RENAME_WAITS: [std::time::Duration; 5] = [
+    std::time::Duration::from_millis(10),
+    std::time::Duration::from_millis(20),
+    std::time::Duration::from_millis(40),
+    std::time::Duration::from_millis(80),
+    std::time::Duration::from_millis(160),
+];
+
 /// `std::fs::rename` has no way to ask for write-through, and there's no directory to flush
-/// afterward, so this is the rename's only chance to reach the disk.
+/// afterward, so this is the rename's only chance to reach the disk. A file another process holds
+/// gets [`RENAME_WAITS`] to be let go.
 #[cfg(target_os = "windows")]
 fn rename_over(temp: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
@@ -109,11 +125,31 @@ fn rename_over(temp: &Path, target: &Path) -> io::Result<()> {
 
     let wide = |path: &Path| path.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
     let (temp, target) = (wide(temp), wide(target));
-    // SAFETY: both are NUL-terminated wide strings that outlive the call.
-    let moved = unsafe {
-        MoveFileExW(temp.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-    };
-    if moved == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    let mut waits = RENAME_WAITS.iter();
+    loop {
+        // SAFETY: both are NUL-terminated wide strings that outlive the call.
+        let moved = unsafe {
+            MoveFileExW(temp.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        };
+        if moved != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match waits.next() {
+            Some(wait) if is_held(&error) => std::thread::sleep(*wait),
+            _ => return Err(error),
+        }
+    }
+}
+
+/// Whether a rename failed because another process has one of the files open: Windows says
+/// `ERROR_SHARING_VIOLATION` (32) for a held temp, and `ERROR_ACCESS_DENIED` (5) for a target open
+/// without `FILE_SHARE_DELETE`. A real lack of permission is 5 as well, and costs only the waits.
+#[cfg(target_os = "windows")]
+fn is_held(error: &io::Error) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    matches!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -256,6 +292,36 @@ mod tests {
             durable_replace(&dir.file(), b"after").expect("the next write");
             assert_eq!(fs::read(dir.file()).expect("read"), b"after", "step {step}");
         }
+    }
+
+    /// Another process holding the target open, as an indexer or a virus scanner does for a moment,
+    /// makes the rename wait and try again; one that keeps it open gets its error back, with the old
+    /// file kept.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_rename_waits_out_a_file_held_for_a_moment() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let dir = TestDir::new("held");
+        durable_replace(&dir.file(), b"old").expect("set up");
+        let hold =
+            || fs::OpenOptions::new().read(true).share_mode(0).open(dir.file()).expect("hold the target");
+
+        let held = hold();
+        let error = durable_replace(&dir.file(), b"new").expect_err("held throughout");
+        assert!(is_held(&error), "{error}");
+        drop(held);
+        assert_eq!(fs::read(dir.file()).expect("read"), b"old");
+        assert!(!dir.temp().exists());
+
+        let held = hold();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+        });
+        durable_replace(&dir.file(), b"new").expect("the hold ends in time");
+        release.join().expect("the hold's thread");
+        assert_eq!(fs::read(dir.file()).expect("read"), b"new");
     }
 
     #[test]

@@ -16,7 +16,10 @@
 //!   fire one, and an app's load checks every name at once. The table also names the fight's score and
 //!   its voice lines' tables, for the app to load.
 //! - **The dispatcher** ([`CueDispatcher`]): resolves those names once, at load and after a reload, then
-//!   fires rows with no allocation. [`CueStep`] is what a step fires into.
+//!   fires rows with no allocation. [`CueStep`] is what a step fires into. With flashes reduced
+//!   ([`CueDispatcher::limit_flashes`], M4 A3) it lets at most three full-screen flashes (a preset with an
+//!   inversion or a duotone) start in any second, as WCAG 2.3.1 counts them, and holds the rest's screen
+//!   effect alone: the row's sound, shake and effects still fire.
 //! - **Cue marks** (M4 A5, [`Stand`], [`CueMarks`]): a row's effect over a fighter's head
 //!   ([`EffectPlace::Crown`]), and the cues no document names: [`DODGE_WINDOW`], fired on a foe as its strike
 //!   comes within a perfect dodge's reach, read from the moves, and [`NAMED_PHASE`], on an enemy crossing a

@@ -384,6 +384,11 @@ pub struct PostEffects {
     pub inversion: Inversion,
     pub duotone: Duotone,
     pub speed_lines: SpeedLines,
+    /// The most these effects together may move a pixel's relative luminance from the frame without them
+    /// (M4 A3): post holds each pixel within it, so with it under WCAG 2.3.1's general flash threshold none
+    /// of them can flash ([`EffectScale::flash_swing`]). 1, [`Self::NONE`]'s, holds nothing, since relative
+    /// luminance spans 0 to 1.
+    pub swing: f32,
 }
 
 impl PostEffects {
@@ -394,6 +399,7 @@ impl PostEffects {
         inversion: Inversion::NONE,
         duotone: Duotone::NONE,
         speed_lines: SpeedLines::NONE,
+        swing: 1.0,
     };
 }
 
@@ -404,39 +410,52 @@ impl Default for PostEffects {
 }
 
 impl PostEffects {
-    /// These effects as `scale` lets them show (M4 A2): each one's strength, amount or opacity times its
-    /// share, everything else as it was. [`EffectScale::FULL`] gives them back exactly.
+    /// These effects as `scale` lets them show (M4 A2, A3): the lens effects' strengths times motion's share,
+    /// and all of them held within the flashes' swing, everything else as it was. [`EffectScale::FULL`] gives
+    /// them back exactly.
     #[must_use]
     pub fn scaled(mut self, scale: EffectScale) -> Self {
         // Not a number reads as none.
         let share = |value: f32| if value >= 0.0 { value.min(1.0) } else { 0.0 };
-        let (flashes, motion) = (share(scale.flashes), share(scale.motion));
-        self.inversion.amount *= flashes;
-        self.duotone.amount *= flashes;
-        self.speed_lines.opacity *= flashes;
+        let motion = share(scale.motion);
         self.radial_blur.strength *= motion;
         self.chromatic_aberration.strength *= motion;
+        self.swing = self.swing.min(share(scale.flash_swing));
         self
     }
 }
 
-/// How much of combat's screen effects a player lets show, by what each does to the eye (M4 A2): the one
+/// How much of combat's screen effects a player lets show, by what each does to the eye (M4 A2, A3): the one
 /// input the player's flashes and camera motion settings reach post through, which the effect stack's
-/// resolved values pass through last ([`PostEffects::scaled`]). Each share is 0 (none) to 1 (as authored).
+/// resolved values pass through last ([`PostEffects::scaled`]).
 ///
-/// - **Flashes** are what swings the frame's light: the inversion and duotone of an impact frame, and speed
-///   lines, which redraw several times a second over the whole frame.
+/// - **Flashes** are what swings the frame's light: an impact frame's inversion and duotone, speed lines
+///   redrawn several times a second over the whole frame, and a blur streaking light across the dark. WCAG
+///   2.3.1 counts a flash by its change in relative luminance, so flashes are a swing here, from 0 to 1: the
+///   most the effects together may move a pixel's relative luminance, which post holds every pixel to
+///   ([`PostEffects::swing`]). 1 lets them swing as authored; [`Self::SAFE_FLASH_SWING`] is reduced flashes.
 /// - **Motion** is what reads as the camera itself moving: the radial blur's zoom toward a hit and the
-///   chromatic aberration's punch of split colour.
+///   chromatic aberration's punch of split colour, as a share from 0 (none) to 1 (as authored).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectScale {
-    pub flashes: f32,
+    pub flash_swing: f32,
     pub motion: f32,
 }
 
 impl EffectScale {
     /// Every effect as authored.
-    pub const FULL: Self = Self { flashes: 1.0, motion: 1.0 };
+    pub const FULL: Self = Self { flash_swing: 1.0, motion: 1.0 };
+
+    /// Reduced flashes' swing (M4 A3): a fifth under WCAG 2.3.1's general flash threshold of 0.1, so no screen
+    /// effect makes a flash at any rate, with room under the threshold for 8-bit output's rounding.
+    pub const SAFE_FLASH_SWING: f32 = 0.08;
+
+    /// Whether flashes are held at all, which also has the cue dispatcher let at most three full-screen
+    /// flashes a second through (`sapphire_cues`).
+    #[must_use]
+    pub fn limits_flashes(self) -> bool {
+        !(self.flash_swing >= 1.0)
+    }
 }
 
 impl Default for EffectScale {
@@ -587,39 +606,42 @@ mod tests {
             inversion: Inversion { amount: 0.9, coverage: EffectCoverage::WORLD },
             duotone: Duotone { amount: 0.7, threshold: 0.72, ..Duotone::NONE },
             speed_lines: SpeedLines { opacity: 0.6, seed: 7, ..SpeedLines::NONE },
+            swing: 1.0,
         }
     }
 
     #[test]
     fn full_scale_changes_nothing() {
         assert_eq!(every_effect().scaled(EffectScale::FULL), every_effect());
-        let none = EffectScale { flashes: 0.0, motion: 0.0 };
-        assert_eq!(PostEffects::NONE.scaled(none), PostEffects::NONE);
+        assert!(!EffectScale::FULL.limits_flashes());
+        let none = EffectScale { flash_swing: 0.0, motion: 0.0 };
+        assert_eq!(PostEffects::NONE.scaled(none), PostEffects { swing: 0.0, ..PostEffects::NONE });
     }
 
-    /// Flashes take the light's swings and motion the lens's, and neither touches the other's or anything
-    /// but an effect's strength.
+    /// Flashes hold the light's swing and motion scales the lens's, and neither touches the other's or anything
+    /// but an effect's strength: reduced flashes leave every effect as authored, for post to hold.
     #[test]
     fn each_share_scales_its_own_effects() {
         let all = every_effect();
-        let flashes = all.scaled(EffectScale { flashes: 0.5, motion: 1.0 });
-        assert_eq!(flashes.inversion.amount, 0.45);
-        assert_eq!(flashes.duotone.amount, 0.35);
-        assert_eq!(flashes.speed_lines.opacity, 0.3);
-        assert_eq!(flashes.radial_blur, all.radial_blur);
-        assert_eq!(flashes.chromatic_aberration, all.chromatic_aberration);
-        assert_eq!(flashes.duotone.threshold, all.duotone.threshold);
-        assert_eq!(flashes.speed_lines.seed, all.speed_lines.seed);
+        let reduced = EffectScale { flash_swing: EffectScale::SAFE_FLASH_SWING, motion: 1.0 };
+        assert!(reduced.limits_flashes());
+        let flashes = all.scaled(reduced);
+        assert_eq!(flashes, PostEffects { swing: 0.08, ..all });
+        let again = flashes.scaled(EffectScale { flash_swing: 0.5, motion: 1.0 });
+        assert_eq!(again.swing, 0.08, "the tighter hold stands");
 
-        let still = all.scaled(EffectScale { flashes: 1.0, motion: 0.0 });
+        let still = all.scaled(EffectScale { flash_swing: 1.0, motion: 0.0 });
         assert_eq!(still.radial_blur.strength, 0.0);
         assert_eq!(still.chromatic_aberration.strength, 0.0);
         assert_eq!(still.radial_blur.center, all.radial_blur.center);
-        assert_eq!((still.inversion, still.duotone), (all.inversion, all.duotone));
+        assert_eq!((still.inversion, still.duotone, still.swing), (all.inversion, all.duotone, 1.0));
         assert_eq!(still.speed_lines, all.speed_lines);
 
-        let past = all.scaled(EffectScale { flashes: 3.0, motion: -1.0 });
-        assert_eq!(past.inversion.amount, all.inversion.amount, "a share past 1 reads as 1");
+        let past = all.scaled(EffectScale { flash_swing: 3.0, motion: -1.0 });
+        assert_eq!(past.swing, 1.0, "a share past 1 reads as 1");
         assert_eq!(past.radial_blur.strength, 0.0, "and one under 0 as 0");
+        let unknown = EffectScale { flash_swing: f32::NAN, motion: 1.0 };
+        assert!(unknown.limits_flashes(), "not a number holds them");
+        assert_eq!(all.scaled(unknown).swing, 0.0, "all the way");
     }
 }

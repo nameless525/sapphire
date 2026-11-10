@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use sapphire_testkit::flashes::{FlashAnalyser, Verdict};
 use sapphire_testkit::golden::{self, Image, Thresholds};
 use sapphire_testkit::look::{Lines, Region, Spread};
 use sapphire_testkit::scenes::{self, DEFAULT_SCENE_TIMEOUT, Mode, Paths, Selection};
@@ -36,14 +37,20 @@ Usage:
       shot by their ratios.
   sapphire_testkit compare <reference.png> <capture.png>
       Compare two images as a golden is compared: FLIP's mean, p99, worst 16x16 tile and
-      maximum, and whether the golden gates pass.";
+      maximum, and whether the golden gates pass.
+  sapphire_testkit flashes <dir> [--rate <frames a second>]
+      Run WCAG 2.3.1's general and red flash tests over the .png frames in <dir>, in the
+      order of their names, captured at --rate (default 60): one line of the most
+      transitions a second over a quarter of a 10-degree field and the largest share of a
+      field over the limit, for each test (sapphire_testkit::flashes). Fails a sequence
+      that doesn't pass.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(args) {
         Ok(failures) if failures.is_empty() => ExitCode::SUCCESS,
         Ok(failures) => {
-            eprintln!("{} scene(s) or shot(s) failed:\n  {}", failures.len(), failures.join("\n  "));
+            eprintln!("{} failed:\n  {}", failures.len(), failures.join("\n  "));
             ExitCode::FAILURE
         }
         Err(error) => {
@@ -58,7 +65,12 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         Some("golden" | "store-shots") => {}
         Some("measure") => return measure(&args[1..]).map(|()| Vec::new()),
         Some("compare") => return compare(&args[1..]).map(|()| Vec::new()),
-        _ => return Err("expected the `golden`, `store-shots`, `measure` or `compare` command".into()),
+        Some("flashes") => return flashes(&args[1..]),
+        _ => {
+            return Err(
+                "expected the `golden`, `store-shots`, `measure`, `compare` or `flashes` command".into()
+            );
+        }
     }
     let shots = args.remove(0) == "store-shots";
     let mut flag = |name: &str| args.iter().position(|arg| arg == name).map(|i| args.remove(i)).is_some();
@@ -156,6 +168,53 @@ fn compare(args: &[String]) -> Result<(), String> {
         if comparison.passes(&thresholds) { "pass" } else { "fail" },
     );
     Ok(())
+}
+
+/// `flashes`: prints one line of WCAG 2.3.1's flash tests over a directory of frames, in the
+/// order of their names, and fails a sequence that doesn't pass.
+#[allow(clippy::print_stdout, reason = "the line is the command's output, for scripts to read")]
+fn flashes(args: &[String]) -> Result<Vec<String>, String> {
+    let (dir, rate) = match args {
+        [dir] => (dir, 60),
+        [dir, flag, rate] if flag == "--rate" => {
+            (dir, rate.parse().map_err(|_| format!("invalid --rate {rate:?}: expected frames a second"))?)
+        }
+        _ => return Err("flashes expects a directory of frames and an optional --rate".into()),
+    };
+    let entries = std::fs::read_dir(dir).map_err(|error| format!("{dir}: {error}"))?;
+    let mut frames = entries
+        .map(|entry| entry.map(|entry| entry.path()).map_err(|error| format!("{dir}: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    frames.retain(|path| path.extension().is_some_and(|extension| extension == "png"));
+    frames.sort();
+    let Some(first) = frames.first() else { return Err(format!("{dir} has no .png frames")) };
+    let first = read(&first.to_string_lossy())?;
+    let mut analyser =
+        FlashAnalyser::new(first.width, first.height, rate).map_err(|error| error.to_string())?;
+    for path in &frames {
+        let frame = read(&path.to_string_lossy())?;
+        analyser.push(&frame).map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    let report = analyser.report();
+    let at = |verdict: &Verdict| match verdict.rate_at.or(verdict.area_at) {
+        Some((frame, field)) => format!("{frame}@{},{},{},{}", field.x, field.y, field.width, field.height),
+        None => "-".to_owned(),
+    };
+    println!(
+        "frames={} rate={rate} size={}x{} general_rate={} general_area={:.3} general_at={} red_rate={} \
+         red_area={:.3} red_at={} wcag_2_3_1={}",
+        report.frames,
+        first.width,
+        first.height,
+        report.general.rate,
+        report.general.area,
+        at(&report.general),
+        report.red.rate,
+        report.red.area,
+        at(&report.red),
+        if report.passes() { "pass" } else { "fail" },
+    );
+    Ok(if report.passes() { Vec::new() } else { vec![format!("{dir} fails WCAG 2.3.1's flash tests")] })
 }
 
 fn read(path: &str) -> Result<Image, String> {

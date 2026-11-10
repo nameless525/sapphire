@@ -32,6 +32,9 @@ impl MenuScreen {
     pub const REMAP_LISTEN: Self = Self::named("remap_listen");
     /// What a remap shows when the press is another binding's: swap the two, or keep them as they were.
     pub const REMAP_TAKEN: Self = Self::named("remap_taken");
+    /// The photosensitivity notice (M4 A3), over the title until the player has read it. A game without one
+    /// offers none.
+    pub const NOTICE: Self = Self::named("notice");
 
     /// The screen named `name`.
     #[must_use]

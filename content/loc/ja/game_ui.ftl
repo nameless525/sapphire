@@ -66,6 +66,12 @@ graphics-dynamic = 解像度の自動調整
 graphics-saver = バッテリー節約
 graphics-back = 戻る
 
+notice-title = 光過敏性発作について
+notice-body = ごく一部の方が、強い光の点滅や模様を見て発作を起こすことがあります。このゲームの戦闘には光の点滅があります。ご本人やご家族に発作やてんかんの経験がある方は、遊ぶ前に医師に相談してください。めまい、見え方の変化、目や筋肉のけいれんを感じたら、すぐに中止してください。
+notice-reduced = フラッシュを「軽減」にすると、戦闘の点滅を暗く抑え、画面全体の点滅を一秒に三回までにします。あとで「設定」の「画面」から変えられます。
+notice-flashes = フラッシュ
+notice-continue = 続ける
+
 sound-title = サウンド
 sound-volume = 全体の音量
 sound-music = 音楽

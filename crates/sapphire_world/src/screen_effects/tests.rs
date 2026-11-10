@@ -721,3 +721,31 @@ fn sustained_layers_wait_for_their_release_and_handles_stop_and_hold() {
     stack.stop(stopped);
     assert!(stack.is_empty());
 }
+
+/// What the cue dispatcher counts as a full-screen flash (M4 A3): a preset with an inversion or a duotone, for
+/// as long as its last one lasts after its delay. Blurs, splits and lines aren't.
+#[test]
+fn a_flash_is_an_inversion_or_a_duotone_for_as_long_as_its_last() {
+    let library = EffectLibrary::default_effects();
+    let seconds = |name: &str| library.preset(library.find(name).expect(name)).expect(name).flash_seconds();
+    for quiet in
+        ["radial_blur", "chromatic_aberration", "speed_lines", "light_hit", "medium_hit", "skill_flash"]
+    {
+        assert_eq!(seconds(quiet), None, "{quiet}");
+    }
+    assert!(close(seconds("heavy_hit").expect("a flash"), 0.05));
+    assert!(close(seconds("poise_break").expect("a flash"), 0.1), "the longer of its duotone and inversion");
+    assert!(close(seconds("finish").expect("a flash"), 0.7), "to the end of its fall");
+    assert!(close(seconds("perfect_dodge").expect("a flash"), 0.75));
+
+    let invert = |delay, envelope| EffectLayer {
+        effect: ScreenEffect::Inversion(InversionEffect::default()),
+        envelope,
+        delay,
+        clock: EffectClock::Real,
+    };
+    let held = preset(&[invert(0.1, Envelope::Sustain { attack: 0.2, release: 0.3 })]);
+    assert!(close(held.flash_seconds().expect("a flash"), 0.6), "a sustained one, what's known of it");
+    let both = preset(&[invert(0.0, pulse(0.0, 0.1, 0.0)), blur(0.2, [0.5, 0.5], pulse(0.0, 2.0, 0.0))]);
+    assert!(close(both.flash_seconds().expect("a flash"), 0.1), "the blur's length isn't the flash's");
+}

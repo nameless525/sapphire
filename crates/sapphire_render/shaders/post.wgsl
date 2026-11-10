@@ -27,7 +27,8 @@
 // composite: `POST_LENS_EFFECTS` (the radial blur and chromatic aberration, reading the scene in
 // place of sharpening) and `POST_COLOR_EFFECTS` (the inversion, the duotone and speed lines over
 // the display values), each effect in them behind a branch every pixel takes alike;
-// `POST_RADIAL_TAPS` is the tier's radial blur taps.
+// `POST_RADIAL_TAPS` is the tier's radial blur taps. Reduced flashes (M4 A3) hold both kinds
+// within a swing of relative luminance, a uniform in those variants.
 
 // Mirrors `post::PostUniforms`.
 struct PostUniforms {
@@ -71,7 +72,8 @@ struct PostEffects {
     // xy: the radial blur's center (texture coordinates); z: its strength, the share of the way to
     // the center its taps reach; w: chromatic aberration's strength.
     lens: vec4<f32>,
-    // xy: chromatic aberration's center.
+    // xy: chromatic aberration's center; z: the most the effects may move a pixel's relative
+    // luminance (M4 A3), 1 for no hold.
     chromatic: vec4<f32>,
     // x: inversion's amount; y: its weight on the world; z: on characters.
     inversion: vec4<f32>,
@@ -825,22 +827,11 @@ fn effect_colors(display: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return color;
 }
 
-// The fused pass with the compositing layers (M1 P2), sharpening, the screen effects (M1 P3), or
-// any of them: as `fs_post`, with the scene through the lens effects or sharpened, the lens flare
-// added to the light and the vignette tinted before the grade, then the diffusion glow screened
-// and the gradient layers blended over the display values, and the color effects over them.
-@fragment
-fn fs_composite(in: CompositeVaryings) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(texture0));
-    var color: vec3<f32>;
-    // The lens effects replace sharpening: a streaked or split frame has nothing to sharpen.
-    if POST_LENS_EFFECTS {
-        color = lens_scene(in.position.xy, in.uv) * post.composite.x;
-    } else if POST_SHARPEN {
-        color = sharpened(in.position.xy, in.uv);
-    } else {
-        color = scene_at(in.position.xy, in.uv) * post.composite.x;
-    }
+// The display values the fused pass composites from `scene`, the exposed scene at the pixel: the
+// bloom and the lens flare added to the light and the vignette over it before the grade, then the
+// diffusion glow screened and the gradient layers blended over the display values.
+fn composited(scene: vec3<f32>, in: CompositeVaryings, size: vec2<f32>) -> vec3<f32> {
+    var color = scene;
     color += textureSampleLevel(texture1, linear_clamp, in.uv, 0.0).rgb * post.composite.y;
     if POST_LAYERS {
         // Flat across the frame: a branch every pixel takes alike.
@@ -858,10 +849,55 @@ fn fs_composite(in: CompositeVaryings) -> @location(0) vec4<f32> {
         }
         display = gradient_layers(display, in.uv);
     }
+    return display;
+}
+
+// The exposed scene at the pixel without the lens effects: sharpened, or as it is.
+fn plain_scene(position: vec2<f32>, uv: vec2<f32>) -> vec3<f32> {
+    if POST_SHARPEN {
+        return sharpened(position, uv);
+    }
+    return scene_at(position, uv) * post.composite.x;
+}
+
+// `light` held within `swing` of `plain`'s relative luminance (M4 A3): what reduced flashes keep the
+// screen effects to, under WCAG 2.3.1's general flash threshold. Past it the pixel mixes back toward
+// the frame without effects, in linear light, where luminance mixes as the colors do, so it lands on
+// the swing exactly and keeps what color the effects gave it.
+fn held_swing(light: vec3<f32>, plain: vec3<f32>, swing: f32) -> vec3<f32> {
+    let change = abs(dot(light - plain, LUMA));
+    if change <= swing {
+        return light;
+    }
+    return mix(plain, light, swing / change);
+}
+
+// The fused pass with the compositing layers (M1 P2), sharpening, the screen effects (M1 P3), or
+// any of them: as `fs_post`, with the scene through the lens effects or sharpened, then
+// `composited`, and the color effects over it. With the player's flashes reduced (M4 A3), the
+// screen effects are held to their swing against the frame without them, drawn again.
+@fragment
+fn fs_composite(in: CompositeVaryings) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(texture0));
+    var scene: vec3<f32>;
+    // The lens effects replace sharpening: a streaked or split frame has nothing to sharpen.
+    if POST_LENS_EFFECTS {
+        scene = lens_scene(in.position.xy, in.uv) * post.composite.x;
+    } else {
+        scene = plain_scene(in.position.xy, in.uv);
+    }
+    var display = composited(scene, in, size);
     if POST_COLOR_EFFECTS {
         display = effect_colors(display, in.uv);
     }
-    return vec4<f32>(srgb_to_linear(display), 1.0);
+    let light = srgb_to_linear(display);
+    // A branch every pixel takes alike, and only a variant with effects has.
+    let swing = post.effects.chromatic.z;
+    if (POST_LENS_EFFECTS || POST_COLOR_EFFECTS) && swing < 1.0 {
+        let plain = srgb_to_linear(composited(plain_scene(in.position.xy, in.uv), in, size));
+        return vec4<f32>(held_swing(light, plain, swing), 1.0);
+    }
+    return vec4<f32>(light, 1.0);
 }
 
 // The colour-vision debug view (M4 A5, `sapphire_render::color_vision`): the finished frame, the interface

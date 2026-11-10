@@ -405,7 +405,8 @@ impl GameApp {
             // Only the first show starts past its title: a reload goes back where the game was.
             show.choose(command);
         } else {
-            tracing::info!(target: LOG_TARGET, "the title is up");
+            let notice = show.offer_flash_notice();
+            tracing::info!(target: LOG_TARGET, notice, "the title is up");
         }
         Ok(())
     }

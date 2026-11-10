@@ -315,9 +315,11 @@
 //!   benches. An unknown name fails with the presets' names. The renderer prewarms the post
 //!   variants of the presets pushed (`Renderer::prewarm_post`), or in `dev` builds of every
 //!   preset, which the overlay fires, so a scene without effects builds none of theirs.
-//! - `--effect-scale <flashes>:<motion>`: the player's flashes and camera motion (M4 A2), each 0 to 1, on
-//!   every screen effect: flashes on the inversion, the duotone and speed lines, camera motion on the
-//!   radial blur and chromatic aberration (`PostEffects::scaled`). `effects-impact-frame-calmer` shows it.
+//! - `--effect-scale <flashes>:<motion>`: the player's flashes, `normal` or `reduced`, and camera motion,
+//!   0 to 1 (M4 A2, A3), on every screen effect: reduced flashes hold every effect's swing in relative
+//!   luminance under WCAG 2.3.1's flash threshold and let three full-screen flashes a second through, and
+//!   camera motion scales the radial blur and chromatic aberration (`PostEffects::scaled`).
+//!   `effects-impact-frame-calmer` shows it.
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't

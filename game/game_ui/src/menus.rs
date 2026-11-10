@@ -516,6 +516,9 @@ pub enum MenuCommand {
     DialogueChose(u8),
     /// The pause's mark (M4 F1): a playtest keeps the run's tick, to replay from, and the run goes on.
     Mark,
+    /// The photosensitivity notice was read (M4 A3). The menus keep it themselves: they mark it in the
+    /// settings and say [`Self::SettingsChanged`] the first time, so it isn't shown again.
+    FlashNoticeRead,
 }
 
 /// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate but a
@@ -1022,6 +1025,12 @@ impl GameMenus {
 
     fn act(&mut self, chosen: Chosen) {
         match chosen {
+            Chosen::Command(MenuCommand::FlashNoticeRead) => {
+                if !self.settings.flash_notice_read {
+                    self.settings.flash_notice_read = true;
+                    self.commands.push(MenuCommand::SettingsChanged);
+                }
+            }
             Chosen::Command(command) => self.commands.push(command),
             Chosen::Open(place) => self.place(place, self.shown.len()),
             Chosen::Switch(place) => {

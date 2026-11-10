@@ -252,6 +252,19 @@ impl GameShow {
         self.game.as_mut().map(Game::first_run)
     }
 
+    /// Shows the photosensitivity notice over the title, if the player hasn't read it and the game has one
+    /// (M4 A3): what a launch with a player at it does once the show stands. A run nobody's playing, a capture
+    /// or a script, doesn't. Its row marks it read in the settings, which [`Self::take_changed_settings`] then
+    /// hands over to be kept, so it shows once. Whether it opened.
+    pub fn offer_flash_notice(&mut self) -> bool {
+        let Some(menus) = &mut self.menus else { return false };
+        if menus.settings().flash_notice_read || menus.screens().place(MenuScreen::NOTICE).is_none() {
+            return false;
+        }
+        menus.open(MenuScreen::NOTICE);
+        true
+    }
+
     /// What the player chose, as a run nobody's playing chooses it (`--new-game`, `--continue`): as a menu's
     /// row would. A show with no game opens its fight for either.
     pub fn choose(&mut self, command: FlowCommand) {
@@ -699,8 +712,8 @@ impl GameShow {
                 MenuCommand::NewGame => self.new_game(),
                 MenuCommand::Continue => self.open_fight(),
                 MenuCommand::ToTitle => self.back_to_title(),
-                // The arena plays no cutscene a player may skip.
-                MenuCommand::Skip => {}
+                // The arena plays no cutscene a player may skip, and the menus keep the notice read.
+                MenuCommand::Skip | MenuCommand::FlashNoticeRead => {}
                 MenuCommand::Leave => left = true,
             }
         }
@@ -1203,6 +1216,41 @@ mod tests {
         assert!(press(&mut show, &mut clock, Scancode::ESCAPE));
     }
 
+    /// A launch with a player at it shows the photosensitivity notice over the title until it's read (M4 A3).
+    /// Focus starts on going on, which marks it read and hands the app the settings to keep, once; the notice
+    /// offers the flashes setting, and back goes on too.
+    #[test]
+    fn the_flash_notice_shows_until_it_is_read_and_offers_the_setting() {
+        let (mut show, mut clock) = show();
+        assert!(show.offer_flash_notice());
+        frame(&mut show, &mut clock);
+        assert!(is_open(&show, MenuScreen::NOTICE) && show.on_title());
+        press(&mut show, &mut clock, Scancode::RETURN);
+        frame(&mut show, &mut clock);
+        assert!(!is_open(&show, MenuScreen::NOTICE));
+        assert!(show.on_title() && is_open(&show, MenuScreen::TITLE), "the press was the notice's alone");
+        let kept = show.take_changed_settings().expect("read");
+        assert!(kept.flash_notice_read);
+        assert_eq!(kept.flashes, game_ui::menus::Flashes::Normal);
+        assert_eq!(show.take_changed_settings(), None, "once");
+        assert!(!show.offer_flash_notice(), "read, it isn't shown again");
+
+        let (mut show, mut clock) = self::show();
+        assert!(show.offer_flash_notice());
+        frame(&mut show, &mut clock);
+        press(&mut show, &mut clock, Scancode::UP);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        let chosen = show.take_changed_settings().expect("the setting stepped");
+        assert_eq!((chosen.flashes, chosen.flash_notice_read), (game_ui::menus::Flashes::Reduced, false));
+        assert!(is_open(&show, MenuScreen::NOTICE), "stepping the setting stays on the notice");
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        frame(&mut show, &mut clock);
+        assert!(!is_open(&show, MenuScreen::NOTICE) && show.on_title(), "back left the notice, not the game");
+        assert!(show.take_changed_settings().expect("read by back").flash_notice_read);
+        let fight = &show.shown.fight.show;
+        assert!(fight.effect_scale().limits_flashes(), "the setting reached the fight");
+    }
+
     #[test]
     fn a_title_that_was_never_drawn_doesnt_come_up_over_the_fight() {
         // What `--open-fight` does.
@@ -1392,7 +1440,10 @@ mod tests {
             press(&mut show, &mut clock, Scancode::DOWN);
         }
         press(&mut show, &mut clock, Scancode::RETURN);
-        let reduced = sapphire_render::EffectScale { flashes: game_ui::menus::REDUCED_FLASHES, motion: 1.0 };
+        let reduced = sapphire_render::EffectScale {
+            flash_swing: sapphire_render::EffectScale::SAFE_FLASH_SWING,
+            motion: 1.0,
+        };
         assert_eq!(show.shown.fight.show.effect_scale(), reduced);
     }
 

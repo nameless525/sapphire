@@ -200,6 +200,17 @@
                     (node: "skip", does: Command(Skip)),
                 ],
             ),
+            // The photosensitivity notice (M4 A3), which a launch with a player at it opens over the title
+            // until it's read. Going on, by its row or by back, marks it read in the settings.
+            (
+                name: "notice",
+                document: "521e00ba-31a9-42e4-9268-be74ecfcbdd6",
+                back: Some(Command(FlashNoticeRead)),
+                rows: [
+                    (node: "flashes", does: Step(Flashes)),
+                    (node: "continue", does: Command(FlashNoticeRead)),
+                ],
+            ),
         ],
     ),
 )

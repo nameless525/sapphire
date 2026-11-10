@@ -49,6 +49,7 @@ fn no_effects_draw_exactly_the_frame_from_before_effects() {
         inversion: Inversion { amount: 0.0, coverage: EffectCoverage::WORLD },
         duotone: Duotone { amount: 0.0, ..Duotone::NONE },
         speed_lines: SpeedLines { opacity: 0.0, ..SpeedLines::NONE },
+        swing: 1.0,
     };
     let inverted =
         PostEffects { inversion: Inversion { amount: 1.0, ..Inversion::NONE }, ..PostEffects::NONE };
@@ -481,4 +482,53 @@ fn effect_variants_are_built_when_prewarmed_or_on_first_use_and_draw_alike() {
     let blur = PostEffects { inversion: Inversion::NONE, ..impact };
     plain.render(PostParams { effects: blur, ..passthrough() });
     assert_eq!(plain.renderer.stats().post.first_use_builds, 0);
+}
+
+/// A pixel's relative luminance, from its 8-bit sRGB code.
+fn luminance(texel: [u8; 4]) -> f32 {
+    0.2126 * srgb_to_linear(texel[0]) + 0.7152 * srgb_to_linear(texel[1]) + 0.0722 * srgb_to_linear(texel[2])
+}
+
+/// The largest change in relative luminance from `plain` to `image` of any pixel.
+fn largest_swing(image: &[[u8; 4]], plain: &[[u8; 4]]) -> f32 {
+    image.iter().zip(plain).map(|(&a, &b)| (luminance(a) - luminance(b)).abs()).fold(0.0, f32::max)
+}
+
+/// Reduced flashes (M4 A3): an impact frame's every effect at once, blur and lines included, moves no pixel's
+/// relative luminance from the frame without them by more than its swing, past 8-bit rounding, on the plain
+/// and the compositing variants alike, and still shows. A swing of 1 draws them exactly as without one.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_held_swing_keeps_every_pixel_within_it() {
+    let size = (160, 90);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = SkyGradient {
+        zenith: Vec3::new(0.05, 0.1, 0.3),
+        horizon: Vec3::new(1.2, 1.0, 0.8),
+        ground: Vec3::new(0.02, 0.02, 0.03),
+    };
+    harness.sphere(Vec3::new(-0.5, 0.0, 0.0), 0.5, flat([1.5, 0.3, 0.2]), true);
+    harness.sphere(Vec3::new(0.8, 0.2, 0.0), 0.3, flat([0.1, 0.1, 0.1]), false);
+    let impact = PostEffects {
+        radial_blur: RadialBlur { center: Vec2::new(0.4, 0.5), strength: 0.1 },
+        chromatic_aberration: ChromaticAberration { center: Vec2::splat(0.5), strength: 0.05 },
+        inversion: Inversion { amount: 1.0, coverage: EffectCoverage::WORLD },
+        duotone: Duotone { amount: 0.6, threshold: 0.5, ..Duotone::NONE },
+        speed_lines: SpeedLines { opacity: 1.0, ..SpeedLines::NONE },
+        swing: 1.0,
+    };
+    // One 8-bit step at the top of the range, where a step is largest in linear light.
+    let rounding = 1.0 - srgb_to_linear(254);
+    for params in [passthrough(), composited()] {
+        let plain = harness.render(params);
+        let full = harness.render(PostParams { effects: impact, ..params });
+        let held = harness.render(PostParams { effects: PostEffects { swing: 0.08, ..impact }, ..params });
+        let (swung, kept) = (largest_swing(&full, &plain), largest_swing(&held, &plain));
+        eprintln!("as authored, a pixel swings {swung:.3}; held to 0.08, {kept:.3}");
+        assert!(swung > 0.5, "{swung}");
+        assert!(kept <= 0.08 + rounding, "{kept}");
+        assert!(mean_step(&held, &plain) > 2.0, "held, the effects still show");
+        let unheld = PostEffects { swing: 1.0, ..impact };
+        assert_eq!(harness.render(PostParams { effects: unheld, ..params }), full);
+    }
 }

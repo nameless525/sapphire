@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 325] {
+pub fn scenes() -> [Scene; 332] {
     [
         Scene {
             name: "turntable-start",
@@ -4989,9 +4989,9 @@ pub fn scenes() -> [Scene; 325] {
             ],
             thresholds: Thresholds::default(),
         },
-        // The player's settings, seen (M4 A2). The impact frame with flashes reduced and no camera motion: a
-        // quarter of its duotone and speed lines, and none of its radial blur or chromatic aberration, against
-        // `effects-impact-frame`.
+        // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera motion:
+        // its duotone and speed lines held within 0.08 of the frame's relative luminance, and none of its radial
+        // blur or chromatic aberration, against `effects-impact-frame`.
         Scene {
             name: "effects-impact-frame-calmer",
             args: &[
@@ -5000,7 +5000,7 @@ pub fn scenes() -> [Scene; 325] {
                 "--post-effect",
                 "impact_frame@0.03",
                 "--effect-scale",
-                "0.25:0",
+                "reduced:0",
                 "--aa",
                 "taa",
                 "--capture-frames",
@@ -5031,6 +5031,15 @@ pub fn scenes() -> [Scene; 325] {
             "--ui-subtitle",
             "small:off"
         ),
+        // The photosensitivity notice (M4 A3) at U7's aspects in both languages, and at the largest text in
+        // Japanese, its longest, where its words scroll.
+        game_scene!("game-notice-tablet-en", "notice", "1024x768", "en"),
+        game_scene!("game-notice-tablet-ja", "notice", "1024x768", "ja"),
+        game_scene!("game-notice-wide-en", "notice", "1280x720", "en"),
+        game_scene!("game-notice-wide-ja", "notice", "1280x720", "ja"),
+        game_scene!("game-notice-ultrawide-en", "notice", "1680x720", "en"),
+        game_scene!("game-notice-ultrawide-ja", "notice", "1680x720", "ja"),
+        game_scene!("game-notice-larger-text-wide-ja", "notice", "1280x720", "ja", "--ui-text", "larger"),
     ]
 }
 

@@ -22,7 +22,8 @@ pub const fn flow_command(command: MenuCommand) -> Option<FlowCommand> {
         MenuCommand::SettingsChanged
         | MenuCommand::DialogueNext
         | MenuCommand::DialogueChose(_)
-        | MenuCommand::Mark => {
+        | MenuCommand::Mark
+        | MenuCommand::FlashNoticeRead => {
             return None;
         }
     })

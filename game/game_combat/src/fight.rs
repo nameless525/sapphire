@@ -1079,7 +1079,7 @@ impl FightShow {
         budget: VfxBudget,
         effects: Option<sapphire_vfx::EffectLibrary>,
     ) -> Result<(), String> {
-        let (show, variants) = scene.with_screen_effects(|_, presets| {
+        let (mut show, variants) = scene.with_screen_effects(|_, presets| {
             let show = match effects {
                 Some(effects) => CueShow::with_effects(effects, budget, presets),
                 None => CueShow::new(budget, presets),
@@ -1089,6 +1089,7 @@ impl FightShow {
             Ok::<_, String>((show, variants))
         })?;
         scene.will_push_effects(variants);
+        show.limit_flashes(self.effect_scale.limits_flashes());
         self.cues = Some(show);
         Ok(())
     }
@@ -1154,11 +1155,15 @@ impl FightShow {
         }
     }
 
-    /// How much of the fight's screen effects shows from the next frame (M4 A2): the player's flashes and
+    /// How much of the fight's screen effects shows from the next frame (M4 A2, A3): the player's flashes and
     /// camera motion, through [`PostEffects::scaled`](sapphire_render::PostEffects::scaled), after a
-    /// timeline's post. [`EffectScale::FULL`], where it starts, draws them as authored.
+    /// timeline's post, and with flashes held, at most three full-screen flashes a second from the cues.
+    /// [`EffectScale::FULL`], where it starts, draws them as authored.
     pub fn set_effect_scale(&mut self, scale: EffectScale) {
         self.effect_scale = scale;
+        if let Some(cues) = &mut self.cues {
+            cues.limit_flashes(scale.limits_flashes());
+        }
     }
 
     /// The screen effects' scale, as [`Self::set_effect_scale`] last said.

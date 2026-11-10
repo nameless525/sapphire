@@ -8,6 +8,10 @@
 //! its graph, the first among them; the rest are prepared and recorded and lost, and the captured frame always
 //! draws. That's for a fight beside the renderer on a software GPU: its picture's history isn't the full run's.
 //!
+//! With `SAPPHIRE_CAPTURE_SEQUENCE=<dir>` set, every one of those frames is read back and written to `<dir>`
+//! as `frame-NNNNN.png`, the captured one last: a sequence for `sapphire_testkit flashes` to judge (M4 A3).
+//! `--capture-step 1` makes it the fight at 60 fps; frames `--draw-every` loses aren't written.
+//!
 //! Next to the PNG it writes `<name>.adapter.txt` (`backend=`, `adapter=`, `device_type=`,
 //! `driver=` lines) naming the GPU that rendered it, so golden-image tests
 //! (`cargo xtask golden`) compare against the right backend's reference.
@@ -41,6 +45,14 @@ const OVERLAY_WARMUP_FRAMES: u32 = 8;
 
 /// A same-executable reference path for validating capture warmup dead-pass elimination.
 const HISTORY_ONLY_ENV: &str = "SAPPHIRE_CAPTURE_HISTORY_ONLY";
+
+/// The directory a capture writes each of its frames to, for a flash analysis (M4 A3).
+const SEQUENCE_ENV: &str = "SAPPHIRE_CAPTURE_SEQUENCE";
+
+/// Where frame `index` of a sequence goes in `dir`: names that sort in the frames' order.
+fn sequence_frame(dir: &Path, index: u32) -> std::path::PathBuf {
+    dir.join(format!("frame-{index:05}.png"))
+}
 
 fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppInitError> {
     match value.and_then(std::ffi::OsStr::to_str) {
@@ -154,6 +166,10 @@ pub(crate) fn run(
     height: u32,
 ) -> Result<(), AppInitError> {
     let history_only = history_only_requested(std::env::var_os(HISTORY_ONLY_ENV).as_deref())?;
+    let sequence = std::env::var_os(SEQUENCE_ENV).map(std::path::PathBuf::from);
+    if let Some(dir) = &sequence {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut history_only_frames = 0_u32;
     // Frames whose graph ran, the captured one among them.
     let mut drawn = 1_u32;
@@ -172,7 +188,12 @@ pub(crate) fn run(
         for frame in 0..earlier {
             stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
             drawn += u32::from(!stage.lose_frames);
-            let drawn = stage.render_capture_warmup(&view, history_only);
+            let drawn = match &sequence {
+                Some(dir) if !stage.lose_frames => render(stage, width, height)
+                    .and_then(|pixels| write_png(&sequence_frame(dir, frame), width, height, &pixels))
+                    .map(|()| false),
+                _ => stage.render_capture_warmup(&view, history_only),
+            };
             stage.lose_frames = false;
             history_only_frames += u32::from(drawn?);
             stage.scene.end_frame();
@@ -189,6 +210,9 @@ pub(crate) fn run(
     stage.show.fight.check().map_err(AppInitError::msg)?;
     let pixels = render(stage, width, height)?;
     write_capture(&stage.gpu, path, (width, height), &pixels)?;
+    if let Some(dir) = &sequence {
+        write_png(&sequence_frame(dir, earlier), width, height, &pixels)?;
+    }
     stage.show.fight.finish().map_err(AppInitError::msg)?;
     // What the load built counts as prewarmed (`StageDesc::warm_load`): a first use here is what a frame built.
     let builds = stage.renderer.stats().pipelines;

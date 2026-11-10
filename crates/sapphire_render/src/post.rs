@@ -140,6 +140,12 @@
 //!   bilinear; against the resolved frame no pixel falls on the wrong side of a character's edge,
 //!   and only edge pixels are partial, as with MSAA (spec §5.12's P3 note). So temporal AA's
 //!   resolve carries nothing new. Cut-ins' hard-edged character cut-outs (M2) may need it.
+//! - **A held swing (M4 A3)** ([`PostEffects::swing`]): with the player's flashes reduced, every
+//!   pixel of a variant with effects stays within the swing of the relative luminance it would have
+//!   without them, mixed back toward that in linear light past it. So no effect, nor all of them
+//!   together, makes a flash by WCAG 2.3.1 at any rate. The frame without effects is composited a
+//!   second time in the same pass, under a branch every pixel takes alike, so a held frame costs
+//!   about a plain composite more, and only while an effect plays.
 //!
 //! **Variants, chosen by their cost on Mobile-Low's settings.** Two more constants pick the fused
 //! pass's variant: `POST_LENS_EFFECTS` and `POST_COLOR_EFFECTS`. That makes 12 composite

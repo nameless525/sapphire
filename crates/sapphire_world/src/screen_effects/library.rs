@@ -9,7 +9,8 @@ use sapphire_render::{PostEffects, PostVariants};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
-use super::layer::EffectLayer;
+use super::envelope::Envelope;
+use super::layer::{EffectKind, EffectLayer};
 
 /// The shipped presets (see [`EffectLibrary::default_effects`]).
 const DEFAULT_EFFECTS: &str = include_str!("../../default_screen_effects.ron");
@@ -36,6 +37,26 @@ impl EffectPreset {
             layer.effect.blend_over(&mut effects, 1.0, 0);
             variants | PostVariants::of_effects(&effects)
         })
+    }
+
+    /// How long a push of it changes the whole frame's light, in its layers' seconds, if it does (M4 A3): what
+    /// a full-screen flash is, an inversion or a duotone, to the last one's end after its delay. A sustained
+    /// one counts its attack and release, the most of it that's known at a push.
+    #[must_use]
+    pub fn flash_seconds(&self) -> Option<f32> {
+        let flashes = self
+            .layers
+            .iter()
+            .filter(|layer| matches!(layer.effect.kind(), EffectKind::Inversion | EffectKind::Duotone));
+        flashes
+            .map(|layer| {
+                let length = match layer.envelope {
+                    Envelope::Sustain { attack, release } => attack + release,
+                    envelope => envelope.end(None),
+                };
+                layer.delay + length
+            })
+            .reduce(f32::max)
     }
 }
 

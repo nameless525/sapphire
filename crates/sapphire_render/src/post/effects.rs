@@ -95,7 +95,8 @@ pub(crate) struct GpuEffects {
     /// xy: the radial blur's center; z: its strength (0: none); w: chromatic aberration's
     /// strength (0: none).
     pub lens: [f32; 4],
-    /// xy: chromatic aberration's center.
+    /// xy: chromatic aberration's center; z: the most the effects may move a pixel's relative luminance
+    /// (M4 A3), 1 for no hold.
     pub chromatic: [f32; 4],
     /// x: inversion's amount; y: its weight on the world; z: on characters.
     pub inversion: [f32; 4],
@@ -174,7 +175,7 @@ impl GpuEffects {
         };
         let gpu = Self {
             lens: [blur_center.x, blur_center.y, blur_strength, aberration_strength],
-            chromatic: [aberration_center.x, aberration_center.y, 0.0, 0.0],
+            chromatic: [aberration_center.x, aberration_center.y, unit(effects.swing), 0.0],
             inversion: [
                 if drawn_inversion { inversion_amount } else { 0.0 },
                 inversion_coverage[0],
@@ -226,6 +227,7 @@ mod tests {
             (gpu.lens[2], gpu.lens[3], gpu.inversion[0], gpu.duotone[0], gpu.lines[0]),
             (0.0, 0.0, 0.0, 0.0, 0.0)
         );
+        assert_eq!(gpu.chromatic[2], 1.0, "and holds nothing");
         // An amount without anywhere to show, or lines without width, draw nothing either.
         let hidden = PostEffects {
             inversion: Inversion { amount: 1.0, coverage: EffectCoverage { world: 0.0, characters: 0.0 } },
@@ -250,6 +252,7 @@ mod tests {
                 coverage: EffectCoverage::WORLD,
             },
             speed_lines: SpeedLines { opacity: 2.0, count: 5000, spread: f32::NAN, ..SpeedLines::NONE },
+            swing: f32::NAN,
         };
         let (gpu, drawn) = GpuEffects::new(&effects);
         assert_eq!(drawn.count(), 5);
@@ -257,6 +260,7 @@ mod tests {
         assert_eq!(gpu.flags[1], 1);
         assert_eq!(gpu.lens, [0.5, 0.5, 1.0, 0.25], "a non-finite center is the middle");
         assert_eq!(&gpu.chromatic[..2], &[2.0, -1.0], "far off screen is far enough");
+        assert_eq!(gpu.chromatic[2], 0.0, "a swing that isn't a number holds them all");
         assert_eq!(gpu.duotone_dark[..3], [0.0; 3], "a non-finite color is black");
         let (start, slope) = (gpu.duotone[3], gpu.duotone_dark[3]);
         assert!((start - 0.3995).abs() < 1e-6 && (slope - 1000.0).abs() < 0.01, "the hardest cut");

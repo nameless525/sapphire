@@ -1579,8 +1579,9 @@ fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
     );
 }
 
-/// The player's flashes and camera motion (M4 A2) reach the fight's screen effects after anything else that
-/// sets them, and at full they're left as they were, bit for bit.
+/// The player's flashes and camera motion (M4 A2, A3) reach the fight's screen effects after anything else that
+/// sets them, and at full they're left as they were, bit for bit. Reduced flashes hold their swing and leave
+/// what's authored.
 #[test]
 fn the_players_effect_scale_reaches_the_screen_effects() {
     use sapphire_render::{EffectScale, PostParams};
@@ -1595,9 +1596,10 @@ fn the_players_effect_scale_reaches_the_screen_effects() {
     let mut adjusted = post;
     show.adjust_post(&mut adjusted);
     assert_eq!(adjusted.effects, authored, "as authored at full");
-    show.set_effect_scale(EffectScale { flashes: 0.25, motion: 0.0 });
+    let reduced = EffectScale { flash_swing: EffectScale::SAFE_FLASH_SWING, motion: 0.0 };
+    show.set_effect_scale(reduced);
     show.adjust_post(&mut adjusted);
-    assert_eq!(adjusted.effects, authored.scaled(EffectScale { flashes: 0.25, motion: 0.0 }));
-    assert_eq!(adjusted.effects.inversion.amount, 0.25);
+    assert_eq!(adjusted.effects, authored.scaled(reduced));
+    assert_eq!((adjusted.effects.inversion.amount, adjusted.effects.swing), (1.0, 0.08));
     assert_eq!(adjusted.effects.radial_blur.strength, 0.0);
 }

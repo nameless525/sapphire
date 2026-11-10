@@ -321,8 +321,8 @@ pub(crate) struct Options {
     /// (M1 P3), each playing from its start, or held that many seconds into it (for captures and
     /// benches). The scene checks the names against its presets.
     pub post_effects: Vec<(String, Option<f32>)>,
-    /// `--effect-scale <flashes>:<motion>`: the player's flashes and camera motion on the fight's screen
-    /// effects (M4 A2, `FightShow::set_effect_scale`), each 0 to 1. None draws them as authored.
+    /// `--effect-scale <flashes>:<motion>`: the player's flashes (`normal` or `reduced`) and camera motion (0 to
+    /// 1) on the fight's screen effects (M4 A2, A3; `FightShow::set_effect_scale`). None draws them as authored.
     pub effect_scale: Option<EffectScale>,
     /// `--vfx arc|hit|dust|duel`: plays effects at fixed ticks (M2 E2).
     pub vfx: Option<VfxShow>,
@@ -1688,18 +1688,21 @@ fn parse_view(raw: &str) -> Result<(f32, f32), String> {
     Ok((yaw, pitch))
 }
 
-/// `<preset>` or `<preset>@<seconds>`.
-/// `--effect-scale`'s `<flashes>:<motion>`, each 0 to 1.
+/// `--effect-scale`'s `<flashes>:<motion>`: flashes `normal` or `reduced`, as the player's setting has them
+/// (M4 A3), and motion 0 to 1.
 fn parse_effect_scale(raw: &str) -> Result<EffectScale, String> {
-    let invalid = || format!("--effect-scale expects <flashes>:<motion>, each 0 to 1, got {raw}");
+    let invalid = || format!("--effect-scale expects <normal|reduced>:<motion from 0 to 1>, got {raw}");
     let (flashes, motion) = raw.split_once(':').ok_or_else(invalid)?;
-    let share = |value: &str| value.parse::<f32>().ok().filter(|share| (0.0..=1.0).contains(share));
-    Ok(EffectScale {
-        flashes: share(flashes).ok_or_else(invalid)?,
-        motion: share(motion).ok_or_else(invalid)?,
-    })
+    let flash_swing = match flashes {
+        "normal" => EffectScale::FULL.flash_swing,
+        "reduced" => EffectScale::SAFE_FLASH_SWING,
+        _ => return Err(invalid()),
+    };
+    let motion = motion.parse::<f32>().ok().filter(|share| (0.0..=1.0).contains(share));
+    Ok(EffectScale { flash_swing, motion: motion.ok_or_else(invalid)? })
 }
 
+/// `<preset>` or `<preset>@<seconds>`.
 fn parse_post_effect(raw: &str) -> Result<(String, Option<f32>), String> {
     let invalid = || format!("--post-effect expects PRESET or PRESET@SECONDS, got {raw:?}");
     let (name, at) = match raw.split_once('@') {
@@ -3040,9 +3043,12 @@ mod tests {
     /// The player's settings as a capture takes them (M4 A2).
     #[test]
     fn the_players_effect_scale_text_and_subtitles_parse() {
-        let (options, _) = parse(&["--effect-scale", "0.25:0"]).unwrap();
-        assert_eq!(options.effect_scale, Some(EffectScale { flashes: 0.25, motion: 0.0 }));
-        for wrong in ["0.25", "2:0", "a:b", "0.5:-1"] {
+        let (options, _) = parse(&["--effect-scale", "reduced:0"]).unwrap();
+        let reduced = EffectScale { flash_swing: EffectScale::SAFE_FLASH_SWING, motion: 0.0 };
+        assert_eq!(options.effect_scale, Some(reduced));
+        let (options, _) = parse(&["--effect-scale", "normal:0.5"]).unwrap();
+        assert_eq!(options.effect_scale, Some(EffectScale { flash_swing: 1.0, motion: 0.5 }));
+        for wrong in ["reduced", "0.25:0", "a:b", "normal:-1", "reduced:2"] {
             assert!(parse(&["--effect-scale", wrong]).is_err(), "{wrong}");
         }
         let (options, _) =

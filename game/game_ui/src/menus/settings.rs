@@ -106,17 +106,14 @@ impl TextSize {
     }
 }
 
-/// How much of the screen's flashes show with them [`Flashes::Reduced`], of what's authored: a stand-in
-/// until A3 measures WCAG 2.3.1's thresholds and caps each effect by them.
-pub const REDUCED_FLASHES: f32 = 0.25;
-
 impl Flashes {
-    /// How much of an impact frame's inversion and duotone and of speed lines shows, 0 to 1.
+    /// The most the screen effects may move a pixel's relative luminance (M4 A3): as authored, or held under
+    /// WCAG 2.3.1's general flash threshold ([`EffectScale::SAFE_FLASH_SWING`]).
     #[must_use]
-    pub const fn share(self) -> f32 {
+    pub const fn swing(self) -> f32 {
         match self {
             Self::Normal => 1.0,
-            Self::Reduced => REDUCED_FLASHES,
+            Self::Reduced => EffectScale::SAFE_FLASH_SWING,
         }
     }
 }
@@ -360,6 +357,10 @@ pub struct PlayerSettings {
     /// The bindings the player remapped, each by its name in the game's document and only where it differs
     /// from the document (`sapphire_controls::set`).
     pub remapped: Vec<Remapped>,
+    /// Whether the photosensitivity notice has been read (M4 A3): until it has, a launch with a player at it
+    /// shows it over the title. The notice marks it ([`super::MenuCommand::FlashNoticeRead`]), and no step
+    /// takes it back.
+    pub flash_notice_read: bool,
 }
 
 impl Versioned for PlayerSettings {
@@ -571,6 +572,7 @@ impl Default for PlayerSettings {
             dynamic_resolution: false,
             battery_saver: false,
             remapped: Vec::new(),
+            flash_notice_read: false,
         }
     }
 }
@@ -635,11 +637,12 @@ impl PlayerSettings {
         Self::share(self.sound)
     }
 
-    /// How much of combat's screen effects shows (M4 A2): the flashes setting's share of the impact frames
-    /// and speed lines, and camera motion's of the zoom blur and colour punch.
+    /// How much of combat's screen effects shows (M4 A2, A3): the flashes setting's swing, which post holds
+    /// every effect to and which limits full-screen flashes to three a second, and camera motion's share of
+    /// the zoom blur and colour punch.
     #[must_use]
     pub fn effect_scale(&self) -> EffectScale {
-        EffectScale { flashes: self.flashes.share(), motion: Self::share(self.camera_motion) }
+        EffectScale { flash_swing: self.flashes.swing(), motion: Self::share(self.camera_motion) }
     }
 
     /// How much of each shake and rumble plays, 0 to 1.
@@ -730,7 +733,10 @@ mod tests {
             shake: 50,
             ..PlayerSettings::default()
         };
-        assert_eq!(calmer.effect_scale(), EffectScale { flashes: REDUCED_FLASHES, motion: 0.0 });
+        assert_eq!(
+            calmer.effect_scale(),
+            EffectScale { flash_swing: EffectScale::SAFE_FLASH_SWING, motion: 0.0 }
+        );
         assert_eq!(calmer.shake_share(), 0.5);
     }
 
@@ -798,6 +804,7 @@ mod tests {
                 again.frame_cap != start.frame_cap,
                 again.dynamic_resolution != start.dynamic_resolution,
                 again.battery_saver != start.battery_saver,
+                again.flash_notice_read != start.flash_notice_read,
             ];
             assert_eq!(changed.iter().filter(|changed| **changed).count(), 1, "{setting:?}");
         }

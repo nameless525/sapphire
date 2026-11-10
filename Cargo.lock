@@ -4792,7 +4792,12 @@ name = "sapphire_soundgen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bevy_reflect",
  "sapphire_assets",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
  "vorbis_rs",
 ]
 

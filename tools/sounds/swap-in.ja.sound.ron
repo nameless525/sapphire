@@ -1,0 +1,20 @@
+// `swap-in` in Japanese (M3 A1): no words, only a voice's shape, in even morae with a falling accent.
+// Spoken by `content/audio/generated/voice/ja/swap-in.cue.ron`.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/voice/ja/swap-in.ogg",
+        sound: Line((
+            speaker_hz: 230.0,
+            syllables: [
+                (vowel: O, seconds: 0.11, pitch: 1.0, burst: false),
+                (vowel: A, seconds: 0.11, pitch: 1.2, burst: true),
+                (vowel: I, seconds: 0.11, pitch: 1.0, burst: true),
+                (vowel: E, seconds: 0.11, pitch: 0.9, burst: true),
+                (vowel: U, seconds: 0.15, pitch: 0.84, burst: false),
+            ],
+            seed: 0x0B0E_5EED_0000_0001,
+        )),
+    ),
+)

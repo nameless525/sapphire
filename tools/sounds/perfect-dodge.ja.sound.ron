@@ -1,0 +1,21 @@
+// `perfect-dodge` in Japanese (M3 A1): no words, only a voice's shape, in even morae, high and then
+// falling after the accent. Spoken by `content/audio/generated/voice/ja/perfect-dodge.cue.ron`.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/voice/ja/perfect-dodge.ogg",
+        sound: Line((
+            speaker_hz: 230.0,
+            syllables: [
+                (vowel: I, seconds: 0.11, pitch: 1.0, burst: true),
+                (vowel: A, seconds: 0.11, pitch: 1.18, burst: true),
+                (vowel: U, seconds: 0.11, pitch: 1.18, burst: true),
+                (vowel: O, seconds: 0.11, pitch: 0.95, burst: true),
+                (vowel: A, seconds: 0.11, pitch: 0.9, burst: false),
+                (vowel: E, seconds: 0.14, pitch: 0.84, burst: true),
+            ],
+            seed: 0x0B0E_5EED_0000_0001,
+        )),
+    ),
+)

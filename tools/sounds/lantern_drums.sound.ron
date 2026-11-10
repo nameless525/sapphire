@@ -1,0 +1,21 @@
+// The ward's score's drums (M3 A1): kick on one and three, snare on two and four, hats on the eighths,
+// and a pickup kick into the loop's top.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/music/lantern_drums.ogg",
+        sound: Stem((
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            bars: 4,
+            part: Drums((
+                kick: [0.0, 2.0],
+                fill: [3.5],
+                snare: [1.0, 3.0],
+                hats_per_beat: 2,
+                seed: 0x5AFF_1BE5_0D15_C0DE,
+            )),
+        )),
+    ),
+)

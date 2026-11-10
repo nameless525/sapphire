@@ -126,7 +126,7 @@ From the bottom up, on M2's ([m3-handoff.md](m3-handoff.md)). Spec §5.19 and §
   - the sandbox's `--ignored` replay lane;
   - `game_app`'s lanes `reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_the_ward` and `wins_the_ward`, each `cargo test -p game_app --features dev --test <name> -- --ignored`;
   - the whole walk's recorder, `cargo test -p game_flow --test ward_walk -- --ignored`, with `SAPPHIRE_WALK_OUT=<file>` to write the replay again when the fight changes under it.
-- **Look-dev for a new figure:** `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]`. **Generators:** `sapphire_pipeline gen-figures --specs tools/figures --out content` for figures from specs, `tools/motion/` for key poses in plain Python, and `tools/sapphire_soundgen` for placeholder sound.
+- **Look-dev for a new figure:** `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]`. **Generators:** `sapphire_pipeline gen-figures --specs tools/figures --out content` for figures from specs, `tools/motion/` for key poses in plain Python, and `sapphire_soundgen --specs tools/sounds --out content` for placeholder sounds from specs.
 
 ## How to add
 
@@ -134,7 +134,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs`, a placeholder sound, and a screen showing a value no model holds. The first is a test list, which a commit of documents alone can do without: a golden is a check someone chooses to add. A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
+**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs` and a screen showing a value no model holds. The first is a test list, which a commit of documents alone can do without: a golden is a check someone chooses to add. The second is code by design. A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -266,7 +266,8 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 1. **A score:** a `Score` document with `tempo_bpm`, `beats_per_bar` and `bars`; `stems`, each with its `.ogg` by ID; `phases`, each naming the stems it plays; and `fade_beats`, `volume_db` and `duck_db`. Its sidecar's importer is `Score(())`. The phases a fight chooses are `waiting`, `running` and `cleared`, and the flow's `music` names those for the title, a defeat and a win. A boss's named phase plays in place of `running` once its health is past it, if the score has a phase of that name (Z5a): the Knell Colossus's `tolling` is the worked example. A phase change fades only the stems it changes, from the next bar line.
 2. **Which score:** `music:` in [default_cues.ron](../crates/sapphire_cues/default_cues.ron), by ID. That's a data edit, compiled in.
 3. **Voice lines:** each line is a `Cue` document on the `Voice` bus with its `.ogg`. Each language's `VoiceLines` document lists `(key, cue)`, and `voices:` in `default_cues.ron` names each language's document. A cue-table row speaks a line with `line: Some("<key>")` when the simulation publishes that row's cue. The voice language follows the player's language setting.
-4. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred"). New placeholder sounds are rows in `tools/sapphire_soundgen`; a recorded `.ogg` needs none.
+4. **A placeholder sound,** until a recording replaces it, is a spec, `tools/sounds/<name>.sound.ron`, which takes no Rust: a stem of the score's tempo, beats and bars playing one of the generator's instruments (a pad's chords, a pulse's notes, a drum pattern, a bell tune or a toll), or a line's syllables at a speaker's pitch (`tools/sapphire_soundgen`'s docs). `cargo run -p sapphire_soundgen` from the workspace root writes each missing `.ogg` to the `path` its spec names; add its row to the `SOURCE.md` beside it, which the generator's tests hold, and name it from the score or the line's cue. A recorded `.ogg` needs no spec.
+5. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred").
 
 ## Rules the reviews made
 
@@ -297,7 +298,6 @@ M3's first pillar counts each of these as a bug. The first is a test list: a com
 
 - **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
-- **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 
 **Fixed in M3:**
 

@@ -1,0 +1,15 @@
+// The ward's score's bass pulse (M3 A1): each bar's root two octaves under the pad's chord, plucked on
+// the eighths, the off-beats softer.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/music/lantern_pulse.ogg",
+        sound: Stem((
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            bars: 4,
+            part: Pulse((notes: [33, 29, 36, 31], per_beat: 2)),
+        )),
+    ),
+)

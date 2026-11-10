@@ -1,0 +1,22 @@
+// The ward's score's bells (M3 A1): a tune on A minor's pentatonic, a bell on each beat with a note.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/music/lantern_bells.ogg",
+        sound: Stem((
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            bars: 4,
+            // A rest is `None`: sixteen beats, a row a bar.
+            part: Bells((
+                tune: [
+                    Some(76), None, Some(79), Some(81),
+                    Some(77), None, Some(76), Some(72),
+                    Some(79), None, Some(76), Some(74),
+                    Some(74), Some(76), None, Some(69),
+                ],
+            )),
+        )),
+    ),
+)

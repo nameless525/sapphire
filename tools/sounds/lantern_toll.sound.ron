@@ -1,0 +1,15 @@
+// The ward's score's toll (M3 Z5a): a great bell struck on each bar's root, an octave under the pad's,
+// ringing on into the next bar, for the Knell Colossus's `tolling` phase.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/music/lantern_toll.ogg",
+        sound: Stem((
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            bars: 4,
+            part: Toll((notes: [45, 41, 48, 43])),
+        )),
+    ),
+)

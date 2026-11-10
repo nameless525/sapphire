@@ -1,0 +1,17 @@
+// The ward's score's pad (M3 A1): held chords over A minor's i, VI, III, VII, four bars of 4/4 at 120
+// beats a minute, a stem of `content/audio/generated/music/lantern.score.ron`, whose tempo, beats and
+// bars these are. `sapphire_soundgen --specs tools/sounds --out content` writes it.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/music/lantern_pad.ogg",
+        sound: Stem((
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            bars: 4,
+            // A minor, F, C, G.
+            part: Pad((chords: [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62]])),
+        )),
+    ),
+)

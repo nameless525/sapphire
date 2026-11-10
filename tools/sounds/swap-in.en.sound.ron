@@ -1,0 +1,17 @@
+// `swap-in` in English (M3 A1): no words, only a voice's shape, stress-timed. Spoken by
+// `content/audio/generated/voice/en/swap-in.cue.ron`.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/voice/en/swap-in.ogg",
+        sound: Line((
+            speaker_hz: 230.0,
+            syllables: [
+                (vowel: A, seconds: 0.24, pitch: 1.15, burst: true),
+                (vowel: I, seconds: 0.30, pitch: 0.92, burst: false),
+            ],
+            seed: 0x0B0E_5EED_0000_0001,
+        )),
+    ),
+)

@@ -2,20 +2,23 @@
 
 The fight's placeholder score and voice lines (M3 A1). Not third-party: every sound here is the
 project's own work, synthesized by [`tools/sapphire_soundgen`](../../../tools/sapphire_soundgen) from
-code alone, with no recordings, samples, downloads or text-to-speech voices. The voices are formant
-babble in each language's syllable shapes, with no words. Licensed with the rest of the workspace.
+a spec each in [`tools/sounds/`](../../../tools/sounds) (M4 R4), with no recordings, samples, downloads
+or text-to-speech voices. The voices are formant babble in each language's syllable shapes, with no
+words. Licensed with the rest of the workspace.
 
 | | |
 |---|---|
 | **Author** | The Sapphire project |
-| **Made by** | `cargo run -p sapphire_soundgen -- content`, from the workspace root |
+| **Made by** | `cargo run -p sapphire_soundgen`, from the workspace root: `tools/sounds/*.sound.ron` into `content/` |
 | **Made on** | macOS on arm64, 2026-11-09 (UTC) |
 | **Format** | Ogg Vorbis, mono, 24 kHz, quality 0.3 (`vorbis_rs`, a fixed stream serial for each file) |
 | **License** | The workspace's |
 
-The generator is a pure function of constants: its noise is a seeded xorshift and each stream's serial
+Each file is a pure function of its spec: its noise is a seeded xorshift and each stream's serial
 is fixed, so a run writes the same bytes as the last on the same machine. Another machine's floating
-point may differ in the last bits, so compare the hashes before taking a regenerated file as unchanged.
+point may differ in the last bits, so the generator writes only missing files unless given `--force`,
+and its tests hold these to their specs byte for byte on macOS on arm64. A new sound needs its row
+here: the tests check that this table names every file a spec makes.
 
 ## What is here
 

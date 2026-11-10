@@ -12,7 +12,7 @@ Agents ran everything that needs no window and no phone, and "Rehearsal" near th
 
 | Exit test | Who answers it | Needs | Where it stands |
 |---|---|---|---|
-| 1. A zone | CI, then this Mac | Nothing | Replays of the ward's walk hold on all three desktop OSes. The boss at its end lands with C2 part 2, and the walk through the game's flow with G1 |
+| 1. A zone | CI, then this Mac | Nothing | Replays of the ward's walk hold on all three desktop OSes. The boss at its end lands with C2 part 2. The whole walk through the game's flow, title to the boss's defeat, is `ward-whole-walk` (G1c) |
 | 2. A boss with no Rust | CI | Nothing | Lands with C2 part 2 (`tests/bosses_are_content.rs`) |
 | 3. One cutscene | CI and this Mac | A person who reads Japanese, for the subtitles' wording | A watch and a skip reach one trail. The HUD draws the subtitles in the chosen language, with goldens at three aspects in two languages (M3 Q4) |
 | 4. HUD and menus | CI and this Mac | A person who reads Japanese | Walked by pad, keyboard and touch, with goldens at three aspects in two languages. The Japanese is machine-quality and owed a reader |
@@ -43,15 +43,20 @@ The test: one zone with three encounters, walked from its start to its boss. Rep
 - The zone is `content/zones/lantern_ward` (M3 C1): the Gate Square, then a lane each way to the Market Court, the Blossom Garden and the Temple Court with its terrace. Each room has spawners and a threshold trigger, and the encounters are documents (M3 B2) reached from the zone's document.
 - `walk-the-ward` walks the ward's tour end to end and back to the court through its four checkpoints (M3 B4). `zone-trip` goes between zones through their exits (M3 W4). `walk-the-ground`, `from-the-platform` and `walk-the-square` walk the proving ground and the square, and `nav-chase` and `nav-patrol` hold navigation.
 - `tools/sapphire_pipeline/tests/zone_ward.rs` holds that a path and a real body get from `player_start` to every spawner, and that the documents reach each other.
-- **Lands with C2 part 2:** the boss at the walk's end, and a replay that reaches it. **Lands with G1:** the walk as the game's flow (title, new game, the ward, its checkpoints, the boss, a return to title), and the replays recorded through it.
+- **Lands with C2 part 2:** the boss at the walk's end, and a replay that reaches it. **Lands with G1:** the walk as the game's flow (title, new game, the ward, its checkpoints, the boss, a return to title).
+- **The whole walk (M3 G1c):** `ward-whole-walk` is the game's flow from a new game at the title along the ward's tour, through the market's, the garden's and the court's fights, the court's gate cutscene watched and the guide's conversation, to the terrace's Knell Colossus beaten and the flow's victory. `game/game_flow/tests/ward_walk.rs` recorded it from a player who reads the simulation before each step (a walker along the tour who fights whoever's nearest, learns each swing's wind-up once and dodges it from then on); nothing in the fight was tuned for it. `the_whole_walk_replays_to_the_win` plays the file through the same flow, headless, in every OS's tests, and `game_app`'s `wins_the_ward` plays it on the stage (exit test 7). It found the ward's run held 12 actors for 15, so the boss was refused and the terrace cleared with nobody in it: the scenario holds 15 now, and the game refuses a flow whose scenario can't hold its cast and every fighter its encounters bring.
 
 ```bash
 cargo xtask replay                                  # every replay, the step's allocations, mean and longest step
 cargo xtask replay --replay walk-the-ward           # one
+cargo test -p game_flow --test ward_walk            # the whole walk through the game's flow, to the win
+cargo test -p game_flow --test ward_walk -- --ignored --nocapture   # records it again, as below
 cargo test -p sapphire_pipeline --test zone_ward    # the ward's paths and documents
 cargo xtask content
 cargo test -p sapphire_sandbox --features dev --locked --test replays -- --ignored --test-threads=1   # beside the renderer
 ```
+
+When the fight changes under the whole walk, its file stops reaching the win (the replay plays what was pressed, not what the player saw): record it again with `SAPPHIRE_WALK_OUT=<repo>/tests/replays/ward-whole-walk.sreplay` on the ignored test, which writes over it, then `cargo xtask replay --update --replay ward-whole-walk`, and take x86-64's values from CI as for any moved replay. The test prints the run's length, what hit the player, and the health left; if the reading player can't win any more, that line is what loses.
 
 `cargo xtask replay` ends `N replays reach their checksums on aarch64`, a line each with ticks, final checksum, allocations in the step and the step's times. A failure names the first tick that differs, and a step that allocated fails too. Script hooks run inside the step and allocate nothing either (`arena-scripted`, `dialogue-flag`), so the suite holds the stricter rule.
 
@@ -244,6 +249,7 @@ The test: a cooked pack lists its pipelines, a load compiles them, and a replay 
 - The sandbox's lane `walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named` walks the ward's tour on every tier's settings and reads `first_use=0 rebuilt=0`. It then leaves a family out of the inventory and sees it named.
 - The same file's zone-trip lane reads no misses across the zone changes.
 - `game_app`'s `reaches_the_fight` goes from the title through a fight's first seconds with no first-use build. `zone_trip` and `opens_the_guide` hold the same through a trip and a conversation.
+- `game_app`'s `wins_the_ward` plays the whole walk (`ward-whole-walk`, exit test 1) through the game's flow on the stage, from the title's new game to the boss's defeat, once on Desktop-Low's settings and once on Mobile-Low's. Every step draws a frame unless `SAPPHIRE_WALK_STEPS_PER_FRAME` says otherwise (CI's does); it reads `first_use=0`, no step allocates, and the stage's run reaches the file's checksums.
 
 ```bash
 cargo xtask content
@@ -251,13 +257,14 @@ cargo test -p sapphire_sandbox --features dev --locked --test replays -- --ignor
 cargo test -p game_app --features dev --locked --test reaches_the_fight -- --ignored
 cargo test -p game_app --features dev --locked --test zone_trip -- --ignored
 cargo test -p game_app --features dev --locked --test opens_the_guide -- --ignored
+cargo test -p game_app --features dev --locked --test wins_the_ward -- --ignored
 ```
 
 A walk by hand: `SAPPHIRE_CONTENT_DIR=target/content/desktop target/release/sapphire_sandbox --bench 240 --zone lantern_ward --zone-walk tour --tier mobile-low --size 640x360`. Read the `zone walk` row's `first_use=` and `rebuilt=`.
 
-**CI's** `App tests (vulkan-lavapipe)` runs all of these, and it's CI's slowest job (about 75 minutes, with a 90-minute limit).
+**CI's** `App tests (vulkan-lavapipe)` runs all of these, and it's CI's slowest job (about 75 minutes before `wins_the_ward`, which raised its limit from 90 minutes to 110). There `wins_the_ward` steps every step but draws one frame in eight (`SAPPHIRE_WALK_STEPS_PER_FRAME=8`), as lavapipe can't draw the walk's frames twice in the job's time; this Mac draws every one.
 
-**Only a device:** a phone's driver compiles at its own pace. Cold, the load blocks 6–7 s on an M5, and the simulator built for 5.7 s and the emulator for 4.0 s on first launch (M3 S2). **Lands with G1:** the replay of the whole walk through the game's flow.
+**Only a device:** a phone's driver compiles at its own pace. Cold, the load blocks 6–7 s on an M5, and the simulator built for 5.7 s and the emulator for 4.0 s on first launch (M3 S2).
 
 ## Exit test 8: budgets and durability
 
@@ -336,7 +343,7 @@ All three replays reached the committed aarch64 checksums, so the Mac, the Simul
 **Noticed, not fixed:**
 
 - No replay played on Android. Z2b gave Android the offscreen entry, above.
-- `walk-the-ward` plays in no app, since its scenario isn't one a stage stands (exit test 1). The walk through the game's flow lands with G1.
+- `walk-the-ward` plays in no app, since its scenario isn't one a stage stands (exit test 1). The whole walk through the game's flow, `ward-whole-walk`, does: `game_app`'s `wins_the_ward`.
 - On the emulator, audio warns that real-time scheduling was refused. Sound wasn't checked.
 - `--capture-ticks` without a replay's end counts the steps a trip holds: a capture at 600 on `zone-trip` stops at the replay's tick 120. That's by design (the capture's steps are frames), and worth knowing before choosing a tick.
 
@@ -402,7 +409,7 @@ The rehearsal ran on Q2b's head, before the chain, G1 and Z1. The final run is o
 - **Exit test 3:** the cutscene from the court's threshold in the ward's walk, not at a fixed tick. Its subtitles on screen in both languages, by the `game-ward-gate-*` goldens (M3 Q4), with CI's lavapipe and WARP.
 - **Exit test 4:** title, new game, continue, the pause and its return to title in a real run, and the title's goldens (`game-title-*`, with CI's lavapipe and WARP).
 - **Exit test 5:** the whole rehearsal again on the final head, on a fresh private Simulator and the emulator. The replays this time on both, the walk G1 records and the boss's among them. Add G1's flow to it: `--game new-game` to a capture on both.
-- **Exit test 7:** the app lanes, with G1's replay of the whole walk through the flow reading 0 first-use builds on Desktop-Low and Mobile-Low.
+- **Exit test 7:** the app lanes, `wins_the_ward` among them: the whole walk through the flow reading 0 first-use builds on Desktop-Low and Mobile-Low.
 - **Exit test 8:** Z1's bench on the ward's walk on Desktop-Low and Mobile-Low, §3.2's script and streaming rows, memory across the walk and a transition's time, into spec §3.5's table. Note the load average beside each number. Run it after the chain and G1, since both change what a step runs.
 - **The record:** the table at the top, each test's "Where it stands", and an "As built" line for Z2 in [m3-plan.md](m3-plan.md).
 

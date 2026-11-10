@@ -23,7 +23,7 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::content::{self, Content, UploadWatcher};
-use crate::faces::MaterialOverrides;
+use crate::material_overrides::MaterialOverrides;
 use crate::scene::Scene;
 use crate::show::SceneShow;
 

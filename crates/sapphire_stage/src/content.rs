@@ -117,14 +117,20 @@ use sapphire_timeline::Timeline;
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, MAX_HELD_CLIPS};
 use crate::environment;
-use crate::faces::{self, MaterialOverrides};
+#[cfg(feature = "samples")]
+use crate::faces;
+#[cfg(feature = "samples")]
 use crate::foliage::{self, FoliageMeshes};
+#[cfg(feature = "samples")]
 use crate::layers;
 use crate::lookdev::{self, Plant, TownMeshes};
+use crate::material_overrides::MaterialOverrides;
+#[cfg(feature = "samples")]
 use crate::outlines;
 use crate::rims::{self, RimRigMeshes};
 use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
+#[cfg(feature = "samples")]
 use crate::swatches::{self, SWATCHES};
 use sapphire_loc::StringTable;
 use sapphire_world::streaming::{StreamSettings, Streamer};
@@ -715,20 +721,27 @@ pub struct Content {
     character_id: AssetId,
     character: Handle<Mesh>,
     /// The shader swatches' materials, once asked for (`--swatches`).
+    #[cfg(feature = "samples")]
     swatches: Vec<Handle<Material>>,
     /// The material layer samples' materials, once asked for (`--materials`).
+    #[cfg(feature = "samples")]
     layer_samples: Vec<Handle<Material>>,
     /// The face test head, once asked for (`--faces`).
+    #[cfg(feature = "samples")]
     face_head: Option<Handle<Mesh>>,
     /// The courtyard, once asked for (`--environment`).
+    #[cfg(feature = "samples")]
     courtyard: Option<Handle<Mesh>>,
-    /// The courtyard's fog cards, once asked for (`--environment` with fog).
+    /// The fog cards, once asked for: the town's, and the courtyard's (`--environment` with fog).
     fog_cards: Vec<Handle<Mesh>>,
     /// The foliage samples, once asked for (`--foliage`).
+    #[cfg(feature = "samples")]
     foliage: Vec<Handle<Mesh>>,
     /// The hard-edged outline sample, once asked for (`--hard-edges`).
+    #[cfg(feature = "samples")]
     hard_edges: Option<Handle<Mesh>>,
     /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
+    #[cfg(feature = "samples")]
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
     /// The look-dev town's plants and mountains, once asked for (`--look-dev`). Its cells are the zone's.
     town: Vec<Handle<Mesh>>,
@@ -917,13 +930,20 @@ impl Content {
             body_tuning: *sapphire_anim::BodyTuning::shipped(),
             character_id,
             character,
+            #[cfg(feature = "samples")]
             swatches: Vec::new(),
+            #[cfg(feature = "samples")]
             layer_samples: Vec::new(),
+            #[cfg(feature = "samples")]
             face_head: None,
+            #[cfg(feature = "samples")]
             courtyard: None,
             fog_cards: Vec::new(),
+            #[cfg(feature = "samples")]
             foliage: Vec::new(),
+            #[cfg(feature = "samples")]
             hard_edges: None,
+            #[cfg(feature = "samples")]
             probes: None,
             town: Vec::new(),
             left_out_of_zones: None,
@@ -1077,6 +1097,7 @@ impl Content {
     /// Loads the shader swatches' materials, with the textures they name, until they are on
     /// `renderer`, and returns their handles, top to bottom: the load screen of `--swatches`.
     /// They stay loaded from then on.
+    #[cfg(feature = "samples")]
     pub(crate) fn swatch_materials(
         &mut self,
         renderer: &mut Renderer,
@@ -1091,6 +1112,7 @@ impl Content {
     /// Loads the material layer samples' materials (M1 C7), with the textures they name, until
     /// they are on `renderer`, and returns their handles in [`layers::MATERIALS`] order: the load
     /// screen of `--materials`. They stay loaded from then on.
+    #[cfg(feature = "samples")]
     pub(crate) fn layer_materials(
         &mut self,
         renderer: &mut Renderer,
@@ -1105,6 +1127,7 @@ impl Content {
     /// Loads the materials `ids`, with the textures they name, until they are on `renderer`,
     /// keeping their handles in `kept`, and returns the renderer's handles in order. `what` names
     /// them in the error.
+    #[cfg(feature = "samples")]
     fn materials<const N: usize>(
         &mut self,
         ids: [AssetId; N],
@@ -1133,6 +1156,7 @@ impl Content {
 
     /// Loads until the face test head is on `renderer`, with its materials and the maps they
     /// name, and returns its mesh: the load screen of `--faces`. It stays loaded from then on.
+    #[cfg(feature = "samples")]
     pub fn face_head(
         &mut self,
         renderer: &mut Renderer,
@@ -1153,6 +1177,7 @@ impl Content {
     /// Loads until the courtyard is on `renderer`, with its environment materials and the maps they
     /// name, and returns its mesh: the load screen of `--environment`. It stays loaded from then
     /// on.
+    #[cfg(feature = "samples")]
     pub fn courtyard(
         &mut self,
         renderer: &mut Renderer,
@@ -1179,9 +1204,9 @@ impl Content {
             .handle)
     }
 
-    /// Loads until the courtyard's fog cards are on `renderer`, with their fog card materials and
-    /// the map they read, and returns their meshes in [`environment::FOG_CARDS`] order. They stay
-    /// loaded from then on.
+    /// Loads until the fog cards are on `renderer`, the town's and the courtyard's, with their fog card
+    /// materials and the map they read, and returns their meshes in [`environment::FOG_CARDS`] order. They
+    /// stay loaded from then on.
     pub fn fog_cards(
         &mut self,
         renderer: &mut Renderer,
@@ -1211,6 +1236,7 @@ impl Content {
     /// Loads until the foliage samples are on `renderer`, with their foliage materials and the
     /// cards' maps, and returns their meshes: the load screen of `--foliage`. They stay loaded
     /// from then on.
+    #[cfg(feature = "samples")]
     pub fn foliage(
         &mut self,
         renderer: &mut Renderer,
@@ -1242,6 +1268,7 @@ impl Content {
     /// Loads until the arcade and the courtyard's probe grid are on `renderer`, the arcade with
     /// its materials, and returns the arcade's mesh: the load screen of `--probes`. Both stay
     /// loaded from then on; the grid's key hours are [`Self::probe_hours`].
+    #[cfg(feature = "samples")]
     pub fn probes(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<MeshHandle, AppInitError> {
         // Asking again tries what failed before, as the character does.
         let arcade =
@@ -1270,6 +1297,7 @@ impl Content {
 
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,
     /// and returns its mesh: the load screen of `--hard-edges`. It stays loaded from then on.
+    #[cfg(feature = "samples")]
     pub fn hard_edges(
         &mut self,
         renderer: &mut Renderer,

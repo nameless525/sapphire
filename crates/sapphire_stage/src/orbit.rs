@@ -90,6 +90,7 @@ impl OrbitCamera {
 
     /// The same camera `factor` times farther from its target, at once and as its zoom's limit
     /// too: a wider shot of the same subject.
+    #[cfg(feature = "samples")]
     pub(crate) fn pulled_back(mut self, factor: f32) -> Self {
         self.goal_distance *= factor;
         self.max_distance *= factor;
@@ -104,6 +105,7 @@ impl OrbitCamera {
 
     /// The camera's default angles, as a rotation turning +Z toward it: what a model facing +Z
     /// turns by to face the camera, upright.
+    #[cfg(feature = "samples")]
     pub(crate) fn facing_rotation(&self) -> Quat {
         Quat::from_rotation_y(self.goal_yaw) * Quat::from_rotation_x(-self.goal_pitch)
     }
@@ -118,6 +120,7 @@ impl OrbitCamera {
     }
 
     /// Moves straight to `pitch` radians, keeping the yaw: a starting view.
+    #[cfg(feature = "samples")]
     pub(crate) fn set_pitch(&mut self, pitch: f32) {
         self.look_from(self.goal_yaw, pitch);
     }

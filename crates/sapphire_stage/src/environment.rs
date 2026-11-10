@@ -34,10 +34,12 @@
 use sapphire_assets::AssetId;
 use sapphire_math::{Mat4, Quat, Vec3};
 
+#[cfg(feature = "samples")]
 use crate::orbit::OrbitCamera;
 
 /// The courtyard, by its sidecar's ID (`content/samples/environment/courtyard.glb.meta`, the
 /// pipeline's `samples::environment::COURTYARD_ID`).
+#[cfg(feature = "samples")]
 pub(crate) const COURTYARD: AssetId = AssetId::from_text("14ad5875-ec27-4866-bb2e-501408f4e1ad");
 
 /// The fog cards' meshes, by their sidecars' IDs (`content/samples/environment/*.glb.meta`): the
@@ -61,6 +63,7 @@ pub(crate) struct CardPlace {
 
 /// The courtyard's fog cards: mist sheets from 30 m out to the foot of the hills, and haze
 /// beyond the wall and among the far pillars, their lower edges a little into the ground.
+#[cfg(feature = "samples")]
 const CARDS: [CardPlace; 7] = [
     CardPlace { mesh: MIST, center: [-8.0, 3.5, -30.0], size: [34.0, 5.0], yaw: 0.35 },
     CardPlace { mesh: MIST, center: [-20.0, 1.5, -36.0], size: [20.0, 4.0], yaw: 0.3 },
@@ -72,6 +75,7 @@ const CARDS: [CardPlace; 7] = [
 ];
 
 /// The courtyard's fog cards: each one's mesh, an index into [`FOG_CARDS`], and its transform.
+#[cfg(feature = "samples")]
 pub(crate) fn fog_cards() -> impl Iterator<Item = (usize, Mat4)> {
     place_cards(&CARDS)
 }
@@ -92,24 +96,33 @@ pub(crate) fn place_cards(cards: &'static [CardPlace]) -> impl Iterator<Item = (
 
 /// The arcade (`content/samples/environment/arcade.glb.meta`, the pipeline's
 /// `samples::environment::ARCADE_ID`).
+#[cfg(feature = "samples")]
 pub(crate) const ARCADE: AssetId = AssetId::from_text("29f2acee-efb7-4abb-8df6-f9b80a877df8");
 
 /// The courtyard's ambient probe grid (`content/samples/environment/courtyard.probes.ron.meta`,
 /// the pipeline's `samples::environment::PROBES_ID`).
+#[cfg(feature = "samples")]
 pub(crate) const PROBES: AssetId = AssetId::from_text("2b0e5d95-2b11-4042-8435-7de3da07ba18");
 
 /// How much farther than the character's framing the camera stands.
+#[cfg(feature = "samples")]
 const PULL_BACK: f32 = 1.45;
 /// The camera's starting angles in radians: the framing's yaw, a lower pitch.
+#[cfg(feature = "samples")]
 const YAW: f32 = 0.35;
+#[cfg(feature = "samples")]
 const PITCH: f32 = 0.1;
 
 /// The arcade camera's angles in radians (−48° and 3°) and vertical field of view (20°).
+#[cfg(feature = "samples")]
 const ARCADE_YAW: f32 = -0.837_758;
+#[cfg(feature = "samples")]
 const ARCADE_PITCH: f32 = 0.052_359_88;
+#[cfg(feature = "samples")]
 const ARCADE_FOV: f32 = 0.349_065_8;
 
 /// The camera for a character whose object-space bounds are `bounds`, in the courtyard.
+#[cfg(feature = "samples")]
 pub(crate) fn camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
     let mut camera = OrbitCamera::framing(bounds).pulled_back(PULL_BACK);
     camera.look_from(YAW, PITCH);
@@ -118,6 +131,7 @@ pub(crate) fn camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
 
 /// The courtyard's camera turned toward the arcade (`--probes`), its lens narrowed with the
 /// character's framing kept.
+#[cfg(feature = "samples")]
 pub(crate) fn arcade_camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
     let mut camera = camera(bounds);
     camera.look_from(ARCADE_YAW, ARCADE_PITCH);
@@ -125,7 +139,7 @@ pub(crate) fn arcade_camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
     camera
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "samples"))]
 mod tests {
     use sapphire_math::Vec3;
 

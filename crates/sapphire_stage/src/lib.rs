@@ -58,7 +58,11 @@
 //!   [`Content::load_graph_of`] keys a graph by a [`content::GraphKey`] the game names. A recolor is an
 //!   [`content::UploadWatcher`].
 //!
-//! Half the crate's public surface is what the sandbox's scene flags build, which a game never names.
+//! The sandbox's sample scenes, which a game never names, build only with the `samples` feature: the
+//! swatches, the material, garment and face rigs, the courtyard with its plants and arcade, the outline scenes,
+//! demo lights and debug draw's demo. The sandbox turns it on; a game leaves it off, and what it names is what's
+//! left. The studio and the rim rig build either way: what they make of the character rides its upload, so a
+//! new version replaces them in place, and they'd need an upload path of their own to leave.
 
 // These docs are read with `--document-private-items`, as CI renders them: a module an app reaches into keeps
 // its links to what stands behind it.
@@ -69,17 +73,24 @@ pub mod animate;
 pub mod audio;
 pub mod content;
 pub mod cvars;
+#[cfg(feature = "samples")]
 pub mod debug_shapes;
 pub mod environment;
 mod extract;
+#[cfg(feature = "samples")]
 pub mod faces;
+#[cfg(feature = "samples")]
 pub mod foliage;
 mod frame;
+#[cfg(feature = "samples")]
 pub mod garments;
 pub mod ik;
+#[cfg(feature = "samples")]
 pub mod layers;
 pub mod lookdev;
+mod material_overrides;
 pub mod orbit;
+#[cfg(feature = "samples")]
 mod outlines;
 pub mod pose;
 mod readback;
@@ -89,6 +100,7 @@ mod show;
 pub mod showcase;
 pub mod skinned;
 pub mod studio;
+#[cfg(feature = "samples")]
 pub mod swatches;
 pub mod turntable;
 pub mod vfx;
@@ -99,6 +111,7 @@ pub use frame::{
     FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame, gpu_failure,
     headless_gpu,
 };
+pub use material_overrides::MaterialOverrides;
 pub use readback::Readback;
 pub use scene::Scene;
 pub use show::{ContentChanges, SceneShow};

@@ -54,6 +54,10 @@ serde.workspace = true
 [features]
 # Development builds: the hooks hot reload and live link reach a stage by. An app's `dev` forwards it.
 dev = ["dep:sapphire_livelink"]
+# The sample scenes the sandbox's flags build, which a game never names: the swatches, the material,
+# garment and face rigs, the courtyard, its plants and arcade, the outline scenes, demo lights and debug
+# draw's demo. Off unless an app asks for them.
+samples = []
 
 # A caller outside the crate, on the platform's real loop, which must own the process's main thread.
 [[test]]

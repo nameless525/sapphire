@@ -46,7 +46,8 @@ sapphire_crash.workspace = true
 # `--ui-dialogue` (M3 Q2b): a cooked conversation walked onto the dialogue panel.
 sapphire_dialogue.workspace = true
 # The scene, content and the stage's frame, which this app fills from its flags (M3 S1).
-sapphire_stage.workspace = true
+# Every scene its flags build, the sample scenes among them, which a game never names.
+sapphire_stage = { workspace = true, features = ["samples"] }
 # `--display-text` (M3 U8): shaping, the glyph pages and display faces' fields.
 sapphire_text.workspace = true
 # `--replay` and `--record`: the simulation beside the renderer (M2 D2).

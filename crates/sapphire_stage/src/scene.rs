@@ -103,10 +103,11 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
-    LocalLight, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers, ViewData,
-    Wind,
+    CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
+    MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers, ViewData, Wind,
 };
+#[cfg(feature = "samples")]
+use sapphire_render::{LightKind, LocalLight};
 use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_vfx::VfxBudget;
 use sapphire_world::fade::ProximityFade;
@@ -122,22 +123,29 @@ use crate::animate::{ClipPlayer, Evaluation, SpringView};
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::content::GraphKey;
+#[cfg(feature = "samples")]
 use crate::debug_shapes::DebugDrawDemo;
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
+#[cfg(feature = "samples")]
 use crate::faces::{self, FaceLayout, FaceRig};
+#[cfg(feature = "samples")]
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
+#[cfg(feature = "samples")]
 use crate::garments;
 use crate::ik::{IkControls, IkDriver, IkGround, IkLook, IkOptions};
+#[cfg(feature = "samples")]
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
+#[cfg(feature = "samples")]
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 use crate::show::{ContentChanges, SceneShow};
 use crate::showcase::{self, InsetShot, Showcased};
 use crate::skinned::{self, Sway};
 use crate::studio::{self, Piece, StudioLayout, StudioMeshes, Subject};
+#[cfg(feature = "samples")]
 use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
 use crate::vfx::{VfxPlayer, VfxShow};
@@ -151,6 +159,7 @@ const HITSTOP_TICKS: u16 = 8;
 /// don't choose a time are unchanged.
 pub const DEFAULT_TIME_OF_DAY: f32 = 10.0;
 /// The radius of a face rig head's body: a sphere around the head.
+#[cfg(feature = "samples")]
 const HEAD_BODY_RADIUS: f32 = 0.16;
 
 /// The characters the light rig lights: instances drawn with a [`CharacterLightRig`], and the
@@ -188,8 +197,12 @@ type GraphPlayers = QueryState<(
 )>;
 
 /// The face rig's heads, each a character lit from its own angles (see [`crate::faces`]).
+#[cfg(feature = "samples")]
 type FaceHeads =
     Query<'static, 'static, (Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
+/// No face rig without the `samples` feature.
+#[cfg(not(feature = "samples"))]
+type FaceHeads = ();
 
 /// What a frame's packet starts from, borrowed together in place, as [`ScreenEffects`] says why.
 type FrameStart = SystemState<(
@@ -369,34 +382,45 @@ pub struct Scene {
     /// The skinned stalk, with `--skinned`.
     stalk: Option<Entity>,
     /// The shader swatches, with `--swatches`.
+    #[cfg(feature = "samples")]
     swatches: Option<[Entity; SWATCHES]>,
     /// The material layer samples, with `--materials`.
+    #[cfg(feature = "samples")]
     layer_samples: Option<[Entity; SAMPLES]>,
     /// The garment samples, with `--two-sided`.
+    #[cfg(feature = "samples")]
     garments: Option<[Entity; garments::SAMPLES]>,
     /// The face rig's heads, with `--faces`, and their layout.
+    #[cfg(feature = "samples")]
     faces: Vec<Entity>,
+    #[cfg(feature = "samples")]
     face_layout: FaceLayout,
     /// The rim rig's figures and backdrop panels, with `--rim-rig`.
     rim_figures: Vec<Entity>,
     rim_backdrop: Vec<(Entity, Panel)>,
     /// The courtyard, with `--environment`.
+    #[cfg(feature = "samples")]
     courtyard: Option<Entity>,
     /// The courtyard's fog cards, with `--environment` and fog, each with its mesh's index in
     /// [`environment::FOG_CARDS`].
     fog_cards: Vec<(Entity, usize)>,
     /// The plants, with `--foliage`, and the view it asked for.
+    #[cfg(feature = "samples")]
     foliage: Vec<(Entity, Plant)>,
+    #[cfg(feature = "samples")]
     foliage_view: Option<FoliageView>,
     /// The air foliage moves in: calm unless `--foliage` or `--wind` set it.
     wind: Wind,
     /// The arcade, with `--probes`.
+    #[cfg(feature = "samples")]
     arcade: Option<Entity>,
     /// The hours the renderer's probe grid was baked at (`--probes`); empty without one.
     probe_hours: Vec<f32>,
     /// The outline row, with `--outline-row`.
+    #[cfg(feature = "samples")]
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
+    #[cfg(feature = "samples")]
     hard_edges: Option<Entity>,
     /// The studio's pieces, with `--stage`.
     studio: Vec<(Entity, Piece)>,
@@ -480,6 +504,7 @@ pub struct Scene {
     /// Merges every thread's debug draws into each frame's packet (M2 T1).
     debug_draw: Collector,
     /// `--debug-draw`'s draws.
+    #[cfg(feature = "samples")]
     debug_draw_demo: Option<DebugDrawDemo>,
     /// The player's sharpening instead of the cvar's (`--sharpening`).
     sharpening: Option<f32>,
@@ -544,21 +569,32 @@ impl Scene {
             ecs,
             character,
             stalk,
+            #[cfg(feature = "samples")]
             swatches: None,
+            #[cfg(feature = "samples")]
             layer_samples: None,
+            #[cfg(feature = "samples")]
             garments: None,
+            #[cfg(feature = "samples")]
             faces: Vec::new(),
+            #[cfg(feature = "samples")]
             face_layout: FaceLayout::default(),
             rim_figures: Vec::new(),
             rim_backdrop: Vec::new(),
+            #[cfg(feature = "samples")]
             courtyard: None,
             fog_cards: Vec::new(),
+            #[cfg(feature = "samples")]
             foliage: Vec::new(),
+            #[cfg(feature = "samples")]
             foliage_view: None,
             wind: Wind::default(),
+            #[cfg(feature = "samples")]
             arcade: None,
             probe_hours: Vec::new(),
+            #[cfg(feature = "samples")]
             outline_row: None,
+            #[cfg(feature = "samples")]
             hard_edges: None,
             studio: Vec::new(),
             studio_layout: None,
@@ -599,6 +635,7 @@ impl Scene {
             fog: true,
             plain_post: false,
             debug_draw: Collector::new(),
+            #[cfg(feature = "samples")]
             debug_draw_demo: None,
             sharpening: None,
             fade: Fade::Off,
@@ -619,6 +656,7 @@ impl Scene {
     /// fall where the sun leaves shadow: a warm lantern beside its head on the right, a cyan
     /// light behind its left arm, and a narrow pink spot from above onto the floor in front of
     /// it. The golden scene `turntable-lights` shows them.
+    #[cfg(feature = "samples")]
     pub fn spawn_demo_lights(&mut self) {
         let [min, max] = self.bounds.map(Vec3::from);
         let height = (max.y - min.y).max(0.1);
@@ -814,6 +852,7 @@ impl Scene {
 
     /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
     /// `meshes`, top to bottom. They never move, so they are extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_swatches(&mut self, meshes: [MeshHandle; SWATCHES]) {
         let bounds = self.bounds;
         let world = self.ecs.world_mut();
@@ -826,6 +865,7 @@ impl Scene {
     }
 
     /// Sets the meshes the swatches draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_swatch_meshes(&mut self, meshes: [MeshHandle; SWATCHES]) {
         debug_assert!(self.swatches.is_some(), "no swatches were spawned");
         for (entity, mesh) in self.swatches.into_iter().flatten().zip(meshes) {
@@ -836,6 +876,7 @@ impl Scene {
     /// Places the material layer samples (`--materials`, M1 C7) on the character's right,
     /// drawing `meshes` in [`layers::MATERIALS`] order. They never move, so they are extracted
     /// once.
+    #[cfg(feature = "samples")]
     pub fn spawn_layer_samples(&mut self, meshes: [MeshHandle; SAMPLES]) {
         let bounds = self.bounds;
         let world = self.ecs.world_mut();
@@ -848,6 +889,7 @@ impl Scene {
     }
 
     /// Sets the meshes the material layer samples draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_layer_sample_meshes(&mut self, meshes: [MeshHandle; SAMPLES]) {
         debug_assert!(self.layer_samples.is_some(), "no material samples were spawned");
         for (entity, mesh) in self.layer_samples.into_iter().flatten().zip(meshes) {
@@ -857,6 +899,7 @@ impl Scene {
 
     /// Places the garment samples (`--two-sided`, M1 C8) on the character's left, drawing
     /// `meshes` in [`garments::SAMPLES`] order. They never move, so they are extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_garments(&mut self, meshes: [MeshHandle; garments::SAMPLES]) {
         let bounds = self.bounds;
         let world = self.ecs.world_mut();
@@ -869,6 +912,7 @@ impl Scene {
     }
 
     /// Sets the meshes the garment samples draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_garment_meshes(&mut self, meshes: [MeshHandle; garments::SAMPLES]) {
         debug_assert!(self.garments.is_some(), "no garment samples were spawned");
         for (entity, mesh) in self.garments.into_iter().flatten().zip(meshes) {
@@ -880,6 +924,7 @@ impl Scene {
     /// drawing `mesh` posed by their rigs' lids and gaze (M1 C6), and frames it with the camera
     /// instead of the character. The heads never move, so they and their poses are extracted
     /// once.
+    #[cfg(feature = "samples")]
     pub fn spawn_face_rig(&mut self, mesh: MeshHandle, layout: FaceLayout) {
         self.extract_poses();
         let camera = faces::camera(self.bounds, layout);
@@ -950,19 +995,16 @@ impl Scene {
     fn place_studio(&mut self, meshes: StudioMeshes) {
         let Some((layout, toward_light)) = self.studio_layout else { return };
         let floor = self.bounds[0][1];
-        let subject = match self.faces.is_empty() {
+        let subject = match self.face_rig_center() {
             // Every head's shadow from far enough to stay out of the rig's view.
-            false => {
-                let (center, half_height) = faces::rig_center(self.bounds, self.face_layout);
-                Subject {
-                    base: Vec3::new(center.x, floor, center.z),
-                    shade_height: center.y + half_height + 0.1,
-                    pillar_distance: 4.5,
-                    pillar_width: 0.3,
-                }
-            }
+            Some((center, half_height)) => Subject {
+                base: Vec3::new(center.x, floor, center.z),
+                shade_height: center.y + half_height + 0.1,
+                pillar_distance: 4.5,
+                pillar_width: 0.3,
+            },
             // From the feet to the chest, so the shadow's edge crosses the body.
-            true => Subject {
+            None => Subject {
                 base: Vec3::new(0.0, floor, 0.0),
                 shade_height: self.figure.feet.y + 0.65 * (self.figure.head.y - self.figure.feet.y),
                 pillar_distance: 2.2,
@@ -980,6 +1022,19 @@ impl Scene {
         }
     }
 
+    /// Where the face rig stands and half its height (`--faces`), if it has heads: what a studio stands
+    /// round instead of the character.
+    #[cfg(feature = "samples")]
+    fn face_rig_center(&self) -> Option<(Vec3, f32)> {
+        (!self.faces.is_empty()).then(|| faces::rig_center(self.bounds, self.face_layout))
+    }
+
+    /// No face rig without the `samples` feature.
+    #[cfg(not(feature = "samples"))]
+    fn face_rig_center(&self) -> Option<(Vec3, f32)> {
+        None
+    }
+
     /// Sets the meshes the studio draws again, the character's figure among them, its pieces standing
     /// where they say: after GPU device loss, and for a new version of the character.
     pub fn set_studio_meshes(&mut self, meshes: StudioMeshes) {
@@ -988,6 +1043,7 @@ impl Scene {
     }
 
     /// Sets the mesh the face rig's heads draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_face_mesh(&mut self, mesh: MeshHandle) {
         debug_assert!(!self.faces.is_empty(), "no face rig was spawned");
         for &head in &self.faces {
@@ -997,6 +1053,7 @@ impl Scene {
 
     /// Places the courtyard (`--environment`), drawing `mesh`, around the character, and frames the
     /// character from farther back to show it. It never moves, so it is extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_environment(&mut self, mesh: MeshHandle) {
         let camera = environment::camera(self.bounds);
         let world = self.ecs.world_mut();
@@ -1005,6 +1062,7 @@ impl Scene {
     }
 
     /// Sets the mesh the courtyard draws again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_courtyard_mesh(&mut self, mesh: MeshHandle) {
         debug_assert!(self.courtyard.is_some(), "no courtyard was spawned");
         if let Some(courtyard) = self.courtyard {
@@ -1014,6 +1072,7 @@ impl Scene {
 
     /// Places the courtyard's fog cards (M1 W3), drawing `meshes` (in
     /// [`environment::FOG_CARDS`] order). They never move, so they are extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_fog_cards(&mut self, meshes: [MeshHandle; environment::FOG_CARDS.len()]) {
         let world = self.ecs.world_mut();
         self.fog_cards = environment::fog_cards()
@@ -1022,6 +1081,7 @@ impl Scene {
     }
 
     /// Sets the meshes the fog cards draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_fog_card_meshes(&mut self, meshes: [MeshHandle; environment::FOG_CARDS.len()]) {
         debug_assert!(!self.fog_cards.is_empty(), "no fog cards were placed");
         for &(card, mesh) in &self.fog_cards {
@@ -1032,6 +1092,7 @@ impl Scene {
     /// Plants the foliage samples (`--foliage`) in the courtyard, drawing `meshes`, for `view`,
     /// which [`Self::frame_foliage`] frames. They never move but for the wind, so they are
     /// extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_foliage(&mut self, view: FoliageView, meshes: FoliageMeshes) {
         let world = self.ecs.world_mut();
         for (plant, place) in foliage::placements() {
@@ -1043,6 +1104,7 @@ impl Scene {
 
     /// Points the camera at the plants as their view asks, the backlit view toward the key light
     /// at the scene's hour; nothing without foliage. Call after the hour is set.
+    #[cfg(feature = "samples")]
     pub fn frame_foliage(&mut self) {
         let Some(view) = self.foliage_view else { return };
         let mut packet = FramePacket::default();
@@ -1052,6 +1114,7 @@ impl Scene {
     }
 
     /// Sets the meshes the plants draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_foliage_meshes(&mut self, meshes: FoliageMeshes) {
         for &(entity, plant) in &self.foliage {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.get(plant)));
@@ -1066,6 +1129,7 @@ impl Scene {
     /// Places the courtyard's arcade (`--probes`), drawing `mesh`, where its probe grid was baked
     /// with it, turns the camera to it, and takes the grid's key `hours`. It never moves, so it is
     /// extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_arcade(&mut self, mesh: MeshHandle, hours: &[f32]) {
         let camera = environment::arcade_camera(self.bounds);
         let world = self.ecs.world_mut();
@@ -1075,6 +1139,7 @@ impl Scene {
     }
 
     /// Sets the mesh the arcade draws again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_arcade_mesh(&mut self, mesh: MeshHandle) {
         if let Some(arcade) = self.arcade {
             self.ecs.world_mut().entity_mut(arcade).insert(RenderMesh(mesh));
@@ -1108,7 +1173,7 @@ impl Scene {
         }
         if let Some((meshes, bounds)) = content.take_new_studio() {
             // A face rig stands where the bounds it was placed by put it, and the studio goes round that.
-            if self.faces.is_empty() {
+            if self.face_rig_center().is_none() {
                 self.bounds = bounds;
             }
             self.set_studio_meshes(meshes);
@@ -1825,6 +1890,7 @@ impl Scene {
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
+    #[cfg(feature = "samples")]
     pub fn spawn_outline_row(&mut self, mesh: MeshHandle) {
         let places = outlines::row(self.bounds);
         let world = self.ecs.world_mut();
@@ -1835,6 +1901,7 @@ impl Scene {
     }
 
     /// Sets the mesh the outline row draws again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_outline_row_mesh(&mut self, mesh: MeshHandle) {
         for entity in self.outline_row.into_iter().flatten() {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
@@ -1843,6 +1910,7 @@ impl Scene {
 
     /// Places the hard-edged outline sample (`--hard-edges`) well beside the character, drawing
     /// `mesh`, and frames it with the camera instead of the character.
+    #[cfg(feature = "samples")]
     pub fn spawn_hard_edges(&mut self, mesh: MeshHandle) {
         let world = self.ecs.world_mut();
         world.insert_resource(outlines::hard_edges_camera(self.bounds));
@@ -1851,6 +1919,7 @@ impl Scene {
     }
 
     /// Sets the mesh the hard-edged sample draws again: after GPU device loss.
+    #[cfg(feature = "samples")]
     pub fn set_hard_edges_mesh(&mut self, mesh: MeshHandle) {
         if let Some(entity) = self.hard_edges {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
@@ -1888,6 +1957,7 @@ impl Scene {
         debug_draw::begin_step();
         self.ecs.fixed_step();
         self.step_zone_walk();
+        #[cfg(feature = "samples")]
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_step();
         }
@@ -1916,6 +1986,7 @@ impl Scene {
     }
 
     /// Turns debug draw on and draws `demo` from now on (`--debug-draw`).
+    #[cfg(feature = "samples")]
     pub fn set_debug_draw_demo(&mut self, demo: DebugDrawDemo) {
         debug_draw::set_enabled(true);
         self.debug_draw_demo = Some(demo);
@@ -1947,12 +2018,16 @@ impl Scene {
     /// screen effects it may push, its effects if it plays any, its sky, its characters' fades if they fade, its
     /// debug lines if it draws any, and what the show declares.
     pub fn declared_pipelines(&self, show: &impl SceneShow) -> PipelineInventory {
+        #[cfg(feature = "samples")]
+        let demo = self.debug_draw_demo.is_some();
+        #[cfg(not(feature = "samples"))]
+        let demo = false;
         let mut inventory = PipelineInventory {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
             sky: self.sky_material.into_iter().collect(),
             fades: self.fade != Fade::Off,
-            debug_draw: self.debug_draw_demo.is_some() || debug_draw::enabled(),
+            debug_draw: demo || debug_draw::enabled(),
             ..PipelineInventory::default()
         };
         show.declare_pipelines(&mut inventory);
@@ -2041,11 +2116,15 @@ impl Scene {
         self.follow_showcases();
         self.ecs.extract();
         let scene_figure = self.figure;
-        let (face_layout, fade) = (self.face_layout, self.fade);
+        let fade = self.fade;
+        #[cfg(feature = "samples")]
+        let face_layout = self.face_layout;
         let (mut extract, time_of_day, rigs, characters, heads) = self
             .frame_characters
             .get_mut(self.ecs.world_mut())
             .expect("the scene inserts what a frame lists its characters from");
+        #[cfg(not(feature = "samples"))]
+        let () = heads;
         let packet = extract.packet_mut();
         // The rigs are resolved for the camera; without one nothing draws.
         if let Some(camera) = packet.main_view().map(|view| view.camera) {
@@ -2087,7 +2166,9 @@ impl Scene {
             }
             // The face rig's heads, in the default preset turned to each head's angles, or by its
             // GI alone in the GI layouts.
+            #[cfg(feature = "samples")]
             let preset = rigs.rig(LightRigId::DEFAULT);
+            #[cfg(feature = "samples")]
             for (entity, rig, transform) in &heads {
                 let center = transform.0.transform_point3(Vec3::ZERO);
                 let lighting = frame.character_lighting(preset, &camera, center);
@@ -2116,6 +2197,7 @@ impl Scene {
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.
         profiling::scope!("debug draw");
+        #[cfg(feature = "samples")]
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_frame();
         }
@@ -2404,6 +2486,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "samples")]
     #[test]
     fn fixed_steps_do_not_allocate_from_the_first() {
         // As the app runs it: steps from the first frame on, with frames in between.
@@ -2533,6 +2616,7 @@ mod tests {
         assert!(pose(&mut scene).is_empty(), "paused, it holds its pose and sends none");
     }
 
+    #[cfg(feature = "samples")]
     #[test]
     fn demo_lights_surround_the_character() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
@@ -3691,6 +3775,7 @@ mod tests {
         scene.end_frame();
     }
 
+    #[cfg(feature = "samples")]
     #[test]
     fn the_face_rig_lists_each_head_lit_from_its_own_angles() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
@@ -3723,6 +3808,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "samples")]
     #[test]
     fn the_gi_face_layouts_light_the_heads_by_their_gi_alone() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);

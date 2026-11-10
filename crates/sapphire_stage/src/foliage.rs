@@ -28,9 +28,9 @@ pub(crate) const TREE: AssetId = AssetId::from_text("2feef8a7-6b16-4c41-ae6d-44b
 pub(crate) const BUSH: AssetId = AssetId::from_text("a24406d9-3d40-4468-b165-d8eaa06d10bf");
 pub(crate) const GRASS: AssetId = AssetId::from_text("14d8adcb-6683-4cdd-babd-a3433d3dac33");
 
-/// The breeze `--foliage` blows unless `--wind` says otherwise: across the courtyard, slightly
-/// toward the camera, at the strength the materials are authored at, gusting a little.
-pub const DEFAULT_WIND: Wind = Wind { direction: Vec3::new(0.944, 0.0, 0.33), strength: 1.0, gustiness: 0.3 };
+/// The breeze `--foliage` blows unless `--wind` says otherwise: the town's ([`crate::lookdev`]), across
+/// the courtyard, slightly toward the camera, at the strength the materials are authored at, gusting a little.
+pub const DEFAULT_WIND: Wind = crate::lookdev::WIND;
 
 /// How the camera shows the plants (`--foliage`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

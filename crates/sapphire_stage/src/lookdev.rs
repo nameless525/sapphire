@@ -285,8 +285,10 @@ impl TownMeshes {
     }
 }
 
-/// The breeze the town's plants sway in.
-pub(crate) const WIND: sapphire_render::Wind = crate::foliage::DEFAULT_WIND;
+/// The breeze the town's plants sway in, and the sandbox's foliage samples (`foliage::DEFAULT_WIND`): slightly
+/// toward the camera, at the strength the foliage materials are authored at, gusting a little.
+pub(crate) const WIND: sapphire_render::Wind =
+    sapphire_render::Wind { direction: Vec3::new(0.944, 0.0, 0.33), strength: 1.0, gustiness: 0.3 };
 
 /// A plant in the town: where its root stands, its scale (x, y, z) and its turn about +Y in
 /// degrees.

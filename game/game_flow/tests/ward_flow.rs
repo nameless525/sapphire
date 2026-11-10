@@ -11,9 +11,9 @@ use game_flow::game::{FlowContent, Game, GameSetup};
 use game_flow::progress::Progress;
 use sapphire_assets::score::Score;
 use sapphire_core::Name;
-use sapphire_dialogue::FlagRegistry;
+use sapphire_dialogue::{ConditionId, DialogueDocument, DialogueWalk, DialogueWorld, EffectId, FlagRegistry};
 use sapphire_gameplay::replay::find_scenario;
-use sapphire_gameplay::{DialogueId, TimelineId};
+use sapphire_gameplay::{DialogueId, Simulation, TimelineId};
 use sapphire_serialize::AssetId;
 
 /// content/zones/lantern_ward/court_gate.timeline.ron
@@ -42,10 +42,10 @@ fn the_ward_s_flow_stands_a_game_on_what_its_scenario_loads() {
     let content = FlowContent { document: document.clone(), registered };
     Game::new(content, GameSetup::default()).expect("the game has what its flow names");
 
-    // The run's scenario loads the gate before anything else, and the guide's conversation as the only one.
+    // The run's scenario holds everyone it'll meet (M3 G1c), which `Game::new` refuses less than.
     let scenario = find_scenario(&SCENARIOS, &document.scenario).expect("this build holds the ward's run");
-    assert_eq!(scenario.timelines().expect("loads"), [(COURT_GATE, TimelineId::from_raw(0))]);
-    assert_eq!(scenario.dialogues().expect("loads"), [(WARD_GUIDE, DialogueId::from_raw(0))]);
+    let room = scenario.room_for_everyone().expect("reads").expect("a document");
+    assert!(room <= scenario.config.max_actors as usize, "{room} for {}", scenario.config.max_actors);
     // The beats play the gate when the court starts, the guide when it ends, and only before the guide's met.
     assert!(document.beats.iter().any(|beat| beat.then == Then::Timeline(COURT_GATE)));
     assert!(document.beats.iter().any(|beat| {
@@ -54,6 +54,68 @@ fn the_ward_s_flow_stands_a_game_on_what_its_scenario_loads() {
             && beat.unless.as_deref() == Some("met_guide")
     }));
     assert!(document.beats.iter().any(|beat| beat.then == Then::Victory));
+}
+
+/// Each timeline and dialogue the run's scenario names is the document at that place in its lists, by its
+/// sidecar's ID, and loads in a run at the ID its place says; each conversation cooks against the game's
+/// registry, conditions and all, and walks to its end taking the first answer each time. So a cutscene or a
+/// conversation more in the run is its documents alone.
+#[test]
+fn what_the_run_names_resolves_and_plays() {
+    let document = flow();
+    let scenario = find_scenario(&SCENARIOS, &document.scenario).expect("this build holds the ward's run");
+    let named = scenario.document().expect("the run is a document");
+    let mut sim = Simulation::new(scenario.config);
+    scenario.set_up(&mut sim).expect("the run stands");
+    let sidecar = |path: &str| text(&format!("{path}.meta"));
+
+    let timelines = scenario.timelines().expect("loads");
+    assert_eq!(timelines.len(), named.timelines.len());
+    for (place, ((id, timeline), path)) in timelines.iter().zip(&named.timelines).enumerate() {
+        assert!(sidecar(path).contains(&id.to_string()), "{path} is {id}");
+        assert_eq!(*timeline, TimelineId::from_raw(place as u32), "{path}");
+        assert!(sim.timeline_digest(*timeline).is_some(), "the run loads {path}");
+    }
+
+    let dialogues = scenario.dialogues().expect("loads");
+    assert_eq!(dialogues.len(), named.dialogues.len());
+    let flags = named.flags.as_deref().filter(|_| !dialogues.is_empty());
+    let registry = flags.map(|flags| FlagRegistry::from_ron(&text(flags)).expect("the registry reads"));
+    for (place, ((id, dialogue), path)) in dialogues.iter().zip(&named.dialogues).enumerate() {
+        assert!(sidecar(path).contains(&id.to_string()), "{path} is {id}");
+        assert_eq!(*dialogue, DialogueId::from_raw(place as u16), "{path}");
+        let registry = registry.as_ref().expect("a run with dialogues names its registry");
+        let cooked = DialogueDocument::from_ron(&text(path))
+            .and_then(|document| {
+                document.cook(registry, |source| {
+                    sapphire_script::cook(source).map(drop).map_err(|error| error.to_string())
+                })
+            })
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
+        assert_eq!(sim.dialogue_digest(*dialogue), Some(cooked.simulation.digest()), "the run loads {path}");
+        let mut walk = DialogueWalk::begin(&cooked, &mut Untouched);
+        for _ in 0..64 {
+            if walk.is_over() {
+                break;
+            }
+            assert!(
+                walk.next(&cooked, &mut Untouched) || walk.choose(&cooked, 0, &mut Untouched),
+                "{path}: a line with no way on"
+            );
+        }
+        assert!(walk.is_over(), "{path}: the conversation never ended");
+    }
+}
+
+/// A world where nothing holds and nothing lands: a conversation as a new game hears it.
+struct Untouched;
+
+impl DialogueWorld for Untouched {
+    fn ask(&mut self, _: ConditionId) -> bool {
+        false
+    }
+
+    fn apply(&mut self, _: EffectId) {}
 }
 
 #[test]

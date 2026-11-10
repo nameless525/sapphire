@@ -1421,6 +1421,7 @@ dependencies = [
  "sapphire_stage",
  "sapphire_time",
  "sapphire_ui",
+ "sapphire_zone",
  "serde",
  "thiserror 2.0.21",
  "tracing",

@@ -944,24 +944,46 @@ mod tests {
         assert!(cant_start(&document).contains("`encounters`"));
     }
 
-    /// What a run walking every encounter needs room for (M3 G1c): the ward's run holds its player and all
-    /// 14 fighters, and does meet them all; the market's room alone holds less than its zone's encounters
-    /// would bring, since only its own ever starts.
+    /// What a run walking every encounter needs room for (M3 G1c): its cast, and every fighter the encounters
+    /// it hasn't fought bring, as the zone a simulation stands on it counts them. A fallen fighter keeps its
+    /// place, so a pool smaller than this refuses the last to come, and a game's flow refuses such a scenario
+    /// (`Game::new`): the ward's run once held 12 for 15, and its boss came to nobody. Held for every scenario
+    /// this build has, so a fighter more in a zone's encounters is the documents' to count, and for a run
+    /// built from one of them with what it starts having fought changed.
     #[test]
     fn room_for_everyone_counts_the_cast_and_every_fighter_to_come() {
-        let document = |name: &str| -> ScenarioDocument {
-            let text = SCENARIO_DOCUMENTS.iter().find(|(held, _)| *held == name).expect("held").1;
-            sapphire_serialize::from_ron(text).expect("reads")
+        let to_come = |document: &ScenarioDocument| -> usize {
+            let mut sim = Simulation::new(document.config());
+            document.set_up(&mut sim).expect("sets up");
+            let encounters = sim.zone().map_or(&[][..], crate::encounter::SimZone::encounters);
+            let waiting = encounters.iter().filter(|held| held.phase() != crate::EncounterPhase::Cleared);
+            waiting.map(crate::encounter::SimEncounter::planned).sum()
         };
-        let run = document("ward-run");
-        assert_eq!(run.room_for_everyone().expect("reads"), 15);
-        assert_eq!(run.max_actors, 15);
-        let mut sim = Simulation::new(run.config());
-        run.set_up(&mut sim).expect("sets up");
-        assert_eq!(run.cast.len() + sim.zone().expect("the ward").planned(), 15, "as the zone counts them");
-        let court = document("ward-court");
-        assert_eq!(court.room_for_everyone().expect("reads"), 2, "every encounter fought: its cast alone");
-        assert!(document("ward-market").room_for_everyone().expect("reads") > 8);
+        let documents: Vec<(&str, ScenarioDocument)> = SCENARIO_DOCUMENTS
+            .iter()
+            .map(|(name, text)| (*name, sapphire_serialize::from_ron(text).expect("reads")))
+            .collect();
+        for (name, document) in &documents {
+            let room = document.room_for_everyone().unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(room, document.cast.len() + to_come(document), "{name}: as the zone counts them");
+        }
+
+        // A run with two encounters or more and none fought: one fought takes its fighters off, and all of
+        // them leave its cast alone.
+        let (name, run) = documents
+            .iter()
+            .find(|(_, document)| document.encounters.len() >= 2 && document.cleared.is_empty())
+            .expect("a run through a zone of several fights");
+        let whole = run.room_for_everyone().expect("reads");
+        assert!(whole > run.cast.len(), "{name}: its encounters bring someone");
+        let mut fought = run.clone();
+        fought.cleared = vec![run.encounters[0].clone()];
+        let fewer = fought.room_for_everyone().expect("reads");
+        assert!(fewer < whole, "{name}: {fewer} with its first encounter fought, of {whole}");
+        assert_eq!(fewer, fought.cast.len() + to_come(&fought), "{name}: as the zone counts them");
+        fought.cleared.clone_from(&run.encounters);
+        let room = fought.room_for_everyone().expect("reads");
+        assert_eq!(room, run.cast.len(), "{name}: every encounter fought: its cast alone");
     }
 
     /// A document's timelines load first, in its order, so each has the ID its place says, and the player's
@@ -1065,35 +1087,79 @@ mod tests {
 
     /// A scenario on a zone needn't list what its encounters spawn, cleared or not (M3 C2): the zone's
     /// spawners say, and the kinds of those names come after what it lists, with their moves and scripts.
-    /// One that lists them gets them in its own order, and the same kinds.
+    /// One that lists them gets the same kinds. Held for every scenario this build has on a zone with
+    /// encounters, with only the kinds its cast plays listed, and again with every encounter fought.
     #[test]
     fn a_zones_encounters_bring_the_kinds_they_spawn() {
-        let text = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "lantern-walk").expect("held").1;
-        let listed: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
-        assert_eq!(listed.cleared.len(), listed.encounters.len(), "every encounter cleared");
-        let mut bare = listed.clone();
-        bare.enemies.clear();
-        bare.moves.retain(|path| kind_of(path) == "player");
-
-        let mut sim = Simulation::new(bare.config());
-        bare.set_up(&mut sim).expect("it starts with no kind listed");
         let ids = |document: &ScenarioDocument| {
             let mut ids: Vec<AssetId> =
                 document.kinds_of_enemy().expect("it plans").iter().map(|kind| kind.kind).collect();
             ids.sort_unstable();
             ids
         };
-        assert_eq!(ids(&bare), ids(&listed));
-        assert_eq!(ids(&bare).len(), 3, "the ward's warrior, Lancer and boss");
-        let roster = bare.roster().expect("it plans");
-        assert_eq!(roster.moves[0], "content/combat/player/player.moves.ron", "what it lists comes first");
-        assert_eq!(roster.moves.len(), 4);
+        let mut zones = 0;
+        for (name, text) in SCENARIO_DOCUMENTS {
+            let listed: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
+            let Some(zone) = listed.zone.as_deref().filter(|_| !listed.encounters.is_empty()) else {
+                continue;
+            };
+            zones += 1;
+            let zone = ZoneDocument::from_ron(named(zone).expect("held")).expect("reads");
+            let cast: Vec<&str> = listed.cast.iter().map(|member| member.moves.as_str()).collect();
+            let plays = |path: &&String| cast.contains(&kind_of(path));
 
-        // Its boss's script, for the boss's set, found by being the boss: exit test 2 holds no code names it.
-        let scripts = bare.scripts().expect("it can say");
-        let [script] = scripts.as_slice() else { panic!("one kind names a script: {scripts:?}") };
-        assert!(script.file.ends_with(".luau"), "{script:?}");
-        assert!(sim.move_library().mind(script.set).and_then(|mind| mind.boss()).is_some(), "{script:?}");
+            // The kinds its cast plays, and the kind each spawner its encounters call names.
+            let mut kinds: Vec<&str> = listed.enemies.iter().filter(plays).map(String::as_str).collect();
+            for path in &listed.encounters {
+                for wave in EncounterDocument::from_ron(named(path).expect("held")).expect("reads").waves {
+                    for called in &wave.spawners {
+                        let spawner = zone.spawners.iter().find(|spawner| spawner.name == *called);
+                        let spawner = spawner.unwrap_or_else(|| panic!("{name}: {path} calls {called}"));
+                        kinds.extend(kind_named(&spawner.spawns));
+                    }
+                }
+            }
+            let mut expected: Vec<AssetId> =
+                kinds.iter().map(|path| id_of(path).expect("a sidecar")).collect();
+            expected.sort_unstable();
+            expected.dedup();
+            let all = ids(&listed);
+            assert!(expected.iter().all(|kind| all.contains(kind)), "{name}: listing them changes nothing");
+
+            let mut bare = listed.clone();
+            bare.enemies.retain(|path| plays(&path));
+            bare.moves.retain(|path| plays(&path));
+            let mut fought = bare.clone();
+            fought.cleared.clone_from(&fought.encounters);
+            for document in [&bare, &fought] {
+                let mut sim = Simulation::new(document.config());
+                document.set_up(&mut sim).unwrap_or_else(|error| panic!("{name}: {error}"));
+                assert_eq!(ids(document), expected, "{name}: the kinds it spawns, and its cast's");
+                let roster = document.roster().expect("it plans");
+                let lists: Vec<&str> = document.moves.iter().map(String::as_str).collect();
+                assert!(roster.moves.starts_with(&lists), "{name}: what it lists comes first");
+
+                // Each kind with its moves, and its script on its set: exit test 2 holds that no code names a
+                // boss's.
+                let scripts = document.scripts().expect("it can say");
+                for kind in document.kinds_of_enemy().expect("it plans") {
+                    let path = roster.enemies.iter().find(|path| id_of(path).ok() == Some(kind.kind));
+                    let path = path.expect("planned");
+                    let enemy = EnemyDocument::parse(named(path).expect("held")).expect("reads");
+                    let moves = moves_with_id(enemy.moves).expect("reads").expect("held");
+                    assert!(roster.moves.contains(&moves), "{name}: {path}'s moves");
+                    let bound = scripts.iter().filter(|script| script.set == kind.set);
+                    let bound: Vec<AssetId> =
+                        bound.map(|script| id_of(script.path).expect("a sidecar")).collect();
+                    assert_eq!(bound, Vec::from_iter(enemy.script), "{name}: {path}'s script");
+                }
+                for script in &scripts {
+                    assert!(script.file.ends_with(".luau"), "{name}: {script:?}");
+                    assert!(sim.move_library().mind(script.set).is_some(), "{name}: {script:?}");
+                }
+            }
+        }
+        assert!(zones > 0, "a scenario on a zone with encounters");
     }
 
     /// A second kind on moves another kind has goes on a copy of them, after every set `moves` lists.

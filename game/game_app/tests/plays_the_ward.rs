@@ -16,11 +16,14 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow};
+use game_combat::combat::SCENARIOS;
+use game_flow::document::FlowDocument;
 use game_flow::flow::{FlowCommand, FlowState, Run};
 use game_flow::game::GameSetup;
 use game_flow::progress::{self, Progress, progress_store};
 use game_ui::menus::PlayerSettings;
 use sapphire_core::Name;
+use sapphire_gameplay::replay::find_scenario;
 use sapphire_gameplay::{EncounterPhase, FlagValues, ZoneStart};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, KeyEvent, Keycode, Modifiers, Platform, RunOptions,
@@ -172,7 +175,13 @@ impl App for OutsideCaller {
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         assert_eq!(state(&stage), FlowState::Title { stood: Run::Saved });
         assert_eq!(stage.show.music_phase(), Some("waiting"), "the title's music is the flow's");
-        assert_eq!(stage.show.shown.fight.dialogue.dialogues().len(), 1, "the guide, from the pack");
+        // Every conversation the flow's scenario names, from the pack.
+        let flow = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/game.flow.ron");
+        let flow = FlowDocument::from_ron(&std::fs::read_to_string(flow)?).map_err(AppInitError::msg)?;
+        let scenario = find_scenario(&SCENARIOS, &flow.scenario).expect("this build holds the flow's run");
+        let named = scenario.dialogues().map_err(AppInitError::msg)?.len();
+        assert!(named > 0, "the run's scenario names the guide's conversation");
+        assert_eq!(stage.show.shown.fight.dialogue.dialogues().len(), named, "each, from the pack");
 
         // The title's continue: the run from the court's checkpoint, on the fight's music.
         let mut clock = 1_000_000_000;

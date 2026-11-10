@@ -160,7 +160,7 @@ impl App for OutsideCaller {
         let replay = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(WALK);
         for tier in [TierId::DesktopLow, TierId::MobileLow] {
             let walked = walk(platform, &replay, tier)?;
-            assert_eq!(walked.cutscenes, 1, "the court's gate, watched");
+            assert!(walked.cutscenes >= 1, "the court's gate among them, watched");
             eprintln!(
                 "wins_the_ward: {}: won at tick {} after {} of the stage's steps, {} frames drawn, in {:.1} s; \
                  first_use=0, step allocations 0",

@@ -3,8 +3,9 @@
 //! cutscene watched, the guide's conversation, the court's fight and the terrace's boss, to the flow's victory.
 //!
 //! `records_the_whole_walk` plays it as a player who reads the simulation before each step ([`Walker`]):
-//! along the tour's points, and at whoever's nearest while an encounter is running, dodging each kind of
-//! swing once it has seen how long its wind-up is. Nothing about the fight is tuned for it. It prints what
+//! along the points of the run's zone's `tour` spline, and at whoever's nearest while an encounter is running,
+//! dodging each kind of swing once it has seen how long its wind-up is, and answering any conversation the
+//! flow opens with its first choice each time. Nothing about the fight is tuned for it. It prints what
 //! hit the player, so a walk that loses says what to. With `SAPPHIRE_WALK_OUT=<file>` it writes the run's
 //! replay there: that's how `tests/replays/ward-whole-walk.sreplay` was made, and how it's made again when the
 //! fight changes under it (then `cargo xtask replay --update --replay ward-whole-walk`).
@@ -16,6 +17,7 @@ use std::alloc::System;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use game_combat::combat::SCENARIOS;
 use game_combat::combat::{Combat, CombatOption};
 use game_combat::dialogue::DialogueRunner;
 use game_flow::document::FlowDocument;
@@ -23,9 +25,12 @@ use game_flow::flow::{FlowCommand, FlowState};
 use game_flow::game::{FlowContent, Game, GameSetup};
 use sapphire_core::Name;
 use sapphire_core::alloc::{CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_dialogue::FlagRegistry;
+use sapphire_dialogue::{Dialogue, DialogueDocument, FlagRegistry};
+use sapphire_gameplay::replay::document::ScenarioDocument;
+use sapphire_gameplay::replay::find_scenario;
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, EncounterPhase, Simulation, Stick, TickActions};
 use sapphire_moves::Phase;
+use sapphire_zone::ZoneDocument;
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -43,11 +48,43 @@ fn text(path: &str) -> String {
     std::fs::read_to_string(root().join(path)).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
+fn flow() -> FlowDocument {
+    FlowDocument::from_ron(&text("content/game.flow.ron")).expect("the game's flow reads")
+}
+
 fn game(setup: GameSetup) -> Game {
     let registry = FlagRegistry::from_ron(&text("content/flags.ron")).expect("the flags read");
     let registered = registry.flags.iter().map(|flag| Name::new(flag)).collect();
-    let document = FlowDocument::from_ron(&text("content/game.flow.ron")).expect("the game's flow reads");
-    Game::new(FlowContent { document, registered }, setup).expect("the game has what its flow names")
+    Game::new(FlowContent { document: flow(), registered }, setup).expect("the game has what its flow names")
+}
+
+/// The flow's run, as its scenario's document says it.
+fn run() -> &'static ScenarioDocument {
+    let scenario = find_scenario(&SCENARIOS, &flow().scenario).expect("this build holds the flow's run");
+    scenario.document().expect("the flow's run is a document")
+}
+
+/// The run's zone's `tour` spline, on the ground (x, z).
+fn tour(run: &ScenarioDocument) -> Vec<[f32; 2]> {
+    let zone = run.zone.as_deref().expect("the run stands in a zone");
+    let zone = ZoneDocument::from_ron(&text(zone)).expect("the zone reads");
+    let tour = zone.splines.iter().find(|spline| spline.name == "tour").expect("the zone has a tour");
+    assert!(!tour.points.is_empty(), "a tour goes somewhere");
+    tour.points.iter().map(|&[x, _, z]| [x, z]).collect()
+}
+
+/// Every conversation the run loads, in its order, cooked as the pipeline cooks them, conditions and all:
+/// what a fight's runner holds.
+fn conversations(run: &ScenarioDocument) -> Vec<Arc<Dialogue>> {
+    let Some(flags) = run.flags.as_deref() else { return Vec::new() };
+    let registry = FlagRegistry::from_ron(&text(flags)).expect("the registry reads");
+    let cook = |source: &str| sapphire_script::cook(source).map(drop).map_err(|error| error.to_string());
+    let cooked = run.dialogues.iter().map(|path| {
+        let document =
+            DialogueDocument::from_ron(&text(path)).unwrap_or_else(|error| panic!("{path}: {error}"));
+        Arc::new(document.cook(&registry, cook).unwrap_or_else(|error| panic!("{path}: {error}")))
+    });
+    cooked.collect()
 }
 
 /// A directory of the test's own, gone when it is.
@@ -67,35 +104,6 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-
-/// The ward's `tour` spline's points, on the ground (x, z): from the start east to the market's far end and
-/// back, west to the garden's and back, and south through the court and up the terrace's steps.
-const TOUR: [[f32; 2]; 24] = [
-    [0.0, 14.0],
-    [0.0, 6.0],
-    [8.0, 3.0],
-    [20.0, 0.0],
-    [46.0, 0.0],
-    [64.0, 0.0],
-    [64.0, 8.0],
-    [72.0, 0.0],
-    [46.0, 0.0],
-    [20.0, 0.0],
-    [8.0, 3.0],
-    [-8.0, 3.0],
-    [-20.0, 0.0],
-    [-46.0, 0.0],
-    [-64.0, 0.0],
-    [-64.0, 8.0],
-    [-46.0, 0.0],
-    [-20.0, 0.0],
-    [-8.0, -6.0],
-    [0.0, -18.0],
-    [0.0, -60.0],
-    [0.0, -96.5],
-    [0.0, -100.5],
-    [0.0, -105.0],
-];
 
 /// Close enough to a point of the tour to go on to the next.
 const REACHED: f32 = 1.5;
@@ -143,6 +151,10 @@ struct Seen {
 /// What it learns is a function of the run so far, so the same run teaches it the same things.
 #[derive(Debug, Default)]
 struct Walker {
+    /// The zone's `tour` spline's points, on the ground (x, z): in the Lantern Ward, from the start east to
+    /// the market's far end and back, west to the garden's and back, and south through the court and up the
+    /// terrace's steps.
+    tour: Vec<[f32; 2]>,
     /// The tour's point it's walking to.
     next: usize,
     /// Each foe's move, by actor.
@@ -273,13 +285,13 @@ impl Walker {
             }
             _ if fighting => (Buttons::NONE, Stick::CENTER, Doing::Waiting),
             _ => {
-                while self.next + 1 < TOUR.len() && distance(at, TOUR[self.next]) < REACHED {
+                while self.next + 1 < self.tour.len() && distance(at, self.tour[self.next]) < REACHED {
                     self.next += 1;
                 }
-                let stick = if distance(at, TOUR[self.next]) < REACHED {
+                let stick = if distance(at, self.tour[self.next]) < REACHED {
                     Stick::CENTER
                 } else {
-                    stick_toward(at, TOUR[self.next])
+                    stick_toward(at, self.tour[self.next])
                 };
                 (Buttons::NONE, stick, Doing::Walking(self.next))
             }
@@ -383,8 +395,8 @@ fn records_the_whole_walk() {
     let kept = kept.clone();
     let mut combat = Combat::new(&option).expect("the ward's run stands");
     assert_eq!(game.command(FlowCommand::NewGame), None);
-    let mut runner = DialogueRunner::new(vec![Arc::new(sapphire_script::scenarios::ward_guide())]);
-    let mut walker = Walker::default();
+    let mut runner = DialogueRunner::new(conversations(run()));
+    let mut walker = Walker { tour: tour(run()), ..Walker::default() };
     let player = combat.cast()[0];
     let mut doing = Doing::Waiting;
     let mut past_the_win = 0;
@@ -419,7 +431,7 @@ fn records_the_whole_walk() {
         if let Some(asset) = game.after_step(&mut combat) {
             let id = game.dialogue_of(asset).expect("the run loads the beat's dialogue");
             runner.open(id, &mut combat).expect("the conversation opens");
-            eprintln!("the guide's conversation: {}", describe(combat.simulation(), player));
+            eprintln!("conversation {id:?}: {}", describe(combat.simulation(), player));
             talk(&mut runner, &mut combat);
             assert!(runner.take_ended().is_some(), "it ended");
             game.command(FlowCommand::DialogueEnded);
@@ -468,7 +480,7 @@ fn the_whole_walk_replays_to_the_win() {
         was_cutscene = cutscene;
     }
     let sim = combat.simulation();
-    assert_eq!(cutscenes, 1, "the court's gate, watched");
+    assert!(cutscenes >= 1, "the court's gate among them, watched");
     // The file applies the guide's answer right after the step the gate ended on, before the flow looks: the
     // beat's `unless met_guide` then passes the conversation by, and the choice stands as the file made it.
     assert_eq!(conversations, 0, "a replay opens no conversation");

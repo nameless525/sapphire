@@ -284,6 +284,7 @@ impl DevTools {
             fixed_steps: stages.fixed_steps,
             audio: stages.audio,
             extract: stages.extract,
+            secondary_motion: stages.secondary_motion,
             render: stages.render,
         });
         self.overlay.record_frame(frame_time, stages.as_ref());

@@ -503,6 +503,7 @@ impl FrameHooks<ShownFight> for StageTools {
             frame;
         let stages = last_times.map(|times| Stages {
             extract: times.extract,
+            secondary_motion: scene.anim_stats().spring_time,
             render: times.render,
             ..Stages::default()
         });

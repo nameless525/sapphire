@@ -23,6 +23,8 @@ pub(crate) struct Stages {
     pub audio: Duration,
     /// Presentation (the camera) and extraction into the frame packet.
     pub extract: Duration,
+    /// Of `extract`, secondary motion: the characters' spring bones and clothes' clearance (§3.2's row).
+    pub secondary_motion: Duration,
     /// `Renderer::prepare`, recording the frame graph and its submit.
     pub render: Duration,
 }
@@ -34,6 +36,7 @@ impl Stages {
         self.fixed_steps += other.fixed_steps;
         self.audio += other.audio;
         self.extract += other.extract;
+        self.secondary_motion += other.secondary_motion;
         self.render += other.render;
     }
 }
@@ -124,6 +127,7 @@ impl FrameStats {
             sim_ms = stage_ms(self.stages.simulation),
             audio_ms = stage_ms(self.stages.audio),
             extract_ms = stage_ms(self.stages.extract),
+            springs_ms = stage_ms(self.stages.secondary_motion),
             render_ms = stage_ms(self.stages.render),
             skipped = self.skipped,
             sim_dropped_ms = self.dropped.as_millis(),

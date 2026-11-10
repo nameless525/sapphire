@@ -100,6 +100,11 @@ impl BudgetTier {
         self.pick(0.3, 0.6)
     }
 
+    /// Secondary motion (§3.2's row), part of extract: spring bones and the clothes' clearance.
+    pub fn secondary_motion(self) -> Duration {
+        self.pick(0.5, 1.0)
+    }
+
     /// Particles and distortion (§3.3's row): the effects' pass under temporal AA.
     pub fn particles(self) -> Duration {
         self.pick(1.2, 3.0)
@@ -159,6 +164,8 @@ pub struct CpuStages {
     /// The audio update: zero in an app that plays no sound.
     pub audio: Duration,
     pub extract: Duration,
+    /// Of `extract`, secondary motion: every character's spring bones and clothes' clearance.
+    pub secondary_motion: Duration,
     pub render: Duration,
 }
 
@@ -192,6 +199,7 @@ impl CpuStages {
             fixed_steps: next.fixed_steps,
             audio: mix(self.audio, next.audio),
             extract: mix(self.extract, next.extract),
+            secondary_motion: mix(self.secondary_motion, next.secondary_motion),
             render: mix(self.render, next.render),
         }
     }
@@ -254,6 +262,7 @@ mod tests {
         assert_eq!((desktop.forward_opaque(), mobile.forward_opaque()), (ms(3.5), ms(8.0)));
         assert_eq!((desktop.post(), mobile.post()), (ms(0.7), ms(2.5)));
         assert_eq!((desktop.prepass(), mobile.prepass()), (ms(1.5), ms(1.5)));
+        assert_eq!((desktop.secondary_motion(), mobile.secondary_motion()), (ms(0.5), ms(1.0)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));
         assert_eq!(BudgetTier::CURRENT == mobile, FormFactor::CURRENT == FormFactor::Mobile);
         assert_eq!(desktop.clustering_ao(), Some(Duration::from_micros(1500)), "spec §3.3");
@@ -269,13 +278,14 @@ mod tests {
             fixed_steps: 2,
             audio: us(5),
             extract: us(20),
+            secondary_motion: us(8),
             render: us(100),
         };
-        assert_eq!(stages.game_side(), us(75));
+        assert_eq!(stages.game_side(), us(75), "secondary motion is part of extract");
         assert_eq!(stages.total(), us(175));
         assert_eq!(CpuStage::ALL.map(|stage| stages.get(stage)), [us(10), us(40), us(5), us(20), us(100)]);
         let half = CpuStages::default().smoothed(&stages, 0.5);
-        assert_eq!((half.render, half.fixed_steps), (us(50), 2));
+        assert_eq!((half.render, half.secondary_motion, half.fixed_steps), (us(50), us(4), 2));
     }
 
     #[test]

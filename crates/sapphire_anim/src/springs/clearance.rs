@@ -3,7 +3,7 @@
 mod residual;
 mod underarm;
 
-use residual::{Residual, short_face::ShortFace};
+use residual::{Residual, short_face::LOCKS, short_face::ShortFace};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, HumanBone};
 use sapphire_assets::skeleton::ArchivedSkeleton;
@@ -21,6 +21,22 @@ const RELEASE_HALF_LIFE: f32 = 4.0; // Presentation ticks.
 const CLEAR: f32 = 0.0008;
 const MAX_TURN_PER_TICK: f32 = 4.5;
 const LOOKAHEAD_TICKS: f32 = 2.0;
+/// A solve's parts, in the order a frame takes them ([`Clearance::parts`]): the garment posed, its
+/// envelope's three axes, the forecast envelope's three, then each strand, the residual and the face's
+/// locks.
+const POSE: usize = 0;
+const AXES: usize = 1;
+const AHEAD_AXES: usize = 4;
+const STRANDS: usize = 7;
+/// What each part of a solve costs, in µs (H5's probe of the walk on Desktop-Low, release, on the M5):
+/// what [`Spread`] balances, by their ratios. Posing the garment is mostly the underarm's relief; a face
+/// lock's includes its share of the face's field.
+const POSE_COST: u32 = 212;
+const AXIS_COST: u32 = 111;
+const AHEAD_AXIS_COST: u32 = 105;
+const STRAND_COST: u32 = 6;
+const RESIDUAL_COST: u32 = 303;
+const FACE_LOCK_COST: u32 = 131;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Influence {
@@ -159,45 +175,54 @@ impl Garment {
         }
     }
 
+    #[cfg(test)]
     fn refit(&mut self, vertices: &[Vec3], triangles: &[[usize; 3]]) {
+        self.bound(vertices);
+        for axis in 0..3 {
+            self.refit_axis(axis, vertices, triangles);
+        }
+    }
+
+    /// Bounds the envelope by `vertices`, which its axes are then refit from.
+    fn bound(&mut self, vertices: &[Vec3]) {
         self.min = vertices.iter().copied().fold(Vec3::splat(f32::INFINITY), Vec3::min);
         self.max = vertices.iter().copied().fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-        for ((axis, grid), written) in self.grids.iter_mut().enumerate().zip(&mut self.written) {
-            if let Some(cells) = written.take() {
-                for y in cells.y.0..=cells.y.1 {
-                    grid[y * GRID + cells.x.0..=y * GRID + cells.x.1].fill(Interval::EMPTY);
-                }
+    }
+
+    /// Rasters `triangles` along `axis`: the depth ranges `vertices` cover in the grid across it.
+    fn refit_axis(&mut self, axis: usize, vertices: &[Vec3], triangles: &[[usize; 3]]) {
+        let grid = &mut self.grids[axis];
+        let written = &mut self.written[axis];
+        if let Some(cells) = written.take() {
+            for y in cells.y.0..=cells.y.1 {
+                grid[y * GRID + cells.x.0..=y * GRID + cells.x.1].fill(Interval::EMPTY);
             }
-            let u = (axis + 1) % 3;
-            let v = (axis + 2) % 3;
-            for triangle in triangles {
-                let [a, b, c] = triangle.map(|i| vertices[i]);
-                let min = a.min(b).min(c);
-                let max = a.max(b).max(c);
-                let index =
-                    |x: f32| (((x + HALF) / CELL).floor() as isize).clamp(0, GRID as isize - 1) as usize;
-                let coordinate = |i: usize| (i as f32 + 0.5) * CELL - HALF;
-                let ab = b - a;
-                let ac = c - a;
-                let area = ab[u] * ac[v] - ab[v] * ac[u];
-                if area.abs() < 1.0e-9 {
-                    continue;
-                }
-                let inverse = area.recip();
-                *written = Some(Cells::with(
-                    *written,
-                    (index(min[u]), index(max[u])),
-                    (index(min[v]), index(max[v])),
-                ));
-                for y in index(min[v])..=index(max[v]) {
-                    let dy = coordinate(y) - a[v];
-                    for x in index(min[u])..=index(max[u]) {
-                        let dx = coordinate(x) - a[u];
-                        let s = (dx * ac[v] - dy * ac[u]) * inverse;
-                        let t = (ab[u] * dy - ab[v] * dx) * inverse;
-                        if s >= 0.0 && t >= 0.0 && s + t <= 1.0 {
-                            grid[y * GRID + x].add(a[axis] + s * ab[axis] + t * ac[axis]);
-                        }
+        }
+        let u = (axis + 1) % 3;
+        let v = (axis + 2) % 3;
+        for triangle in triangles {
+            let [a, b, c] = triangle.map(|i| vertices[i]);
+            let min = a.min(b).min(c);
+            let max = a.max(b).max(c);
+            let index = |x: f32| (((x + HALF) / CELL).floor() as isize).clamp(0, GRID as isize - 1) as usize;
+            let coordinate = |i: usize| (i as f32 + 0.5) * CELL - HALF;
+            let ab = b - a;
+            let ac = c - a;
+            let area = ab[u] * ac[v] - ab[v] * ac[u];
+            if area.abs() < 1.0e-9 {
+                continue;
+            }
+            let inverse = area.recip();
+            *written =
+                Some(Cells::with(*written, (index(min[u]), index(max[u])), (index(min[v]), index(max[v]))));
+            for y in index(min[v])..=index(max[v]) {
+                let dy = coordinate(y) - a[v];
+                for x in index(min[u])..=index(max[u]) {
+                    let dx = coordinate(x) - a[u];
+                    let s = (dx * ac[v] - dy * ac[u]) * inverse;
+                    let t = (ab[u] * dy - ab[v] * dx) * inverse;
+                    if s >= 0.0 && t >= 0.0 && s + t <= 1.0 {
+                        grid[y * GRID + x].add(a[axis] + s * ab[axis] + t * ac[axis]);
                     }
                 }
             }
@@ -262,10 +287,88 @@ pub(super) struct Clearance {
     residual: Option<Residual>,
     short_face: Option<ShortFace>,
     underarm: Option<Underarm>,
-    /// Presented ticks drawn since the last solve, which the next one takes as its elapsed time.
-    pending: f64,
-    /// The tick boundary, in its interval, the last solve was due at: `None` solves at the next update.
-    solved_in: Option<i64>,
+    /// How far ahead, in multiples of its motion since the one before, the garment was last posed
+    /// forecast: the strands' solves forecast their own probes as far.
+    forecast: f32,
+    /// Per part of a solve ([`Self::parts`]), the presented ticks drawn since it last solved, which it
+    /// takes as its elapsed time when it next does.
+    pending: Vec<f64>,
+    /// The tick of the last update at an interval: `None` solves every part at the next.
+    last: Option<i64>,
+    /// The tick of its interval the next tick drawn is: the parts from here on haven't solved in it.
+    phase: u32,
+    /// The tick of its interval each part solves on.
+    spread: Spread,
+}
+
+/// Where a solve's parts fall in its interval, each on one tick, so that no tick carries much more than
+/// its share of the solve. The parts that read what others solve keep their order over the interval, so
+/// each sees what those before it solved in the same one; the free parts, which read only the pose, go
+/// wherever is lightest. Deterministic: the same interval always spreads the same way, so a replay
+/// solves each part on the same frames every run.
+#[derive(Clone, Debug, PartialEq)]
+struct Spread {
+    interval: u32,
+    /// Per part, the tick of the interval it solves on, from 0.
+    ticks: Vec<u32>,
+    /// Per tick of the interval, what its parts cost.
+    loads: Vec<u32>,
+}
+
+impl Spread {
+    fn new(parts: usize) -> Self {
+        Self { interval: 1, ticks: vec![0; parts], loads: vec![0] }
+    }
+
+    /// Spreads the parts over `interval` ticks by `cost`, those not `free` in order: the least load a
+    /// tick must take for them all to fit, filling the ticks in turn with the ordered parts, then each
+    /// free part on the lightest tick.
+    fn fit(&mut self, interval: u32, cost: impl Fn(usize) -> u32, free: impl Fn(usize) -> bool) {
+        let interval = interval.max(1);
+        self.interval = interval;
+        self.loads.clear();
+        self.loads.resize(interval as usize, 0);
+        let fits = |capacity: u32, ticks: &mut [u32], loads: &mut [u32]| {
+            loads.fill(0);
+            let mut tick = 0;
+            for part in (0..ticks.len()).filter(|&part| !free(part)) {
+                let cost = cost(part);
+                if loads[tick] > 0 && loads[tick] + cost > capacity {
+                    tick += 1;
+                    if tick == loads.len() {
+                        return false;
+                    }
+                }
+                loads[tick] += cost;
+                ticks[part] = tick as u32;
+            }
+            for part in (0..ticks.len()).filter(|&part| free(part)) {
+                let (tick, &load) =
+                    loads.iter().enumerate().min_by_key(|&(_, &load)| load).expect("an interval has a tick");
+                if load + cost(part) > capacity {
+                    return false;
+                }
+                loads[tick] += cost(part);
+                ticks[part] = tick as u32;
+            }
+            true
+        };
+        let (most, total) = (0..self.ticks.len())
+            .map(&cost)
+            .fold((0, 0), |(most, total), cost| (most.max(cost), total + cost));
+        // Everything on the first tick always fits.
+        let (mut least, mut enough) = (most.max(total.div_ceil(interval)).min(total), total);
+        while least < enough {
+            let middle = least + (enough - least) / 2;
+            if fits(middle, &mut self.ticks, &mut self.loads) {
+                enough = middle;
+            } else {
+                least = middle + 1;
+            }
+        }
+        let fitted = fits(least, &mut self.ticks, &mut self.loads);
+        debug_assert!(fitted, "a solve's parts fit {least} a tick");
+    }
 }
 
 impl Clearance {
@@ -434,6 +537,8 @@ impl Clearance {
             )
         };
         let shirt_points = vec![Vec3::ZERO; shirt.len()];
+        let parts = Self::parts(strands.len());
+        debug_assert!(parts <= 32, "a solve's parts are bits of a u32");
         let placed = vec![Placed::default(); limbs.len()];
         let probe_count =
             strands.iter().map(|strand| strand.previous_probes.capacity()).max().unwrap_or_default();
@@ -459,9 +564,54 @@ impl Clearance {
             residual,
             short_face,
             underarm,
-            pending: 0.0,
-            solved_in: None,
+            forecast: 0.0,
+            pending: vec![0.0; parts],
+            last: None,
+            phase: 0,
+            spread: Spread::new(parts),
         })
+    }
+
+    /// How many parts a solve has with `strands`: the garment posed, its envelopes' axes, each strand,
+    /// the residual and each of the face's locks.
+    fn parts(strands: usize) -> usize {
+        STRANDS + strands + 1 + LOCKS
+    }
+
+    fn strand_part(strand: usize) -> usize {
+        STRANDS + strand
+    }
+
+    fn residual_part(&self) -> usize {
+        STRANDS + self.strands.len()
+    }
+
+    fn face_part(&self, lock: usize) -> usize {
+        self.residual_part() + 1 + lock
+    }
+
+    /// Every part, a bit each.
+    fn every_part(&self) -> u32 {
+        u32::MAX >> (32 - self.pending.len())
+    }
+
+    /// What a part of the solve costs at `interval`, for [`Spread`] to balance. The forecast envelope's
+    /// axes cost nothing where the interval is too long for a forecast, and a part absent nothing.
+    fn cost(&self, part: usize, interval: u32) -> u32 {
+        match part {
+            POSE => POSE_COST,
+            AXES..AHEAD_AXES => AXIS_COST,
+            AHEAD_AXES..STRANDS => {
+                if interval < 4 {
+                    AHEAD_AXIS_COST
+                } else {
+                    0
+                }
+            }
+            _ if part < self.residual_part() => STRAND_COST,
+            _ if part == self.residual_part() => self.residual.as_ref().map_or(0, |_| RESIDUAL_COST),
+            _ => self.short_face.as_ref().map_or(0, |_| FACE_LOCK_COST),
+        }
     }
 
     pub(super) fn reset(&mut self) {
@@ -473,8 +623,8 @@ impl Clearance {
         }
         self.has_history = false;
         self.waking = false;
-        self.pending = 0.0;
-        self.solved_in = None;
+        self.pending.fill(0.0);
+        self.last = None;
         for strand in &mut self.strands {
             strand.relief = Relief::default();
         }
@@ -485,8 +635,8 @@ impl Clearance {
         // orientation and discard only the motion estimate, which has a gap now.
         self.has_history = false;
         self.waking = true;
-        self.pending = 0.0;
-        self.solved_in = None;
+        self.pending.fill(0.0);
+        self.last = None;
         if let Some(residual) = &mut self.residual {
             residual.sleep();
         }
@@ -498,52 +648,73 @@ impl Clearance {
     pub(super) fn settle(&mut self, pose: &mut CharacterPose, wake_elapsed: f32) {
         let elapsed = self.waking.then_some(wake_elapsed);
         self.waking = false;
-        self.pending = 0.0;
-        self.apply(pose, elapsed);
+        self.solve_all(pose, elapsed);
     }
 
-    /// Solves if `interval` ticks have come round since the last solve, on tick boundaries, taking
-    /// every tick drawn since as elapsed; otherwise holds what it last solved. An interval of 1 solves
-    /// on every update with `span`, the ticks since the last, and `None` holds.
+    /// Solves every part over `elapsed`, `None` across a cut.
+    fn solve_all(&mut self, pose: &mut CharacterPose, elapsed: Option<f32>) {
+        self.pending.fill(0.0);
+        self.run(pose, self.every_part(), |_| elapsed);
+    }
+
+    /// Solves the parts whose ticks in `interval` have come round since the update before, each taking
+    /// every tick drawn since it last solved as its elapsed time, and writes what the others last
+    /// solved. An interval of 1 solves every part on every update with `span`, the ticks since the
+    /// last, and `None` holds.
     pub(super) fn update(&mut self, pose: &mut CharacterPose, ticks: f64, span: f64, interval: Option<u32>) {
-        self.pending += span;
+        for pending in &mut self.pending {
+            *pending += span;
+        }
         let due = match interval {
-            None => None,
-            Some(0 | 1) => Some(None),
-            Some(interval) => {
-                let boundary = (ticks / f64::from(interval)).floor() as i64;
-                (self.solved_in != Some(boundary)).then_some(Some(boundary))
+            None => 0,
+            Some(0 | 1) => {
+                self.last = None;
+                self.every_part()
             }
+            Some(interval) => self.due(ticks.floor() as i64, interval),
         };
-        let Some(boundary) = due else {
-            self.hold(pose);
-            return;
-        };
-        let elapsed = self.pending as f32;
-        self.pending = 0.0;
-        self.solved_in = boundary;
-        self.apply(pose, Some(elapsed));
+        self.run(pose, due, |pending| Some(pending as f32));
     }
 
-    /// Writes what the last solve wrote, as offsets on the pose as it is now, solving nothing.
-    fn hold(&mut self, pose: &mut CharacterPose) {
-        if let Some(underarm) = &self.underarm {
-            underarm.hold(pose);
+    /// The parts due at `tick`, a bit each: those on the ticks of `interval` this update reaches from
+    /// where the last left off. An interval runs to its end before the next begins, so its parts solve
+    /// in their order even where a frame draws more than one tick, and its last frame leaves any ticks
+    /// over. The first update at an interval, or one a whole interval late, solves every part and
+    /// begins the next.
+    fn due(&mut self, tick: i64, interval: u32) -> u32 {
+        let Some(last) = self.last else {
+            self.last = Some(tick);
+            self.phase = 0;
+            return self.every_part();
+        };
+        let ticks = tick - last;
+        if ticks <= 0 {
+            return 0;
         }
-        let chest = Frame::of(&pose.model()[self.chest]);
-        let mut wrote = false;
-        for strand in &self.strands {
-            wrote |= write_relief(pose, chest, strand.joints[0], strand.relief);
+        self.last = Some(tick);
+        if self.spread.interval != interval {
+            let mut costs = [0; 32];
+            for (part, cost) in costs.iter_mut().enumerate().take(self.pending.len()) {
+                *cost = self.cost(part, interval);
+            }
+            let residual = self.residual_part();
+            self.spread.fit(interval, |part| costs[part], |part| part > residual);
+            self.phase = 0;
         }
-        if wrote {
-            pose.finish();
+        if ticks >= i64::from(interval) {
+            self.phase = 0;
+            return self.every_part();
         }
-        if let Some(residual) = &mut self.residual {
-            residual.hold(pose);
+        let from = self.phase;
+        let to = (from + ticks as u32).min(interval);
+        self.phase = if to == interval { 0 } else { to };
+        let mut due = 0;
+        for (part, &at) in self.spread.ticks.iter().enumerate() {
+            if (from..to).contains(&at) {
+                due |= 1 << part;
+            }
         }
-        if let Some(face) = &mut self.short_face {
-            face.apply(pose, &self.strands, Some(0.0));
-        }
+        due
     }
 
     pub(super) fn continue_from(&mut self, old: &Self) {
@@ -569,10 +740,12 @@ impl Clearance {
         }
         self.has_history = old.has_history;
         self.waking = old.waking;
-        self.pending = old.pending;
-        self.solved_in = old.solved_in;
-        self.previous_shirt.copy_from_slice(&old.previous_shirt);
-        self.previous_limbs.copy_from_slice(&old.previous_limbs);
+        self.pending.copy_from_slice(&old.pending);
+        // This one's garment has no envelope yet, so its next update solves every part, the garment's
+        // motion measured from where the old one last posed it.
+        self.last = None;
+        self.posed_shirt.copy_from_slice(&old.posed_shirt);
+        self.posed_limbs.copy_from_slice(&old.posed_limbs);
         for (new, old) in self.strands.iter_mut().zip(&old.strands) {
             new.relief = old.relief;
             new.previous_probes.clone_from(&old.previous_probes);
@@ -603,16 +776,137 @@ impl Clearance {
             })
     }
 
-    pub(super) fn apply(&mut self, pose: &mut CharacterPose, elapsed: Option<f32>) {
+    /// Solves the parts in `due`, a bit each, on the pose as it is now, each over `elapsed` of the ticks
+    /// drawn since it last solved, and writes what the others last solved, as offsets on the pose as it
+    /// is now. Parts go in order, so a strand solved here sees this frame's envelopes if they solved,
+    /// and the residual and the face this frame's strands.
+    fn run(&mut self, pose: &mut CharacterPose, due: u32, elapsed: impl Fn(f64) -> Option<f32>) {
+        // Posing the garment moves no joint, so the chest's frame stands through it.
+        let chest_from_model = pose.model()[self.chest].inverse();
+        match take(&mut self.pending, due, POSE, &elapsed) {
+            Some(elapsed) => self.pose_garment(pose, chest_from_model, elapsed),
+            None => {
+                if let Some(underarm) = &self.underarm {
+                    underarm.hold(pose);
+                }
+            }
+        }
+        for axis in 0..3 {
+            if take(&mut self.pending, due, AXES + axis, &elapsed).is_some() {
+                self.garment.refit_axis(axis, &self.posed_shirt, &self.triangles);
+            }
+            if take(&mut self.pending, due, AHEAD_AXES + axis, &elapsed).is_some() && self.forecast > 0.0 {
+                self.ahead_garment.refit_axis(axis, &self.ahead_shirt, &self.triangles);
+            }
+        }
+        let chest = Frame::of(&pose.model()[self.chest]);
+        let forecast = self.forecast;
+        let predict = |now: Vec3, before: Vec3| now + ((now - before) * forecast).clamp_length_max(0.07);
+        let mut wrote = false;
+        for (index, strand) in self.strands.iter_mut().enumerate() {
+            let joint = strand.joints[0];
+            if let Some(elapsed) = take(&mut self.pending, due, Self::strand_part(index), &elapsed) {
+                let pivot =
+                    |joint: usize| chest_from_model.transform_point3(pose.model()[joint].translation.into());
+                let root = pivot(joint);
+                let end = pivot(*strand.joints.last().expect("has a tail joint"));
+                let Some(along) = (end - root).try_normalize() else { continue };
+                self.probes.clear();
+                self.probes.extend(
+                    strand
+                        .samples
+                        .iter()
+                        .map(|p| p.split(pose.model(), chest_from_model, root, &strand.joints)),
+                );
+                for link in strand.joints.windows(2) {
+                    let a = pivot(link[0]);
+                    let b = pivot(link[1]);
+                    for sample in 1..=6 {
+                        let at = a.lerp(b, sample as f32 / 6.0);
+                        self.probes.push(Probe { fixed: root, rotating: at - root, radius: 0.002 });
+                    }
+                }
+                self.ahead_probes.clear();
+                if forecast > 0.0 {
+                    self.ahead_probes.extend(self.probes.iter().zip(&strand.previous_probes).map(
+                        |(now, before)| Probe {
+                            fixed: predict(now.fixed, before.fixed),
+                            rotating: predict(now.rotating, before.rotating),
+                            radius: now.radius,
+                        },
+                    ));
+                }
+                strand.previous_probes.clear();
+                strand.previous_probes.extend_from_slice(&self.probes);
+                let excursion = elapsed.map_or(0.55, |dt| (dt.min(2.0) * MAX_TURN_PER_TICK).to_radians());
+                let filter = |probe: &Probe, garment: &Garment, limbs: &[Placed]| {
+                    let point = probe.fixed + strand.relief.rotation * probe.rotating;
+                    let margin = excursion * probe.rotating.length() + probe.radius + GARMENT_MARGIN;
+                    garment.within(point, margin)
+                        || limbs.iter().any(|limb| {
+                            point.distance_squared(limb.nearest(point)) <= (limb.radius + margin).powi(2)
+                        })
+                };
+                self.probes.retain(|probe| filter(probe, &self.garment, &self.posed_limbs));
+                self.ahead_probes.retain(|probe| filter(probe, &self.ahead_garment, &self.ahead_limbs));
+                // Take the outer locks around the sleeve as it moves from back to front.
+                // The forward edge of the upper arm is about 4 cm ahead of its pivot.
+                let route = strand.shoulder_route.map(|arm| {
+                    let middle = pivot(strand.joints[strand.joints.len() / 2 - 1]);
+                    let fore = ((middle.z - pivot(arm).z - 0.04) / 0.06).clamp(-0.8, 0.8);
+                    Vec3::new(strand.side, 0.3, fore)
+                });
+                strand.relief =
+                    choose(strand.relief, elapsed, along, strand.side, strand.front, route, |rotation| {
+                        let current = penetration(rotation, &self.garment, &self.posed_limbs, &self.probes);
+                        let ahead =
+                            penetration(rotation, &self.ahead_garment, &self.ahead_limbs, &self.ahead_probes);
+                        (current, ahead)
+                    });
+            }
+            wrote |= write_relief(pose, chest, joint, strand.relief);
+        }
+        if wrote {
+            pose.finish();
+        }
+        let residual_part = self.residual_part();
+        if let Some(residual) = &mut self.residual {
+            match take(&mut self.pending, due, residual_part, &elapsed) {
+                Some(elapsed) => residual.apply(
+                    pose,
+                    chest_from_model,
+                    &self.strands,
+                    &self.posed_shirt,
+                    &self.previous_shirt,
+                    elapsed,
+                ),
+                None => residual.hold(pose),
+            }
+        }
+        let face_part = self.face_part(0);
+        if let Some(face) = &mut self.short_face {
+            let elapsed = std::array::from_fn(|lock| {
+                take(&mut self.pending, due, face_part + lock, &elapsed).unwrap_or(Some(0.0))
+            });
+            face.apply(pose, &self.strands, elapsed);
+        }
+    }
+
+    /// Poses the garment over `elapsed` ticks, in the chest's frame: the underarm's relief, the shirt
+    /// and the arms where they stand and as forecast ahead, and the envelopes' bounds, whose axes
+    /// refit as parts of their own. Where it posed them before becomes what the forecast and the
+    /// residual measure motion from.
+    fn pose_garment(&mut self, pose: &mut CharacterPose, chest_from_model: Affine3A, elapsed: Option<f32>) {
         if let Some(underarm) = &self.underarm {
             underarm.clear(pose);
         }
         let forecast = elapsed
             .filter(|&dt| self.has_history && dt > 0.0 && dt < 4.0)
             .map_or(0.0, |dt| LOOKAHEAD_TICKS / dt.max(0.125) * ((4.0 - dt) * 0.5).min(1.0));
+        self.forecast = forecast;
         let predict = |now: Vec3, before: Vec3| now + ((now - before) * forecast).clamp_length_max(0.07);
-        let chest = Frame::of(&pose.model()[self.chest]);
-        let chest_from_model = pose.model()[self.chest].inverse();
+        std::mem::swap(&mut self.previous_shirt, &mut self.posed_shirt);
+        std::mem::swap(&mut self.previous_limbs, &mut self.posed_limbs);
         for (out, &point) in self.posed_shirt.iter_mut().zip(&self.shirt) {
             *out = chest_from_model.transform_point3(point.model(pose.model()));
         }
@@ -632,14 +926,14 @@ impl Clearance {
         if let Some(underarm) = &mut self.underarm {
             underarm.solve(pose, chest_from_model, &self.shirt, &mut self.posed_shirt, elapsed);
         }
-        self.garment.refit(&self.posed_shirt, &self.triangles);
+        self.garment.bound(&self.posed_shirt);
         if forecast > 0.0 {
             for ((ahead, &now), &before) in
                 self.ahead_shirt.iter_mut().zip(&self.posed_shirt).zip(&self.previous_shirt)
             {
                 *ahead = predict(now, before);
             }
-            self.ahead_garment.refit(&self.ahead_shirt, &self.triangles);
+            self.ahead_garment.bound(&self.ahead_shirt);
         }
         for (out, limb) in self.posed_limbs.iter_mut().zip(&self.limbs) {
             let transform = chest_from_model * pose.model()[limb.joint];
@@ -660,85 +954,18 @@ impl Clearance {
                 *ahead = Placed { start, axis, radius: now.radius };
             }
         }
-        let mut wrote = false;
-        for strand in &mut self.strands {
-            let joint = strand.joints[0];
-            let pivot =
-                |joint: usize| chest_from_model.transform_point3(pose.model()[joint].translation.into());
-            let root = pivot(joint);
-            let end = pivot(*strand.joints.last().expect("has a tail joint"));
-            let Some(along) = (end - root).try_normalize() else { continue };
-            self.probes.clear();
-            self.probes.extend(
-                strand.samples.iter().map(|p| p.split(pose.model(), chest_from_model, root, &strand.joints)),
-            );
-            for link in strand.joints.windows(2) {
-                let a = pivot(link[0]);
-                let b = pivot(link[1]);
-                for sample in 1..=6 {
-                    let at = a.lerp(b, sample as f32 / 6.0);
-                    self.probes.push(Probe { fixed: root, rotating: at - root, radius: 0.002 });
-                }
-            }
-            self.ahead_probes.clear();
-            if forecast > 0.0 {
-                self.ahead_probes.extend(self.probes.iter().zip(&strand.previous_probes).map(
-                    |(now, before)| Probe {
-                        fixed: predict(now.fixed, before.fixed),
-                        rotating: predict(now.rotating, before.rotating),
-                        radius: now.radius,
-                    },
-                ));
-            }
-            strand.previous_probes.clear();
-            strand.previous_probes.extend_from_slice(&self.probes);
-            let excursion = elapsed.map_or(0.55, |dt| (dt.min(2.0) * MAX_TURN_PER_TICK).to_radians());
-            let filter = |probe: &Probe, garment: &Garment, limbs: &[Placed]| {
-                let point = probe.fixed + strand.relief.rotation * probe.rotating;
-                let margin = excursion * probe.rotating.length() + probe.radius + GARMENT_MARGIN;
-                garment.within(point, margin)
-                    || limbs.iter().any(|limb| {
-                        point.distance_squared(limb.nearest(point)) <= (limb.radius + margin).powi(2)
-                    })
-            };
-            self.probes.retain(|probe| filter(probe, &self.garment, &self.posed_limbs));
-            self.ahead_probes.retain(|probe| filter(probe, &self.ahead_garment, &self.ahead_limbs));
-            // Take the outer locks around the sleeve as it moves from back to front.
-            // The forward edge of the upper arm is about 4 cm ahead of its pivot.
-            let route = strand.shoulder_route.map(|arm| {
-                let middle = pivot(strand.joints[strand.joints.len() / 2 - 1]);
-                let fore = ((middle.z - pivot(arm).z - 0.04) / 0.06).clamp(-0.8, 0.8);
-                Vec3::new(strand.side, 0.3, fore)
-            });
-            strand.relief =
-                choose(strand.relief, elapsed, along, strand.side, strand.front, route, |rotation| {
-                    let current = penetration(rotation, &self.garment, &self.posed_limbs, &self.probes);
-                    let ahead =
-                        penetration(rotation, &self.ahead_garment, &self.ahead_limbs, &self.ahead_probes);
-                    (current, ahead)
-                });
-            wrote |= write_relief(pose, chest, joint, strand.relief);
-        }
-        if wrote {
-            pose.finish();
-        }
-        if let Some(residual) = &mut self.residual {
-            residual.apply(
-                pose,
-                chest_from_model,
-                &self.strands,
-                &self.posed_shirt,
-                &self.previous_shirt,
-                elapsed,
-            );
-        }
-        if let Some(face) = &mut self.short_face {
-            face.apply(pose, &self.strands, elapsed);
-        }
         self.has_history = true;
-        self.previous_shirt.copy_from_slice(&self.posed_shirt);
-        self.previous_limbs.copy_from_slice(&self.posed_limbs);
     }
+}
+
+/// A part's elapsed time if it's in `due`, taking its ticks pending: `None` if it holds.
+fn take(
+    pending: &mut [f64],
+    due: u32,
+    part: usize,
+    elapsed: impl Fn(f64) -> Option<f32>,
+) -> Option<Option<f32>> {
+    (due & 1 << part != 0).then(|| elapsed(std::mem::take(&mut pending[part])))
 }
 
 /// Turns a strand's root `joint` by `relief`, which is in the chest's frame, and says whether it did.
@@ -1007,6 +1234,50 @@ mod tests {
         assert!(degrees_between(Quat::IDENTITY, next.rotation) < 18.0);
     }
 
+    /// A solve's parts spread over the interval: those that read what others solve in order, so a strand
+    /// never solves before the envelope it reads in the same interval, and the face's locks wherever is
+    /// lightest, no tick taking more than an even share and a part.
+    #[test]
+    fn a_solves_parts_spread_over_the_interval_in_order_as_evenly_as_order_allows() {
+        let heroine = |ahead: u32| -> Vec<u32> {
+            [POSE_COST]
+                .into_iter()
+                .chain([AXIS_COST; 3])
+                .chain([ahead; 3])
+                .chain([STRAND_COST; 12])
+                .chain([RESIDUAL_COST])
+                .chain([FACE_LOCK_COST; LOCKS])
+                .collect()
+        };
+        let ordered = Clearance::parts(12) - LOCKS;
+        let free = |part: usize| part >= ordered;
+        let loads = |spread: &Spread, costs: &[u32]| {
+            let mut loads = vec![0; spread.interval as usize];
+            for (&tick, &cost) in spread.ticks.iter().zip(costs) {
+                loads[tick as usize] += cost;
+            }
+            loads
+        };
+        let mut spread = Spread::new(Clearance::parts(12));
+        let costs = heroine(AHEAD_AXIS_COST);
+        spread.fit(3, |part| costs[part], free);
+        // The garment posed and its envelope; the forecast envelope, the strands and a face lock; the
+        // residual and the other two.
+        assert_eq!(loads(&spread, &costs), [545, 518, 565]);
+        assert_eq!(spread.ticks[ordered..], [2, 1, 2]);
+        for interval in 1..=8 {
+            let costs = heroine(if interval < 4 { AHEAD_AXIS_COST } else { 0 });
+            spread.fit(interval, |part| costs[part], free);
+            assert!(spread.ticks[..ordered].is_sorted(), "{interval}: {:?}", spread.ticks);
+            let loads = loads(&spread, &costs);
+            let even = costs.iter().sum::<u32>().div_ceil(interval);
+            let most = *loads.iter().max().unwrap();
+            assert!(most < even.max(RESIDUAL_COST) + RESIDUAL_COST, "{interval}: {loads:?}");
+        }
+        spread.fit(1, |part| heroine(AHEAD_AXIS_COST)[part], free);
+        assert!(spread.ticks.iter().all(|&tick| tick == 0));
+    }
+
     /// A chest, and a strand hanging from it with a clearance turning it 24° off its pose and no
     /// garment, so a solve only releases it; and its springs, after their first frame at tick 8.
     fn turned_strand() -> (CharacterPose, SpringBones, SpringFrame, Clearance) {
@@ -1077,8 +1348,11 @@ mod tests {
             residual: None,
             short_face: None,
             underarm: None,
-            pending: 0.0,
-            solved_in: None,
+            forecast: 0.0,
+            pending: vec![0.0; Clearance::parts(1)],
+            last: None,
+            phase: 0,
+            spread: Spread::new(Clearance::parts(1)),
         };
         (pose, springs, frame, clearance)
     }
@@ -1086,7 +1360,7 @@ mod tests {
     #[test]
     fn lod_wake_retains_drawn_relief_at_a_frozen_clock() {
         let (mut pose, mut springs, mut frame, mut clearance) = turned_strand();
-        clearance.apply(&mut pose, Some(0.0));
+        clearance.solve_all(&mut pose, Some(0.0));
         springs.clearance = Some(Box::new(clearance));
         let drawn = pose.locals()[1].rotation;
         assert!(degrees_between(drawn, Quat::IDENTITY) > 23.9);
@@ -1106,42 +1380,65 @@ mod tests {
         assert_eq!(pose.locals()[1].rotation, Quat::IDENTITY);
     }
 
-    /// Every other tick, a light tier's clearance solves at the first update past each boundary,
-    /// taking every tick since the last solve, and between writes what that solve left, unchanged.
-    /// Held, it writes and solves nothing more however long it waits.
+    /// A light tier's clearance spreads its solve over the interval: the garment posed first, the strand
+    /// last, each taking every tick since it last solved, and on each frame the parts that don't solve
+    /// write what they last solved, unchanged. An interval runs out before the next begins, however
+    /// many ticks a frame draws, and a frame a whole interval late solves every part. Held, it writes
+    /// and solves nothing more however long it waits.
     #[test]
-    fn a_clearance_at_an_interval_solves_on_its_boundaries_and_holds_between() {
+    fn a_clearance_at_an_interval_spreads_its_parts_over_it_and_holds_each_between() {
         let (mut pose, _, _, mut clearance) = turned_strand();
         let rest = pose.locals()[1].rotation;
-        let mut update = |clearance: &mut Clearance, ticks: f64, interval| {
+        let mut update = |clearance: &mut Clearance, ticks: f64, span: f64, interval| {
             pose.locals_mut()[1].rotation = rest;
             pose.finish();
-            clearance.update(&mut pose, ticks, 1.0, interval);
+            clearance.update(&mut pose, ticks, span, interval);
             degrees_between(pose.locals()[1].rotation, rest)
         };
+        let strand = Clearance::strand_part(0);
+        let pending = |clearance: &Clearance| (clearance.pending[POSE], clearance.pending[strand]);
         let full = degrees_between(clearance.strands[0].relief.rotation, Quat::IDENTITY);
-        // Tick 8 is the boundary of 4: a solve over one tick, which releases some of the turn.
-        let solved = update(&mut clearance, 8.0, Some(2));
+        // The first update solves every part: over one tick, which releases some of the turn.
+        let solved = update(&mut clearance, 8.0, 1.0, Some(2));
         assert!(solved < full - 1.0 && solved > 15.0, "{solved} of {full}");
-        assert_eq!(clearance.pending, 0.0);
-        // Tick 9 is still in it: held, to the bit.
+        assert_eq!(pending(&clearance), (0.0, 0.0));
+        // Then each interval of two ticks poses the garment on its first and solves the strand on its
+        // second, over both ticks since it last did, releasing more than one tick did.
+        assert_eq!(update(&mut clearance, 9.0, 1.0, Some(2)), solved);
+        assert_eq!((clearance.spread.ticks[POSE], clearance.spread.ticks[strand]), (0, 1));
+        assert_eq!(pending(&clearance), (0.0, 1.0));
+        let twice = update(&mut clearance, 10.0, 1.0, Some(2));
+        assert!(solved - twice > full - solved, "{twice} after {solved}");
+        assert_eq!(pending(&clearance), (1.0, 0.0));
         let relief = clearance.strands[0].relief;
-        assert_eq!(update(&mut clearance, 9.0, Some(2)), solved);
+        assert_eq!(update(&mut clearance, 11.0, 1.0, Some(2)), twice);
         assert_eq!(clearance.strands[0].relief, relief);
-        assert_eq!(clearance.pending, 1.0);
-        // Tick 10 starts the next: a solve over both ticks since, releasing more than one would.
-        let next = update(&mut clearance, 10.0, Some(2));
-        assert_eq!(clearance.pending, 0.0);
-        assert!(next < solved - 1.0, "{next} after {solved}");
+        // An interval of four takes the garment's envelope a tick an axis, the strand with the last.
+        update(&mut clearance, 12.0, 1.0, Some(4));
+        assert_eq!(clearance.spread.ticks[..=strand], [0, 1, 2, 3, 3, 3, 3, 3]);
+        assert_eq!(pending(&clearance), (0.0, 2.0));
+        // Two ticks a frame: the axes on the first, then the last axis and the strand, the interval's
+        // tick left over; the next frame begins the next interval.
+        update(&mut clearance, 14.0, 2.0, Some(4));
+        assert_eq!(pending(&clearance), (2.0, 4.0));
+        assert_eq!(clearance.pending[AXES + 2], 4.0);
+        update(&mut clearance, 16.0, 2.0, Some(4));
+        assert_eq!(pending(&clearance), (4.0, 0.0));
+        update(&mut clearance, 18.0, 2.0, Some(4));
+        assert_eq!(pending(&clearance), (0.0, 2.0));
+        // A frame a whole interval late solves every part (that it has: no residual or face here).
+        update(&mut clearance, 22.0, 4.0, Some(4));
+        assert!(clearance.pending[..=strand].iter().all(|&pending| pending == 0.0));
         // Out of range, it holds.
         let relief = clearance.strands[0].relief;
-        for ticks in 11..40 {
-            assert_eq!(update(&mut clearance, f64::from(ticks), None), next);
+        let held = update(&mut clearance, 14.0, 1.0, None);
+        for ticks in 15..40 {
+            assert_eq!(update(&mut clearance, f64::from(ticks), 1.0, None), held);
         }
         assert_eq!(clearance.strands[0].relief, relief);
         // An interval of 1 solves at every update, however short.
         let mut reference = turned_strand().3;
-        reference.apply(&mut turned_strand().0, Some(1.0));
+        reference.solve_all(&mut turned_strand().0, Some(1.0));
         let (mut pose, _, _, mut every) = turned_strand();
         every.update(&mut pose, 8.25, 1.0, Some(1));
         assert_eq!(every.strands[0].relief, reference.strands[0].relief);

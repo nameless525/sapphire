@@ -896,6 +896,7 @@ impl SandboxApp {
             #[cfg(feature = "dev")]
             self.dev.after_steps(self.show.fight.combat.as_ref(), &self.scene);
             self.scene.animate(&self.content, alpha, &mut self.show);
+            self.stages.secondary_motion = self.scene.anim_stats().spring_time;
             if target.is_some() {
                 self.show.begin_interface(self.renderer.ui_page_state());
             }

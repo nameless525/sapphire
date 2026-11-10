@@ -308,6 +308,8 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             budget_row(ui, &name, stages.get(stage), tier.stage(stage, stages.fixed_steps));
         }
         budget_row(ui, "Game side (of §3.2's total)", stages.game_side(), tier.game_side());
+        // Spring bones and the clothes' clearance, inside extract (M4 H5).
+        budget_row(ui, "  Secondary motion", stages.secondary_motion, tier.secondary_motion());
         // What the effects' steps and frame write took this frame (M2 E2), where any played.
         if frame.render.vfx.sprites > 0 || frame.render.vfx.ribbon_points > 0 {
             budget_row(ui, "  VFX simulation", frame.render.vfx.simulation.simulation, tier.vfx_simulation());

@@ -11,6 +11,8 @@ const SAMPLES: usize = 112;
 const GAP: f32 = 0.002;
 const MAX_TURN: f32 = 16.0;
 const RATE: f32 = 4.0;
+/// The face's locks: the strands either side of it and the one over it.
+pub(in crate::springs::clearance) const LOCKS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Sample {
@@ -37,8 +39,8 @@ pub(in crate::springs::clearance) struct ShortFace {
     nodes: Vec<Node>,
     field: Field,
     locks: Vec<Lock>,
-    drawn: [Quat; 3],
-    remembered: [[Option<usize>; SAMPLES]; 3],
+    drawn: [Quat; LOCKS],
+    remembered: [[Option<usize>; SAMPLES]; LOCKS],
     posed: Vec<Vec3>,
 }
 
@@ -124,7 +126,7 @@ impl ShortFace {
             }
             locks.push(Lock { strand, root, samples });
         }
-        if locks.len() != 3 {
+        if locks.len() != LOCKS {
             return None;
         }
 
@@ -188,20 +190,20 @@ impl ShortFace {
             nodes,
             field,
             locks,
-            drawn: [Quat::IDENTITY; 3],
-            remembered: [[None; SAMPLES]; 3],
+            drawn: [Quat::IDENTITY; LOCKS],
+            remembered: [[None; SAMPLES]; LOCKS],
             posed: vec![Vec3::ZERO; skin.len()],
             skin,
         })
     }
 
     pub(in crate::springs::clearance) fn reset(&mut self) {
-        self.drawn = [Quat::IDENTITY; 3];
-        self.remembered = [[None; SAMPLES]; 3];
+        self.drawn = [Quat::IDENTITY; LOCKS];
+        self.remembered = [[None; SAMPLES]; LOCKS];
     }
 
     pub(in crate::springs::clearance) fn sleep(&mut self) {
-        self.remembered = [[None; SAMPLES]; 3];
+        self.remembered = [[None; SAMPLES]; LOCKS];
     }
 
     pub(in crate::springs::clearance) fn continue_from(&mut self, old: &Self) {
@@ -225,17 +227,19 @@ impl ShortFace {
         self.locks.iter().map(|lock| lock.root).find(|&joint| conflicts(joint))
     }
 
+    /// Solves each lock over its `elapsed` ticks, `None` or none holding it as it was drawn, and writes
+    /// them all. The locks read only the pose, so each may solve on a frame of its own.
     pub(in crate::springs::clearance) fn apply(
         &mut self,
         pose: &mut CharacterPose,
         strands: &[Strand],
-        elapsed: Option<f32>,
+        elapsed: [Option<f32>; LOCKS],
     ) {
-        let dt = elapsed.unwrap_or(0.0).clamp(0.0, 2.0);
+        let dts = elapsed.map(|elapsed| elapsed.unwrap_or(0.0).clamp(0.0, 2.0));
         let model = pose.model();
         let head = Frame::of(&model[self.head]).rotation;
         let from_model = model[self.head].inverse();
-        if dt > 0.0 {
+        if dts.iter().any(|&dt| dt > 0.0) {
             for (out, &point) in self.posed.iter_mut().zip(&self.skin) {
                 *out = from_model.transform_point3(point.model(model));
             }
@@ -254,8 +258,8 @@ impl ShortFace {
             }
             self.field.refit(&self.nodes, &self.patches, |slot| self.posed[skin_index(slot)]);
         }
-        let mut offsets = [Quat::IDENTITY; 3];
-        for (i, lock) in self.locks.iter().enumerate() {
+        let mut offsets = [Quat::IDENTITY; LOCKS];
+        for (i, (lock, dt)) in self.locks.iter().zip(dts).enumerate() {
             let previous = self.drawn[i];
             let mut target = previous;
             if dt > 0.0 {
@@ -411,8 +415,8 @@ mod tests {
             nodes: vec![Node { start: 0, end: 1, right: None }],
             field: Field::new(1, 1),
             locks,
-            drawn: [Quat::IDENTITY; 3],
-            remembered: [[None; SAMPLES]; 3],
+            drawn: [Quat::IDENTITY; LOCKS],
+            remembered: [[None; SAMPLES]; LOCKS],
             posed: vec![Vec3::ZERO; 3],
         };
         let strands = std::array::from_fn(|i| Strand {
@@ -435,10 +439,10 @@ mod tests {
     fn full_apply_retains_contact_through_frozen_sleep_and_head_transport() {
         let (mut face, base, strands) = fixture();
         let mut pose = base.clone();
-        face.apply(&mut pose, &strands, None);
-        assert_eq!(face.drawn, [Quat::IDENTITY; 3]);
+        face.apply(&mut pose, &strands, [None; LOCKS]);
+        assert_eq!(face.drawn, [Quat::IDENTITY; LOCKS]);
 
-        face.apply(&mut pose, &strands, Some(1.0));
+        face.apply(&mut pose, &strands, [Some(1.0); LOCKS]);
         let contact = face.drawn;
         assert!(degrees(contact[0], Quat::IDENTITY) > 1.0);
         assert!(contact.into_iter().all(|q| degrees(q, Quat::IDENTITY) <= RATE + 0.001));
@@ -446,14 +450,14 @@ mod tests {
 
         face.sleep();
         let mut frozen = base.clone();
-        face.apply(&mut frozen, &strands, Some(0.0));
+        face.apply(&mut frozen, &strands, [Some(0.0); LOCKS]);
         assert_eq!(face.drawn, contact);
         assert_eq!(frozen.locals()[1].rotation, first);
 
         let mut transported = base.clone();
         transported.locals_mut()[0].rotation = Quat::from_rotation_y(0.8);
         transported.finish();
-        face.apply(&mut transported, &strands, Some(0.0));
+        face.apply(&mut transported, &strands, [Some(0.0); LOCKS]);
         assert_eq!(face.drawn, contact);
         assert!(degrees(transported.locals()[1].rotation, first) < 0.05);
 
@@ -466,7 +470,7 @@ mod tests {
             p.parts[0].local.z -= 1.0;
         });
         let mut released = base.clone();
-        face.apply(&mut released, &strands, Some(0.25));
+        face.apply(&mut released, &strands, [Some(0.25); LOCKS]);
         assert!(
             face.drawn
                 .into_iter()
@@ -477,8 +481,8 @@ mod tests {
 
         face.reset();
         let mut held = base.clone();
-        face.apply(&mut held, &strands, None);
-        assert_eq!(face.drawn, [Quat::IDENTITY; 3]);
+        face.apply(&mut held, &strands, [None; LOCKS]);
+        assert_eq!(face.drawn, [Quat::IDENTITY; LOCKS]);
         assert_eq!(held.locals()[1].rotation, Quat::IDENTITY);
     }
 
@@ -486,11 +490,11 @@ mod tests {
     fn the_surface_query_uses_current_morph_weights_and_refuses_incompatible_history() {
         let (mut face, mut pose, strands) = fixture();
         pose.weights_mut()[0] = 0.5;
-        face.apply(&mut pose, &strands, Some(1.0));
+        face.apply(&mut pose, &strands, [Some(1.0); LOCKS]);
         assert!((face.posed[0].z + 0.008).abs() < 1.0e-6);
         let old = face.clone();
         face.skin[0].parts[0].local.x += 0.001;
         face.continue_from(&old);
-        assert_eq!(face.drawn, [Quat::IDENTITY; 3]);
+        assert_eq!(face.drawn, [Quat::IDENTITY; LOCKS]);
     }
 }

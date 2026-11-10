@@ -174,6 +174,7 @@ The usual rules carry over: existing goldens stay byte-identical unless a row sa
 | Z2 | **The exit run:** `docs/m3-exit-run.md`, and a rehearsal on Simulator and emulator. | M | All above | |
 | Z3 | **Reviews:** fresh agents read each area, as M2's five did, and fix what they find. | M | All above | |
 | Z4 | **Handoff:** `docs/m4-handoff.md`, spec §10's M3 status, the "How to add" sections with no Rust in them. | S | Z2, Z3 | |
+| Z5c | **Three deferred items closed:** insets redraw after a reload, the screen pane follows its model file on disk, and text takes any width. | S | Z3 | **As built (M3 Z5c):** a held inset picture draws again on the frame after a shader reload's swap, a mesh or material replaced in place or adopted, or a probe grid set (`Insets::redraw`, called where each is replaced, so a frame with no reload costs nothing more); the GPU test `render::insets` holds each. The editor's screen pane reads each held model file again on its one-second poll and compares bytes by hash, not modification time and length, which a same-length edit can slip past; an unreadable moment waits, a model that doesn't parse holds the preview back, and what was typed stays (`panes.rs`). `TextSystem::shape` settles a width before `parley` sees it: NaN and infinite wrap nowhere, negative wraps as zero, with the cache still keyed by the caller's bits. No golden or replay moved. |
 
 ## 5. Order
 

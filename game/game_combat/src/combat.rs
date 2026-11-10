@@ -65,7 +65,7 @@ use sapphire_dialogue::ConditionId;
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, KindOfEnemy, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, RunStart, SCRIPTS, Scenario,
-    ScenarioError, Script, checksums_file_name, find_scenario, find_script,
+    ScenarioError, Script, Trail, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
 use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions, TimelineId, ZoneStart};
@@ -139,6 +139,14 @@ pub enum CombatOption {
     /// `start` is where in the scenario's zone it starts: a save's place, for a run continued, which its
     /// file holds too.
     Run { scenario: String, start: RunStart, script: Option<String>, keep: Option<PathBuf> },
+}
+
+/// A run's file as far as it's got, and the checksums the run reached on the way, which a replay of the file
+/// must reach: [`Combat::so_far`].
+#[derive(Clone, Debug)]
+pub struct RunSoFar {
+    pub replay: Replay,
+    pub trail: Trail,
 }
 
 /// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
@@ -752,6 +760,14 @@ impl Combat {
     /// Whether it plays a file: what it does between steps is the file's, so nothing else may.
     pub fn is_replay(&self) -> bool {
         matches!(self.mode, Mode::Replaying { .. })
+    }
+
+    /// A recording's file and its checksums as far as they go, copied, with the run going on: what a playtest
+    /// keeps of a run (M4 F1). Nothing for a replay, which has its file already, or a fight with none.
+    #[must_use]
+    pub fn so_far(&self) -> Option<RunSoFar> {
+        let Mode::Recording { recording, .. } = &self.mode else { return None };
+        Some(RunSoFar { replay: recording.so_far(), trail: recording.trail().clone() })
     }
 
     /// Asks one of a dialogue's bound conditions of this run's VM, between steps, read-only (M3 Q2b): false

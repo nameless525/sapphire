@@ -60,6 +60,14 @@
 //! what it has (`game_flow::update`). A build trusts the keys `platform/patch.toml` lists, and a dev build
 //! the test key too (`sapphire_patch::TEST_KEY`).
 //!
+//! # A playtest build (M4 F1)
+//!
+//! Built with `playtest` (`cargo xtask playtest`), the game keeps each session beside the save, under
+//! `sessions/`: every run as a replay with the checksums it reached, a second of frame times and heat a row,
+//! the settings and the build, and the marks the player sets from the pause's row that only this build shows
+//! (`playtest.rs`, `sapphire_playtest`'s docs for the format). A store build is built without it, and so has
+//! neither the session's code nor the mark.
+//!
 //! # What it doesn't do yet
 //!
 //! A lost device costs what was played since the save.
@@ -67,6 +75,8 @@
 mod app;
 mod offscreen;
 mod options;
+#[cfg(feature = "playtest")]
+mod playtest;
 mod settings;
 pub mod tiers;
 

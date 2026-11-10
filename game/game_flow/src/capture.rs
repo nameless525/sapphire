@@ -78,10 +78,23 @@ pub struct Captured {
 /// writes waited for. A boot ([`GameCapture::boot`]) runs `update` first, if given (M4 P4).
 pub fn capture(
     host: &Host,
+    show: GameShow,
+    first: &CombatOption,
+    capture: &GameCapture,
+    update: Option<BootUpdate>,
+) -> Result<Captured, AppInitError> {
+    capture_with(host, show, first, capture, update, |_| {})
+}
+
+/// [`capture`], with `after` called on the stage after each frame's drawn, and once more after the show's
+/// finished, with its run ended: what a playtest's session hears of a capture (M4 F1).
+pub fn capture_with(
+    host: &Host,
     mut show: GameShow,
     first: &CombatOption,
     capture: &GameCapture,
     update: Option<BootUpdate>,
+    mut after: impl FnMut(&mut Stage<GameShow>),
 ) -> Result<Captured, AppInitError> {
     show.stand_for(capture.display);
     let gpu = headless_gpu()?;
@@ -141,6 +154,7 @@ pub fn capture(
         let into = if frame_at < capture.draw_from { &small } else { &view };
         stage.render(into, 1.0, |_, _| {})?;
         stage.show.say_first_uses(&stage.renderer);
+        after(&mut stage);
     }
     now += frame;
     let at = Timestamp::from_nanos(now.as_nanos() as u64);
@@ -165,7 +179,9 @@ pub fn capture(
             "the title and the game's frames after the boot"
         );
     }
+    after(&mut stage);
     stage.show.finish().map_err(AppInitError::msg)?;
+    after(&mut stage);
     tracing::info!(target: LOG_TARGET, ticks = capture.ticks, "a game drawn with no window");
     Ok(Captured { pixels, adapter: stage.gpu.caps().adapter.clone(), boot })
 }

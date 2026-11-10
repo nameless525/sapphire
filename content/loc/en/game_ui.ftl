@@ -33,6 +33,8 @@ pause-character = Character
 pause-settings = Settings
 pause-to-title = Back to the title
 pause-leave = Quit
+# Only a playtest build's pause shows it (M4 F1).
+pause-mark = Mark this moment
 
 settings-title = Settings
 settings-language = Language

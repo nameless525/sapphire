@@ -1,0 +1,26 @@
+[package]
+name = "sapphire_playtest"
+description = "A playtest's session on disk: what a playtest build keeps of each time someone plays, and its format."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The session document's `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+# The heat readings the frames' rows hold.
+sapphire_core.workspace = true
+# Each run's file and checksums, as `tests/replays/` keeps them.
+sapphire_gameplay.workspace = true
+# Writes off the frame's path.
+sapphire_jobs.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

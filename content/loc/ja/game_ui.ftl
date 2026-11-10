@@ -18,6 +18,8 @@ pause-character = キャラクター
 pause-settings = 設定
 pause-to-title = タイトルへ戻る
 pause-leave = 終了
+# Only a playtest build's pause shows it (M4 F1).
+pause-mark = この場面に印をつける
 
 settings-title = 設定
 settings-language = 言語

@@ -27,6 +27,8 @@
                 back: Some(Command(Resume)),
                 rows: [
                     (node: "resume", does: Command(Resume)),
+                    // A playtest build's alone (M4 F1): it keeps the tick, and the run goes on.
+                    (node: "mark", does: Command(Mark)),
                     (node: "character", does: Open("character")),
                     (node: "settings", does: Open("settings")),
                     (node: "to-title", does: Command(ToTitle)),

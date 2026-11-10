@@ -640,6 +640,14 @@ impl Recording {
         self.recorder.clone().finish()
     }
 
+    /// The run's checksums as far as its file goes: past a live edit or the limit on a run's length, the
+    /// steps it goes on with add none, as they add nothing to the file. What [`Self::so_far`] must reach,
+    /// for a file kept with them (a playtest's session, M4 F1).
+    #[must_use]
+    pub fn trail(&self) -> &Trail {
+        &self.tracked.trail
+    }
+
     /// The finished replay, and what the run did.
     #[must_use]
     pub fn finish(self) -> (Replay, Played) {

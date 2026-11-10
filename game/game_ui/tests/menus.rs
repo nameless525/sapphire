@@ -442,7 +442,7 @@ fn back_means_what_each_screen_says() {
 fn a_platform_with_no_way_out_offers_none() {
     let settings = PlayerSettings::default();
     let Screens { assets, menus: screens } = assets();
-    let setup = MenuSetup { screens, settings, can_leave: false, pseudo: false };
+    let setup = MenuSetup { screens, settings, can_leave: false, can_mark: false, pseudo: false };
     let menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
     let mut walk = Walk {
         menus,

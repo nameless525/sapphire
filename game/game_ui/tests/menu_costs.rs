@@ -37,7 +37,7 @@ fn at(frame: u64) -> Timestamp {
 fn menus(over: Option<MenuScreen>) -> (GameMenus, UiDrawList) {
     let settings = PlayerSettings { language: "ja".to_owned(), ..PlayerSettings::default() };
     let Screens { assets, menus: screens } = assets();
-    let setup = MenuSetup { screens, settings, can_leave: true, pseudo: false };
+    let setup = MenuSetup { screens, settings, can_leave: true, can_mark: false, pseudo: false };
     let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
     menus.open(MenuScreen::HUD);
     if let Some(screen) = over {

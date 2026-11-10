@@ -224,7 +224,7 @@ impl ScreenOptions {
                 // A menu says what text size it's drawn at.
                 None if model == ScreenModel::Menu && self.text != TextSize::Normal => {
                     let settings = PlayerSettings { text_size: self.text, ..PlayerSettings::default() };
-                    Box::new(MenuModel::of(&settings, true, true))
+                    Box::new(MenuModel::of(&settings, true, false, true))
                 }
                 None => model.sample(),
             },

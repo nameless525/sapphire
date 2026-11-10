@@ -54,8 +54,12 @@ fn largest(language: &str) -> PlayerSettings {
 /// The game's menus as `settings` have them.
 fn menus_with(settings: PlayerSettings) -> GameMenus {
     let support::Screens { assets, menus: screens } = assets();
-    GameMenus::new(assets, Atlas::paint(), MenuSetup { screens, settings, can_leave: true, pseudo: false })
-        .unwrap()
+    GameMenus::new(
+        assets,
+        Atlas::paint(),
+        MenuSetup { screens, settings, can_leave: true, can_mark: false, pseudo: false },
+    )
+    .unwrap()
 }
 
 /// Each of the game's screens, alone, settled at `size` pixels: `look` sees it. The HUD says everything it

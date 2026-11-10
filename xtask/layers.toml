@@ -142,7 +142,9 @@ game_ui = { kind = "runtime", layer = 6, features = ["dev"] }
 # depend on an app. It drives the fight and the interface, by edges in [allow], and neither knows it.
 game_flow = { kind = "runtime", layer = 6 }
 # The game's app: the window around game_flow's show. `dev`: what the crates under it take, for CI's builds.
-game_app = { kind = "app", features = ["dev"] }
+# `playtest` (M4 F1): a playtest build, which keeps each session through `sapphire_playtest`; a store build is
+# built without it.
+game_app = { kind = "app", features = ["dev", "playtest"] }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
@@ -159,6 +161,11 @@ sapphire_livelink = { kind = "dev_only" }
 sapphire_document = { kind = "dev_only" }
 # A zone with no art, for streaming's tests and benches (M3 W2).
 sapphire_synthetic_zone = { kind = "dev_only" }
+# A playtest's session on disk (M4 F1): what a playtest build keeps of each time someone plays, its bounds and
+# its format, which a host reads back. Only the game's `playtest` feature links it, so a store build can't reach
+# it. It takes its writes from its caller, so its tree holds no platform and no SDL, and a host's runner can
+# read a session with it.
+sapphire_playtest = { kind = "dev_only" }
 # Apps.
 # `tracy`: stream profiling zones to Tracy (spec §5.3).
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).

@@ -179,7 +179,11 @@ impl Options {
                 record: record.clone(),
                 replay: None,
             };
-            GameShow::from_content(content, settings.clone(), setup)
+            let made = GameShow::from_content(content, settings.clone(), setup);
+            // A playtest build's show offers the mark and hands each run over, however often it's made again.
+            #[cfg(feature = "playtest")]
+            let made = made.map(|(show, first)| (crate::playtest::asked(show), first));
+            made
         })
     }
 

@@ -35,6 +35,8 @@ sapphire_rhi.workspace = true
 sapphire_save.workspace = true
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
+# A playtest build's session (M4 F1), through `playtest` alone.
+sapphire_playtest = { workspace = true, optional = true }
 png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
@@ -53,6 +55,9 @@ sapphire_serialize.workspace = true
 [features]
 # What the crates under it have for development builds. The game adds no tools of its own.
 dev = ["sapphire_stage/dev", "game_combat/dev", "game_ui/dev"]
+# A playtest build (M4 F1): the shipping game, keeping each session under the player's files and putting a mark
+# on the pause. `cargo xtask playtest` builds with it, and a store build never does.
+playtest = ["dep:sapphire_playtest"]
 
 # A caller outside the crate, on the platform's real loop, which must own the process's main thread.
 [[test]]

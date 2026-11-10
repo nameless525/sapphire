@@ -91,6 +91,9 @@ pub struct GameApp {
     /// Frames presented, for `--lose-device`.
     #[cfg(feature = "dev")]
     presented: u64,
+    /// A playtest build's session (M4 F1): what's kept of this play.
+    #[cfg(feature = "playtest")]
+    playtest: Option<crate::playtest::Playtest>,
 }
 
 /// The game on one device: what a lost device takes.
@@ -123,6 +126,11 @@ impl App for GameApp {
         let window = platform.create_window(&window_desc(Self::METADATA.name, &info))?;
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let tiers = TierFollower::new(&chosen, info.device_class);
+        #[cfg(feature = "playtest")]
+        let playtest = {
+            let dir = options.save_dir.clone().unwrap_or_else(|| platform.user_dir().to_owned());
+            crate::playtest::Playtest::begin(platform, &Self::METADATA, &dir, &chosen)
+        };
         let rumble = chosen.rumble;
         let patches = options.patch_setup(platform).map(|setup| Patches::open(platform.host(), setup));
         let host = host_of(platform, patches.as_ref());
@@ -154,6 +162,8 @@ impl App for GameApp {
             retry_due: Duration::ZERO,
             #[cfg(feature = "dev")]
             presented: 0,
+            #[cfg(feature = "playtest")]
+            playtest,
         })
     }
 
@@ -319,6 +329,10 @@ impl App for GameApp {
             std::thread::sleep(IDLE_FRAME);
         }
         stage.scene.end_frame();
+        #[cfg(feature = "playtest")]
+        if let Some(playtest) = &mut self.playtest {
+            playtest.frame(stage, frame_time, heat);
+        }
         profiling::finish_frame!();
         AppControl::Continue
     }
@@ -332,6 +346,10 @@ impl App for GameApp {
             && let Err(error) = show.finish()
         {
             tracing::error!(target: LOG_TARGET, %error, "the run didn't end well");
+        }
+        #[cfg(feature = "playtest")]
+        if let Some(playtest) = self.playtest.take() {
+            playtest.end(self.show_mut());
         }
         tracing::info!(target: LOG_TARGET, "quit");
     }
@@ -422,6 +440,10 @@ impl GameApp {
             self.tiers.follow_settings(chosen, stage);
         }
         self.settings.keep(chosen);
+        #[cfg(feature = "playtest")]
+        if let Some(playtest) = &mut self.playtest {
+            playtest.settings(chosen);
+        }
     }
 
     fn stop_rumble(&mut self, platform: &mut Platform) {
@@ -447,6 +469,18 @@ impl GameApp {
                 Duty::PauseAndKeep => {
                     if let Some(show) = self.show_mut() {
                         show.leave_foreground();
+                    }
+                    #[cfg(feature = "playtest")]
+                    if let Some(playtest) = &mut self.playtest {
+                        let show = match &mut self.on_device {
+                            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut stage.show),
+                            _ => None,
+                        };
+                        if event == LifecycleEvent::WillEnterBackground {
+                            playtest.left_foreground(show);
+                        } else {
+                            playtest.flush(show);
+                        }
                     }
                 }
                 Duty::FlushSettings => self.settings.finish(),
@@ -495,6 +529,10 @@ impl GameApp {
                 Game::Stood(stage) => {
                     tracing::warn!(target: LOG_TARGET, "the GPU device was lost; the game boots again on a new one");
                     self.reload = Some(stage.show.end_for_reload());
+                    #[cfg(feature = "playtest")]
+                    if let Some(playtest) = &mut self.playtest {
+                        playtest.take_runs(&mut stage.show);
+                    }
                 }
                 // Where an earlier loss left the game is still where the next boot takes it.
                 Game::Booting(_) => {

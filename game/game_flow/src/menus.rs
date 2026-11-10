@@ -6,8 +6,9 @@ use game_ui::menus::{GameMenus, HudModel, MenuCommand};
 
 use crate::flow::{Banner, Flow, FlowCommand};
 
-/// What a menu's command asks of the flow: `None` for what's the interface's own (a setting moved) or the
-/// dialogue runner's (a line read, an answer chosen, which it ends with [`FlowCommand::DialogueEnded`]).
+/// What a menu's command asks of the flow: `None` for what's the interface's own (a setting moved), the
+/// dialogue runner's (a line read, an answer chosen, which it ends with [`FlowCommand::DialogueEnded`]) or a
+/// playtest's (a mark, M4 F1, whose resume reaches the flow as the pause's end).
 #[must_use]
 pub const fn flow_command(command: MenuCommand) -> Option<FlowCommand> {
     Some(match command {
@@ -18,7 +19,10 @@ pub const fn flow_command(command: MenuCommand) -> Option<FlowCommand> {
         MenuCommand::Pause => FlowCommand::Pause,
         MenuCommand::Resume => FlowCommand::Resume,
         MenuCommand::Leave => FlowCommand::Leave,
-        MenuCommand::SettingsChanged | MenuCommand::DialogueNext | MenuCommand::DialogueChose(_) => {
+        MenuCommand::SettingsChanged
+        | MenuCommand::DialogueNext
+        | MenuCommand::DialogueChose(_)
+        | MenuCommand::Mark => {
             return None;
         }
     })
@@ -84,9 +88,12 @@ mod tests {
 
     #[test]
     fn what_the_interface_and_the_dialogue_keep_never_reaches_the_flow() {
-        for command in
-            [MenuCommand::SettingsChanged, MenuCommand::DialogueNext, MenuCommand::DialogueChose(1)]
-        {
+        for command in [
+            MenuCommand::SettingsChanged,
+            MenuCommand::DialogueNext,
+            MenuCommand::DialogueChose(1),
+            MenuCommand::Mark,
+        ] {
             assert_eq!(flow_command(command), None, "{command:?}");
         }
     }

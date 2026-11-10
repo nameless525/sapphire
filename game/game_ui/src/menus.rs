@@ -52,7 +52,7 @@ impl ScreenModel {
     #[must_use]
     pub fn sample(self) -> Box<dyn PartialReflect> {
         match self {
-            Self::Menu => Box::new(MenuModel::of(&PlayerSettings::default(), true, true)),
+            Self::Menu => Box::new(MenuModel::of(&PlayerSettings::default(), true, false, true)),
             Self::Character => Box::new(CharacterModel::default()),
             Self::Dialogue => Box::new(DialogueModel::default()),
             // Every word the HUD can say, the document's own: a foe's name and an objective too.
@@ -86,6 +86,8 @@ impl ScreenModel {
 pub struct MenuModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
     pub can_leave: bool,
+    /// Whether the pause offers a mark: only a playtest build keeps one (M4 F1).
+    pub can_mark: bool,
     /// Whether there's a run to go on with: the title's row comes first, and with none, focus starts on a new
     /// game.
     pub can_continue: bool,
@@ -130,11 +132,11 @@ pub struct MenuModel {
 }
 
 impl MenuModel {
-    /// What a menu shows of `settings`, with a way out if `can_leave` and a run to go on with if
-    /// `can_continue`.
+    /// What a menu shows of `settings`, with a way out if `can_leave`, the pause's mark if `can_mark` (a playtest
+    /// build's, M4 F1) and a run to go on with if `can_continue`.
     #[must_use]
-    pub fn of(settings: &PlayerSettings, can_leave: bool, can_continue: bool) -> Self {
-        let mut model = Self { can_leave, can_continue, ..Self::default() };
+    pub fn of(settings: &PlayerSettings, can_leave: bool, can_mark: bool, can_continue: bool) -> Self {
+        let mut model = Self { can_leave, can_mark, can_continue, ..Self::default() };
         model.show_settings(settings);
         model
     }
@@ -367,6 +369,8 @@ pub struct MenuSetup {
     pub settings: PlayerSettings,
     /// Whether this platform has a way out to offer.
     pub can_leave: bool,
+    /// Whether the pause offers a mark, which only a playtest build keeps (M4 F1).
+    pub can_mark: bool,
     /// Whether under pseudo-localization.
     pub pseudo: bool,
 }
@@ -395,6 +399,8 @@ pub enum MenuCommand {
     DialogueNext,
     /// The dialogue panel's answer, from 0.
     DialogueChose(u8),
+    /// The pause's mark (M4 F1): a playtest keeps the run's tick, to replay from, and the run goes on.
+    Mark,
 }
 
 /// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate.
@@ -420,6 +426,7 @@ pub struct GameMenus {
     controls: MenuControls,
     settings: PlayerSettings,
     can_leave: bool,
+    can_mark: bool,
     can_continue: bool,
     commands: Vec<MenuCommand>,
     events: Vec<UiEvent>,
@@ -433,7 +440,7 @@ impl GameMenus {
     /// HUD. Nothing shows until something [`Self::open`]s. The screens have to have those that are
     /// [`OPENED_BY_CODE`].
     pub fn new(assets: ScreenAssets, atlas: Atlas, setup: MenuSetup) -> Result<Self, String> {
-        let MenuSetup { screens, settings, can_leave, pseudo } = setup;
+        let MenuSetup { screens, settings, can_leave, can_mark, pseudo } = setup;
         screens.require(&OPENED_BY_CODE)?;
         if assets.documents.len() != screens.screens.len() {
             return Err(format!(
@@ -459,6 +466,7 @@ impl GameMenus {
             controls,
             settings,
             can_leave,
+            can_mark,
             can_continue: false,
             commands: Vec::with_capacity(8),
             events: Vec::with_capacity(8),
@@ -491,7 +499,9 @@ impl GameMenus {
 
     fn model_of(&self, kind: ScreenModel) -> Box<dyn PartialReflect> {
         match kind {
-            ScreenModel::Menu => Box::new(MenuModel::of(&self.settings, self.can_leave, self.can_continue)),
+            ScreenModel::Menu => {
+                Box::new(MenuModel::of(&self.settings, self.can_leave, self.can_mark, self.can_continue))
+            }
             ScreenModel::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
             other => other.sample(),
         }

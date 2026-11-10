@@ -48,7 +48,7 @@ impl Walk {
     pub fn new(screens: Screens, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
         let settings = PlayerSettings { language: locale.to_owned(), ..PlayerSettings::default() };
         let Screens { assets, menus: screens } = screens;
-        let setup = MenuSetup { screens, settings, can_leave: true, pseudo };
+        let setup = MenuSetup { screens, settings, can_leave: true, can_mark: true, pseudo };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
         let at = Timestamp::from_nanos(1);
         menus.controls_mut().push(at, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });

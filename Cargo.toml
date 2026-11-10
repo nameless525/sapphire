@@ -65,6 +65,8 @@ members = [
     "crates/sapphire_hot_reload",
     "crates/sapphire_watch",
     "crates/sapphire_livelink",
+    # Playtest builds only, through the game's `playtest` feature (M4 F1)
+    "crates/sapphire_playtest",
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
@@ -136,6 +138,7 @@ sapphire_text = { path = "crates/sapphire_text" }
 sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
+sapphire_playtest = { path = "crates/sapphire_playtest" }
 sapphire_bytecode = { path = "crates/sapphire_bytecode" }
 sapphire_script = { path = "crates/sapphire_script" }
 sapphire_camera = { path = "crates/sapphire_camera" }

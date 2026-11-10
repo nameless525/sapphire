@@ -16,10 +16,15 @@
 //! playing and writes what's on its way to disk, so a phone that never brings the app back loses nothing kept,
 //! and one that does lands on the pause. A lost device takes the stage with this show: the next show, on the
 //! next device, is made from the save, and [`GameShow::reload_from`] takes it back to where the save has it.
+//!
+//! **A playtest (M4 F1)** keeps what the app's session asks of the show, and only once asked: the pause's mark,
+//! which [`GameShow::offer_marks`] puts on the pause and [`GameShow::take_mark`] hears, and each run's file and
+//! checksums as it ends, which [`GameShow::keep_ended_runs`] keeps for [`GameShow::take_ended_runs`]. A store
+//! build asks neither, and its pause has no mark.
 
 use std::time::Duration;
 
-use game_combat::combat::{Combat, CombatOption, read_bindings};
+use game_combat::combat::{Combat, CombatOption, RunSoFar, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::{FightDocuments, error_chain};
 use game_ui::dialogue::DialoguePanel;
@@ -106,6 +111,11 @@ pub struct GameShow {
     beat_dialogue: Option<DialogueId>,
     /// What a frame with no window stands for ([`Self::stand_for`]).
     offscreen: OffscreenDisplay,
+    /// Whether the pause's mark was chosen since [`Self::take_mark`] last asked.
+    mark_asked: bool,
+    /// The runs that ended since [`Self::take_ended_runs`] last asked, once [`Self::keep_ended_runs`] has
+    /// asked for them.
+    ended_runs: Option<Vec<RunSoFar>>,
 }
 
 impl GameShow {
@@ -123,7 +133,13 @@ impl GameShow {
         let mut shown = ShownFight::default();
         shown.fight.documents = documents;
         // iOS's guidelines leave leaving to the home gesture.
-        let setup = MenuSetup { screens, settings, can_leave: Os::CURRENT != Os::Ios, pseudo: false };
+        let setup = MenuSetup {
+            screens,
+            settings,
+            can_leave: Os::CURRENT != Os::Ios,
+            can_mark: false,
+            pseudo: false,
+        };
         Ok(Self {
             shown,
             menus: None,
@@ -143,6 +159,8 @@ impl GameShow {
             left: false,
             beat_dialogue: None,
             offscreen: OffscreenDisplay::default(),
+            mark_asked: false,
+            ended_runs: None,
         })
     }
 
@@ -236,7 +254,31 @@ impl GameShow {
         if let Some(game) = &mut self.game {
             game.finish();
         }
+        keep_ended_run(&mut self.ended_runs, self.shown.fight.combat.as_ref());
         self.shown.fight.finish()
+    }
+
+    /// Puts the mark on the pause (M4 F1), for a playtest's session to hear through [`Self::take_mark`]. Before
+    /// [`Self::stand`], which makes the menus.
+    pub fn offer_marks(&mut self) {
+        self.setup.can_mark = true;
+    }
+
+    /// Whether the pause's mark was chosen since this last asked. The run is where it was marked: the pause
+    /// held its steps, and the mark resumes it only as this frame's menus end.
+    pub fn take_mark(&mut self) -> bool {
+        std::mem::take(&mut self.mark_asked)
+    }
+
+    /// Keeps each run's file and checksums as it ends, from now on, for [`Self::take_ended_runs`]: a run
+    /// another replaces under the wipe, and the one a quit or a lost device ends ([`Self::finish`]).
+    pub fn keep_ended_runs(&mut self) {
+        self.ended_runs.get_or_insert_with(Vec::new);
+    }
+
+    /// The runs that ended since this last asked, oldest first, once [`Self::keep_ended_runs`] has asked.
+    pub fn take_ended_runs(&mut self) -> Vec<RunSoFar> {
+        self.ended_runs.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Whether someone's playing the run that's open: past the title, and not a script or a replay.
@@ -409,10 +451,13 @@ impl GameShow {
             return;
         };
         let fight = &mut self.shown.fight;
-        let stood = fight
-            .prepare_stock_combat(&option, content)
-            .map_err(|error| error.to_string())
-            .and_then(|combat| fight.start_run(combat, scene, content));
+        let ended = &mut self.ended_runs;
+        let stood = fight.prepare_stock_combat(&option, content).map_err(|error| error.to_string()).and_then(
+            |combat| {
+                keep_ended_run(ended, fight.combat.as_ref());
+                fight.start_run(combat, scene, content)
+            },
+        );
         match stood {
             Ok(followed) => {
                 self.beat_dialogue = None;
@@ -615,6 +660,11 @@ impl GameShow {
             match command {
                 // The pause is the controls', which a game's flow follows (`pause_flow`).
                 MenuCommand::Resume => self.controls.set_paused(false),
+                // A playtest's, and the pause is over.
+                MenuCommand::Mark => {
+                    self.mark_asked = true;
+                    self.controls.set_paused(false);
+                }
                 MenuCommand::Pause => self.controls.set_paused(true),
                 MenuCommand::SettingsChanged => self.follow_settings(),
                 command @ (MenuCommand::DialogueNext | MenuCommand::DialogueChose(_)) => {
@@ -814,6 +864,13 @@ impl GameShow {
     }
 }
 
+/// The run `combat` plays as it ends, kept in `ended` if anything asked for runs as they end.
+fn keep_ended_run(ended: &mut Option<Vec<RunSoFar>>, combat: Option<&Combat>) {
+    if let (Some(ended), Some(run)) = (ended, combat.and_then(Combat::so_far)) {
+        ended.push(run);
+    }
+}
+
 /// Whether `event` starts something, which a menu that's up keeps to itself. What ends something goes on, so
 /// the bindings hear the end of what they saw begin.
 fn is_press(event: &Event) -> bool {
@@ -976,6 +1033,11 @@ mod tests {
 
     /// A show with the game's documents up and no words in them, not yet drawn.
     fn undrawn() -> GameShow {
+        undrawn_as(|_| {})
+    }
+
+    /// The same, with `ask` asking it for what it offers before its menus are made.
+    fn undrawn_as(ask: impl FnOnce(&mut GameShow)) -> GameShow {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/ui");
         let documents = screens().screens.into_iter().map(|screen| {
             let text = std::fs::read_to_string(ui.join(format!("{}.ui.ron", screen.name))).unwrap();
@@ -988,6 +1050,7 @@ mod tests {
         };
         let mut show = GameShow::new(FightDocuments::shipped(), screens(), PlayerSettings::default())
             .expect("the bindings parse");
+        ask(&mut show);
         let mut menus = GameMenus::new(assets, show.atlas.clone(), show.setup.clone()).unwrap();
         menus.open(MenuScreen::TITLE);
         show.menus = Some(menus);
@@ -1165,6 +1228,58 @@ mod tests {
         assert!(!show.on_title() && show.shown.hud.is_some());
         frame(&mut show, &mut clock);
         assert!(is_open(&show, MenuScreen::HUD) && !is_open(&show, MenuScreen::TITLE));
+    }
+
+    /// A playtest's pause has a mark (M4 F1), which resumes the run and is heard once; the show keeps each run
+    /// as it ends. A show that wasn't asked has neither.
+    #[test]
+    fn a_playtest_s_pause_marks_and_its_runs_are_kept() {
+        let (mut plain, mut clock) = fight();
+        press(&mut plain, &mut clock, Scancode::ESCAPE);
+        let menus = plain.menus.as_mut().unwrap();
+        assert!(!menus.model_mut::<game_ui::menus::MenuModel>(MenuScreen::PAUSE).unwrap().can_mark);
+        plain.finish().unwrap();
+        assert!(plain.take_ended_runs().is_empty(), "nobody asked");
+
+        let mut show = undrawn_as(|show| {
+            show.offer_marks();
+            show.keep_ended_runs();
+        });
+        let mut clock = 0;
+        frame(&mut show, &mut clock);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        assert!(show.controls.is_paused() && is_open(&show, MenuScreen::PAUSE));
+        let menus = show.menus.as_mut().unwrap();
+        assert!(menus.model_mut::<game_ui::menus::MenuModel>(MenuScreen::PAUSE).unwrap().can_mark);
+        assert!(!show.take_mark());
+
+        show.commands.push(MenuCommand::Mark);
+        frame(&mut show, &mut clock);
+        assert!(!show.controls.is_paused(), "a mark goes on with the run");
+        assert!(show.take_mark());
+        assert!(!show.take_mark(), "heard once");
+
+        // No stage stands a run here: one as a stage would, three steps in.
+        let option = CombatOption::Run {
+            scenario: "ward-court".to_owned(),
+            start: sapphire_gameplay::replay::RunStart::default(),
+            script: None,
+            keep: None,
+        };
+        let mut combat = Combat::new(&option).expect("the run stands");
+        for _ in 0..3 {
+            combat.step(&mut |_: u64, _: &[sapphire_gameplay::ActorId]| {
+                sapphire_gameplay::TickActions::default()
+            });
+        }
+        show.shown.fight.combat = Some(combat);
+        assert!(show.take_ended_runs().is_empty(), "the run goes on");
+        show.finish().unwrap();
+        let runs = show.take_ended_runs();
+        assert_eq!(runs.len(), 1, "the quit ends the run, which is kept");
+        assert_eq!((runs[0].replay.ticks(), runs[0].trail.ticks()), (3, 3), "as far as it got");
+        assert!(show.take_ended_runs().is_empty());
     }
 
     /// Of everything a player chooses, auto-target's strength alone reaches a run (M4 A1): every other setting

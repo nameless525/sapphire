@@ -42,7 +42,17 @@ impl App for OffscreenGame {
             remake: options.make_show(platform, PlayerSettings::default()),
         });
         let capture = options.capture();
+        #[cfg(not(feature = "playtest"))]
         let captured = game_flow::capture::capture(&host, show, &first, &capture, update)?;
+        #[cfg(feature = "playtest")]
+        let captured = crate::playtest::capture(
+            platform,
+            &host,
+            (show, &first),
+            &capture,
+            update,
+            options.save_dir.as_deref(),
+        )?;
         if let Some(patches) = &mut patches {
             patches.reopen();
             patches.confirm_launch();

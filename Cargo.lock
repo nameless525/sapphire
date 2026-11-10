@@ -1621,6 +1621,7 @@ dependencies = [
  "sapphire_jobs",
  "sapphire_patch",
  "sapphire_platform",
+ "sapphire_playtest",
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_save",
@@ -4846,6 +4847,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sapphire_playtest"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "sapphire_core",
+ "sapphire_gameplay",
+ "sapphire_jobs",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

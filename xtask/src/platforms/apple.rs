@@ -62,7 +62,7 @@ pub fn render_info_plist(template: &str, app: &App, build: u32) -> anyhow::Resul
 }
 
 /// Appends `text` escaped for an XML text node.
-fn push_xml_escaped(out: &mut String, text: &str) {
+pub fn push_xml_escaped(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),

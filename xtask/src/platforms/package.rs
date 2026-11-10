@@ -8,11 +8,12 @@
 //!
 //! | Platform | What's there |
 //! |---|---|
-//! | `ios`, `ios-sim` | `<Name>.app`: the executable, the mobile cook, Info.plist, `en.lproj` and `ja.lproj`, and actool's `Assets.car` with the icon's keys merged into Info.plist; signed ad hoc |
+//! | `ios` | `<Name>.xcarchive` ([`super::ios_store`]): the app and its dSYM, as Xcode's Organizer reads them, and `checks/` |
+//! | `ios-sim` | `<Name>.app`: the executable, the mobile cook, Info.plist, `en.lproj` and `ja.lproj`, and actool's `Assets.car` with the icon's keys merged into Info.plist; with the store's keys and privacy manifest, signed ad hoc with the game's entitlements |
 //! | `macos` | `<Name>.app`: as iOS's, nested under `Contents/`, with the desktop cook, and actool's `AppIcon.icns` too; signed ad hoc |
 //! | `android` | `<Name>.aab` from Gradle's `bundleRelease`, offline, checked ([`super::aab`]), and `icons/play_store_512.png`; in `checks/`, the APKs Play would make of it for local testing, their badging and release lint's report |
 //! | `windows`, `linux` | `<Name>/`: the executable and the desktop cook; Linux's icon beside them, and Windows' `.ico` in `icons/` |
-//! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; and `symbols/`, what the link split out: the dSYM, the unstripped Android library, the PDB or the `.dwp` |
+//! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; and `symbols/`, what the link split out: the dSYM (in the archive for `ios`), the unstripped Android library, the PDB or the `.dwp` |
 //!
 //! It makes what every store's package shares. What a store checks is its own package's: S2 wraps the
 //! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs the AAB (with the upload
@@ -34,7 +35,7 @@ use anyhow::{Context as _, anyhow, ensure};
 use serde_json::json;
 
 use super::apple::{self, BundleLayout};
-use super::{App, BundleClaim, GAME, aab, android, desktop};
+use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store};
 use crate::content::{self, Cook};
 use crate::version::{Build, Kind};
 use crate::workspace::{self, BuildProfile, CargoBuild};
@@ -286,7 +287,10 @@ fn apple_app(
     let minimum = apple::plist_string(&template, minimum_key).context("the template names its minimum")?;
     let catalog = icons.join(if target == Target::MacOs { "macos" } else { "ios" }).join("Assets.xcassets");
     compile_icon(&catalog, &layout, actool_platform, minimum, &icons.join("actool"))?;
-    apple::codesign_ad_hoc(&layout.root)?;
+    match target {
+        Target::MacOs => apple::codesign_ad_hoc(&layout.root)?,
+        _ => ios_store::finish_app(&layout, app, target == Target::Ios, &stage.join("checks"))?,
+    }
 
     let mut symbols = Vec::new();
     for file in split.iter().filter(|file| file.extension().is_some_and(|ext| ext == "dSYM")) {
@@ -295,6 +299,10 @@ fn apple_app(
         symbols.push(format!("symbols/{}", file_name.to_string_lossy()));
     }
     ensure!(!symbols.is_empty(), "the shipping build left no dSYM beside {}", executable.display());
+    if target == Target::Ios {
+        let (archive, dsym) = ios_store::archive(app, build, stage, &name, &symbols)?;
+        return Ok(Made { app: archive, symbols: vec![dsym], checks: serde_json::Value::Null });
+    }
     Ok(Made { app: name, symbols, checks: serde_json::Value::Null })
 }
 

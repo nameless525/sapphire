@@ -77,8 +77,10 @@ Commands:
       version and a build number counted from git, the identity in platform/identity.toml and
       the icon from platform/icon/icon.png, with package.json saying what it is and symbols/
       holding what the link split out:
-        ios       <Name>.app for devices, with actool's Assets.car, signed ad hoc
-        ios-sim   the same for the Simulator
+        ios       <Name>.xcarchive: the app for devices, with actool's Assets.car, the store's
+                  Info.plist keys, its privacy manifest and entitlements, signed ad hoc, and its
+                  dSYM, checked offline (checks/)
+        ios-sim   the same app for the Simulator, with no archive
         macos     <Name>.app with Assets.car and AppIcon.icns, signed ad hoc
         android   <Name>.aab (Gradle's bundleRelease, offline), held to release lint and checked
                   with bundletool, aapt2 and zipalign; checks/ has the local-testing APKs.

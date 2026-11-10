@@ -22,8 +22,10 @@ mod desktop;
 mod host;
 mod ios;
 mod ios_sim;
+mod ios_store;
 mod macos;
 mod package;
+mod privacy_manifest;
 
 use std::ffi::OsString;
 use std::fmt;

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for the maintainer's distribution of the archive `xtask package` makes for iOS (M4 S2),
+  with an account, a team and the game's chosen bundle ID:
+
+    xcodebuild -exportArchive -archivePath target/package/ios/<Name>.xcarchive \
+      -exportOptionsPlist platform/ios/ExportOptions.plist -exportPath target/package/ios/export \
+      -allowProvisioningUpdates
+
+  First add <key>teamID</key><string>YOUR TEAM ID</string>: an ad hoc signature carries no team, so
+  without one Xcode stops at "No Team Found in Archive". Xcode then signs for distribution and writes an
+  .ipa to upload with Transporter, or Organizer uploads it. The build number is git's (xtask's), so Xcode
+  mustn't change it.
+-->
+<plist version="1.0">
+<dict>
+	<key>destination</key>
+	<string>export</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The entitlements `xtask package` signs the game's iOS app with (M4 S2): only what the game needs, which
+  is none. It uses no capability (no iCloud, Game Center, push, App Groups or associated domains), and a
+  store build must not be debuggable, so there's no get-task-allow. Distribution signing adds the
+  application identifier and team from the maintainer's provisioning profile when the archive is
+  exported. A key added here needs its capability on the App ID too, and its reason in
+  xtask/src/platforms/ios_store.rs's ENTITLEMENTS.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

@@ -5,7 +5,11 @@
   `cargo xtask bundle` and `package` fill the Xcode-style build-setting placeholders, so the Xcode project
   can use this file unchanged later; BUNDLE_DISPLAY_NAME is a user-defined build setting,
   English's: each language's is in its lproj's InfoPlist.strings.
-  The game is landscape only, full screen, with an empty launch screen.
+  The game is landscape only, full screen, with an empty launch screen. ITSAppUsesNonExemptEncryption is
+  false because the game links no encryption of its own: if a TLS library or a cipher joins the link
+  (the patcher's), Apple's export questions need answering again. The games category is the App
+  Store's, and lets iOS start Game Mode. `xtask package` adds the DT* keys Xcode writes, read from
+  the installed Xcode and SDK (M4 S2).
 -->
 <plist version="1.0">
 <dict>
@@ -32,6 +36,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>

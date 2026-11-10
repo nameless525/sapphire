@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The game's privacy manifest (M4 S2), at the root of every iOS package's .app. SDL, Luau and the crates
+  link into one executable, so this declares every required-reason API the link uses. `xtask package`
+  scans the shipping executable and refuses one that uses a category not declared here
+  (xtask/src/platforms/privacy_manifest.rs). Reasons are from Apple's "Describing use of required reason
+  API", read 2026-11-10:
+
+  - File timestamp, C617.1 (files inside the app's container): std's file metadata, which the save, the
+    settings, crash reports and the pipeline cache read, and SDL's file streams (stat, fstat, fstatat).
+  - System boot time, 35F9.1 (elapsed time between events in the app): frame and audio timing in SDL,
+    Luau, wgpu and cpal (mach_absolute_time).
+
+  The game tracks nobody and collects nothing.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+</dict>
+</plist>

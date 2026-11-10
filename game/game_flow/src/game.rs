@@ -100,7 +100,8 @@ pub struct GameStats {
 }
 
 /// What a run has done that the flow asks about and the simulation doesn't keep: the checkpoints that have
-/// been the latest, and the timelines a beat played that have ended. Fixed in size.
+/// been the latest, and the timelines a beat played that have ended. Fixed in size. Its checkpoints and
+/// encounters are the flow's zone's, by their places there, so they're marked only while the run is in it.
 #[derive(Clone, Copy, Debug, Default)]
 struct RunSeen {
     /// By checkpoint, one bit each: past 64, a checkpoint counts as reached only while it's the latest.
@@ -120,6 +121,9 @@ struct RunSeen {
 /// A run's simulation, as the flow reads it.
 struct RunView<'a> {
     sim: &'a Simulation,
+    /// Whether the run is in the flow's zone. Elsewhere no checkpoint is reached and no encounter starts or
+    /// clears, as far as the beats go: they name the flow's zone's, and another zone's places aren't theirs.
+    home: bool,
     player: Option<ActorId>,
     seen: &'a RunSeen,
     timelines: &'a [(AssetId, TimelineId)],
@@ -140,11 +144,12 @@ impl FlowView for RunView<'_> {
     }
 
     fn checkpoint_reached(&self, name: &str) -> bool {
-        let Some(zone) = self.sim.zone() else { return false };
+        let Some(zone) = self.sim.zone().filter(|_| self.home) else { return false };
         let Some(id) = zone.checkpoint(name) else { return false };
         zone.latest_checkpoint() == Some(id) || (id.raw() < 64 && self.seen.reached & (1 << id.raw()) != 0)
     }
 
+    /// Wherever the run is: a banner shows for another zone's checkpoint too.
     fn latest_checkpoint(&self) -> Option<&str> {
         let zone = self.sim.zone()?;
         zone.latest_checkpoint().and_then(|id| zone.checkpoint_name(id))
@@ -164,7 +169,7 @@ impl FlowView for RunView<'_> {
 impl RunView<'_> {
     /// The encounter's phase, if the run's zone has it and it wasn't cleared before the run began.
     fn phase_this_run(&self, encounter: AssetId) -> Option<EncounterPhase> {
-        let zone = self.sim.zone()?;
+        let zone = self.sim.zone().filter(|_| self.home)?;
         let place = zone.encounters().iter().position(|held| held.id() == encounter)?;
         let before = place < 64 && self.seen.cleared_before & (1 << place) != 0;
         (!before).then(|| zone.encounters()[place].phase())
@@ -300,7 +305,8 @@ impl Game {
     /// dialogue a beat opened, for the caller to show.
     pub fn after_step(&mut self, combat: &mut Combat) -> Option<AssetId> {
         let sim = combat.simulation();
-        if !self.seen.looked {
+        let home = in_zone(sim, self.flow.document().zone);
+        if !self.seen.looked && home {
             self.seen.looked = true;
             let encounters = sim.zone().map_or(&[][..], |zone| zone.encounters());
             for (place, encounter) in encounters.iter().enumerate().take(64) {
@@ -310,7 +316,7 @@ impl Game {
                 }
             }
         }
-        if let Some(zone) = sim.zone()
+        if let Some(zone) = sim.zone().filter(|_| home)
             && let Some(latest) = zone.latest_checkpoint()
             && latest.raw() < 64
         {
@@ -327,6 +333,7 @@ impl Game {
         }
         let view = RunView {
             sim,
+            home,
             player: combat.cast().first().copied(),
             seen: &self.seen,
             timelines: &self.timelines,
@@ -380,11 +387,7 @@ impl Game {
             return;
         }
         let Some(progress) = &self.progress else { return };
-        let away = sim
-            .current_zone()
-            .and_then(|id| sim.zone_ground(id))
-            .is_some_and(|row| row.asset() != progress.zone);
-        let Some(zone) = sim.zone().filter(|_| !away) else { return };
+        let Some(zone) = sim.zone().filter(|_| in_zone(sim, progress.zone)) else { return };
         if !progress.moved_on(zone, sim.flags()) {
             return;
         }
@@ -428,6 +431,12 @@ impl Game {
             kept.finish();
         }
     }
+}
+
+/// Whether `sim`'s run is in `zone`: a run that's taken no trip is in the zone it started in, which no shelf row
+/// holds, and one back from a trip is in its zone's row.
+fn in_zone(sim: &Simulation, zone: AssetId) -> bool {
+    sim.current_zone().and_then(|id| sim.zone_ground(id)).is_none_or(|row| row.asset() == zone)
 }
 
 /// What a scenario loads that a beat can name: its timelines and its dialogues, each by its document's ID
@@ -476,6 +485,18 @@ mod tests {
     /// content/zones/lantern_ward/court_gate.timeline.ron
     const COURT_GATE: AssetId = AssetId::from_text("7c42b73f-d94d-4eb2-b064-2637819640a8");
 
+    /// content/zones/proving_ground/proving_ground.zone.ron
+    const GROUND: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
+
+    /// The ward's flow over `ward-ground-trip`, with a beat on a checkpoint the proving ground has by name.
+    const TRIP_FLOW: &str = r#"(type: "sapphire::game::FlowDocument", version: 1, data: (
+        scenario: "ward-ground-trip",
+        zone: "f15b7d04-631d-59b5-8c42-338147fc4e86",
+        beats: [(when: Reached("platform"), then: Victory)],
+        music: (title: "waiting", victory: "cleared", defeat: "waiting"),
+        holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
+    ))"#;
+
     fn ward() -> Game {
         let document =
             FlowDocument::from_ron(include_str!("../../../content/game.flow.ron")).expect("the flow reads");
@@ -495,9 +516,59 @@ mod tests {
         let loaded = game.timelines.len();
         game.play(&mut fight, COURT_GATE, None);
         assert_eq!(game.stats().refused, 1);
-        let view =
-            RunView { sim: fight.simulation(), player: None, seen: &game.seen, timelines: &game.timelines };
+        let view = RunView {
+            sim: fight.simulation(),
+            home: true,
+            player: None,
+            seen: &game.seen,
+            timelines: &game.timelines,
+        };
         assert!(view.timeline_ended(COURT_GATE), "the flow goes on from it");
         assert_eq!(game.timelines.len(), loaded, "nothing grows");
+    }
+
+    /// A step of `combat` with nobody pressing anything, and the game after it.
+    fn step(game: &mut Game, combat: &mut Combat) {
+        let mut neutral = |_: u64, _: &[ActorId]| sapphire_gameplay::TickActions::NEUTRAL;
+        combat.step(&mut neutral);
+        game.after_step(combat);
+    }
+
+    /// The flow's checkpoints and encounters are its zone's, by their places there. On a trip into the
+    /// proving ground, reaching its `platform` marks nothing of the ward's, not the checkpoint at the same
+    /// place in the ward's list, and a beat naming `platform` doesn't fire: it isn't the flow's zone's.
+    #[test]
+    fn a_trip_out_of_the_flows_zone_reaches_nothing_of_the_flows() {
+        let document = FlowDocument::from_ron(TRIP_FLOW).expect("reads");
+        let content = FlowContent { document, registered: Vec::new() };
+        let mut game = Game::new(content, GameSetup::default()).expect("stands");
+        let mut combat = Combat::new(&game.first_run()).expect("the run stands");
+        game.command(FlowCommand::NewGame);
+        step(&mut game, &mut combat);
+        let ward = combat.simulation().zone().expect("the ward");
+        assert_eq!(ward.checkpoint("platform"), None, "the ward has no platform");
+        let ward_names: Vec<String> = (0..ward.checkpoint_count() as u32)
+            .map(|raw| {
+                ward.checkpoint_name(sapphire_gameplay::CheckpointId::from_raw(raw))
+                    .expect("listed")
+                    .to_owned()
+            })
+            .collect();
+        combat.enter_zone(GROUND, "", Name::new("player_start").as_u64(), |_| None).expect("on the shelf");
+        step(&mut game, &mut combat);
+        combat.return_to_checkpoint("platform").expect("the ground has one");
+        for _ in 0..5 {
+            step(&mut game, &mut combat);
+        }
+        let ground = combat.simulation().zone().expect("the ground");
+        let latest = ground.latest_checkpoint().expect("one reached");
+        assert_eq!(ground.checkpoint_name(latest), Some("platform"));
+        let shared = &ward_names[latest.raw() as usize];
+        assert_eq!(
+            game.seen.reached & (1 << latest.raw()),
+            0,
+            "the ward's {shared}, at the same place, isn't marked"
+        );
+        assert_eq!(game.flow().state(), FlowState::Playing, "nothing of the ward's was reached");
     }
 }

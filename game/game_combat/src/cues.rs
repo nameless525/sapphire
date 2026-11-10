@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use sapphire_audio::Emitter;
 use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
+use sapphire_core::Name;
 use sapphire_cues::{
     CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
 };
@@ -34,6 +35,7 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::WorldClock;
 use sapphire_gameplay::{ActorView, CueEvent, EncounterPhase, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
+use sapphire_moves::EnemyPhase;
 use sapphire_platform::{GamepadId, Platform};
 use sapphire_render::{PostVariants, VfxFrame};
 use sapphire_sequencer::FiredCue;
@@ -42,7 +44,7 @@ use sapphire_vfx::{EffectLibrary as VfxLibrary, OwnerSteps, VfxBudget, VfxWorld}
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
 use crate::trails::BladeTrails;
-use sapphire_stage::audio::{CueSounds, ShowSounds};
+use sapphire_stage::audio::{CueSounds, RUNNING, ShowSounds};
 
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
 const SEED: u64 = 0x5EED;
@@ -60,12 +62,12 @@ pub(crate) fn behind_latest(alpha: f32) -> f32 {
 
 /// The phase a fight's score plays (M3 A1): `running` while any of its zone's encounters runs, `cleared`
 /// once every one has cleared, and `waiting` before and between. A fight with no zone is a duel, which
-/// always runs. Boss phases (B3) will be further names a score can list, said through here.
+/// always runs. A boss's named phase stands in for `running` ([`boss_phase`]).
 fn music_phase(sim: &Simulation) -> &'static str {
-    let Some(zone) = sim.zone() else { return "running" };
+    let Some(zone) = sim.zone() else { return RUNNING };
     let encounters = zone.encounters();
     if encounters.iter().any(|encounter| encounter.phase() == EncounterPhase::Running) {
-        "running"
+        RUNNING
     } else if !encounters.is_empty()
         && encounters.iter().all(|encounter| encounter.phase() == EncounterPhase::Cleared)
     {
@@ -73,6 +75,21 @@ fn music_phase(sim: &Simulation) -> &'static str {
     } else {
         "waiting"
     }
+}
+
+/// The named phase of a boss in the fight (M3 Z5a): of the first still up, in the simulation's order, whose
+/// health is past a phase with a name, the last such phase its kind's document lists. The score plays it in
+/// place of `running` if it has a phase of that name ([`CueSounds::boss_phase`]), so a boss's music is two
+/// documents, its kind's `phases` and the score's, and no code. Allocates nothing.
+fn boss_phase(sim: &Simulation) -> Option<Name> {
+    let library = sim.move_library();
+    sim.actors().find_map(|actor| {
+        let set = actor.moves.set.filter(|_| !actor.fighter.is_defeated())?;
+        let mind = library.mind(set).filter(|mind| mind.boss().is_some())?;
+        let past = library.phases(Some(set)).phase_of(actor.fighter.health(), actor.fighter.max_health())?;
+        let crossed = mind.phases().get(..usize::from(past)).unwrap_or_default();
+        crossed.iter().rev().find_map(EnemyPhase::name)
+    })
 }
 
 /// Where a fight's cues land.
@@ -135,6 +152,8 @@ pub struct CueShow {
     started_over: bool,
     /// The phase the score plays, as of the latest step: none before one.
     music_phase: Option<&'static str>,
+    /// A boss's named phase, as of the latest step, which the score plays in its place if it has it.
+    boss_phase: Option<Name>,
 }
 
 impl CueShow {
@@ -176,6 +195,7 @@ impl CueShow {
             stepping: Duration::ZERO,
             started_over: false,
             music_phase: None,
+            boss_phase: None,
         })
     }
 
@@ -253,6 +273,7 @@ impl CueShow {
         }));
         self.world_time_scale = sim.world().resource::<WorldClock>().0.effective_scale();
         self.music_phase = Some(music_phase(sim));
+        self.boss_phase = boss_phase(sim);
         self.stepping += stopwatch.elapsed();
     }
 
@@ -326,6 +347,7 @@ impl CueShow {
             world_time_scale: self.world_time_scale,
             started_over: self.started_over,
             music_phase: self.music_phase,
+            boss_phase: self.boss_phase,
         }
     }
 
@@ -662,7 +684,7 @@ mod tests {
         assert!((target.yaw.abs() - std::f32::consts::PI).abs() < 1e-5);
         let event = CueEvent {
             actor: ActorId::from_raw(cast[0].raw()).expect("not zero"),
-            cue: sapphire_core::Name::new("hit_landed"),
+            cue: Name::new("hit_landed"),
             tick: 0,
             local_time: SimTime::ZERO,
             move_time: SimDuration::ZERO,
@@ -695,7 +717,7 @@ mod tests {
         let (sim, cast) = scenario.start(scenario.config).expect("sets up");
         let event = CueEvent {
             actor: cast[0],
-            cue: sapphire_core::Name::new("swing"),
+            cue: Name::new("swing"),
             tick: 0,
             local_time: SimTime::ZERO,
             move_time: SimDuration::ZERO,
@@ -874,7 +896,7 @@ mod tests {
         };
         let event = CueEvent {
             actor,
-            cue: sapphire_core::Name::intern(&row.cue),
+            cue: Name::intern(&row.cue),
             tick,
             local_time: SimTime::ZERO,
             move_time: SimDuration::ZERO,
@@ -938,5 +960,85 @@ mod tests {
         let error = show.take_presets(&losing).expect_err("the table pushes others");
         assert!(matches!(error, CueTableError::UnknownPreset { .. }), "{error}");
         show.take_presets(&presets).expect("the same again");
+    }
+
+    /// The committed boss fight (M3 Z5a): its boss's named phase is what the show asks the score for in place
+    /// of `running`, from the step its health crosses it, said as the cue of its name, and not before. The
+    /// name is its kind's document's alone.
+    #[test]
+    fn a_bosss_named_phase_is_asked_for_from_the_step_it_crosses() {
+        use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
+
+        let presets = ScreenLibrary::default_effects();
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let bytes = include_bytes!("../../../tests/replays/arena-boss.sreplay");
+        let mut player =
+            Player::new(Replay::decode(bytes).expect("reads"), &SCENARIOS).expect("recorded on these");
+        let boss = player.cast()[1];
+        let enraged = Name::new("enraged");
+        let (mut crossed, mut asked) = (None, None);
+        while player.step() {
+            let sim = player.simulation();
+            let stage = CueStage::Actors { director: None, fighters: &[], player_blade: false };
+            show.step(sim, &mut screen, &presets, Mat4::IDENTITY, stage);
+            if sim.cues().any(|cue| cue.actor == boss && cue.cue == enraged) {
+                crossed.get_or_insert(sim.tick());
+            }
+            let sounds = show.sounds();
+            assert_eq!(sounds.music_phase, Some(RUNNING), "a duel always runs");
+            if sounds.boss_phase.is_some() {
+                assert_eq!(sounds.boss_phase, Some(enraged));
+                asked.get_or_insert(sim.tick());
+            }
+            let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
+        }
+        assert!(crossed.is_some(), "the recording takes it past half health");
+        assert_eq!(asked, crossed, "asked for from the step it crossed");
+    }
+
+    /// The shipped score's phases (M3 Z5a): past the three a fight's encounters choose, each is a phase a
+    /// shipped boss names, so none is out of reach, and there's one, so a shipped boss's phase is heard. Which
+    /// boss is content's to say: no code names one.
+    #[test]
+    fn every_phase_the_shipped_score_has_past_a_fights_is_a_bosss() {
+        fn kinds_under(folder: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(folder).expect("a folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    kinds_under(&path, found);
+                } else if path.to_string_lossy().ends_with(".enemy.ron") {
+                    found.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |path: &std::path::Path| std::fs::read_to_string(path).expect("reads");
+        let music = root.join("content/audio/generated/music");
+        let score = sapphire_assets::score::Score::from_document(&read(&music.join("lantern.score.ron")))
+            .expect("reads");
+        let shipped = CueTable::default_table().music().expect("the table names a score");
+        let sidecar = read(&music.join("lantern.score.ron.meta"));
+        assert!(sidecar.contains(&shipped.to_string()), "that's the score the table plays");
+
+        let mut kinds = Vec::new();
+        kinds_under(&root.join("content/combat"), &mut kinds);
+        let mut bosses_phases = Vec::new();
+        for kind in &kinds {
+            let document = sapphire_moves::EnemyDocument::parse(&read(kind)).expect("a kind reads");
+            if document.boss.is_some() {
+                bosses_phases.extend(document.phases.into_iter().filter_map(|phase| phase.name));
+            }
+        }
+        let past: Vec<&str> = score
+            .phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .filter(|name| ![RUNNING, "waiting", "cleared"].contains(name))
+            .collect();
+        assert!(!past.is_empty(), "the score plays some boss's phase");
+        for name in past {
+            assert!(bosses_phases.iter().any(|named| named == name), "no shipped boss names `{name}`");
+        }
     }
 }

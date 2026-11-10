@@ -16,7 +16,8 @@
 //! recooked while the app runs isn't picked up: the mixer holds what was decoded at startup.
 //!
 //! A fight's table can name a score and voice lines (M3 A1, [`ShowSounds`]): the score follows the
-//! fight's phase ([`CueSounds::music_phase`]) and the lines are spoken in the voice language
+//! fight's phase ([`CueSounds::music_phase`]), or a boss's named phase where the score has one of that name
+//! (M3 Z5a, [`CueSounds::boss_phase`]), and the lines are spoken in the voice language
 //! ([`DeviceAudio::set_voice_language`]), which starts as `LocaleSettings`' default and is the
 //! player's to change, apart from the text's.
 
@@ -32,6 +33,7 @@ use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
     EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput,
 };
+use sapphire_core::Name;
 use sapphire_loc::LocaleSettings;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
@@ -63,6 +65,10 @@ pub struct CueSounds<'a> {
     pub started_over: bool,
     /// The phase the fight's score plays, by name: none, and the music fades out.
     pub music_phase: Option<&'a str>,
+    /// The named phase of a boss in the fight (M3 Z5a), which the score plays in place of [`RUNNING`] if it has
+    /// a phase of that name. With any other `music_phase`, a game flow's `waiting` or `cleared` among them, it
+    /// isn't heard.
+    pub boss_phase: Option<Name>,
 }
 
 impl CueSounds<'_> {
@@ -74,8 +80,12 @@ impl CueSounds<'_> {
         world_time_scale: 1.0,
         started_over: false,
         music_phase: None,
+        boss_phase: None,
     };
 }
+
+/// The phase a fight's score plays while any of its encounters runs: the one a boss's phase can stand in for.
+pub const RUNNING: &str = "running";
 
 /// What an app loads for a fight's sound: the cues its table plays, and the score and voice lines it
 /// names.
@@ -220,7 +230,7 @@ impl DeviceAudio {
             emitters: &self.emitters,
             cues: requests.as_ref().map_or(fight.requests, |requests| requests.as_slice()),
             lines: fight.lines,
-            music: music(self.score, fight.music_phase),
+            music: music(self.score, &fight),
         };
         self.system.update(&frame, &mut self.random);
         self.report_in -= dt;
@@ -287,9 +297,12 @@ impl DeviceAudio {
     }
 }
 
-/// The music `score` plays in `phase`, if there's both.
-fn music(score: Option<AssetId>, phase: Option<&str>) -> Option<MusicRequest<'_>> {
-    Some(MusicRequest { score: score?, phase: phase? })
+/// The music `score` plays for `fight`, if there's both a score and a phase: a boss's named phase in place of
+/// [`RUNNING`] only.
+fn music<'a>(score: Option<AssetId>, fight: &CueSounds<'a>) -> Option<MusicRequest<'a>> {
+    let phase = fight.music_phase?;
+    let instead = fight.boss_phase.filter(|_| phase == RUNNING);
+    Some(MusicRequest { score: score?, phase, instead })
 }
 
 /// Loads `sounds` and decodes theirs, the voice lines' cues with the table's: what a mixer holds from
@@ -424,7 +437,7 @@ impl OfflineAudio {
             emitters: &self.emitters,
             cues: fight.requests,
             lines: fight.lines,
-            music: music(self.score, fight.music_phase),
+            music: music(self.score, &fight),
         };
         self.system.update(&frame, &mut self.random);
     }
@@ -476,6 +489,24 @@ mod tests {
             let text = std::fs::read_to_string(&sidecar).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert!(text.contains(&id.to_string()), "{name}'s sidecar has another ID:\n{text}");
         }
+    }
+
+    /// A boss's phase stands in only for `running`, so a game's flow saying `waiting` over a defeat, with the
+    /// boss still up in its second phase, is heard as the flow says.
+    #[test]
+    fn a_boss_phase_stands_in_for_running_alone() {
+        const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-0000000000f0");
+        let tolling = Name::new("tolling");
+        let fight =
+            |phase| CueSounds { music_phase: Some(phase), boss_phase: Some(tolling), ..CueSounds::NONE };
+        let running = fight(RUNNING);
+        assert_eq!(music(Some(SCORE), &running).and_then(|music| music.instead), Some(tolling));
+        let waiting = fight("waiting");
+        assert_eq!(
+            music(Some(SCORE), &waiting).map(|music| (music.phase, music.instead)),
+            Some(("waiting", None))
+        );
+        assert_eq!(music(None, &running), None, "no score, no music");
     }
 
     #[test]

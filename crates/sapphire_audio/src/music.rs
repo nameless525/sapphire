@@ -4,6 +4,11 @@
 //! [`SILENCE_DB`], so they stay in time with one another; a phase is the set that's up. A change of
 //! phase fades the stems that differ on the next bar line of the music's clock, as the mixer counts
 //! it, so the frame that asks only has to ask a little ahead: [`LEAD_SECONDS`].
+//!
+//! A request can name a phase to play in place of the one it asks for, if the score has it (M3 Z5a,
+//! [`MusicRequest::instead`]): a boss's named phase, which the simulation keeps only as a [`Name`], so the
+//! score's phases are matched by their names' hashes. A score without it plays the phase asked for, and
+//! that's no error: a boss's phase may be named for its bar or its screen alone.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -11,6 +16,7 @@ use std::time::Duration;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::SILENCE_DB;
 use sapphire_assets::score::{MAX_STEMS, Score};
+use sapphire_core::Name;
 
 use crate::LOG_TARGET;
 use crate::backend::{AudioBackend, StemStart};
@@ -28,6 +34,9 @@ pub struct MusicRequest<'a> {
     pub score: AssetId,
     /// One of its phases, by name.
     pub phase: &'a str,
+    /// The phase to play in place of `phase` if the score has one of this name: a boss's (M3 Z5a). Without
+    /// one, `phase` plays, and nothing counts as unknown.
+    pub instead: Option<Name>,
 }
 
 /// A score, with each phase's stems as a mask.
@@ -35,9 +44,17 @@ struct LoadedScore {
     score: Score,
     /// Bit `n` set: stem `n` plays in that phase.
     masks: Vec<u8>,
+    /// Each phase's name, hashed, for [`MusicRequest::instead`].
+    names: Vec<Name>,
 }
 
 impl LoadedScore {
+    /// The phase `request` plays: its `instead`, if the score has that, or its `phase`.
+    fn phase_of(&self, request: MusicRequest<'_>) -> Option<usize> {
+        let instead = request.instead.and_then(|name| self.names.iter().position(|&known| known == name));
+        instead.or_else(|| self.score.phase(request.phase))
+    }
+
     fn beat_seconds(&self) -> f64 {
         60.0 / f64::from(self.score.tempo_bpm)
     }
@@ -58,8 +75,14 @@ struct Playing {
     started: bool,
     /// The stems up, or going up at the bar.
     mask: u8,
-    /// The name of the phase last asked for, hashed, so a frame asking the same compares one number.
-    asked: u64,
+    /// What was last asked for: the phase's name hashed and the one in its place, so a frame asking the same
+    /// compares two numbers.
+    asked: (u64, Option<Name>),
+}
+
+/// What `request` asks for, as [`Playing::asked`] keeps it.
+fn asked(request: MusicRequest<'_>) -> (u64, Option<Name>) {
+    (fnv1a(request.phase.as_bytes()), request.instead)
 }
 
 /// What [`Music::update`] did, for the stats.
@@ -89,7 +112,8 @@ impl Music {
                 phase.play.iter().filter_map(|name| score.stem(name)).fold(0, |mask, stem| mask | 1 << stem)
             })
             .collect();
-        self.scores.insert(id, LoadedScore { score, masks });
+        let names = score.phases.iter().map(|phase| Name::new(&phase.name)).collect();
+        self.scores.insert(id, LoadedScore { score, masks, names });
     }
 
     /// How far the music goes down under a voice line: the playing score's, or nothing.
@@ -121,7 +145,7 @@ impl Music {
                     playing.started = true;
                     backend.play_music();
                 }
-                self.change_phase(request.phase, backend);
+                self.change_phase(request, backend);
             }
             _ if plays && self.failed != Some(request.score) => self.start(request, backend),
             _ => {}
@@ -135,7 +159,7 @@ impl Music {
             tracing::warn!(target: LOG_TARGET, score = %request.score, "no music: the score isn't loaded");
             return;
         };
-        let mask = match loaded.score.phase(request.phase) {
+        let mask = match loaded.phase_of(request) {
             Some(phase) => loaded.masks[phase],
             None => {
                 self.counts.unknown_phases += 1;
@@ -154,12 +178,8 @@ impl Music {
             .map_or(Duration::ZERO, LoadedScore::fade);
         match backend.load_music(loaded.score.tempo_bpm, &stems[..loaded.score.stems.len()], fade) {
             Ok(()) => {
-                self.playing = Some(Playing {
-                    score: request.score,
-                    started: false,
-                    mask,
-                    asked: fnv1a(request.phase.as_bytes()),
-                });
+                self.playing =
+                    Some(Playing { score: request.score, started: false, mask, asked: asked(request) });
             }
             Err(error) => {
                 self.playing = None;
@@ -169,16 +189,16 @@ impl Music {
         }
     }
 
-    /// Fades the stems `phase` changes on the next bar line it can make.
-    fn change_phase(&mut self, phase: &str, backend: &mut impl AudioBackend) {
+    /// Fades the stems `request`'s phase changes on the next bar line it can make.
+    fn change_phase(&mut self, request: MusicRequest<'_>, backend: &mut impl AudioBackend) {
         let Some(playing) = &mut self.playing else { return };
-        let asked = fnv1a(phase.as_bytes());
+        let asked = asked(request);
         if asked == playing.asked {
             return;
         }
         playing.asked = asked;
         let loaded = &self.scores[&playing.score];
-        let Some(index) = loaded.score.phase(phase) else {
+        let Some(index) = loaded.phase_of(request) else {
             // The stems stay as they were.
             self.counts.unknown_phases += 1;
             return;
@@ -284,6 +304,14 @@ mod tests {
         phase: Option<&str>,
         lines: &[LineRequest],
     ) -> Vec<MockCall> {
+        ask(system, phase.map(|phase| MusicRequest { score: SCORE, phase, instead: None }), lines)
+    }
+
+    fn ask(
+        system: &mut AudioSystem<MockBackend>,
+        music: Option<MusicRequest<'_>>,
+        lines: &[LineRequest],
+    ) -> Vec<MockCall> {
         let frame = AudioFrame {
             dt: 1.0 / 60.0,
             listener: Listener::default(),
@@ -291,10 +319,40 @@ mod tests {
             emitters: &[],
             cues: &[],
             lines,
-            music: phase.map(|phase| MusicRequest { score: SCORE, phase }),
+            music,
         };
         system.update(&frame, &mut CueRng::new(1));
         system.backend_mut().take_calls()
+    }
+
+    /// A boss's named phase (M3 Z5a) plays in place of the phase asked for where the score has it, by its
+    /// name's hash; where it hasn't, the phase asked for plays, and nothing counts as unknown.
+    #[test]
+    fn a_phase_in_place_of_the_one_asked_plays_only_if_the_score_has_it() {
+        let mut system = system();
+        let running = |instead: Option<&str>| {
+            Some(MusicRequest { score: SCORE, phase: "running", instead: instead.map(Name::intern) })
+        };
+        // Started at a boss's phase the score hasn't: `running`, all three.
+        assert!(matches!(ask(&mut system, running(Some("enraged")), &[])[..], [MockCall::LoadMusic { .. }]));
+        let gains: Vec<f32> = system.backend().stems().iter().map(|stem| stem.gain_db).collect();
+        assert_eq!(gains, [VOLUME_DB, VOLUME_DB, VOLUME_DB]);
+        assert_eq!(ask(&mut system, running(Some("enraged")), &[]), [MockCall::PlayMusic]);
+
+        // One it has: `cleared`'s stems, here, standing in for a boss's, on the next bar line.
+        system.backend_mut().set_music_beats(Some(1.0));
+        assert_eq!(
+            ask(&mut system, running(Some("cleared")), &[]),
+            [MockCall::FadeStem { stem: 1, gain_db: SILENCE_DB, beat: 4, fade: HALF_A_SECOND }]
+        );
+        assert_eq!(ask(&mut system, running(Some("cleared")), &[]), [], "the same ask asks nothing");
+        // And back to `running` when it's gone.
+        assert_eq!(
+            ask(&mut system, running(None), &[]),
+            [MockCall::FadeStem { stem: 1, gain_db: VOLUME_DB, beat: 4, fade: HALF_A_SECOND }]
+        );
+        assert_eq!(system.stats().music_unknown_phases, 0);
+        assert_eq!(system.stats().music_phase_changes, 2);
     }
 
     #[test]

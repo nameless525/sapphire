@@ -77,7 +77,7 @@ fn play_until(
             emitters: &[],
             cues: &[],
             lines: std::mem::take(&mut lines),
-            music: Some(MusicRequest { score: SCORE, phase }),
+            music: Some(MusicRequest { score: SCORE, phase, instead: None }),
         };
         system.update(&frame, &mut CueRng::new(1));
         system.backend_mut().output_mut().render_into(&mut block);

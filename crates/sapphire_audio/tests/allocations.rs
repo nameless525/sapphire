@@ -152,7 +152,7 @@ fn music_changes_phase_with_no_allocation() {
     let mut buffer = vec![0.0; GAME_FRAME * 2];
     let phases = ["p0", "p1", "p2", "p3"];
     let mut frame_at = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, phase: &str| {
-        let music = Some(MusicRequest { score: SCORE, phase });
+        let music = Some(MusicRequest { score: SCORE, phase, instead: None });
         system.update(&AudioFrame { music, ..frame(&[], &[]) }, &mut rng);
         system.backend_mut().output_mut().render_into(&mut buffer);
     };

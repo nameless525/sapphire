@@ -13,6 +13,8 @@ kira.workspace = true
 profiling.workspace = true
 # Cooked sounds, cues and their IDs: plain data the cooker reads too.
 sapphire_assets.workspace = true
+# A boss's phase in place of the one asked for, by its name's hash (M3 Z5a).
+sapphire_core.workspace = true
 sapphire_math.workspace = true
 # The budget's counter, and the mix's time on the audio callback (rule R2).
 sapphire_time.workspace = true

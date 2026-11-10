@@ -245,13 +245,13 @@ fn music_costs() {
         let mut emitters = start;
         let mut block = vec![0.0; BLOCK * 2];
         for tick in 0..8 {
-            let music = Some(MusicRequest { score: SCORE, phase: "waiting" });
+            let music = Some(MusicRequest { score: SCORE, phase: "waiting", instead: None });
             system.update(&AudioFrame { music, ..frame_at(tick, &mut emitters, &requests) }, &mut random);
             system.backend_mut().output_mut().render_into(&mut block);
         }
         for tick in 8..72 {
             let phase = if tick % 2 == 0 { "running" } else { "waiting" };
-            let music = Some(MusicRequest { score: SCORE, phase });
+            let music = Some(MusicRequest { score: SCORE, phase, instead: None });
             let timer = Stopwatch::start();
             system.update(&AudioFrame { music, ..frame_at(tick, &mut emitters, &[]) }, &mut random);
             updates.push(timer.elapsed());

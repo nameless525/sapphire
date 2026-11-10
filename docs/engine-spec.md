@@ -1749,6 +1749,22 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 - **As built (M1 R4):** `shadows` is drawn from: each tier's `ShadowSettings` (`sapphire_render::shadows`, replacing R6's plain `Shadows` and `MAX_SHADOW_CASCADES`) holds the cascades (1–4) and their resolution, `distance` (meters, default 120), `cached_cascades` (fewer than the cascades, default 0), `character_shadow` (maps on desktop, capsules otherwise), `character_resolution` (default 1024) and `filter` (`Tent5` or `Tent3`, default `Tent5`); a table checks them all. Shipped: Desktop-High 4 × 2048 to 120 m, 2 cached, maps of 1024, `Tent5`; Desktop-Low 4 × 1024 to 100 m, 2 cached, maps of 512, `Tent5`; Mobile-High 2 × 1024 to 50 m, 1 cached, capsules, `Tent3`; Mobile-Low 2 × 1024 to 40 m, 1 cached, capsules, `Tent3` (`tiers.ron` gives the reasons). `QualityTier::render_settings` passes them on; `QualitySettings::shadows`, the player's switch (the sandbox's `--shadows`), turns them off, and a change makes a new renderer as a tier change does. The golden runners select Desktop-Low, so the earlier scenes pin `--shadows off` and the shadow scenes their tier.
 - **As built (M1 W6):** each tier gains `foliage` (`FoliageSettings`): `wind_levels` (0–3: trunk sway, branch bend, leaf flutter), `alpha_to_coverage` (under MSAA) and `translucency`. Both desktop tiers and Mobile-High take 3, on and on; Mobile-Low 2, on and off (`tiers.ron` and "Environment" above give the reasons). The desktop tiers draw without MSAA, so their cards are alpha-tested under TAA. A table without it reads the desktop tiers'. The wind levels and translucency are pipeline-overridable constants and alpha-to-coverage picks the fragment entry point, so a tier change builds the foliage pipelines anew, as every tier change makes a new renderer.
 - **As built (M1 W5):** `ambient_occlusion` and `reflections` are drawn from: each tier's `AmbientOcclusion` (capsule AO on all four; GTAO 2 slices × 4 steps at 1 m on both desktop tiers and 1 × 4 at 0.75 m on Mobile-High; none on Mobile-Low) and `ReflectionSettings` (the reflection cube's side: 128, 128, 64, 32). `environment` gains `probes` (`ProbeLookup`): where the environment shader reads a probe grid, per pixel on three tiers and per vertex on Mobile-Low (§5.12, "Lighting", has the numbers). The player's `QualitySettings::ambient_occlusion` (`OcclusionSetting`: the tier's, off, capsules alone, or full, which turns on the desktop tiers' GTAO on Mobile-Low too) resolves against the tier; both are pipeline constants, so a change builds the environment's pipelines anew.
+- **As built (M4 T0, the optional passes and the look at every scale):** `QualitySettings::shed` (`OptionalPasses`, a set of `OptionalPass`) is the thermal ladder's second rung as data. `Quality::render_settings` applies it after the player's shadows and AO, and each pass sheds one step:
+  - GTAO to none, with the capsules kept;
+  - the cirrus off;
+  - one foliage wind level fewer;
+  - the sky cube's face interval doubled, to at most `SkySettings::MAX_CUBE_INTERVAL` (60);
+  - one bloom level fewer.
+
+  Volumetric fog isn't built, and the particle cap is `sapphire_vfx`'s budget, so neither is here. Nothing shed touches the character family, the outlines, the ramps or the grade. The sandbox takes `--shed <pass>`, repeatable. GTAO, the wind levels and the cirrus are pipeline constants, so a shed builds those pipelines anew, as a tier change does.
+
+  `sapphire_testkit::look` measures lines (darkness with against without them: strength, contrast and width) and edges (the 10–90% width, and a region's gradient spread), and `sapphire_testkit measure` and `compare` run them on captures. The GPU test `look_tiers` holds each tier's lines and hard two-tone edge at scale 1, the tier's own scale, 0.85 of it and its dynamic floor. The 12 `tier-*` golden scenes are each tier's close-up at its own scale and at its floor, and the ward and a hit on both low tiers.
+
+  `research_notes/Ship readiness for M4/t0-spike.md` has every number. In short:
+  - Desktop TAA keeps still lines and edges to the 0.7 floor.
+  - On phones the height cap does most of the softening: a hard edge goes from 1 px to 2.3 (Mobile-High) or 3.25 px (Mobile-Low). The 0.75 floor adds 10–25% to that.
+  - GTAO is Desktop-Low's only large optional pass (12–14% of the frame), and a bloom level Mobile-Low's (11–13%). The cirrus and the wind level save nothing measurable.
+  - Resolution to 0.85 saves 14–15% on Desktop-Low, and 2–11% on Mobile-Low.
 
 **Debug views**
 

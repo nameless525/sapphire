@@ -1658,6 +1658,7 @@ One uber-shader family, with at most 8 static permutation bits: layers, alpha-te
   - On Vulkan, persist the pipeline cache.
   - On Metal, warm up behind load screens (**Verify** whether wgpu exposes Metal binary archives).
   - **M4 (Decision, [m4-plan.md](m4-plan.md) §3):** nothing is drawn hidden. A load waits for its pipelines behind a screen that keeps drawing, while job workers build them, and a hub's prefetch warms on workers too. A pipeline built on the frame's thread after the boot screen's first frame is a hitch. wgpu 30 has no Metal binary archives (§11, Q5), so Metal and DX12 rely on the OS's and the driver's caches, and Vulkan keeps its persisted cache.
+  - **As built (M4 H0, a spike):** a warm-up's builds must run where no frame waits: `bevy_tasks`' scope runs queued pool tasks on the waiting thread, so a frame that waits on the compute pool (the graph executor, the ECS) took a cold build of 0.4–1.5 s on the M5's Metal. Metal compiles in another process and keys its cache to the bundle ID (a bare binary shares one), cold 4.7–4.9 s for Desktop-High's 112 pipelines against 70–100 ms warm. A build that pushes its error scopes on the worker running it catches its own refusal (`pipeline_builds` test). Numbers in `research_notes/Ship readiness for M4/h0-spike.md`.
 - **Hot reload:**
   - Desktop: file watch triggers an async recompile and a pipeline swap.
   - Devices: live link pushes the WGSL text. Shaders are translated at runtime anyway, so this works on phones too.

@@ -76,6 +76,12 @@ pub fn offscreen_requested() -> bool {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
 }
 
+/// Whether `args` ask for [`OffscreenGame`]: [`offscreen_requested`] for arguments that aren't the
+/// process's. Android's `SDL_main` asks it of the launching intent's (M3 Z2b), so a capture runs there too.
+pub fn asks_offscreen(args: &[String]) -> bool {
+    args.iter().any(|arg| options::is_offscreen_flag(arg))
+}
+
 /// Releases process-wide resources once the platform loop has returned (desktop). iOS never returns from
 /// `run`, and Android keeps the process alive, so neither calls it.
 pub fn shutdown() {
@@ -102,4 +108,25 @@ fn install_crash_capture() -> Option<CrashGuard> {
     }
 }
 
-sapphire_platform::export_android_main!(GameApp, init = startup);
+sapphire_platform::export_android_main!(
+    GameApp,
+    init = startup,
+    offscreen = OffscreenGame,
+    when = asks_offscreen
+);
+
+#[cfg(test)]
+mod tests {
+    use super::asks_offscreen;
+
+    /// Android's entry picks the app by this: a capture runs offscreen and ends, and anything else is
+    /// the window's.
+    #[test]
+    fn an_intent_asking_for_a_capture_runs_offscreen() {
+        let args = |list: &[&str]| list.iter().map(|&arg| arg.to_owned()).collect::<Vec<_>>();
+        assert!(asks_offscreen(&args(&["--open-fight", "--capture", "fight.png", "--ticks", "600"])));
+        assert!(asks_offscreen(&args(&["--capture=title.png"])));
+        assert!(!asks_offscreen(&args(&["--open-fight", "--script", "fight-back"])));
+        assert!(!asks_offscreen(&[]));
+    }
+}

@@ -1,4 +1,5 @@
-//! Desktop and iOS entry point. Android enters through the `SDL_main` exported by the library.
+//! Desktop and iOS entry point. Android enters through the `SDL_main` exported by the library, which
+//! picks the windowed or the offscreen game the same way, by the launching intent's arguments.
 
 use std::process::ExitCode;
 

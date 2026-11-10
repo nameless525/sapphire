@@ -432,10 +432,18 @@ pub fn command_help() -> Option<&'static str> {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_help_flag)).then_some(options::USAGE)
 }
 
-/// Whether the arguments ask for an offscreen mode (`--capture`, `--bench` or `--offscreen`),
-/// which `main` runs as [`OffscreenApp`] in the background instead of opening the windowed app.
+/// Whether the process's arguments ask for an offscreen mode (`--capture`, `--bench` or
+/// `--offscreen`), which `main` runs as [`OffscreenApp`] in the background instead of opening the
+/// windowed app.
 pub fn offscreen_requested() -> bool {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
+}
+
+/// Whether `args` ask for an offscreen mode: [`offscreen_requested`] for arguments that aren't the
+/// process's. Android's `SDL_main` asks it of the launching intent's, and runs [`OffscreenApp`] for
+/// a yes (M3 Z2b), so a capture or a bench, and a replay with either, runs on the emulator too.
+pub fn asks_offscreen(args: &[String]) -> bool {
+    args.iter().any(|arg| options::is_offscreen_flag(arg))
 }
 
 /// Releases process-wide resources once the platform loop has returned (desktop). iOS never
@@ -472,4 +480,40 @@ fn install_crash_capture() -> Option<CrashGuard> {
     }
 }
 
-sapphire_platform::export_android_main!(SandboxApp, init = startup);
+sapphire_platform::export_android_main!(
+    SandboxApp,
+    init = startup,
+    offscreen = OffscreenApp,
+    when = asks_offscreen
+);
+
+#[cfg(test)]
+mod tests {
+    use super::asks_offscreen;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|&arg| arg.to_owned()).collect()
+    }
+
+    /// Android's entry picks the app by this, so a replay launched by an intent with a capture or a
+    /// bench runs offscreen and ends, and one without stays the windowed app.
+    #[test]
+    fn an_intent_asking_for_a_capture_or_a_bench_runs_offscreen() {
+        for asked in [
+            &["--capture", "end.png", "--arena", "--replay", "zone-trip.sreplay"][..],
+            &["--arena", "--replay", "zone-trip.sreplay", "--bench=1"],
+            &["--offscreen", "--arena", "--fight", "--script", "fight-back"],
+            &["--contact-sheet", "sheet.png"],
+        ] {
+            assert!(asks_offscreen(&args(asked)), "{asked:?}");
+        }
+        for windowed in [
+            &[][..],
+            &["--arena", "--fight"],
+            &["--arena", "--replay", "zone-trip.sreplay"],
+            &["--benchmark"],
+        ] {
+            assert!(!asks_offscreen(&args(windowed)), "{windowed:?}");
+        }
+    }
+}

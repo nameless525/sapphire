@@ -251,6 +251,12 @@ pub fn run_with<A: App>(options: RunOptions) -> ExitCode {
 /// the place for crash reporting (spec §5.2) and logging, which `fn main` sets up on
 /// the other platforms. It must not panic (it runs inside an `extern "C"` function).
 ///
+/// `offscreen = <App>, when = <fn(&[String]) -> bool>`, if given, runs that app instead
+/// when `when` says yes to the arguments the launching intent passed, as `fn main` picks
+/// an app on the other platforms (a capture or a bench that opens no window, say). It
+/// runs on the same loop, under the activity's window, which it can leave alone. `when`
+/// must not panic either.
+///
 /// Expands to nothing on other targets, so the same `lib.rs` builds everywhere. See
 /// the crate docs for the full Android packaging contract.
 ///
@@ -287,7 +293,7 @@ pub fn run_with<A: App>(options: RunOptions) -> ExitCode {
 /// ```
 #[macro_export]
 macro_rules! export_android_main {
-    ($app:ty $(, init = $init:path)? $(,)?) => {
+    ($app:ty $(, init = $init:path)? $(, offscreen = $offscreen:ty, when = $when:path)? $(,)?) => {
         #[cfg(target_os = "android")]
         const _: () = {
             // Export SDL's own C symbols, JNI_OnLoad above all, from this cdylib.
@@ -305,6 +311,13 @@ macro_rules! export_android_main {
                 argv: *mut *mut ::core::ffi::c_char,
             ) -> ::core::ffi::c_int {
                 $($init();)?
+                $(
+                    // SAFETY: as below.
+                    if unsafe { $crate::__private::args_ask(argc, argv, $when) } {
+                        // SAFETY: as below.
+                        return unsafe { $crate::__private::android_main::<$offscreen>(argc, argv) };
+                    }
+                )?
                 // SAFETY: SDLActivity calls this once, on its SDL thread, with a valid
                 // null-terminated `argv` of `argc` C strings.
                 unsafe { $crate::__private::android_main::<$app>(argc, argv) }
@@ -334,6 +347,18 @@ pub mod __private {
         // failed. Written to logcat directly, so no app's log filter can drop it.
         crate::sdl_log(tracing::Level::INFO, &main_returned(status));
         status
+    }
+
+    /// Whether `when` says yes to the arguments in `argv`: how the `SDL_main` emitted by
+    /// [`export_android_main!`] picks its `offscreen` app.
+    ///
+    /// # Safety
+    ///
+    /// `argv` must be null or point to at least `argc` pointers, each null or a valid
+    /// NUL-terminated string.
+    pub unsafe fn args_ask(argc: c_int, argv: *mut *mut c_char, when: fn(&[String]) -> bool) -> bool {
+        // SAFETY: forwarded caller contract.
+        when(&unsafe { collect_args(argc, argv) })
     }
 
     /// The line [`android_main`] logs as the app's main function returns: exactly
@@ -855,6 +880,29 @@ mod tests {
         assert_eq!(__private::main_returned(0), "main returned status=0");
         assert_eq!(__private::main_returned(1), "main returned status=1");
         assert_eq!(__private::main_returned(-1), "main returned status=-1");
+    }
+
+    /// Android's `SDL_main` picks its app by the intent's arguments, as `fn main` does by the
+    /// process's: what `when` is shown is every argument, in order.
+    #[test]
+    fn android_main_asks_about_the_arguments_it_was_given() {
+        let args: Vec<CString> = ["app", "--arena", "--capture", "x.png"]
+            .into_iter()
+            .map(|arg| CString::new(arg).expect("no NUL"))
+            .collect();
+        let mut argv: Vec<*mut c_char> =
+            args.iter().map(|arg| arg.as_ptr().cast_mut()).chain([ptr::null_mut()]).collect();
+        let argc = c_int::try_from(args.len()).expect("a few");
+        let capture = |args: &[String]| args.iter().any(|arg| arg == "--capture");
+        let shown = |args: &[String]| args == ["app", "--arena", "--capture", "x.png"];
+        let bench = |args: &[String]| args.iter().any(|arg| arg == "--bench");
+        // SAFETY: `argv` holds `argc` valid C strings and a null, alive for each call.
+        unsafe {
+            assert!(__private::args_ask(argc, argv.as_mut_ptr(), capture));
+            assert!(__private::args_ask(argc, argv.as_mut_ptr(), shown));
+            assert!(!__private::args_ask(argc, argv.as_mut_ptr(), bench));
+            assert!(!__private::args_ask(0, ptr::null_mut(), capture), "no arguments at all");
+        }
     }
 
     #[test]

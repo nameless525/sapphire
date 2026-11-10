@@ -97,7 +97,9 @@
 //! SDL's Java glue drives the app, so an Android build needs:
 //!
 //! 1. The app crate builds as a `cdylib`, say `libsandbox.so`, whose `lib.rs` invokes
-//!    `sapphire_platform::export_android_main!(SandboxApp, init = setup);`. That
+//!    `sapphire_platform::export_android_main!(SandboxApp, init = setup);`, adding
+//!    `offscreen = OffscreenApp, when = asks_offscreen` for an app that runs offscreen
+//!    when the intent's arguments ask, as `fn main` picks one elsewhere. That
 //!    exports `SDL_main(argc, argv)`, which SDLActivity looks up with `dlsym` and calls
 //!    on its SDL thread once the surface is ready, plus all of SDL's C symbols,
 //!    including `JNI_OnLoad`, which registers SDL's Java native methods. SDL and the

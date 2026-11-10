@@ -1,5 +1,6 @@
 //! `--capture <png>`: the game with no window, for a run nobody's watching. Draws its ticks, writes the last
-//! frame and exits.
+//! frame and exits. `main` runs it on desktop and iOS, and Android's `SDL_main` when the launching intent
+//! asks (M3 Z2b), under an activity whose window nothing draws to.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -9,7 +10,9 @@ use std::time::Duration;
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use game_ui::menus::PlayerSettings;
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, Timestamp};
+use sapphire_platform::{
+    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform, Timestamp,
+};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
@@ -30,7 +33,12 @@ impl App for OffscreenGame {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
-        let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
+        let mut path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
+        // A phone's app runs from nowhere it can write: a path with no directory of its own goes under its
+        // cache, which `adb shell run-as` and `devicectl` reach (M3 Z2b).
+        if path.is_relative() && platform.system_info().device_class != DeviceClass::Desktop {
+            path = platform.cache_dir().join(path);
+        }
         let gpu = headless_gpu()?;
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));

@@ -6,8 +6,12 @@
 //! [`capture`](crate::capture) writes a PNG (the hook for golden-image tests, spec §9) and
 //! [`bench`](crate::bench) measures the per-frame CPU path, then each exits; `--offscreen`
 //! (`serve.rs`) keeps drawing for hot reload and live link until stopped.
+//!
+//! Android's `SDL_main` runs them too, when the launching intent's arguments ask (M3 Z2b), under an
+//! activity whose window nothing draws to: a replay reaches its checksums on the emulator that way.
+//! A phone's relative paths go under its cache, as the windowed app's recordings do.
 
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 use sapphire_render::RenderSettings;
 use sapphire_render::debug_view::DebugView;
 #[cfg(feature = "dev")]
@@ -52,10 +56,15 @@ impl App for OffscreenApp {
     const METADATA: AppMetadata = SandboxApp::METADATA;
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let (options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        let (mut options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         options.refuse_unknown(&unknown).map_err(AppInitError::msg)?;
         if !unknown.is_empty() {
             tracing::warn!(target: LOG_TARGET, ?unknown, "ignoring unknown arguments");
+        }
+        // As the windowed app's: a phone's files are in its cache, where `adb push` through `run-as`
+        // and `devicectl` reach them (M3 Z2b).
+        if platform.system_info().device_class != DeviceClass::Desktop {
+            options.files_under(platform.cache_dir());
         }
         let offscreen = options.offscreen.as_ref().ok_or_else(|| {
             AppInitError::msg("OffscreenApp needs --capture <png>, --bench <frames> or --offscreen")

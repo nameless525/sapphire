@@ -128,7 +128,7 @@ impl App for SandboxApp {
         // A phone's app has no working directory to speak of, and its cache is what `run-as` and
         // `devicectl` can fetch from.
         if info.device_class != DeviceClass::Desktop {
-            options.record_under(platform.cache_dir());
+            options.files_under(platform.cache_dir());
         }
         tracing::info!(target: LOG_TARGET, version = Self::METADATA.version, ?info, ?options, "starting");
 

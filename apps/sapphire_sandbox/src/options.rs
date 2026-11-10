@@ -1426,15 +1426,6 @@ impl Options {
         Ok((options, unknown))
     }
 
-    /// A `--record` path with no directory of its own goes under `dir`: a phone's cache.
-    pub fn record_under(&mut self, dir: &std::path::Path) {
-        if let Some(CombatOption::Record { path, .. }) = &mut self.combat
-            && path.is_relative()
-        {
-            *path = dir.join(&*path);
-        }
-    }
-
     /// What a fight someone plays in a window takes without being asked: see where it's called.
     fn play_in_a_window(&mut self) {
         self.combat_input = true;
@@ -1464,18 +1455,36 @@ impl Options {
         Ok(())
     }
 
-    /// An error if the windowed app was given an offscreen mode, which only happens on Android:
-    /// `main` picks the app from the process's arguments, and Android enters through `SDL_main`,
-    /// which runs the windowed app with its arguments from the launching intent. It would draw
-    /// until stopped, and never take the capture or the bench it was asked for.
+    /// An error if the windowed app was given an offscreen mode. Every entry runs those as
+    /// `OffscreenApp`: `main` by the process's arguments, and Android's `SDL_main` by the launching
+    /// intent's (M3 Z2b). An entry that didn't would open a window that draws until stopped, and
+    /// never take the capture or the bench it was asked for.
     pub fn refuse_offscreen(&self) -> Result<(), String> {
         if self.offscreen.is_some() {
             return Err(format!(
-                "{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} don't run on Android; \
-                 a device's capture is `cargo xtask link capture`"
+                "{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} run as the offscreen app, not the windowed one: \
+                 this entry should have picked it"
             ));
         }
         Ok(())
+    }
+
+    /// A file path with no directory of its own goes under `dir`, a phone's cache, where the app may
+    /// read and write and `run-as` and `devicectl` can reach: `--record`'s, `--replay`'s (with the
+    /// checksums beside it) and `--capture`'s.
+    pub fn files_under(&mut self, dir: &std::path::Path) {
+        let under = |path: &mut PathBuf| {
+            if path.is_relative() {
+                *path = dir.join(&*path);
+            }
+        };
+        if let Some(CombatOption::Record { path, .. } | CombatOption::Replay { path, .. }) = &mut self.combat
+        {
+            under(path);
+        }
+        if let Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) = &mut self.offscreen {
+            under(path);
+        }
     }
 }
 
@@ -2138,19 +2147,35 @@ mod tests {
     }
 
     /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under
-    /// the cache, which is what can be fetched from a phone.
+    /// the cache, which is what can be fetched from a phone, and pushed to one (M3 Z2b).
     #[test]
-    fn a_recording_on_a_phone_goes_under_its_cache() {
-        let recorded = |path: &str| {
-            let (mut options, _) = parse(&["--arena", "--record", path, "--scenario", "s"]).unwrap();
-            options.record_under(std::path::Path::new("/cache"));
-            match options.combat {
-                Some(CombatOption::Record { path, .. }) => path,
-                _ => panic!("a recording"),
-            }
+    fn a_phones_files_go_under_its_cache() {
+        let under = |args: &[&str]| {
+            let (mut options, _) = parse(args).unwrap();
+            options.files_under(std::path::Path::new("/cache"));
+            options
+        };
+        let recorded = |path: &str| match under(&["--arena", "--record", path, "--scenario", "s"]).combat {
+            Some(CombatOption::Record { path, .. }) => path,
+            _ => panic!("a recording"),
         };
         assert_eq!(recorded("touch.sreplay"), PathBuf::from("/cache/touch.sreplay"));
         assert_eq!(recorded("/data/touch.sreplay"), PathBuf::from("/data/touch.sreplay"));
+
+        let played = under(&["--capture", "end.png", "--arena", "--replay", "zone-trip.sreplay"]);
+        assert!(
+            matches!(&played.combat, Some(CombatOption::Replay { path, .. }) if path.as_path() == std::path::Path::new("/cache/zone-trip.sreplay"))
+        );
+        assert!(matches!(
+            &played.offscreen,
+            Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) if path.as_path() == std::path::Path::new("/cache/end.png")
+        ));
+        let own = under(&["--capture", "/sdcard/end.png", "--replay", "/data/local/tmp/a.sreplay"]);
+        assert!(matches!(&own.combat, Some(CombatOption::Replay { path, .. }) if path.starts_with("/data")));
+        assert!(matches!(
+            &own.offscreen,
+            Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) if path.starts_with("/sdcard")
+        ));
     }
 
     /// A recording in the arena is the same fight as `--fight`, written down: a phone has no other way to
@@ -2692,7 +2717,7 @@ mod tests {
             &["--bench", "10", "--replay", "a.sreplay"][..],
         ] {
             let (options, _) = parse(args).unwrap();
-            assert!(options.refuse_offscreen().unwrap_err().contains("Android"), "{args:?}");
+            assert!(options.refuse_offscreen().unwrap_err().contains("the offscreen app"), "{args:?}");
         }
         let (options, _) = parse(&["--look-dev", "wide"]).unwrap();
         assert_eq!(options.refuse_offscreen(), Ok(()));

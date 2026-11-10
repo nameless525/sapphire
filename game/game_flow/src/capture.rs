@@ -6,14 +6,16 @@ use std::time::Duration;
 
 use game_combat::combat::CombatOption;
 use game_combat::fight::fight_stage;
-use sapphire_platform::{AppInitError, Platform, Timestamp};
+use sapphire_platform::{
+    AppInitError, Event, KeyEvent, Keycode, Modifiers, Platform, Scancode, Timestamp, WindowId,
+};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
-use crate::flow::FlowCommand;
+use crate::flow::{FlowCommand, FlowState};
 use crate::show::GameShow;
 
 /// The capture's target, sRGB like a window's swapchain.
@@ -31,6 +33,9 @@ pub struct GameCapture {
     /// The player's quality settings: the defaults, so the device's tier, for the game's own; a golden pins
     /// its tier, since a device chooses its own (CI's Metal runner a lower one than a Mac's).
     pub quality: QualitySettings,
+    /// Whether the keyboard holds the stick forward from the first frame until a timeline plays: a continue
+    /// facing a gate walks through it into its cutscene, as a player would (M3 Q4's subtitles).
+    pub forward: bool,
 }
 
 /// A capture's last frame.
@@ -67,9 +72,27 @@ pub fn capture(
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let frame = Duration::from_secs(1) / TICK_HZ;
     let mut now = Duration::ZERO;
-    for _ in 1..capture.ticks {
+    // Whether it still walks, until a timeline plays, and whether forward's pressed yet.
+    let (mut forward, mut held) = (capture.forward, false);
+    for frame_at in 1..capture.ticks {
         now += frame;
         stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
+        if forward {
+            let playing = stage.show.game().is_some_and(|game| game.flow().state() == FlowState::Playing);
+            if !held && playing {
+                // Once the title's gone, so its rows don't take the press.
+                stage.show.handle_event(&forward_key(now, true));
+                held = true;
+            }
+            // What a window's `read_input` does after the menus, which a capture with no input leaves out.
+            stage.show.controls.update(Timestamp::from_nanos(now.as_nanos() as u64));
+            if held && stage.show.shown.fight.show.timeline_player().is_some() {
+                stage.show.handle_event(&forward_key(now, false));
+                forward = false;
+                // Where a golden pins its frame from: the timeline's first.
+                tracing::info!(target: LOG_TARGET, frame = frame_at, "walked into a timeline");
+            }
+        }
         stage.step();
         stage.show.drive_view(frame);
         stage.render(&view, 1.0, |_, _| {})?;
@@ -89,4 +112,17 @@ pub fn capture(
     stage.show.finish().map_err(AppInitError::msg)?;
     tracing::info!(target: LOG_TARGET, ticks = capture.ticks, "a game drawn with no window");
     Ok(Captured { pixels, adapter: stage.gpu.caps().adapter.clone() })
+}
+
+/// The keyboard's forward, down or up, at `now`, as a window would send it.
+fn forward_key(now: Duration, down: bool) -> Event {
+    Event::Key(KeyEvent {
+        timestamp: Timestamp::from_nanos(now.as_nanos() as u64),
+        window: WindowId::from_raw(1),
+        scancode: Scancode::W,
+        keycode: Keycode(0),
+        modifiers: Modifiers::default(),
+        down,
+        repeat: false,
+    })
 }

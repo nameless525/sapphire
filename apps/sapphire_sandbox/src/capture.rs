@@ -78,20 +78,25 @@ fn step(
 
 /// `--game`: the game's own show on the content's flow, from `start`, over `progress`'s save if there is one,
 /// drawn `ticks` frames with no window on the player's `quality` settings (`--tier` and the rest of the
-/// command line's) and written as any capture is (M3 G1). It keeps no run's file, and the save only in a
-/// scratch directory it takes away after.
+/// command line's) and written as any capture is (M3 G1). In `language` if one's given, and walking forward
+/// into a cutscene if `forward` (M3 Q4). It keeps no run's file, and the save only in a scratch directory it
+/// takes away after.
 pub(crate) fn game(
     platform: &Platform,
     path: &Path,
-    (start, progress): (GameStart, Option<&Path>),
+    (start, progress, forward, language): (GameStart, Option<&Path>, bool, Option<&str>),
     (ticks, size): (u32, (u32, u32)),
     quality: QualitySettings,
 ) -> Result<(), AppInitError> {
     let scratch = progress.map(Scratch::holding).transpose()?;
     let setup =
         GameSetup { store: scratch.as_ref().map(|scratch| scratch.store.clone()), ..GameSetup::default() };
-    let (show, first) = GameShow::from_content(platform.content(), PlayerSettings::default(), setup)?;
-    let capture = GameCapture { choose: start.command(), size, ticks, quality };
+    let mut settings = PlayerSettings::default();
+    if let Some(language) = language {
+        language.clone_into(&mut settings.language);
+    }
+    let (show, first) = GameShow::from_content(platform.content(), settings, setup)?;
+    let capture = GameCapture { choose: start.command(), size, ticks, quality, forward };
     let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
     write_png(path, size.0, size.1, &captured.pixels)?;
     write_adapter_info(path, &captured.adapter)?;

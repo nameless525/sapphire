@@ -243,6 +243,12 @@ pub(crate) struct Options {
     /// `--progress <file.ron>` (with `--game`): the save the game starts over, a `Progress` document, kept in a
     /// scratch directory for the capture's length: what a continue continues.
     pub progress: Option<PathBuf>,
+    /// `--game-forward` (with `--game`): the keyboard holds the stick forward once the run stands, until a
+    /// timeline plays, so a continue facing a gate walks into its cutscene (M3 Q4).
+    pub game_forward: bool,
+    /// `--game-language <code>` (with `--game`): the player's chosen language, of the game's, in place of
+    /// English.
+    pub game_language: Option<String>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -805,6 +811,14 @@ impl Options {
                 }
                 "--game" => options.game = Some(GameStart::parse(&value("--game")?)?),
                 "--progress" => options.progress = Some(PathBuf::from(value("--progress")?)),
+                "--game-forward" => options.game_forward = true,
+                "--game-language" => {
+                    let language = value("--game-language")?;
+                    if !game_ui::menus::LANGUAGES.contains(&language.as_str()) {
+                        return Err(format!("--game-language: the game has no {language:?}"));
+                    }
+                    options.game_language = Some(language);
+                }
                 "--display-text" => {
                     options.display_text =
                         Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
@@ -1334,6 +1348,11 @@ impl Options {
         }
         if options.progress.is_some() && options.game.is_none() {
             return Err("--progress is the save the game's own show starts over: it needs --game".to_owned());
+        }
+        if (options.game_forward || options.game_language.is_some()) && options.game.is_none() {
+            return Err(
+                "--game-forward and --game-language play the game's own show: they need --game".to_owned()
+            );
         }
         options.combat = match (replay, record, scenario, script) {
             (None, None, None, script) if fight => Some(CombatOption::Fight { script, party: options.party }),
@@ -2321,6 +2340,13 @@ mod tests {
         let (game, _) = parse(&["--game", "continue", "--progress", "saved.ron", "--capture", "x"]).unwrap();
         assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
         assert_eq!(game.progress.as_deref(), Some(std::path::Path::new("saved.ron")));
+        refused(&["--game-forward", "--capture", "x"], "--game-forward");
+        refused(&["--game", "title", "--game-language", "fr", "--capture", "x"], "no \"fr\"");
+        let (game, _) =
+            parse(&["--game", "continue", "--game-forward", "--game-language", "ja", "--capture", "x"])
+                .unwrap();
+        assert!(game.game_forward);
+        assert_eq!(game.game_language.as_deref(), Some("ja"));
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

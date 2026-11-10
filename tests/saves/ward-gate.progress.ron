@@ -1,0 +1,21 @@
+// A save of the game's flow (M3 Q4) at the Lantern Ward's court checkpoint, with the market and the garden
+// fought and the court not yet, and no story flag set: a continue stands facing the court's gate, and walking
+// back through it starts the court's encounter and the gate's cutscene, which `game-gate-*` capture through
+// the sandbox's `--game continue --progress --game-forward`.
+(
+    type: "sapphire::game::Progress",
+    version: 1,
+    data: (
+        // content/zones/lantern_ward/lantern_ward.zone.ron
+        zone: "f15b7d04-631d-59b5-8c42-338147fc4e86",
+        start: (
+            checkpoint: Some("court"),
+            // market and garden's encounters, ascending.
+            cleared: [
+                "9c124ff2-ab3d-4b6c-a281-79dc6eade2ec",
+                "f2a2a203-7ac5-4a8b-91ec-4366daa62246",
+            ],
+        ),
+        flags: (flags: []),
+    ),
+)

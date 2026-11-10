@@ -121,6 +121,7 @@ impl Options {
             size: self.size,
             ticks: self.ticks,
             quality: QualitySettings::default(),
+            forward: false,
         }
     }
 }
@@ -153,7 +154,8 @@ mod tests {
                 choose: Some(FlowCommand::NewGame),
                 size: (640, 360),
                 ticks: 9,
-                quality: QualitySettings::default()
+                quality: QualitySettings::default(),
+                forward: false,
             }
         );
         assert!(!options.saves());

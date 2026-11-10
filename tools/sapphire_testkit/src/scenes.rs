@@ -103,6 +103,33 @@ macro_rules! game_scene {
     };
 }
 
+/// The court gate's cutscene in the game as it ships (M3 Q4), at a size in pixels and in a language: a continue
+/// from `ward-gate.progress.ron` walks back through the gate, into the cutscene at frame 17, and the last frame,
+/// 3.9 s on, falls mid-way through the warden's line (2.9 to 4.9 s).
+macro_rules! gate_scene {
+    ($name:literal, $size:literal, $language:literal) => {
+        Scene {
+            name: $name,
+            args: &[
+                "--size",
+                $size,
+                "--capture-ticks",
+                "251",
+                "--tier",
+                "desktop-high",
+                "--game",
+                "continue",
+                "--progress",
+                "tests/saves/ward-gate.progress.ron",
+                "--game-forward",
+                "--game-language",
+                $language,
+            ],
+            thresholds: Thresholds::default(),
+        }
+    };
+}
+
 /// The scenes, in the order they were added. Those from before the sky's layers (M1 W2) pin the
 /// sky's gradient alone, `--plain-sky` (no discs, glows, stars or clouds), so they stay
 /// pixel-identical to their goldens: they are about the character, and the sky has scenes of its
@@ -202,7 +229,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 211] {
+pub fn scenes() -> [Scene; 217] {
     [
         Scene {
             name: "turntable-start",
@@ -3994,6 +4021,15 @@ pub fn scenes() -> [Scene; 211] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The court gate's cutscene with its subtitles (M3 Q4, exit test 3): a continue at the court's
+        // checkpoint walks back through the gate, which starts the court's encounter and the cutscene, and the
+        // frame is mid-line, the warden speaking, in both languages at 4:3, 16:9 and 21:9.
+        gate_scene!("game-ward-gate-tablet-en", "640x480", "en"),
+        gate_scene!("game-ward-gate-tablet-ja", "640x480", "ja"),
+        gate_scene!("game-ward-gate-wide-en", "854x480", "en"),
+        gate_scene!("game-ward-gate-wide-ja", "854x480", "ja"),
+        gate_scene!("game-ward-gate-ultrawide-en", "1120x480", "en"),
+        gate_scene!("game-ward-gate-ultrawide-ja", "1120x480", "ja"),
         // The character screen's inset (M3 U6) on a phone's 19.5:9 at twice the points, on Mobile-Low, a
         // quarter turn round by a drag.
         Scene {

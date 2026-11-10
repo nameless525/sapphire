@@ -124,8 +124,18 @@ impl Host {
         *self.state.faults.lock().unwrap_or_else(PoisonError::into_inner) = Box::new(faults);
     }
 
-    /// Every request answered so far.
+    /// Every request answered so far, once the answers in flight are logged. A request is logged after its
+    /// answer is written, so a client can read a whole answer, act on it and return before its connection's
+    /// thread logs it: a Windows run saw an empty log after a refused manifest. It waits at most about
+    /// 5000 sleeps of a millisecond, past a stall, counted rather than timed (R2: tests read no clock).
     pub fn log(&self) -> Vec<Served> {
+        for _ in 0..5000 {
+            let log = self.state.log.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            if log.len() >= self.state.asked.load(Ordering::Acquire) {
+                return log;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
         self.state.log.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 

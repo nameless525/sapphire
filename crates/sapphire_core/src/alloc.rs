@@ -382,6 +382,9 @@ pub fn vm_counts() -> AllocCounts {
     per_thread::vm()
 }
 
+// The `#[cfg(target_os = ...)]` on the two `per_thread` modules is an accepted exception to rule R7
+// (ADR 0001): the global allocator counts before anything else runs, so it can't ask `sapphire_platform`
+// (and SDL) which targets have native thread-locals. Both gates stay here, the one's the other's negation.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux"))]
 mod per_thread {
     use std::cell::Cell;

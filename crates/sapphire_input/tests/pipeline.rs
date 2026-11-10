@@ -1903,6 +1903,30 @@ fn captured_axes_wait_for_rest_before_dispatching_any_trigger() {
     }
 }
 
+/// A capture lasts until the source is at rest, under its dead zone, not until it reads under its binding's
+/// threshold: a pull that captured at half travel, still going, mustn't then fire a binding that wants more.
+#[test]
+fn a_capture_lasts_until_rest_past_a_threshold_above_it() {
+    let bindings = r#"(name: "main", bindings: [(action: "fire", source: PadAxis(RightTrigger), actuation: Some(0.8), modifiers: [DeadZone(lower: 0.15, upper: 0.95)])])"#;
+    let mut rig = Rig::new(map(r#"(name: "fire", kind: Button)"#, bindings), &["main"]);
+    rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.update(1);
+    rig.input.capture_next();
+    let axis = |value| RawInput::PadAxis { pad: 0, axis: PadAxis::RightTrigger, value };
+    rig.push(2, axis(0.5));
+    assert_eq!(rig.update(10), []);
+    assert_eq!(rig.input.take_captured(), Some(Source::PadAxis(PadAxis::RightTrigger)));
+    rig.push(20, axis(0.9));
+    rig.push(30, axis(1.0));
+    assert_eq!(rig.update(40), [], "the same pull, on past the threshold");
+    // Eased off into the dead zone is at rest, so the next pull is a press.
+    rig.push(50, axis(0.1));
+    assert_eq!(rig.update(60), []);
+    rig.push(70, axis(0.9));
+    let events = rig.update(80);
+    assert!(events.iter().any(|(_, kind, _)| *kind == Triggered), "{events:?}");
+}
+
 #[test]
 fn a_lift_moves_under_the_press_gate_before_releasing_it() {
     for moved_first in [false, true] {

@@ -188,7 +188,8 @@ struct BindingState {
     /// A motion binding's share of its channel's motion this update.
     accepted: Accepted,
     active: bool,
-    /// A captured analog source remains physical state, but cannot dispatch until rest.
+    /// A captured analog source remains physical state, but cannot dispatch until it's at rest: its
+    /// value zero once its modifiers have had it, so at or under its dead zone, whatever its threshold.
     captured: bool,
     /// Scratch for rebuilding the active set.
     include: bool,
@@ -908,7 +909,8 @@ impl InputSystem {
                 let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
                 let actuated = is_actuated(value, binding.threshold, state.memory.actuated());
                 if state.captured {
-                    state.captured = actuated;
+                    // Not let go under its own threshold: a pull still on its way up would carry on past it.
+                    state.captured = value != Vec2::ZERO;
                     state.memory = Memory::entering(actuated);
                     state.output = Output::default();
                     combined.add(state.output);

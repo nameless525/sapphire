@@ -71,6 +71,22 @@ fn a_flow_naming_what_its_scenario_doesnt_load_is_refused() {
     assert!(refused.is_some_and(|error| error.contains("met_guide")));
 }
 
+/// A game's run meets every fighter in its zone, so its scenario's pool holds them all (M3 G1c): the market's
+/// room alone, which holds only what its own fight brings, can't be a game's run of the whole ward.
+#[test]
+fn a_flow_whose_scenario_cant_hold_everyone_it_meets_is_refused() {
+    let mut document = flow();
+    document.scenario = "ward-market".to_owned();
+    document.beats.retain(|beat| beat.then == Then::Victory);
+    let registry = FlagRegistry::from_ron(&text("content/flags.ron")).expect("the flags read");
+    let registered = registry.flags.iter().map(|flag| Name::new(flag)).collect();
+    let refused = Game::new(FlowContent { document, registered }, GameSetup::default()).err();
+    assert!(
+        refused.as_deref().is_some_and(|error| error.contains("the last would never come")),
+        "{refused:?}"
+    );
+}
+
 #[test]
 fn the_flow_s_music_is_the_ward_s_score_s_phases() {
     let score =

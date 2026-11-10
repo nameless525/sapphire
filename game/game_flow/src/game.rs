@@ -467,6 +467,16 @@ fn check(content: &FlowContent) -> Result<Loads, String> {
     let document = &content.document;
     let scenario = find_scenario(&SCENARIOS, &document.scenario)
         .ok_or_else(|| format!("the flow's scenario `{}` isn't one this build holds", document.scenario))?;
+    // A game's run walks the whole zone, so its pool holds everyone it'll meet: one that runs out refuses the
+    // last to come, and their encounter clears with nobody in it (M3 G1c).
+    let room = scenario.room_for_everyone().map_err(|error| format!("`{}`: {error}", document.scenario))?;
+    if let Some(room) = room.filter(|&room| room > scenario.config.max_actors as usize) {
+        return Err(format!(
+            "`{}` holds {} actors, and its cast and every fighter its encounters bring need {room}: the last \
+             would never come",
+            document.scenario, scenario.config.max_actors
+        ));
+    }
     let timelines = scenario.timelines().map_err(|error| format!("`{}`: {error}", document.scenario))?;
     let dialogues = scenario.dialogues().map_err(|error| format!("`{}`: {error}", document.scenario))?;
     for (index, beat) in document.beats.iter().enumerate() {

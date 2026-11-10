@@ -296,6 +296,12 @@ impl Scenario {
         self.document().map_or(Ok(Vec::new()), ScenarioDocument::timelines_by_id)
     }
 
+    /// The actors a run that meets every fighter its zone's encounters bring needs room for, its cast among
+    /// them: a document's [`ScenarioDocument::room_for_everyone`] (M3 G1c). `None` for a scenario of code.
+    pub fn room_for_everyone(&self) -> Result<Option<usize>, ScenarioError> {
+        self.document().map(ScenarioDocument::room_for_everyone).transpose()
+    }
+
     /// The dialogues its runs load, by their documents' IDs, and the ID each has there: a document's
     /// `dialogues` (M3 G1). A scenario of code names none.
     pub fn dialogues(&self) -> Result<Vec<(AssetId, DialogueId)>, ScenarioError> {

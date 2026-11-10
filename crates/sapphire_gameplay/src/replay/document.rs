@@ -758,6 +758,20 @@ impl ScenarioDocument {
         Ok(driven.map(|(_, &actor)| actor).collect())
     }
 
+    /// The actors a run needs room for to meet every fighter its zone's encounters bring, those it starts
+    /// with `cleared` aside, and its cast (M3 G1c). A fallen fighter keeps its place in the pool, so a pool
+    /// smaller than this refuses the last arrivals of a run that walks the whole zone, and an encounter whose
+    /// last wave came to nobody is cleared without a fight: the ward's run held 12 for 15, and its flow won
+    /// with no boss. A scenario of one room can hold less, since the rest never start.
+    pub fn room_for_everyone(&self) -> Result<usize, ScenarioError> {
+        let mut room = self.cast.len();
+        for path in self.encounters.iter().filter(|path| !self.cleared.contains(path)) {
+            let encounter = EncounterDocument::from_ron(named(path)?)?;
+            room += encounter.waves.iter().map(|wave| wave.spawners.len()).sum::<usize>();
+        }
+        Ok(room)
+    }
+
     /// Starts the zone as a save would, if the first of the cast stands at a checkpoint or anything's been
     /// cleared, and says where the first of the cast stands then.
     fn start_zone(
@@ -928,6 +942,26 @@ mod tests {
         let mut document = waves;
         document.encounters.clear();
         assert!(cant_start(&document).contains("`encounters`"));
+    }
+
+    /// What a run walking every encounter needs room for (M3 G1c): the ward's run holds its player and all
+    /// 14 fighters, and does meet them all; the market's room alone holds less than its zone's encounters
+    /// would bring, since only its own ever starts.
+    #[test]
+    fn room_for_everyone_counts_the_cast_and_every_fighter_to_come() {
+        let document = |name: &str| -> ScenarioDocument {
+            let text = SCENARIO_DOCUMENTS.iter().find(|(held, _)| *held == name).expect("held").1;
+            sapphire_serialize::from_ron(text).expect("reads")
+        };
+        let run = document("ward-run");
+        assert_eq!(run.room_for_everyone().expect("reads"), 15);
+        assert_eq!(run.max_actors, 15);
+        let mut sim = Simulation::new(run.config());
+        run.set_up(&mut sim).expect("sets up");
+        assert_eq!(run.cast.len() + sim.zone().expect("the ward").planned(), 15, "as the zone counts them");
+        let court = document("ward-court");
+        assert_eq!(court.room_for_everyone().expect("reads"), 2, "every encounter fought: its cast alone");
+        assert!(document("ward-market").room_for_everyone().expect("reads") > 8);
     }
 
     /// A document's timelines load first, in its order, so each has the ID its place says, and the player's

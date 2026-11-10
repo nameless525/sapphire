@@ -82,7 +82,11 @@ pub struct TripReport {
 
 /// A trip under way.
 struct Trip {
+    /// Where it goes. One a replay's entry starts has no pack named yet: see [`Self::entered`].
     target: ZoneTarget,
+    /// The simulation's zone a replay's entry started it for, until its first frame names the target's pack
+    /// from that zone's ground: a fixed step allocates nothing, and a pack's name is a `String`.
+    entered: Option<ZoneId>,
     phase: TripPhase,
     /// It's been asked of the stage.
     asked: bool,
@@ -140,14 +144,19 @@ impl Trips {
         }
     }
 
-    fn begin(&mut self, target: ZoneTarget, stage_only: bool) {
-        if self.trip.as_ref().is_some_and(|trip| {
-            trip.target == target && trip.stage_only == stage_only && trip.phase.holds_simulation()
-        }) {
+    /// Starts a trip to `target`, unless one to the same spawner, of the same kind, is under way. `entered` is
+    /// the simulation's zone a replay's entry names, whose pack `target` doesn't have yet.
+    fn begin(&mut self, target: ZoneTarget, stage_only: bool, entered: Option<ZoneId>) {
+        let same = |trip: &Trip| {
+            (trip.target.zone, trip.target.arrive, trip.stage_only)
+                == (target.zone, target.arrive, stage_only)
+        };
+        if self.trip.as_ref().is_some_and(|trip| same(trip) && trip.phase.holds_simulation()) {
             return;
         }
         self.trip = Some(Trip {
             target,
+            entered,
             phase: TripPhase::Covering,
             asked: false,
             same: false,
@@ -203,7 +212,7 @@ impl FightShow {
 impl Fight {
     /// Whether this step of the simulation waits: a timeline, a trip or an open conversation holds it. A
     /// replay's zone entry due before the step starts a trip, which holds it. Every loop that steps a fight
-    /// asks this first.
+    /// asks this first. Allocates nothing: the trip's first frame names the zone's pack.
     pub fn holds_step(&mut self) -> bool {
         if !self.show.trips.holds_simulation()
             && let Some(combat) = &mut self.combat
@@ -212,10 +221,10 @@ impl Fight {
             let simulation = combat.simulation();
             let target = simulation.zone_ground(entry.zone).and_then(|zone| {
                 let arrive = zone.spawner_id(entry.spawner)?;
-                Some(ZoneTarget { zone: zone.asset(), pack: zone.pack().to_owned(), arrive })
+                Some(ZoneTarget { zone: zone.asset(), pack: String::new(), arrive })
             });
             match target {
-                Some(target) => self.begin_trip(target, false),
+                Some(target) => self.begin_trip(target, false, Some(entry.zone)),
                 // A crafted file: the step enters it, or refuses, as a headless run does.
                 None => tracing::error!(target: LOG_TARGET, ?entry, "a zone entry names no zone"),
             }
@@ -241,12 +250,12 @@ impl Fight {
         let target = scene
             .zone_exit(Name::new(name).as_u64(), content)
             .ok_or_else(|| format!("the zone on stage has no exit `{name}`"))?;
-        self.begin_trip(target, false);
+        self.begin_trip(target, false, None);
         Ok(())
     }
 
-    fn begin_trip(&mut self, target: ZoneTarget, stage_only: bool) {
-        self.show.trips.begin(target, stage_only);
+    fn begin_trip(&mut self, target: ZoneTarget, stage_only: bool, entered: Option<ZoneId>) {
+        self.show.trips.begin(target, stage_only, entered);
         self.show.draws_latest = true;
     }
 
@@ -272,7 +281,7 @@ impl Fight {
                     home.arrive = Name::new(&name).as_u64();
                 }
                 tracing::info!(target: LOG_TARGET, zone = %home.zone, "a restart takes the stage home");
-                self.begin_trip(home, true);
+                self.begin_trip(home, true, None);
             }
             Some(Home::Town(zone)) if on_stage == zone => {}
             Some(Home::Town(_)) => tracing::warn!(
@@ -289,6 +298,12 @@ impl Fight {
         let settings = trips.settings.unwrap_or(StreamSettings::DESKTOP);
         if !trip.asked {
             trip.asked = true;
+            let simulation = self.combat.as_ref().map(crate::combat::Combat::simulation);
+            if let Some(entered) = trip.entered.take()
+                && let Some(zone) = simulation.and_then(|simulation| simulation.zone_ground(entered))
+            {
+                zone.pack().clone_into(&mut trip.target.pack);
+            }
             trip.same = scene.zone_on_stage() == Some(trip.target.zone);
             trip.warm = trip.same || scene.zone_load(trip.target.zone) == ZoneLoad::Ready;
             if !trip.same {
@@ -423,4 +438,42 @@ fn zone_ground(content: &Content, zone: AssetId) -> Result<Arc<PhysicsWorld>, St
         None => PhysicsWorld::new(Vec::new(), 0).map_err(|error| error.to_string())?,
     };
     Ok(Arc::new(world))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::combat::{Combat, CombatOption, no_bindings};
+
+    /// A replay's zone entry starts a trip inside the fixed step, and the step allocates nothing for it (M3
+    /// Z1): the trip's first frame names the zone's pack from the simulation's ground.
+    #[test]
+    fn a_replays_trip_starts_in_a_step_with_no_allocation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/zone-trip.sreplay");
+        let combat = Combat::new(&CombatOption::Replay { path, to_end: true }).expect("reads");
+        let mut fight = Fight::default();
+        fight.attach_combat(Some(combat));
+        assert!(sapphire_core::alloc::is_installed(), "this regression requires counting");
+        loop {
+            let scope = sapphire_core::alloc::AllocScope::begin();
+            let held = fight.holds_step();
+            let counts = scope.counts();
+            if held {
+                assert_eq!((counts.allocations, counts.bytes), (0, 0), "starting a trip");
+                break;
+            }
+            let combat = fight.combat.as_mut().expect("attached");
+            assert!(combat.ticks_left() != Some(0), "the replay took no trip");
+            combat.step(&mut no_bindings);
+        }
+        let trip = fight.show.trips.trip.as_mut().expect("under way");
+        assert_eq!(trip.phase, TripPhase::Covering);
+        assert!(trip.target.pack.is_empty(), "named on its first frame");
+        let entered = trip.entered.take().expect("a replay's entry");
+        let simulation = fight.combat.as_ref().expect("attached").simulation();
+        let pack = simulation.zone_ground(entered).expect("on the shelf").pack();
+        assert!(pack.starts_with("zone_"), "{pack}");
+    }
 }

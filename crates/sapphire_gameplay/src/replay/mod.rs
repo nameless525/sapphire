@@ -33,6 +33,7 @@
 
 mod chase;
 mod checksums;
+pub mod cinematics;
 pub mod document;
 mod file;
 mod play;
@@ -47,6 +48,7 @@ pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
     checksums_file_name,
 };
+pub use cinematics::{Cinematic, add_cinematics, cinematics_of};
 pub use document::KindOfEnemy;
 pub use file::{
     COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS,
@@ -54,11 +56,11 @@ pub use file::{
 };
 pub use play::{PlayError, Played, Player, Recording, RunStart, StepAllocated};
 pub use scenario::{
-    BAKED_ZONES, BakedZone, FightWorld, PARTY_TUNING, PLAYERS, PreparedFight, RIVALS, SCENARIOS, Scenario,
-    ScenarioError, ScenarioSetup, ULTIMATE_CINEMATIC, WARRIOR_ENEMY, WARRIOR_MOVES, WARRIORS,
+    BAKED_ZONES, BakedZone, FightWorld, PARTY_TUNING, PLAYER_MOVES_PATH, PLAYERS, PreparedFight, RIVALS,
+    SCENARIOS, Scenario, ScenarioError, ScenarioSetup, WARRIOR_ENEMY, WARRIOR_MOVES, WARRIORS,
     add_melee_buttons, add_warrior, arena_fight, document_file_name, duel, find_scenario, melee,
-    melee_buttons, party_document, party_moves, player_moves, test_moves, timelines, ultimate_cinematic,
-    warrior_enemy, warrior_moves,
+    melee_buttons, party_document, party_moves, player_moves, test_moves, timelines, warrior_enemy,
+    warrior_moves,
 };
 pub use script::{
     ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, ARENA_WALK_JUMP, ARENA_WALK_LEGS,

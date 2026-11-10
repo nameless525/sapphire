@@ -25,9 +25,10 @@ use sapphire_physics::{
 use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
-use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
+use sapphire_timeline::{TimelineDocument, TimelineError};
 use sapphire_zone::{Zone, ZoneError};
 
+use super::cinematics::{Cinematic, cinematics_of};
 use super::document::{KindOfEnemy, ScenarioDocument};
 use super::play::RunStart;
 use crate::actions::{Buttons, Controls};
@@ -60,16 +61,9 @@ const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ro
 pub const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
 
 /// The player's and the warrior's documents, from the repository's root: what [`PreparedFight`] finds a live
-/// edit of either by.
-const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
+/// edit of either by, and what the cinematics their moves name are beside ([`super::cinematics`]).
+pub const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
 const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
-
-/// The cinematic the player's ultimate names (M3 Q3b), as this build holds it: every fight on the player's
-/// moves loads it under [`ULTIMATE_CINEMATIC`], wherever it is, a scenario document's among them.
-const ULTIMATE: &str = include_str!("../../../../content/combat/player/ultimate.timeline.ron");
-
-/// The name the player's `ultimate` move gives its cinematic.
-pub const ULTIMATE_CINEMATIC: &str = "ultimate";
 
 /// A zone as a cook made it, its simulation's half: see `zone_trip`.
 #[derive(Clone, Copy, Debug)]
@@ -464,12 +458,6 @@ pub fn player_moves() -> Result<MoveSet, MoveSetError> {
     super::document::baked_moves("player").expect("`arena-fight` names them, so this build holds them")
 }
 
-/// The simulation half of the player's ultimate's cinematic, which a fight on the player's moves loads
-/// before them under [`ULTIMATE_CINEMATIC`].
-pub fn ultimate_cinematic() -> Result<TimelineSimulation, ScenarioError> {
-    Ok(TimelineDocument::from_ron(ULTIMATE)?.cook()?.simulation)
-}
-
 /// What a party's swap takes in a test: a second on the field, and two and a half off it.
 pub const PARTY_TUNING: PartyTuning = PartyTuning { swap_cooldown: 60, rest: 150 };
 
@@ -639,7 +627,8 @@ pub fn timelines(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 /// world; preparation belongs to the combat session, so a restart never reparses its built-in content.
 pub struct PreparedFight {
     player: MoveSet,
-    ultimate: TimelineSimulation,
+    /// The cinematics `player` and `warrior` name, which a start on them loads.
+    cinematics: Vec<Cinematic>,
     warrior: MoveSet,
     /// The warrior as a kind of enemy (M3 B3): its brains and phases, given its set at each start.
     warrior_mind: EnemyMind,
@@ -650,10 +639,11 @@ pub struct PreparedFight {
 
 impl PreparedFight {
     pub fn new(party: bool) -> Result<Self, ScenarioError> {
+        let (player, warrior) = (player_moves()?, warrior_moves()?);
         Ok(Self {
-            player: player_moves()?,
-            ultimate: ultimate_cinematic()?,
-            warrior: warrior_moves()?,
+            cinematics: cinematics_of([(PLAYER_MOVES_PATH, &player), (WARRIOR_MOVES_PATH, &warrior)])?,
+            player,
+            warrior,
             warrior_mind: warrior_enemy()?.mind,
             colliders: crate::arena::cooked_colliders()?,
             spawns: crate::arena::spawns(),
@@ -668,12 +658,24 @@ impl PreparedFight {
         live: &super::LiveMoves,
     ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
         let mut sim = Simulation::new(config);
-        let player = live.latest(document_file_name(PLAYER_MOVES_PATH)).unwrap_or(&self.player);
-        let warrior = live.latest(document_file_name(WARRIOR_MOVES_PATH)).unwrap_or(&self.warrior);
+        let (edited_player, edited_warrior) = (
+            live.latest(document_file_name(PLAYER_MOVES_PATH)),
+            live.latest(document_file_name(WARRIOR_MOVES_PATH)),
+        );
+        let (player, warrior) =
+            (edited_player.unwrap_or(&self.player), edited_warrior.unwrap_or(&self.warrior));
+        // An edit can name a cinematic the sets this was prepared with don't, so an edited fight reads them again.
+        let edited;
+        let cinematics = if edited_player.is_some() || edited_warrior.is_some() {
+            edited = cinematics_of([(PLAYER_MOVES_PATH, player), (WARRIOR_MOVES_PATH, warrior)])?;
+            &edited
+        } else {
+            &self.cinematics
+        };
         let cast = fight_on(
             &mut sim,
             player.clone(),
-            &self.ultimate,
+            cinematics,
             warrior.clone(),
             &self.warrior_mind,
             &self.colliders,
@@ -844,13 +846,13 @@ pub fn zone_trip(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(cast)
 }
 
-/// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded. The
-/// warrior's set is a kind of enemy's, with `mind` (M3 B3).
+/// The player's moves after the `cinematics` the fight's sets name, so the scenario's check finds them loaded.
+/// The warrior's set is a kind of enemy's, with `mind` (M3 B3).
 #[allow(clippy::too_many_arguments, reason = "a fight's inputs, from its two callers")]
 pub(super) fn fight_on(
     sim: &mut Simulation,
     player: MoveSet,
-    ultimate: &TimelineSimulation,
+    cinematics: &[Cinematic],
     warrior: MoveSet,
     mind: &EnemyMind,
     cooked: &[u8],
@@ -859,7 +861,7 @@ pub(super) fn fight_on(
 ) -> Result<Vec<ActorId>, ScenarioError> {
     let set = ColliderSet::read(cooked)?;
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
-    sim.add_cinematic(ULTIMATE_CINEMATIC, ultimate.clone())?;
+    super::cinematics::load(sim, cinematics)?;
     let actors = FightActors {
         spawns,
         controller: sim.add_controller_profile(&crate::arena::profile())?,

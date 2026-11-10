@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use sapphire_gameplay::replay::{
-    SCENARIOS, ULTIMATE_CINEMATIC, add_warrior, find_scenario, player_moves, ultimate_cinematic,
+    PLAYER_MOVES_PATH, SCENARIOS, add_cinematics, add_warrior, find_scenario, player_moves,
 };
 use sapphire_gameplay::{ActorSpawn, Faction, Simulation, TickActions, ZoneCast};
 use sapphire_pipeline::cook::{Cook, CookOptions, cook_dir};
@@ -60,9 +60,10 @@ fn a_cooked_zone_is_what_a_scenario_reads() {
     let physics = sapphire_physics::PhysicsWorld::from_cooked(set, cooked.body_capacity()).expect("builds");
     cooked.set_physics_world(physics).expect("room");
     // The player's moves name their ultimate's cinematic, which every fight on them loads (M3 Q3b).
-    cooked.add_cinematic(ULTIMATE_CINEMATIC, ultimate_cinematic().expect("reads")).expect("room");
+    let player = player_moves().expect("reads");
+    add_cinematics(&mut cooked, [(PLAYER_MOVES_PATH, &player)]).expect("room");
     let controller = Some(cooked.add_controller_profile(&sapphire_gameplay::arena::profile()).expect("good"));
-    let player = cooked.add_move_set(player_moves().expect("reads"));
+    let player = cooked.add_move_set(player);
     let warrior = add_warrior(&mut cooked).expect("compiles");
     let moves = [("player", player), ("warrior", warrior)];
     let cast = ZoneCast { moves: &moves, controller };

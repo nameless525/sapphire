@@ -427,9 +427,10 @@ mod tests {
             let cooked = crate::arena::cooked_colliders()?;
             let set = ColliderSet::read(&cooked)?;
             sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
-            sim.add_cinematic(super::super::ULTIMATE_CINEMATIC, super::super::ultimate_cinematic()?)?;
+            let player = player_moves()?;
+            super::super::add_cinematics(sim, [(super::super::PLAYER_MOVES_PATH, &player)])?;
             let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-            let moves = Some(sim.add_move_set(player_moves()?));
+            let moves = Some(sim.add_move_set(player));
             let warrior = sim.add_move_set(edited());
             sim.add_enemy(warrior, warrior_enemy()?.mind)?;
             let warrior = Some(warrior);

@@ -6,8 +6,9 @@
 //! copy in `baked/` takes that rather than its document, since cooking its tables takes the pipeline. So does
 //! every kind of enemy under `content/combat/` (M3 C2), since a zone's spawners name the kinds it spawns and a
 //! scenario on it needn't, with the moves each names by ID and the `.luau` it names as its `script`, each
-//! found by its sidecar, so a kind and its script reach a fight from documents alone. `replay::document`
-//! reads them.
+//! found by its sidecar, so a kind and its script reach a fight from documents alone. Every `.timeline.ron`
+//! beside a set of moves' document goes in too (M3 Z5a), since a move names its cinematic by that file's
+//! name. `replay::document` and `replay::cinematics` read them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -113,6 +114,21 @@ fn main() {
                 });
             named.insert(relative.clone());
         }
+    }
+    // The cinematics a set's moves can name (M3 Z5a): every timeline beside its document.
+    let sets: Vec<String> =
+        named.iter().filter(|relative| relative.ends_with(".moves.ron")).cloned().collect();
+    for set in &sets {
+        let folder = root.join(set).parent().expect("a set's document is in a folder").to_owned();
+        println!("cargo:rerun-if-changed={}", folder.display());
+        let mut timelines: Vec<String> = fs::read_dir(&folder)
+            .expect("a set's folder")
+            .map(|entry| entry.expect("a directory entry").file_name().to_string_lossy().into_owned())
+            .filter(|file| file.ends_with(".timeline.ron"))
+            .collect();
+        timelines.sort();
+        let prefix = set.rsplit_once('/').map_or(String::new(), |(folder, _)| format!("{folder}/"));
+        named.extend(timelines.into_iter().map(|file| format!("{prefix}{file}")));
     }
     for relative in &named {
         embed(relative, &mut code);

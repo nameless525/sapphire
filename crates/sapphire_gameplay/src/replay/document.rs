@@ -52,7 +52,8 @@
 //!
 //! **What a run can play and open** (M3 G1): `timelines` and `dialogues` list the cutscenes and conversations
 //! a game's flow or a replay's commands can start, each loaded in its list's order, so the first is timeline 0
-//! and dialogue 0: the timelines before the player's ultimate's cinematic, so that one comes after them.
+//! and dialogue 0: the timelines before the cinematics the sets' moves name (`super::cinematics`), so those
+//! come after them.
 //! [`ScenarioDocument::timelines_by_id`] and [`ScenarioDocument::dialogues_by_id`] say which is which by the
 //! documents' IDs, which is how a flow names them. A dialogue's conditions are checked as its cook checks them,
 //! by the pipeline: the simulation loads only its effects, cooked against the registry `flags` names.
@@ -649,16 +650,16 @@ impl ScenarioDocument {
             sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
         }
         self.load_timelines_and_dialogues(sim)?;
-        // The player's moves name their ultimate's cinematic, which a fight loads before them, as `fight_on`
-        // does (M3 Q3b).
-        if self.moves.iter().any(|path| kind_of(path) == "player") {
-            sim.add_cinematic(super::ULTIMATE_CINEMATIC, super::ultimate_cinematic()?)?;
-        }
-        let controller = Some(sim.add_controller_profile(&ControllerProfile::default())?);
+        // Every cinematic the sets' moves name loads before them, in their order, as `fight_on`'s do (M3 Q3b,
+        // Z5a): a second kind on the same moves names nothing they don't.
         let roster = self.roster()?;
+        let read = roster.moves.iter().map(|&path| Ok((path, moves_of(path)?)));
+        let read = read.collect::<Result<Vec<_>, ScenarioError>>()?;
+        super::cinematics::add_cinematics(sim, read.iter().map(|(path, set)| (*path, set)))?;
+        let controller = Some(sim.add_controller_profile(&ControllerProfile::default())?);
         let mut sets = Vec::with_capacity(roster.moves.len() + roster.enemies.len());
-        for path in &roster.moves {
-            sets.push((kind_of(path), sim.add_move_set(moves_of(path)?)));
+        for (path, set) in read {
+            sets.push((kind_of(path), sim.add_move_set(set)));
         }
         let planned = roster.planned()?;
         for (path, plan) in roster.enemies.iter().zip(&planned) {

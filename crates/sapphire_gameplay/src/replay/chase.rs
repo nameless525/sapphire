@@ -14,8 +14,8 @@ use sapphire_nav::NavGraph;
 use sapphire_physics::{ColliderSet, PhysicsWorld};
 
 use super::scenario::{
-    CHASER_ENEMY, CHASER_MOVES, PLAYERS, ScenarioError, ULTIMATE_CINEMATIC, WARRIORS, add_warrior,
-    player_moves, test_moves, ultimate_cinematic,
+    CHASER_ENEMY, CHASER_MOVES, PLAYER_MOVES_PATH, PLAYERS, ScenarioError, WARRIORS, add_warrior,
+    player_moves, test_moves,
 };
 use crate::actors::{ActorId, ActorSpawn};
 use crate::simulation::Simulation;
@@ -103,9 +103,10 @@ pub(super) fn nav_patrol(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioE
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
     sim.set_navigation(&crate::arena::cooked_navmesh())?;
     let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-    // The player's moves name their ultimate's cinematic, which loads before them, as `fight_on` does.
-    sim.add_cinematic(ULTIMATE_CINEMATIC, ultimate_cinematic()?)?;
-    let player_set = Some(sim.add_move_set(player_moves()?));
+    // The cinematics the player's moves name load before them, as `fight_on`'s do.
+    let player = player_moves()?;
+    super::add_cinematics(sim, [(PLAYER_MOVES_PATH, &player)])?;
+    let player_set = Some(sim.add_move_set(player));
     let warrior_set = Some(add_warrior(sim)?);
 
     let spawns = crate::arena::spawns();

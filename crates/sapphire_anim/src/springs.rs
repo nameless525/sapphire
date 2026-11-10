@@ -178,6 +178,23 @@ impl Substeps {
     }
 }
 
+/// How far past a grounded torso's middle, in meters at the rig's scale, a strand's joint must sit
+/// before it clears to the other side from the one it last did.
+const TORSO_SIDE_HOLD: f32 = 0.02;
+
+/// The side, ±1, a strand whose joint sits `offset` along the character's +x from a grounded torso's
+/// middle clears it to, given the side it `held` (0 for none): the one it held, unless the joint is more
+/// than `hold` past the middle on the other.
+fn torso_side(held: f32, offset: f32, hold: f32) -> f32 {
+    if held != 0.0 && offset * held > -hold {
+        held
+    } else if offset < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 /// How a quality tier runs springs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpringQuality {
@@ -619,6 +636,9 @@ pub struct SpringBones {
     tails: Vec<Tail>,
     /// Each swing's turn from its parent after the sub-step before the last, and after the last.
     solved: Vec<[Quat; 2]>,
+    /// The side, along the character's +x, each swing last cleared a grounded torso to, ±1, or 0 if it
+    /// hasn't since it settled: kept until its joint is clearly on the other side.
+    torso_sides: Vec<f32>,
     /// Each swing's turn from its parent in the pose: what its stiffness pulls toward.
     targets: Vec<Quat>,
     /// The anchors in the model's space, in the pose.
@@ -877,6 +897,7 @@ impl SpringBones {
             substeps,
             tails: vec![Tail::default(); swing_count],
             solved: vec![[Quat::IDENTITY; 2]; swing_count],
+            torso_sides: vec![0.0; swing_count],
             targets: vec![Quat::IDENTITY; swing_count],
             model_anchors: vec![Frame::IDENTITY; anchor_count],
             anchors_was: vec![Frame::IDENTITY; anchor_count],
@@ -1031,6 +1052,7 @@ impl SpringBones {
         }
         self.tails.clone_from(&other.tails);
         self.solved.clone_from(&other.solved);
+        self.torso_sides.clone_from(&other.torso_sides);
         self.anchors_was.clone_from(&other.anchors_was);
         self.colliders_now.clone_from(&other.colliders_now);
         self.colliders_was.clone_from(&other.colliders_was);
@@ -1215,6 +1237,7 @@ impl SpringBones {
     /// Back to the pose, with no motion.
     fn settle(&mut self, pose: &mut CharacterPose, frame: &SpringFrame) {
         self.settling = false;
+        self.torso_sides.fill(0.0);
         self.resting = false;
         self.still_for = 0;
         let world = Frame::of(&frame.world_from_model);
@@ -1355,9 +1378,13 @@ impl SpringBones {
                         let now = &self.colliders_now[collider];
                         let reach = now.radius + hit_radius;
                         // There is little space behind the torso on the ground. Clear each strand
-                        // toward the side where its joint sits, so it can spread beside the body.
+                        // toward the side where its joint sits, so it can spread beside the body. A
+                        // joint near the torso's middle keeps the side it had, or it would flip
+                        // with every rounding of a dot product near zero.
                         let lateral = self.world_rotation * Vec3::X;
-                        let sign = (position - now.nearest(position)).dot(lateral).signum();
+                        let offset = (position - now.nearest(position)).dot(lateral);
+                        let sign = torso_side(self.torso_sides[at], offset, TORSO_SIDE_HOLD * scale);
+                        self.torso_sides[at] = sign;
                         let aside = |at| now.nearest(at) + lateral * (sign * reach);
                         if contact(tail.now, clear, was, now, hit_radius).is_some() {
                             clear = clear_of(position, length, aside(clear), now, reach, toward_pose);

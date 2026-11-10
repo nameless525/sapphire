@@ -659,6 +659,22 @@ fn a_character_past_the_limit_sleeps_and_wakes_nearer() {
     const { assert!(SpringQuality::MOBILE.distance < SpringQuality::DESKTOP_HIGH.distance) };
 }
 
+/// A strand clears a grounded torso to the side its joint is on, and keeps that side while the joint
+/// wanders about the middle, where the sign of a dot product near zero would flip it frame to frame.
+#[test]
+fn a_strand_by_a_grounded_torsos_middle_keeps_its_side() {
+    let hold = TORSO_SIDE_HOLD;
+    assert_eq!(torso_side(0.0, 0.004, hold), 1.0);
+    assert_eq!(torso_side(0.0, -0.004, hold), -1.0);
+    let mut side = torso_side(0.0, 1.0e-7, hold);
+    for wander in [-1.0e-7, 3.0e-4, -0.006, 0.0, -0.0, -0.019, 0.01] {
+        side = torso_side(side, wander, hold);
+        assert_eq!(side, 1.0, "at {wander}");
+    }
+    assert_eq!(torso_side(side, -0.021, hold), -1.0, "clearly on the other side");
+    assert_eq!(torso_side(-1.0, 0.019, hold), -1.0);
+}
+
 /// Clearance solves every frame near the camera on Desktop-High, less often on the lighter tiers, half
 /// as often again past `near` on every tier, and holds past `far`.
 #[test]

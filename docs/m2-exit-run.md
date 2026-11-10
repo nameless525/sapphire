@@ -411,7 +411,7 @@ It ends `11 replays reach their checksums on aarch64`, each line with its ticks,
 
 The test: Mobile-Low holds 30 fps while thermally throttled, after 15 minutes of combat (spec §3). Nothing short of a phone answers it. Spec §3.5 has the same fight on an Apple M5, which says the work is all there and nothing grows.
 
-**What thermal state means.** A phone can't hold its peak clocks. As it heats, the OS lowers CPU and GPU clocks to protect the battery and the hand holding it, so a frame that fits when cold can miss when hot. §3's budgets are for the hot phone. The OS says how far along it is. On iOS, `thermalState`: `nominal`, `fair`, `serious` (the OS is reducing performance) and `critical`. On Android, thermal status from `NONE` through `LIGHT`, `MODERATE`, `SEVERE` and `CRITICAL`, to `EMERGENCY` and `SHUTDOWN`. The app reads it every 2 s and logs one scale in `frame stats`: `thermal=Nominal`, `Fair` (Android's `LIGHT` and `MODERATE`), `Serious` (`SEVERE`), `Critical` (and past) or `Unknown`.
+**What thermal state means.** A phone can't hold its peak clocks. As it heats, the OS lowers CPU and GPU clocks to protect the battery and the hand holding it, so a frame that fits when cold can miss when hot. §3's budgets are for the hot phone. The OS says how far along it is. On iOS, `thermalState`: `nominal`, `fair`, `serious` (the OS is reducing performance) and `critical`. On Android, thermal status from `NONE` through `LIGHT`, `MODERATE`, `SEVERE` and `CRITICAL`, to `EMERGENCY` and `SHUTDOWN`. The app reads it once a second and logs one scale in `frame stats` (Android's, since M4 T1): `thermal=Nominal`, `Light` (iOS's `fair`), `Moderate`, `Severe` (iOS's `serious`), `Critical` (and past) or `Unknown`, then, where the OS has them, Android's headroom and hint session and iOS's Low Power Mode. Before M4 the scale was `Nominal`, `Fair`, `Serious` and `Critical`, as the rehearsal below logged it.
 
 ### Running it
 
@@ -446,11 +446,11 @@ From `target/soak.log`:
 
 ### Pass and fail
 
-These lines are this file's reading of "holds", which the plan doesn't define. Over the **last 10 minutes** of the 25, with the phone at `thermal=Serious` or hotter:
+These lines are this file's reading of "holds", which the plan doesn't define. Over the **last 10 minutes** of the 25, with the phone at `thermal=Severe` or hotter:
 
 - **Pass:** no 2 s window under 28 fps, at most 1% of frames missed (`missed` over `on time`), `live_bytes` and the meminfo total flat, and no fight's checksum differs.
 - **Fail:** 30 fps isn't held by those lines. The answer is then in which stage grew: `render_ms` or a GPU frame near 33 ms, against spec §3.5's table, and it decides the ladder in spec §6.3 (dynamic resolution, optional passes).
-- **Not throttled:** if `thermal` never reaches `Serious` in 25 minutes, that's a result, and the phone passes only as far as it went: record the highest state, say so, and run again warmer (charging from a wall socket, in the sun, under a cover, or after 15 minutes of `--tier mobile-high`). At a cold state the test hasn't asked its question. Mobile-Low at 30 fps may simply not heat some phones, which would itself be good news, and a reason to rerun at Mobile-High.
+- **Not throttled:** if `thermal` never reaches `Severe` in 25 minutes, that's a result, and the phone passes only as far as it went: record the highest state, say so, and run again warmer (charging from a wall socket, in the sun, under a cover, or after 15 minutes of `--tier mobile-high`). At a cold state the test hasn't asked its question. Mobile-Low at 30 fps may simply not heat some phones, which would itself be good news, and a reason to rerun at Mobile-High.
 
 A crash ends the run, and the log's last lines and the OS's crash report are the finding.
 

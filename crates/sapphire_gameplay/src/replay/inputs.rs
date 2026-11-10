@@ -282,7 +282,6 @@ impl Track {
             schedule.check().map_err(|problem| (format!("presses[{index}]"), problem))?;
         }
         match &self.stick {
-            None => {}
             Some(StickPath::Legs(legs) | StickPath::Loop(legs)) => {
                 if legs.is_empty() {
                     return at("stick", "a path of no legs");
@@ -291,11 +290,10 @@ impl Track {
                     leg.check().map_err(|problem| (format!("stick[{index}]"), problem))?;
                 }
             }
-            Some(StickPath::Sweep { x, y }) => {
-                if !(1..=256).contains(x) || !(1..=256).contains(y) {
-                    return at("stick", "a sweep starts over every 1 to 256 ticks");
-                }
+            Some(StickPath::Sweep { x, y }) if !(1..=256).contains(x) || !(1..=256).contains(y) => {
+                return at("stick", "a sweep starts over every 1 to 256 ticks");
             }
+            None | Some(StickPath::Sweep { .. }) => {}
         }
         Ok(())
     }

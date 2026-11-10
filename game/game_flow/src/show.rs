@@ -494,6 +494,13 @@ impl GameShow {
         self.menus.as_ref().map(|menus| menus.settings().clone())
     }
 
+    /// What the app's window is called in the player's language (M3 Z5b), once [`Self::stand`] has loaded the
+    /// strings.
+    #[must_use]
+    pub fn window_title(&self) -> Option<&str> {
+        self.menus.as_ref().map(GameMenus::window_title)
+    }
+
     /// Opens the run's dialogue `id` between steps, as a game's flow or a script's beat asks: the panel comes
     /// up before the next frame draws, and the fight holds its steps until it closes.
     ///

@@ -133,7 +133,9 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     };
     assert_eq!(string_of(&walk, MenuScreen::Title, "new-text"), "New game");
     assert_eq!(string_of(&walk, MenuScreen::Settings, "language-value"), "English");
+    assert_eq!(walk.menus.window_title(), "Sapphire");
     walk.choose(MenuScreen::Settings, "language");
+    assert_eq!(walk.menus.window_title(), "サファイア", "the window's title follows the language");
     assert_eq!(walk.menus.settings().language, "ja");
     let locale = walk.menus.settings().locale();
     assert_eq!((locale.text.as_str(), locale.voice.as_str()), ("ja", "ja"), "and the voices with it");

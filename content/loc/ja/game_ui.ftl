@@ -3,6 +3,8 @@
 ### Machine-quality Japanese: written by an agent and not yet read by a Japanese reader, who owes every
 ### line here a pass. Take this mark off only once they have. `en/game_ui.ftl` says how a string is added.
 
+window-title = サファイア
+
 title-name = サファイア
 title-tagline = はじめての戦い
 title-continue = つづきから

@@ -15,6 +15,9 @@
 ### A new file of strings goes beside this one, in both languages, each with its own `.meta` sidecar.
 ### A cutscene's lines and speakers go in `cutscenes.ftl` instead, named by its timeline's `subtitles`; the
 ### same test holds them.
+### The window's title is the one key no document names: the app sets it (`game_ui::menus::WINDOW_TITLE`).
+
+window-title = Sapphire
 
 title-name = Sapphire
 title-tagline = The first fight

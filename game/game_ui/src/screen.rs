@@ -182,6 +182,13 @@ impl ScreenStack {
         self.loc.set_text_locale(locale).map_err(|error| format!("the language `{locale}`: {error}"))
     }
 
+    /// `key`'s plain message in the stack's language, or the key itself where no table has one: for a
+    /// string shown outside the screens, as a window's title is.
+    #[must_use]
+    pub fn text<'a>(&'a self, key: &'a str) -> &'a str {
+        self.loc.text(key)
+    }
+
     /// A frame's input: the top screen's, if it's open.
     pub fn input(&mut self, input: &UiInput<'_>) {
         if let Some(top) = self.screens.last_mut().filter(|top| top.opened) {

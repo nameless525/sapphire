@@ -1,5 +1,5 @@
 //! Every string the game draws (M3 C3): the game's documents, its cutscenes' subtitles, its dialogues'
-//! lines (M3 Q2) and its bosses' names name keys, and only the string tables say what they show, in English
+//! lines (M3 Q2), its bosses' names and its window's title (M3 Z5b) name keys, and only the string tables say what they show, in English
 //! and Japanese. Nothing a document, a cutscene or a boss names is missing from either language, the two
 //! have the same keys taking the same variables, no key is one nothing can show, the Japanese says it's
 //! machine-quality, and the fonts' character set holds every character the tables use. How a string is
@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use game_ui::menus::MenuScreen;
+use game_ui::menus::{MenuScreen, WINDOW_TITLE};
 use sapphire_assets::ui::UiDocument;
 use sapphire_dialogue::DialogueDocument;
 use sapphire_pipeline::font::Characters;
@@ -29,9 +29,10 @@ fn keys(table: &StringTable) -> BTreeSet<&str> {
     table.entries.iter().map(|entry| table.str(entry.key)).collect()
 }
 
-/// What every document names: its keys, and the prefixes its `key_from`s choose whole keys under.
+/// What every document names: its keys, and the prefixes its `key_from`s choose whole keys under. The window's
+/// title is the one key the app names rather than a document (M3 Z5b).
 fn named() -> (BTreeSet<String>, BTreeSet<String>) {
-    let (mut keys, mut prefixes) = (BTreeSet::new(), BTreeSet::new());
+    let (mut keys, mut prefixes) = (BTreeSet::from([WINDOW_TITLE.to_owned()]), BTreeSet::new());
     for screen in MenuScreen::ALL {
         for (node, text, _) in document(screen).texts() {
             assert!(

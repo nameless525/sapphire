@@ -27,12 +27,12 @@ use sdl3_sys::rect::SDL_Rect;
 use sdl3_sys::video::{
     SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowDisplayScale, SDL_GetWindowFlags, SDL_GetWindowID,
     SDL_GetWindowPixelDensity, SDL_GetWindowProperties, SDL_GetWindowSafeArea, SDL_GetWindowSize,
-    SDL_GetWindowSizeInPixels, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
+    SDL_GetWindowSizeInPixels, SDL_GetWindowTitle, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
     SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, SDL_PROP_WINDOW_WIN32_HWND_POINTER,
     SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, SDL_PROP_WINDOW_X11_DISPLAY_POINTER,
-    SDL_PROP_WINDOW_X11_SCREEN_NUMBER, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, SDL_WINDOW_FULLSCREEN,
-    SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_METAL, SDL_WINDOW_RESIZABLE,
-    SDL_Window,
+    SDL_PROP_WINDOW_X11_SCREEN_NUMBER, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, SDL_SetWindowTitle,
+    SDL_WINDOW_FULLSCREEN, SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_METAL,
+    SDL_WINDOW_RESIZABLE, SDL_Window,
 };
 
 use crate::app::RunId;
@@ -183,6 +183,27 @@ impl Window {
 
     pub fn id(&self) -> WindowId {
         self.inner.id
+    }
+
+    /// Names the window where the OS shows it: its title bar, task switcher and dock. A game names it in
+    /// the player's language once its strings load, and again when the language changes; mobile shows
+    /// no title.
+    pub fn set_title(&self, title: &str) {
+        let Some(raw) = self.raw() else { return };
+        let title = sdl::c_string_lossy(title);
+        // SAFETY: the window is live, this is the main thread, and the title is a valid C string that
+        // SDL copies.
+        if !unsafe { SDL_SetWindowTitle(raw, title.as_ptr()) } {
+            tracing::warn!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_SetWindowTitle failed");
+        }
+    }
+
+    /// The window's title, as last set; empty once the window is gone.
+    pub fn title(&self) -> String {
+        let Some(raw) = self.raw() else { return String::new() };
+        // SAFETY: the window is live; SDL's string stays valid until the title next changes, and is
+        // copied before any other SDL call.
+        unsafe { sdl::borrowed_string(SDL_GetWindowTitle(raw)) }.unwrap_or_default()
     }
 
     /// The size in window coordinates (the space mouse positions and

@@ -110,6 +110,7 @@ impl App for GameApp {
         stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+        name_window(&window, show);
         let mut audio = match show.shown.fight.show.cue_show() {
             Some(cues) => DeviceAudio::for_show(&cues.sounds_to_load(), platform, content, renderer, gpu)?,
             None => None,
@@ -264,9 +265,10 @@ impl GameApp {
         }
     }
 
-    /// What the player has just chosen: heard now, and kept for the next run. The language and size have
-    /// reached the screens already.
+    /// What the player has just chosen: heard now, the window named in its language, and kept for the next
+    /// run. The language and size have reached the screens already.
     fn follow_settings(&mut self, chosen: &PlayerSettings, platform: &mut Platform) {
+        name_window(&self.window, &self.stage.show);
         if let Some(audio) = &mut self.audio {
             audio.set_volume(chosen.volume());
             speak_in(audio, &chosen.locale().voice);
@@ -385,6 +387,13 @@ impl GameApp {
         if let Err(error) = self.stage.gpu.save_pipeline_cache() {
             tracing::warn!(target: LOG_TARGET, %error, "pipeline cache not saved");
         }
+    }
+}
+
+/// Names the window in the player's language, from the game's strings; until they load it has the app's name.
+fn name_window(window: &Window, show: &GameShow) {
+    if let Some(title) = show.window_title() {
+        window.set_title(title);
     }
 }
 

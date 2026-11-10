@@ -33,6 +33,9 @@ pub const LANGUAGES: [&str; 2] = ["en", "ja"];
 pub const SIZES: [(&str, f32); 3] = [("small", 0.85), ("normal", 1.0), ("large", 1.2)];
 /// How far a press of the volume setting moves it, in percent. It comes round past 100.
 const SOUND_STEP: u8 = 10;
+/// The key of the window's title, the one string the game shows outside a screen (M3 Z5b): the app names
+/// its window by it, in the menus' language ([`GameMenus::window_title`]).
+pub const WINDOW_TITLE: &str = "window-title";
 
 /// One of the game's screens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -576,6 +579,12 @@ impl GameMenus {
     #[must_use]
     pub fn settings(&self) -> &PlayerSettings {
         &self.settings
+    }
+
+    /// What the window is called in the language the menus show, which follows the language setting.
+    #[must_use]
+    pub fn window_title(&self) -> &str {
+        self.stack.text(WINDOW_TITLE)
     }
 
     /// The tree of `screen`, if it's showing.

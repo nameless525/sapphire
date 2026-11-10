@@ -208,6 +208,10 @@ impl App for KeepsWindow {
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         match platform.create_window(&WindowDesc::default()) {
             Ok(window) => {
+                assert_eq!(window.title(), WindowDesc::default().title);
+                // A game's title, in its player's language once its strings load (M3 Z5b).
+                window.set_title("サファイア");
+                assert_eq!(window.title(), "サファイア");
                 let handle = window.surface_handle();
                 if let Ok(handle) = &handle {
                     assert!(handle.raw_window_handle().is_ok(), "a live handle borrows");
@@ -259,6 +263,8 @@ fn check_kept_window(when: &str) {
         );
         assert_eq!(window.size(), Size::default(), "{when}");
         assert_eq!(window.pixel_size(), Size::default(), "{when}");
+        window.set_title("gone");
+        assert_eq!(window.title(), "", "{when}: a gone window has no title to set or read");
         if let Ok(handle) = handle {
             assert!(matches!(handle.raw_window_handle(), Err(HandleError::Unavailable)), "{when}");
             assert!(matches!(handle.raw_display_handle(), Err(HandleError::Unavailable)), "{when}");

@@ -46,6 +46,7 @@ use sapphire_world::screen_effects::EffectLibrary;
 use crate::LOG_TARGET;
 use crate::arena::{
     ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, PLAYER_EYES, RosterChange,
+    StagedKind,
 };
 use crate::blade::{self, HeldBlade};
 #[cfg(feature = "dev")]
@@ -414,7 +415,7 @@ impl FightShow {
                 }
                 None => self.stand_by_kind(kind.kind, ground.clone(), content, renderer, gpu)?,
             };
-            table.push((kind.set, place));
+            table.push(StagedKind { set: kind.set, place, name: kind.name.clone() });
         }
         if let Some(arena) = &mut self.arena {
             arena.set_kinds(table);
@@ -1186,10 +1187,11 @@ impl FightShow {
         Some((arena.hud_values()?, arena.fight_time()))
     }
 
-    /// The key of the boss's name its bar shows (`boss-<kind>`), while the foe the HUD shows is a boss:
-    /// what `game_ui`'s `HudModel::follow_fight` takes. `simulation` is the one this show follows.
-    pub fn boss_name<'a>(&self, simulation: &'a Simulation) -> Option<&'a str> {
-        self.arena.as_deref()?.boss_name(simulation)
+    /// The key of the name of the foe the HUD shows, as its kind of enemy names it (M4 X2), a boss's on its
+    /// bar: what `game_ui`'s `HudModel::follow_fight` takes. Nobody's before [`Self::load_kinds`] has stood
+    /// its kind by.
+    pub fn foe_name(&self) -> Option<&str> {
+        self.arena.as_deref()?.foe_name()
     }
 
     pub fn arena_mut(&mut self) -> Option<&mut ArenaActors> {

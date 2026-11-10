@@ -3,8 +3,10 @@
 //! ```ron
 //! (
 //!     type: "sapphire::moves::EnemyDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
+//!         // The key of its name in the game's words: `enemy-<kind>`, or `boss-<kind>` for a boss.
+//!         name: "boss-warden",
 //!         // Its `.moves.ron`, by the ID in its sidecar.
 //!         moves: "1c2bf2a5-5d7e-4a43-bb4e-0b3a5b7f1d10",
 //!         // How it fights, by name, and the one it starts with.
@@ -13,7 +15,8 @@
 //!         // Where its health's phases fall, in thousandths of the most it has, first to last. A phase
 //!         // may change its brain, and one with a name says so to presentation as it's crossed.
 //!         phases: [(at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 0)],
-//!         boss: Some((name: "boss-warden")),
+//!         // A boss bar shows it, named by `name`.
+//!         boss: true,
 //!         look: (
 //!             mesh: "...", graph: "...",
 //!             scale: 1.0, height: 2.0, eyes_below_crown: 0.2, framed_radius: 0.45,
@@ -27,8 +30,13 @@
 //! **Two halves.** [`Enemy::mind`] is the simulation's: its brains, compiled against its set of moves, its
 //! phases, and whether it's a boss, by its name's key. A simulation takes it beside that set
 //! (`sapphire_gameplay`'s `Simulation::add_enemy`) and a replay's `tables_hash` holds it, so a HUD reads a
-//! boss's bar, phases and name from the simulation alone. [`Enemy::look`] is the stage's: what draws one and
+//! boss's bar and phases from the simulation alone. [`Enemy::look`] is the stage's: what draws one and
 //! how it's framed, none of which a step reads.
+//!
+//! **Every kind names itself** (M4 X2): `name` is its name's key in the game's words, which the HUD shows
+//! over whichever of its fighters it shows, a boss's on its bar. Only the document holds it, so a kind's name
+//! moves no checksum: whoever stands a fight reads it from there (`sapphire_gameplay`'s
+//! `KindOfEnemy::name`). A boss's mind still holds its key, as it did before every kind had one.
 //!
 //! **Brains are compiled here, not in the moves:** the same moves can fight two ways, as two kinds of enemy,
 //! and a boss's phases choose among its own. Each brain is checked against the set's document, naming the
@@ -82,6 +90,9 @@ pub fn phase_of(thresholds: impl IntoIterator<Item = u16>, health: u32, max: u32
 #[type_path = "sapphire::moves"]
 #[serde(deny_unknown_fields)]
 pub struct EnemyDocument {
+    /// The key of its name in the game's words, a string table's message: `enemy-<kind>`, or `boss-<kind>`
+    /// for a boss, the prefixes the HUD reads them under.
+    pub name: String,
     /// Its set of moves: the `.moves.ron`'s ID.
     pub moves: AssetId,
     /// How it fights, by name.
@@ -90,9 +101,9 @@ pub struct EnemyDocument {
     pub brain: String,
     /// Where its health's phases fall, first to last. None: it has no phases at all.
     pub phases: Vec<EnemyPhaseDocument>,
-    /// It's a boss: a boss bar shows it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub boss: Option<BossDocument>,
+    /// It's a boss: a boss bar shows it, named by `name`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub boss: bool,
     pub look: EnemyLookDocument,
     /// Its script (M3 C2): a `.luau`'s ID, which a fight with this kind in it binds, as a boss's own way of
     /// fighting that a brain can't say. Scenario documents read it from here. The cooked kind doesn't hold
@@ -102,8 +113,9 @@ pub struct EnemyDocument {
 }
 
 impl Versioned for EnemyDocument {
-    /// 1: M3 B3.
-    const VERSION: u32 = 1;
+    /// 1: M3 B3. 2: M4 X2, every kind's `name`, which took the place of a boss's, and `boss` a flag. A
+    /// version 1 kind has no name to give, so it's refused rather than upgraded.
+    const VERSION: u32 = 2;
 }
 
 /// One phase of an enemy's health.
@@ -118,14 +130,6 @@ pub struct EnemyPhaseDocument {
     /// The brain it fights with from here, one of `brains`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brain: Option<String>,
-}
-
-/// What makes an enemy a boss.
-#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BossDocument {
-    /// The key of its name in the game's words, a string table's message, for the boss bar.
-    pub name: String,
 }
 
 /// What draws one. Its material comes with its mesh.
@@ -193,6 +197,9 @@ impl EnemyDocument {
 
     /// Checks everything that needs nothing outside the document, naming the field.
     pub fn check(&self) -> Result<(), EnemyError> {
+        if self.name.is_empty() {
+            return Err(invalid("name", "a kind of enemy needs its name's key"));
+        }
         if self.brains.is_empty() {
             return Err(invalid("brains", "an enemy needs a brain"));
         }
@@ -231,9 +238,6 @@ impl EnemyDocument {
             {
                 return Err(invalid(field(), format!("`{brain}` isn't one of `brains`")));
             }
-        }
-        if self.boss.as_ref().is_some_and(|boss| boss.name.is_empty()) {
-            return Err(invalid("boss.name", "a name is empty"));
         }
         let look = &self.look;
         for (what, value) in [
@@ -283,7 +287,7 @@ impl EnemyDocument {
         let look = &self.look;
         Ok(Enemy {
             moves: self.moves,
-            mind: EnemyMind { brains, phases, boss: self.boss.as_ref().map(|boss| boss.name.clone()) },
+            mind: EnemyMind { brains, phases, boss: self.boss.then(|| self.name.clone()) },
             look: EnemyLook {
                 mesh: look.mesh,
                 graph: look.graph,
@@ -340,7 +344,7 @@ pub struct EnemyMind {
     /// The first is what each one starts with.
     brains: Vec<NamedBrain>,
     phases: Vec<EnemyPhase>,
-    /// Its name's key in the game's words, if it's a boss.
+    /// Its name's key in the game's words, if it's a boss: its document's `name`.
     boss: Option<String>,
 }
 
@@ -620,7 +624,7 @@ mod tests {
             ("`phases[1]`", |d| d.phases[1].brain = Some("ghost".to_owned())),
             ("`phases[2]`", |d| d.phases[2].name = d.phases[1].name.clone()),
             ("`phases[0]`", |d| d.phases[0].at = PER_MILLE),
-            ("`boss.name`", |d| d.boss.as_mut().unwrap().name.clear()),
+            ("`name`", |d| d.name.clear()),
             ("`look.scale`", |d| d.look.scale = 0.0),
             ("`look.height`", |d| d.look.height = f32::NAN),
             ("`look.eyes_below_crown`", |d| d.look.eyes_below_crown = 9.0),
@@ -635,6 +639,18 @@ mod tests {
         document.brains.get_mut("fierce").unwrap().attacks[0].intent = "ghost".to_owned();
         let error = document.compile(&moves()).expect_err("no such intent").to_string();
         assert!(error.contains("brain `fierce`") && error.contains("`ghost`"), "{error}");
+    }
+
+    /// A kind with no name's key is refused, naming the field, so no HUD shows another kind's name over it
+    /// (M4 X2). So is a kind of the version before every kind had one.
+    #[test]
+    fn a_kind_with_no_name_is_refused() {
+        let line = "        name: \"boss-slice\",\n";
+        assert!(ENEMY.contains(line), "the test's kind names itself");
+        let error = EnemyDocument::parse(&ENEMY.replacen(line, "", 1)).expect_err("no name").to_string();
+        assert!(error.contains("`name`"), "{error}");
+        let old = ENEMY.replacen("version: 2,", "version: 1,", 1);
+        assert!(EnemyDocument::parse(&old).is_err(), "version 1 has no name to give");
     }
 
     #[test]

@@ -4,8 +4,10 @@
 // own bosses are documents like this one on moves of their own.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it, on its boss bar.
+        name: "boss-captain",
         // `warrior.moves.ron`.
         moves: "c50887be-5ce3-498a-9f28-255e7e372b32",
         brains: {
@@ -115,8 +117,8 @@
         // `on_phase` fires as it crosses each. The second changes its brain and is the phase a boss's music
         // and screen hang on, by its name.
         phases: [(at: 750), (at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 250), (at: 0)],
-        // Its name's key in the game's words, for its boss bar.
-        boss: Some((name: "boss-captain")),
+        // A boss: its bar shows it, named by `name`.
+        boss: true,
         look: (
             // `warrior.glb`, derived from KayKit's skeleton (`sapphire_pipeline::combat::warrior`).
             mesh: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",

@@ -1127,7 +1127,7 @@ mod tests {
         let mut bosses_phases = Vec::new();
         for kind in &kinds {
             let document = sapphire_moves::EnemyDocument::parse(&read(kind)).expect("a kind reads");
-            if document.boss.is_some() {
+            if document.boss {
                 bosses_phases.extend(document.phases.into_iter().filter_map(|phase| phase.name));
             }
         }

@@ -1,10 +1,10 @@
 //! Every string the game draws (M3 C3): the game's documents, its cutscenes' subtitles, its dialogues'
-//! lines (M3 Q2), its bosses' names and its window's title (M3 Z5b) name keys, and only the string tables say what they show, in English
-//! and Japanese. Nothing a document, a cutscene or a boss names is missing from either language, the two
-//! have the same keys taking the same variables, no key is one nothing can show, the Japanese says it's
-//! machine-quality, and the fonts' character set holds every character the tables use. How a string is
-//! added is in `content/loc/en/game_ui.ftl`'s header. `menus.rs` walks every screen in both languages and
-//! under pseudo-localization.
+//! lines (M3 Q2), its kinds of enemy's names (M4 X2) and its window's title (M3 Z5b) name keys, and only the
+//! string tables say what they show, in English and Japanese. Nothing a document, a cutscene or a kind of
+//! enemy names is missing from either language, the two have the same keys taking the same variables, no key
+//! is one nothing can show, the Japanese says it's machine-quality, and the fonts' character set holds every
+//! character the tables use. How a string is added is in `content/loc/en/game_ui.ftl`'s header. `menus.rs`
+//! walks every screen in both languages and under pseudo-localization.
 
 mod support;
 
@@ -17,7 +17,7 @@ use sapphire_assets::ui::UiDocument;
 use sapphire_dialogue::DialogueDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
-use support::{boss_names, content, document, document_in, menus, subtitles, table, testdata, with_help};
+use support::{content, document, document_in, kind_names, menus, subtitles, table, testdata, with_help};
 
 const LOCALES: [&str; 2] = ["en", "ja"];
 
@@ -64,8 +64,8 @@ fn named_by(documents: impl Iterator<Item = (String, UiDocument)>) -> (BTreeSet<
 }
 
 /// What every timeline's subtitles say, and who says it: keys a cutscene shows. Then what every dialogue's
-/// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2). Then every boss's name:
-/// keys its boss bar shows.
+/// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2). Then every kind of
+/// enemy's name: keys the HUD calls its foe (M4 X2).
 fn spoken() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     for (line, speaker) in subtitles() {
@@ -73,7 +73,7 @@ fn spoken() -> BTreeSet<String> {
         keys.extend(speaker);
     }
     add_said(&content(), &mut keys);
-    keys.extend(boss_names());
+    keys.extend(kind_names().into_keys());
     keys
 }
 
@@ -197,16 +197,28 @@ fn a_new_screens_keys_are_held_with_no_change_here() {
     assert_eq!(unknown, ["help-title"]);
 }
 
-/// A boss's name is in every language, so no boss bar names a key (M3 Z3).
+/// Every kind of enemy's name is one the HUD can show (M4 X2, after M3 Z3's bosses): under the prefix of the
+/// `key_from` that shows it, a boss's bar's or the enemy's name's, which a cook holds to its fonts, and plain
+/// text in every language. So a new kind whose name is missing or misplaced fails here rather than showing
+/// the document's own name, another kind's.
 #[test]
-fn every_boss_s_name_is_in_every_language() {
-    let bosses = boss_names();
-    // No boss by name: they're content, which `sapphire_gameplay`'s `bosses_are_content` holds code to.
-    assert!(!bosses.is_empty(), "some kind of enemy is a boss");
-    for locale in LOCALES {
-        let table = table(locale);
-        let missing: Vec<_> = bosses.iter().filter(|key| table.entry(key).is_none()).collect();
-        assert!(missing.is_empty(), "{locale} lacks the bosses' names {missing:?}");
+fn every_kind_of_enemy_s_name_is_one_the_hud_can_show() {
+    let hud = document(MenuScreen::HUD);
+    let prefix_of = |name: &str| {
+        let (_, text, _) = hud.texts().find(|(node, _, _)| node.name == name).expect("the HUD's foe's name");
+        text.key_from.as_ref().expect("chosen as the fight goes").prefix.clone()
+    };
+    let (boss_prefix, enemy_prefix) = (prefix_of("boss-name"), prefix_of("enemy-name"));
+    let kinds = kind_names();
+    assert!(kinds.values().any(|&boss| boss), "some kind of enemy is a boss");
+    for (key, &boss) in &kinds {
+        let prefix = if boss { &boss_prefix } else { &enemy_prefix };
+        assert!(key.starts_with(prefix.as_str()), "{key} isn't under {prefix}");
+        for locale in LOCALES {
+            let table = table(locale);
+            let entry = table.entry(key).unwrap_or_else(|| panic!("{locale} lacks the name {key}"));
+            assert!(matches!(entry.pattern, Pattern::Plain(_)), "{locale}: {key} takes a variable");
+        }
     }
 }
 

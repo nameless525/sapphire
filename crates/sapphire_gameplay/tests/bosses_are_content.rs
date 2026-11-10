@@ -13,7 +13,7 @@
 //! What "reached" means: a document names another by its ID (a `.meta` sidecar's `id`), by its path under
 //! `content/`, or, a spawner, by a kind's name, which is a `<name>.enemy.ron`'s. A source file a document
 //! never names, such as a clip nothing plays yet, isn't needed. Nothing here names a boss: they're found by
-//! being one, a kind whose document has a `boss`.
+//! being one, a kind whose document says `boss`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -186,9 +186,11 @@ fn bosses(content: &Content, zone: &Reached) -> Vec<Boss> {
     let mut bosses = Vec::new();
     for kind in zone.files.iter().filter(|path| path.to_string_lossy().ends_with(".enemy.ron")) {
         let document = EnemyDocument::parse(&std::fs::read_to_string(kind).unwrap()).expect("a kind parses");
-        let Some(boss) = &document.boss else { continue };
+        if !document.boss {
+            continue;
+        }
         let stem = kind.file_name().unwrap().to_str().unwrap().trim_end_matches(".enemy.ron");
-        let words = [stem, boss.name.as_str()]
+        let words = [stem, document.name.as_str()]
             .iter()
             .flat_map(|names| names.split(|c: char| !c.is_ascii_alphanumeric()))
             .map(str::to_ascii_lowercase)

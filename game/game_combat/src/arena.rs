@@ -433,6 +433,15 @@ pub(crate) struct ArenaEnemy {
     pub(crate) sizes: enemy::Sizes,
 }
 
+/// A kind of enemy the stage stands by (`FightShow::load_kinds`): the set its fighters play, its place among
+/// the stage's, and the key of its name, which the HUD calls them (M4 X2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StagedKind {
+    pub(crate) set: MoveSetId,
+    pub(crate) place: usize,
+    pub(crate) name: String,
+}
+
 /// A warrior of these sizes whose feet are at `position`, as the camera frames one.
 fn warrior_subject(sizes: enemy::Sizes, position: Vec3) -> Subject {
     Subject { position, height: sizes.crown, radius: sizes.framed_radius }
@@ -479,7 +488,7 @@ fn ultimate_values(view: &ActorView, cost: u32) -> Option<UltimateValues> {
 }
 
 /// A boss's bar for `actor`, if its kind of enemy is a boss: a mark where each of its phases falls (M3 B3).
-/// Its name's key is `EnemyMind::boss`, which the HUD's words draw over it ([`ArenaActors::boss_name`]).
+/// The HUD's words draw its kind's name over it ([`ArenaActors::foe_name`]).
 fn boss_bar(simulation: &Simulation, actor: ActorId) -> Option<BossBar> {
     let library = simulation.move_library();
     let mind = library.mind(simulation.actor(actor)?.moves.set?)?;
@@ -586,9 +595,9 @@ pub struct ArenaActors {
     /// What the last step said of each of them, for what poses them to read. Nothing before a fight.
     /// Beside [`Self::fighters`] rather than in it, so a fight's cues can read it as it stands.
     seen: Vec<Option<ActorView>>,
-    /// Each set of moves a kind of enemy plays, and that kind's place among the stage's. An actor on any
-    /// other set draws as the first kind.
-    kinds: Vec<(MoveSetId, usize)>,
+    /// Each set of moves a kind of enemy plays, that kind's place among the stage's, and its name. An actor
+    /// on any other set draws as the first kind, and goes unnamed.
+    kinds: Vec<StagedKind>,
     /// The foe the player has now, which the HUD shows and the character looks at.
     shown: Option<ActorId>,
     /// What the player's set's `ultimate` costs, as of the last step: nothing without one.
@@ -637,9 +646,9 @@ impl ArenaActors {
         }
     }
 
-    /// Says which kind of enemy draws the fighters on each set: those a stage has stood by
-    /// (`FightShow::load_kinds`). Anyone on another set draws as the first.
-    pub(crate) fn set_kinds(&mut self, kinds: Vec<(MoveSetId, usize)>) {
+    /// Says which kind of enemy draws the fighters on each set, and what the HUD calls them: those a stage has
+    /// stood by (`FightShow::load_kinds`). Anyone on another set draws as the first, and goes unnamed.
+    pub(crate) fn set_kinds(&mut self, kinds: Vec<StagedKind>) {
         self.kinds = kinds;
     }
 
@@ -650,7 +659,7 @@ impl ArenaActors {
 
     /// The place of the kind of enemy that draws someone on `set`.
     pub(crate) fn kind_of_set(&self, set: Option<MoveSetId>) -> usize {
-        self.kinds.iter().find(|(kind_set, _)| Some(*kind_set) == set).map_or(0, |&(_, kind)| kind)
+        self.kinds.iter().find(|kind| Some(kind.set) == set).map_or(0, |kind| kind.place)
     }
 
     /// How many warriors of the kind at `kind` stand here with no actor yet.
@@ -872,12 +881,12 @@ impl ArenaActors {
         }
     }
 
-    /// The key of the boss's name in the game's words (`boss-<kind>`, as its kind of enemy names it), while
-    /// the foe the HUD shows is a boss, read from `simulation`, the one the arena last followed.
-    pub(crate) fn boss_name<'a>(&self, simulation: &'a Simulation) -> Option<&'a str> {
-        self.boss?;
-        let set = simulation.actor(self.shown?)?.moves.set?;
-        simulation.move_library().mind(set)?.boss()
+    /// The key of the name of the foe the HUD shows, in the game's words, as its kind of enemy names it
+    /// (M4 X2): a boss's is its bar's. Nobody's while it shows none, or one on a set no kind stood by has,
+    /// such as a scenario of code's, rather than another kind's name.
+    pub(crate) fn foe_name(&self) -> Option<&str> {
+        let set = self.seen[self.place_of(self.shown?)?]?.moves.set?;
+        self.kinds.iter().find(|kind| kind.set == set).map(|kind| kind.name.as_str())
     }
 
     /// What the HUD shows of the fighters, once a fight has stepped: the foe the player has whole, and of
@@ -1525,21 +1534,76 @@ mod tests {
         }
     }
 
-    /// A boss's bar names it by the key its kind of enemy holds, and any other foe's names nobody.
+    /// The kinds a scenario stands, as `FightShow::load_kinds` gives them to the arena, each at the place it
+    /// would load at.
+    fn staged(scenario: &sapphire_gameplay::replay::Scenario) -> Vec<StagedKind> {
+        let kinds = scenario.kinds_of_enemy().expect("it plans");
+        let staged = kinds.into_iter().enumerate();
+        staged.map(|(place, kind)| StagedKind { set: kind.set, place, name: kind.name }).collect()
+    }
+
+    /// A boss's bar is a boss's kind's, named by the key its kind of enemy holds, the one its mind has; a
+    /// fight with no kinds stood by names nobody.
     #[test]
     fn a_bosss_bar_names_it_by_its_kinds_key() {
         let (mut actors, _, mut sim, cast) = fight();
         step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
         assert_eq!(actors.hud_values().expect("a fight").boss, None);
-        assert_eq!(actors.boss_name(&sim), None);
+        assert_eq!(actors.foe_name(), None, "no kind stood by");
 
         let (mut actors, _, mut sim, cast) = fight_of("arena-boss");
+        actors.set_kinds(staged(find_scenario(&SCENARIOS, "arena-boss").expect("listed")));
         step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
         assert!(actors.hud_values().expect("a fight").boss.is_some());
         let set = sim.actor(cast[1]).expect("there").moves.set.expect("a set");
         let key = sim.move_library().mind(set).and_then(|mind| mind.boss());
         assert!(key.is_some_and(|key| key.starts_with("boss-")), "{key:?}");
-        assert_eq!(actors.boss_name(&sim), key);
+        assert_eq!(actors.foe_name(), key);
+    }
+
+    /// A fight against each kind of enemy this build holds names its foe by that kind's own key, from its
+    /// document, a boss's on its bar (M4 X2): no kind is named by another's, as a Lancer was by the warrior's.
+    #[test]
+    fn a_fight_against_each_kind_names_that_kind() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let base = *find_scenario(&SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let kinds = sapphire_gameplay::replay::kinds_held().expect("they read");
+        assert!(kinds.len() > 1, "more than the warrior");
+        let mut names = std::collections::BTreeSet::new();
+        for (kind, moves) in kinds {
+            let stem = sapphire_gameplay::replay::document_file_name(kind).trim_end_matches(".enemy.ron");
+            let text = format!(
+                r#"(type: "sapphire::gameplay::ScenarioDocument", version: 1, data: (
+                    about: "the player against one of a kind", max_actors: 8,
+                    colliders: "content/arena/square.colliders.ron",
+                    moves: ["content/combat/player/player.moves.ron", "{moves}"],
+                    enemies: ["{kind}"],
+                    cast: [
+                        (moves: "player", at: "player", faction: 1, soft_lock: true),
+                        (moves: "{stem}", at: "enemy", faction: 2, brain: true),
+                    ],
+                ))"#
+            );
+            let document =
+                sapphire_serialize::from_ron(&text).unwrap_or_else(|error| panic!("{kind}: {error}"));
+            let setup = sapphire_gameplay::replay::ScenarioSetup::Document(Box::leak(Box::new(document)));
+            let scenario = sapphire_gameplay::replay::Scenario { setup, ..base };
+            let (mut sim, cast) =
+                scenario.start(scenario.config).unwrap_or_else(|error| panic!("{kind}: {error}"));
+            let (mut actors, _) = actors_on(built(), ArenaShot::Director);
+            actors.set_kinds(staged(&scenario));
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+
+            let own =
+                sapphire_moves::EnemyDocument::parse(&std::fs::read_to_string(root.join(kind)).unwrap())
+                    .unwrap_or_else(|error| panic!("{kind}: {error}"));
+            let values = actors.hud_values().expect("a fight");
+            assert!(values.enemy.is_some(), "{kind}: the HUD shows its foe");
+            assert_eq!(values.boss.is_some(), own.boss, "{kind}: a boss's bar is a boss's");
+            assert_eq!(actors.foe_name(), Some(own.name.as_str()), "{kind}");
+            names.insert(own.name);
+        }
+        assert_eq!(names.len(), sapphire_gameplay::replay::kinds_held().unwrap().len(), "each its own name");
     }
 
     /// The bars are the simulation's, in shares, with only the player's in digits.

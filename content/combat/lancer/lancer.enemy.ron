@@ -2,8 +2,10 @@
 // warriors hold the front. Its moves are `lancer.moves.ron`; its brain presses their intents, by name.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it.
+        name: "enemy-lancer",
         // `lancer.moves.ron`.
         moves: "17e486c0-c303-4c48-9d99-4b5230722eee",
         brains: {

@@ -49,7 +49,7 @@ pub use checksums::{
     checksums_file_name,
 };
 pub use cinematics::{Cinematic, add_cinematics, cinematics_of};
-pub use document::KindOfEnemy;
+pub use document::{KindOfEnemy, kinds_held};
 pub use file::{
     COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS,
     PLAIN_FORMAT_VERSION, Recorder, Replay, ReplayCommand, ReplayError, is_valid_name,

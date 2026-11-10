@@ -7,8 +7,9 @@
 ### 2. Write the Japanese too, as well as you can. It stays under that file's machine-quality mark until a
 ###    Japanese reader has read every line: an agent's Japanese is owed a person's pass.
 ### 3. Name the key in a document (`text: (key: ...)`), or let a `key_from` prefix cover it. Nothing the game
-###    draws is written anywhere else: no words in code, and a variable is only ever a number. A boss's name
-###    reads `boss-<kind>`, and its `.enemy.ron` names it (`boss: Some((name: ...))`) for its boss bar.
+###    draws is written anywhere else: no words in code, and a variable is only ever a number. Every kind of
+###    enemy names itself in its `.enemy.ron` (`name: ...`): `enemy-<kind>`, or `boss-<kind>` for a boss,
+###    whose bar it names.
 ### 4. Add any Han character the Japanese uses that `content/fonts/ui.charset.ron` lacks.
 ### 5. Run `cargo test -p game_ui --test strings`, which holds all of this, and `--test menus`, which walks
 ###    every screen in both languages and under pseudo-localization.
@@ -104,7 +105,6 @@ controls-back = Back
 
 character-title = Character
 character-name-wanderer = Wanderer
-character-name-skeleton = Skeleton Warrior
 character-level = Lv. { $level }
 character-hp = HP
 character-hp-value = { NUMBER($hp) } / { NUMBER($max) }
@@ -137,6 +137,9 @@ hud-skip = Skip
 hud-banner-checkpoint = Checkpoint reached
 hud-banner-victory = Victory
 hud-banner-defeat = Defeated
+
+enemy-warrior = Skeleton Warrior
+enemy-lancer = Lancer
 
 boss-captain = Skeleton Captain
 boss-knell-colossus = Knell Colossus

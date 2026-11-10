@@ -2,8 +2,10 @@
 // brain, and a boss's name. Its IDs name nothing: these tests cook nothing else.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it, on its boss bar.
+        name: "boss-slice",
         moves: "5d2c9a61-0f3e-4b7a-9c1d-2e8f6a4b3c10",
         brains: {
             "steady": (
@@ -26,7 +28,7 @@
         },
         brain: "steady",
         phases: [(at: 750), (at: 500, name: Some("enraged"), brain: Some("fierce")), (at: 0)],
-        boss: Some((name: "boss-slice")),
+        boss: true,
         look: (
             mesh: "0b7e4f2a-3c5d-4e6f-8a9b-1c2d3e4f5a60",
             graph: "6a5f4e3d-2c1b-4a09-8f7e-6d5c4b3a2910",

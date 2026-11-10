@@ -57,10 +57,10 @@
                 parent: "enemy",
                 binds: [(to: Shown, path: "names_enemy")],
                 text: (
-                    key: "character-name-skeleton",
+                    key: "enemy-warrior",
                     style: "name",
                     color: (240, 246, 255, 255),
-                    key_from: (path: "enemy", prefix: "character-name-"),
+                    key_from: (path: "enemy", prefix: "enemy-"),
                     shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),

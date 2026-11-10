@@ -4,8 +4,10 @@
 // harder, with a double slam and a leap, and tolls its bell.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it, on its boss bar.
+        name: "boss-knell-colossus",
         // Its moves, beside this file.
         moves: "44c03915-fd61-4b01-afe0-affca3905c01",
         brains: {
@@ -123,8 +125,8 @@
         // The second is the phase its bar marks and its music and screen hang on, by its name. Its script
         // changes its brain there.
         phases: [(at: 500, name: Some("tolling")), (at: 0)],
-        // Its name's key in the game's words, for its boss bar.
-        boss: Some((name: "boss-knell-colossus")),
+        // A boss: its bar shows it, named by `name`.
+        boss: true,
         look: (
             // Its `.glb`, from its spec in `tools/figures/`.
             mesh: "49e92e56-e2b1-4cb0-93b9-6c7aef439350",

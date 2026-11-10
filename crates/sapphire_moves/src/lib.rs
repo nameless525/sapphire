@@ -253,9 +253,9 @@ pub use document::{
     WarpDocument,
 };
 pub use enemy::{
-    ArchivedEnemy, BossDocument, ENEMY_EXTENSION, Enemy, EnemyDocument, EnemyError, EnemyLook,
-    EnemyLookDocument, EnemyMind, EnemyPhase, EnemyPhaseDocument, HeldDocument, HeldLook, MAX_BRAINS,
-    MAX_ENEMY_PHASES, NamedBrain, PER_MILLE, QUARTERS, phase_of,
+    ArchivedEnemy, ENEMY_EXTENSION, Enemy, EnemyDocument, EnemyError, EnemyLook, EnemyLookDocument,
+    EnemyMind, EnemyPhase, EnemyPhaseDocument, HeldDocument, HeldLook, MAX_BRAINS, MAX_ENEMY_PHASES,
+    NamedBrain, PER_MILLE, QUARTERS, phase_of,
 };
 pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
 pub use set::{

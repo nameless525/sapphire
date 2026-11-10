@@ -241,13 +241,29 @@ fn zone_pack(id: AssetId) -> Result<Option<String>, ScenarioError> {
     Ok(None)
 }
 
-/// A kind of enemy in a scenario's simulations: what a stage draws the fighters on `set` as.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A kind of enemy in a scenario's simulations: what a stage draws the fighters on `set` as, and what a HUD
+/// calls them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KindOfEnemy {
     /// The set its fighters play.
     pub set: crate::moves::MoveSetId,
     /// Its `.enemy.ron`'s ID, which its cook has.
     pub kind: AssetId,
+    /// The key of its name in the game's words, as its document names it (M4 X2): presentation, which no
+    /// step reads.
+    pub name: String,
+}
+
+/// Every kind of enemy this build holds, which `build.rs` compiles in from `content/combat/`, by its
+/// document's path from the repository's root, with the path of the moves it plays: what a scenario's
+/// `moves` and `enemies` would list to stand one (M4 X2).
+pub fn kinds_held() -> Result<Vec<(&'static str, &'static str)>, ScenarioError> {
+    let kinds = NAMED_DOCUMENTS.iter().filter(|(path, _)| path.ends_with(".enemy.ron"));
+    let kinds = kinds.map(|&(path, text)| {
+        let moves = moves_with_id(EnemyDocument::parse(text)?.moves)?;
+        Ok((path, moves.ok_or_else(|| invalid(path, "this build holds no moves for it"))?))
+    });
+    kinds.collect()
 }
 
 /// The script one of a scenario's kinds of enemy names (M3 C2), which this build holds, and the set that
@@ -426,14 +442,15 @@ impl ScenarioDocument {
         Ok(())
     }
 
-    /// Each of its kinds of enemy, by its sidecar's ID, and the set its fighters play in a simulation this
-    /// sets up: what draws them is that kind's look, which a stage reads from its cooked document (M3 B3b). The
-    /// simulation never reads it.
+    /// Each of its kinds of enemy, by its sidecar's ID, the set its fighters play in a simulation this
+    /// sets up, and its name's key: what draws them is that kind's look, which a stage reads from its cooked
+    /// document (M3 B3b), and what a HUD calls them is its name (M4 X2). The simulation never reads either.
     pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
         let roster = self.roster()?;
         let planned = roster.planned()?;
         let kinds = roster.enemies.iter().zip(planned).map(|(path, plan)| {
-            Ok(KindOfEnemy { set: crate::moves::MoveSetId(plan.set), kind: id_of(path)? })
+            let set = crate::moves::MoveSetId(plan.set);
+            Ok(KindOfEnemy { set, kind: id_of(path)?, name: plan.document.name })
         });
         kinds.collect()
     }
@@ -1072,12 +1089,9 @@ mod tests {
             for (kind, path) in kinds.iter().zip(&roster.enemies) {
                 let mind = sim.move_library().mind(kind.set).unwrap_or_else(|| panic!("{name}: {path}"));
                 let compiled = EnemyDocument::parse(named(path).expect("held")).expect("reads");
-                assert_eq!(
-                    mind.boss(),
-                    compiled.boss.as_ref().map(|boss| boss.name.as_str()),
-                    "{name}: {path}"
-                );
+                assert_eq!(mind.boss(), compiled.boss.then_some(compiled.name.as_str()), "{name}: {path}");
                 assert_eq!(kind.kind, id_of(path).expect("a sidecar"), "{name}: {path}");
+                assert_eq!(kind.name, compiled.name, "{name}: {path}");
                 assert_eq!(kinds.iter().filter(|other| other.set == kind.set).count(), 1, "{name}: {path}");
             }
         }
@@ -1085,7 +1099,36 @@ mod tests {
         let boss: ScenarioDocument = sapphire_serialize::from_ron(boss).expect("reads");
         let captain = id_of("content/combat/enemy/captain.enemy.ron").expect("a sidecar");
         let kinds = boss.kinds_of_enemy().expect("it plans");
-        assert_eq!(kinds, [KindOfEnemy { set: crate::moves::MoveSetId(1), kind: captain }]);
+        let set = crate::moves::MoveSetId(1);
+        assert_eq!(kinds, [KindOfEnemy { set, kind: captain, name: "boss-captain".to_owned() }]);
+    }
+
+    /// Every kind of enemy under `content/combat/` is held, with the moves it plays.
+    #[test]
+    fn every_kind_of_enemy_is_held_with_its_moves() {
+        let kinds = kinds_held().expect("they read");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut on_disk = Vec::new();
+        let mut folders = vec![root.join("content/combat")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(folder).expect("a folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.to_string_lossy().ends_with(".enemy.ron") {
+                    let relative = path.strip_prefix(&root).expect("under the root");
+                    on_disk.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        on_disk.sort();
+        let mut held: Vec<String> = kinds.iter().map(|(kind, _)| (*kind).to_owned()).collect();
+        held.sort();
+        assert_eq!(held, on_disk);
+        for (kind, moves) in kinds {
+            let document = EnemyDocument::parse(named(kind).expect("held")).expect("reads");
+            assert_eq!(id_of(moves).ok(), Some(document.moves), "{kind}");
+        }
     }
 
     /// A scenario on a zone needn't list what its encounters spawn, cleared or not (M3 C2): the zone's

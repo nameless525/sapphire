@@ -2,8 +2,10 @@
 // gets, so it chases. Its moves are `chaser.moves.ron`; its look is nothing anything draws.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it.
+        name: "enemy-chaser",
         moves: "7c0f5b1e-3a2d-4c8e-9f61-2b4d6e8a0c13",
         brains: {
             "chase": (

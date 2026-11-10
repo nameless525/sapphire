@@ -355,7 +355,8 @@ fn each_kind_of_enemy_draws_as_itself() {
     let driver = warrior.driver.clone();
     scene.show.stocks.push(WarriorStock { meshes, held, driver });
     let arena = scene.show.arena.as_deref_mut().expect("built");
-    arena.set_kinds(vec![(warrior_set, 0), (captain_set, 1)]);
+    let staged = |set, place| StagedKind { set, place, name: kinds[place].name.clone() };
+    arena.set_kinds(vec![staged(warrior_set, 0), staged(captain_set, 1)]);
     let stood = scene.show.warriors[0];
 
     sim.step(&sapphire_gameplay::TickActions::NEUTRAL);

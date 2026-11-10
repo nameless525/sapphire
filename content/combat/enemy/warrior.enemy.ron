@@ -2,8 +2,10 @@
 // `warrior.moves.ron`; its brain presses their intents, by name.
 (
     type: "sapphire::moves::EnemyDocument",
-    version: 1,
+    version: 2,
     data: (
+        // Its name's key in the game's words: what the HUD calls it.
+        name: "enemy-warrior",
         // `warrior.moves.ron`.
         moves: "c50887be-5ce3-498a-9f28-255e7e372b32",
         brains: {

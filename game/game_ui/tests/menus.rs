@@ -19,7 +19,7 @@ use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
 use support::walk::{CHARACTER, CONTROLS, DISPLAY, Device, SETTINGS, SOUND, SUBTITLES, Walk};
 use support::{
-    Screens, assets, boss_names, content, document_in, menus, screens_of, subtitles, table, testdata,
+    Screens, assets, content, document_in, kind_names, menus, screens_of, subtitles, table, testdata,
     with_help,
 };
 
@@ -224,46 +224,45 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     assert_eq!(string_of(&walk, CONTROLS, "hold-light-value"), "Hold", "only the one chosen");
 }
 
-/// A boss's bar is named by the key its kind of enemy holds, in the enemy's name's place, in both languages;
-/// another foe's is named as before.
+/// Each kind of enemy's foe is named by the key its kind holds, in both languages (M4 X2): a boss's on its
+/// bar, in the enemy's name's place, and any other's as the enemy's name, so no kind shows another's. A foe
+/// with no name shows none.
 #[test]
-fn a_bosss_bar_is_named_by_its_kind_of_enemy() {
-    let mut values = HudValues {
-        enemy: Some(FighterValues::default()),
-        boss: Some(BossBar::default()),
-        ..HudValues::default()
-    };
-    for key in boss_names() {
+fn each_kind_of_enemy_is_named_by_its_own_key() {
+    let kinds = kind_names();
+    assert!(kinds.values().any(|&boss| boss) && kinds.values().any(|&boss| !boss), "bosses and others");
+    for (key, &boss) in &kinds {
+        let values = HudValues {
+            enemy: Some(FighterValues::default()),
+            boss: boss.then(BossBar::default),
+            ..HudValues::default()
+        };
+        let (named, unnamed) = if boss { ("boss-name", "enemy-name") } else { ("enemy-name", "boss-name") };
         for locale in ["en", "ja"] {
             let mut walk = Walk::new(assets(), locale, false, (1280, 720), Device::Keyboard);
             walk.menus.open(MenuScreen::HUD);
-            values.boss = Some(BossBar::default());
             walk.menus
                 .model_mut::<HudModel>(MenuScreen::HUD)
                 .unwrap()
-                .follow_fight(Some(&values), Some(&key));
+                .follow_fight(Some(&values), Some(key.as_str()));
             walk.settle();
             walk.check(MenuScreen::HUD, false);
             let table = table(locale);
-            let Pattern::Plain(span) = table.entry(&key).expect("in the table").pattern else {
+            let Pattern::Plain(span) = table.entry(key).expect("in the table").pattern else {
                 panic!("{key} is a plain name")
             };
             let tree = walk.tree(MenuScreen::HUD);
             let shown = |name| tree.is_visible(tree.find(name).expect("a node"));
             let said = |name| tree.strings().find(|(node, _)| *node == name).expect("text").1;
-            assert!(shown("boss-name") && !shown("enemy-name"), "{locale}: {key}");
-            assert_eq!(said("boss-name"), table.str(span), "{locale}: {key}");
+            assert!(shown(named) && !shown(unnamed), "{locale}: {key}");
+            assert_eq!(said(named), table.str(span), "{locale}: {key}");
 
-            // The same foe with a plain bar is named as any other.
-            values.boss = None;
-            walk.menus
-                .model_mut::<HudModel>(MenuScreen::HUD)
-                .unwrap()
-                .follow_fight(Some(&values), Some(&key));
+            // The same foe with no name to give shows none.
+            walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().follow_fight(Some(&values), None);
             walk.settle();
             let tree = walk.tree(MenuScreen::HUD);
             let shown = |name| tree.is_visible(tree.find(name).expect("a node"));
-            assert!(!shown("boss-name") && shown("enemy-name"), "{locale}: {key}");
+            assert!(shown("enemy") && !shown("boss-name") && !shown("enemy-name"), "{locale}: {key}");
         }
     }
 }

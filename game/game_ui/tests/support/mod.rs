@@ -4,7 +4,7 @@
 
 pub mod walk;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use game_ui::menus::{MenuDocument, MenuScreen};
@@ -37,24 +37,26 @@ pub fn table(locale: &str) -> StringTable {
     StringTable::read(&bytes).unwrap()
 }
 
-fn add_boss_names(dir: &Path, into: &mut BTreeSet<String>) {
+fn add_kind_names(dir: &Path, into: &mut BTreeMap<String, bool>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.is_dir() {
-            add_boss_names(&path, into);
+            add_kind_names(&path, into);
         } else if path.to_str().is_some_and(|name| name.ends_with(".enemy.ron")) {
             let kind = EnemyDocument::parse(&std::fs::read_to_string(&path).unwrap())
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            into.extend(kind.boss.map(|boss| boss.name));
+            let other = into.insert(kind.name.clone(), kind.boss);
+            assert!(other.is_none(), "{}: another kind is named {}", path.display(), kind.name);
         }
     }
 }
 
-/// The key of every boss's name that a kind of enemy under `content/` holds (M3 B3): what its bar shows.
-/// No boss by name: they're content, which `sapphire_gameplay`'s `bosses_are_content` holds code to.
-pub fn boss_names() -> BTreeSet<String> {
-    let mut keys = BTreeSet::new();
-    add_boss_names(&content(), &mut keys);
+/// The key of every kind of enemy's name under `content/` (M4 X2), and whether it's a boss's, which its bar
+/// shows (M3 B3): what the HUD calls its foe. No kind by name: they're content, and a boss's name is in no
+/// `.rs` file (`sapphire_gameplay`'s `bosses_are_content`).
+pub fn kind_names() -> BTreeMap<String, bool> {
+    let mut keys = BTreeMap::new();
+    add_kind_names(&content(), &mut keys);
     keys
 }
 

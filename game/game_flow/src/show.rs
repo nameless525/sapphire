@@ -641,11 +641,11 @@ impl GameShow {
         let Some(menus) = &mut self.menus else { return };
         let fight = &self.shown.fight;
         let values = fight.show.hud_values().map(|(values, _)| values);
-        let boss_name = fight.combat.as_ref().and_then(|combat| fight.show.boss_name(combat.simulation()));
+        let foe_name = fight.show.foe_name();
         let touch = self.shown.hud.as_ref().is_some_and(FightHud::shows_controls);
         if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
             model.touch = touch;
-            model.follow_fight(values.as_ref(), boss_name);
+            model.follow_fight(values.as_ref(), foe_name);
             // A game's flow gives no objective, so its HUD shows none. With no game, the fight standing is the
             // arena's, whose objective is the document's own: its foe.
             model.has_objective = self.game.is_none();

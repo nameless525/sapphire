@@ -90,7 +90,6 @@ controls-back = 戻る
 
 character-title = キャラクター
 character-name-wanderer = 旅人
-character-name-skeleton = 骸骨の戦士
 character-level = Lv. { $level }
 character-hp = HP
 character-hp-value = { NUMBER($hp) } / { NUMBER($max) }
@@ -123,6 +122,9 @@ hud-skip = スキップ
 hud-banner-checkpoint = チェックポイント到達
 hud-banner-victory = 勝利
 hud-banner-defeat = 敗北
+
+enemy-warrior = 骸骨の戦士
+enemy-lancer = 槍使い
 
 boss-captain = 骸骨の隊長
 boss-knell-colossus = 弔鐘の巨像

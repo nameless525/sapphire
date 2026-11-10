@@ -235,11 +235,12 @@ pub struct HudModel {
     /// The key of the player's name.
     pub player: String,
     pub level: i32,
-    /// The key of the enemy's. Empty reads the document's own.
+    /// The key of the foe's name, `enemy-<kind>`, as its kind of enemy names it ([`Self::follow_fight`]).
+    /// Empty reads the document's own.
     pub enemy: String,
     /// Whether the fight has a foe for the HUD to name: none until [`Self::follow_fight`] says so.
     pub has_enemy: bool,
-    /// The foe isn't a boss, so its name is `enemy`.
+    /// The foe has a name and isn't a boss, so its name is `enemy`.
     pub names_enemy: bool,
     /// The key of a boss's name, `boss-<kind>`, as its kind of enemy names it: its bar's name in place of
     /// `enemy`. Empty reads the document's own.
@@ -306,18 +307,20 @@ impl Default for HudModel {
 pub const PLAYER_SPEAKER: &str = "speaker-wanderer";
 
 impl HudModel {
-    /// Follows the fight's bars: whether there's a foe, and its name, a boss's by `boss_name` (the key
-    /// `game_combat`'s `FightShow::boss_name` gives) while its bar is a boss's. Allocates only for a boss's
-    /// name longer than any before.
-    pub fn follow_fight(&mut self, values: Option<&HudValues>, boss_name: Option<&str>) {
+    /// Follows the fight's bars: whether there's a foe, and its name, `foe_name` (the key `game_combat`'s
+    /// `FightShow::foe_name` gives, as the foe's kind of enemy names it), which is `boss` while its bar is a
+    /// boss's and `enemy` otherwise (M4 X2). A foe with no name shows none, rather than another's. Allocates
+    /// only for a name longer than any before.
+    pub fn follow_fight(&mut self, values: Option<&HudValues>, foe_name: Option<&str>) {
         self.has_enemy = values.is_some_and(|values| values.enemy.is_some());
-        let boss = boss_name.filter(|_| values.is_some_and(|values| values.boss.is_some()));
-        self.has_boss = boss.is_some();
-        self.names_enemy = !self.has_boss;
-        if let Some(boss) = boss
-            && self.boss != boss
+        let name = foe_name.filter(|_| self.has_enemy);
+        self.has_boss = name.is_some() && values.is_some_and(|values| values.boss.is_some());
+        self.names_enemy = name.is_some() && !self.has_boss;
+        let held = if self.has_boss { &mut self.boss } else { &mut self.enemy };
+        if let Some(name) = name
+            && held != name
         {
-            boss.clone_into(&mut self.boss);
+            name.clone_into(held);
         }
     }
 

@@ -63,6 +63,10 @@ fn kill_loop(dir: &TestDir) {
 
     // How long a whole install takes, process start included: the kills spread over a little more.
     afresh();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "spreads the kills over an install's length; nothing here ships"
+    )]
     let started = Instant::now();
     assert!(spawn().wait().expect("waits").success(), "an install that isn't killed finishes");
     let whole = started.elapsed();

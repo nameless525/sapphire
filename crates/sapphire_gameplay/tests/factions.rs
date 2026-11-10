@@ -7,7 +7,7 @@ use std::alloc::System;
 use sapphire_core::Name;
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_gameplay::replay::{self, RIVALS, SCENARIOS, WARRIORS, find_scenario};
-use sapphire_gameplay::targeting::{TargetingTuning, TargetingWeights};
+use sapphire_gameplay::targeting::{AutoTarget, TargetingTuning, TargetingWeights};
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTable, Buttons, ControllerProfile, DEFEATED, Faction, MoveSetId,
     ProfileId, SimConfig, Simulation, Stick, TickActions, WarpTarget, actor_body,
@@ -279,6 +279,32 @@ fn a_soft_lock_weighs_by_the_simulations_weights_and_the_ticks_own_device() {
     let (other, _, near_behind, _) =
         scene(TargetingTuning { soft_lock: closeness_only, ..shipped }, Buttons::NONE);
     assert_eq!(other, Some(near_behind), "the tuning's weights are the ones it used");
+}
+
+/// The player's auto-target strength (M4 A1) is what a thumb's soft lock weighs by, and the tables' hash takes
+/// the weights it chose: at the normal strength, what it was before there was a setting.
+#[test]
+fn a_thumbs_soft_lock_weighs_by_the_players_strength() {
+    let scene = |strength: AutoTarget| {
+        let mut floor = Floor::new(SimConfig::default());
+        let normal_hash = floor.sim.tables_hash();
+        floor.sim.set_auto_target(strength);
+        let hash = floor.sim.tables_hash();
+        let player = floor.fighter(0.0, 0.0, SIDE_A);
+        let far_ahead = floor.fighter(0.0, 9.0, SIDE_B);
+        let near_aside = floor.fighter(2.0, -2.0, SIDE_B);
+        floor.sim.give_soft_lock(player);
+        floor.sim.step(&pushing(player, Buttons::TOUCH, 0.0, 1.0));
+        (floor.lock_of(player), far_ahead, near_aside, hash == normal_hash)
+    };
+    let (weak, far_ahead, _, weak_hashes_as_normal) = scene(AutoTarget::Weak);
+    assert_eq!(weak, Some(far_ahead), "a weak pull listens to the thumb's stick");
+    assert!(!weak_hashes_as_normal);
+    let (strong, _, near_aside, strong_hashes_as_normal) = scene(AutoTarget::Strong);
+    assert_eq!(strong, Some(near_aside), "a strong one takes who's close");
+    assert!(!strong_hashes_as_normal);
+    let (_, _, _, normal_hashes_as_normal) = scene(AutoTarget::Normal);
+    assert!(normal_hashes_as_normal);
 }
 
 /// A move bends toward one target from start to end: the lock can change its mind with the stick, and the

@@ -1,0 +1,317 @@
+// The settings' subtitles page (M4 A1): whether they show, their size, the band behind them and their
+// speakers' names. Each row steps what it shows on a press.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "menu.model.ron",
+        styles: [
+            (name: "title", role: "heading", size: 32, weight: 800),
+            (name: "row", role: "body", size: 20, weight: 500),
+            (name: "value", role: "body", size: 18, weight: 700),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center, safe_area: true),
+                look: (fill: Color((6, 8, 14, 190))),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Column, gap: 8, width: Points(560), max_width: Percent(92), max_height: Percent(96), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "title",
+                parent: "panel",
+                text: (
+                    key: "subtitles-title",
+                    style: "title",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "list",
+                parent: "panel",
+                layout: (direction: Column, gap: 8, shrink: 1, min_height: Points(112), padding: (left: 4, right: 4, top: 4, bottom: 4)),
+                mask: true,
+                scroll: Vertical,
+            ),
+            (
+                name: "shown",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    down: "size",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "shown-text",
+                parent: "shown",
+                text: (
+                    key: "subtitles-shown",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "shown-value",
+                parent: "shown",
+                text: (
+                    key: "settings-switch-on",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "subtitles", prefix: "settings-switch-"),
+                ),
+            ),
+            (
+                name: "size",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "shown",
+                    down: "background",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "size-text",
+                parent: "size",
+                text: (
+                    key: "subtitles-size",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "size-value",
+                parent: "size",
+                text: (
+                    key: "subtitles-size-normal",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "subtitle_size", prefix: "subtitles-size-"),
+                ),
+            ),
+            (
+                name: "background",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "size",
+                    down: "speakers",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "background-text",
+                parent: "background",
+                text: (
+                    key: "subtitles-background",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "background-value",
+                parent: "background",
+                text: (
+                    key: "subtitles-background-normal",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "subtitle_background", prefix: "subtitles-background-"),
+                ),
+            ),
+            (
+                name: "speakers",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "background",
+                    down: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "speakers-text",
+                parent: "speakers",
+                text: (
+                    key: "subtitles-speakers",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "speakers-value",
+                parent: "speakers",
+                text: (
+                    key: "settings-switch-on",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "speakers", prefix: "settings-switch-"),
+                ),
+            ),
+            (
+                name: "foot",
+                parent: "panel",
+                layout: (direction: Column, shrink: 0, padding: (left: 4, right: 4)),
+            ),
+            (
+                name: "back",
+                parent: "foot",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "speakers",
+                    fires: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "back-text",
+                parent: "back",
+                text: (
+                    key: "subtitles-back",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-shown",
+                tracks: [(node: "shown", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-size",
+                tracks: [(node: "size", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-background",
+                tracks: [(node: "background", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-speakers",
+                tracks: [(node: "speakers", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-back",
+                tracks: [(node: "back", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

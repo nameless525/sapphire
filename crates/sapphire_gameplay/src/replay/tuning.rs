@@ -721,4 +721,41 @@ mod tests {
         assert_eq!(replay.ticks(), EDIT_AT);
         assert_eq!(replay.tables_hash(), before, "what those ticks ran on");
     }
+
+    /// The player's auto-target strength (M4 A1) is no edit: a recording keeps each change as a command, and
+    /// goes on, and its file plays back on the strengths it ran on, from the shipped start. Setting what's set
+    /// records nothing.
+    #[test]
+    fn the_players_strength_is_recorded_and_plays_back() {
+        use super::super::ReplayCommand;
+        use crate::targeting::AutoTarget;
+
+        let mut source = fight;
+        let mut recording = Recording::new(duel(), duel().config).expect("sets up");
+        let start = recording.simulation().tables_hash();
+        assert!(!recording.set_auto_target(AutoTarget::Normal), "what it starts on");
+        assert!(recording.set_auto_target(AutoTarget::Strong));
+        for _ in 0..20 {
+            recording.step(&mut source).expect("short");
+        }
+        assert!(recording.set_auto_target(AutoTarget::Weak));
+        for _ in 0..20 {
+            recording.step(&mut source).expect("short");
+        }
+        assert_eq!(recording.edited_at(), None, "a setting isn't an edit");
+        let (replay, played) = recording.finish();
+        assert_eq!(replay.ticks(), 40);
+        assert_eq!(replay.tables_hash(), start, "a run starts on the normal strength");
+        let commands = [
+            (0, ReplayCommand::AutoTarget(AutoTarget::Strong)),
+            (20, ReplayCommand::AutoTarget(AutoTarget::Weak)),
+        ];
+        assert_eq!(replay.commands(), commands);
+
+        let replay = Replay::decode(&replay.encode()).expect("reads back");
+        let mut player = Player::new(replay, &SCENARIOS).expect("on the shipped tables");
+        player.run_to_end();
+        assert_eq!(player.simulation().auto_target(), AutoTarget::Weak);
+        assert_eq!(player.finish().trail, played.trail);
+    }
 }

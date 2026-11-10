@@ -306,7 +306,7 @@ mod tests {
             let top = stack.top().unwrap();
             assert!(top.problems().is_empty(), "{:#?}", top.problems());
             assert_eq!(top.state(), Some("open"));
-            assert_eq!(top.focus_name(), Some("rumble"));
+            assert_eq!(top.focus_name(), Some("subtitles"), "down three from the language");
             assert_eq!(top.unreachable(), Vec::<&str>::new());
         }
     }

@@ -645,6 +645,13 @@ fn is_press(event: &Event) -> bool {
     }
 }
 
+/// What of the player's settings a run reads (M4 A1), given before every step: auto-target's strength, and
+/// nothing else. A run stood or restarted since starts on the normal strength, and a recording keeps only a
+/// change, so every run on the normal strength records as before. Every other setting is presentation.
+fn give_the_run(settings: &PlayerSettings, combat: &mut Combat) {
+    combat.set_auto_target(settings.auto_target);
+}
+
 impl SceneShow for GameShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         self.shown.declare_pipelines(inventory);
@@ -658,6 +665,9 @@ impl SceneShow for GameShow {
             return;
         }
         let mut stopwatch = Stopwatch::start();
+        if let (Some(menus), Some(combat)) = (&self.menus, self.shown.fight.combat.as_mut()) {
+            give_the_run(menus.settings(), combat);
+        }
         let mut bindings = self.controls.source(self.camera_yaw);
         read_bindings(self.shown.fight.combat.as_mut(), &mut bindings, PLAYER);
         laps.simulation += stopwatch.lap();
@@ -963,6 +973,53 @@ mod tests {
         assert!(is_open(&show, MenuScreen::HUD) && !is_open(&show, MenuScreen::TITLE));
     }
 
+    /// Of everything a player chooses, auto-target's strength alone reaches a run (M4 A1): every other setting
+    /// changed leaves a fight's checksums and tables as they were, and the strength moves its tables' hash.
+    #[test]
+    fn only_the_auto_target_strength_reaches_a_run() {
+        use game_ui::menus::{Flashes, HeldAction, HoldMode, SubtitleBackground, SubtitleSize, TextSize};
+        use sapphire_gameplay::targeting::AutoTarget;
+        use sapphire_gameplay::{ActorId, TickActions};
+
+        let run = |settings: &PlayerSettings| {
+            let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
+            let mut combat = Combat::new(&option).expect("the fight stands");
+            let mut sums = Vec::new();
+            for _ in 0..120 {
+                give_the_run(settings, &mut combat);
+                combat.step(&mut |_: u64, _: &[ActorId]| TickActions::default());
+                sums.push(combat.simulation().checksum());
+            }
+            (combat.simulation().tables_hash(), sums)
+        };
+        let mut other = PlayerSettings {
+            language: "ja".to_owned(),
+            size: "large".to_owned(),
+            text_size: TextSize::Larger,
+            shake: 0,
+            flashes: Flashes::Reduced,
+            camera_motion: 25,
+            sound: 10,
+            music: 20,
+            effects: 30,
+            voice: 40,
+            mono: true,
+            rumble: false,
+            ..PlayerSettings::default()
+        };
+        other.subtitles.shown = false;
+        other.subtitles.size = SubtitleSize::Larger;
+        other.subtitles.background = SubtitleBackground::Solid;
+        other.subtitles.speakers = false;
+        for action in HeldAction::ALL {
+            *other.holds.mode_mut(*action) = HoldMode::Toggle;
+        }
+        let normal = run(&PlayerSettings::default());
+        assert_eq!(run(&other), normal, "presentation stays out of the run");
+        let strong = run(&PlayerSettings { auto_target: AutoTarget::Strong, ..PlayerSettings::default() });
+        assert_ne!(strong.0, normal.0, "the strength is in the run's tables");
+    }
+
     #[test]
     fn what_the_player_chooses_reaches_the_hud_and_the_app_once() {
         let (mut show, mut clock) = fight();
@@ -972,8 +1029,10 @@ mod tests {
         let menus = show.menus.as_mut().unwrap();
         menus.open(MenuScreen::named("settings"));
         frame(&mut show, &mut clock);
-        // The first row's the language, the next the size.
+        // The hub's first row's the language, the next opens the display's page, whose first is the size.
         press(&mut show, &mut clock, Scancode::DOWN);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        assert_eq!(show.take_changed_settings(), None, "a page opened");
         press(&mut show, &mut clock, Scancode::RETURN);
         let chosen = show.take_changed_settings().expect("a row stepped");
         assert_eq!(chosen.scale(), SIZES[2].1, "normal steps to large");

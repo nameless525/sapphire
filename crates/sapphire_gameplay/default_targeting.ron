@@ -1,9 +1,11 @@
 // Who a soft lock picks: `sapphire_gameplay::targeting`, compiled in as `TargetingTuning::shipped`. That
 // module's docs say how the weights add up. A simulation holds these, so a change moves `tables_hash` and a
-// replay of a fight on other numbers refuses to start.
+// replay of a fight on other numbers refuses to start. A player chooses how hard auto-target pulls on touch
+// (`AutoTarget`, M4 A1): `touch` is its normal strength, and the other two take its place. Nobody has judged
+// them on a phone yet: they lean halfway toward the pad's weights, and further toward closeness and reach.
 (
     type: "sapphire::gameplay::TargetingTuning",
-    version: 1,
+    version: 2,
     data: (
         // A gamepad's: the stick says who, and closeness decides what's left.
         soft_lock: (
@@ -22,6 +24,24 @@
             range: 14.0,
             keep_range: 18.0,
             hysteresis: 0.15,
+        ),
+        // Weak: the stick says more of who, and the reach is the pad's.
+        touch_weak: (
+            direction: 0.9,
+            facing: 0.3,
+            distance: 1.25,
+            range: 12.0,
+            keep_range: 16.0,
+            hysteresis: 0.15,
+        ),
+        // Strong: whoever's closest, almost whatever the stick says, from further away.
+        touch_strong: (
+            direction: 0.1,
+            facing: 0.05,
+            distance: 1.8,
+            range: 18.0,
+            keep_range: 22.0,
+            hysteresis: 0.2,
         ),
     ),
 )

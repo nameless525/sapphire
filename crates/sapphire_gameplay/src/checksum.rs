@@ -34,7 +34,7 @@ use crate::patrol::Patrols;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::script::ScriptWorld;
 use crate::simulation::SimRng;
-use crate::targeting::{SoftLock, TargetingTuning};
+use crate::targeting::{AutoTarget, SoftLock, TargetingTuning};
 use crate::timeline::{TimelineLibrary, TimelineRun};
 use crate::zone::ZoneShelf;
 
@@ -553,7 +553,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
             hasher.u32(actor.raw());
         }
     }
-    hasher.u64(targeting.digest());
+    hasher.u64(targeting.digest(*world.resource::<AutoTarget>()));
     world.resource::<BodyTable>().0.write_canonical(&mut |bytes| hasher.bytes(bytes));
     dialogues.write_digests(&mut hasher);
     if let Some(zone) = zone {

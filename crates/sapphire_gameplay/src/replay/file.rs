@@ -11,6 +11,7 @@ use crate::checkpoint::{CheckpointId, ZoneStart};
 use crate::dialogue::DialogueEffect;
 use crate::flags::{Flags, MAX_FLAGS};
 use crate::simulation::SimConfig;
+use crate::targeting::AutoTarget;
 use crate::timeline::TimelineId;
 use crate::zone::ZoneEntry;
 
@@ -30,6 +31,9 @@ pub enum ReplayCommand {
     ReturnTo(CheckpointId),
     /// [`Simulation::apply_dialogue_effect`](crate::Simulation::apply_dialogue_effect) (M3 Q2).
     Dialogue(DialogueEffect),
+    /// [`Simulation::set_auto_target`](crate::Simulation::set_auto_target) (M4 A1): the player's setting,
+    /// changed or first applied.
+    AutoTarget(AutoTarget),
 }
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
@@ -76,6 +80,8 @@ const COMMAND_RETURN: u8 = 2;
 const COMMAND_ENTER_ZONE: u8 = 3;
 /// M3 Q2's, after B4's return to a checkpoint at 2 and W4's zone entry at 3.
 const COMMAND_DIALOGUE: u8 = 4;
+/// M4 A1's: the player's auto-target strength, by [`AutoTarget::to_raw`].
+const COMMAND_AUTO_TARGET: u8 = 5;
 
 /// A starting flag in the file: its name's hash and its value.
 const FLAG_LEN: usize = 8 + 4;
@@ -141,6 +147,8 @@ pub enum ReplayError {
     FlagOutOfOrder { index: u32 },
     #[error("command {index} has kind {kind}, which this build doesn't know")]
     BadCommand { index: u32, kind: u8 },
+    #[error("command {index}, of kind {kind}, has argument {argument}, which names nothing of that kind")]
+    BadArgument { index: u32, kind: u8, argument: u32 },
     #[error("command {index} is at tick {tick}, before the one before it or past the file's {ticks} ticks")]
     CommandOutOfOrder { index: u32, tick: u32, ticks: u32 },
 }
@@ -236,6 +244,10 @@ fn read_commands(
             COMMAND_RETURN => ReplayCommand::ReturnTo(CheckpointId::from_raw(argument)),
             COMMAND_ENTER_ZONE => ReplayCommand::EnterZone(ZoneEntry::from_raw(argument)),
             COMMAND_DIALOGUE => ReplayCommand::Dialogue(DialogueEffect::from_raw(argument)),
+            COMMAND_AUTO_TARGET => match AutoTarget::from_raw(argument) {
+                Some(strength) => ReplayCommand::AutoTarget(strength),
+                None => return Err(ReplayError::BadArgument { index, kind, argument }),
+            },
             kind => return Err(ReplayError::BadCommand { index, kind }),
         };
         commands.push((tick, command));
@@ -404,8 +416,9 @@ impl Cursor {
 ///
 /// A command's kind is 0 for a timeline played (its argument the timeline's ID), 1 for one skipped (how far
 /// in, in milliseconds), 2 for a return to a checkpoint (the checkpoint's place in its zone's list), 3 for
-/// entering a zone (the entry) and 4 for a dialogue's effect (the dialogue's ID in the high 16 bits and the
-/// effect's in the low). A kind this build doesn't know is refused by its index.
+/// entering a zone (the entry), 4 for a dialogue's effect (the dialogue's ID in the high 16 bits and the
+/// effect's in the low) and 5 for the player's auto-target strength (M4 A1: 0 weak, 1 normal, 2 strong). A
+/// kind this build doesn't know is refused by its index, and so is a strength it doesn't.
 /// | … | the body: runs of equal ticks, up to the digest |
 /// | 8 | XXH3-64 of every byte before it |
 ///
@@ -553,6 +566,7 @@ impl Replay {
                     ReplayCommand::ReturnTo(checkpoint) => (COMMAND_RETURN, checkpoint.raw()),
                     ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
                     ReplayCommand::Dialogue(effect) => (COMMAND_DIALOGUE, effect.to_raw()),
+                    ReplayCommand::AutoTarget(strength) => (COMMAND_AUTO_TARGET, strength.to_raw()),
                 };
                 out.extend_from_slice(&tick.to_le_bytes());
                 out.push(kind);
@@ -800,6 +814,32 @@ mod tests {
         let digest = xxh3_64(&spoiled);
         spoiled.extend_from_slice(&digest.to_le_bytes());
         assert_eq!(Replay::decode(&spoiled), Err(ReplayError::BadCommand { index: 0, kind: u8::MAX }));
+    }
+
+    /// The player's auto-target strength (M4 A1) is a command of its own kind, and a strength no build
+    /// knows is refused by its index.
+    #[test]
+    fn a_strength_reads_back_and_an_unknown_one_is_refused() {
+        let mut recorder = Recorder::new("s", SimConfig::default(), 0).unwrap();
+        recorder.command(ReplayCommand::AutoTarget(AutoTarget::Strong));
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        recorder.command(ReplayCommand::AutoTarget(AutoTarget::Weak));
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        let bytes = recorder.finish().encode();
+        let read = Replay::decode(&bytes).unwrap();
+        let expected = [
+            (0, ReplayCommand::AutoTarget(AutoTarget::Strong)),
+            (1, ReplayCommand::AutoTarget(AutoTarget::Weak)),
+        ];
+        assert_eq!(read.commands(), expected);
+
+        let at = bytes.windows(5).position(|window| window == [COMMAND_AUTO_TARGET, 2, 0, 0, 0]).unwrap();
+        let mut spoiled = bytes[..bytes.len() - DIGEST_LEN].to_vec();
+        spoiled[at + 1] = 3;
+        let digest = xxh3_64(&spoiled);
+        spoiled.extend_from_slice(&digest.to_le_bytes());
+        let refused = ReplayError::BadArgument { index: 0, kind: COMMAND_AUTO_TARGET, argument: 3 };
+        assert_eq!(Replay::decode(&spoiled), Err(refused));
     }
 
     #[test]

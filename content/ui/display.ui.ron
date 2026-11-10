@@ -1,0 +1,367 @@
+// The settings' display page (M4 A1): the interface's and the text's sizes, and how much the screen
+// moves and flashes. Each row steps what it shows on a press, which a pad, a key and a finger all have.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "menu.model.ron",
+        styles: [
+            (name: "title", role: "heading", size: 32, weight: 800),
+            (name: "row", role: "body", size: 20, weight: 500),
+            (name: "value", role: "body", size: 18, weight: 700),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center, safe_area: true),
+                look: (fill: Color((6, 8, 14, 190))),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Column, gap: 8, width: Points(560), max_width: Percent(92), max_height: Percent(96), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "title",
+                parent: "panel",
+                text: (
+                    key: "display-title",
+                    style: "title",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "list",
+                parent: "panel",
+                layout: (direction: Column, gap: 8, shrink: 1, min_height: Points(112), padding: (left: 4, right: 4, top: 4, bottom: 4)),
+                mask: true,
+                scroll: Vertical,
+            ),
+            (
+                name: "size",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    down: "text",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "size-text",
+                parent: "size",
+                text: (
+                    key: "display-size",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "size-value",
+                parent: "size",
+                text: (
+                    key: "display-size-normal",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "size", prefix: "display-size-"),
+                ),
+            ),
+            (
+                name: "text",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "size",
+                    down: "shake",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "text-text",
+                parent: "text",
+                text: (
+                    key: "display-text",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "text-value",
+                parent: "text",
+                text: (
+                    key: "display-text-normal",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "text_size", prefix: "display-text-"),
+                ),
+            ),
+            (
+                name: "shake",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "text",
+                    down: "flashes",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "shake-text",
+                parent: "shake",
+                text: (
+                    key: "display-shake",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "shake-value",
+                parent: "shake",
+                text: (
+                    key: "settings-percent",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    args: [(name: "percent", path: "shake")],
+                ),
+            ),
+            (
+                name: "flashes",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "shake",
+                    down: "camera",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "flashes-text",
+                parent: "flashes",
+                text: (
+                    key: "display-flashes",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "flashes-value",
+                parent: "flashes",
+                text: (
+                    key: "display-flashes-normal",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "flashes", prefix: "display-flashes-"),
+                ),
+            ),
+            (
+                name: "camera",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "flashes",
+                    down: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "camera-text",
+                parent: "camera",
+                text: (
+                    key: "display-camera",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "camera-value",
+                parent: "camera",
+                text: (
+                    key: "settings-percent",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    args: [(name: "percent", path: "camera_motion")],
+                ),
+            ),
+            (
+                name: "foot",
+                parent: "panel",
+                layout: (direction: Column, shrink: 0, padding: (left: 4, right: 4)),
+            ),
+            (
+                name: "back",
+                parent: "foot",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "camera",
+                    fires: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "back-text",
+                parent: "back",
+                text: (
+                    key: "display-back",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-size",
+                tracks: [(node: "size", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-text",
+                tracks: [(node: "text", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-shake",
+                tracks: [(node: "shake", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-flashes",
+                tracks: [(node: "flashes", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-camera",
+                tracks: [(node: "camera", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-back",
+                tracks: [(node: "back", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

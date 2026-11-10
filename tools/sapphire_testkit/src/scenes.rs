@@ -240,7 +240,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 229] {
+pub fn scenes() -> [Scene; 253] {
     [
         Scene {
             name: "turntable-start",
@@ -3992,6 +3992,31 @@ pub fn scenes() -> [Scene; 229] {
         game_scene!("game-settings-wide-ja", "settings", "1280x720", "ja"),
         game_scene!("game-settings-ultrawide-en", "settings", "1680x720", "en"),
         game_scene!("game-settings-ultrawide-ja", "settings", "1680x720", "ja"),
+        // The settings' pages (M4 A1), each on its sample model: every setting at what it starts at.
+        game_scene!("game-display-tablet-en", "display", "1024x768", "en"),
+        game_scene!("game-display-tablet-ja", "display", "1024x768", "ja"),
+        game_scene!("game-display-wide-en", "display", "1280x720", "en"),
+        game_scene!("game-display-wide-ja", "display", "1280x720", "ja"),
+        game_scene!("game-display-ultrawide-en", "display", "1680x720", "en"),
+        game_scene!("game-display-ultrawide-ja", "display", "1680x720", "ja"),
+        game_scene!("game-sound-tablet-en", "sound", "1024x768", "en"),
+        game_scene!("game-sound-tablet-ja", "sound", "1024x768", "ja"),
+        game_scene!("game-sound-wide-en", "sound", "1280x720", "en"),
+        game_scene!("game-sound-wide-ja", "sound", "1280x720", "ja"),
+        game_scene!("game-sound-ultrawide-en", "sound", "1680x720", "en"),
+        game_scene!("game-sound-ultrawide-ja", "sound", "1680x720", "ja"),
+        game_scene!("game-subtitles-tablet-en", "subtitles", "1024x768", "en"),
+        game_scene!("game-subtitles-tablet-ja", "subtitles", "1024x768", "ja"),
+        game_scene!("game-subtitles-wide-en", "subtitles", "1280x720", "en"),
+        game_scene!("game-subtitles-wide-ja", "subtitles", "1280x720", "ja"),
+        game_scene!("game-subtitles-ultrawide-en", "subtitles", "1680x720", "en"),
+        game_scene!("game-subtitles-ultrawide-ja", "subtitles", "1680x720", "ja"),
+        game_scene!("game-controls-tablet-en", "controls", "1024x768", "en"),
+        game_scene!("game-controls-tablet-ja", "controls", "1024x768", "ja"),
+        game_scene!("game-controls-wide-en", "controls", "1280x720", "en"),
+        game_scene!("game-controls-wide-ja", "controls", "1280x720", "ja"),
+        game_scene!("game-controls-ultrawide-en", "controls", "1680x720", "en"),
+        game_scene!("game-controls-ultrawide-ja", "controls", "1680x720", "ja"),
         game_scene!("game-character-tablet-en", "character", "1024x768", "en"),
         game_scene!("game-character-tablet-ja", "character", "1024x768", "ja"),
         game_scene!("game-character-wide-en", "character", "1280x720", "en"),

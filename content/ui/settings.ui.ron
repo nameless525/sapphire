@@ -1,4 +1,5 @@
-// The settings (M3 U7): each row steps through what it can be on a press, which a pad, a key and a finger all have.
+// The settings (M3 U7, M4 A1): the language, and a row for each page of the rest, each its own screen
+// that `menus.rs`'s rows open. Back goes to whoever opened it.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -54,7 +55,7 @@
                 ),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
-                    down: "size",
+                    down: "display",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
                         fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
@@ -86,7 +87,7 @@
                 ),
             ),
             (
-                name: "size",
+                name: "display",
                 parent: "list",
                 layout: (
                     direction: Row,
@@ -113,22 +114,21 @@
                 ),
             ),
             (
-                name: "size-text",
-                parent: "size",
+                name: "display-text",
+                parent: "display",
                 text: (
-                    key: "settings-size",
+                    key: "settings-display",
                     style: "row",
                     color: (240, 246, 255, 255),
                 ),
             ),
             (
-                name: "size-value",
-                parent: "size",
+                name: "display-value",
+                parent: "display",
                 text: (
-                    key: "settings-size-normal",
+                    key: "settings-more",
                     style: "value",
                     color: (255, 192, 56, 255),
-                    key_from: (path: "size", prefix: "settings-size-"),
                 ),
             ),
             (
@@ -145,8 +145,8 @@
                 ),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
-                    up: "size",
-                    down: "rumble",
+                    up: "display",
+                    down: "subtitles",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
                         fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
@@ -171,14 +171,13 @@
                 name: "sound-value",
                 parent: "sound",
                 text: (
-                    key: "settings-sound-value",
+                    key: "settings-more",
                     style: "value",
                     color: (255, 192, 56, 255),
-                    args: [(name: "percent", path: "sound")],
                 ),
             ),
             (
-                name: "rumble",
+                name: "subtitles",
                 parent: "list",
                 layout: (
                     direction: Row,
@@ -192,6 +191,51 @@
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
                     up: "sound",
+                    down: "controls",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "subtitles-text",
+                parent: "subtitles",
+                text: (
+                    key: "settings-subtitles",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "subtitles-value",
+                parent: "subtitles",
+                text: (
+                    key: "settings-more",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                ),
+            ),
+            (
+                name: "controls",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "subtitles",
                     down: "back",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
@@ -205,22 +249,21 @@
                 ),
             ),
             (
-                name: "rumble-text",
-                parent: "rumble",
+                name: "controls-text",
+                parent: "controls",
                 text: (
-                    key: "settings-rumble",
+                    key: "settings-controls",
                     style: "row",
                     color: (240, 246, 255, 255),
                 ),
             ),
             (
-                name: "rumble-value",
-                parent: "rumble",
+                name: "controls-value",
+                parent: "controls",
                 text: (
-                    key: "settings-rumble-on",
+                    key: "settings-more",
                     style: "value",
                     color: (255, 192, 56, 255),
-                    key_from: (path: "rumble", prefix: "settings-rumble-"),
                 ),
             ),
             (
@@ -242,7 +285,7 @@
                 ),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
-                    up: "rumble",
+                    up: "controls",
                     fires: "back",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
@@ -285,16 +328,20 @@
                 tracks: [(node: "language", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
-                name: "focus-size",
-                tracks: [(node: "size", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+                name: "focus-display",
+                tracks: [(node: "display", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
                 name: "focus-sound",
                 tracks: [(node: "sound", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
-                name: "focus-rumble",
-                tracks: [(node: "rumble", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+                name: "focus-subtitles",
+                tracks: [(node: "subtitles", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-controls",
+                tracks: [(node: "controls", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
                 name: "focus-back",

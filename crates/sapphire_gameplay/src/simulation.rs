@@ -46,7 +46,7 @@ use crate::patrol::{PatrolError, PatrolId, Patrols};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::script::{self, HookFrame, ScriptWorld};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
-use crate::targeting::{self, SoftLock, TargetingTuning};
+use crate::targeting::{self, AutoTarget, SoftLock, TargetingTuning};
 use crate::timeline::{
     self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
@@ -191,6 +191,7 @@ impl Simulation {
         world.insert_resource(DialogueLibrary::default());
         world.insert_resource(Flags::default());
         world.insert_resource(TargetingTuning::shipped());
+        world.insert_resource(AutoTarget::Normal);
         world.insert_resource(BodyTable(*BodyTuning::shipped()));
         world.insert_resource(ZoneShelf::default());
         world.insert_resource(Patrols::default());
@@ -645,6 +646,24 @@ impl Simulation {
         let mut current = self.ecs.world_mut().resource_mut::<TargetingTuning>();
         let changed = *current != tuning;
         *current = tuning;
+        changed
+    }
+
+    /// How hard auto-target pulls on touch in this simulation: the player's setting, [`AutoTarget::Normal`]
+    /// until told otherwise. A restart keeps it.
+    #[must_use]
+    pub fn auto_target(&self) -> AutoTarget {
+        *self.ecs.world().resource::<AutoTarget>()
+    }
+
+    /// Makes `strength` how hard auto-target pulls, between steps, as a player's setting does. Says whether
+    /// that changed anything: if it did, [`Self::tables_hash`] takes the weights it chose. A recording keeps
+    /// it as a command ([`crate::replay::Recording::set_auto_target`]), so a replay chooses as its run did.
+    pub fn set_auto_target(&mut self, strength: AutoTarget) -> bool {
+        let changed = *self.ecs.world().resource::<AutoTarget>() != strength;
+        if changed {
+            *self.ecs.world_mut().resource_mut::<AutoTarget>() = strength;
+        }
         changed
     }
 

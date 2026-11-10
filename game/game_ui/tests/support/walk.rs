@@ -14,6 +14,13 @@ use super::Screens;
 pub const SETTINGS: MenuScreen = MenuScreen::named("settings");
 /// The character screen, likewise.
 pub const CHARACTER: MenuScreen = MenuScreen::named("character");
+/// The settings' pages (M4 A1), which their hub opens.
+pub const DISPLAY: MenuScreen = MenuScreen::named("display");
+pub const SOUND: MenuScreen = MenuScreen::named("sound");
+pub const SUBTITLES: MenuScreen = MenuScreen::named("subtitles");
+pub const CONTROLS: MenuScreen = MenuScreen::named("controls");
+/// The settings' hub and its pages, each a scrolling list of rows over a way back.
+pub const SETTINGS_SCREENS: [MenuScreen; 5] = [SETTINGS, DISPLAY, SOUND, SUBTITLES, CONTROLS];
 
 /// How a walk presses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -184,7 +191,8 @@ impl Walk {
     /// A finger on a short list drags what it wants to where it can land on it.
     pub fn drag_to(&mut self, screen: MenuScreen, node: &str) {
         let list = match node {
-            "language" | "size" | "sound" | "rumble" if screen == SETTINGS => "list",
+            "back" => return,
+            _ if SETTINGS_SCREENS.contains(&screen) => "list",
             "skill-attack" | "skill-dodge" | "skill-art" if screen == CHARACTER => "skills",
             _ => return,
         };

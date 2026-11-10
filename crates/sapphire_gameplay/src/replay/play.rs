@@ -18,7 +18,7 @@ use crate::moves::{MoveSetId, Tuned};
 use crate::script::HookFrame;
 use crate::simulation::{LendsFrame, SimConfig, Simulation, StartFlagsError};
 use crate::stats::SimStats;
-use crate::targeting::TargetingTuning;
+use crate::targeting::{AutoTarget, TargetingTuning};
 use crate::timeline::{TimelineId, TimelinePlayError};
 use crate::zone::{ZoneEntry, ZoneEntryError};
 
@@ -299,6 +299,9 @@ impl Player {
                 ReplayCommand::Dialogue(effect) => {
                     let _ = self.tracked.sim.apply_dialogue_effect(effect);
                 }
+                ReplayCommand::AutoTarget(strength) => {
+                    self.tracked.sim.set_auto_target(strength);
+                }
             }
             self.next_command += 1;
         }
@@ -520,6 +523,18 @@ impl Recording {
         Ok(())
     }
 
+    /// Makes `strength` how hard auto-target pulls before the next step, as the player's setting does, and
+    /// records that if it changed anything: a run starts on the normal strength, so a game sets the player's
+    /// before the first step, and again whenever they change it. Past a live edit or the limit the file has
+    /// ended, so it only changes the run. Says whether it changed anything.
+    pub fn set_auto_target(&mut self, strength: AutoTarget) -> bool {
+        let changed = self.tracked.sim.set_auto_target(strength);
+        if changed && self.keeps() {
+            self.recorder.command(ReplayCommand::AutoTarget(strength));
+        }
+        changed
+    }
+
     /// Records that someone skipped the timeline playing, `at_ms` into it, and runs the steps it holds
     /// input for, on neutral input: exactly the steps watching it would have run. See the `timeline`
     /// module, which is why this is all a skip is. A move's cinematic is refused, recording nothing.
@@ -580,6 +595,9 @@ impl Recording {
                         self.return_to_checkpoint(checkpoint)?;
                     }
                     ReplayCommand::Dialogue(effect) => self.apply_dialogue_effect(effect)?,
+                    ReplayCommand::AutoTarget(strength) => {
+                        self.set_auto_target(strength);
+                    }
                 }
             }
             self.step(&mut source)?;

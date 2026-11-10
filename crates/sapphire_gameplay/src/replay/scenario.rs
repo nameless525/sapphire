@@ -741,6 +741,12 @@ impl FightWorld {
         self.simulation.tune_targeting(tuning)
     }
 
+    /// Makes `strength` how hard auto-target pulls, between steps: the player's setting. A restart keeps it.
+    /// Says whether that changed anything ([`Simulation::set_auto_target`]).
+    pub fn set_auto_target(&mut self, strength: crate::targeting::AutoTarget) -> bool {
+        self.simulation.set_auto_target(strength)
+    }
+
     /// Start again at revision zero of the current moves, allocating no new storage. A live edit
     /// that no longer supports this party is refused before changing any state, allowing recovery.
     pub fn restart(&mut self) -> Result<(), ScenarioError> {

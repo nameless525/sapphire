@@ -17,7 +17,7 @@ use sapphire_math::Vec2;
 use sapphire_platform::Scancode;
 use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
-use support::walk::{CHARACTER, Device, SETTINGS, Walk};
+use support::walk::{CHARACTER, CONTROLS, DISPLAY, Device, SETTINGS, SOUND, SUBTITLES, Walk};
 use support::{
     Screens, assets, boss_names, content, document_in, menus, screens_of, subtitles, table, testdata,
     with_help,
@@ -25,6 +25,42 @@ use support::{
 
 /// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.
 const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
+
+/// The settings' pages (M4 A1): the hub's row that opens each, the page, and each of its rows in the order a
+/// walk steps them. The interface's size comes round to where it started, so the rest walks at it.
+const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 4] = [
+    ("display", DISPLAY, &["size", "text", "shake", "flashes", "camera", "size", "size"]),
+    ("sound", SOUND, &["volume", "music", "effects", "voice", "mono", "rumble", "mono"]),
+    ("subtitles", SUBTITLES, &["shown", "size", "background", "speakers", "shown"]),
+    (
+        "controls",
+        CONTROLS,
+        &["auto-target", "hold-light", "hold-heavy", "hold-dodge", "hold-skill", "hold-lock-on"],
+    ),
+];
+
+/// The settings' hub, each of its pages and each of their rows, and back out of each.
+fn walk_the_settings(walk: &mut Walk, pseudo: bool) {
+    walk.check(SETTINGS, pseudo);
+    assert!(walk.menus.is_open(SETTINGS));
+    for row in ["language", "language"] {
+        walk.choose(SETTINGS, row);
+        walk.check(SETTINGS, pseudo);
+    }
+    for (row, page, rows) in SETTINGS_PAGES {
+        walk.choose(SETTINGS, row);
+        assert!(walk.menus.is_open(page), "{row} opens its page, by {:?} at {:?}", walk.device, walk.size);
+        walk.check(page, pseudo);
+        for row in rows {
+            walk.choose(page, row);
+            walk.check(page, pseudo);
+        }
+        walk.back(page);
+        assert!(walk.menus.tree(page).is_none(), "{page:?} went, by {:?} at {:?}", walk.device, walk.size);
+        assert!(walk.menus.is_open(SETTINGS), "back to the hub");
+    }
+    walk.back(SETTINGS);
+}
 
 /// Every menu, by one device.
 fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
@@ -37,13 +73,7 @@ fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
 
     // Title to settings, each of its rows, and back.
     walk.choose(MenuScreen::TITLE, "settings");
-    walk.check(SETTINGS, pseudo);
-    assert!(walk.menus.is_open(SETTINGS));
-    for row in ["language", "language", "size", "sound", "rumble", "rumble", "size", "size"] {
-        walk.choose(SETTINGS, row);
-        walk.check(SETTINGS, pseudo);
-    }
-    walk.back(SETTINGS);
+    walk_the_settings(walk, pseudo);
     assert!(
         walk.menus.tree(SETTINGS).is_none(),
         "its machine took it out, by {:?} at {:?}",
@@ -147,15 +177,50 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     assert_eq!(string_of(&walk, MenuScreen::TITLE, "new-text"), "はじめから", "under it too");
     assert!(walk.commands.contains(&MenuCommand::SettingsChanged));
 
-    walk.choose(SETTINGS, "sound");
-    assert_eq!(walk.menus.settings().sound, 0, "past the top it comes round");
-    assert!(string_of(&walk, SETTINGS, "sound-value").starts_with('0'));
-    walk.choose(SETTINGS, "sound");
-    assert_eq!(walk.menus.settings().sound, 10);
+    assert_eq!(string_of(&walk, SETTINGS, "sound-value"), "›", "a page's row says it goes on");
+    walk.choose(SETTINGS, "language");
+    assert_eq!(walk.menus.settings().language, "en");
 
-    walk.choose(SETTINGS, "size");
+    walk.choose(SETTINGS, "sound");
+    assert!(string_of(&walk, SOUND, "volume-value").starts_with("100"));
+    walk.choose(SOUND, "volume");
+    assert_eq!(walk.menus.settings().sound, 0, "past the top it comes round");
+    assert!(string_of(&walk, SOUND, "volume-value").starts_with('0'));
+    walk.choose(SOUND, "volume");
+    assert_eq!(walk.menus.settings().sound, 10);
+    walk.choose(SOUND, "music");
+    assert_eq!((walk.menus.settings().music, walk.menus.settings().sound), (0, 10), "each its own");
+    assert_eq!(string_of(&walk, SOUND, "mono-value"), "Off");
+    walk.choose(SOUND, "mono");
+    assert!(walk.menus.settings().mono);
+    assert_eq!(string_of(&walk, SOUND, "mono-value"), "On");
+    walk.back(SOUND);
+
+    walk.choose(SETTINGS, "display");
+    walk.choose(DISPLAY, "size");
     assert_eq!(walk.menus.settings().size, "large");
     assert!(walk.menus.settings().scale() > 1.0);
+    walk.choose(DISPLAY, "flashes");
+    assert_eq!(string_of(&walk, DISPLAY, "flashes-value"), "Reduced");
+    walk.choose(DISPLAY, "shake");
+    assert_eq!(walk.menus.settings().shake, 0);
+    assert!(string_of(&walk, DISPLAY, "shake-value").starts_with('0'));
+    walk.back(DISPLAY);
+
+    walk.choose(SETTINGS, "subtitles");
+    walk.choose(SUBTITLES, "background");
+    assert_eq!(string_of(&walk, SUBTITLES, "background-value"), "Solid");
+    walk.choose(SUBTITLES, "speakers");
+    assert!(!walk.menus.settings().subtitles.speakers);
+    walk.back(SUBTITLES);
+
+    walk.choose(SETTINGS, "controls");
+    assert_eq!(string_of(&walk, CONTROLS, "auto-target-value"), "Normal");
+    walk.choose(CONTROLS, "auto-target");
+    assert_eq!(string_of(&walk, CONTROLS, "auto-target-value"), "Strong");
+    walk.choose(CONTROLS, "hold-dodge");
+    assert_eq!(string_of(&walk, CONTROLS, "hold-dodge-value"), "Toggle");
+    assert_eq!(string_of(&walk, CONTROLS, "hold-light-value"), "Hold", "only the one chosen");
 }
 
 /// A boss's bar is named by the key its kind of enemy holds, in the enemy's name's place, in both languages;

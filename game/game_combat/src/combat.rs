@@ -777,6 +777,22 @@ impl Combat {
         }
     }
 
+    /// Makes `strength` how hard the player's auto-target pulls, between steps (M4 A1): the player's setting,
+    /// which a game sets before every step, so a run stood or restarted since takes it too. A recording keeps
+    /// it as a command when it changes anything, so its replay chooses as it did. A replay plays the strength
+    /// it recorded and takes no other.
+    pub fn set_auto_target(&mut self, strength: sapphire_gameplay::targeting::AutoTarget) {
+        match &mut self.mode {
+            Mode::Replaying { .. } => {}
+            Mode::Recording { recording, .. } => {
+                recording.set_auto_target(strength);
+            }
+            Mode::Fighting(fight) => {
+                fight.sim.set_auto_target(strength);
+            }
+        }
+    }
+
     /// Whether someone's playing this through the bindings, rather than a file or a script driving it.
     pub fn is_played(&self) -> bool {
         match &self.mode {
@@ -1569,6 +1585,9 @@ impl ScriptStarts {
                 }
                 ReplayCommand::Dialogue(effect) => {
                     recording.apply_dialogue_effect(effect).map_err(|error| error.to_string())?;
+                }
+                ReplayCommand::AutoTarget(strength) => {
+                    recording.set_auto_target(strength);
                 }
                 ReplayCommand::SkipTimeline { .. } | ReplayCommand::EnterZone(_) => {}
             }

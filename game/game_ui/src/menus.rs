@@ -17,30 +17,27 @@
 //! lands on its pause.
 
 mod document;
+mod settings;
 
 use std::fmt::Write as _;
 
 use bevy_reflect::{PartialReflect, Reflect, TypeInfo, Typed};
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::{MenuControls, MenuError};
-use sapphire_loc::LocaleSettings;
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
-use sapphire_reflect::Versioned;
 use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, HudValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
 use serde::{Deserialize, Serialize};
 
 pub use self::document::{MenuDocument, MenuScreen, RowAction, ScreenEntry, ScreenModel, ScreenRow};
+pub use self::settings::{
+    Flashes, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, SIZES, Setting, SubtitleBackground,
+    SubtitleSize, Subtitles, TextSize,
+};
 use crate::screen::{ScreenStack, StackSetup};
 
-/// The languages the game ships, in the order the setting steps through them.
-pub const LANGUAGES: [&str; 2] = ["en", "ja"];
-/// The interface sizes, by the name a table has for each, in order, with what each scales points by.
-pub const SIZES: [(&str, f32); 3] = [("small", 0.85), ("normal", 1.0), ("large", 1.2)];
-/// How far a press of the volume setting moves it, in percent. It comes round past 100.
-const SOUND_STEP: u8 = 10;
 /// The key of the window's title, the one string the game shows outside a screen (M3 Z5b): the app names
 /// its window by it, in the menus' language ([`GameMenus::window_title`]).
 pub const WINDOW_TITLE: &str = "window-title";
@@ -75,7 +72,8 @@ impl ScreenModel {
 }
 
 /// What any menu's paths can read (M3 U9): whether there's a way out and a run to go on with, and the
-/// player's settings. The title, the pause and the settings read it, and so can any screen content adds.
+/// player's settings (M4 A1 adds the settings' pages' own), each a key of what it's set to or a percent. The
+/// title, the pause and the settings read it, and so can any screen content adds.
 #[derive(Clone, Debug, Default, Reflect)]
 pub struct MenuModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
@@ -85,12 +83,36 @@ pub struct MenuModel {
     pub can_continue: bool,
     /// The key of the language's name.
     pub language: String,
-    /// The key of the size's name.
+    /// The key of the interface's size's name.
     pub size: String,
+    pub text_size: String,
     /// In percent.
+    pub shake: i32,
+    pub flashes: String,
+    /// In percent.
+    pub camera_motion: i32,
+    /// Every sound's volume, in percent.
     pub sound: i32,
-    /// The key of what it's set to.
+    /// In percent.
+    pub music: i32,
+    /// In percent.
+    pub effects: i32,
+    /// In percent.
+    pub voice: i32,
+    pub mono: String,
     pub rumble: String,
+    /// Whether subtitles show.
+    pub subtitles: String,
+    pub subtitle_size: String,
+    pub subtitle_background: String,
+    /// Whether a subtitle names its speaker.
+    pub speakers: String,
+    pub auto_target: String,
+    pub hold_light: String,
+    pub hold_heavy: String,
+    pub hold_dodge: String,
+    pub hold_skill: String,
+    pub hold_lock_on: String,
 }
 
 impl MenuModel {
@@ -101,10 +123,31 @@ impl MenuModel {
     }
 
     fn show_settings(&mut self, settings: &PlayerSettings) {
+        let switch = |on: bool| format!("settings-switch-{}", if on { "on" } else { "off" });
+        let held = |action| format!("controls-held-{}", settings.holds.mode(action).name());
         self.language = format!("settings-language-{}", settings.known_language());
-        self.size = format!("settings-size-{}", settings.size);
+        self.size = format!("display-size-{}", settings.size);
+        self.text_size = format!("display-text-{}", settings.text_size.name());
+        self.shake = i32::from(settings.shake);
+        self.flashes = format!("display-flashes-{}", settings.flashes.name());
+        self.camera_motion = i32::from(settings.camera_motion);
         self.sound = i32::from(settings.sound);
-        self.rumble = format!("settings-rumble-{}", if settings.rumble { "on" } else { "off" });
+        self.music = i32::from(settings.music);
+        self.effects = i32::from(settings.effects);
+        self.voice = i32::from(settings.voice);
+        self.mono = switch(settings.mono);
+        self.rumble = switch(settings.rumble);
+        self.subtitles = switch(settings.subtitles.shown);
+        self.subtitle_size = format!("subtitles-size-{}", settings.subtitles.size.name());
+        self.subtitle_background = format!("subtitles-background-{}", settings.subtitles.background.name());
+        self.speakers = switch(settings.subtitles.speakers);
+        self.auto_target =
+            format!("controls-auto-target-{}", settings::auto_target_name(settings.auto_target));
+        self.hold_light = held(HeldAction::Light);
+        self.hold_heavy = held(HeldAction::Heavy);
+        self.hold_dodge = held(HeldAction::Dodge);
+        self.hold_skill = held(HeldAction::Skill);
+        self.hold_lock_on = held(HeldAction::LockOn);
     }
 }
 
@@ -268,59 +311,6 @@ impl HudModel {
     }
 }
 
-/// What the player has chosen, which the app keeps between runs.
-#[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
-#[type_path = "sapphire::game_ui"]
-#[serde(default)]
-pub struct PlayerSettings {
-    /// Of [`LANGUAGES`].
-    pub language: String,
-    /// By name, of [`SIZES`].
-    pub size: String,
-    /// In percent.
-    pub sound: u8,
-    /// Whether a pad shakes.
-    pub rumble: bool,
-}
-
-impl Versioned for PlayerSettings {
-    const VERSION: u32 = 1;
-}
-
-impl Default for PlayerSettings {
-    fn default() -> Self {
-        Self { language: "en".to_owned(), size: "normal".to_owned(), sound: 100, rumble: true }
-    }
-}
-
-impl PlayerSettings {
-    /// What the chosen size scales points by. A size no build has means what the setting starts at.
-    #[must_use]
-    pub fn scale(&self) -> f32 {
-        SIZES.iter().find(|(name, _)| *name == self.size).map_or(1.0, |(_, scale)| *scale)
-    }
-
-    /// The chosen language, if this build has it.
-    #[must_use]
-    pub fn known_language(&self) -> &str {
-        if LANGUAGES.contains(&self.language.as_str()) { &self.language } else { LANGUAGES[0] }
-    }
-
-    /// The volume as a share.
-    #[must_use]
-    pub fn volume(&self) -> f32 {
-        f32::from(self.sound.min(100)) / 100.0
-    }
-
-    /// The languages the game reads and speaks in. Voices follow the chosen language: the engine keeps the
-    /// two apart (M3 A1), but the settings screen has one control for both until a game wants a second.
-    #[must_use]
-    pub fn locale(&self) -> LocaleSettings {
-        let language = self.known_language().to_owned();
-        LocaleSettings { text: language.clone(), voice: language }
-    }
-}
-
 /// How a [`GameMenus`] starts.
 #[derive(Clone, Debug)]
 pub struct MenuSetup {
@@ -357,15 +347,6 @@ pub enum MenuCommand {
     DialogueNext,
     /// The dialogue panel's answer, from 0.
     DialogueChose(u8),
-}
-
-/// A setting a press steps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Setting {
-    Language,
-    Size,
-    Sound,
-    Rumble,
 }
 
 /// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate.
@@ -715,21 +696,7 @@ impl GameMenus {
     /// Steps a setting on, shows it on every menu, and says it's time to keep them.
     fn step(&mut self, setting: Setting) {
         let settings = &mut self.settings;
-        match setting {
-            Setting::Language => {
-                let at = LANGUAGES.iter().position(|tag| *tag == settings.known_language()).unwrap_or(0);
-                settings.language = LANGUAGES[(at + 1) % LANGUAGES.len()].to_owned();
-            }
-            Setting::Size => {
-                let at = SIZES.iter().position(|(name, _)| *name == settings.size).unwrap_or(1);
-                settings.size = SIZES[(at + 1) % SIZES.len()].0.to_owned();
-            }
-            Setting::Sound => {
-                settings.sound =
-                    if settings.sound >= 100 { 0 } else { (settings.sound + SOUND_STEP).min(100) };
-            }
-            Setting::Rumble => settings.rumble = !settings.rumble,
-        }
+        settings.step(setting);
         let language = settings.known_language().to_owned();
         let scale = settings.scale();
         if let Err(error) = self.stack.set_locale(&language) {

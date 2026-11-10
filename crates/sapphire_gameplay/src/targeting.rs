@@ -14,21 +14,25 @@
 //! A candidate scores by how near it is to where the player is pointing and how close it is:
 //! `direction · (1 − angle / π) + distance · (1 − metres / range)`. Pointing means the stick, or the actor's
 //! facing with the stick at rest, at the `facing` weight. Auto-target on touch (pillar 7) is the same
-//! function with [`TargetingTuning::touch`], where closeness counts for most.
+//! function with [`TargetingTuning::touch`], where closeness counts for most. How hard it pulls is the player's
+//! setting ([`AutoTarget`], M4 A1): its weak and strong strengths weigh by `touch_weak` and `touch_strong` in
+//! `touch`'s place.
 //!
 //! The camera doesn't choose anything: it's handed the chosen target's position.
 //!
 //! **The weights are a document** (`default_targeting.ron`, [`TargetingTuning`]), compiled in because a
 //! replay needs no assets. A [`Simulation`](crate::Simulation) holds the resolved value and its
 //! [`tables_hash`](crate::Simulation::tables_hash) takes it, so a fight on other weights can't pass for one
-//! on these.
+//! on these. The strength is the run's too ([`crate::Simulation::set_auto_target`]): a player changes it
+//! between steps, a recording keeps that as a command, and the hash takes the weights it chooses, so a run on
+//! the normal strength hashes as one from before there was a setting.
 
 use std::sync::OnceLock;
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{Reflect, TypePath};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
@@ -102,20 +106,80 @@ impl TargetingWeights {
     }
 }
 
-/// Every way a soft lock is weighed (a `TargetingTuning` document, schema 1).
+/// Every way a soft lock is weighed (a `TargetingTuning` document, schema 2).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TypePath, Resource)]
 #[type_path = "sapphire::gameplay"]
 #[serde(deny_unknown_fields)]
 pub struct TargetingTuning {
     /// A gamepad's or a keyboard's.
     pub soft_lock: TargetingWeights,
-    /// Auto-target on touch (pillar 7).
+    /// Auto-target on touch (pillar 7), at its normal strength.
     pub touch: TargetingWeights,
+    /// Auto-target on touch at the player's weak strength ([`AutoTarget::Weak`]).
+    pub touch_weak: TargetingWeights,
+    /// Auto-target on touch at the player's strong strength ([`AutoTarget::Strong`]).
+    pub touch_strong: TargetingWeights,
 }
 
 impl Versioned for TargetingTuning {
-    /// 1: M3 S3.
+    /// 1: M3 S3. 2: M4 A1's auto-target strengths, which a version 1 document weighs as its `touch`.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        decode_versioned::<TargetingTuningV1, D>(version, data).map(|old| Self {
+            soft_lock: old.soft_lock,
+            touch: old.touch,
+            touch_weak: old.touch,
+            touch_strong: old.touch,
+        })
+    }
+}
+
+/// [`TargetingTuning`] version 1 (M3 S3): one set of weights on touch.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetingTuningV1 {
+    soft_lock: TargetingWeights,
+    touch: TargetingWeights,
+}
+
+impl Versioned for TargetingTuningV1 {
     const VERSION: u32 = 1;
+}
+
+/// How hard auto-target pulls on touch: a player's setting (spec §6.8, M4 A1), which a step reads, so the run
+/// records it. Normal is what every run before the setting ran on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect, Resource)]
+#[type_path = "sapphire::gameplay"]
+pub enum AutoTarget {
+    /// The stick counts for more, and the reach is shorter.
+    Weak,
+    #[default]
+    Normal,
+    /// Closeness counts for even more, and the reach is longer.
+    Strong,
+}
+
+impl AutoTarget {
+    /// Every strength, weakest first: the order a setting steps through them.
+    pub const ALL: [Self; 3] = [Self::Weak, Self::Normal, Self::Strong];
+
+    /// Its number in a replay's command.
+    #[must_use]
+    pub const fn to_raw(self) -> u32 {
+        self as u32
+    }
+
+    /// The strength `raw` numbers, if it numbers one.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Weak),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Strong),
+            _ => None,
+        }
+    }
 }
 
 /// A targeting document that can't be used.
@@ -141,16 +205,29 @@ impl TargetingTuning {
         let tuning: Self = sapphire_serialize::from_ron(text)?;
         tuning.soft_lock.check("soft_lock")?;
         tuning.touch.check("touch")?;
+        tuning.touch_weak.check("touch_weak")?;
+        tuning.touch_strong.check("touch_strong")?;
         Ok(tuning)
     }
 
-    /// What [`crate::Simulation::tables_hash`] takes of them: their numbers by their bits, the same on every
-    /// architecture.
+    /// What a thumb's soft lock weighs by at `strength`.
     #[must_use]
-    pub(crate) fn digest(&self) -> u64 {
+    pub const fn on_touch(&self, strength: AutoTarget) -> &TargetingWeights {
+        match strength {
+            AutoTarget::Weak => &self.touch_weak,
+            AutoTarget::Normal => &self.touch,
+            AutoTarget::Strong => &self.touch_strong,
+        }
+    }
+
+    /// What [`crate::Simulation::tables_hash`] takes of them at `strength`: the numbers a step can read, by
+    /// their bits, the same on every architecture. The strengths a run isn't on aren't in it, so at the normal
+    /// strength it's what it was before there were others.
+    #[must_use]
+    pub(crate) fn digest(&self, strength: AutoTarget) -> u64 {
         let mut hasher = StateHasher::new();
         self.soft_lock.write_canonical(&mut hasher);
-        self.touch.write_canonical(&mut hasher);
+        self.on_touch(strength).write_canonical(&mut hasher);
         hasher.finish()
     }
 }
@@ -248,6 +325,7 @@ pub(crate) fn choose_soft_locks(
     table: Res<'_, ActorTable>,
     party: Res<'_, Party>,
     weights: Res<'_, TargetingTuning>,
+    strength: Res<'_, AutoTarget>,
     mut candidates: ResMut<'_, LockCandidates>,
     mut locks: Query<'_, '_, (&mut SoftLock, &mut WarpTarget, &Controls, &MoveOutput)>,
     bodies: Query<'_, '_, (&ActorTransform, &Fighter)>,
@@ -277,7 +355,8 @@ pub(crate) fn choose_soft_locks(
             candidates,
         };
         let by_thumb = controls.current.buttons.contains(Buttons::TOUCH);
-        lock.target = choose_target(&query, if by_thumb { &weights.touch } else { &weights.soft_lock });
+        let weights = if by_thumb { weights.on_touch(*strength) } else { &weights.soft_lock };
+        lock.target = choose_target(&query, weights);
         if !output.windows.warp {
             *aim = lock.target.map_or(WarpTarget::None, WarpTarget::Actor);
         }
@@ -563,13 +642,54 @@ mod tests {
             |weights| weights.keep_range += 0.25,
             |weights| weights.hysteresis += 0.25,
         ];
+        let normal = AutoTarget::Normal;
         for moved in moves {
-            let (mut soft, mut touch) = (shipped, shipped);
+            let (mut soft, mut touch, mut weak, mut strong) = (shipped, shipped, shipped, shipped);
             moved(&mut soft.soft_lock);
             moved(&mut touch.touch);
-            assert_ne!(soft.digest(), shipped.digest());
-            assert_ne!(touch.digest(), shipped.digest());
-            assert_ne!(soft.digest(), touch.digest(), "which of them it was counts too");
+            moved(&mut weak.touch_weak);
+            moved(&mut strong.touch_strong);
+            assert_ne!(soft.digest(normal), shipped.digest(normal));
+            assert_ne!(touch.digest(normal), shipped.digest(normal));
+            assert_ne!(soft.digest(normal), touch.digest(normal), "which of them it was counts too");
+            assert_ne!(weak.digest(AutoTarget::Weak), shipped.digest(AutoTarget::Weak));
+            assert_ne!(strong.digest(AutoTarget::Strong), shipped.digest(AutoTarget::Strong));
+            assert_eq!(weak.digest(normal), shipped.digest(normal), "a row the run doesn't read");
+            assert_eq!(strong.digest(normal), shipped.digest(normal), "a row the run doesn't read");
         }
+        assert_ne!(shipped.digest(AutoTarget::Weak), shipped.digest(normal));
+        assert_ne!(shipped.digest(AutoTarget::Strong), shipped.digest(normal));
+        for strength in AutoTarget::ALL {
+            assert_eq!(AutoTarget::from_raw(strength.to_raw()), Some(strength));
+        }
+        assert_eq!(AutoTarget::from_raw(3), None);
+    }
+
+    /// The strengths pull as their names say: a weak one listens to the stick more than the normal, a strong
+    /// one less, and reaches further.
+    #[test]
+    fn the_strengths_pull_as_they_say() {
+        let shipped = TargetingTuning::shipped();
+        let pull = |weights: &TargetingWeights| weights.distance / weights.direction;
+        assert!(pull(&shipped.touch_weak) < pull(&shipped.touch));
+        assert!(pull(&shipped.touch_strong) > pull(&shipped.touch));
+        assert!(shipped.touch_strong.range > shipped.touch.range);
+        // A thumb pushed at the far one: the weak strength takes it, the strong the near one behind.
+        let scene = [at(1, 0.0, 9.0), at(2, 2.0, -2.0)];
+        let aimed = pushed(0.0, 1.0);
+        assert_eq!(choose(0.0, aimed, None, &scene, &shipped.touch_weak), Some(id(1)));
+        assert_eq!(choose(0.0, aimed, None, &scene, &shipped.touch_strong), Some(id(2)));
+    }
+
+    /// A game's own document from before the strengths reads, every strength weighing as its `touch`.
+    #[test]
+    fn a_version_1_document_weighs_every_strength_as_its_touch() {
+        let start = SHIPPED.find("        // Weak").expect("the weak row");
+        let end = SHIPPED.find("    ),\n)").expect("the document's end");
+        let v1 = format!("{}{}", &SHIPPED[..start], &SHIPPED[end..]).replacen("version: 2", "version: 1", 1);
+        let read = TargetingTuning::from_ron(&v1).expect("a version 1 document reads");
+        let shipped = TargetingTuning::shipped();
+        assert_eq!((read.soft_lock, read.touch), (shipped.soft_lock, shipped.touch));
+        assert_eq!((read.touch_weak, read.touch_strong), (shipped.touch, shipped.touch));
     }
 }

@@ -3673,7 +3673,7 @@ These concerns cut across modules. Each line names its owning module.
   2. Disable optional passes.
   3. Drop the tier.
   4. Offer a 30 fps lock.
-- **M4's ladder (Decision, [m4-plan.md](m4-plan.md) §3):** it spends what the look can spare first, as rungs per tier in `tiers.ron`: resolution down to 0.85, then optional passes off, then resolution down to the tier's floor, then a 30 fps cap, then a lower tier at the next pause or wipe, never in a fight. No rung touches the character family, the outlines, the ramps or the grade. On the phone tiers there's no temporal upsampling, so resolution alone softens the two-tone edges and lines first.
+- **M4's ladder (Decision, [m4-plan.md](m4-plan.md) §3):** it spends what the look can spare first, as rungs per tier in `tiers.ron`. Desktops go resolution down to 0.85, then optional passes off, then resolution down to the tier's floor; phones shed passes first (the sky's face rate, a bloom level, AO on Mobile-High), then 0.85, then the floor, and Mobile-Low's dynamic resolution stops at 0.85, leaving its floor to the ladder. Every tier then caps at 30 fps, then drops a tier at the next pause or wipe, never in a fight. The cirrus and the wind levels aren't rungs: T0 measured no saving. No rung touches the character family, the outlines, the ramps or the grade. On the phone tiers there's no temporal upsampling, so resolution alone softens the two-tone edges and lines first.
 - **iOS has no swap**, and the OS kills apps that exceed device-dependent memory limits. Check `os_proc_available_memory` at boot to pick budgets, and drop caches on `LowMemory`.
 - **Android low-memory killer:** keep the background footprint small, and release GPU resources when backgrounded where practical.
 

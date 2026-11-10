@@ -2,7 +2,9 @@
 //! the screen from before the zone changes until the new zone's first cells are in, every frame it covers is the
 //! same picture, and nothing's built on a frame that the load didn't. Then a game's flow on `ground-trip`
 //! goes back to the title while its trip's wipe covers, and the title's run stands only once the trip's over,
-//! where its scenario starts, rather than being carried through the rest of the trip (M3 Z3f).
+//! where its scenario starts, rather than being carried through the rest of the trip (M3 Z3f), the stage taken
+//! back there by a trip of its own under the same wipe (M3 G1b). And a game's run restarted in the hub after its
+//! trip there goes home the same way, its run waiting at its first tick until the stage is there (M3 G1b).
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -23,6 +25,7 @@ use game_flow::document::FlowDocument;
 use game_flow::flow::{FlowCommand, FlowState, Run};
 use game_flow::game::{FlowContent, Game, GameSetup};
 use game_ui::menus::{MenuDocument, PlayerSettings};
+use sapphire_gameplay::replay::RunStart;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
@@ -158,6 +161,7 @@ impl App for OutsideCaller {
             trips.iter().map(|seen| seen.covered.len()).collect::<Vec<_>>(),
         );
         to_the_title_mid_trip(platform)?;
+        restart_after_a_trip(platform)?;
         Ok(Self)
     }
 
@@ -225,22 +229,140 @@ fn to_the_title_mid_trip(platform: &mut Platform) -> Result<(), AppInitError> {
     }
     stage.show.choose(FlowCommand::Pause);
     stage.show.choose(FlowCommand::ToTitle);
-    let mut frames = 0;
-    while !matches!(flow_state(&stage), FlowState::Title { .. }) {
+    // The trip out ends in the hub; the title's run stands under the restart's wipe, and the stage goes home by a
+    // trip of its own, which that wipe already covers: every frame a trip holds is covered, so nothing flashes
+    // between the restart and the trip home, and the zone changes only under it.
+    let (mut frames, mut home, mut out_over) = (0, 0, false);
+    let mut zone = stage.scene.zone_on_stage();
+    while !matches!(flow_state(&stage), FlowState::Title { .. })
+        || stage.show.shown.fight.show.trip_phase().is_some()
+    {
         assert!(frames < MOST_FRAMES, "never back at the title: {:?}", flow_state(&stage));
+        let phase = stage.show.shown.fight.show.trip_phase();
+        out_over |= phase.is_none();
+        let covered_before = wipe_state(&stage) == "covered";
         play(&mut stage)?;
         frames += 1;
+        if let Some(phase) = phase.filter(|phase| phase.holds_simulation()) {
+            assert_eq!(wipe_state(&stage), "covered", "a trip holds under the wipe ({phase:?})");
+            if out_over {
+                home += 1;
+            }
+        }
+        let on_stage = stage.scene.zone_on_stage();
+        if on_stage != zone {
+            assert!(
+                covered_before && wipe_state(&stage) == "covered",
+                "the zone changed uncovered ({phase:?})"
+            );
+        }
+        zone = on_stage;
     }
     assert_eq!(flow_state(&stage), FlowState::Title { stood: Run::Saved });
-    assert!(stage.show.shown.fight.show.trip_phase().is_none(), "the trip's over");
+    assert!(home > 0, "the stage went home by a trip");
+    assert_eq!(stage.scene.zone_on_stage(), ground, "the title's run stands where its scenario starts");
+    let last = stage.show.shown.fight.show.last_trip().expect("it went");
+    assert!(last.error.is_none() && Some(last.zone) == ground, "{last:?}");
     let combat = stage.show.shown.fight.combat.as_ref().expect("the title's run stands");
     let sim = combat.simulation();
     assert_eq!(sim.current_zone(), None, "the title's run is where its scenario starts, not on a trip");
     assert_eq!(sim.tick(), 0, "and hasn't stepped");
-    println!(
-        "zone_trip: back to the title mid-trip in {frames} frames, the stage {} the ground",
-        if stage.scene.zone_on_stage() == ground { "in" } else { "out of" }
+    let first_uses = stage.renderer.stats().pipelines.first_use_builds;
+    assert_eq!(first_uses, 0, "the trips built what the loads didn't: {}", stage.renderer.first_use_report());
+    println!("zone_trip: back to the title mid-trip in {frames} frames, and home in {home}");
+    Ok(())
+}
+
+/// One frame: the steps, then the frame drawn and read back.
+struct Drawn {
+    /// Where the trip had got before the frame.
+    phase: Option<TripPhase>,
+    /// The wipe covered the screen before the frame and after it.
+    covered: bool,
+}
+
+fn step_and_draw(stage: &mut Stage<GameShow>) -> Result<Drawn, AppInitError> {
+    let phase = stage.show.shown.fight.show.trip_phase();
+    let covered_before = wipe_state(stage) == "covered";
+    play(stage)?;
+    Ok(Drawn { phase, covered: covered_before && wipe_state(stage) == "covered" })
+}
+
+/// A game's run out through the proving ground's exit into the hub, then restarted there as a game's flow
+/// restarts one, with no wipe of the flow's over it: the new run stands in the proving ground, and the stage
+/// goes back there by a trip of its own, under the trip's wipe, the run waiting at its first tick.
+fn restart_after_a_trip(platform: &mut Platform) -> Result<(), AppInitError> {
+    let gpu = headless_gpu()?;
+    let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
+    let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
+    let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
+    let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
+    let mut show = GameShow::new(documents, screens, PlayerSettings::default())?;
+    let option = CombatOption::Run {
+        scenario: "ground-trip".to_owned(),
+        start: RunStart::default(),
+        script: None,
+        keep: None,
+    };
+    let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
+    let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
+    let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
+    show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+    stage.show.open_fight();
+    let ground = stage.scene.zone_on_stage().expect("the run stands in the proving ground");
+
+    let Stage { show, scene, content, .. } = &mut stage;
+    show.shown.fight.take_exit(scene, content, "to_proving_hub").map_err(AppInitError::msg)?;
+    let mut frames = 0;
+    while stage.show.shown.fight.show.trip_phase().is_some() {
+        play(&mut stage)?;
+        frames += 1;
+        assert!(frames < MOST_FRAMES, "the trip out never ended");
+    }
+    let hub = stage.scene.zone_on_stage();
+    assert!(hub.is_some_and(|hub| hub != ground), "the stage went to the hub: {hub:?}");
+
+    let Stage { show, scene, content, .. } = &mut stage;
+    let fight = &mut show.shown.fight;
+    let combat = fight.prepare_stock_combat(&option, content)?;
+    fight.start_run(combat, scene, content).map_err(AppInitError::msg)?;
+    assert_eq!(fight.show.trip_phase(), Some(TripPhase::Covering), "the restart takes the stage home");
+
+    let mut zone = hub;
+    let (mut held, mut swapped_covered) = (0, false);
+    while let Some(phase) = stage.show.shown.fight.show.trip_phase() {
+        let drawn = step_and_draw(&mut stage)?;
+        frames += 1;
+        assert!(frames < MOST_FRAMES, "the trip home never ended");
+        let on_stage = stage.scene.zone_on_stage();
+        if phase.holds_simulation() {
+            held += 1;
+            assert_eq!(tick(&stage), 0, "the run waits at its first tick for the stage ({phase:?})");
+        }
+        if on_stage != zone {
+            assert!(drawn.covered, "the zone changed on a frame the wipe didn't cover ({:?})", drawn.phase);
+            swapped_covered = true;
+        }
+        zone = on_stage;
+    }
+    assert!(swapped_covered, "the stage went home under the wipe");
+    assert_eq!(stage.scene.zone_on_stage(), Some(ground), "the restarted run's stage is its own zone");
+    let last = stage.show.shown.fight.show.last_trip().expect("it went");
+    assert!(last.error.is_none() && last.zone == ground, "{last:?}");
+    for _ in 0..10 {
+        play(&mut stage)?;
+    }
+    let combat = stage.show.shown.fight.combat.as_ref().expect("the run stands");
+    assert!(combat.simulation().tick() > 0, "the run goes on once the stage is home");
+    assert_eq!(combat.simulation().current_zone(), None, "the run's in the zone it started in");
+    let first_uses = stage.renderer.stats().pipelines.first_use_builds;
+    assert_eq!(
+        first_uses,
+        0,
+        "the trip home built what the loads didn't: {}",
+        stage.renderer.first_use_report()
     );
+    println!("zone_trip: a restart in the hub went home in {held} held frames");
     Ok(())
 }
 

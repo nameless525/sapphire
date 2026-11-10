@@ -81,7 +81,8 @@ pub struct ZoneTarget {
     pub zone: AssetId,
     /// Its pack, which nothing need have mounted.
     pub pack: String,
-    /// The ID of the spawner it arrives at.
+    /// The ID of the spawner it arrives at, or of the checkpoint: a restarted run's trip home arrives at its
+    /// checkpoint.
     pub arrive: u64,
 }
 
@@ -190,11 +191,16 @@ impl NextZone {
     }
 }
 
-/// Where spawner `id` of `zone` stands: the zone's origin for one it hasn't got, as a cook holds an exit to it.
+/// Where spawner or checkpoint `id` of `zone` stands: the zone's origin for one it hasn't got, as a cook holds
+/// an exit to it.
 fn arrival(server: &AssetServer, zone: &Handle<Zone>, id: u64) -> [f32; 3] {
-    let zone = server.get(zone).expect("the zone is ready");
-    let spawner = zone.simulation.spawners.iter().find(|spawner| spawner.id.to_native() == id);
-    spawner.map_or([0.0; 3], |spawner| spawner.position())
+    let simulation = &server.get(zone).expect("the zone is ready").simulation;
+    let spawner = simulation.spawners.iter().find(|spawner| spawner.id.to_native() == id);
+    let checkpoint = || simulation.checkpoints.iter().find(|checkpoint| checkpoint.id.to_native() == id);
+    spawner
+        .map(|spawner| spawner.position())
+        .or_else(|| checkpoint().map(|checkpoint| checkpoint.position()))
+        .unwrap_or([0.0; 3])
 }
 
 impl ZoneStage {

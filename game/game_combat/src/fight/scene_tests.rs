@@ -592,6 +592,44 @@ fn an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap() {
     assert_eq!(stats.holding, zone.encounters()[0].phase() == sapphire_gameplay::EncounterPhase::Running);
 }
 
+/// An encounter a save cleared before the run's first step was never started in the run, warm or cold, when
+/// the stage first looks and when the next run on the stage starts the same way.
+#[test]
+fn an_encounter_a_save_cleared_never_starts() {
+    use sapphire_gameplay::replay::{self, ActionSource, SCENARIOS, find_scenario};
+    use sapphire_gameplay::{EncounterPhase, ZoneStart};
+
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = Clip::read(&bytes).expect("a valid clip");
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+    let (mut scene, _, _) = fighting(&table);
+    let scenario = find_scenario(&SCENARIOS, "square-street").expect("listed");
+    let continued = || {
+        let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
+        let id = sim.zone().expect("it has one").encounters()[0].id();
+        sim.start_at(&ZoneStart { checkpoint: None, cleared: vec![id] }).expect("a save's start");
+        (sim, cast)
+    };
+    let mut script = replay::up_the_street;
+    for run in ["the first run", "the next"] {
+        let (mut sim, cast) = continued();
+        scene.follow_simulation(&sim, &cast);
+        scene.follow_volumes(&sim, &cast);
+        // Through where its trigger would start it.
+        for _ in 0..600 {
+            let actions = script.actions(sim.tick(), &cast);
+            sim.step(&actions);
+            scene.follow_simulation(&sim, &cast);
+            scene.follow_volumes(&sim, &cast);
+        }
+        let zone = sim.zone().expect("it has one");
+        assert!(zone.stats().triggers_fired > 0, "{run}: the player walked into its trigger");
+        assert_eq!(zone.encounters()[0].phase(), EncounterPhase::Cleared, "{run}");
+        let stats = scene.show.volume_stats();
+        assert_eq!((stats.started_warm, stats.started_cold), (0, 0), "{run}: {stats:?}");
+    }
+}
+
 /// The character's sword stays in the hand of the held pose until its graph has made a pose.
 #[test]
 fn a_graphs_hand_says_nothing_until_it_has_a_pose() {

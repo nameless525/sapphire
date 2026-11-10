@@ -228,6 +228,13 @@ impl ScriptHost {
         Ok(ConditionSet { functions, names: names.iter().map(|name| Name::intern(name)).collect() })
     }
 
+    /// Whether this host's VM bound `conditions`, so [`ask`] can ask them: a set bound by another host, as
+    /// one kept past its fight's is, reads false, and one with no conditions needs no VM.
+    #[must_use]
+    pub fn holds(&self, conditions: &ConditionSet) -> bool {
+        conditions.functions.iter().all(|function| self.vm.owns(function))
+    }
+
     /// Asks one condition on a frame lent read-only, with the set's names on it for the time it runs.
     fn ask_condition(
         &mut self,

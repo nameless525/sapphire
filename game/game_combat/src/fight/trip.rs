@@ -18,6 +18,11 @@
 //! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The day, the light rigs and the
 //! probes stay the stage's: the test zones name none.
 //!
+//! A game's restart after a trip ([`Fight::start_run`]) starts the new run in its own zone, where the stage
+//! no longer is: a trip home takes the stage back there, its simulation held at its first tick until the
+//! stage has arrived. That trip is the stage's alone: the simulation is already there. A run stood in the
+//! town's square can't be taken back to it, since a zone's arrival leaves the town.
+//!
 //! [`Combat::due_zone_entry`]: crate::combat::Combat::due_zone_entry
 //! [`Combat::enter_zone`]: crate::combat::Combat::enter_zone
 
@@ -84,6 +89,8 @@ struct Trip {
     /// It goes to the zone already on stage, as a replay played again over a stage does: the stage only
     /// stands the travellers anew.
     same: bool,
+    /// Only the stage goes: a restarted run is already in the zone, which the simulation doesn't enter.
+    stage_only: bool,
     warm: bool,
     started: Stopwatch,
     frames: u32,
@@ -109,6 +116,17 @@ pub(super) struct Trips {
     /// The real time given to the camera during a trip since the wipe last took it.
     pending: f32,
     last: Option<TripReport>,
+    /// Where a run of this fight starts on the stage, as [`Fight::stand_prepared`] stood it.
+    pub(super) home: Option<Home>,
+}
+
+/// Where a run of a fight starts on its stage: what a restart's trip home goes back to.
+#[derive(Clone, Debug)]
+pub(super) enum Home {
+    /// A zone, arrived at as its first run stood.
+    Zone(ZoneTarget),
+    /// The town's square, and the zone the stage streamed there, which no trip comes back to.
+    Town(Option<AssetId>),
 }
 
 impl Trips {
@@ -122,8 +140,10 @@ impl Trips {
         }
     }
 
-    fn begin(&mut self, target: ZoneTarget) {
-        if self.trip.as_ref().is_some_and(|trip| trip.target == target && trip.phase.holds_simulation()) {
+    fn begin(&mut self, target: ZoneTarget, stage_only: bool) {
+        if self.trip.as_ref().is_some_and(|trip| {
+            trip.target == target && trip.stage_only == stage_only && trip.phase.holds_simulation()
+        }) {
             return;
         }
         self.trip = Some(Trip {
@@ -131,6 +151,7 @@ impl Trips {
             phase: TripPhase::Covering,
             asked: false,
             same: false,
+            stage_only,
             warm: false,
             started: Stopwatch::start(),
             frames: 0,
@@ -194,7 +215,7 @@ impl Fight {
                 Some(ZoneTarget { zone: zone.asset(), pack: zone.pack().to_owned(), arrive })
             });
             match target {
-                Some(target) => self.begin_trip(target),
+                Some(target) => self.begin_trip(target, false),
                 // A crafted file: the step enters it, or refuses, as a headless run does.
                 None => tracing::error!(target: LOG_TARGET, ?entry, "a zone entry names no zone"),
             }
@@ -220,13 +241,45 @@ impl Fight {
         let target = scene
             .zone_exit(Name::new(name).as_u64(), content)
             .ok_or_else(|| format!("the zone on stage has no exit `{name}`"))?;
-        self.begin_trip(target);
+        self.begin_trip(target, false);
         Ok(())
     }
 
-    fn begin_trip(&mut self, target: ZoneTarget) {
-        self.show.trips.begin(target);
+    fn begin_trip(&mut self, target: ZoneTarget, stage_only: bool) {
+        self.show.trips.begin(target, stage_only);
         self.show.draws_latest = true;
+    }
+
+    /// Takes the stage back to where a run of this fight starts, for the run just attached, whose simulation is
+    /// there and hasn't stepped ([`Fight::start_run`]). A trip under way is the last run's, and goes no
+    /// further. One home starts from the latest checkpoint the run stands at, or where its first run stood.
+    /// Nothing if the stage is there already, or nothing's known of where that is.
+    pub(super) fn go_home(&mut self, scene: &Scene) {
+        if self.show.trips.trip.take().is_some() {
+            self.show.draws_latest = false;
+        }
+        let on_stage = scene.zone_on_stage();
+        match self.show.trips.home.clone() {
+            None => {}
+            Some(Home::Zone(home)) if on_stage == Some(home.zone) => {}
+            Some(Home::Zone(mut home)) => {
+                let checkpoint = self
+                    .combat
+                    .as_ref()
+                    .and_then(crate::combat::Combat::zone_start)
+                    .and_then(|start| start.checkpoint);
+                if let Some(name) = checkpoint {
+                    home.arrive = Name::new(&name).as_u64();
+                }
+                tracing::info!(target: LOG_TARGET, zone = %home.zone, "a restart takes the stage home");
+                self.begin_trip(home, true);
+            }
+            Some(Home::Town(zone)) if on_stage == zone => {}
+            Some(Home::Town(_)) => tracing::warn!(
+                target: LOG_TARGET,
+                "a run in the town's square restarts on the stage a trip took it from: the town doesn't come back"
+            ),
+        }
     }
 
     /// A frame of the trip under way, after the content's update and before the zone streams.
@@ -311,7 +364,8 @@ impl Fight {
         trip.swapped = Some(Stopwatch::start());
         trip.phase = TripPhase::Arriving;
         let target = trip.target.clone();
-        if let Some(combat) = &mut self.combat
+        if !trip.stage_only
+            && let Some(combat) = &mut self.combat
             && let Err(error) =
                 combat.enter_zone(target.zone, &target.pack, target.arrive, |id| content.cooked_bytes(id))
         {

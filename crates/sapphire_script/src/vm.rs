@@ -521,12 +521,18 @@ impl ScriptVm {
         }
     }
 
+    /// Whether `hook` is a function of this VM: what [`Self::ask`] and a hook's firing refuse otherwise.
+    #[must_use]
+    pub fn owns(&self, hook: &Hook) -> bool {
+        hook.function.weak_lua() == &self.lua.weak()
+    }
+
     /// Asks a dialogue's condition, with `frame` (read-only, between steps) for its bindings to read: it
     /// holds only if it returns `true`. Anything else it returns, an error or running out of budget
     /// doesn't hold, and so does one another VM bound, as a set kept past its host's fight would be.
     pub fn ask(&self, frame: &mut HookFrame, condition: &Hook) -> (HookEnd, bool) {
         // `mlua` panics on a function of another state, which a shipping build's abort makes a crash.
-        if condition.function.weak_lua() != &self.lua.weak() {
+        if !self.owns(condition) {
             return (HookEnd::Failed("the condition belongs to another VM".to_owned()), false);
         }
         let _vm = VmAllocations::enter();

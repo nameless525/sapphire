@@ -113,12 +113,11 @@ pub enum DialogueRunError {
     Replay,
 }
 
-/// The conversation that's open.
+/// The conversation that's open: its conditions are the runner's, by its ID.
 struct Open {
     id: DialogueId,
     dialogue: Arc<Dialogue>,
     walk: DialogueWalk,
-    conditions: ConditionSet,
 }
 
 /// How far each dialogue's trigger had fired when last looked at, and on what.
@@ -136,6 +135,9 @@ pub struct DialogueRunner {
     dialogues: Vec<Arc<Dialogue>>,
     /// By [`DialogueId`], for those with an `opens_on`.
     watched: Vec<Watched>,
+    /// By [`DialogueId`]: each one's conditions, bound in the run's VM by [`Self::bind`] before its first
+    /// step, so an open compiles nothing. Empty for one with none, or not bound yet.
+    conditions: Vec<ConditionSet>,
     open: Option<Open>,
     ended: Option<DialogueEnded>,
     lines: u64,
@@ -168,7 +170,27 @@ impl DialogueRunner {
     #[must_use]
     pub fn new(dialogues: Vec<Arc<Dialogue>>) -> Self {
         let watched = vec![Watched::default(); dialogues.len()];
-        Self { dialogues, watched, open: None, ended: None, lines: 0 }
+        let conditions = dialogues.iter().map(|_| ConditionSet::default()).collect();
+        Self { dialogues, watched, conditions, open: None, ended: None, lines: 0 }
+    }
+
+    /// Binds every dialogue's conditions in `host`'s VM, once a run's attached and before its first step, so
+    /// a conversation that opens later, a game's beat's included, binds and compiles nothing and takes
+    /// nothing from the heap. A replay, which opens none, binds none. A dialogue whose conditions don't bind
+    /// is left to [`Self::open`], which tries again and says why.
+    pub fn bind(&mut self, host: &(impl DialogueHost + ?Sized)) {
+        if !host.takes_dialogue() {
+            return;
+        }
+        for (raw, (dialogue, conditions)) in self.dialogues.iter().zip(&mut self.conditions).enumerate() {
+            let id = DialogueId::from_raw(raw as u16);
+            match bind(dialogue, id, host) {
+                Ok(bound) => *conditions = bound,
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, %error, "a dialogue's conditions didn't bind")
+                }
+            }
+        }
     }
 
     /// A runner over every dialogue `simulation` loaded, found among the shared pack's and `zone`'s by the
@@ -261,9 +283,10 @@ impl DialogueRunner {
         }
     }
 
-    /// Opens dialogue `id` between steps: binds its conditions in the run's VM (compiling them, once a
-    /// conversation), runs its branches to the first line and applies what showing that sets. Whatever was
-    /// open closes first, as it would have ended.
+    /// Opens dialogue `id` between steps: runs its branches to the first line and applies what showing that
+    /// sets. Whatever was open closes first, as it would have ended. Its conditions are those [`Self::bind`]
+    /// bound in the run's VM; if that VM didn't bind them, as when nothing called it, it binds them here,
+    /// compiling them, which allocates.
     ///
     /// # Errors
     ///
@@ -277,26 +300,21 @@ impl DialogueRunner {
         if !host.takes_dialogue() {
             return Err(DialogueRunError::Replay);
         }
-        let dialogue =
-            Arc::clone(self.dialogues.get(usize::from(id.raw())).ok_or(DialogueRunError::Unknown(id))?);
+        let index = usize::from(id.raw());
+        let dialogue = Arc::clone(self.dialogues.get(index).ok_or(DialogueRunError::Unknown(id))?);
         self.close(host.simulation().tick());
-        let mut conditions = if dialogue.needs_scripts() {
-            let vm = host
-                .simulation()
-                .world()
-                .get_resource::<ScriptHost>()
-                .ok_or(DialogueRunError::NoScripts(id))?;
-            vm.bind_conditions(&dialogue, &format!("=dialogue {}", id.raw()))
-                .map_err(|error| DialogueRunError::Conditions { dialogue: id, problem: error.to_string() })?
-        } else {
-            ConditionSet::default()
-        };
-        let mut world = Asking { host, conditions: &mut conditions, id, failed: None };
+        let conditions = &mut self.conditions[index];
+        let bound_here =
+            host.simulation().world().get_resource::<ScriptHost>().is_some_and(|vm| vm.holds(conditions));
+        if dialogue.needs_scripts() && (conditions.is_empty() || !bound_here) {
+            *conditions = bind(&dialogue, id, host)?;
+        }
+        let mut world = Asking { host, conditions, id, failed: None };
         let walk = DialogueWalk::begin(&dialogue, &mut world);
         let failed = world.failed.take();
         let tick = world.host.simulation().tick();
         tracing::info!(target: LOG_TARGET, dialogue = id.raw(), tick, "a conversation opens");
-        self.open = Some(Open { id, dialogue, walk, conditions });
+        self.open = Some(Open { id, dialogue, walk });
         self.after_move(tick, failed)
     }
 
@@ -329,7 +347,8 @@ impl DialogueRunner {
         go: impl FnOnce(&mut DialogueWalk, &Dialogue, &mut Asking<'_, H>) -> bool,
     ) -> Result<bool, DialogueRunError> {
         let Some(open) = &mut self.open else { return Ok(false) };
-        let mut world = Asking { host, conditions: &mut open.conditions, id: open.id, failed: None };
+        let conditions = &mut self.conditions[usize::from(open.id.raw())];
+        let mut world = Asking { host, conditions, id: open.id, failed: None };
         let went = go(&mut open.walk, &open.dialogue, &mut world);
         let failed = world.failed.take();
         let tick = world.host.simulation().tick();
@@ -362,6 +381,20 @@ impl DialogueRunner {
             self.ended = Some(DialogueEnded { dialogue: open.id, tick });
         }
     }
+}
+
+/// Binds dialogue `id`'s conditions in the VM of `host`'s run: nothing for one with none.
+fn bind(
+    dialogue: &Dialogue,
+    id: DialogueId,
+    host: &(impl DialogueHost + ?Sized),
+) -> Result<ConditionSet, DialogueRunError> {
+    if !dialogue.needs_scripts() {
+        return Ok(ConditionSet::default());
+    }
+    let vm = host.simulation().world().get_resource::<ScriptHost>().ok_or(DialogueRunError::NoScripts(id))?;
+    vm.bind_conditions(dialogue, &format!("=dialogue {}", id.raw()))
+        .map_err(|error| DialogueRunError::Conditions { dialogue: id, problem: error.to_string() })
 }
 
 #[cfg(test)]
@@ -415,5 +448,50 @@ mod tests {
         let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("sets up");
         let refused = fight.apply_dialogue_effect(DialogueEffect::from_raw(0));
         assert!(refused.expect_err("no file").contains("no dialogue"));
+    }
+
+    fn guide_run() -> Combat {
+        let option = CombatOption::Run {
+            scenario: "dialogue-flag".to_owned(),
+            start: RunStart::default(),
+            script: None,
+            keep: None,
+        };
+        Combat::new(&option).expect("sets up")
+    }
+
+    /// Conditions bound as the run attaches leave an open, a game's beat's included, nothing to compile: it
+    /// takes nothing from the heap, the VM's own counted apart.
+    #[test]
+    fn a_conversation_bound_before_the_run_opens_with_no_heap() {
+        let mut run = guide_run();
+        let mut runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+        runner.bind(&run);
+        assert!(!runner.conditions[0].is_empty(), "the guide asks conditions");
+        let (opened, counts) = sapphire_core::alloc::count_in_scope(|| runner.open(GUIDE, &mut run));
+        opened.expect("it opens");
+        if sapphire_core::alloc::PER_THREAD_COUNTS {
+            assert_eq!(counts.allocations, 0, "{counts:?}");
+        }
+        walk(&mut runner, &mut run);
+        assert_eq!(run.simulation().flags().get(Name::new("ward_lit")), 1, "the first answer lit the ward");
+    }
+
+    /// Conditions another run's VM bound, as a runner kept for the next run holds, are bound again in this
+    /// run's as it opens, so they ask this run's flags rather than reading false.
+    #[test]
+    fn a_conversation_bound_for_another_run_binds_again_in_this_one() {
+        let first = guide_run();
+        let mut runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+        runner.bind(&first);
+        let mut next = guide_run();
+        fn vm(run: &Combat) -> &ScriptHost {
+            run.simulation().world().get_resource::<ScriptHost>().expect("a VM")
+        }
+        assert!(!vm(&next).holds(&runner.conditions[0]), "the first run's VM bound them");
+        runner.open(GUIDE, &mut next).expect("it opens");
+        assert!(vm(&next).holds(&runner.conditions[0]), "bound again in this run's");
+        walk(&mut runner, &mut next);
+        assert_eq!(next.simulation().flags().get(Name::new("ward_lit")), 1);
     }
 }

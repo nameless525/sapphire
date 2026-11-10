@@ -66,7 +66,9 @@ use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 use crate::documents::FightDocuments;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::TimelineShow;
-use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, stream_settings};
+use sapphire_stage::scene::{
+    DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, ZoneTarget, stream_settings,
+};
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
 
@@ -2155,12 +2157,17 @@ impl Fight {
             let zone = ZoneShow { stem, at, walk: None, settings, pose, figure };
             scene.stand_in_zone(zone, content, renderer, gpu)?;
             show.spawn_zone_arena(scene, ZoneArena { shot, ground, enemy, held });
+            show.trips.home = scene.zone_on_stage().map(|zone| {
+                let (pack, arrive) = (sapphire_zone::pack_name(stem), sapphire_core::Name::new(at).as_u64());
+                trip::Home::Zone(ZoneTarget { zone, pack, arrive })
+            });
         } else {
             let town = content.town(renderer, gpu)?;
             let fog_cards = Some(content.fog_cards(renderer, gpu)?);
             let look = LookDev { town, fog_cards, pose, figure };
             show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
             scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
+            show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
         }
         show.hold_timelines(combat.simulation(), place.zone.map(|(stem, _)| stem), content, renderer, gpu)?;
         self.dialogue = DialogueRunner::hold(
@@ -2170,6 +2177,7 @@ impl Fight {
             renderer,
             gpu,
         )?;
+        self.dialogue.bind(&combat);
         show.set_zone_streaming(stream_settings(tier));
 
         content.load_graph(lookdev::GRAPH, renderer, gpu)?;
@@ -2228,7 +2236,8 @@ impl Fight {
 
     /// Stands `combat`, prepared, on what's stood, in place of the run that's there, which ends, writing its
     /// file if it keeps one: a game's restart under its wipe (M3 G1). It stands in the place the last one
-    /// did. What can't stand there leaves no run standing, and says why.
+    /// did: if a trip took the stage elsewhere, a trip home takes it back, the run held at its first tick
+    /// until it's there (see [`trip`]). What can't stand there leaves no run standing, and says why.
     pub fn start_run(
         &mut self,
         combat: Combat,
@@ -2253,8 +2262,10 @@ impl Fight {
             ));
         }
         self.dialogue = DialogueRunner::new(held);
+        self.dialogue.bind(&combat);
         let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
+        self.go_home(scene);
         Ok(followed)
     }
 

@@ -30,7 +30,7 @@
 
 use std::time::Duration;
 
-use sapphire_gameplay::{ActorId, EncounterPhase, Simulation, StartVolume, ZoneId};
+use sapphire_gameplay::{ActorId, EncounterPhase, SimEncounter, Simulation, StartVolume, ZoneId};
 use sapphire_math::Vec3;
 use sapphire_stage::scene::Scene;
 use sapphire_time::Stopwatch;
@@ -99,7 +99,8 @@ pub(super) struct Volumes {
 }
 
 impl Volumes {
-    /// A new fight on the same stage: everything's cold again, and the spares stay.
+    /// A new fight on the same stage: everything's cold again, and the spares stay. Its encounters wait, as
+    /// a run's do before its first step; one its start cleared hasn't begun (`began`).
     pub(super) fn start_over(&mut self) {
         self.warmth.fill(Warmth::Cold);
         self.phases.fill(EncounterPhase::Waiting);
@@ -163,8 +164,10 @@ impl FightShow {
             volumes.zone = simulation.current_zone();
             volumes.warmth.clear();
             volumes.warmth.resize(encounters.len(), Warmth::Cold);
+            // Each as it's first seen: one already cleared there, by a save, its scenario or an earlier visit,
+            // isn't starting now.
             volumes.phases.clear();
-            volumes.phases.resize(encounters.len(), EncounterPhase::Waiting);
+            volumes.phases.extend(encounters.iter().map(SimEncounter::phase));
             volumes.stats.encounters += encounters.len() as u32;
             // Room for everyone, so an arrival grows nothing: a few words a fighter.
             let planned = zone.planned();
@@ -196,7 +199,7 @@ impl FightShow {
                 }
             }
             let was = std::mem::replace(&mut volumes.phases[index], phase);
-            if was == EncounterPhase::Waiting && phase != EncounterPhase::Waiting {
+            if was == EncounterPhase::Waiting && began(encounter) {
                 let warm = volumes.warmth[index] == Warmth::Warm;
                 if warm {
                     volumes.stats.started_warm += 1;
@@ -310,6 +313,17 @@ impl FightShow {
         }
         volumes.stats.time = stopwatch.elapsed();
         volumes.stats.peak_time = volumes.stats.peak_time.max(volumes.stats.time);
+    }
+}
+
+/// Whether an encounter that was waiting at the last look has begun since: it runs, or it's cleared after a
+/// wave came, which a capture's steps can pass between two looks. One a save cleared before the run's first
+/// step has had no wave, and wasn't fought in this run.
+fn began(encounter: &SimEncounter) -> bool {
+    match encounter.phase() {
+        EncounterPhase::Waiting => false,
+        EncounterPhase::Running => true,
+        EncounterPhase::Cleared => encounter.waves_begun() > 0,
     }
 }
 

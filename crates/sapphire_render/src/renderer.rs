@@ -23,6 +23,7 @@ use crate::ambient::{Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, Reflec
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
+use crate::color_vision::{ColorVision, ColorVisionDraw};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
 use crate::draw::{DrawRef, DrawSet, MeshDraws};
@@ -578,6 +579,11 @@ pub struct Renderer {
     /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
     /// then, so a renderer that never shows one builds nothing for them.
     debug_views: Option<Box<DebugViews>>,
+    /// The colour-vision view asked for ([`Self::set_color_vision`]).
+    color_vision: ColorVision,
+    /// What this frame draws the colour-vision view with, taken from post as it's prepared: `None`
+    /// while it's off.
+    color_vision_draw: Option<ColorVisionDraw>,
     /// Debug draw's pipeline and buffers, made by the first frame with lines: `None` until then,
     /// so a renderer that never draws any builds nothing for them.
     debug_draw: Option<Box<DebugDraw>>,
@@ -935,6 +941,8 @@ impl Renderer {
             debug_view: DebugView::Off,
             shed: OptionalPasses::NONE,
             debug_views: None,
+            color_vision: ColorVision::Off,
+            color_vision_draw: None,
             debug_draw: None,
             labels: gpu.label("").is_some(),
             layouts,
@@ -2299,6 +2307,13 @@ impl Renderer {
         }
         self.stats.debug_view =
             self.debug_views.as_ref().map_or_else(DebugViewStats::default, |views| views.stats());
+        // The colour-vision view (M4 A5): a comparison while it's off.
+        self.color_vision_draw = self.color_vision.dichromacy().and_then(|dichromacy| {
+            self.checked_build(|renderer| {
+                renderer.post.build_color_vision(dichromacy, BuildOn::sources(renderer.edited_shaders))
+            });
+            self.post.color_vision_draw(dichromacy)
+        });
         // Debug draw (M2 T1): a comparison while a frame has no lines.
         let lines = &packet.debug.lines;
         if !lines.is_empty() && packet.main_view().is_some() {
@@ -2537,12 +2552,21 @@ impl Renderer {
             ref mut uploads,
             ref debug_views,
             ref debug_draw,
+            ref color_vision_draw,
             ref frame_ran,
             ref ui,
             ref mut insets,
             first_inset_view,
+            color_format,
             ..
         } = *self;
+        // With the colour-vision view on (M4 A5), everything draws into a texture of the target's, which
+        // the view's pass then writes into the target as a dichromat sees it.
+        let shown = target;
+        let target = match color_vision_draw {
+            Some(_) => ColorVisionDraw::input(graph, shown, color_format),
+            None => target,
+        };
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
         // next frame's disocclusion test: the scene prepass draws into one of a persistent pair
         // it imports along with its history. The main pass's depth stays in tile memory.
@@ -3063,6 +3087,10 @@ impl Renderer {
         if let Some(draw) = debug_draw {
             draw.record(graph, target, targets.depth, labels);
         }
+        // The colour-vision view over all of it (M4 A5).
+        if let Some(vision) = color_vision_draw {
+            vision.record(graph, target, shown, labels);
+        }
         Some(targets)
     }
 
@@ -3273,6 +3301,15 @@ impl Renderer {
     /// first frame that shows one builds what it needs, on this thread.
     pub fn set_debug_view(&mut self, view: DebugView) {
         self.debug_view = view;
+    }
+
+    /// Shows the frame as `vision` from the next [`Self::prepare`] (M4 A5, the
+    /// [`color_vision`](crate::color_vision) module): as a dichromat sees it, the interface included,
+    /// or as it is. The hook for the `r.color_vision` cvar, which apps pass on every frame as they pass
+    /// `r.debug_view`. Nothing is built until a dichromacy is shown, and the first frame that shows one
+    /// builds its pipeline on this thread.
+    pub fn set_color_vision(&mut self, vision: ColorVision) {
+        self.color_vision = vision;
     }
 
     /// The render scale the next [`Self::record`] uses.

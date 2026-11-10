@@ -35,6 +35,9 @@ pub enum EffectPlace {
     Hit,
     /// Where the cue's subject stands, upright: a hit's target, or the actor whose cue it is.
     Feet,
+    /// Over the subject's head, upright: a cue's mark (M4 A5), [`CROWN_CLEARANCE`](crate::CROWN_CLEARANCE)
+    /// over its highest hurtbox.
+    Crown,
 }
 
 /// Whose clock a row's effect runs on, so what can freeze it.

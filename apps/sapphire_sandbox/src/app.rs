@@ -911,6 +911,7 @@ impl SandboxApp {
             // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
             self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
+            self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
             self.renderer.prepare(&self.gpu, packet);
             if let Some((view, size)) = target {
                 let timing = FrameTiming::new(&self.graph, self.frame_time);

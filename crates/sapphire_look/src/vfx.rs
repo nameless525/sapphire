@@ -30,14 +30,44 @@ pub enum VfxShape {
     Star,
     /// A thin ring, crisp outside and soft inside: a hit's shock.
     Ring,
+    /// A thick chevron pointing down the quad's length (to `v` = 0), crisp all round: a foe's blow on
+    /// its way, over its head (M4 A5's cue marks).
+    Chevron,
+    /// A diamond's outline, crisp: a boss's phase turning (M4 A5's cue marks).
+    Diamond,
 }
 
+/// The share of their outlines under which two shapes read apart (M4 A5, [`VfxShape::overlap`]): less
+/// than half, a judgement, so most of what either covers the other doesn't.
+pub const SHAPES_APART: f32 = 0.5;
+
 impl VfxShape {
-    pub const ALL: [Self; 4] = [Self::SoftDot, Self::Streak, Self::Star, Self::Ring];
+    pub const ALL: [Self; 6] =
+        [Self::SoftDot, Self::Streak, Self::Star, Self::Ring, Self::Chevron, Self::Diamond];
 
     /// Its layer of the map.
     pub const fn layer(self) -> u32 {
         self as u32
+    }
+
+    /// How much of their outlines two shapes share, from 0 to 1: the quad's points both cover over the
+    /// points either does (each covering past half), on a 64 by 64 grid. Under
+    /// [`SHAPES_APART`], two marks read apart by shape alone (M4 A5).
+    #[must_use]
+    pub fn overlap(self, other: Self) -> f32 {
+        const SIDE: u32 = 64;
+        let covers = |shape: Self, i: u32, j: u32| {
+            shape.coverage((i as f32 + 0.5) / SIDE as f32, (j as f32 + 0.5) / SIDE as f32) > 0.5
+        };
+        let (mut both, mut either) = (0_u32, 0_u32);
+        for j in 0..SIDE {
+            for i in 0..SIDE {
+                let (a, b) = (covers(self, i, j), covers(other, i, j));
+                both += u32::from(a && b);
+                either += u32::from(a || b);
+            }
+        }
+        if either == 0 { 1.0 } else { both as f32 / either as f32 }
     }
 
     /// How much of the quad the shape covers at `(u, v)` in 0 to 1, a quad's whole width and
@@ -65,8 +95,23 @@ impl VfxShape {
             }
             // A crisp outer edge, and a short fall inside it.
             Self::Ring => smoothstep(0.66, 0.9, r) * (1.0 - smoothstep(0.9, 0.95, r)),
+            // Two strokes meeting at the bottom, as far from their line as the stroke's half width.
+            Self::Chevron => {
+                let reach = segment_distance((x.abs(), y), (0.0, -0.5), (0.72, 0.42));
+                1.0 - smoothstep(0.16, 0.22, reach)
+            }
+            Self::Diamond => 1.0 - smoothstep(0.08, 0.14, (x.abs() + y.abs() - 0.72).abs()),
         }
     }
+}
+
+/// How far `point` is from the segment from `a` to `b`.
+fn segment_distance(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (along_x, along_y) = (b.0 - a.0, b.1 - a.1);
+    let (to_x, to_y) = (point.0 - a.0, point.1 - a.1);
+    let t = ((to_x * along_x + to_y * along_y) / (along_x * along_x + along_y * along_y)).clamp(0.0, 1.0);
+    let (dx, dy) = (to_x - t * along_x, to_y - t * along_y);
+    (dx * dx + dy * dy).sqrt()
 }
 
 fn smoothstep(start: f32, end: f32, x: f32) -> f32 {
@@ -232,6 +277,27 @@ mod tests {
         assert_eq!(VfxShape::Star.coverage(0.5, 0.5), 1.0);
         assert_eq!(VfxShape::Ring.coverage(0.5, 0.5), 0.0);
         assert!(VfxShape::Ring.coverage(0.93, 0.5) > 0.9, "on the ring's crest");
+    }
+
+    #[test]
+    fn the_chevron_points_down_its_length() {
+        let (tip, notch) = (VfxShape::Chevron.coverage(0.5, 0.25), VfxShape::Chevron.coverage(0.5, 0.75));
+        assert!(tip > 0.9 && notch < 0.1, "tip {tip}, above it {notch}");
+        assert!(VfxShape::Diamond.coverage(0.5, 0.5) < 0.1, "a diamond is an outline");
+    }
+
+    /// The cue marks (M4 A5) are told apart by outline alone, whatever their colour: of what either of
+    /// two covers, they share under half.
+    #[test]
+    fn the_cue_marks_share_less_than_half_their_outlines() {
+        let marks = [VfxShape::Star, VfxShape::Chevron, VfxShape::Diamond];
+        for (index, &a) in marks.iter().enumerate() {
+            for &b in &marks[index + 1..] {
+                let overlap = a.overlap(b);
+                assert!(overlap < SHAPES_APART, "{a:?} and {b:?} share {overlap}");
+            }
+            assert_eq!(a.overlap(a), 1.0);
+        }
     }
 
     #[test]

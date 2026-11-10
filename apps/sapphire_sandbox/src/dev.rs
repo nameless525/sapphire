@@ -119,6 +119,7 @@ impl DevTools {
             .register_all(&sapphire_stage::cvars::CVARS)
             .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_render::debug_view::CVARS))
+            .and_then(|()| cvars.register_all(&sapphire_render::color_vision::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
             .and_then(|()| cvars.register_all(&game_combat::combat_views::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_platform::CVARS))

@@ -15,6 +15,7 @@ use sapphire_assets::AssetId;
 use sapphire_core::alloc::{AllocCounts, AllocScope};
 use sapphire_core::thermal::ThermalReading;
 use sapphire_platform::{AppInitError, Host};
+use sapphire_render::color_vision::ColorVision;
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierTable};
@@ -557,7 +558,8 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             && !self.hooks.overlay_visible()
             && !self.measure_gpu
             && !self.quality.wants_gpu_timing()
-            && sapphire_render::debug_view::DEBUG_VIEW.get() == DebugView::Off;
+            && sapphire_render::debug_view::DEBUG_VIEW.get() == DebugView::Off
+            && sapphire_render::color_vision::COLOR_VISION.get() == ColorVision::Off;
         let mut graph = FrameGraph::new();
         let target = if discard_output {
             let texture = view.texture();
@@ -592,6 +594,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         // Before `prepare`, which culls hulls by it, and readies the debug view.
         self.renderer.set_outline_distance(self.quality.outline_distance());
         self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
+        self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
         self.renderer.prepare(&self.gpu, packet);
         self.laps.prepare += laps.lap();
         self.laps.prepare_allocations = next_scope(&mut scope);

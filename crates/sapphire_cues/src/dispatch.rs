@@ -12,6 +12,7 @@ use sapphire_render::PostVariants;
 use sapphire_vfx::{Effect, EffectId, EffectLibrary as VfxLibrary, OwnerId, OwnerSteps, Placement, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectPresetId, EffectStack};
 
+use crate::marks::{CROWN_CLEARANCE, Stand};
 use crate::rumble::{Rumble, RumbleMixer, RumbleSink};
 use crate::table::{
     CueRow, CueTable, CueTableError, EffectFire, EffectOwner, EffectPlace, MAX_ROW_EFFECTS, MAX_ROW_SOUNDS,
@@ -67,8 +68,9 @@ pub struct CueStep<'a> {
     pub shakes: &'a mut dyn ShakeSink,
     /// The view's world-to-clip, which puts a hit's point on screen.
     pub view_projection: Mat4,
-    /// Where an actor stands. `None` for one that's gone, whose [`EffectPlace::Feet`] effects don't play.
-    pub root_of: &'a dyn Fn(ActorId) -> Option<Vec3>,
+    /// Where an actor stands ([`Stand::of`], for the simulation's). `None` for one that's gone, whose
+    /// effects but a hit's don't play.
+    pub stand_of: &'a dyn Fn(ActorId) -> Option<Stand>,
 }
 
 /// Who or where a cue happens.
@@ -311,6 +313,12 @@ impl CueDispatcher {
         self.fire_on(cue, Site::Place(place), step);
     }
 
+    /// Fires a cue on `actor` that the simulation didn't publish, as if it had with no hit: what
+    /// [`CueMarks`](crate::CueMarks) finds (M4 A5). Allocates nothing.
+    pub fn fire_on_actor(&mut self, cue: Name, actor: ActorId, step: &mut CueStep<'_>) {
+        self.fire_on(cue, Site::Actor { actor, hit: None }, step);
+    }
+
     fn fire(&mut self, event: &CueEvent, step: &mut CueStep<'_>) {
         self.fire_on(event.cue, Site::Actor { actor: event.actor, hit: event.hit }, step);
     }
@@ -359,10 +367,13 @@ impl CueDispatcher {
         let (placement, owner) = match site {
             Site::Actor { actor, hit } => {
                 let subject = hit.map_or(actor, |hit| hit.target);
-                let root = (step.root_of)(subject);
+                let stand = (step.stand_of)(subject);
                 let placement = match (effect.at, hit) {
                     (EffectPlace::Hit, Some(hit)) => Some(along_normal(&hit)),
-                    _ => root.map(Placement::at),
+                    (EffectPlace::Crown, _) => {
+                        stand.map(|stand| Placement::at(stand.crown + Vec3::Y * CROWN_CLEARANCE))
+                    }
+                    _ => stand.map(|stand| Placement::at(stand.feet)),
                 };
                 let owner = match effect.clock {
                     EffectOwner::World => OwnerId::WORLD,
@@ -566,9 +577,10 @@ mod tests {
         }
 
         fn read(&mut self, dispatcher: &mut CueDispatcher, tick: u64, cues: &[CueEvent]) {
-            let root_of = |actor: ActorId| match actor {
-                ATTACKER => Some(Vec3::new(0.0, 0.0, -1.0)),
-                TARGET => Some(Vec3::new(0.0, 0.0, 1.0)),
+            // The attacker stands two metres tall, the target one.
+            let stand_of = |actor: ActorId| match actor {
+                ATTACKER => Some(Stand { feet: Vec3::new(0.0, 0.0, -1.0), crown: Vec3::new(0.0, 2.0, -1.0) }),
+                TARGET => Some(Stand { feet: Vec3::new(0.0, 0.0, 1.0), crown: Vec3::new(0.0, 1.0, 1.0) }),
                 _ => None,
             };
             let mut step = CueStep {
@@ -577,7 +589,7 @@ mod tests {
                 presets: &self.presets,
                 shakes: &mut self.shakes,
                 view_projection: Mat4::IDENTITY,
-                root_of: &root_of,
+                stand_of: &stand_of,
             };
             dispatcher.read_step(tick, cues.iter().copied(), &mut step);
         }
@@ -652,14 +664,14 @@ mod tests {
             CueRow { sounds: vec![SOUND], ..with_effect("bell", EffectPlace::Feet, EffectOwner::Actor) };
         let mut dispatcher = dispatcher(vec![row]);
         let mut sinks = Sinks::new();
-        let root_of = |_| panic!("a placed cue asks for no actor");
+        let stand_of = |_| panic!("a placed cue asks for no actor");
         let mut step = CueStep {
             vfx: &mut sinks.vfx,
             screen: &mut sinks.screen,
             presets: &sinks.presets,
             shakes: &mut sinks.shakes,
             view_projection: Mat4::IDENTITY,
-            root_of: &root_of,
+            stand_of: &stand_of,
         };
         dispatcher.fire_at(Name::new("bell"), place, &mut step);
         dispatcher.fire_at(Name::new("nothing"), place, &mut step);
@@ -800,14 +812,15 @@ mod tests {
     }
 
     #[test]
-    fn effects_play_at_the_hit_or_at_the_subjects_feet() {
+    fn effects_play_at_the_hit_or_at_the_subjects_feet_or_over_its_head() {
         let mut dispatcher = dispatcher(vec![
             with_effect("at_hit", EffectPlace::Hit, EffectOwner::World),
             with_effect("at_feet", EffectPlace::Feet, EffectOwner::World),
+            with_effect("over", EffectPlace::Crown, EffectOwner::World),
         ]);
         // Dust rises and drifts, but not far on its first tick.
-        let middle_z = |frame: &VfxFrame| {
-            let total: f32 = frame.sprites.iter().map(|sprite| sprite.position.z).sum();
+        let middle = |frame: &VfxFrame| {
+            let total: Vec3 = frame.sprites.iter().map(|sprite| sprite.position).sum();
             total / frame.sprites.len() as f32
         };
         let mut frame = VfxFrame::default();
@@ -818,13 +831,38 @@ mod tests {
             sinks.vfx.advance(&OwnerSteps { world: TICK, owners: &[] });
             sinks.vfx.write_frame(&mut frame, 1.0);
             assert!(!frame.sprites.is_empty(), "{name}");
-            middle_z(&frame)
+            middle(&frame)
         };
         let some_hit = Some(hit(Weight::Light));
-        assert!(place("at_hit", some_hit).abs() < 0.3, "at the hit, z = 0");
-        assert!((place("at_feet", some_hit) - 1.0).abs() < 0.3, "at the target, z = 1");
-        assert!((place("at_feet", None) + 1.0).abs() < 0.3, "at the actor, z = -1");
-        assert!((place("at_hit", None) + 1.0).abs() < 0.3, "with no hit, at the actor");
+        assert!(place("at_hit", some_hit).z.abs() < 0.3, "at the hit, z = 0");
+        assert!((place("at_feet", some_hit).z - 1.0).abs() < 0.3, "at the target, z = 1");
+        assert!((place("at_feet", None).z + 1.0).abs() < 0.3, "at the actor, z = -1");
+        assert!((place("at_hit", None).z + 1.0).abs() < 0.3, "with no hit, at the actor");
+        // Over the subject's crown: the target's one metre, the actor's two.
+        let over = Vec3::new(0.0, 1.0 + CROWN_CLEARANCE, 1.0);
+        assert!(place("over", some_hit).distance(over) < 0.3, "over the target");
+        assert!(place("over", None).distance(over + Vec3::new(0.0, 1.0, -2.0)) < 0.3, "over the actor");
+    }
+
+    /// A cue the simulation didn't publish fires on its actor as one with no hit would (M4 A5).
+    #[test]
+    fn a_cue_fired_on_an_actor_plays_its_row_there() {
+        let mut dispatcher =
+            dispatcher(vec![with_effect("dodge_window", EffectPlace::Crown, EffectOwner::World)]);
+        let mut sinks = Sinks::new();
+        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y });
+        let mut step = CueStep {
+            vfx: &mut sinks.vfx,
+            screen: &mut sinks.screen,
+            presets: &sinks.presets,
+            shakes: &mut sinks.shakes,
+            view_projection: Mat4::IDENTITY,
+            stand_of: &stand_of,
+        };
+        dispatcher.fire_on_actor(Name::new("dodge_window"), ATTACKER, &mut step);
+        dispatcher.fire_on_actor(Name::new("nothing"), ATTACKER, &mut step);
+        let stats = dispatcher.stats();
+        assert_eq!((stats.cues, stats.unmatched, stats.effects), (2, 1, 1));
     }
 
     #[test]
@@ -927,6 +965,7 @@ mod tests {
             name: (*name).to_owned(),
             emitters: spawns.iter().map(|&spawn| EmitterDesc { spawn, ..dust.emitters[0].clone() }).collect(),
             trail: None,
+            mark: false,
         });
         VfxLibrary::new(effects.collect()).expect("valid")
     }

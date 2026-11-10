@@ -100,6 +100,9 @@ pub enum Facing {
     /// Lengthwise along their velocity: half their length is their size plus `stretch` seconds of
     /// their speed.
     Velocity { stretch: f32 },
+    /// Toward the camera and upright on screen, the quad's length up it, never turning: a shape whose
+    /// way up says something, as a cue mark's does (M4 A5). It takes no random numbers.
+    Upright,
 }
 
 impl Default for Facing {
@@ -117,6 +120,8 @@ pub enum Shape {
     Streak,
     Star,
     Ring,
+    Chevron,
+    Diamond,
 }
 
 impl From<Shape> for VfxShape {
@@ -126,6 +131,8 @@ impl From<Shape> for VfxShape {
             Shape::Streak => Self::Streak,
             Shape::Star => Self::Star,
             Shape::Ring => Self::Ring,
+            Shape::Chevron => Self::Chevron,
+            Shape::Diamond => Self::Diamond,
         }
     }
 }
@@ -269,6 +276,10 @@ pub struct Effect {
     pub emitters: Vec<EmitterDesc>,
     #[serde(default)]
     pub trail: Option<TrailDesc>,
+    /// A cue mark (M4 A5): its random numbers come from a stream marks share apart from every other
+    /// effect's, so a mark added to a cue moves no spark of the effects spawned after it.
+    #[serde(default)]
+    pub mark: bool,
 }
 
 impl Effect {
@@ -472,6 +483,7 @@ impl EmitterDesc {
             Facing::Velocity { stretch } => {
                 require(stretch.is_finite() && stretch >= 0.0, "facing", "`stretch` can't be negative")?;
             }
+            Facing::Upright => {}
         }
         require(share_ok(self.additive), "additive", "must be 0 to 1")?;
         require(self.soft.is_finite() && self.soft > 0.0, "soft", "must be above 0")?;
@@ -577,7 +589,12 @@ mod tests {
     }
 
     fn library_of(emitter: EmitterDesc) -> Result<EffectLibrary, EffectLibraryError> {
-        EffectLibrary::new(vec![Effect { name: "hit".to_owned(), emitters: vec![emitter], trail: None }])
+        EffectLibrary::new(vec![Effect {
+            name: "hit".to_owned(),
+            emitters: vec![emitter],
+            trail: None,
+            mark: false,
+        }])
     }
 
     /// The field an edit of a valid emitter makes the library name, with the emitter's name.
@@ -597,7 +614,7 @@ mod tests {
     fn trail_error(edit: impl FnOnce(&mut TrailDesc)) -> &'static str {
         let mut bad = trail();
         edit(&mut bad);
-        let effect = Effect { name: "swing".to_owned(), emitters: Vec::new(), trail: Some(bad) };
+        let effect = Effect { name: "swing".to_owned(), emitters: Vec::new(), trail: Some(bad), mark: false };
         match EffectLibrary::new(vec![effect]) {
             Err(EffectLibraryError::Invalid { effect, part, field, .. }) => {
                 assert_eq!(effect, "swing");
@@ -610,7 +627,7 @@ mod tests {
 
     #[test]
     fn duplicate_names_keep_row_validation_precedence() {
-        let first = Effect { name: "same".to_owned(), emitters: vec![emitter()], trail: None };
+        let first = Effect { name: "same".to_owned(), emitters: vec![emitter()], trail: None, mark: false };
         let mut duplicate = first.clone();
         duplicate.emitters.clear();
         duplicate.trail = None;
@@ -638,7 +655,10 @@ mod tests {
                 "heavy_spark",
                 "finish_burst",
                 "blade_trail",
-                "warrior_trail"
+                "warrior_trail",
+                "telegraph_mark",
+                "dodge_glint",
+                "phase_mark"
             ]
         );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
@@ -711,13 +731,18 @@ mod tests {
     #[test]
     fn libraries_must_hold_named_distinct_effects() {
         assert_eq!(EffectLibrary::new(vec![]), Err(EffectLibraryError::Empty));
-        let effect = |name: &str| Effect { name: name.to_owned(), emitters: vec![emitter()], trail: None };
+        let effect = |name: &str| Effect {
+            name: name.to_owned(),
+            emitters: vec![emitter()],
+            trail: None,
+            mark: false,
+        };
         assert_eq!(EffectLibrary::new(vec![effect("")]), Err(EffectLibraryError::EmptyName(0)));
         assert_eq!(
             EffectLibrary::new(vec![effect("a"), effect("a")]),
             Err(EffectLibraryError::DuplicateName("a".to_owned()))
         );
-        let nothing = Effect { name: "a".to_owned(), emitters: vec![], trail: None };
+        let nothing = Effect { name: "a".to_owned(), emitters: vec![], trail: None, mark: false };
         assert_eq!(EffectLibrary::new(vec![nothing]), Err(EffectLibraryError::Nothing("a".to_owned())));
         let many = Effect { emitters: vec![emitter(); MAX_EMITTERS + 1], ..effect("a") };
         assert_eq!(EffectLibrary::new(vec![many]), Err(EffectLibraryError::TooManyEmitters("a".to_owned())));

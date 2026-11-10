@@ -13,6 +13,9 @@ use crate::document::{
 use crate::rng::Rng;
 use crate::trail::{Segment, TrailSample};
 
+/// What sets the marks' random streams apart from every other effect's, from the same seed.
+const MARK_SEED: u64 = 0x6D61_726B_7321;
+
 /// Whose clock an effect runs on: a plain key, an actor's stable ID in a game. Gameplay never reads
 /// back through it (R3: effects read cues, never affect them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -155,8 +158,10 @@ pub struct VfxWorld {
     library: EffectLibrary,
     budget: VfxBudget,
     seed: u64,
-    /// Effects spawned so far: each one's random stream.
+    /// Effects spawned so far, but marks: each one's random stream.
     spawned: u64,
+    /// Marks spawned so far (M4 A5, [`Effect::mark`]): their streams, apart from the others'.
+    marks: u64,
     slots: Vec<Slot>,
     /// Slots not in use, the next last.
     free_slots: Vec<u16>,
@@ -181,6 +186,7 @@ impl VfxWorld {
             budget,
             seed,
             spawned: 0,
+            marks: 0,
             slots: vec![Slot::new(); usize::from(effects)],
             free_slots: (0..effects).rev().collect(),
             particles: Vec::with_capacity(budget.max_particles as usize),
@@ -233,6 +239,7 @@ impl VfxWorld {
         self.free_slots.clear();
         self.free_slots.extend((0..self.slots.len() as u16).rev());
         self.spawned = 0;
+        self.marks = 0;
         self.dropped_particles = 0;
         self.dropped_ribbon_points = 0;
         self.dropped_effects = 0;
@@ -241,13 +248,23 @@ impl VfxWorld {
 
     /// Starts `effect` at `placement` on `owner`'s clock. `None` if the library has no such effect
     /// or the budget's cap on effects is full, which is counted. An effect whose trail didn't fit
-    /// spawns without it, also counted.
+    /// spawns without it, also counted. A [mark](Effect::mark) takes its numbers from the marks'
+    /// stream, so it moves no other effect's.
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
+        let mark = self.library.effect(effect)?.mark;
         let handle = self.start(effect, owner, placement)?;
-        self.spawned += 1;
-        self.reseed(handle);
+        let stream = if mark {
+            self.marks += 1;
+            Rng::new(self.seed ^ MARK_SEED, self.marks)
+        } else {
+            self.spawned += 1;
+            Rng::new(self.seed, self.spawned)
+        };
+        if let Some(slot) = self.slot_mut(handle) {
+            slot.rng = stream;
+        }
         Some(handle)
     }
 
@@ -264,14 +281,6 @@ impl VfxWorld {
             self.start(effect, owner, placement)
         } else {
             self.spawn(effect, owner, placement)
-        }
-    }
-
-    /// Gives `handle`'s effect its random numbers, by how many have been spawned.
-    fn reseed(&mut self, handle: EffectHandle) {
-        let (seed, spawned) = (self.seed, self.spawned);
-        if let Some(slot) = self.slot_mut(handle) {
-            slot.rng = Rng::new(seed, spawned);
         }
     }
 
@@ -621,7 +630,7 @@ fn birth(emitter: &EmitterDesc, slot: &mut Slot, slot_index: u16, place: u8) -> 
     let velocity = placement.rotation * direction * rng.between(motion.speed);
     let (rotation, spin) = match emitter.facing {
         Facing::Camera { spin } => (TAU * rng.unit(), rng.between(spin)),
-        Facing::Velocity { .. } => (0.0, 0.0),
+        Facing::Velocity { .. } | Facing::Upright => (0.0, 0.0),
     };
     Particle {
         position: placement.position + placement.rotation * source,
@@ -664,7 +673,7 @@ fn sprite(particle: &Particle, emitter: &EmitterDesc, behind: f32) -> VfxSprite 
     let t = (particle.age - behind) / particle.lifetime;
     let half_width = emitter.size.sample(t) * particle.size;
     let (axis, half_length) = match emitter.facing {
-        Facing::Camera { .. } => (Vec3::ZERO, half_width),
+        Facing::Camera { .. } | Facing::Upright => (Vec3::ZERO, half_width),
         Facing::Velocity { stretch } => {
             (particle.velocity, half_width + particle.velocity.length() * stretch)
         }

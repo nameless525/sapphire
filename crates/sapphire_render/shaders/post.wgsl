@@ -863,3 +863,29 @@ fn fs_composite(in: CompositeVaryings) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(srgb_to_linear(display), 1.0);
 }
+
+// The colour-vision debug view (M4 A5, `sapphire_render::color_vision`): the finished frame, the interface
+// and debug lines included, as a dichromat sees it, through Machado et al.'s matrix (these constants, by
+// rows) on linear light. Its input is the frame in the target's sRGB format, which decodes as it's read and
+// encodes again on write, and as large as the target, so each pixel loads its own texel.
+override COLOR_VISION_00: f32 = 1.0;
+override COLOR_VISION_01: f32 = 0.0;
+override COLOR_VISION_02: f32 = 0.0;
+override COLOR_VISION_10: f32 = 0.0;
+override COLOR_VISION_11: f32 = 1.0;
+override COLOR_VISION_12: f32 = 0.0;
+override COLOR_VISION_20: f32 = 0.0;
+override COLOR_VISION_21: f32 = 0.0;
+override COLOR_VISION_22: f32 = 1.0;
+
+@fragment
+fn fs_color_vision(in: FullscreenVaryings) -> @location(0) vec4<f32> {
+    let seen = textureLoad(texture0, vec2<i32>(in.position.xy), 0).rgb;
+    // WGSL's matrices are built by columns.
+    let matrix = mat3x3<f32>(
+        vec3<f32>(COLOR_VISION_00, COLOR_VISION_10, COLOR_VISION_20),
+        vec3<f32>(COLOR_VISION_01, COLOR_VISION_11, COLOR_VISION_21),
+        vec3<f32>(COLOR_VISION_02, COLOR_VISION_12, COLOR_VISION_22),
+    );
+    return vec4<f32>(clamp(matrix * seen, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+}

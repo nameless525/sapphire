@@ -4,7 +4,8 @@
 // nothing and is counted, so a row that fires nothing says so on purpose.
 //
 // - `effects`: `sapphire_vfx`'s effects, `default_effects.ron`. `at: Hit` (the default) is the hit's
-//   point with the effect's +Y out of the surface, `Feet` where its subject stands. `clock: World`
+//   point with the effect's +Y out of the surface, `Feet` where its subject stands, `Crown` over its
+//   head, where a cue mark goes. `clock: World`
 //   (the default) burns through hitstop; `Subject` and `Actor` freeze with one of the fighters.
 // - `sounds`: `Cue` documents by their sidecars' IDs, in `content/audio/`.
 // - `shake`: a preset of `default_camera.ron`, and a `strength` on top of it.
@@ -170,7 +171,6 @@
             (cue: "reaction"),
             (cue: "falls"),
             (cue: "dodge_start"),
-            (cue: "telegraph"),
             (cue: "stagger"),
             (cue: "stagger_heavy"),
             (cue: "knockdown"),
@@ -199,6 +199,13 @@
                 effects: [(effect: "cut_spark")],
                 sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"], // swing
             ),
+            // Cue marks (M4 A5): what a fight warns of, each a shape over the fighter it's about, so none is
+            // told by colour alone (m4-plan §3, "Colour"). A heavy's wind-up; and two cues `CueMarks` fires
+            // that no document names: a dodge pressed now being perfect, read from the moves, and an enemy
+            // crossing any named phase, so a new boss's phases are marked with no row of their own.
+            (cue: "telegraph", effects: [(effect: "telegraph_mark", at: Crown)]),
+            (cue: "dodge_window", effects: [(effect: "dodge_glint", at: Crown)]),
+            (cue: "named_phase", effects: [(effect: "phase_mark", at: Crown)]),
         ],
     ),
 )

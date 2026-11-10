@@ -69,7 +69,10 @@ const VIOLET_INK: [u8; 4] = [44, 26, 92, 240];
 /// The shipped layout (see [`HudDesign::shipped`]).
 const SHIPPED_DESIGN: &str = include_str!("../default_hud.ron");
 
+/// A health bar's trailing segment: what a hit just took.
 const EMBER: [u8; 4] = [255, 112, 58, 255];
+/// How wide the inked edge between a health bar's fill and its trailing segment is, in points.
+const TRAIL_EDGE: f32 = 2.5;
 const SHADOW: [u8; 4] = [0, 0, 0, 170];
 const OUTLINE: [u8; 4] = [8, 10, 18, 255];
 
@@ -956,6 +959,12 @@ impl CombatHud {
         painter.bar(bars.hp, SLANT, (0.0, 1.0), Paint::outlined(INK, PALE, edge));
         painter.bar(bars.hp, SLANT, (values.hp, trail.trail), Paint::fill(EMBER));
         painter.bar(bars.hp, SLANT, (0.0, values.hp), Paint::fill(color));
+        if trail.trail > values.hp {
+            // Where what's left ends and what was just lost begins, as an inked edge rather than the
+            // change from the fill's colour to ember alone (M4 A5, m4-plan §3 "Colour").
+            let half = 0.5 * TRAIL_EDGE * scale / bars.hp.width().max(1.0);
+            painter.bar(bars.hp, SLANT, (values.hp - half, values.hp + half), Paint::fill(INK));
+        }
         painter.bar(bars.poise, SLANT, (0.0, 1.0), Paint::outlined(INK, faded(PALE, 0.7), scale));
         painter.bar(bars.poise, SLANT, (0.0, values.poise), Paint::fill(AMBER));
         if let Some(points) = values.hp_points {

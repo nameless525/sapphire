@@ -251,6 +251,9 @@
 //!   characters' regions, ramp rows or outline widths, over the frame after post. In every
 //!   build, so captures and golden scenes show them; the overlay's cvar panel switches them in
 //!   `dev` builds.
+//! - `--color-vision off|protanopia|deuteranopia|tritanopia`: show the finished frame, the HUD
+//!   included, as a dichromat sees it (`r.color_vision`, M4 A5, Machado et al. 2009), for checking
+//!   that a fight's cues stay apart by shape. With any debug view, in every build.
 //! - `--debug-draw shapes|lines:<count>|volumes|colliders|combat`: turn debug draw on and draw a
 //!   fixed set of shapes around the character, one of each kind and each way of lasting and facing
 //!   a surface (the golden scene `debugdraw-shapes`), or that many lines a frame, for benches; or,

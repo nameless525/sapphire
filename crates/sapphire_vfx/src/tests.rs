@@ -36,7 +36,12 @@ fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
 }
 
 fn burst(count: u32) -> Effect {
-    Effect { name: "burst".to_owned(), emitters: vec![dots("dots", Spawn::Burst { count })], trail: None }
+    Effect {
+        name: "burst".to_owned(),
+        emitters: vec![dots("dots", Spawn::Burst { count })],
+        trail: None,
+        mark: false,
+    }
 }
 
 fn trail(max_samples: u32) -> Effect {
@@ -56,6 +61,7 @@ fn trail(max_samples: u32) -> Effect {
             additive: 0.8,
             soft: 0.02,
         }),
+        mark: false,
     }
 }
 
@@ -315,6 +321,7 @@ fn what_a_step_cant_fit_is_counted_without_being_walked() {
         name: "flood".to_owned(),
         emitters: vec![stream("a"), stream("b"), stream("c"), stream("d")],
         trail: None,
+        mark: false,
     };
     for max_particles in [0, 512] {
         let budget = VfxBudget { max_particles, ..VfxBudget::MOBILE_LOW };
@@ -340,6 +347,7 @@ fn overlapping_bursts_past_the_cap_count_what_didnt_fit() {
         name: "full".to_owned(),
         emitters: (0..MAX_EMITTERS).map(|_| dots("dots", Spawn::Burst { count: 4096 })).collect(),
         trail: None,
+        mark: false,
     };
     let budget = VfxBudget::DESKTOP_HIGH;
     let mut world = world_of(vec![full], budget);
@@ -368,6 +376,7 @@ fn what_a_full_world_keeps_is_what_it_would_have_made_first() {
             dots("late", Spawn::Burst { count: 7 }),
         ],
         trail: None,
+        mark: false,
     };
     let sprites = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -391,6 +400,7 @@ fn a_rate_owes_the_same_with_room_or_without() {
         name: "stream".to_owned(),
         emitters: vec![dots("dots", Spawn::Rate { per_second: 37.5, duration: 0.5 })],
         trail: None,
+        mark: false,
     };
     let owed = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -414,6 +424,7 @@ fn a_step_too_long_to_count_owes_what_a_count_holds() {
         name: "stream".to_owned(),
         emitters: vec![dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 })],
         trail: None,
+        mark: false,
     };
     let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -427,7 +438,7 @@ fn a_continuous_emitter_recovers_after_large_finite_steps() {
     for step in [1e8, f32::MAX] {
         let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 });
         emitter.lifetime = (0.25, 0.25);
-        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None };
+        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None, mark: false };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
         world.advance(&OwnerSteps { world: step, owners: &[] });
@@ -448,7 +459,7 @@ fn a_large_step_respects_delayed_finite_emission_and_pauses() {
         let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.5 });
         emitter.delay = 1.0;
         emitter.lifetime = (0.25, 0.25);
-        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None };
+        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None, mark: false };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
         world.advance(&OwnerSteps { world: 0.0, owners: &[] });
@@ -575,6 +586,48 @@ fn two_spawns_from_one_seed_differ() {
     assert_ne!(frame.sprites[0].position, frame.sprites[1].position);
 }
 
+/// A cue mark (M4 A5) draws its numbers from a stream of its own, so the sparks spawned after it land as
+/// they would without it, while a plain effect in its place moves them.
+#[test]
+fn a_mark_moves_no_other_effects_numbers() {
+    let mut spark = burst(4);
+    spark.emitters[0].motion = Motion { speed: (1.0, 2.0), spread: 180.0, ..Motion::default() };
+    let mark = Effect { name: "mark".to_owned(), mark: true, ..spark.clone() };
+    let plain = Effect { name: "plain".to_owned(), ..spark.clone() };
+    let play = |first: Option<EffectId>| {
+        let library = EffectLibrary::new(vec![spark.clone(), mark.clone(), plain.clone()]).expect("valid");
+        let mut world = VfxWorld::new(library, VfxBudget::DESKTOP_LOW, 7);
+        if let Some(first) = first {
+            world.spawn(first, OwnerId(2), Placement::at(Vec3::X * 9.0)).expect("spawned");
+        }
+        world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+        world.advance(&ALL_RUN);
+        let frame = frame_of(&mut world);
+        frame.sprites.into_iter().filter(|sprite| sprite.position.x < 5.0).collect::<Vec<_>>()
+    };
+    let alone = play(None);
+    assert_eq!(alone.len(), 4);
+    assert_eq!(play(Some(EffectId(1))), alone);
+    assert_ne!(play(Some(EffectId(2))), alone);
+}
+
+#[test]
+fn an_upright_quad_never_turns() {
+    let mut effect = burst(3);
+    effect.emitters[0].facing = Facing::Upright;
+    effect.emitters[0].shape = Shape::Chevron;
+    let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
+    world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+    for _ in 0..10 {
+        world.advance(&ALL_RUN);
+    }
+    let frame = frame_of(&mut world);
+    assert_eq!(frame.sprites.len(), 3);
+    for sprite in frame.sprites {
+        assert_eq!((sprite.axis, sprite.rotation, sprite.shape), (Vec3::ZERO, 0.0, VfxShape::Chevron));
+    }
+}
+
 #[test]
 fn particles_follow_their_curves_and_die_at_their_lifetime() {
     let mut effect = burst(1);
@@ -636,6 +689,7 @@ fn a_rate_emits_at_its_rate_and_stops_when_stopped() {
         name: "stream".to_owned(),
         emitters: vec![dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 })],
         trail: None,
+        mark: false,
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -660,6 +714,7 @@ fn an_effect_is_endless_exactly_when_it_never_ends_by_itself() {
         name: "effect".to_owned(),
         emitters: spawns.iter().map(|&spawn| dots("dots", spawn)).collect(),
         trail: None,
+        mark: false,
     };
     let (once, brief) = (Spawn::Burst { count: 2 }, Spawn::Rate { per_second: 60.0, duration: 0.5 });
     let endless = Spawn::Rate { per_second: 60.0, duration: 0.0 };
@@ -741,6 +796,7 @@ fn a_rates_duration_bounds_how_many_it_emits() {
             ..dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.5 })
         }],
         trail: None,
+        mark: false,
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");

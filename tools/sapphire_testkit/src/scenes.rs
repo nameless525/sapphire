@@ -228,7 +228,9 @@ macro_rules! gate_scene {
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
 /// `arena-skirmish` plays eight fighters (M3 B1), on the director. `arena-boss` plays a boss (M3 B3), just
 /// past the phase where it enrages, with its bar and phase marks. `arena-captain` draws two kinds of enemy at
-/// once, each as itself (M3 B3b).
+/// once, each as itself (M3 B3b). `color-vision-telegraph` alone shows the colour-vision view
+/// (`--color-vision`, M4 A5; off, every other scene's, builds and draws nothing): an enemy's wind-up and
+/// its mark as a deuteranope sees them.
 ///
 /// The tier scenes (M4 T0) draw three shots as each tier ships, AO and all, at the tier's own scale and
 /// at its dynamic floor: the face's close-up on every tier, and the ward's street and a hit's post on the
@@ -240,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 273] {
+pub fn scenes() -> [Scene; 274] {
     [
         Scene {
             name: "turntable-start",
@@ -2463,6 +2465,37 @@ pub fn scenes() -> [Scene; 273] {
                 "on",
                 "--capture-frames",
                 "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same fight as a deuteranope sees it (M4 A5, `--color-vision`, Machado et al. 2009), earlier
+        // in the overhead's wind-up: the ember chevron over the enemy, which says by shape what its colour
+        // alone might not.
+        Scene {
+            name: "color-vision-telegraph",
+            args: &[
+                "--capture-ticks",
+                "84",
+                "--cues",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--view",
+                "75,8",
+                "--replay",
+                "tests/replays/arena-fight-still.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+                "--color-vision",
+                "deuteranopia",
             ],
             thresholds: Thresholds::default(),
         },
@@ -5358,12 +5391,12 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> io::Result<Option
 
 /// The last [`LOG_TAIL_LINES`] lines of a scene's log, indented, for its failure.
 /// What a scene's frames built that its load didn't declare (M3 K1), from its log's "captured frame" line:
-/// `None` if nothing, or if the scene shows a debug view. A capture counts what its load builds as prewarmed,
-/// so a first use there is a frame's, which a game's frame would stall on: the load's inventory, or what the
-/// scene declares, should list it. A debug view alone builds in its frame: it copies what that frame draws
-/// into its own target, and no load declares a view a tool turns on.
+/// `None` if nothing, or if the scene shows a debug view or the colour-vision view. A capture counts what its
+/// load builds as prewarmed, so a first use there is a frame's, which a game's frame would stall on: the load's
+/// inventory, or what the scene declares, should list it. A debug view alone builds in its frame: it copies
+/// what that frame draws into its own target, and no load declares a view a tool turns on.
 fn frame_builds(log: &str, scene: &Scene) -> Option<String> {
-    if scene.args.contains(&"--debug-view") {
+    if scene.args.contains(&"--debug-view") || scene.args.contains(&"--color-vision") {
         return None;
     }
     let line = log.lines().rfind(|line| line.contains("captured frame"))?;

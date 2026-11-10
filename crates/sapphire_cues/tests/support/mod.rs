@@ -12,7 +12,7 @@ use sapphire_assets::cue::Cue;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{AudioFrame, AudioSystem, CueRng, Emitter, Listener, MockBackend, MockCall};
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Subject};
-use sapphire_cues::{CueDispatcher, CueStep, CueTable, RumbleSink, actor_emitter};
+use sapphire_cues::{CueDispatcher, CueMarks, CueStep, CueTable, RumbleSink, Stand, actor_emitter};
 use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
 use sapphire_look::VfxFrame;
 use sapphire_math::{Mat4, Vec2, Vec3};
@@ -64,6 +64,8 @@ pub struct Reached {
 pub struct Fight {
     pub player: Player,
     pub cues: CueDispatcher,
+    /// The cues no document names (M4 A5).
+    pub marks: CueMarks,
     pub vfx: VfxWorld,
     pub screen: EffectStack,
     world: ScaledClock,
@@ -102,6 +104,11 @@ impl Fight {
         Self {
             player: player(name),
             cues,
+            marks: {
+                let mut marks = CueMarks::default();
+                marks.reserve_actors(16);
+                marks
+            },
             vfx: VfxWorld::new(effects, VfxBudget::DESKTOP_LOW, 7),
             screen,
             world,
@@ -121,6 +128,7 @@ impl Fight {
     /// The same fight from its start, on the same sinks, which have grown whatever they grow.
     pub fn restart(&mut self, name: &str) {
         self.player = player(name);
+        self.marks.start_over();
     }
 
     /// One fixed step and what fires in it: the hits it published, or `None` past the replay's end.
@@ -134,19 +142,18 @@ impl Fight {
         self.screen.tick(&self.world);
         let sim = self.player.simulation();
         let hits = sim.cues().filter(|cue| cue.hit.is_some()).count();
-        let root_of = |actor| sim.actor(actor).map(|view| view.position);
-        self.cues.read_step(
-            sim.tick(),
-            sim.cues(),
-            &mut CueStep {
-                vfx: &mut self.vfx,
-                screen: &mut self.screen,
-                presets: &self.presets,
-                shakes: &mut self.camera,
-                view_projection: Mat4::IDENTITY,
-                root_of: &root_of,
-            },
-        );
+        let stand_of = |actor| Stand::of(sim, actor);
+        let mut step = CueStep {
+            vfx: &mut self.vfx,
+            screen: &mut self.screen,
+            presets: &self.presets,
+            shakes: &mut self.camera,
+            view_projection: Mat4::IDENTITY,
+            stand_of: &stand_of,
+        };
+        self.cues.read_step(sim.tick(), sim.cues(), &mut step);
+        // The cast's first is the player.
+        self.marks.read_step(sim, self.player.cast().first().copied(), &mut self.cues, &mut step);
         self.cues.advance_effects(sim, &mut self.vfx);
         hits
     }

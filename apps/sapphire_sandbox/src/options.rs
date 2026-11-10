@@ -8,7 +8,8 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind,
+    ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings,
+    Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -344,6 +345,9 @@ pub(crate) struct Options {
     pub rung: Option<usize>,
     /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
     pub debug_view: Option<DebugView>,
+    /// `--color-vision <dichromacy>`: the colour-vision debug view (`r.color_vision`, M4 A5) instead of
+    /// off.
+    pub color_vision: Option<ColorVision>,
     /// `--debug-draw <what>`: turn debug draw on and draw this (M2 T1).
     pub debug_draw: Option<DebugDraw>,
     /// `--cue <name> [--cue-repeat <seconds>]`: play this cue on the real audio device (M2 E1).
@@ -515,6 +519,11 @@ impl Options {
             && let Err(error) = sapphire_render::debug_view::DEBUG_VIEW.set(view)
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--debug-view");
+        }
+        if let Some(vision) = self.color_vision
+            && let Err(error) = sapphire_render::color_vision::COLOR_VISION.set(vision)
+        {
+            tracing::warn!(target: crate::LOG_TARGET, %error, "--color-vision");
         }
         match self.debug_draw {
             Some(DebugDraw::Demo(demo)) => scene.set_debug_draw_demo(demo),
@@ -1029,6 +1038,14 @@ impl Options {
                         format!("--debug-view expects one of {}, got {name:?}", names.join(", "))
                     })?;
                     options.debug_view = Some(view);
+                }
+                "--color-vision" => {
+                    let name = value("--color-vision")?;
+                    let vision = ColorVision::from_name(&name).ok_or_else(|| {
+                        let names: Vec<&str> = ColorVision::ALL.iter().map(|vision| vision.name()).collect();
+                        format!("--color-vision expects one of {}, got {name:?}", names.join(", "))
+                    })?;
+                    options.color_vision = Some(vision);
                 }
                 "--debug-draw" => {
                     options.debug_draw = Some(DebugDraw::parse(&value("--debug-draw")?)?);
@@ -2557,6 +2574,18 @@ mod tests {
         assert_eq!(Options::default().debug_view, None);
         let error = parse(&["--debug-view", "normals"]).unwrap_err();
         assert!(error.contains("off, wireframe, overdraw, lights"), "{error}");
+    }
+
+    #[test]
+    fn the_color_vision_is_named_on_the_command_line() {
+        use sapphire_look::Dichromacy;
+        let (options, unknown) = parse(&["--color-vision", "deuteranopia"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.color_vision, Some(ColorVision::Simulated(Dichromacy::Deuteranopia)));
+        assert_eq!(parse(&["--color-vision=off"]).unwrap().0.color_vision, Some(ColorVision::Off));
+        assert_eq!(Options::default().color_vision, None);
+        let error = parse(&["--color-vision", "achromatopsia"]).unwrap_err();
+        assert!(error.contains("off, protanopia, deuteranopia, tritanopia"), "{error}");
     }
 
     #[test]

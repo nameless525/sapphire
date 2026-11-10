@@ -310,6 +310,66 @@
                     additive: 0.7,
                 )),
             ),
+            // Cue marks (M4 A5, m4-plan §3 "Colour"): what a fight warns of, each a shape of its own over
+            // the fighter it's about, upright on screen, so a player who can't tell their colours apart
+            // tells their shapes. Each pops in large and settles, so it catches the eye once. Marks draw
+            // their random numbers apart from every other effect (`mark`), so none moves a spark.
+            (
+                // A heavy's wind-up (`telegraph`): a chevron pointing down at the foe, ember like its
+                // blade, held through most of a wind-up.
+                name: "telegraph_mark",
+                mark: true,
+                emitters: [
+                    (
+                        name: "chevron",
+                        spawn: Burst(count: 1),
+                        lifetime: (0.6, 0.6),
+                        shape: Chevron,
+                        facing: Upright,
+                        additive: 0.5,
+                        size: [(0.0, 0.32), (0.12, 0.2), (1.0, 0.18)],
+                        color: [(0.0, (2.0, 0.5, 0.16)), (1.0, (1.2, 0.26, 0.08))],
+                        alpha: [(0.0, 1.0), (0.75, 1.0), (1.0, 0.0)],
+                    ),
+                ],
+            ),
+            (
+                // A dodge pressed now would be perfect (`dodge_window`): a four-pointed glint over the foe,
+                // brief, gold going white, timed rather than held.
+                name: "dodge_glint",
+                mark: true,
+                emitters: [
+                    (
+                        name: "glint",
+                        spawn: Burst(count: 1),
+                        lifetime: (0.22, 0.22),
+                        shape: Star,
+                        facing: Upright,
+                        size: [(0.0, 0.06), (0.3, 0.3), (1.0, 0.14)],
+                        color: [(0.0, (2.4, 2.0, 1.0)), (1.0, (1.6, 1.5, 1.2))],
+                        alpha: [(0.0, 1.0), (0.6, 1.0), (1.0, 0.0)],
+                    ),
+                ],
+            ),
+            (
+                // A boss crossing into a named phase (its phase's cue): an open diamond over it, pale
+                // violet like the boss bar's phase marks, opening as it fades.
+                name: "phase_mark",
+                mark: true,
+                emitters: [
+                    (
+                        name: "diamond",
+                        spawn: Burst(count: 1),
+                        lifetime: (0.9, 0.9),
+                        shape: Diamond,
+                        facing: Upright,
+                        additive: 0.6,
+                        size: [(0.0, 0.12), (0.2, 0.3), (1.0, 0.38)],
+                        color: [(0.0, (1.5, 1.2, 2.2)), (1.0, (0.9, 0.7, 1.6))],
+                        alpha: [(0.0, 1.0), (0.6, 0.9), (1.0, 0.0)],
+                    ),
+                ],
+            ),
         ],
     ),
 )

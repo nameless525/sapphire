@@ -17,6 +17,11 @@
 //!   its voice lines' tables, for the app to load.
 //! - **The dispatcher** ([`CueDispatcher`]): resolves those names once, at load and after a reload, then
 //!   fires rows with no allocation. [`CueStep`] is what a step fires into.
+//! - **Cue marks** (M4 A5, [`Stand`], [`CueMarks`]): a row's effect over a fighter's head
+//!   ([`EffectPlace::Crown`]), and the cues no document names: [`DODGE_WINDOW`], fired on a foe as its strike
+//!   comes within a perfect dodge's reach, read from the moves, and [`NAMED_PHASE`], on an enemy crossing a
+//!   named phase. Every warning a fight gives is a mark of its own shape there, so none relies on colour
+//!   alone.
 //! - **Rumble's mixing** ([`RumbleMixer`]): SDL holds one rumble per pad, so overlapping hits meet here.
 //!   SDL's call is `sapphire_platform`'s, and the app's [`RumbleSink`] makes it.
 //!
@@ -35,7 +40,7 @@
 //! ```
 //! use sapphire_audio::{AudioFrame, AudioSystem, CueRng, Listener, MockBackend};
 //! use sapphire_camera::{CameraDirector, CameraTuning};
-//! use sapphire_cues::{CueDispatcher, CueStep, CueTable};
+//! use sapphire_cues::{CueDispatcher, CueStep, CueTable, Stand};
 //! use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 //! use sapphire_gameplay::TickActions;
 //! use sapphire_look::VfxFrame;
@@ -60,14 +65,14 @@
 //! # let mut frame = VfxFrame::default();
 //! // Each of a frame's fixed steps, since the next step clears these cues:
 //! sim.step(&TickActions::NEUTRAL);
-//! let root_of = |actor| sim.actor(actor).map(|view| view.position);
+//! let stand_of = |actor| Stand::of(&sim, actor);
 //! cues.read_step(sim.tick(), sim.cues(), &mut CueStep {
 //!     vfx: &mut vfx,
 //!     screen: &mut screen,
 //!     presets: &presets,
 //!     shakes: &mut camera,
 //!     view_projection: Mat4::IDENTITY, // The view's, which puts a hit on screen.
-//!     root_of: &root_of,
+//!     stand_of: &stand_of,
 //! });
 //! cues.advance_effects(&sim, &mut vfx);
 //!
@@ -113,6 +118,7 @@
 //!   two-tone frame as long as a long freeze reads as a stuck image.
 
 mod dispatch;
+mod marks;
 mod rumble;
 mod table;
 
@@ -120,6 +126,7 @@ pub use dispatch::{
     CueDispatcher, CueStats, CueStep, MAX_FRAME_LINES, MAX_FRAME_SOUNDS, SaidLine, ShakeSink, actor_emitter,
     emitter_of, owner_of,
 };
+pub use marks::{CROWN_CLEARANCE, CueMarks, DODGE_WINDOW, NAMED_PHASE, Stand, named_phases};
 pub use rumble::{MAX_RUMBLES, Rumble, RumbleMixer, RumbleSink};
 pub use table::{
     CueRow, CueTable, CueTableError, EffectFire, EffectOwner, EffectPlace, MAX_ROW_EFFECTS, MAX_ROW_SOUNDS,

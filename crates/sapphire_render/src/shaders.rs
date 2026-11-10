@@ -688,6 +688,7 @@ mod tests {
                 "fs_post",
                 "vs_composite",
                 "fs_composite",
+                "fs_color_vision",
             ],
         ),
         (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),

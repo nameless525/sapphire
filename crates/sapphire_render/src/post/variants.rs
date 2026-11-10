@@ -4,6 +4,7 @@
 
 use std::ops::{BitOr, BitOrAssign};
 
+use sapphire_look::Dichromacy;
 use sapphire_rhi::wgpu;
 
 use super::layers::Variant;
@@ -11,6 +12,7 @@ use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
 };
+use crate::color_vision::{COLOR_VISION_CONSTANTS, COLOR_VISION_PASS};
 use crate::inset::{INSET_FORMAT, INSET_RESOLVE_PASS};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Cancel;
@@ -118,13 +120,21 @@ pub(super) enum Slot {
     /// An inset's resolve (M3 U6, `inset`): its scene exposed and graded into its picture. No frame
     /// variant draws it, so it is outside [`Self::all`]: inventories declare it (`PipelineInventory::insets`).
     Inset,
+    /// The colour-vision debug view (M4 A5, `color_vision`): the finished frame as a dichromat sees it.
+    /// Outside [`Self::all`] too, built only while the view shows.
+    ColorVision(Dichromacy),
 }
 
 impl Slot {
     /// How many the frame's variants have.
     const COUNT: usize = 4 + Variant::COMPOSITES;
-    /// How many there are, the inset's resolve with them.
-    const SLOTS: usize = Self::COUNT + 1;
+    /// How many there are, the inset's resolve and the colour-vision views with them.
+    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len();
+
+    /// The pipelines outside the frame's variants, which something else asks for.
+    fn others() -> impl Iterator<Item = Self> {
+        [Self::Inset].into_iter().chain(Dichromacy::ALL.map(Self::ColorVision))
+    }
 
     /// Every pipeline post has, in [`Self::index`]'s order.
     fn all() -> impl Iterator<Item = Self> {
@@ -140,6 +150,7 @@ impl Slot {
             Self::Up => 3,
             Self::Composite(index) => 4 + index,
             Self::Inset => Self::COUNT,
+            Self::ColorVision(dichromacy) => Self::COUNT + 1 + dichromacy as usize,
         }
     }
 
@@ -157,7 +168,7 @@ impl Slot {
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
                 (switches, 0)
             }
-            Self::Inset => (PostVariants::NONE, 0),
+            Self::Inset | Self::ColorVision(_) => (PostVariants::NONE, 0),
         }
     }
 
@@ -177,7 +188,7 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
-            Self::Inset => false,
+            Self::Inset | Self::ColorVision(_) => false,
         })
     }
 }
@@ -241,6 +252,16 @@ impl Builder {
                 let names = (INSET_RESOLVE_PASS, fullscreen, "fs_inset");
                 let layout = &self.layouts.composite;
                 self.pipeline(module, PipelineFamily::Inset, names, layout, INSET_FORMAT, &[])
+            }
+            // The finished frame in, by `texture0`, and the dichromacy's matrix as constants.
+            Slot::ColorVision(dichromacy) => {
+                let matrix = dichromacy.matrix();
+                let constants: [(&str, f64); 9] = std::array::from_fn(|index| {
+                    (COLOR_VISION_CONSTANTS[index], f64::from(matrix[index / 3][index % 3]))
+                });
+                let names = (COLOR_VISION_PASS, fullscreen, "fs_color_vision");
+                let (layout, format) = (&self.layouts.one, self.output_format);
+                self.pipeline(module, PipelineFamily::Debug, names, layout, format, &constants)
             }
         }
     }
@@ -358,7 +379,7 @@ impl Pipelines {
     /// what it returns is to be thrown away.
     pub(super) fn rebuilt(&self, builder: &Builder, module: &wgpu::ShaderModule, cancel: &Cancel) -> Self {
         let mut rebuilt = Self::default();
-        let built = Slot::all().chain([Slot::Inset]).filter(|&slot| self.get(slot).is_some());
+        let built = Slot::all().chain(Slot::others()).filter(|&slot| self.get(slot).is_some());
         rebuilt.build(builder, module, built.take_while(|_| !cancel.is_set()));
         rebuilt
     }
@@ -388,6 +409,9 @@ mod tests {
         assert_eq!(count(PostVariants::ALL, 5), Slot::COUNT);
         let all: Vec<Slot> = Slot::all().collect();
         assert!(all.iter().enumerate().all(|(index, slot)| slot.index() == index));
+        let others: Vec<Slot> = Slot::others().collect();
+        assert!(others.iter().zip(Slot::COUNT..).all(|(slot, index)| slot.index() == index));
+        assert_eq!(Slot::COUNT + others.len(), Slot::SLOTS);
         // The effects alone: the color effects over the plain or the lens effects' scene.
         assert_eq!(count(PostVariants::SCREEN_EFFECTS, 5), 3 + 4);
         let lens = PostVariants { lens_effects: true, ..PostVariants::NONE };

@@ -31,7 +31,7 @@ use sapphire_assets::sound::decode_vorbis;
 use sapphire_audio::{AudioFrame, AudioSystem, CueRng, Emitter, KiraBackend, Listener, OfflineOutput};
 use sapphire_camera::{CameraDirector, CameraTuning};
 use sapphire_core::alloc::{CountingAllocator, count_in_scope};
-use sapphire_cues::{CueDispatcher, CueStep, CueTable, actor_emitter};
+use sapphire_cues::{CueDispatcher, CueStep, CueTable, Stand, actor_emitter};
 use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
 use sapphire_look::VfxFrame;
 use sapphire_math::Mat4;
@@ -154,7 +154,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
         screen.tick(&world);
         let sim = player.simulation();
         let hit = sim.cues().any(|cue| cue.hit.is_some());
-        let root_of = |actor| sim.actor(actor).map(|view| view.position);
+        let stand_of = |actor| Stand::of(sim, actor);
         let timer = Stopwatch::start();
         let ((), step) = count_in_scope(|| {
             cues.read_step(
@@ -166,7 +166,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
                     presets: &sinks.presets,
                     shakes: &mut camera,
                     view_projection: Mat4::IDENTITY,
-                    root_of: &root_of,
+                    stand_of: &stand_of,
                 },
             );
             cues.advance_effects(sim, &mut vfx);

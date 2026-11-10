@@ -760,3 +760,41 @@ fn a_design_moves_what_it_says_and_nothing_else() {
     assert_eq!((moved.attack, moved.skill, moved.stick), (shipped.attack, shipped.skill, shipped.stick));
     assert_eq!((moved.player, moved.enemy), (shipped.player, shipped.enemy));
 }
+
+/// What a health bar says by colour it says by shape too (M4 A5, m4-plan §3 "Colour"): where its fill
+/// ends and the ember of what a hit just took begins is an inked edge, since the enemy's rose and the
+/// ember are only Oklab 0.096 apart, and about 0.06 under deuteranopia and tritanopia as Machado et al.
+/// (2009) simulate them.
+#[test]
+fn a_health_bar_s_loss_ends_at_an_inked_edge_not_a_colour_alone() {
+    use sapphire_look::color_vision::{APART, Dichromacy, distance, srgb_bytes_to_linear};
+    let (rose, ember) = (srgb_bytes_to_linear(ROSE), srgb_bytes_to_linear(EMBER));
+    // Why the edge is there: close even to a trichromat, and closer under deuteranopia and tritanopia.
+    for dichromacy in [Dichromacy::Deuteranopia, Dichromacy::Tritanopia] {
+        let seen = distance(dichromacy.simulate(rose), dichromacy.simulate(ember));
+        assert!(seen < APART, "{dichromacy:?}: {seen}");
+    }
+
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let actions = TouchActions::default();
+    let mut hud = CombatHud::new();
+    let at = |hud: &mut CombatHud, time: u64, hp: f32| {
+        let values = HudValues {
+            player: FighterValues { hp: 0.9, ..FighterValues::default() },
+            enemy: Some(FighterValues { hp, ..FighterValues::default() }),
+            ..HudValues::default()
+        };
+        hud.update(ms(time), &values, &actions);
+        let mut list = UiDrawList::default();
+        hud.draw(&layout, &actions, &mut list);
+        let edges: Vec<_> =
+            list.quads.iter().filter(|quad| quad.color == INK && quad.outline == 0.0).collect();
+        let losses = list.quads.iter().filter(|quad| quad.color == EMBER).count();
+        (edges.len(), losses)
+    };
+    let (still, none) = at(&mut hud, 0, 0.8);
+    assert_eq!(none, 0);
+    let (edges, losses) = at(&mut hud, 16, 0.5);
+    assert_eq!((edges - still, losses), (1, 1), "one edge, with the loss it bounds");
+    assert_eq!(at(&mut hud, 3000, 0.5), (still, 0), "and none once it caught up");
+}

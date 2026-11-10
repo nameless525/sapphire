@@ -109,6 +109,9 @@
 //!   Each replays the main pass through copies of its own pipelines into a depth and stencil (or
 //!   the characters' values) it reads, and draws over the frame after post. Off, the default,
 //!   builds and draws nothing.
+//! - The colour-vision view ([`color_vision`], M4 A5): the finished frame, the interface included, as
+//!   a protanope, deuteranope or tritanope sees it by Machado et al.'s matrices, through one post
+//!   pipeline drawn last (`r.color_vision`, [`Renderer::set_color_vision`]). Off builds and draws nothing.
 //! - Debug draw ([`debug_draw`], M2 T1): the packet's lines as thick screen-space lines over the
 //!   frame, depth-tested in the shader against the scene prepass's depth or on top. A frame with
 //!   none builds and draws nothing.
@@ -857,6 +860,7 @@ mod bounds;
 mod buffer;
 mod character_prepass;
 mod characters;
+pub mod color_vision;
 pub mod debug_draw;
 pub mod debug_view;
 mod draw;
@@ -894,6 +898,7 @@ pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
 };
 pub use character_prepass::CharacterPrepassStats;
+pub use color_vision::ColorVision;
 pub use debug_draw::DebugDrawPassStats;
 pub use debug_view::{DebugView, DebugViewStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};

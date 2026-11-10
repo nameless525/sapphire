@@ -26,6 +26,8 @@
 //!   vignette, the compositing layers and combat's screen effects ([`PostParams`]).
 //! - **The frame's effects** ([`vfx`]): the sprites and ribbon points `sapphire_vfx` resolves and
 //!   the renderer draws ([`VfxFrame`]), and the shapes of their generated map ([`VfxShape`]).
+//! - **Colour vision** ([`color_vision`], M4 A5): the three dichromacies by Machado et al. (2009), which
+//!   the renderer's colour-vision debug view and the cue tests share, and Oklab's distance.
 //! - **The on-screen interface's draw list** ([`ui`], M2 I2): quads over a distance field atlas
 //!   ([`UiDrawList`], [`UiQuad`], [`UiAtlas`]), so `sapphire_ui` writes straight into the packet
 //!   with no edge to the renderer, and the renderer draws them with no edge to `sapphire_ui`.
@@ -45,6 +47,7 @@
 //! - **Weather and wind** join the look here once the world resolves them per zone and hour (M2);
 //!   until then they are the renderer's plain packet data, like the rest of the packet.
 
+pub mod color_vision;
 pub mod fog;
 pub mod light;
 pub mod post;
@@ -52,6 +55,7 @@ pub mod sky;
 pub mod ui;
 pub mod vfx;
 
+pub use color_vision::Dichromacy;
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
 pub use light::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,

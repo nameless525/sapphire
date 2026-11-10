@@ -254,8 +254,10 @@ mod gpu_tests;
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
+use sapphire_look::Dichromacy;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
+use crate::color_vision::ColorVisionDraw;
 use crate::graph::{FrameGraph, TextureId};
 use crate::inset::INSET_RESOLVE_PASS;
 use crate::pipeline_builds::PipelineBuilds;
@@ -786,6 +788,22 @@ impl PostProcess {
     /// Takes in what a warm-up built that isn't built yet.
     pub(crate) fn adopt(&mut self, warmed: WarmedPost) {
         self.pipelines.adopt(warmed.0);
+    }
+
+    /// Builds the colour-vision view's pipeline for `dichromacy` unless it is built (M4 A5,
+    /// [`color_vision`](crate::color_vision)): in the frame that first shows it. Says how many it built.
+    pub(crate) fn build_color_vision(&mut self, dichromacy: Dichromacy, on: BuildOn) -> u32 {
+        self.pipelines.build_all(&self.builder, &self.module, [Slot::ColorVision(dichromacy)], on)
+    }
+
+    /// What the colour-vision view draws `dichromacy` with, once [`Self::build_color_vision`] built it.
+    pub(crate) fn color_vision_draw(&self, dichromacy: Dichromacy) -> Option<ColorVisionDraw> {
+        Some(ColorVisionDraw {
+            device: self.builder.device.clone(),
+            pipeline: self.pipelines.get(Slot::ColorVision(dichromacy))?.clone(),
+            shared: self.shared.clone(),
+            layout: self.builder.layouts.one.clone(),
+        })
     }
 
     /// A new inset's constants buffer and groups.

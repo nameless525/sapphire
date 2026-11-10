@@ -29,7 +29,8 @@ use sapphire_audio::Emitter;
 use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
 use sapphire_core::Name;
 use sapphire_cues::{
-    CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
+    CueDispatcher, CueMarks, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, Stand,
+    actor_emitter,
 };
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::WorldClock;
@@ -164,6 +165,8 @@ pub struct CueShow {
     #[cfg(any(test, feature = "dev"))]
     loaded_sounds: Vec<sapphire_assets::AssetId>,
     dispatcher: CueDispatcher,
+    /// The cues no document names: a perfect dodge's window and a named phase, for their marks (M4 A5).
+    marks: CueMarks,
     world: VfxWorld,
     trails: BladeTrails,
     shakes: OrbitShakes,
@@ -213,6 +216,7 @@ impl CueShow {
             loaded_sounds: table.sound_cues(),
             table,
             dispatcher,
+            marks: CueMarks::default(),
             trails: BladeTrails::new(&effects),
             world: VfxWorld::new(effects, budget, SEED),
             shakes: OrbitShakes { stack: ShakeStack::new(SEED), tuning },
@@ -232,6 +236,7 @@ impl CueShow {
         let capacity = sim.world().resource::<sapphire_gameplay::ActorRequests>().capacity() as usize;
         self.emitters.reserve(capacity.saturating_sub(self.emitters.len()));
         self.dispatcher.reserve_actors(capacity);
+        self.marks.reserve_actors(capacity);
     }
 
     /// The post variants the table's screen effects draw through.
@@ -285,15 +290,21 @@ impl CueShow {
                 (None, &mut self.shakes, fighters, player_blade)
             }
         };
-        let root_of = |id| stand.or_else(|| sim.actor(id).map(|actor| actor.position));
+        // On one character's stage everyone stands where it does, as tall as they are.
+        let stand_of = |id| match stand {
+            Some(feet) => {
+                Some(Stand::of(sim, id).map_or(Stand { feet, crown: feet }, |at| at.moved_to(feet)))
+            }
+            None => Stand::of(sim, id),
+        };
         let mut step =
-            CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, root_of: &root_of };
+            CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, stand_of: &stand_of };
         let cues = sim.cues().map(|cue| stand.map_or(cue, |stand| on_stage(cue, sim, stand)));
         let said_before = self.dispatcher.said().len();
         self.dispatcher.read_step(tick, cues, &mut step);
+        let player = fighters.first().and_then(|player| Some(player.as_ref()?.id));
         // The step's last line is the one to read: on the one character every line is the player's.
         if let Some(said) = self.dispatcher.said().skip(said_before).last() {
-            let player = fighters.first().and_then(|view| view.as_ref()).map(|view| view.id);
             let by_player = stand.is_some()
                 || said.actor.is_some_and(|actor| {
                     Some(actor) == player || sim.party().slots().any(|slot| slot.actor == actor)
@@ -304,6 +315,7 @@ impl CueShow {
             caption.key.push_str(said.key);
             (caption.by_player, caption.left) = (by_player, CAPTION_SECONDS);
         }
+        self.marks.read_step(sim, player, &mut self.dispatcher, &mut step);
         let blades = fighters.iter().enumerate();
         let blades = blades.map(|(place, view)| view.as_ref().filter(|_| place > 0 || player_blade));
         self.trails.read_step(blades, sim.move_library(), &mut self.world);
@@ -339,7 +351,7 @@ impl CueShow {
             presets,
             shakes,
             view_projection: Mat4::IDENTITY,
-            root_of: &|_| None,
+            stand_of: &|_| None,
         };
         for cue in fired {
             self.dispatcher.fire_at(cue.cue, cue.place, &mut step);
@@ -449,6 +461,7 @@ impl CueShow {
         self.trails.start_over();
         self.shakes.stack = ShakeStack::new(SEED);
         self.dispatcher.start_over();
+        self.marks.start_over();
         self.emitters.clear();
         self.world_time_scale = 1.0;
         self.tick = None;
@@ -1006,14 +1019,14 @@ mod tests {
         let mut clock = sapphire_time::ScaledClock::new();
         let mut screen = EffectStack::new(clock.new_local_clock());
         let mut fired = FiredShakes::default();
-        let root_of = |_| Some(Vec3::ZERO);
+        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y });
         let mut step = CueStep {
             vfx: &mut show.world,
             screen: &mut screen,
             presets,
             shakes: &mut fired,
             view_projection: Mat4::IDENTITY,
-            root_of: &root_of,
+            stand_of: &stand_of,
         };
         show.dispatcher.read_step(tick, [event], &mut step);
         fired.0

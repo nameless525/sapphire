@@ -1002,3 +1002,57 @@ fn a_view_builds_its_own_pipelines_and_no_others() {
         assert_eq!(held(), shown, "kept with the view off");
     }
 }
+
+/// The colour-vision view (M4 A5, `r.color_vision`): each pixel of the finished frame, whatever debug
+/// view drew it, is what `sapphire_look`'s CPU simulation of Machado et al.'s matrix makes of it, so
+/// the tests that hold cues apart and the view a person looks at agree. Off, it draws nothing and the
+/// frame is as it was.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_color_vision_view_shows_each_pixel_as_the_simulation_does() {
+    use sapphire_look::Dichromacy;
+    use sapphire_render::ColorVision;
+    use sapphire_render::color_vision::COLOR_VISION_PASS;
+
+    let gpu = gpu();
+    let texture = target(&gpu);
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: false, ..RenderSettings::default() };
+    let mut scene = Scene::new(&gpu, settings);
+    let colors = [[0.8, 0.1, 0.1], [0.1, 0.6, 0.1], [0.1, 0.2, 0.9], [0.9, 0.8, 0.1]];
+    for (index, rgb) in colors.into_iter().enumerate() {
+        let mesh = scene.upload(&environment_sphere(rgb));
+        scene.place(mesh, Vec3::new(-2.25 + 1.5 * index as f32, 0.0, 0.0), 0.7, false);
+    }
+    let ran = |scene: &Scene| {
+        scene.report().passes.iter().any(|pass| pass.name == COLOR_VISION_PASS && pass.order.is_some())
+    };
+
+    for view in [DebugView::Off, DebugView::Overdraw] {
+        scene.renderer.set_color_vision(ColorVision::Off);
+        let before = scene.render(&gpu, &texture, view);
+        assert!(!ran(&scene), "off draws nothing");
+        for dichromacy in Dichromacy::ALL {
+            scene.renderer.set_color_vision(ColorVision::Simulated(dichromacy));
+            let seen = scene.render(&gpu, &texture, view);
+            assert!(ran(&scene), "{dichromacy:?}");
+            let mut worst = (0, 0);
+            for (index, (pixel, was)) in seen.iter().zip(&before).enumerate() {
+                let linear = Vec3::from(std::array::from_fn::<f32, 3, _>(|c| srgb_to_linear(was[c])));
+                let expected = dichromacy.simulate(linear).to_array().map(linear_to_srgb);
+                let off = (0..3).map(|c| pixel[c].abs_diff(expected[c])).max().unwrap_or(0);
+                worst = worst.max((off, index));
+            }
+            assert!(
+                worst.0 <= 2,
+                "{view:?} under {dichromacy:?}: pixel {} is {} codes off",
+                worst.1,
+                worst.0
+            );
+            assert_ne!(seen, before, "{view:?} under {dichromacy:?} changes the frame");
+        }
+        scene.renderer.set_color_vision(ColorVision::Off);
+        let after = scene.render(&gpu, &texture, view);
+        assert!(!ran(&scene));
+        assert_eq!(after, before, "{view:?}: off again leaves the frame as it was");
+    }
+}

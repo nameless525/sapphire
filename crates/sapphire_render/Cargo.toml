@@ -43,6 +43,8 @@ sapphire_pipeline.workspace = true
 # The interface's GPU tests draw the real HUD; dev-dependencies are exempt
 # from layering (the crates depend on neither at run time).
 sapphire_platform.workspace = true
+# The look's GPU tests measure lines and two-tone edges as captures are measured (M4 T0).
+sapphire_testkit.workspace = true
 # Real Japanese through the pass, with a font the test is given.
 sapphire_text.workspace = true
 epaint_default_fonts.workspace = true

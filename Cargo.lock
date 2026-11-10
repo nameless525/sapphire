@@ -4264,6 +4264,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_rhi",
  "sapphire_serialize",
+ "sapphire_testkit",
  "sapphire_text",
  "sapphire_ui",
  "serde",

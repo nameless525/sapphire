@@ -1,11 +1,13 @@
 //! `sapphire_testkit`: runs test suites that need a built app, as a process, because nothing may
 //! depend on a tool crate (rule R1). `cargo xtask golden` builds the sandbox and this binary,
-//! then runs `golden`.
+//! then runs `golden`. `measure` reads lines and edges from two captures of one shot.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use sapphire_testkit::golden::{self, Image, Thresholds};
+use sapphire_testkit::look::{Lines, Region, Spread};
 use sapphire_testkit::scenes::{self, DEFAULT_SCENE_TIMEOUT, Mode, Paths, Selection};
 
 const USAGE: &str = "\
@@ -19,7 +21,16 @@ Usage:
       forces (vulkan: lavapipe, dx12: WARP), otherwise every <count>-th scene.
       --scene-timeout stops a scene's sandbox after that long and fails the scene
       (default 900). Each scene's output is in <out>/<scene>.log, and every scene's time
-      in <out>/timings.json.";
+      in <out>/timings.json.
+  sapphire_testkit measure <with lines.png> <without lines.png> [--region <x,y,width,height>]
+      Measure two captures of one shot, drawn with lines and without (the sandbox's
+      --outline-distance 0), over the region or the whole image, in output pixels: the
+      lines' strength (width times darkness), contrast and width, and the spread of the
+      second capture's edges (sapphire_testkit::look). Compare two scales or tiers of a
+      shot by their ratios.
+  sapphire_testkit compare <reference.png> <capture.png>
+      Compare two images as a golden is compared: FLIP's mean, p99, worst 16x16 tile and
+      maximum, and whether the golden gates pass.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,8 +48,11 @@ fn main() -> ExitCode {
 }
 
 fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
-    if args.first().map(String::as_str) != Some("golden") {
-        return Err("expected the `golden` command".into());
+    match args.first().map(String::as_str) {
+        Some("golden") => {}
+        Some("measure") => return measure(&args[1..]).map(|()| Vec::new()),
+        Some("compare") => return compare(&args[1..]).map(|()| Vec::new()),
+        _ => return Err("expected the `golden`, `measure` or `compare` command".into()),
     }
     args.remove(0);
     let mut flag = |name: &str| args.iter().position(|arg| arg == name).map(|i| args.remove(i)).is_some();
@@ -74,4 +88,52 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         (Some(_), Some(_)) => return Err("--scene and --shard can't be combined".into()),
     };
     scenes::run(&paths, mode, selection, timeout)
+}
+
+/// `measure`: prints one line of the two captures' lines and edges.
+#[allow(clippy::print_stdout, reason = "the line is the command's output, for scripts to read")]
+fn measure(args: &[String]) -> Result<(), String> {
+    let (paths, region) = match args {
+        [with, without] => ([with, without], None),
+        [with, without, flag, region] if flag == "--region" => {
+            ([with, without], Some(region.parse::<Region>()?))
+        }
+        _ => return Err("measure expects two captures and an optional --region".into()),
+    };
+    let [with, without] = paths.map(|path| read(path));
+    let (with, without) = (with?, without?);
+    let region = region.unwrap_or(Region::of(&with));
+    let lines = Lines::between(&with, &without, region)?;
+    let spread = Spread::of(&without, region, |_, _| false)?;
+    println!(
+        "lines_strength={:.1} lines_contrast={:.4} lines_width={:.1} edge_total={:.3} edge_spread={:.1}",
+        lines.strength,
+        lines.contrast(),
+        lines.width(),
+        spread.total,
+        spread.width(),
+    );
+    Ok(())
+}
+
+/// `compare`: prints one line of FLIP's numbers for a capture against a reference.
+#[allow(clippy::print_stdout, reason = "the line is the command's output, for scripts to read")]
+fn compare(args: &[String]) -> Result<(), String> {
+    let [reference, capture] = args else { return Err("compare expects a reference and a capture".into()) };
+    let thresholds = Thresholds::default();
+    let comparison = golden::compare(&read(reference)?, &read(capture)?, &thresholds)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "flip_mean={:.4} flip_p99={:.4} worst_tile={:.4} max={:.4} gates={}",
+        comparison.mean,
+        comparison.percentile_value,
+        comparison.worst_tile,
+        comparison.max,
+        if comparison.passes(&thresholds) { "pass" } else { "fail" },
+    );
+    Ok(())
+}
+
+fn read(path: &str) -> Result<Image, String> {
+    Image::read_png(path.as_ref()).map_err(|error| error.to_string())
 }

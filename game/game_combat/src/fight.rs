@@ -1415,7 +1415,9 @@ impl FightShow {
             // A timeline's character track plays its row in the combat slot over whatever the simulation
             // says (M3 Q3), on a clock that goes on through a cutscene that holds the simulation's.
             input.ticks += held_ticks;
-            if let Some(combat) = staged.and_then(|staged| staged[index]) {
+            // Only the first two have a role, `hero` and `foe`: a crowd's others play what the simulation says
+            // (the whole walk's ultimate among three found this, M3 G1c).
+            if let Some(combat) = staged.and_then(|staged| staged.get(index).copied().flatten()) {
                 input.combat = Some(combat);
             }
             stats.characters += 1;

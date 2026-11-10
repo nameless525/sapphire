@@ -11,10 +11,10 @@ use game_combat::combat::{Combat, CombatOption};
 use game_flow::document::FlowDocument;
 use game_flow::flow::{FlowCommand, FlowState, Run};
 use game_flow::game::{FlowContent, Game, GameSetup};
-use game_flow::progress::{self, progress_store};
+use game_flow::progress::{self, Progress, progress_store};
 use sapphire_core::Name;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_gameplay::{ActorId, TickActions};
+use sapphire_gameplay::{ActorId, EncounterPhase, FlagValues, TickActions, ZoneStart};
 use sapphire_serialize::AssetId;
 
 #[global_allocator]
@@ -24,6 +24,8 @@ static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 const GROUND: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
 /// content/zones/proving_hub/proving_hub.zone.ron
 const HUB: AssetId = AssetId::from_text("5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805");
+/// content/zones/proving_ground/cart_yard.encounter.ron, whose clearing wins.
+const CART_YARD: AssetId = AssetId::from_text("5d3a9e21-7c44-4b0e-9f16-0a8ce3b7d214");
 /// The proving ground's platform checkpoint, where the save puts a continued run.
 const PLATFORM: [f32; 3] = [-13.5, 1.0, -20.0];
 
@@ -152,4 +154,28 @@ fn a_new_game_goes_out_and_back_saves_at_a_checkpoint_and_continues_there() {
     assert_eq!(next.flow().state(), FlowState::Title { stood: Run::Saved });
     let combat = Combat::new(&next.first_run()).expect("the saved run stands behind the title");
     assert!(near(player(&combat), PLATFORM), "the next launch's continue starts there too");
+}
+
+/// A save written on the step the run was won, its last fight cleared, continues into the cleared ground
+/// rather than into the win again, which would go back to the title over the same save for ever: what a save
+/// brought cleared began and ended before this run.
+#[test]
+fn a_save_made_at_the_win_continues_without_winning_again() {
+    let dir = Scratch::new("won-then-continue");
+    let store = progress_store(&dir.0, |path, bytes| std::fs::write(path, bytes));
+    let won = Progress {
+        zone: GROUND,
+        start: ZoneStart { checkpoint: None, cleared: vec![CART_YARD] },
+        flags: FlagValues::default(),
+    };
+    store.write(&store.snapshot(&won).expect("snapshots")).expect("writes");
+    let mut game = game(&dir);
+    assert_eq!(game.flow().state(), FlowState::Title { stood: Run::Saved });
+    let mut combat = Combat::new(&game.first_run()).expect("the saved run stands");
+    assert_eq!(game.command(FlowCommand::Continue), None);
+    steps(&mut game, &mut combat, 10);
+    let zone = combat.simulation().zone().expect("the ground");
+    let yard = zone.encounters().iter().find(|held| held.id() == CART_YARD).expect("the cart yard");
+    assert_eq!(yard.phase(), EncounterPhase::Cleared, "as the save says");
+    assert_eq!(game.flow().state(), FlowState::Playing, "won before this run, so not won again");
 }

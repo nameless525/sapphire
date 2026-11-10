@@ -110,7 +110,8 @@ struct RunSeen {
     /// The timeline a beat played, by place in [`Game::timelines`], until it ends.
     playing: Option<usize>,
     /// By encounter, one bit each, those cleared before the run's first step, as a save's are: they didn't
-    /// begin in this run, so a beat waiting on one beginning doesn't fire for them.
+    /// begin or end in this run, so a beat waiting on one beginning or being cleared doesn't fire for them. A
+    /// save written as the last fight's cleared would otherwise win again on every continue.
     cleared_before: u64,
     /// Whether a step has been looked at, which [`Self::cleared_before`] is taken at.
     looked: bool,
@@ -126,16 +127,11 @@ struct RunView<'a> {
 
 impl FlowView for RunView<'_> {
     fn encounter_started(&self, encounter: AssetId) -> bool {
-        let Some(zone) = self.sim.zone() else { return false };
-        let Some(place) = zone.encounters().iter().position(|held| held.id() == encounter) else {
-            return false;
-        };
-        let before = place < 64 && self.seen.cleared_before & (1 << place) != 0;
-        !before && zone.encounters()[place].phase() != EncounterPhase::Waiting
+        self.phase_this_run(encounter).is_some_and(|phase| phase != EncounterPhase::Waiting)
     }
 
     fn encounter_cleared(&self, encounter: AssetId) -> bool {
-        self.phase(encounter) == Some(EncounterPhase::Cleared)
+        self.phase_this_run(encounter) == Some(EncounterPhase::Cleared)
     }
 
     fn timeline_ended(&self, timeline: AssetId) -> bool {
@@ -166,9 +162,12 @@ impl FlowView for RunView<'_> {
 }
 
 impl RunView<'_> {
-    fn phase(&self, encounter: AssetId) -> Option<EncounterPhase> {
+    /// The encounter's phase, if the run's zone has it and it wasn't cleared before the run began.
+    fn phase_this_run(&self, encounter: AssetId) -> Option<EncounterPhase> {
         let zone = self.sim.zone()?;
-        zone.encounters().iter().find(|held| held.id() == encounter).map(|held| held.phase())
+        let place = zone.encounters().iter().position(|held| held.id() == encounter)?;
+        let before = place < 64 && self.seen.cleared_before & (1 << place) != 0;
+        (!before).then(|| zone.encounters()[place].phase())
     }
 }
 
@@ -347,7 +346,7 @@ impl Game {
     }
 
     /// A beat's timeline: the player brought to `align` first, then it plays, each a recorded command. One the
-    /// run can't play has ended, so the flow goes on.
+    /// run can't play, as when a move's cinematic is playing, has ended, so the flow goes on.
     fn play(&mut self, combat: &mut Combat, timeline: AssetId, align: Option<&str>) {
         if let Some(checkpoint) = align
             && let Err(error) = combat.return_to_checkpoint(checkpoint)
@@ -355,19 +354,18 @@ impl Game {
             self.stats.refused += 1;
             tracing::warn!(target: LOG_TARGET, checkpoint, %error, "a beat's checkpoint didn't take");
         }
-        let place = self.timelines.iter().position(|&(asset, _)| asset == timeline);
-        let played = match place {
-            Some(place) => combat.play_timeline(self.timelines[place].1).map(|()| place),
-            None => Err("the run's scenario loads no such timeline".to_owned()),
+        // `check` held every beat's timeline to what the scenario loads.
+        let Some(place) = self.timelines.iter().position(|&(asset, _)| asset == timeline) else {
+            self.stats.refused += 1;
+            tracing::error!(target: LOG_TARGET, %timeline, "the run's scenario loads no such timeline");
+            return;
         };
-        match played {
-            Ok(place) => self.seen.playing = Some(place),
+        match combat.play_timeline(self.timelines[place].1) {
+            Ok(()) => self.seen.playing = Some(place),
             Err(error) => {
                 self.stats.refused += 1;
                 tracing::warn!(target: LOG_TARGET, %timeline, %error, "a beat's timeline didn't play");
-                // It ends now, so a beat waiting on its end can fire.
-                self.timelines.push((timeline, TimelineId::from_raw(u32::MAX)));
-                let place = self.timelines.len() - 1;
+                // It ends now, where the flow and a beat waiting on its end look for it.
                 if place < 64 {
                     self.seen.ended |= 1 << place;
                 }
@@ -469,4 +467,37 @@ fn check(content: &FlowContent) -> Result<Loads, String> {
         }
     }
     Ok((timelines, dialogues))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// content/zones/lantern_ward/court_gate.timeline.ron
+    const COURT_GATE: AssetId = AssetId::from_text("7c42b73f-d94d-4eb2-b064-2637819640a8");
+
+    fn ward() -> Game {
+        let document =
+            FlowDocument::from_ron(include_str!("../../../content/game.flow.ron")).expect("the flow reads");
+        let registry =
+            FlagRegistry::from_ron(include_str!("../../../content/flags.ron")).expect("the flags read");
+        let registered = registry.flags.iter().map(|flag| Name::new(flag)).collect();
+        Game::new(FlowContent { document, registered }, GameSetup::default()).expect("the ward's flow stands")
+    }
+
+    /// A beat's timeline the run refuses (a fight with no file plays none, and a recording refuses one while
+    /// a move's cinematic plays) has ended where the flow looks for it, so its cutscene doesn't wait for
+    /// ever, and nothing grows.
+    #[test]
+    fn a_timeline_the_run_refuses_has_ended() {
+        let mut game = ward();
+        let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("stands");
+        let loaded = game.timelines.len();
+        game.play(&mut fight, COURT_GATE, None);
+        assert_eq!(game.stats().refused, 1);
+        let view =
+            RunView { sim: fight.simulation(), player: None, seen: &game.seen, timelines: &game.timelines };
+        assert!(view.timeline_ended(COURT_GATE), "the flow goes on from it");
+        assert_eq!(game.timelines.len(), loaded, "nothing grows");
+    }
 }

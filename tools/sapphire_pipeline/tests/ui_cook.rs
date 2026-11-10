@@ -410,9 +410,10 @@ fn the_game_s_screens_cook_in_both_languages_and_bring_their_characters() {
     {
         copy(file.to_owned());
     }
-    for locale in ["en", "ja"] {
-        copy(format!("loc/{locale}/game_ui.ftl"));
-        copy(format!("loc/{locale}/game_ui.ftl.meta"));
+    // The HUD's subtitle names a cutscene's line and speaker (M3 Q4), whose keys are `cutscenes.ftl`'s.
+    for (locale, table) in [("en", "game_ui"), ("ja", "game_ui"), ("en", "cutscenes"), ("ja", "cutscenes")] {
+        copy(format!("loc/{locale}/{table}.ftl"));
+        copy(format!("loc/{locale}/{table}.ftl.meta"));
     }
     // An objective no document names, which the HUD's `hud-objective-` keys can show: the cook brings its
     // characters, though the character set doesn't have them.

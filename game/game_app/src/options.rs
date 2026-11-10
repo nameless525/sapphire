@@ -82,6 +82,12 @@ impl Options {
                 _ => return Err(format!("unknown argument {arg:?}")),
             }
         }
+        if options.choose == Some(FlowCommand::Continue) && !options.saves() {
+            // It would draw the title, as a continue with nothing to continue does, and say nothing.
+            return Err("--continue with --capture continues the save in --save-dir: a capture keeps none \
+                        of its own"
+                .to_owned());
+        }
         Ok(options)
     }
 
@@ -169,5 +175,8 @@ mod tests {
         assert!(parse(&["--ticks", "many"]).is_err());
         assert!(parse(&["--script"]).is_err());
         assert!(parse(&["--save-dir"]).is_err());
+        let refused = parse(&["--capture", "a.png", "--continue"]).expect_err("nothing to continue");
+        assert!(refused.contains("--save-dir"), "{refused}");
+        assert!(parse(&["--continue"]).is_ok(), "a window's game keeps its save");
     }
 }

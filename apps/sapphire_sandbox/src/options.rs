@@ -1317,6 +1317,30 @@ impl Options {
         if options.game.is_some() && (!capturing || fight || replay.is_some() || record.is_some()) {
             return Err("--game draws the game's own runs with no window: it needs --capture, and no --fight, --replay or --record".to_owned());
         }
+        if options.game.is_some() {
+            // The game's own scene, a frame a tick, on the command line's quality settings (`--tier` and
+            // the rest, which a golden pins): what else would change the scene or the capture can't reach
+            // it, so it's refused rather than dropped.
+            for (given, flag) in [
+                (capture_frames.is_some(), "--capture-frames"),
+                (capture_step.is_some(), "--capture-step"),
+                (options.draw_every.is_some(), "--draw-every"),
+                (options.in_town(), "--look-dev or --arena"),
+                (options.zone.is_some(), "--zone"),
+                (ui_game.is_some(), "--ui-game"),
+            ] {
+                if given {
+                    return Err(format!(
+                        "--game draws the game's own scene a frame a tick, which {flag} doesn't reach"
+                    ));
+                }
+            }
+        }
+        if options.game == Some(GameStart::Continue) && options.progress.is_none() {
+            return Err(
+                "--game continue continues the save --progress names, and keeps none of its own".to_owned()
+            );
+        }
         if options.progress.is_some() && options.game.is_none() {
             return Err("--progress is the save the game's own show starts over: it needs --game".to_owned());
         }
@@ -2286,10 +2310,26 @@ mod tests {
         refused(&["--game", "title"], "--capture");
         refused(&["--game", "title", "--capture", "x", "--replay", "a"], "--replay");
         refused(&["--game", "over", "--capture", "x"], "--game expects");
-        let (game, _) = parse(&["--game", "continue", "--capture", "x"]).unwrap();
-        assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
+        // What the game's capture can't reach is refused, not dropped.
+        for (flag, value) in [
+            ("--capture-frames", "4"),
+            ("--capture-step", "2"),
+            ("--draw-every", "50"),
+            ("--look-dev", "hero"),
+            ("--zone", "lantern_ward"),
+            ("--ui-game", "title"),
+        ] {
+            refused(&["--game", "title", "--capture", "x", flag, value], "--game draws the game's own scene");
+        }
+        refused(&["--game", "title", "--capture", "x", "--arena"], "--look-dev or --arena");
+        // The quality settings reach it, as a golden pins its tier.
+        let (pinned, _) = parse(&["--game", "title", "--capture", "x", "--tier", "desktop-high"]).unwrap();
+        assert_eq!(pinned.quality_settings().tier, Some(TierId::DesktopHigh));
+        // With no save of its own, a continue with none named would draw the title, saying nothing.
+        refused(&["--game", "continue", "--capture", "x"], "--progress names");
         refused(&["--progress", "saved.ron", "--capture", "x"], "--progress");
         let (game, _) = parse(&["--game", "continue", "--progress", "saved.ron", "--capture", "x"]).unwrap();
+        assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
         assert_eq!(game.progress.as_deref(), Some(std::path::Path::new("saved.ron")));
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");

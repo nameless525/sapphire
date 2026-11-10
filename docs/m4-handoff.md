@@ -148,7 +148,7 @@ For the player, on a clip of its own ([m3-handoff.md](m3-handoff.md) has M2's ve
 1. **Pose it.** Add a function in [tools/motion/moves.py](../tools/motion/moves.py) to its `MOVES`, and give it an ID in `frames.py`'s `IDS`. `--write` writes `<name>.keypose.ron` and its sidecar. `--write-numbers` puts `frames.py`'s draft frame numbers into the moves document. Read a sheet with `sheet.py`.
 2. **Frame it.** Add a row to [player.moves.ron](../content/combat/player/player.moves.ron), last in `moves`, with `name`; `startup`, `active` and `recovery`, adding up to the clip's length; `motion`; `hitboxes` on path `blade`; `cancels`, `warps` and `cues`; and optionally `invulnerable`.
 
-   A row has no intent. A press reaches a move through the top-level `intents` and `neutral`, or through another move's `cancels`. M3 added two optional fields: `cost`, against the fighter's `energy` (Q3c), and `cinematic`, naming a timeline (Q3b). **Rust step:** only the name `ultimate` is loaded (`ULTIMATE_CINEMATIC` in `crates/sapphire_gameplay/src/replay/scenario.rs`).
+   A row has no intent. A press reaches a move through the top-level `intents` and `neutral`, or through another move's `cancels`. M3 added two optional fields: `cost`, against the fighter's `energy` (Q3c), and `cinematic`, naming a timeline (Q3b): `<name>.timeline.ron` beside the moves document, on the `Steps` clock. Every fight on the set loads it by that name (Z5a), and a name with no timeline there fails the scenario, naming the move.
 3. **Rust step:** add it to `MOVES`, and to `ATTACKS` if it's an attack, in [player_moves.rs](../tools/sapphire_pipeline/tests/player_moves.rs). `each_move_plays_the_clip_of_its_name` fails without it.
 4. **Give it a row in the graph:** [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron)'s `clips` and `combat.moves`. Without it, `every_move_a_fighter_has_is_in_its_graph` fails.
 5. **Give any new cue a row** in [default_cues.ron](../crates/sapphire_cues/default_cues.ron). Without it, `every_cue_the_recordings_publish_has_a_row` fails.
@@ -180,7 +180,7 @@ Walked. The worked example is [content/combat/knell_colossus/](../content/combat
 
 1. **A kind of enemy, as above,** with three more things in its `.enemy.ron`:
    - `boss: Some((name: "boss-<name>"))`, its bar's name key, which the HUD draws on the bar. Add `boss-<name>` to `content/loc/{en,ja}/game_ui.ftl`, and any new Han to `content/fonts/ui.charset.ron`. `cargo test -p game_ui --test strings` fails a boss whose name either language lacks (Z3e).
-   - `phases` with names, `(at: 500, name: Some("tolling"))`. The hit that crosses a phase says its name as the boss's cue and changes the brain the phase names. The HUD's boss bar marks each phase.
+   - `phases` with names, `(at: 500, name: Some("tolling"))`. The hit that crosses a phase says its name as the boss's cue and changes the brain the phase names. The HUD's boss bar marks each phase. From there the music plays the score's phase of that name, if it has one (see "Music by encounter phase").
    - `script: "<id>"`, naming a `.luau` by its sidecar's ID. The sidecar's importer is `Script(())`.
 2. **The script.** It returns `names` and its hooks: `on_phase(actor, phase, health)`, `on_move`, `on_hit`, `on_defeat` and `on_beat` are in [sapphire.d.luau](../crates/sapphire_script/sapphire.d.luau). **Phases count from 1, and so do places in `names`;** the walk's first try checked `phase == 0` and never fired. Commands such as `sapphire.set_brain(actor, place)` and `sapphire.force_move(actor, place)` take a place in `names`. A script is pure decisions, with no strings at run time (plan §3, "Luau's job"), and the scan refuses string concatenation and a bare `for` over a table.
 3. **Into a zone, content only.** Add a spawner whose `spawns` is the kind, an encounter that calls it, and the scenario updates the next recipe names. The commit that does this must touch only `content/`, `tests/replays/` and `tests/golden/`, or `bosses_are_content.rs` fails. The boss's name must be in no `.rs` file, test messages included, and its script must be reached from the zone.
@@ -254,10 +254,10 @@ The worked examples are the six documents in [content/ui/](../content/ui/). Spec
 
 The worked examples are `content/audio/generated/music/lantern.score.ron` and `content/audio/generated/voice/{en,ja}.voice.ron`. Spec §5.15 is the reference.
 
-1. **A score:** a `Score` document with `tempo_bpm`, `beats_per_bar` and `bars`; `stems`, each with its `.ogg` by ID; `phases`, each naming the stems it plays; and `fade_beats`, `volume_db` and `duck_db`. Its sidecar's importer is `Score(())`. The phases a fight chooses are `waiting`, `running` and `cleared`, and the flow's `music` names those for the title, a defeat and a win. A phase change fades only the stems it changes, from the next bar line.
+1. **A score:** a `Score` document with `tempo_bpm`, `beats_per_bar` and `bars`; `stems`, each with its `.ogg` by ID; `phases`, each naming the stems it plays; and `fade_beats`, `volume_db` and `duck_db`. Its sidecar's importer is `Score(())`. The phases a fight chooses are `waiting`, `running` and `cleared`, and the flow's `music` names those for the title, a defeat and a win. A boss's named phase plays in place of `running` once its health is past it, if the score has a phase of that name (Z5a): the Knell Colossus's `tolling` is the worked example. A phase change fades only the stems it changes, from the next bar line.
 2. **Which score:** `music:` in [default_cues.ron](../crates/sapphire_cues/default_cues.ron), by ID. That's a data edit, compiled in.
 3. **Voice lines:** each line is a `Cue` document on the `Voice` bus with its `.ogg`. Each language's `VoiceLines` document lists `(key, cue)`, and `voices:` in `default_cues.ron` names each language's document. A cue-table row speaks a line with `line: Some("<key>")` when the simulation publishes that row's cue. The voice language follows the player's language setting.
-4. **Rust steps:** a phase name other than the three, such as a boss's `tolling`, is chosen in `game_combat::cues::music_phase`. A line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred"). New placeholder sounds are rows in `tools/sapphire_soundgen`; a recorded `.ogg` needs none.
+4. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred"). New placeholder sounds are rows in `tools/sapphire_soundgen`; a recorded `.ogg` needs none.
 
 ## Rules the reviews made
 
@@ -289,10 +289,8 @@ M3's first pillar counts each of these as a bug:
 - **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
 - **A replay's scripted input** is a row in `crates/sapphire_gameplay/src/replay/script.rs`. Recording on an existing script needs none.
 - **A new player move** joins `MOVES` (and `ATTACKS`) in `tools/sapphire_pipeline/tests/player_moves.rs`.
-- **A cinematic other than `ultimate`** needs its name loaded in `replay/scenario.rs` and `game_combat::arena`.
 - **The sandbox's dialogue preview** always shows the guide.
 - **A new screen** is a `MenuScreen` variant with a model struct.
-- **A music phase other than `waiting`, `running` and `cleared`** is chosen in `game_combat::cues::music_phase`. A boss's named phase is the natural next one, and its stems have to be written first.
 - **A shelved zone** is a row of `BAKED_ZONES` in `replay/scenario.rs`.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 

@@ -341,8 +341,8 @@ impl Game {
         let action = self.flow.observe(&view);
         let opened = match action {
             Some(FlowAction::PlayTimeline { timeline, align }) => {
-                let align = align.map(str::to_owned);
-                self.play(combat, timeline, align.as_deref());
+                // `align` is the flow's document's, so the run's marks go by field, not through `self`.
+                play_beat(combat, &self.timelines, &mut self.seen, &mut self.stats, timeline, align);
                 None
             }
             Some(FlowAction::OpenDialogue(dialogue)) => Some(dialogue),
@@ -350,34 +350,6 @@ impl Game {
         };
         self.save(combat.simulation());
         opened
-    }
-
-    /// A beat's timeline: the player brought to `align` first, then it plays, each a recorded command. One the
-    /// run can't play, as when a move's cinematic is playing, has ended, so the flow goes on.
-    fn play(&mut self, combat: &mut Combat, timeline: AssetId, align: Option<&str>) {
-        if let Some(checkpoint) = align
-            && let Err(error) = combat.return_to_checkpoint(checkpoint)
-        {
-            self.stats.refused += 1;
-            tracing::warn!(target: LOG_TARGET, checkpoint, %error, "a beat's checkpoint didn't take");
-        }
-        // `check` held every beat's timeline to what the scenario loads.
-        let Some(place) = self.timelines.iter().position(|&(asset, _)| asset == timeline) else {
-            self.stats.refused += 1;
-            tracing::error!(target: LOG_TARGET, %timeline, "the run's scenario loads no such timeline");
-            return;
-        };
-        match combat.play_timeline(self.timelines[place].1) {
-            Ok(()) => self.seen.playing = Some(place),
-            Err(error) => {
-                self.stats.refused += 1;
-                tracing::warn!(target: LOG_TARGET, %timeline, %error, "a beat's timeline didn't play");
-                // It ends now, where the flow and a beat waiting on its end look for it.
-                if place < 64 {
-                    self.seen.ended |= 1 << place;
-                }
-            }
-        }
     }
 
     /// Writes the save if the run has moved on in the flow's zone: not while it's somewhere else, nor after a
@@ -429,6 +401,42 @@ impl Game {
     pub fn finish(&mut self) {
         if let Some(kept) = &mut self.kept {
             kept.finish();
+        }
+    }
+}
+
+/// A beat's timeline: the player brought to `align` first, then it plays, each a recorded command. One the
+/// run can't play, as when a move's cinematic is playing, has ended, so the flow goes on. What takes
+/// allocates nothing.
+fn play_beat(
+    combat: &mut Combat,
+    timelines: &[(AssetId, TimelineId)],
+    seen: &mut RunSeen,
+    stats: &mut GameStats,
+    timeline: AssetId,
+    align: Option<&str>,
+) {
+    if let Some(checkpoint) = align
+        && let Err(error) = combat.return_to_checkpoint(checkpoint)
+    {
+        stats.refused += 1;
+        tracing::warn!(target: LOG_TARGET, checkpoint, %error, "a beat's checkpoint didn't take");
+    }
+    // `check` held every beat's timeline to what the scenario loads.
+    let Some(place) = timelines.iter().position(|&(asset, _)| asset == timeline) else {
+        stats.refused += 1;
+        tracing::error!(target: LOG_TARGET, %timeline, "the run's scenario loads no such timeline");
+        return;
+    };
+    match combat.play_timeline(timelines[place].1) {
+        Ok(()) => seen.playing = Some(place),
+        Err(error) => {
+            stats.refused += 1;
+            tracing::warn!(target: LOG_TARGET, %timeline, %error, "a beat's timeline didn't play");
+            // It ends now, where the flow and a beat waiting on its end look for it.
+            if place < 64 {
+                seen.ended |= 1 << place;
+            }
         }
     }
 }
@@ -514,7 +522,7 @@ mod tests {
         let mut game = ward();
         let mut fight = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("stands");
         let loaded = game.timelines.len();
-        game.play(&mut fight, COURT_GATE, None);
+        play_beat(&mut fight, &game.timelines, &mut game.seen, &mut game.stats, COURT_GATE, None);
         assert_eq!(game.stats().refused, 1);
         let view = RunView {
             sim: fight.simulation(),

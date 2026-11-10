@@ -179,3 +179,58 @@ fn a_save_made_at_the_win_continues_without_winning_again() {
     assert_eq!(yard.phase(), EncounterPhase::Cleared, "as the save says");
     assert_eq!(game.flow().state(), FlowState::Playing, "won before this run, so not won again");
 }
+
+/// content/zones/lantern_ward/lantern_ward.zone.ron
+const WARD: AssetId = AssetId::from_text("f15b7d04-631d-59b5-8c42-338147fc4e86");
+/// The ward's encounters: market, garden, court and terrace.
+const WARD_FIGHTS: [&str; 4] = [
+    "9c124ff2-ab3d-4b6c-a281-79dc6eade2ec",
+    "f2a2a203-7ac5-4a8b-91ec-4366daa62246",
+    "3e7d6965-beed-4aee-86c8-ea292239a816",
+    "a03f7333-c342-4c3b-bbc4-dd3a096e9297",
+];
+
+/// `ward-court`, whose court checkpoint brings the gate's cutscene, aligned to it, and whose terrace wins.
+const GATE_FLOW: &str = r#"(type: "sapphire::game::FlowDocument", version: 1, data: (
+    scenario: "ward-court",
+    zone: "f15b7d04-631d-59b5-8c42-338147fc4e86",
+    beats: [
+        (when: Reached("court"), align: Some("court"), then: Timeline("7c42b73f-d94d-4eb2-b064-2637819640a8")),
+        (when: Cleared("a03f7333-c342-4c3b-bbc4-dd3a096e9297"), then: Victory),
+    ],
+    music: (title: "waiting", victory: "cleared", defeat: "waiting"),
+    holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
+))"#;
+
+/// A beat's step that saves nothing allocates nothing either: a continue at the court, which the save
+/// already holds, plays the gate on its first step, aligned to the court, both recorded commands.
+#[test]
+fn a_beats_step_that_saves_nothing_allocates_nothing() {
+    let dir = Scratch::new("beat-allocates-nothing");
+    let store = progress_store(&dir.0, |path, bytes| std::fs::write(path, bytes));
+    let mut cleared: Vec<AssetId> = WARD_FIGHTS.iter().map(|id| AssetId::from_text(id)).collect();
+    cleared.sort_unstable();
+    let at_court = Progress {
+        zone: WARD,
+        start: ZoneStart { checkpoint: Some("court".to_owned()), cleared },
+        flags: FlagValues::default(),
+    };
+    store.write(&store.snapshot(&at_court).expect("snapshots")).expect("writes");
+    let content =
+        FlowContent { document: FlowDocument::from_ron(GATE_FLOW).expect("reads"), registered: Vec::new() };
+    let store = progress_store(&dir.0, |path, bytes| std::fs::write(path, bytes));
+    let mut game = Game::new(content, GameSetup { store: Some(store), ..GameSetup::default() })
+        .expect("the game has what it names");
+    assert_eq!(game.flow().state(), FlowState::Title { stood: Run::Saved });
+    let mut combat = Combat::new(&game.first_run()).expect("the saved run stands");
+    assert_eq!(game.command(FlowCommand::Continue), None);
+    let allocated = steps(&mut game, &mut combat, 1);
+    assert!(
+        matches!(game.flow().state(), FlowState::Cutscene { .. }),
+        "the gate plays: {:?}",
+        game.flow().state()
+    );
+    assert_eq!(game.stats().refused, 0, "its align and its timeline took");
+    assert_eq!(game.progress().cloned(), Some(at_court), "nothing new to save");
+    assert!(!allocated || !PER_THREAD_COUNTS, "the beat's step allocates nothing");
+}

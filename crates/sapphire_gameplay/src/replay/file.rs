@@ -632,6 +632,11 @@ impl Replay {
     }
 }
 
+/// The commands a recording has room for from its start: a game's run records a few a beat, each beat
+/// once (M3 G1), so a beat's step pushes them with no heap, as a step that saves nothing promises. Past
+/// this many, the list grows as a `Vec` does.
+const COMMANDS_RESERVED: usize = 64;
+
 /// Builds a [`Replay`] one tick at a time, joining repeats into runs as it goes, so it costs what
 /// the file will: nothing for a tick like the last.
 #[derive(Clone, Debug)]
@@ -655,7 +660,7 @@ impl Recorder {
             config,
             tables_hash,
             ticks: 0,
-            commands: Vec::new(),
+            commands: Vec::with_capacity(COMMANDS_RESERVED),
             flags: Vec::new(),
             start: None,
             body: Vec::new(),
@@ -686,7 +691,7 @@ impl Recorder {
         self.replay.ticks = MAX_TICKS;
     }
 
-    /// Adds a command before the next tick.
+    /// Adds a command before the next tick: with no heap for a recording's first 64.
     pub fn command(&mut self, command: ReplayCommand) {
         self.replay.commands.push((self.replay.ticks, command));
     }

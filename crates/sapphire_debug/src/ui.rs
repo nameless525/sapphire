@@ -669,8 +669,12 @@ fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
             ui,
             "Audio",
             format!(
-                "{}, {} Hz, {} voices, {} cues played",
-                device.state, device.sample_rate, stats.voices, stats.cues_played
+                "{}, {} Hz{}, {} voices, {} cues played",
+                device.state,
+                device.sample_rate,
+                if device.low_latency_refused { " (normal latency)" } else { "" },
+                stats.voices,
+                stats.cues_played
             ),
         );
         let dropped = stats.dropped_no_output + stats.dropped_voice_limit + stats.dropped_unknown;

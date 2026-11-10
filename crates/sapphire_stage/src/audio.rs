@@ -280,6 +280,7 @@ impl DeviceAudio {
             frames = device.frames,
             xruns = device.xruns,
             streams = device.streams_opened,
+            low_latency_refused = device.low_latency_refused,
             voices = stats.voices,
             played = stats.cues_played,
             dropped_no_output = stats.dropped_no_output,

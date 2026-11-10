@@ -70,6 +70,9 @@ struct Shared {
     mix_nanos: AtomicU64,
     mix_nanos_max: AtomicU64,
     streams_opened: AtomicU32,
+    /// Whether a stream was refused the low-latency path it asked for: see
+    /// [`DeviceStatus::low_latency_refused`].
+    low_latency_refused: AtomicBool,
     /// What the stream's error callback last said, for the worker to log: it may be called on the
     /// audio thread, so it only ever tries the lock.
     last_error: Mutex<Option<cpal::Error>>,
@@ -157,6 +160,7 @@ impl Backend for CpalOutput {
             mix_nanos: AtomicU64::new(0),
             mix_nanos_max: AtomicU64::new(0),
             streams_opened: AtomicU32::new(0),
+            low_latency_refused: AtomicBool::new(false),
             last_error: Mutex::new(None),
         });
         Ok((Self { shared, opened: opened.ok(), worker: None }, sample_rate))
@@ -166,8 +170,14 @@ impl Backend for CpalOutput {
         let shared = self.shared.clone();
         let opened = self.opened.take();
         let worker = thread::Builder::new().name("sapphire-audio-device".to_owned()).spawn(move || {
-            Worker { shared, renderer: Arc::new(Mutex::new(renderer)), stream: None, paused: false }
-                .run(opened)
+            Worker {
+                shared,
+                renderer: Arc::new(Mutex::new(renderer)),
+                stream: None,
+                paused: false,
+                said_low_latency: false,
+            }
+            .run(opened)
         });
         match worker {
             Ok(handle) => {
@@ -207,6 +217,7 @@ impl Output for CpalOutput {
             mix_nanos: shared.mix_nanos.load(Ordering::Relaxed),
             mix_nanos_max: shared.mix_nanos_max.load(Ordering::Relaxed),
             streams_opened: shared.streams_opened.load(Ordering::Relaxed),
+            low_latency_refused: shared.low_latency_refused.load(Ordering::Relaxed),
         }
     }
 }
@@ -229,6 +240,8 @@ struct Worker {
     renderer: Arc<Mutex<Renderer>>,
     stream: Option<Stream>,
     paused: bool,
+    /// Whether the log has said the device refused low latency: once a process, however many streams.
+    said_low_latency: bool,
 }
 
 impl Worker {
@@ -239,6 +252,10 @@ impl Worker {
                 && let Some(error) = last.take()
             {
                 tracing::warn!(target: LOG_TARGET, %error, "audio stream error");
+            }
+            if !self.said_low_latency && shared.low_latency_refused.load(Ordering::Relaxed) {
+                self.said_low_latency = true;
+                tracing::info!(target: LOG_TARGET, "the device refused the low-latency path; sound plays on its normal one");
             }
             if shared.rebuild.swap(false, Ordering::Relaxed) && self.stream.take().is_some() {
                 tracing::warn!(target: LOG_TARGET, "audio stream lost; opening another");
@@ -412,26 +429,38 @@ where
         shared.mix_nanos.fetch_add(nanos, Ordering::Relaxed);
         shared.mix_nanos_max.fetch_max(nanos, Ordering::Relaxed);
     };
-    let on_error = move |error: cpal::Error| {
-        match error.kind() {
-            // These come from the audio thread itself, many times over: only count them.
-            ErrorKind::Xrun => {
-                shared.xruns.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-            ErrorKind::DeviceNotAvailable | ErrorKind::StreamInvalidated | ErrorKind::DeviceChanged => {
-                shared.rebuild.store(true, Ordering::Relaxed);
-            }
-            _ => {}
-        }
-        if let Ok(mut last) = shared.last_error.try_lock() {
-            *last = Some(error);
-        }
-        worker.unpark();
-    };
+    let on_error = move |error: cpal::Error| heard(&shared, &worker, error);
     device
         .build_output_stream(config, on_data, on_error, None)
         .map_err(|error| format!("can't open a stream: {error}"))
+}
+
+/// What a stream's error callback does with `error`, which may come on the audio thread itself.
+fn heard(shared: &Shared, worker: &Thread, error: cpal::Error) {
+    match error.kind() {
+        // These come from the audio thread itself, many times over: only count them.
+        ErrorKind::Xrun => {
+            shared.xruns.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        // Not an error: the stream runs, on the device's normal path rather than the low-latency one
+        // `cpal`'s `realtime` asks AAudio for. The Android emulator never grants it, and a phone may
+        // not for some outputs (Bluetooth, a rate not its own). It's a state, said once (M3 Z2c).
+        ErrorKind::RealtimeDenied => {
+            if !shared.low_latency_refused.swap(true, Ordering::Relaxed) {
+                worker.unpark();
+            }
+            return;
+        }
+        ErrorKind::DeviceNotAvailable | ErrorKind::StreamInvalidated | ErrorKind::DeviceChanged => {
+            shared.rebuild.store(true, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+    if let Ok(mut last) = shared.last_error.try_lock() {
+        *last = Some(error);
+    }
+    worker.unpark();
 }
 
 /// One callback's mix, into `data` as `T`s, through `scratch`, whole frames long.
@@ -740,6 +769,7 @@ mod tests {
             mix_nanos: AtomicU64::new(0),
             mix_nanos_max: AtomicU64::new(0),
             streams_opened: AtomicU32::new(0),
+            low_latency_refused: AtomicBool::new(false),
             last_error: Mutex::new(None),
         })
     }
@@ -823,6 +853,23 @@ mod tests {
         takes::<U24>();
         takes::<u32>();
         takes::<u64>();
+    }
+
+    #[test]
+    fn a_refused_low_latency_is_a_state_and_not_an_error() {
+        let shared = shared();
+        let worker = thread::current();
+        heard(&shared, &worker, cpal::Error::new(ErrorKind::RealtimeDenied));
+        heard(&shared, &worker, cpal::Error::new(ErrorKind::RealtimeDenied));
+        assert!(shared.low_latency_refused.load(Ordering::Relaxed));
+        assert!(shared.last_error.lock().expect("not poisoned").is_none(), "nothing for the log's warnings");
+        assert!(!shared.rebuild.load(Ordering::Relaxed), "the stream stays");
+
+        heard(&shared, &worker, cpal::Error::new(ErrorKind::Xrun));
+        assert_eq!(shared.xruns.load(Ordering::Relaxed), 1);
+        heard(&shared, &worker, cpal::Error::new(ErrorKind::DeviceChanged));
+        assert!(shared.rebuild.load(Ordering::Relaxed));
+        assert!(shared.last_error.lock().expect("not poisoned").is_some(), "a lost device is still said");
     }
 
     #[test]

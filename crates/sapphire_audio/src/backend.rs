@@ -103,6 +103,10 @@ pub struct DeviceStatus {
     pub mix_nanos_max: u64,
     /// Streams opened: more than 1 means the device was lost and came back.
     pub streams_opened: u32,
+    /// Whether the device refused a stream the low-latency path it asked for, so sound plays on its
+    /// normal one, tens of milliseconds later: Android's AAudio on the emulator always, and on a phone
+    /// for some outputs. Not an error, and said once in the log.
+    pub low_latency_refused: bool,
 }
 
 impl DeviceStatus {

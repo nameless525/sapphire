@@ -171,9 +171,20 @@ impl Staging {
 
     /// Removes everything staged: what a download does when the install is already the host's release.
     pub(crate) fn clear(&self) -> Result<(), StagingError> {
-        self.keep_only(&HashSet::new(), &HashSet::new(), &HashSet::new())?;
+        self.clear_with(|path| fs::remove_file(path))
+    }
+
+    /// [`Self::clear`], removing each file through `remove`: the manifest last, so a staging that still names
+    /// a release is one an installer can still finish, or clear.
+    pub(crate) fn clear_with(
+        &self,
+        mut remove: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<(), StagingError> {
+        for sub in [TABLES, BLOCKS, FILES] {
+            self.remove_where_with(sub, |_| true, &mut remove)?;
+        }
         let path = self.manifest_path();
-        match fs::remove_file(&path) {
+        match remove(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 Err(StagingError::Io { path, source: error })
             }
@@ -182,7 +193,16 @@ impl Staging {
     }
 
     /// Removes each file in `sub` whose name `remove` picks.
-    fn remove_where(&self, sub: &str, remove: impl Fn(&str) -> bool) -> Result<(), StagingError> {
+    fn remove_where(&self, sub: &str, pick: impl Fn(&str) -> bool) -> Result<(), StagingError> {
+        self.remove_where_with(sub, pick, &mut |path: &Path| fs::remove_file(path))
+    }
+
+    fn remove_where_with(
+        &self,
+        sub: &str,
+        pick: impl Fn(&str) -> bool,
+        remove: &mut impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<(), StagingError> {
         let dir = self.dir.join(sub);
         let io_error = |path: &Path| {
             let path = path.to_owned();
@@ -191,8 +211,8 @@ impl Staging {
         for entry in fs::read_dir(&dir).map_err(io_error(&dir))? {
             let path = entry.map_err(io_error(&dir))?.path();
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-            if remove(name) {
-                fs::remove_file(&path).map_err(io_error(&path))?;
+            if pick(name) {
+                remove(&path).map_err(io_error(&path))?;
             }
         }
         Ok(())

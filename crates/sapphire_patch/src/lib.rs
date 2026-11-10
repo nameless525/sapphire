@@ -1,5 +1,6 @@
-//! Patches' download (M4 P2, m4-plan §3 "What a patch moves", "What's signed" and "HTTP"): what a new
-//! release lacks, fetched by hash from a static host, checked before it's kept, and resumed after a kill.
+//! Patches (M4 P2 and P3, m4-plan §3 "What a patch moves", "What's signed" and "HTTP"): what a new release
+//! lacks, fetched by hash from a static host, checked before it's kept, and resumed after a kill; then
+//! installed beside the current release and switched to by one durable rename.
 //!
 //! # What a download does
 //!
@@ -55,23 +56,62 @@
 //! the OS's verifier everywhere but Android, where it trusts Mozilla's roots, compiled in ([`Roots`]).
 //! Integrity never rests on TLS: the signed manifest and every block's hash carry it.
 //!
+//! # Installing
+//!
+//! An [`Installation`] is an app's content: what it shipped with ([`Shipped`]: a directory, or an APK's
+//! assets), read-only, and the patches installed over it in a directory of its own, the root, laid out as a
+//! host is:
+//!
+//! ```text
+//! <root>/release.smanifest            the current release, as signed: the one name that switches releases
+//! <root>/packs/<header hash>.spack    each pack the app didn't ship, by its header hash in hex
+//! <root>/files/<blake3>               each file outside the packs the app didn't ship, by its blake3 in hex
+//! <root>/lock                         held while an install or a confirmed launch's cleaning runs
+//! ```
+//!
+//! A release's pack lives where the app shipped it if the app shipped the same pack under the same name
+//! ([`Location::Shipped`]), else under the root by its hash ([`Location::Patched`]); files likewise.
+//!
+//! [`Installation::install`] takes what a download staged. It holds the staging, so a download can't run
+//! beside it, and accepts the staged manifest again as the current release's successor: nothing staged is
+//! trusted for being there. Each new pack is assembled beside the current ones (`<hash>.spack.part`), from
+//! its tables and blocks, each kept block read from the current release's packs and each fetched one from
+//! the staging, every block checked by its hash as it's written; then flushed, read back whole (its length,
+//! header hash, table and every block's hash), and renamed to its hash. Files go the same way. Once every
+//! one is in place and its directory flushed, the new manifest replaces `<root>/release.smanifest` through
+//! `sapphire_platform::durable_replace`: that one rename switches releases. The staging is cleared after it.
+//!
+//! **A kill at any step** leaves exactly one whole release to start on. Before the rename, the manifest still
+//! names the current release, whose packs nothing touched: the new ones are under other names. After it, it
+//! names the new one, every byte of which was in place and flushed first. A killed install's leftovers are
+//! checked whole before they're used, or made again. [`Installation::open`] starts on the installed patch only
+//! if it's newer than what the app shipped, of the same cook, leaves what the simulation reads as the app
+//! shipped it, and has every pack and file it installed at its size; else on the shipped release. So an app
+//! update past a patch starts on its own content, and so does a patch that lost a file.
+//!
+//! **The release before stays** until [`Installation::confirm_launch`], which the game calls once it has
+//! launched well on the current one. A process still running on the old release may yet mount its packs, so
+//! only the next launch, on the new one, removes them, and with them whatever a killed install left.
+//!
 //! # Not here
 //!
-//! Installing what was staged is M4 P3's: assembling the new packs from kept and fetched blocks
-//! ([`Installed::block`] says where a kept one lies), checking them whole, and switching to them. When to
-//! check for a patch, the clock, the app build and the host are the game's (M4 P4).
+//! When to check for a patch, the clock, the app build, the host and where the root and the staging live
+//! are the game's (M4 P4). A power cut can't be tested here: `durable_replace`'s docs say where each OS's
+//! flush stops.
 
 //!
 //! [`Manifest::accept_successor`]: sapphire_assets::manifest::Manifest::accept_successor
 
 mod download;
 mod http;
+mod install;
 mod plan;
 mod staging;
 mod transport;
 
 pub use download::{Download, DownloadError, Outcome, Phase, Progress, Request, Retries, Staged};
 pub use http::{HttpError, HttpTransport, Roots, Timeouts};
+pub use install::{Cleaned, InstallError, InstallOutcome, InstallSteps, Installation, Location, Shipped};
 pub use plan::{Installed, InstalledBlock, InstalledError, Plan, PlanError, PlannedBlock};
 pub use staging::{Staging, StagingError};
 pub use transport::{Body, FetchError, Transport};

@@ -255,6 +255,23 @@ impl Manifest {
         Ok(next)
     }
 
+    /// The first file, in path order, that `other` may not carry as a patch of this release or this as a patch
+    /// of it: one either marks not patchable ([`ReleasedFile::patchable`]) that isn't in both, the same and
+    /// marked the same. A patch can't add, change, drop or unmark what the simulation reads (m4-plan §3 "What a
+    /// patch may carry"). `None` if every such file agrees. The patcher's plan, the installer and the
+    /// pipeline's `release --patch-from` all hold releases to this one rule.
+    pub fn unpatchable_change<'a>(&'a self, other: &'a Self) -> Option<&'a str> {
+        let differs = |release: &'a Self, against: &Self| {
+            release.files.iter().find(|file| !file.patchable && against.file(&file.path) != Some(*file))
+        };
+        let (mine, theirs) = (differs(self, other), differs(other, self));
+        let first = match (mine, theirs) {
+            (Some(mine), Some(theirs)) => Some(if theirs.path < mine.path { theirs } else { mine }),
+            (mine, theirs) => mine.or(theirs),
+        };
+        first.map(|file| file.path.as_str())
+    }
+
     /// Whether the release has expired at `now`, in seconds since the Unix epoch.
     pub fn is_expired(&self, now: u64) -> bool {
         now >= self.expires

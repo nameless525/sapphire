@@ -497,7 +497,7 @@ fn range_of(range: Range<u64>) -> Option<Range<u64>> {
 
 /// A staged table's table of contents, if it's the one `pack` names: its header, by hash, size and data
 /// offset, then its table of contents by the header's hash of it.
-fn table(pack: &ReleasedPack, bytes: &[u8]) -> Option<Toc> {
+pub(crate) fn table(pack: &ReleasedPack, bytes: &[u8]) -> Option<Toc> {
     let header = PackHeader::read(bytes).ok()?;
     if header.hash() != pack.header_hash
         || header.file_len() != pack.size

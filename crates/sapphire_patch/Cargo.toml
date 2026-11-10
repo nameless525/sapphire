@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_patch"
-description = "Patches' download: plans what a new release lacks by hash, fetches it by range on a thread of its own, and resumes after a kill."
+description = "Patches: plans what a new release lacks by hash, fetches it by range on a thread of its own and resumes after a kill, then installs it beside the current release and switches by one durable rename."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -36,6 +36,11 @@ rcgen.workspace = true
 # Its own `main` plays both sides: the test that kills, and the patcher it kills.
 [[test]]
 name = "kill"
+harness = false
+
+# The same for an install: the test that kills, and the installer it kills.
+[[test]]
+name = "install_kill"
 harness = false
 
 [lints]

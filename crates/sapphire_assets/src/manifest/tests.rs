@@ -256,6 +256,53 @@ fn a_successor_is_newer_current_for_this_app_and_this_cook() {
     );
 }
 
+/// What the simulation reads stays as the app build shipped it: a patch may change what's marked patchable,
+/// and nothing else, and the first file it gets wrong is named.
+#[test]
+fn a_patch_may_not_add_change_drop_or_unmark_what_the_simulation_reads() {
+    let base = release(10);
+    let patch = |change: &dyn Fn(&mut Vec<ReleasedFile>)| {
+        let mut next = release(11);
+        change(&mut next.files);
+        next
+    };
+    let changed = |next: &Manifest| base.unpatchable_change(next).map(str::to_owned);
+    let replace = |path: &'static str, by: ReleasedFile| {
+        move |files: &mut Vec<ReleasedFile>| {
+            let at = files.iter().position(|file| file.path == path).expect("in the release");
+            files[at] = by.clone();
+        }
+    };
+    assert_eq!(changed(&patch(&|_| {})), None);
+    assert_eq!(
+        changed(&patch(&replace("documents/ui/menus.ron", file("documents/ui/menus.ron", "new", true)))),
+        None
+    );
+    assert_eq!(
+        changed(&patch(&replace(
+            "documents/game.flow.ron",
+            file("documents/game.flow.ron", "a new flow", false)
+        ))),
+        Some("documents/game.flow.ron".to_owned())
+    );
+    assert_eq!(
+        changed(&patch(&replace("documents/flags.ron", file("documents/flags.ron", "flags", true)))),
+        Some("documents/flags.ron".to_owned()),
+        "unmarked"
+    );
+    assert_eq!(
+        changed(&patch(&|files| files.retain(|file| file.path != "documents/game.flow.ron"))),
+        Some("documents/game.flow.ron".to_owned()),
+        "dropped"
+    );
+    let added = patch(&|files| files.insert(1, file("documents/combat/tuning.ron", "tuning", false)));
+    assert_eq!(changed(&added), Some("documents/combat/tuning.ron".to_owned()), "added");
+    assert_eq!(added.unpatchable_change(&base), Some("documents/combat/tuning.ron"), "either way round");
+    // A presentation file made the simulation's is a change to what it reads, too.
+    let marked = patch(&replace("documents/ui/menus.ron", file("documents/ui/menus.ron", "menus", false)));
+    assert_eq!(changed(&marked), Some("documents/ui/menus.ron".to_owned()));
+}
+
 /// Keys rotate one hop at a time: a release signed by the old key and the new names the new one, so a client
 /// on the old trust takes it, and from then on only what the new key signs.
 #[test]

@@ -8,6 +8,7 @@ pub mod server;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use sapphire_assets::manifest::{Manifest, ManifestSignature, ReleasedFile, ReleasedPack};
 use sapphire_assets::pack::{Codec, HEADER_LEN, PackAsset, PackHeader, Toc, write_pack};
 use sapphire_assets::{AssetId, AssetKind};
-use sapphire_patch::{Installed, MANIFEST_PATH, Retries, Staging, file_path, pack_path};
+use sapphire_patch::{
+    Installation, Installed, Location, MANIFEST_PATH, Retries, Shipped, Staging, file_path, pack_path,
+};
 
 /// Release keys' seeds: the installed release names `TRUSTED`'s key for its successor.
 pub const TRUSTED: u8 = 1;
@@ -63,12 +66,18 @@ pub struct Content {
     pub files: BTreeMap<String, (Vec<u8>, bool)>,
 }
 
-/// The texture: compressible halves and noise, ten blocks; edits change blocks 4 and 5.
-fn texture(edited: bool) -> Vec<u8> {
+/// The texture: compressible halves and noise, ten blocks; the second release's edit changes blocks 4 and 5,
+/// and the third's block 8 too.
+fn texture(generation: u8) -> Vec<u8> {
     let mut bytes = pattern(5 * BLOCK, 3);
     bytes.extend(noise(5 * BLOCK, 7));
-    if edited {
+    if generation >= 1 {
         for byte in &mut bytes[4 * BLOCK + 100..6 * BLOCK - 100] {
+            *byte = !*byte;
+        }
+    }
+    if generation >= 2 {
+        for byte in &mut bytes[8 * BLOCK + 50..8 * BLOCK + 60] {
             *byte = !*byte;
         }
     }
@@ -77,20 +86,30 @@ fn texture(edited: bool) -> Vec<u8> {
 
 /// The release the install has.
 pub fn first_release() -> Content {
-    content(false)
+    content(0)
 }
 
 /// Its successor, with an edit of each kind P0 measured: two neighbouring blocks of a texture, a mesh
 /// rewritten whole at a new size (which moves every block after it, though not their bytes), a string, a
 /// zone's new piece, a screen file outside the packs, and a new pack holding only blocks the install has.
 pub fn second_release() -> Content {
-    content(true)
+    content(1)
 }
 
-fn content(edited: bool) -> Content {
+/// The release after that: another of the texture's blocks, the strings again, the second's new pack gone,
+/// and the screen file once more.
+pub fn third_release() -> Content {
+    content(2)
+}
+
+fn content(generation: u8) -> Content {
+    let edited = generation >= 1;
     let mesh = if edited { noise(3 * BLOCK + 4100, 22) } else { noise(3 * BLOCK, 21) };
-    let strings =
-        if edited { "title-tagline = A lantern for every door\n" } else { "title-tagline = Lanterns\n" };
+    let strings = match generation {
+        0 => "title-tagline = Lanterns\n",
+        1 => "title-tagline = A lantern for every door\n",
+        _ => "title-tagline = Every door, a lantern\n",
+    };
     let strings: Vec<u8> = strings.bytes().cycle().take(3000).collect();
     let sound = noise(2 * BLOCK - 300, 31);
     let mut zone =
@@ -102,7 +121,7 @@ fn content(edited: bool) -> Content {
         (
             "shared".to_owned(),
             vec![
-                asset(10, Codec::Zstd, &texture(edited)),
+                asset(10, Codec::Zstd, &texture(generation)),
                 asset(11, Codec::Zstd, &mesh),
                 asset(12, Codec::Lz4, &pattern(2000, 9)),
             ],
@@ -111,12 +130,15 @@ fn content(edited: bool) -> Content {
         ("loc".to_owned(), vec![asset(50, Codec::Zstd, &strings)]),
         ("zone_lantern_ward".to_owned(), zone),
     ]);
-    if edited {
+    if generation == 1 {
         // The same sound under another ID: a new pack, whose only block the install already holds.
         packs.insert("audio_extra".to_owned(), vec![asset(31, Codec::None, &sound)]);
     }
-    let menus: &[u8] =
-        if edited { b"(screens: [title, pause, settings])" } else { b"(screens: [title, pause])" };
+    let menus: &[u8] = match generation {
+        0 => b"(screens: [title, pause])",
+        1 => b"(screens: [title, pause, settings])",
+        _ => b"(screens: [title, pause, settings, credits])",
+    };
     Content {
         packs: packs.into_iter().map(|(name, assets)| (name, write_pack(assets).expect("packs"))).collect(),
         files: BTreeMap::from([
@@ -188,15 +210,106 @@ impl Content {
         .expect("installs")
     }
 
-    /// Writes it as an install of `version` under `dir`: `<name>.spack` beside `release.smanifest`.
+    /// Writes it as an install of `version` under `dir`, as an app ships it: `<name>.spack` and the files
+    /// outside the packs beside `release.smanifest`.
     pub fn write_install(&self, dir: &Path, version: u64) {
         fs::create_dir_all(dir).expect("makes the install");
         for (name, bytes) in &self.packs {
             fs::write(dir.join(sapphire_assets::pack::file_name(name)), bytes).expect("writes a pack");
         }
+        for (path, (bytes, _)) in &self.files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("in a directory")).expect("makes its directory");
+            fs::write(path, bytes).expect("writes a file");
+        }
         fs::write(dir.join(MANIFEST_PATH), self.signed(version, EXPIRES, TRUSTED))
             .expect("writes the manifest");
     }
+}
+
+/// Content an app shipped, in a directory as [`Content::write_install`] writes it.
+#[derive(Clone, Debug)]
+pub struct ShippedDir(pub PathBuf);
+
+impl Shipped for ShippedDir {
+    fn read(&self, path: &str) -> io::Result<Vec<u8>> {
+        fs::read(self.0.join(path))
+    }
+
+    fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let mut file = fs::File::open(self.0.join(path))?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::with_capacity(len);
+        file.take(len as u64).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+/// Stages `to`, signed as `version`, in `staging_dir` as a download over an install of `from` leaves it: its
+/// manifest, and the tables, blocks and files [`Expected::between`] says it fetches.
+pub fn stage(staging_dir: &Path, from: &Content, to: &Content, version: u64) {
+    let staging = Staging::open(staging_dir).expect("opens the staging");
+    let expected = Expected::between(from, to);
+    let pack_of = |hash: &[u8; 32]| {
+        to.packs.values().find(|pack| header(pack).hash() == *hash).expect("one of its packs")
+    };
+    for (hash, len) in &expected.tables {
+        fs::write(staging.table_path(hash), &pack_of(hash)[..*len as usize]).expect("stages tables");
+    }
+    for (hash, range) in &expected.blocks {
+        let bytes = &pack_of(hash)[range.start as usize..range.end as usize];
+        fs::write(staging.block_path(blake3::hash(bytes).as_bytes()), bytes).expect("stages a block");
+    }
+    let held: HashSet<&Vec<u8>> = from.files.values().map(|(bytes, _)| bytes).collect();
+    for (bytes, _) in to.files.values().filter(|(bytes, _)| !held.contains(bytes)) {
+        fs::write(staging.file_path(blake3::hash(bytes).as_bytes()), bytes).expect("stages a file");
+    }
+    fs::write(staging.manifest_path(), to.signed(version, EXPIRES, TRUSTED)).expect("stages the manifest");
+}
+
+/// Checks `installation` starts on `content` as `version`: every pack and file of it, wherever it's kept,
+/// byte for byte; packs the app shipped (under `shipped`) as they are, the rest by their hashes.
+pub fn assert_starts_on<S: Shipped>(
+    installation: &Installation<S>,
+    shipped: &Path,
+    content: &Content,
+    version: u64,
+) {
+    assert_eq!(installation.version(), version, "the current release");
+    assert_eq!(installation.current(), &content.manifest(version, EXPIRES), "the current manifest");
+    let read = |location: Location, shipped_path: &str| match location {
+        Location::Shipped => fs::read(shipped.join(shipped_path)),
+        Location::Patched(path) => fs::read(path),
+    };
+    for (name, bytes) in &content.packs {
+        let location = installation.pack(name).expect("the release has it");
+        let file_name = sapphire_assets::pack::file_name(name);
+        assert!(read(location, &file_name).is_ok_and(|read| read == *bytes), "pack {name} of {version}");
+    }
+    for (path, (bytes, _)) in &content.files {
+        let location = installation.file(path).expect("the release has it");
+        assert!(read(location, path).is_ok_and(|read| read == *bytes), "file {path} of {version}");
+    }
+}
+
+/// The files under `dir`, from it, `/`-separated and sorted.
+pub fn listing(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut dirs = vec![dir.to_owned()];
+    while let Some(next) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&next) else { continue };
+        for entry in entries {
+            let path = entry.expect("lists").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let relative = path.strip_prefix(dir).expect("under it");
+                names.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 /// An install written by [`Content::write_install`], read back.

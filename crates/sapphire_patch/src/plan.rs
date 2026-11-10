@@ -110,18 +110,11 @@ pub enum PlanError {
 impl Plan {
     /// Plans `next` over `installed`. Every file a patch may not change (m4-plan §3 "What a patch may
     /// carry") must be in both releases, the same, and marked so in both: a patch can't add, change, drop
-    /// or unmark one.
+    /// or unmark one ([`Manifest::unpatchable_change`]).
     pub fn new(installed: &Installed, next: Manifest) -> Result<Self, PlanError> {
         let current = &installed.manifest;
-        let fixed = |manifest: &Manifest, other: &Manifest| {
-            manifest
-                .files
-                .iter()
-                .find(|file| !file.patchable && other.file(&file.path) != Some(*file))
-                .map(|file| file.path.clone())
-        };
-        if let Some(path) = fixed(current, &next).or_else(|| fixed(&next, current)) {
-            return Err(PlanError::NotPatchable { version: next.version, path });
+        if let Some(path) = current.unpatchable_change(&next) {
+            return Err(PlanError::NotPatchable { version: next.version, path: path.to_owned() });
         }
         let held_packs: HashSet<[u8; 32]> = current.packs.iter().map(|pack| pack.header_hash).collect();
         let held_files: HashSet<[u8; 32]> = current.files.iter().map(|file| file.hash).collect();

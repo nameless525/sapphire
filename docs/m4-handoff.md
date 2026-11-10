@@ -4,6 +4,8 @@ What M4 inherits from M3, for whoever starts M4. Like [m3-handoff.md](m3-handoff
 
 **Written on 2026-11-10** on top of all of M3's packages (Z4, in three parts). The final exit run's head, its numbers and its date are Z2's, in [m3-exit-run.md](m3-exit-run.md).
 
+**The plan M4 builds from is [m4-plan.md](m4-plan.md).** Its §3 says which of the deferred items below it takes and which wait.
+
 **Nobody has played anything.** The maintainer started M3 on 2026-11-03 without having played M2's fight, so review 3 from [m2-exit-run.md](m2-exit-run.md) was never run. Nobody has played M3's slice either. Whether any of it is fun is unknown, and that is still the largest risk in the project.
 
 ## Where M3 stands

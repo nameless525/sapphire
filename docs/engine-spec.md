@@ -554,7 +554,7 @@ pub struct FramePacket {
 | `sapphire_save` | L4 | Settings and progress saves, migrations | `postcard`, `ron` | M3 |
 | `sapphire_strings` | L2 | Localized strings as plain data: the cooked table, its checks, its characters, its pseudo-localized form. The cooker can link it. | `postcard` | M3 |
 | `sapphire_loc` | L2 | Runs those tables: plurals, numbers, the live switch, font family chains | `icu_plurals`, `icu_decimal` (`fluent-syntax` at cook) | M3 |
-| `sapphire_patch` | L4 | Chunk manifests, CDN download, verification (later) | `reqwest`, `rustls`, `ed25519-dalek` | M4 |
+| `sapphire_patch` | L4 | Signed release manifests, download and install of changed blocks | `ureq`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` ([m4-plan.md](m4-plan.md) §3) | M4 |
 | `sapphire_online` | L4 | Accounts, server-authoritative economy (later) | `reqwest` | later |
 | `sapphire_stage` | L5 | A stage: the scene, the content and the renderer on one device, stepped and drawn into a texture or a window, with what plays there a `SceneShow` of the caller's | `sapphire_render`, `sapphire_world`, `sapphire_gameplay`, `sapphire_assets` | M3 |
 | `game_flow` | L6 | The game's flow from the title through a run's beats to a defeat or a win, its save, and the show that stands it on a stage (§5.30) | `game_combat`, `game_ui`, `sapphire_save` | M3 |
@@ -1654,6 +1654,7 @@ One uber-shader family, with at most 8 static permutation bits: layers, alpha-te
   - At pack load, compile the listed pipelines on workers. An object stays hidden until its pipelines are ready.
   - On Vulkan, persist the pipeline cache.
   - On Metal, warm up behind load screens (**Verify** whether wgpu exposes Metal binary archives).
+  - **M4 (Decision, [m4-plan.md](m4-plan.md) §3):** nothing is drawn hidden. A load waits for its pipelines behind a screen that keeps drawing, while job workers build them, and a hub's prefetch warms on workers too. A pipeline built on the frame's thread after the boot screen's first frame is a hitch. wgpu 30 has no Metal binary archives (§11, Q5), so Metal and DX12 rely on the OS's and the driver's caches, and Vulkan keeps its persisted cache.
 - **Hot reload:**
   - Desktop: file watch triggers an async recompile and a pipeline swap.
   - Devices: live link pushes the WGSL text. Shaders are translated at runtime anyway, so this works on phones too.
@@ -3044,6 +3045,11 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 - **Swap:** atomically switch the manifest when a patch completes. Only changed chunks are downloaded.
 - **HTTP:** `reqwest` + `rustls` + `rustls-platform-verifier`, so certificates are checked with the OS trust store on iOS and Android.
 - **iOS background downloads** need a native `URLSession` shim.
+- **M4 (Decisions, [m4-plan.md](m4-plan.md) §3):**
+  - The unit is the pack's stored block (64 KiB, compressed alone, named by its blake3), unless P0's measurement says otherwise.
+  - One release manifest is signed (`ed25519-dalek`, `verify_strict`), with root keys in the binary, a version that only grows, an expiry, the minimum app build, and each pack's header hash. Packs stay unsigned, and a shipping build mounts only the packs it names.
+  - A patch carries presentation only. What the simulation reads ships in the binary, and no code is downloaded.
+  - HTTP is `ureq`, blocking, on a thread of its own, with `rustls` and `rustls-platform-verifier`, not `reqwest`. There are no background downloads in M4, so no `URLSession` shim yet.
 
 **Online services**
 
@@ -3646,6 +3652,7 @@ These concerns cut across modules. Each line names its owning module.
   2. Disable optional passes.
   3. Drop the tier.
   4. Offer a 30 fps lock.
+- **M4's ladder (Decision, [m4-plan.md](m4-plan.md) §3):** it spends what the look can spare first, as rungs per tier in `tiers.ron`: resolution down to 0.85, then optional passes off, then resolution down to the tier's floor, then a 30 fps cap, then a lower tier at the next pause or wipe, never in a fight. No rung touches the character family, the outlines, the ramps or the grade. On the phone tiers there's no temporal upsampling, so resolution alone softens the two-tone edges and lines first.
 - **iOS has no swap**, and the OS kills apps that exceed device-dependent memory limits. Check `os_proc_available_memory` at boot to pick budgets, and drop caches on `LowMemory`.
 - **Android low-memory killer:** keep the background footprint small, and release GPU resources when backgrounded where practical.
 
@@ -3653,6 +3660,7 @@ These concerns cut across modules. Each line names its owning module.
 
 - **Install model, following gacha-game practice:** ship a small app (boot pack, UI, the first zone), then download the remaining packs from a CDN in-game, with progress UI and resume.
 - **Store size limits:** use Play Asset Delivery and the App Store's on-demand options only if store size limits require it. **Verify** the current limits in M4.
+- **M4 (Decision, [m4-plan.md](m4-plan.md) §3):** everything installs with the app, since the content and binary are far under every limit (§11, Q11). Downloaded packs are patches, from a host the maintainer picks.
 - **iOS:** mark downloaded packs as excluded from iCloud backup.
 - **Android:** download into app-internal storage so packs can be memory-mapped.
 
@@ -3706,6 +3714,7 @@ On **foreground**:
 - Colorblind-safe attack telegraphs, with shape and icon as well as color.
 - UI text scale.
 - Adjustable auto-target strength on touch.
+- **M4 (Decision, [m4-plan.md](m4-plan.md) §3):** also separate volumes, mono, camera motion, a first-launch photosensitivity notice and a timing assist. With flashes reduced, combat passes WCAG 2.3.1; the default is measured and reported. No full-screen recolour filter. A setting that changes what a step reads is recorded with the run; the rest never reach a checksum.
 
 ---
 
@@ -3773,7 +3782,7 @@ split-debuginfo = "packed"    # PDB / dSYM / .dwp uploaded to Sentry, then strip
 | Target | How `game_app` is built | Packaging |
 |---|---|---|
 | macOS / Windows / Linux | `cargo build -p <app>` (bin) | `cargo xtask bundle --platform macos` gives an `.app` with `Contents/Resources/content`. Codesigning, notarization and Steam depots come in M4 |
-| iOS | `cargo build -p <app> --target aarch64-apple-ios[-sim]` (bin; SDL is statically linked) | `cargo xtask bundle --platform ios-sim` gives an ad-hoc-signed `.app`. Device signing, plus an Xcode project for sentry-cocoa, the privacy manifest and store archives, come in M4 |
+| iOS | `cargo build -p <app> --target aarch64-apple-ios[-sim]` (bin; SDL is statically linked) | `cargo xtask bundle --platform ios-sim` gives an ad-hoc-signed `.app`. Device signing, plus an Xcode project for sentry-cocoa, the privacy manifest and store archives, come in M4. M4's plan assembles the store archive in xtask with no Xcode project ([m4-plan.md](m4-plan.md) §3, "iOS packaging") |
 | Android | `cargo rustc -p <app> --lib --target aarch64-linux-android --crate-type cdylib`, with the NDK environment set by xtask | `cargo xtask bundle --platform android`: the Gradle project in `platform/android` takes the `.so` in `jniLibs/arm64-v8a`, SDL's Java glue (synced from `sdl3-src`) and cooked content in `assets/content`. The app's `SDLActivity` is generated from one template (`AppActivity.java.in`), in the Java package its `bundle-id` names and called for that ID's last segment (`dev.sapphire.sandbox/.SandboxActivity`, `dev.sapphire.game/.GameActivity`), and each app builds under `target/android/build/<bundle-name>/`. `cpal`'s Android context is set in M2 (plan E1) |
 
 `.cargo/config.toml` fragment for Android 16 KB pages (**Verify** against NDK r28+ defaults):
@@ -3871,7 +3880,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 | **M1 Data path** | Months 2–6 | ECS, reflection and serialization; the `sapphire_assets` runtime. `sapphire_pipeline`: glTF / FBX, `ctt` BC and ASTC, meshopt, packs, content-hash cache, hot reload. Renderer v1: frame graph, compute skinning, forward lighting, shadows, the anime character recipe (track C), the world look (time of day, sky, fog, ambient probes, stylized environment shader) and the post stack. VRM import and anime map tools, `sapphire_input`, `sapphire_debug`, live link, golden-image tests. The plan is [m1-plan.md](m1-plan.md). | Editing a ramp, material parameter or time-of-day key shows up on desktop *and* phone without a restart. The look-dev scene meets the tier budgets on all 5 platforms. Golden images pass on 3 backends. |
 | **M2 Combat slice** | Months 4–10 | `sapphire_anim` (our own runtime, inertialization, IK, spring bones), `sapphire_physics`, the combat core, party swap, camera director, one enemy AI, audio (`kira`), VFX v1, touch controls, live tuning, and the timeline editor v1. The plan is [m2-plan.md](m2-plan.md). | One character against one enemy **feels right** with a gamepad on desktop and with touch on a phone. Replays are deterministic in CI, and Mobile-Low holds 30 fps while thermally throttled. **This is the go/no-go gate.** If tuning still feels slow, take the off-ramp in the report: move gameplay and tools to Godot with gdext, and keep the Rust systems. |
 | **M3 World and tools** | Months 8–18 | Zones and transitions, navigation, sequencer and dialogue, Luau, `sapphire_ui` with the HUD and menus, saves, localization, the editor document model with undo and play-in-editor, and the pipeline (PSO) inventory. The plan is [m3-plan.md](m3-plan.md). | A zone with 3 encounters, a boss authored with no Rust changes, one cutscene, and a full HUD and menus in 2 languages, all on 5 platforms. |
-| **M4 Ship readiness** | Month 12 onward | PSO warm-up, signed chunk manifests and `sapphire_patch`, quality tiers with dynamic resolution and thermal handling, the symbol pipeline, accessibility, and store compliance. | Zero shader hitches in a scripted playthrough. Patches download only changed chunks. Builds pass TestFlight, Play internal testing and Steam review. |
+| **M4 Ship readiness** | Month 12 onward | PSO warm-up, signed chunk manifests and `sapphire_patch`, quality tiers with dynamic resolution and thermal handling, the symbol pipeline, accessibility, and store compliance. The plan is [m4-plan.md](m4-plan.md). | Zero shader hitches in a scripted playthrough. Patches download only changed chunks. Builds pass TestFlight, Play internal testing and Steam review. |
 
 **M0 status (2026-10-24):**
 
@@ -3956,16 +3965,16 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 |---|---|---|
 | Q1 | ~~Does the SDL3 entry flow work from Rust?~~ **Answered in M0:** yes. `SDL_RunApp` runs on the iOS simulator, and an exported `SDL_main` with SDL's JNI symbols links for Android (see Android results in ADR 0002). | M0 spike |
 | Q2 | ~~Android 16 KB page alignment~~ **Answered in M0:** NDK r28+ defaults already produce 16 KB-aligned `.so` files; the rustflag in `.cargo/config.toml` is belt and braces. | M0 |
-| Q3 | Steam Deck: native Linux build, or the Windows build under Proton? Prefer native. | M0; still open at M1's close, for want of a Deck (§10, M1 status) |
+| Q3 | Steam Deck: native Linux build, or the Windows build under Proton? Prefer native. **M4 plan:** native, built in the Steam Linux Runtime 3.0 SDK container in CI, so a Deck runs the same Linux build ([m4-plan.md](m4-plan.md) §3, "Steam"); a Deck's own check is still owed. | M0; still open at M1's close, for want of a Deck (§10, M1 status) |
 | Q4 | Which Windows default backend, Vulkan or DX12, based on Intel / AMD / NVIDIA driver testing? | M1; still open at its close, for want of Windows hardware (§10, M1 status) |
-| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). **M1 R7:** the phone tiers keep 4× MSAA as transient attachments, held there by a GPU test; the measurement on Mali, Adreno and Apple devices moves to M2. | M1; the device measurements are still open at its close (§10, M1 status) |
+| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). **M1 R7:** the phone tiers keep 4× MSAA as transient attachments, held there by a GPU test; the measurement on Mali, Adreno and Apple devices moves to M2. **M4 plan:** wgpu 30 exposes no Metal binary archives: in wgpu-hal 30.0.1, `create_pipeline_cache` returns an empty object on Metal and DX12, so those backends rely on the OS's and the driver's caches ([m4-plan.md](m4-plan.md) §3, "Driver caches"). | M1; the device measurements are still open at its close (§10, M1 status) |
 | Q6 | ~~Do hosted CI runners expose a GPU for Metal golden images?~~ **Answered (M1 plan):** yes. GitHub's macOS arm64 runners expose Metal as "Apple Paravirtual device", and wgpu runs its image tests there on every PR (shader validation is broken there; 3 vCPU). Goldens run per PR on lavapipe, WARP and `macos-26` Metal. | M1 |
 | Q7 | ~~Does ozz-animation-rs cover offline animation building?~~ **Answered ([m2-plan.md](m2-plan.md) §3):** it has no offline tools, still needs nightly Rust at HEAD and has no stable path, so `sapphire_anim` is our own runtime with our own cooker, with no C++ in the pipeline. | M2 |
 | Q8 | ~~FMOD license tier and cost; if blocked, the `kira` backend becomes primary.~~ **Answered ([m2-plan.md](m2-plan.md) §3):** blocked for a public repository, so `kira` is primary, as the maintainer confirmed. | M2 |
 | Q9 | Device floors (A14 / Snapdragon 865 / 6 GB), measured while thermally throttled. | M2; still open at its close, for want of a phone (§10, M2 status) |
-| Q10 | iOS policy on downloadable scripts and content: legal and App Review guidance. | Before any live-service plan |
-| Q11 | Current App Store and Play size limits, which shape the install-time vs CDN content split. | M4 |
-| Q12 | ~~Android crash capture~~ **Answered in M0:** there's no workable monitor process on Android. `sapphire_crash` writes an async-signal-safe signal record and chains to `debuggerd`; symbolicated native crashes come from Sentry's Android NDK SDK in the Gradle project. | M0 |
+| Q10 | iOS policy on downloadable scripts and content: legal and App Review guidance. **M4 plan:** answered by not needing it for now. A patch carries presentation only, and no script or other code is ever downloaded ([m4-plan.md](m4-plan.md) §3, "What a patch may carry"); a live-service plan reopens it. | Before any live-service plan |
+| Q11 | Current App Store and Play size limits, which shape the install-time vs CDN content split. **M4 plan:** the content (about 27 MB for mobile, 37 MB for desktop) and the binary are far under every limit, so everything installs with the app and patches come from a host the maintainer picks; Play Asset Delivery and Apple-hosted packs wait ([m4-plan.md](m4-plan.md) §3, "Where content lives"; the limits and their sources are in research_notes/Ship readiness for M4). | M4 |
+| Q12 | ~~Android crash capture~~ **Answered in M0:** there's no workable monitor process on Android. `sapphire_crash` writes an async-signal-safe signal record and chains to `debuggerd`; symbolicated native crashes come from Sentry's Android NDK SDK in the Gradle project. **M4 plan, revised:** on API 31 and later, the app reads its own tombstone through `ApplicationExitInfo` at its next launch, and `xtask symbolicate` reads it offline, so symbolicated native crashes need no Sentry SDK ([m4-plan.md](m4-plan.md) §3, "Symbols and crashes"). | M0 |
 | Q13 | ~~iOS frame pacing: engine-owned `CADisplayLink` or present-interval pacing?~~ **Answered in M1 (F7, ADR 0003):** an engine-owned `CADisplayLink` at the tier's rate drives SDL's own main-callback functions; a pure pacer holds back early ticks and measures intervals. Decided text, simulator results and the device check that remains are in §6.2. | M1 |
 | Q14 | Android pre-rotation: wgpu doesn't pre-rotate, so SurfaceFlinger rotates our landscape buffer on portrait-native phones. Measure the cost on real devices before choosing whether to render pre-rotated. | M2; still open at its close, for want of a phone (§10, M2 status) |
 
@@ -4009,7 +4018,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `rerecast` | `=0.5.0` | `sapphire_pipeline` | Baking only, not vendored (P0: every defect had a way around through its public API). Never its `libm` feature, which turns on glam's, and any bump reruns the attack and the digests. `landmass` was rejected ([m3-plan.md](m3-plan.md) §3) |
 | `mlua` (feature `luau`) | 0.12 | `sapphire_script` | No `luau-jit` |
 | `fluent-syntax`, `icu_plurals`, `icu_decimal` | 0.12, 2.4, 2.4 | `sapphire_pipeline`, `sapphire_loc` | `fluent`'s bundles can't be cooked, so a small evaluator of our own runs the tables (M3 V2). `fluent-syntax` is tool-only |
-| `reqwest`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | latest | `sapphire_patch` (later) | **unchecked** |
+| `ureq`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | 3, latest, latest, 3 | `sapphire_patch` (M4) | **unchecked:** M4 P0 checks them on five targets. `ureq` replaces `reqwest`, which would bring tokio and hyper for a few range requests; `rustls` on the `ring` provider ([m4-plan.md](m4-plan.md) §3, "HTTP") |
 | `jni` | latest | `sapphire_platform` (Android) | **unchecked** |
 | `egui`, `egui-wgpu`, `egui_plot`, `egui_tiles` | 0.37 line (`egui_tiles` 0.18, `egui_plot` 0.38) | `sapphire_debug`, `sapphire_editor` | M1 F5: `egui` and `egui-wgpu` 0.37.0 (on wgpu 30); the overlay draws its own frame-time graph, without `egui_plot` |
 | `gltf`, `ufbx` | 1.4, 0.11 | `sapphire_pipeline` | |

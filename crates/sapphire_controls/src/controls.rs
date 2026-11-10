@@ -235,8 +235,9 @@ impl CombatControls {
 
     /// Takes an edited document of bindings, compiled, as it runs: a button's new binding reads from the next
     /// update, and an old one's gone. Anything combat reads that it lacks refuses it, with what's playing kept
-    /// as it was. What's held is ignored until released ([`InputSystem::replace_bindings`]). An app's own
-    /// actions may have moved, so it finds them again.
+    /// as it was. Every binding starts afresh ([`InputSystem::replace_bindings`]): a press or release waits
+    /// for what's held to be let go, and a hold (`Down`) reads it at once. An app's own actions may have
+    /// moved, so it finds them again.
     pub fn replace_bindings(&mut self, map: InputMap) -> Result<(), ControlsError> {
         let ids = ActionIds::new(&map)?;
         let context = |name| map.context(name).ok_or(ControlsError::MissingContext(name));

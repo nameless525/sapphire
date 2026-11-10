@@ -5,14 +5,17 @@
 //! once on Mobile-Low's: each draws the walk's frames, builds no pipeline the load didn't, allocates in no
 //! step, and reaches the checksums the replay's file holds. No window.
 //!
+//! `SAPPHIRE_WALK_TIERS=<key>[,<key>]` walks only the tiers it names (`desktop-low`, `mobile-low`), so CI can
+//! walk each on a runner of its own; unset, both.
+//!
 //! A frame for every step by default. `SAPPHIRE_WALK_STEPS_PER_FRAME=<n>` draws one every `n` steps instead,
 //! as a device that can't keep up runs several steps a frame: CI's lavapipe, which draws a frame of this
 //! stage in tens of milliseconds, can't draw the walk's 14,000-odd steps twice inside its job's time.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
-//! `cargo test -p game_app --features dev --test wins_the_ward -- --ignored`. CI's `App tests` job runs it on
-//! lavapipe.
+//! `cargo test -p game_app --features dev --test wins_the_ward -- --ignored`. CI's `App tests` jobs run it on
+//! lavapipe, a tier each.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,6 +61,32 @@ fn play(stage: &mut Stage<GameShow>, clock: &mut u64, draw: bool) -> Result<(), 
         frame(stage)?;
     }
     Ok(())
+}
+
+/// The tiers the walk is played on, in this order.
+const TIERS: [TierId; 2] = [TierId::DesktopLow, TierId::MobileLow];
+
+/// The tiers `SAPPHIRE_WALK_TIERS` names, or all of [`TIERS`] when it's unset. A name that isn't one of them is
+/// an error, so a misspelt choice can't pass by walking nothing.
+fn tiers() -> Result<Vec<TierId>, String> {
+    let Ok(names) = std::env::var("SAPPHIRE_WALK_TIERS") else {
+        return Ok(TIERS.to_vec());
+    };
+    let keys: Vec<&str> = TIERS.iter().map(|tier| tier.key()).collect();
+    let mut chosen = Vec::new();
+    for name in names.split(',').map(str::trim) {
+        match TierId::from_key(name).filter(|tier| TIERS.contains(tier)) {
+            Some(tier) if !chosen.contains(&tier) => chosen.push(tier),
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "SAPPHIRE_WALK_TIERS: {name:?} isn't a tier the walk is played on: {}",
+                    keys.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(chosen)
 }
 
 /// Steps a frame: `SAPPHIRE_WALK_STEPS_PER_FRAME`, or 1.
@@ -158,7 +187,7 @@ impl App for OutsideCaller {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let replay = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(WALK);
-        for tier in [TierId::DesktopLow, TierId::MobileLow] {
+        for tier in tiers().map_err(AppInitError::msg)? {
             let walked = walk(platform, &replay, tier)?;
             assert!(walked.cutscenes >= 1, "the court's gate among them, watched");
             eprintln!(
@@ -187,6 +216,10 @@ fn main() -> ExitCode {
     if !std::env::args().any(|argument| argument == "--ignored") {
         eprintln!("wins_the_ward: needs a GPU and cooked content; run it with --ignored");
         return ExitCode::SUCCESS;
+    }
+    if let Err(error) = tiers() {
+        eprintln!("wins_the_ward: {error}");
+        return ExitCode::FAILURE;
     }
     sapphire_core::log::init(Default::default(), None).expect("initialize app test logging");
     if std::env::var_os("SAPPHIRE_CONTENT_DIR").is_none() {

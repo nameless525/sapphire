@@ -887,6 +887,65 @@ fn mounting_checks_packs() {
     assert!(!server.contains(id(4)));
 }
 
+/// A shipping build's mount (M4 P1): only what the release names, with the length and header it names.
+#[test]
+fn a_release_holds_what_mounts() {
+    use crate::manifest::{Manifest, ReleasedPack};
+    use crate::pack::PackHeader;
+
+    let released = |name: &str, bytes: &[u8]| ReleasedPack {
+        name: name.to_owned(),
+        size: bytes.len() as u64,
+        header_hash: PackHeader::read(bytes).unwrap().hash(),
+    };
+    let shared = write_pack(character()).unwrap();
+    let zone_pack =
+        |side| write_pack(vec![packed(id(9), AssetKind::Texture, &texture_bytes(side, side, 1))]).unwrap();
+    let zone = zone_pack(4);
+    let release = Manifest {
+        version: 1,
+        expires: 0,
+        min_app_build: 0,
+        cook: "desktop".to_owned(),
+        successor_keys: vec![],
+        packs: vec![released("shared", &shared), released("zone", &zone)],
+        files: vec![],
+    };
+    let source = Arc::new(MemoryPackSource::new());
+    source.insert("shared", shared.clone());
+    source.insert("other", write_pack(textures(2)).unwrap());
+    // Another cook's zone: a pack of its own, with a length the release doesn't name.
+    source.insert("zone", zone_pack(8));
+    let mut server = AssetServer::new(source.clone(), unlimited());
+    server.mount_only_released(&release);
+    server.mount_now("shared").expect("the release's own pack");
+    assert!(matches!(server.mount_now("other"), Err(MountError::NotReleased(name)) if name == "other"));
+    let refused = server.mount_now("zone").unwrap_err();
+    assert!(matches!(refused, MountError::NotAsReleased { .. }), "{refused}");
+
+    // The same length and a header that checks out, but not the release's: refused by its hash.
+    let header = PackHeader::read(&zone).unwrap();
+    let mut same_length = zone.clone();
+    let toc: Vec<u8> = zone[256..header.data_offset as usize].iter().map(|byte| byte ^ 1).collect();
+    same_length[64..96].copy_from_slice(blake3::hash(&toc).as_bytes());
+    let hash = blake3::hash(&same_length[..128]);
+    same_length[128..160].copy_from_slice(hash.as_bytes());
+    source.insert("zone", same_length);
+    let refused = server.mount_now("zone").unwrap_err();
+    assert!(
+        matches!(refused, MountError::NotAsReleased { reason: "its header isn't the release's", .. }),
+        "{refused}"
+    );
+    source.insert("zone", zone);
+    server.mount_now("zone").expect("the release's zone");
+
+    // A remount is held to it as a mount is.
+    source.insert("shared", write_pack(textures(1)).unwrap());
+    assert!(matches!(server.remount("shared"), Err(MountError::NotAsReleased { .. })));
+    source.insert("shared", shared);
+    assert_eq!(server.remount("shared").unwrap(), RemountReport::default());
+}
+
 struct SizedSource {
     inner: CountedSource,
     file_len: u64,

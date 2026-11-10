@@ -11,6 +11,7 @@ use super::handle::SlotKey;
 use super::{
     AssetServer, Completion, LOG_TARGET, LoadError, LoadPriority, MountError, PackFile, PackSource, SlotState,
 };
+use crate::manifest::ReleasedPack;
 use crate::pack::{HEADER_LEN, PackHeader, PackMetadataRead, Toc};
 
 slotmap::new_key_type! {
@@ -87,18 +88,36 @@ fn read_now(source: &dyn PackSource, file: PackFile, offset: u64, len: usize) ->
 }
 
 /// Opens the pack called `name` and reads and checks its header and table of contents, waiting for them
-/// on the calling thread.
+/// on the calling thread. With a `release`, the pack must be one it names, with the length and header it
+/// names, before its table of contents is read.
 pub(super) fn read_pack(
     source: &Arc<dyn PackSource>,
     name: &str,
+    release: Option<&[ReleasedPack]>,
     metadata: &mut PackMetadataRead,
 ) -> Result<(OpenPack, Toc), MountError> {
     let io_error = |source| MountError::Io { name: name.to_owned(), source };
     let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
+    let not_as_released = |reason| MountError::NotAsReleased { name: name.to_owned(), reason };
+    let released = match release {
+        Some(packs) => Some(
+            packs
+                .binary_search_by(|pack| pack.name.as_str().cmp(name))
+                .map(|index| &packs[index])
+                .map_err(|_| MountError::NotReleased(name.to_owned()))?,
+        ),
+        None => None,
+    };
     let (file, len) = source.open(name).map_err(io_error)?;
     let open = OpenPack { source: source.clone(), file };
+    if released.is_some_and(|released| released.size != len) {
+        return Err(not_as_released("its length isn't the release's"));
+    }
     let header = read_now(&**source, file, 0, len.min(HEADER_LEN as u64) as usize).map_err(io_error)?;
     let header = PackHeader::read(&header).map_err(pack_error)?;
+    if released.is_some_and(|released| released.header_hash != header.hash()) {
+        return Err(not_as_released("its header isn't the release's"));
+    }
     let toc_len = metadata.toc_read_len(&header, len).map_err(pack_error)?;
     let toc = read_now(&**source, file, HEADER_LEN as u64, toc_len).map_err(io_error)?;
     let toc = Toc::read(header, &toc, len).map_err(pack_error)?;
@@ -130,12 +149,14 @@ impl AssetServer {
         self.pending_mounts.push(PendingMount { name: name.to_owned(), request });
         self.reads_in_flight += 1;
         let (source, sender, name) = (self.source.clone(), self.sender.clone(), name.to_owned());
+        let release = self.release.clone();
         sapphire_jobs::spawn_async(move || {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| read_pack(&source, &name, &mut metadata)))
-                    .unwrap_or_else(|_| {
-                        Err(MountError::Io { name, source: io::Error::other("reading the pack panicked") })
-                    });
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                read_pack(&source, &name, release.as_deref(), &mut metadata)
+            }))
+            .unwrap_or_else(|_| {
+                Err(MountError::Io { name, source: io::Error::other("reading the pack panicked") })
+            });
             // A closed channel means the server is gone: what was opened closes with the message.
             let _ = sender.send(Completion::Mount { request, result, metadata });
         });

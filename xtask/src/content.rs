@@ -3,8 +3,10 @@
 //!
 //! Each cook writes loose cooked files to `target/content/loose/<cook>/` and packs them into
 //! `target/content/<cook>/`, which then holds packs (`shared.spack`, a `zone_<stem>.spack` per zone, and
-//! `audio.spack` and `fonts.spack`, which only apps that play sound or show text mount) and `NOTICES.txt`,
-//! the fonts' licenses: what apps ship and desktop runs read (M1 A4, M3 U3).
+//! `audio.spack` and `fonts.spack`, which only apps that play sound or show text mount), `NOTICES.txt`,
+//! the fonts' licenses, the game's `documents/`, and `release.smanifest`, the unsigned release manifest that
+//! names all of it: what apps ship and desktop runs read (M1 A4, M3 U3, M4 P1). A build without `dev` mounts
+//! only packs that manifest names, and `cargo xtask release` signs it (`crate::release`).
 //!
 //! Every run runs the pipeline, whose content cache (`target/content/cache/`, shared by both
 //! cooks) makes it incremental: an asset is cooked only when an input its cache key covers

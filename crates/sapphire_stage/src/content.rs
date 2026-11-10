@@ -73,6 +73,11 @@
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
 //! platform's; a pushed pack is remounted the same way (`Content::apply_pack`).
+//!
+//! Every other build is a shipping build's mount (M4 P1): [`Content::new`] reads the release manifest at the
+//! content's root (`release.smanifest`, which every cook writes) and holds the server to it, so a pack it
+//! doesn't name, or whose bytes aren't the ones it names, fails to mount. Its signature isn't checked here: an
+//! install's own manifest came with the app or was checked by what installed it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -86,6 +91,8 @@ use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
+#[cfg(not(feature = "dev"))]
+use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack;
@@ -903,6 +910,14 @@ impl Content {
         let mut server = AssetServer::new(live_packs.clone(), budgets);
         #[cfg(not(feature = "dev"))]
         let mut server = AssetServer::new(packs, budgets);
+        #[cfg(not(feature = "dev"))]
+        {
+            let release = content
+                .read(manifest::FILE_NAME)
+                .map_err(|error| missing(&error))
+                .and_then(|bytes| Manifest::read(&bytes).map_err(|error| missing(&error)))?;
+            server.mount_only_released(&release);
+        }
         server.mount_now(PACK).map_err(|error| missing(&error))?;
         let character_id = character;
         let character = server.load_with(character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;

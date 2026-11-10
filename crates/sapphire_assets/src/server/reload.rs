@@ -100,7 +100,7 @@ impl AssetServer {
             .metadata_budget
             .begin()
             .map_err(|source| MountError::Pack { name: name.to_owned(), source })?;
-        let (file, toc) = mounts::read_pack(&self.source, name, &mut metadata)?;
+        let (file, toc) = mounts::read_pack(&self.source, name, self.release.as_deref(), &mut metadata)?;
         let old = &self.mounts[mount];
         // The header holds the table of contents' hash, so an equal one is the same pack, laid out
         // the same: reads in flight from the earlier file stay good.

@@ -9,6 +9,13 @@
 //!
 //! A cook always writes the manifest, empty when `content/` has none, so a game can't mistake old content for
 //! having no documents of its own.
+//!
+//! **What a patch may change (M4 P1):** a document a replay's run reads ([`NamedDocument::simulation`]: the
+//! targeting and body tuning, the flow and the flags) changes only with an app build, as everything the
+//! simulation reads does (m4-plan §3 "What a patch may carry"), and so does this manifest, which says which
+//! files those are. The rest are presentation (hair and cloth, the HUD, the bindings, which turn input into
+//! the actions a replay records, the effects and the screens), which a patch may change. The release manifest
+//! (`crate::manifest`) records which is which, file by file.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -69,6 +76,8 @@ pub struct NamedDocument<'a> {
     pub type_name: &'static str,
     /// Its path under `content/`.
     pub path: &'a str,
+    /// Whether a replay's run reads it, so that only an app build may change it (see the module docs).
+    pub simulation: bool,
 }
 
 impl GameDocuments {
@@ -80,19 +89,19 @@ impl GameDocuments {
     /// What it names.
     pub fn named(&self) -> impl Iterator<Item = NamedDocument<'_>> {
         [
-            ("targeting", "sapphire::gameplay::TargetingTuning", &self.targeting),
-            ("body", "sapphire::body_pose::BodyTuning", &self.body),
-            ("motion", "sapphire::anim::CharacterMotion", &self.motion),
-            ("hud", "sapphire::ui::HudDesign", &self.hud),
-            ("bindings", "sapphire::input::InputBindings", &self.bindings),
-            ("effects", "sapphire::vfx::EffectLibrary", &self.effects),
-            ("flow", "sapphire::game::FlowDocument", &self.flow),
-            ("flags", "sapphire::dialogue::FlagRegistry", &self.flags),
-            ("menus", "sapphire::game::MenuDocument", &self.menus),
+            ("targeting", "sapphire::gameplay::TargetingTuning", true, &self.targeting),
+            ("body", "sapphire::body_pose::BodyTuning", true, &self.body),
+            ("motion", "sapphire::anim::CharacterMotion", false, &self.motion),
+            ("hud", "sapphire::ui::HudDesign", false, &self.hud),
+            ("bindings", "sapphire::input::InputBindings", false, &self.bindings),
+            ("effects", "sapphire::vfx::EffectLibrary", false, &self.effects),
+            ("flow", "sapphire::game::FlowDocument", true, &self.flow),
+            ("flags", "sapphire::dialogue::FlagRegistry", true, &self.flags),
+            ("menus", "sapphire::game::MenuDocument", false, &self.menus),
         ]
         .into_iter()
-        .filter_map(|(field, type_name, path)| {
-            path.as_deref().map(|path| NamedDocument { field, type_name, path })
+        .filter_map(|(field, type_name, simulation, path)| {
+            path.as_deref().map(|path| NamedDocument { field, type_name, path, simulation })
         })
     }
 }
@@ -117,7 +126,12 @@ mod tests {
         assert_eq!(empty.named().count(), 0);
         let some = GameDocuments::from_ron(&manifest("hud: Some(\"ui/my_hud.ron\")")).expect("reads");
         let named: Vec<NamedDocument<'_>> = some.named().collect();
-        let hud = NamedDocument { field: "hud", type_name: "sapphire::ui::HudDesign", path: "ui/my_hud.ron" };
+        let hud = NamedDocument {
+            field: "hud",
+            type_name: "sapphire::ui::HudDesign",
+            path: "ui/my_hud.ron",
+            simulation: false,
+        };
         assert_eq!(named, [hud]);
         assert_eq!(shipped_path(hud.path), "documents/ui/my_hud.ron");
     }

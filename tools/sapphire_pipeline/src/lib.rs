@@ -52,6 +52,8 @@
 //!   rig).
 //! - [`pack`]: the last stage (M1 A4): a cook's outputs into packs, the files content ships in,
 //!   with the grouping rules and the codec each kind is compressed with.
+//! - [`release`]: the release manifest a cook writes beside its packs, and signing a release and laying it
+//!   out for a static host (M4 P1). The only code that signs one: no build of the game links it.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
 //!   local store of cooked outputs and pack encodings by key.
 //! - [`lookdev`]: the look-dev scene's generated sources (M1 X1): the town's painted maps and
@@ -141,6 +143,7 @@ pub mod nav;
 pub mod optimize;
 pub mod pack;
 pub mod probes;
+pub mod release;
 pub mod samples;
 pub mod script;
 #[cfg(test)]

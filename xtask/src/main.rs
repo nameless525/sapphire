@@ -14,6 +14,7 @@ mod golden;
 mod layers;
 mod link;
 mod platforms;
+mod release;
 mod replay;
 mod script_api;
 mod version;
@@ -40,6 +41,13 @@ Commands:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
       `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
       target/content/editor/, which no app ships.
+  release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
+      --min-build <n> [--next-keys <hex>[,<hex>...]]
+      Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte
+      ed25519 seed in hex, comma-separated; only the maintainer has them) and lay it out in <dir>
+      for a static host: packs/ and files/ by hash, manifests/<n>.smanifest, and release.smanifest,
+      written last and copied to a host last. <n> must be higher than <dir>'s current release's.
+      Nothing is uploaded.
   bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
       [--exe <path>] [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/, by the
@@ -184,6 +192,24 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             args.finish(false)?;
             let cooked = content::cook(cook)?;
             eprintln!("cooked content for {cook} into {}", cooked.dir.display());
+            Ok(())
+        }
+        "release" => {
+            let cook = args.required::<Cook>("--cook")?;
+            let out = args.required::<PathBuf>("--out")?;
+            let release = release::Release {
+                version: args.required("--release-version")?,
+                expires: args.required("--expires")?,
+                min_build: args.required("--min-build")?,
+                next_keys: args.value("--next-keys")?,
+            };
+            args.finish(false)?;
+            if cook == Cook::Editor {
+                bail!("the editor's cook ships nowhere, so it has no release");
+            }
+            let cooked = content::cook(cook)?;
+            let manifest = release::publish(&cooked, &out, &release)?;
+            eprintln!("released {cook} content as {}", manifest.display());
             Ok(())
         }
         "bundle" => {

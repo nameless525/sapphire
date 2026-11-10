@@ -22,6 +22,7 @@ use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
+use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
 
 const USAGE: &str = "\
@@ -77,7 +78,15 @@ Usage:
       assets into --packs (shared.spack, audio.spack, fonts.spack, NOTICES.txt). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
       The game's documents (game.documents.ron under --source, if there's one) go beside the packs, under
-      documents/.
+      documents/, and an unsigned release.smanifest names everything there.
+  sapphire_pipeline release --packs <DIR> --out <DIR> --release-version <N>
+                            --expires <YYYY-MM-DD> --min-build <N> [--next-keys <HEX>[,<HEX>...]]
+      Sign the release of the cook in --packs, which its release.smanifest must still describe,
+      with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte ed25519 seed in hex, comma-separated),
+      and lay it out in --out for a static host: packs/ and files/ named by hash,
+      manifests/<N>.smanifest, and release.smanifest, written last. --release-version must be
+      higher than --out's current release's. The release names the keys that may sign the next
+      one: the signing keys, unless --next-keys says.
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
@@ -93,6 +102,10 @@ Options:
   --editor                   Also cook what only an editor reads (each zone's shapes): never for packs
                              that ship.
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
+  --release-version <N>      release: the release's version.
+  --expires <YYYY-MM-DD>     release: the day, at midnight UTC, it stops being offered as current.
+  --min-build <N>            release: the oldest app build it runs on.
+  --next-keys <HEX,...>      release: the public keys that may sign the next release.
   -h, --help                 Show this message.
   -V, --version              Show the version.";
 
@@ -151,6 +164,11 @@ enum Command {
         cache: Option<PathBuf>,
         locked: bool,
         editor: bool,
+    },
+    Release {
+        packs: PathBuf,
+        out: PathBuf,
+        options: ReleaseOptions,
     },
     Help,
     Version,
@@ -280,7 +298,24 @@ fn run(command: Command) -> anyhow::Result<()> {
                 for path in &shipped.removed {
                     println!("  removed {}", path.display());
                 }
+                if let Some(path) = release::write_manifest(&packs, cook)? {
+                    println!("  wrote {}", path.display());
+                }
             }
+        }
+        Command::Release { packs, out, options } => {
+            let keys = release::keys_from_env(std::env::var(release::KEY_VAR).ok().as_deref())?;
+            let published = release::publish(&packs, &out, &options, &keys)?;
+            eprintln!(
+                "released {} ({} cook, {} packs, {} files) into {}: {} written, {} already there",
+                published.manifest.version,
+                published.manifest.cook,
+                published.manifest.packs.len(),
+                published.manifest.files.len(),
+                out.display(),
+                published.written,
+                published.kept
+            );
         }
         Command::Help => println!("{USAGE}"),
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
@@ -472,6 +507,19 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             locked: options.flag("--locked"),
             editor: options.flag("--editor"),
         },
+        "release" => Command::Release {
+            packs: options.required("--packs")?,
+            out: options.required("--out")?,
+            options: ReleaseOptions {
+                version: options.required("--release-version")?,
+                expires: release::date(&options.required::<String>("--expires")?)?,
+                min_app_build: options.required("--min-build")?,
+                successor_keys: match options.value::<String>("--next-keys")? {
+                    Some(keys) => Some(release::public_keys(&keys)?),
+                    None => None,
+                },
+            },
+        },
         other => bail!("unknown command `{other}`"),
     };
     options.finish()?;
@@ -647,5 +695,29 @@ mod tests {
         assert!(parse(&["cook-mesh", "a.glb", "b", "--weld-tolerance", "-1"]).is_err());
         assert!(parse(&["gen-samples", "--out", "dir", "--extra"]).is_err());
         assert!(parse(&["cook", "--source", "a", "--out", "b", "--cook", "mobile", "--force"]).is_err());
+        let release = ["release", "--packs", "p", "--out", "o", "--release-version", "3", "--min-build", "9"];
+        assert!(parse(&release).is_err(), "no expiry");
+        assert!(parse(&[&release[..], &["--expires", "2027-02-30"]].concat()).is_err(), "no such day");
+        assert!(parse(&[&release[..], &["--expires", "2027-03-01", "--next-keys", "00"]].concat()).is_err());
+    }
+
+    #[test]
+    fn parses_a_release() {
+        let parsed = parse(&[
+            "release",
+            "--packs",
+            "p",
+            "--out",
+            "o",
+            "--release-version",
+            "3",
+            "--expires",
+            "1970-01-02",
+            "--min-build",
+            "9",
+        ])
+        .unwrap();
+        let options = ReleaseOptions { version: 3, expires: 86_400, min_app_build: 9, successor_keys: None };
+        assert_eq!(parsed, Command::Release { packs: "p".into(), out: "o".into(), options });
     }
 }

@@ -63,6 +63,10 @@
 //!   workers, dependencies first, a GPU upload queue under a per-frame budget); and residency
 //!   (per-kind budgets, LRU eviction of unused assets, pinning). [`AssetServer`]'s docs describe
 //!   each stage.
+//! - The release manifest ([`manifest`], `release.smanifest`, M4 P1): one signed file naming every pack of a
+//!   release by its size and header hash and every other shipped file by its blake3, and the shipping mount
+//!   that refuses a pack it doesn't name ([`AssetServer::mount_only_released`]). Signing is the pipeline's;
+//!   this crate only verifies.
 //! - Hot reload's runtime half (M1 A8): [`AssetServer::remount`] reads a changed pack again and
 //!   reloads what its hashes say changed, through the same pipeline, swapping each new version in
 //!   behind the asset's handles once it is uploaded. Every version an app is sent carries a
@@ -100,8 +104,7 @@
 //!   remount of the pack it left and then of the pack it moved to, in that order. (Live link
 //!   needed no overlay mounts to push only what changed: its source serves the new pack whole,
 //!   assembled on the device from the changed assets it received and the rest of the pack it had.)
-//! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
-//!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
+//! - Letting packs a signed release manifest names skip bytecheck (spec §5.9).
 //! - Memory-mapped packs, so raw blocks are read in place; cancelling the reads of assets dropped
 //!   before they load; pinning by group (party, encounter) rather than by handle.
 //! - Texture mip streaming within the upload budget, so a large texture uploads over several
@@ -115,6 +118,7 @@ pub mod documents;
 pub mod font;
 pub mod graph;
 mod kind;
+pub mod manifest;
 pub mod material;
 pub mod mesh;
 pub mod pack;

@@ -12,6 +12,8 @@ license.workspace = true
 bevy_reflect.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
+# The release manifest's signature, which a build checks and never makes (M4 P1).
+ed25519-dalek.workspace = true
 half.workspace = true
 ktx2.workspace = true
 # Ogg Vorbis, for cooked sounds (M2 E1): the cooker's check and the runtime's decode alike.
@@ -45,6 +47,8 @@ tracing.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+# Tests sign manifests with keys from fixed seeds.
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
 postcard.workspace = true
 ron.workspace = true
 # Deadlines in the tests that wait on a worker.

@@ -54,11 +54,12 @@
 //! decoded, and each asset's hash after its blocks are. Corrupt, truncated or hostile data is an
 //! error, never a panic, and a decoder only ever sees bytes whose hash matched.
 //!
-//! **Signing (later, with `sapphire_patch`, M4):** the signature fields are reserved now so the
-//! layout doesn't change then. A signature will cover the header hash, and through it every byte
-//! of the pack; a reader rejects any scheme it doesn't know, and today every nonzero one. Spec
-//! §5.9's plan to skip bytecheck for verified packs rests on that signature, so until it exists
-//! every cooked asset is validated when it is decoded.
+//! **Signing:** packs stay unsigned (M4 P1). A signed release manifest names each pack by its size and
+//! header hash ([`PackHeader::hash`], [`crate::manifest`]), and through it every byte of the pack, and a
+//! shipping build mounts only a pack it names. The signature fields stay reserved: a reader rejects any
+//! scheme it doesn't know, and today every nonzero one. Every cooked asset is still validated when it is
+//! decoded: spec §5.9's skipping bytecheck for verified packs would rest on the manifest's signature, and
+//! nothing skips it yet.
 //!
 //! # Blocks and codecs
 //!
@@ -276,6 +277,14 @@ impl PackHeader {
             return Err(PackError::Header("the data's extent overflows"));
         }
         Ok(parsed)
+    }
+
+    /// The header hash: blake3 of the header's first 128 bytes, which a release manifest names a pack by
+    /// ([`crate::manifest`]). It covers the table of contents' hash, which covers every block's, so it pins
+    /// every byte a reader uses. Every header byte is a field here or fixed, so this is the hash [`Self::read`]
+    /// checked.
+    pub fn hash(&self) -> [u8; 32] {
+        *blake3::hash(&self.to_bytes()[..HASHED_HEADER_LEN]).as_bytes()
     }
 
     /// Bytes in the table of contents, from its counts.

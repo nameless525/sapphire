@@ -53,6 +53,8 @@ bevy_reflect.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
 ctt.workspace = true
+# Signs release manifests (M4 P1), with a key from the environment that's wiped when it's dropped.
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
 getrandom.workspace = true
 glam.workspace = true
 # Probe grids store half floats (M1 W5).

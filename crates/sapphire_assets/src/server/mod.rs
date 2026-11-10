@@ -24,6 +24,7 @@ pub use self::mounts::{MountState, UnmountReport};
 pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
+use crate::manifest::{Manifest, ReleasedPack};
 use crate::pack::{Decoder, Entry, PackError, PackMetadataBudget, PackMetadataRead, Toc};
 use crate::{AssetId, AssetKind, PipelineKey};
 
@@ -206,6 +207,10 @@ pub enum MountError {
     NotMounted(String),
     #[error("pack {0:?} is bound to the running stock fight")]
     BoundToStockFight(String),
+    #[error("pack {0:?} isn't in this install's release")]
+    NotReleased(String),
+    #[error("pack {name:?} isn't the one this install's release names: {reason}")]
+    NotAsReleased { name: String, reason: &'static str },
 }
 
 /// What an uploader returns for an asset it couldn't upload.
@@ -514,6 +519,11 @@ enum Completion {
 /// [`AssetServer::remount`] still waits for the file on the calling thread: it runs when a pack was just
 /// rewritten on a development machine or pushed to a device, and never in a shipped frame.
 ///
+/// A shipping build holds its mounts to its release ([`AssetServer::mount_only_released`], M4 P1): a pack the
+/// release manifest doesn't name, or whose length or header hash isn't the one it names, fails to mount
+/// ([`MountError::NotReleased`], [`MountError::NotAsReleased`]), and since the header hash pins the table of
+/// contents, which pins every block, the pack's bytes are the release's or fail their hash when read.
+///
 /// # Unmounting
 ///
 /// [`AssetServer::unmount`] closes a pack, at a zone change say, and hands back what nothing wants of
@@ -603,6 +613,8 @@ pub struct AssetServer {
     source: Arc<dyn PackSource>,
     budgets: AssetBudgets,
     metadata_budget: PackMetadataBudget,
+    /// The packs a shipping build may mount, by name, if it's held to a release.
+    release: Option<Arc<[ReleasedPack]>>,
     mounts: SlotMap<MountKey, Mount>,
     /// Packs a worker is opening, oldest first.
     pending_mounts: Vec<PendingMount>,
@@ -661,6 +673,7 @@ impl AssetServer {
             source: Arc::new(source),
             budgets,
             metadata_budget,
+            release: None,
             mounts: SlotMap::with_key(),
             pending_mounts: Vec::new(),
             failed_mounts: Vec::new(),
@@ -687,6 +700,14 @@ impl AssetServer {
 
     pub fn budgets(&self) -> &AssetBudgets {
         &self.budgets
+    }
+
+    /// Holds every mount and remount from here on to `release`: a pack it doesn't name, or whose file isn't
+    /// the length and header it names, fails to mount (see [mounting](AssetServer#mounting)). A shipping
+    /// build's call, on its install's manifest, before it mounts anything; development builds, whose packs
+    /// a cook or live link rewrites, don't make it.
+    pub fn mount_only_released(&mut self, release: &Manifest) {
+        self.release = Some(release.packs.clone().into());
     }
 
     /// Changes the budgets; a kind now over budget is trimmed on the next update.

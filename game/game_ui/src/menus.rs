@@ -46,16 +46,23 @@ pub const WINDOW_TITLE: &str = "window-title";
 pub const OPENED_BY_CODE: [&str; 4] = ["title", "pause", "hud", "dialogue"];
 
 impl ScreenModel {
-    /// Its model as it stands with nothing yet said, which is also what a golden shows.
+    /// Its model as a golden shows it: as it stands with nothing yet said, but for the HUD, which shows every
+    /// word it has.
     #[must_use]
     pub fn sample(self) -> Box<dyn PartialReflect> {
         match self {
             Self::Menu => Box::new(MenuModel::of(&PlayerSettings::default(), true, true)),
             Self::Character => Box::new(CharacterModel::default()),
             Self::Dialogue => Box::new(DialogueModel::default()),
-            Self::Hud => {
-                Box::new(HudModel { touch: true, has_banner: true, can_skip: true, ..HudModel::default() })
-            }
+            // Every word the HUD can say, the document's own: a foe's name and an objective too.
+            Self::Hud => Box::new(HudModel {
+                touch: true,
+                has_enemy: true,
+                has_objective: true,
+                has_banner: true,
+                can_skip: true,
+                ..HudModel::default()
+            }),
         }
     }
 
@@ -225,8 +232,9 @@ pub struct HudModel {
     /// The key of the player's name.
     pub player: String,
     pub level: i32,
-    /// The key of the enemy's.
+    /// The key of the enemy's. Empty reads the document's own.
     pub enemy: String,
+    /// Whether the fight has a foe for the HUD to name: none until [`Self::follow_fight`] says so.
     pub has_enemy: bool,
     /// The foe isn't a boss, so its name is `enemy`.
     pub names_enemy: bool,
@@ -234,8 +242,10 @@ pub struct HudModel {
     /// `enemy`. Empty reads the document's own.
     pub boss: String,
     pub has_boss: bool,
-    /// The objective's key.
+    /// The objective's key, under `hud-objective-`. Empty reads the document's own.
     pub objective: String,
+    /// Whether the run gives an objective: none unless whoever stands the run says so.
+    pub has_objective: bool,
     /// Whether it's played by touch, which has no key to pause with.
     pub touch: bool,
     /// The banner's key, under `hud-banner-`: a checkpoint reached, a victory, a defeat.
@@ -259,12 +269,13 @@ impl Default for HudModel {
         Self {
             player: "character-name-wanderer".to_owned(),
             level: 12,
-            enemy: "character-name-skeleton".to_owned(),
-            has_enemy: true,
+            enemy: String::new(),
+            has_enemy: false,
             names_enemy: true,
             boss: String::new(),
             has_boss: false,
-            objective: "hud-objective-arena".to_owned(),
+            objective: String::new(),
+            has_objective: false,
             touch: false,
             banner: "hud-banner-checkpoint".to_owned(),
             has_banner: false,

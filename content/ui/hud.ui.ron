@@ -80,7 +80,7 @@
                 name: "objective",
                 parent: "root",
                 layout: (anchored: (right: Points(16), top: Points(64)), direction: Column, align: End, gap: 2, max_width: Percent(38)),
-                binds: [(to: Opacity, path: "fight_words")],
+                binds: [(to: Shown, path: "has_objective"), (to: Opacity, path: "fight_words")],
             ),
             (
                 name: "objective-label",

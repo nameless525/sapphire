@@ -51,7 +51,7 @@ fn frame(stage: &mut Stage<GameShow>) -> Result<Vec<u8>, AppInitError> {
 fn play(stage: &mut Stage<GameShow>, clock: &mut u64, draw: bool) -> Result<(), AppInitError> {
     *clock += 16_666_667;
     stage.show.update_menus(Timestamp::from_nanos(*clock));
-    stage.show.controls.update(Timestamp::from_nanos(*clock));
+    stage.show.follow_input(Timestamp::from_nanos(*clock));
     stage.step();
     stage.show.drive_view(Duration::from_millis(16));
     if draw {

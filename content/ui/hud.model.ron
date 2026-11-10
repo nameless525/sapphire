@@ -13,6 +13,7 @@
             (path: "has_banner", kind: Bool),
             (path: "has_boss", kind: Bool),
             (path: "has_enemy", kind: Bool),
+            (path: "has_objective", kind: Bool),
             (path: "has_speaker", kind: Bool),
             (path: "has_subtitle", kind: Bool),
             (path: "level", kind: Number),

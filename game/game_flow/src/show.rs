@@ -550,6 +550,9 @@ impl GameShow {
         if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
             model.touch = touch;
             model.follow_fight(values.as_ref(), boss_name);
+            // A game's flow gives no objective, so its HUD shows none. With no game, the fight standing is the
+            // arena's, whose objective is the document's own: its foe.
+            model.has_objective = self.game.is_none();
         }
         if let Some(values) = values {
             menus.visit_models(|model: &mut CharacterModel| {
@@ -574,12 +577,18 @@ impl GameShow {
                 controls.read_touch(touch, now);
             }
         }
-        controls.update(now);
+        self.follow_input(now);
+        left || self.controls.wants_to_leave()
+    }
+
+    /// What a frame does once its input's been read, a window's or a capture's, as of `now`: the controls, the
+    /// pause and the flow, and the fight on the screens.
+    pub fn follow_input(&mut self, now: Timestamp) {
+        self.controls.update(now);
         self.pause_flow();
         self.follow_flow();
         self.follow_pause();
         self.show_fight_on_menus();
-        left || self.controls.wants_to_leave()
     }
 
     /// This frame's fixed steps: none while paused, and no burst after. Takes where the camera looks, which
@@ -762,12 +771,15 @@ impl SceneShow for GameShow {
 mod tests {
     use game_ui::menus::SIZES;
     use sapphire_assets::ui::UiDocument;
+    use sapphire_core::Name;
+    use sapphire_dialogue::FlagRegistry;
     use sapphire_gameplay::Buttons;
     use sapphire_loc::StringTable;
     use sapphire_platform::{KeyEvent, Keycode, Modifiers, Scancode, WindowId};
     use sapphire_stage::content::ScreenAssets;
 
     use super::*;
+    use crate::document::FlowDocument;
 
     const SIZE: (u32, u32) = (1280, 720);
     /// Longer than anything a screen does.
@@ -812,9 +824,7 @@ mod tests {
         *clock += SETTLE;
         let now = Timestamp::from_nanos(*clock);
         let left = show.update_menus(now);
-        show.controls.update(now);
-        show.follow_pause();
-        show.show_fight_on_menus();
+        show.follow_input(now);
         show.draw_interface(SIZE, &mut UiDrawList::default());
         left
     }
@@ -1054,6 +1064,36 @@ mod tests {
         frame(&mut show, &mut clock);
         let menus = show.menus.as_mut().unwrap();
         assert!(!menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().touch, "a pad has its own");
+    }
+
+    /// The HUD names a foe only once the fight has one, and gives an objective only where the run has one: the
+    /// arena's own with no game, and none from a game's flow, which names none (M4 X1). A new game's HUD said
+    /// "Skeleton Warrior" and "Defeat the enemy" at the Gate Square, from the model's defaults.
+    #[test]
+    fn the_hud_names_only_what_the_run_has() {
+        let hud = |show: &mut GameShow| {
+            let model = show.menus.as_mut().unwrap().model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            (model.has_enemy, model.has_objective)
+        };
+        let (mut show, mut clock) = fight();
+        frame(&mut show, &mut clock);
+        assert_eq!(
+            hud(&mut show),
+            (false, true),
+            "no foe before the fight has one, and the arena's objective"
+        );
+
+        let document = FlowDocument::from_ron(include_str!("../../../content/game.flow.ron")).unwrap();
+        let registry = FlagRegistry::from_ron(include_str!("../../../content/flags.ron")).unwrap();
+        let registered = registry.flags.iter().map(|flag| Name::new(flag)).collect();
+        let game = Game::new(FlowContent { document, registered }, GameSetup::default()).unwrap();
+        let mut show = undrawn().with_game(game);
+        let mut clock = 0;
+        frame(&mut show, &mut clock);
+        show.choose(FlowCommand::NewGame);
+        frame(&mut show, &mut clock);
+        assert!(is_open(&show, MenuScreen::HUD), "a new game plays");
+        assert_eq!(hud(&mut show), (false, false), "no foe, and the flow gives no objective");
     }
 
     /// A game's own bindings are what its show reads, and a document that lacks what combat reads stops it,

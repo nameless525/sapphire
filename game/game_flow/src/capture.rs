@@ -95,22 +95,21 @@ pub fn capture(
     let (mut forward, mut held) = (capture.forward, false);
     for frame_at in 1..capture.ticks {
         now += frame;
-        stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
-        if forward {
-            let playing = stage.show.game().is_some_and(|game| game.flow().state() == FlowState::Playing);
-            if !held && playing {
-                // Once the title's gone, so its rows don't take the press.
-                stage.show.handle_event(&forward_key(now, true));
-                held = true;
-            }
-            // What a window's `read_input` does after the menus, which a capture with no input leaves out.
-            stage.show.controls.update(Timestamp::from_nanos(now.as_nanos() as u64));
-            if held && stage.show.shown.fight.show.timeline_player().is_some() {
-                stage.show.handle_event(&forward_key(now, false));
-                forward = false;
-                // Where a golden pins its frame from: the timeline's first.
-                tracing::info!(target: LOG_TARGET, frame = frame_at, "walked into a timeline");
-            }
+        let at = Timestamp::from_nanos(now.as_nanos() as u64);
+        stage.show.update_menus(at);
+        let playing = stage.show.game().is_some_and(|game| game.flow().state() == FlowState::Playing);
+        if forward && !held && playing {
+            // Once the title's gone, so its rows don't take the press.
+            stage.show.handle_event(&forward_key(now, true));
+            held = true;
+        }
+        // What a window's `read_input` does after the menus and the press: the HUD follows the fight.
+        stage.show.follow_input(at);
+        if forward && held && stage.show.shown.fight.show.timeline_player().is_some() {
+            stage.show.handle_event(&forward_key(now, false));
+            forward = false;
+            // Where a golden pins its frame from: the timeline's first.
+            tracing::info!(target: LOG_TARGET, frame = frame_at, "walked into a timeline");
         }
         stage.step();
         stage.show.drive_view(frame);
@@ -119,7 +118,9 @@ pub fn capture(
         stage.show.say_first_uses(&stage.renderer);
     }
     now += frame;
-    stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
+    let at = Timestamp::from_nanos(now.as_nanos() as u64);
+    stage.show.update_menus(at);
+    stage.show.follow_input(at);
     if capture.ticks > 0 {
         stage.step();
         stage.show.drive_view(frame);

@@ -264,7 +264,7 @@ Both cooked and recorded replays. Both played beside the renderer to their check
 - the boss's script changed its brain and forced its move on the crossing step;
 - the boss's document changed its brain at its next phase.
 
-`bosses_are_content.rs` held the new boss to exit test 2, its third clause on the scratch commit. Then the branch was deleted. Two things the walk found are in the recipes: phases and names count from 1 in a script, and a zone holds only one kind that names a script. A bug it found in the exit test is fixed (see "Everything deferred").
+`bosses_are_content.rs` held the new boss to exit test 2, its third clause on the scratch commit. Then the branch was deleted. One thing the walk found is in the recipes: phases and names count from 1 in a script. It also found that a zone could hold only one kind that named a script, and that every scenario on a zone had to list every kind the zone spawns. Both are fixed, as is a bug it found in the exit test (see "Everything deferred").
 
 ### A move
 
@@ -331,8 +331,8 @@ Walked. The worked example is [content/combat/knell_colossus/](../content/combat
    - **Phases count from 1, and so do places in `names`.** The walk's first try checked `phase == 0` and never fired.
    - Commands such as `sapphire.set_brain(actor, place)` and `sapphire.force_move(actor, place)` take a place in `names`.
    - A script is pure decisions, with no strings at run time (plan §3, "Luau's job"). The scan refuses string concatenation, and a bare `for` over a table.
-3. **Into a zone, content only.** Add a spawner whose `spawns` is the kind, an encounter that calls it, and every scenario update the next recipe names. The commit that does this must touch only `content/`, `tests/replays/` and `tests/golden/`, or `bosses_are_content.rs` fails. Its name must be in no `.rs` file, and its script must be reached from the zone.
-4. **One kind with a script per zone.** A fight binds one script, and every scenario on a zone has to list every kind the zone's spawners name. So a second kind that names a script can't share a zone with the first. The walk's boss went to the proving ground for this reason.
+3. **Into a zone, content only.** Add a spawner whose `spawns` is the kind, an encounter that calls it, and the scenario updates the next recipe names. The commit that does this must touch only `content/`, `tests/replays/` and `tests/golden/`, or `bosses_are_content.rs` fails. Its name must be in no `.rs` file, and its script must be reached from the zone.
+4. **Kinds with scripts can share a zone.** Each kind's script hears only its own fighters: their phases, moves and defeats, the hits they land or take, and every beat. A fight's scripts share one VM, with its memory limit and each step's budget. They also share one board of 64 numbers, as they share flags. So a script that keeps numbers on the board should use slots that no other script in its zones uses.
 5. **Hot reload:** in a `dev` build, `link push <file>.luau` reloads the script into the running fight between steps, and the board is kept.
 
 ### An encounter in a zone
@@ -350,11 +350,9 @@ Walked, as part of both recipes above.
    - its ID in `encounters`.
 
    The cook refuses a spawner off the navmesh, and an encounter naming a spawner or trigger the zone lacks.
-3. **Every scenario on that zone** (`content/scenarios/*.scenario.ron` whose `zone` is it) must list:
-   - the new encounter in `encounters`, and in `cleared` if it shouldn't run there;
-   - each new kind in `enemies`, and its moves in `moves`.
+3. **Every scenario on that zone** (`content/scenarios/*.scenario.ron` whose `zone` is it) must list the new encounter in `encounters`, and in `cleared` if it shouldn't run there. A scenario that doesn't fails to set up.
 
-   A scenario that doesn't fails to set up, naming the spawner. In the walk that was three of the ward's scenarios and three of the proving ground's.
+   Its kinds needn't be listed anywhere else. The zone's spawners say what it spawns, so a scenario adds each kind that its encounters' spawners name after the kinds it lists, with that kind's moves and script. Cleared encounters count too. The kind is the `<spawns>.enemy.ron` under `content/combat/`, which the build compiles in. A kind's name is its file's, so two `.enemy.ron` files with one name fail the build. A name with no kind fails the scenario's setup, naming the spawner.
 4. **A scenario of its own:** a `cast` member with `moves: "player"` standing at a player spawner inside the trigger, as [ward-terrace.scenario.ron](../content/scenarios/ward-terrace.scenario.ron) does. Then record a replay:
    ```bash
    cargo xtask replay --record <name> --scenario <scenario> --script fight-back --ticks <n>
@@ -513,10 +511,12 @@ M3's first pillar counts each of these as a bug:
 - **A new screen** is a `MenuScreen` variant with a model struct.
 - **A music phase other than `waiting`, `running` and `cleared`** is chosen in `game_combat::cues::music_phase`. A boss's named phase is the natural next one. Its stems have to be written first.
 - **A replay that crosses zones** names them by constants in `replay/`.
-- **One kind with a script per zone.** A fight binds one script, and a scenario must list every kind its zone's spawners name. The fix is code: bind each kind's script, or let a scenario leave out the kinds of encounters it lists as cleared.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 
-**Fixed while walking:** exit test 2's third clause charged a boss to every zone that reached it through an exit. It now looks only in the zone whose spawner names it. The fix is the commit "Look for a boss's commit in the zone that has it".
+**Fixed while walking:**
+
+- Exit test 2's third clause charged a boss to every zone that reached it through an exit. It now looks only in the zone whose spawner names it. The fix is the commit "Look for a boss's commit in the zone that has it".
+- **One kind with a script per zone.** A fight bound one script, and a scenario had to list every kind its zone's spawners name. Now each kind's script is bound for its own fighters, in the fight's one VM, and a scenario on a zone adds the kinds its encounters spawn. The fix is the commit "Bind each kind's script for its own fighters". The Lantern Ward's six replays moved (the walk, the market, the terrace and the court's three), since the Knell Colossus's script no longer hears anyone else.
 
 ### Known to the run
 
@@ -532,6 +532,7 @@ M3's first pillar counts each of these as a bug:
 - **E3 and E4's window checks** need a person: a lost device in a real window, docking, the gizmo and focus.
 - **The emulator's audio** warns that real-time scheduling was refused. Nobody has listened.
 - **The bodies' foot and look settings** reach the simulation's own bodies only as defaults. Taking a game's document is a simulation table in `tables_hash`, which moves every checksum (S3).
+- **The script VM's heap isn't replayed.** Binding a dialogue's conditions and asking them between steps allocates in the fight's VM. A hook that hits the VM's 2 MiB memory limit fails, and the checksum holds how each hook ended. A replay asks no conditions. So a recording whose panel asked conditions could diverge from its replay near that limit. Spec §5.23's "Can't do" covers the garbage that asking leaves, not this.
 - **No production path loads a pack's `.sscript`.** Dialogues carry their conditions' source and compile at bind (Q2b). A script could do the same (71 µs for `arena-scripted`). The cooked kind doesn't carry its script either, so a game reading kinds from packs needs a format change.
 
 ### From the spec's "Can't do" lines

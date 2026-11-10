@@ -22,6 +22,12 @@
 //! that read release 7's manifest keeps fetching release 7's bytes while release 8 goes up. Publishing to a
 //! host means copying everything but `release.smanifest` first, and it last. The same `release.smanifest` is
 //! what an app's own content carries in place of its cook's unsigned one.
+//!
+//! A release published as a patch of an earlier one ([`ReleaseOptions::patch_from`], M4 P3) is refused before
+//! anything is written unless an install of the earlier release would take it, of the same cook, newer, and
+//! signed by a key the earlier names, and unless it carries only what a patch may: every file the simulation
+//! reads as the earlier release has it, the first one that isn't named (m4-plan §3 "What a patch may carry").
+//! What the simulation reads otherwise is compiled into the app, so no pack can change it.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -95,6 +101,20 @@ pub enum ReleaseError {
     SuccessorKeys,
     #[error("{0:?} isn't a date as YYYY-MM-DD")]
     BadDate(String),
+    #[error(
+        "{path} isn't release {from}'s, and the simulation reads it: a patch can't add, change, drop or unmark it, \
+         so only an app build may"
+    )]
+    NotPatchable { path: String, from: u64 },
+    #[error("release {version} isn't newer than release {from}, which it patches")]
+    PatchNotNewer { from: u64, version: u64 },
+    #[error("this is the {cook} cook, and release {from}, which it patches, is the {patched} cook")]
+    PatchOtherCook { from: u64, cook: String, patched: String },
+    #[error(
+        "no key signing this release is one release {from} names for its successor, so no install of it would \
+         take the patch"
+    )]
+    PatchNotTrusted { from: u64 },
 }
 
 /// What [`publish`] did.
@@ -121,6 +141,10 @@ pub struct ReleaseOptions {
     /// The keys that may sign the next release: the signing keys' public halves when `None`. Rotating to a new
     /// key names it here, signed by the old one (and, while clients move, the new one too).
     pub successor_keys: Option<Vec<PublicKey>>,
+    /// The earlier release's manifest, when this release is a patch of it (`--patch-from`): it must be what an
+    /// install of that release takes as its successor, and carry only what a patch may (m4-plan §3 "What a
+    /// patch may carry").
+    pub patch_from: Option<PathBuf>,
 }
 
 /// What the cook's directory `packs` ships, as an unsigned manifest of `cook` (see the module docs).
@@ -228,6 +252,9 @@ pub fn publish(
     let signed = release.encode(&signatures).map_err(manifest_error)?;
     // What a client will do with it, before anything's written.
     Manifest::verify(&signed, &signers).map_err(manifest_error)?;
+    if let Some(path) = &options.patch_from {
+        check_patch(&read_manifest(path)?, &release, &signers)?;
+    }
 
     if current_path.exists() {
         let existing = read_manifest(&current_path)?;
@@ -286,6 +313,29 @@ pub fn publish(
         written,
         kept: copies.len() - written,
     })
+}
+
+/// Refuses `release` as a patch of `from` unless an install of `from` would take it, signed by `signers`, and
+/// it leaves what the simulation reads as `from` has it ([`Manifest::unpatchable_change`]), naming the first
+/// file it doesn't.
+fn check_patch(from: &Manifest, release: &Manifest, signers: &[PublicKey]) -> Result<(), ReleaseError> {
+    if release.cook != from.cook {
+        return Err(ReleaseError::PatchOtherCook {
+            from: from.version,
+            cook: release.cook.clone(),
+            patched: from.cook.clone(),
+        });
+    }
+    if release.version <= from.version {
+        return Err(ReleaseError::PatchNotNewer { from: from.version, version: release.version });
+    }
+    if !signers.iter().any(|key| from.successor_keys.contains(key)) {
+        return Err(ReleaseError::PatchNotTrusted { from: from.version });
+    }
+    match from.unpatchable_change(release) {
+        Some(path) => Err(ReleaseError::NotPatchable { path: path.to_owned(), from: from.version }),
+        None => Ok(()),
+    }
 }
 
 /// The signing keys in `value`, [`KEY_VAR`]'s text: never echoed, even when it's wrong.

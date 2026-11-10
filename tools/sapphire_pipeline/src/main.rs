@@ -81,12 +81,15 @@ Usage:
       documents/, and an unsigned release.smanifest names everything there.
   sapphire_pipeline release --packs <DIR> --out <DIR> --release-version <N>
                             --expires <YYYY-MM-DD> --min-build <N> [--next-keys <HEX>[,<HEX>...]]
+                            [--patch-from <MANIFEST>]
       Sign the release of the cook in --packs, which its release.smanifest must still describe,
       with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte ed25519 seed in hex, comma-separated),
       and lay it out in --out for a static host: packs/ and files/ named by hash,
       manifests/<N>.smanifest, and release.smanifest, written last. --release-version must be
       higher than --out's current release's. The release names the keys that may sign the next
-      one: the signing keys, unless --next-keys says.
+      one: the signing keys, unless --next-keys says. With --patch-from, it's a patch of that
+      earlier release: refused, naming the file, if it changes anything the simulation reads, and
+      unless an install of the earlier one would take it (same cook, newer, a key it names).
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
@@ -106,6 +109,7 @@ Options:
   --expires <YYYY-MM-DD>     release: the day, at midnight UTC, it stops being offered as current.
   --min-build <N>            release: the oldest app build it runs on.
   --next-keys <HEX,...>      release: the public keys that may sign the next release.
+  --patch-from <MANIFEST>    release: the earlier release's signed manifest, which this one patches.
   -h, --help                 Show this message.
   -V, --version              Show the version.";
 
@@ -518,6 +522,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
                     Some(keys) => Some(release::public_keys(&keys)?),
                     None => None,
                 },
+                patch_from: options.value("--patch-from")?,
             },
         },
         other => bail!("unknown command `{other}`"),
@@ -717,7 +722,31 @@ mod tests {
             "9",
         ])
         .unwrap();
-        let options = ReleaseOptions { version: 3, expires: 86_400, min_app_build: 9, successor_keys: None };
-        assert_eq!(parsed, Command::Release { packs: "p".into(), out: "o".into(), options });
+        let options = ReleaseOptions {
+            version: 3,
+            expires: 86_400,
+            min_app_build: 9,
+            successor_keys: None,
+            patch_from: None,
+        };
+        assert_eq!(parsed, Command::Release { packs: "p".into(), out: "o".into(), options: options.clone() });
+        let patch = parse(&[
+            "release",
+            "--packs",
+            "p",
+            "--out",
+            "o",
+            "--release-version",
+            "3",
+            "--expires",
+            "1970-01-02",
+            "--min-build",
+            "9",
+            "--patch-from",
+            "host/manifests/2.smanifest",
+        ])
+        .unwrap();
+        let options = ReleaseOptions { patch_from: Some("host/manifests/2.smanifest".into()), ..options };
+        assert_eq!(patch, Command::Release { packs: "p".into(), out: "o".into(), options });
     }
 }

@@ -23,7 +23,7 @@ mod workspace;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::bail;
+use anyhow::{Context as _, bail};
 
 use crate::content::Cook;
 use crate::platforms::{App, Options, PackageTarget, Platform, SANDBOX};
@@ -42,12 +42,14 @@ Commands:
       `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
       target/content/editor/, which no app ships.
   release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
-      --min-build <n> [--next-keys <hex>[,<hex>...]]
+      --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
       Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte
       ed25519 seed in hex, comma-separated; only the maintainer has them) and lay it out in <dir>
       for a static host: packs/ and files/ by hash, manifests/<n>.smanifest, and release.smanifest,
       written last and copied to a host last. <n> must be higher than <dir>'s current release's.
-      Nothing is uploaded.
+      With --patch-from, the release is a patch of the one that signed manifest is: refused,
+      naming the file, if it changes anything the simulation reads, and unless an install of the
+      earlier release would take it. Nothing is uploaded.
   bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
       [--exe <path>] [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/, by the
@@ -72,6 +74,8 @@ Commands:
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
   package --platform <platform> [--out <dir>] [--dev]
+      [--release-version <n> --expires <YYYY-MM-DD> --min-build <n> [--next-keys <hex>[,<hex>...]]
+      [--patch-from <manifest>]]
       Build the game for a store under <dir>/<platform>/ (default target/package/): game_app in the
       shipping profile (fat LTO: minutes, and gigabytes), the platform's cook, the workspace's
       version and a build number counted from git, the identity in platform/identity.toml and
@@ -92,7 +96,10 @@ Commands:
       The build number is the count of commits on main at HEAD. Off main, with changes not
       committed or untracked files, it fails, unless --dev packages it anyway, marked dev in its
       build ID and package.json. A shallow clone always fails. Nothing is uploaded or notarized,
-      and nothing but Android's upload key signs for a store.
+      and nothing but Android's upload key signs for a store. With a release's options, the
+      content's release is signed as `release` signs it (SAPPHIRE_RELEASE_KEY), laid out for its
+      host in release/, and the app carries the signed manifest; without them the app keeps the
+      cook's unsigned one, and package.json says so.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
@@ -199,12 +206,8 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         "release" => {
             let cook = args.required::<Cook>("--cook")?;
             let out = args.required::<PathBuf>("--out")?;
-            let release = release::Release {
-                version: args.required("--release-version")?,
-                expires: args.required("--expires")?,
-                min_build: args.required("--min-build")?,
-                next_keys: args.value("--next-keys")?,
-            };
+            let release = release::Release::from_args(&mut args)?
+                .context("a release needs --release-version, --expires and --min-build")?;
             args.finish(false)?;
             if cook == Cook::Editor {
                 bail!("the editor's cook ships nowhere, so it has no release");
@@ -232,8 +235,9 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             let target = args.required::<PackageTarget>("--platform")?;
             let out = args.value::<PathBuf>("--out")?.unwrap_or_else(platforms::default_package_dir);
             let dev = args.flag("--dev");
+            let release = release::Release::from_args(&mut args)?;
             args.finish(false)?;
-            let packaged = platforms::package(target, &out, dev)?;
+            let packaged = platforms::package(target, &out, dev, release.as_ref())?;
             eprintln!("packaged into {}", packaged.display());
             Ok(())
         }

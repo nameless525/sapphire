@@ -37,6 +37,7 @@ use serde_json::json;
 use super::apple::{self, BundleLayout};
 use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store};
 use crate::content::{self, Cook};
+use crate::release::{self, Release};
 use crate::version::{Build, Kind};
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -107,9 +108,14 @@ pub fn default_out() -> PathBuf {
     workspace::output_dir().join("package")
 }
 
+/// Where a signed package lays its content's release out for a host, inside the package.
+const RELEASE_DIR: &str = "release";
+
 /// Packages the game for `target` under `out`, and returns where. `dev` allows a build that isn't a
-/// release's, marked dev ([`crate::version`]).
-pub fn package(target: Target, out: &Path, dev: bool) -> anyhow::Result<PathBuf> {
+/// release's, marked dev ([`crate::version`]). With `release`, the content's release is signed and laid out
+/// for its host in `release/` ([`release::publish`]), and the app carries the signed manifest; without it,
+/// the cook's unsigned one, which no patch can follow.
+pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>) -> anyhow::Result<PathBuf> {
     let host = std::env::consts::OS;
     ensure!(
         target.hosts().contains(&host),
@@ -137,17 +143,35 @@ pub fn package(target: Target, out: &Path, dev: bool) -> anyhow::Result<PathBuf>
     fs::create_dir_all(&stage).with_context(|| format!("failed to create {}", stage.display()))?;
     let icons = stage.with_extension("icons");
     super::make_icons(&icons)?;
-    let content = content::cook(target.cook())?;
+    let cooked = content::cook(target.cook())?;
+    let signed = stage.with_extension("content");
+    let content = match release {
+        Some(release) => {
+            let manifest = release::publish(&cooked, &stage.join(RELEASE_DIR), release)?;
+            with_manifest(&cooked.dir, &manifest, &signed)?;
+            signed.clone()
+        }
+        None => {
+            if !dev {
+                eprintln!(
+                    "warning: the content's release isn't signed, so no patch can follow this package: give \
+                     --release-version, --expires and --min-build, with {} set",
+                    release::KEY_VAR
+                );
+            }
+            cooked.dir.clone()
+        }
+    };
     let env: Vec<(&str, OsString)> =
         build.env(&app.version).into_iter().map(|(name, value)| (name, value.into())).collect();
 
     let made = match target {
         Target::Ios | Target::IosSim | Target::MacOs => {
-            apple_app(target, &app, &build, &env, &content.dir, &icons, &stage)?
+            apple_app(target, &app, &build, &env, &content, &icons, &stage)?
         }
         Target::Android => {
             let work = stage.with_extension("gradle");
-            let packaged = android::package(&app, build.number, &env, &content.dir, &work)?;
+            let packaged = android::package(&app, build.number, &env, &content, &work)?;
             let aab = format!("{}.aab", app.bundle_name);
             copy(&packaged.aab, &stage.join(&aab))?;
             let library = packaged.library.file_name().context("the library has a name")?;
@@ -170,12 +194,13 @@ pub fn package(target: Target, out: &Path, dev: bool) -> anyhow::Result<PathBuf>
             workspace::remove_dir_if_exists(&work)?;
             Made { app: aab, symbols: vec![format!("symbols/{}", library.to_string_lossy())], checks }
         }
-        Target::Windows | Target::Linux => desktop_app(target, &app, &env, &content.dir, &icons, &stage)?,
+        Target::Windows | Target::Linux => desktop_app(target, &app, &env, &content, &icons, &stage)?,
     };
-    drop(content);
+    drop(cooked);
     workspace::remove_dir_if_exists(&icons)?;
+    workspace::remove_dir_if_exists(&signed)?;
 
-    let manifest = manifest(target, &app, &build, &made);
+    let manifest = manifest(target, &app, &build, &made, release);
     let path = stage.join("package.json");
     fs::write(&path, serde_json::to_string_pretty(&manifest).expect("JSON values serialize") + "\n")
         .with_context(|| format!("failed to write {}", path.display()))?;
@@ -192,12 +217,37 @@ struct Made {
     checks: serde_json::Value,
 }
 
+/// The content an app carries when its release is signed: a copy of the cook in `cooked` at `out`, with the
+/// signed `manifest` in place of the cook's unsigned one. A copy, because other runs read the cook.
+fn with_manifest(cooked: &Path, manifest: &Path, out: &Path) -> anyhow::Result<()> {
+    workspace::remove_dir_if_exists(out)?;
+    workspace::copy_dir(cooked, out)?;
+    copy(manifest, &out.join(release::MANIFEST))
+}
+
 /// `package.json`: what a package is, for what reads it next (S2–S4, C1, and the patch manifest, which
 /// takes the version and build number from it).
-fn manifest(target: Target, app: &App, build: &Build, made: &Made) -> serde_json::Value {
+fn manifest(
+    target: Target,
+    app: &App,
+    build: &Build,
+    made: &Made,
+    release: Option<&Release>,
+) -> serde_json::Value {
     let (kind, why) = match &build.kind {
         Kind::Release => ("release", None),
         Kind::Dev(why) => ("dev", Some(why.as_str())),
+    };
+    let release = match release {
+        Some(release) => json!({
+            "signed": true,
+            "version": release.version,
+            "expires": release.expires,
+            "min_build": release.min_build,
+            "patch_of": release.patch_from.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy()),
+            "host_dir": RELEASE_DIR,
+        }),
+        None => json!({ "signed": false }),
     };
     json!({
         "app": app.package,
@@ -218,6 +268,7 @@ fn manifest(target: Target, app: &App, build: &Build, made: &Made) -> serde_json
         },
         "profile": "shipping",
         "cook": target.cook().name(),
+        "release": release,
         "app_path": made.app,
         "symbols": made.symbols,
         "checks": made.checks,
@@ -412,7 +463,8 @@ mod tests {
             checks: json!({ "signed_with": "debug" }),
         };
         let release = Build { number: 4123, kind: Kind::Release, commit: "1a2b3c4d".into() };
-        let written = manifest(Target::Ios, &app, &release, &made);
+        let written = manifest(Target::Ios, &app, &release, &made, None);
+        assert_eq!(written["release"], json!({ "signed": false }));
         assert_eq!(written["version"], "0.1.0");
         assert_eq!(written["build"]["number"], 4123);
         assert_eq!(written["build"]["id"], "0.1.0+4123");
@@ -426,9 +478,49 @@ mod tests {
         assert_eq!(written["checks"]["signed_with"], "debug");
 
         let dev = Build { kind: Kind::Dev("off main".into()), ..release };
-        let written = manifest(Target::MacOs, &app, &dev, &made);
+        let signed = Release {
+            version: 7,
+            expires: "2027-06-01".into(),
+            min_build: 4100,
+            next_keys: None,
+            patch_from: Some(Path::new("host").join("manifests").join("6.smanifest")),
+        };
+        let written = manifest(Target::MacOs, &app, &dev, &made, Some(&signed));
         assert_eq!(written["build"]["kind"], "dev");
         assert_eq!(written["build"]["dev_because"], "off main");
         assert_eq!(written["build"]["id"], "0.1.0+4123.dev.1a2b3c4");
+        assert_eq!(
+            written["release"],
+            json!({
+                "signed": true,
+                "version": 7,
+                "expires": "2027-06-01",
+                "min_build": 4100,
+                "patch_of": "6.smanifest",
+                "host_dir": "release",
+            })
+        );
+    }
+
+    /// A signed package's app carries its cook with the signed manifest in place of the unsigned one, and the
+    /// cook, which other runs read, stays as it was.
+    #[test]
+    fn a_signed_package_carries_the_signed_manifest_and_leaves_the_cook_alone() {
+        let dir = std::env::temp_dir().join(format!("xtask-signed-content-{}", std::process::id()));
+        let (cooked, out) = (dir.join("cooked"), dir.join("content"));
+        fs::create_dir_all(cooked.join("documents")).unwrap();
+        fs::write(cooked.join("shared.spack"), "a pack").unwrap();
+        fs::write(cooked.join("documents/flags.ron"), "flags").unwrap();
+        fs::write(cooked.join(release::MANIFEST), "unsigned").unwrap();
+        fs::write(dir.join("signed.smanifest"), "signed").unwrap();
+        fs::create_dir_all(out.join("stale")).unwrap();
+
+        with_manifest(&cooked, &dir.join("signed.smanifest"), &out).unwrap();
+        assert_eq!(fs::read_to_string(out.join(release::MANIFEST)).unwrap(), "signed");
+        assert_eq!(fs::read_to_string(out.join("shared.spack")).unwrap(), "a pack");
+        assert_eq!(fs::read_to_string(out.join("documents/flags.ron")).unwrap(), "flags");
+        assert!(!out.join("stale").exists(), "made afresh");
+        assert_eq!(fs::read_to_string(cooked.join(release::MANIFEST)).unwrap(), "unsigned");
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

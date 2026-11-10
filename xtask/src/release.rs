@@ -7,15 +7,22 @@
 //! `manifests/<version>.smanifest`, and `release.smanifest`, written last (`sapphire_pipeline::release` has the
 //! layout). The key goes from this process's environment to the pipeline's and nowhere else: xtask never
 //! reads it, and nothing prints it. The signed `release.smanifest` is also what an app's own content carries
-//! in place of its cook's unsigned one, so `package` copies it over the content's after this.
+//! in place of its cook's unsigned one, so `package` ships a copy of its cook with it in that place.
+//!
+//! `--patch-from <manifest>` makes the release a patch of an earlier one, whose signed manifest it names: the
+//! pipeline refuses, before anything is written, a patch that changes a file the simulation reads (naming it)
+//! or one an install of the earlier release wouldn't take (M4 P3, m4-plan §3 "What a patch may carry").
 //!
 //! The command itself is a thin entry, cooking and then publishing; `package` calls [`publish`] on the cook it
-//! made.
+//! made, when it's given a release's options ([`Release::from_args`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anyhow::bail;
+
+use crate::cli;
 use crate::content::{self, Cooked};
 use crate::workspace;
 
@@ -30,6 +37,30 @@ pub struct Release {
     pub min_build: u32,
     /// The public keys, in hex and comma-separated, that may sign the next release, if not the signing keys.
     pub next_keys: Option<String>,
+    /// The earlier release's signed manifest, when this one is a patch of it: the pipeline refuses a patch
+    /// that changes what the simulation reads, naming the file, or that an install of the earlier release
+    /// wouldn't take.
+    pub patch_from: Option<PathBuf>,
+}
+
+impl Release {
+    /// The release options on a command line: `--release-version`, `--expires` and `--min-build`, with
+    /// `--next-keys` and `--patch-from` if given. `None` if none of them is there; an error if some are and
+    /// not all three that a release needs.
+    pub fn from_args(args: &mut cli::Args) -> anyhow::Result<Option<Self>> {
+        let version = args.value("--release-version")?;
+        let expires = args.value("--expires")?;
+        let min_build = args.value("--min-build")?;
+        let next_keys = args.value("--next-keys")?;
+        let patch_from = args.value("--patch-from")?;
+        match (version, expires, min_build) {
+            (Some(version), Some(expires), Some(min_build)) => {
+                Ok(Some(Self { version, expires, min_build, next_keys, patch_from }))
+            }
+            (None, None, None) if next_keys.is_none() && patch_from.is_none() => Ok(None),
+            _ => bail!("a release needs --release-version, --expires and --min-build, all three"),
+        }
+    }
 }
 
 /// Signs `cooked`'s release and lays it out in `out`. Returns the signed manifest, `<out>/release.smanifest`,
@@ -44,7 +75,10 @@ pub fn publish(cooked: &Cooked, out: &Path, release: &Release) -> anyhow::Result
 }
 
 /// The manifest's file name: `sapphire_assets::manifest::FILE_NAME`, which xtask doesn't link.
-const MANIFEST: &str = "release.smanifest";
+pub const MANIFEST: &str = "release.smanifest";
+
+/// The environment variable the pipeline reads the signing keys from, for messages: xtask never reads it.
+pub const KEY_VAR: &str = "SAPPHIRE_RELEASE_KEY";
 
 /// The pipeline's command line for a release of `packs` into `out`.
 fn arguments(packs: &Path, out: &Path, release: &Release) -> Vec<OsString> {
@@ -60,6 +94,9 @@ fn arguments(packs: &Path, out: &Path, release: &Release) -> Vec<OsString> {
         .chain(release.next_keys.clone().map(|keys| ("--next-keys", keys)))
         .flat_map(|(name, value)| [OsString::from(name), OsString::from(value)]),
     );
+    if let Some(patch_from) = &release.patch_from {
+        arguments.extend(["--patch-from".into(), patch_from.into()]);
+    }
     arguments
 }
 
@@ -69,8 +106,13 @@ mod tests {
 
     #[test]
     fn a_release_runs_the_pipelines_command_with_its_options() {
-        let mut release =
-            Release { version: 12, expires: "2027-06-01".to_owned(), min_build: 1300, next_keys: None };
+        let mut release = Release {
+            version: 12,
+            expires: "2027-06-01".to_owned(),
+            min_build: 1300,
+            next_keys: None,
+            patch_from: None,
+        };
         let line = |release: &Release| -> Vec<String> {
             arguments(Path::new("cook"), Path::new("host"), release)
                 .into_iter()
@@ -95,6 +137,39 @@ mod tests {
         );
         release.next_keys = Some("ab,cd".to_owned());
         assert_eq!(line(&release)[11..], ["--next-keys", "ab,cd"]);
+        release.patch_from = Some("host/manifests/11.smanifest".into());
+        assert_eq!(line(&release)[13..], ["--patch-from", "host/manifests/11.smanifest"]);
         assert!(!line(&release).iter().any(|argument| argument.contains("KEY")), "no key on a command line");
+    }
+
+    /// A package signs only when it's given a release's options, and then needs all three.
+    #[test]
+    fn release_options_come_all_three_or_not_at_all() {
+        let parse = |line: &str| {
+            let mut args = cli::Args::new(line.split_whitespace().map(str::to_owned));
+            let release = Release::from_args(&mut args);
+            release.and_then(|release| args.finish(false).map(|_| release))
+        };
+        assert_eq!(parse("").unwrap(), None);
+        let release =
+            parse("--release-version 4 --expires 2027-06-01 --min-build 1300 --patch-from m/3.smanifest")
+                .unwrap()
+                .expect("a release");
+        assert_eq!(
+            release,
+            Release {
+                version: 4,
+                expires: "2027-06-01".to_owned(),
+                min_build: 1300,
+                next_keys: None,
+                patch_from: Some("m/3.smanifest".into()),
+            }
+        );
+        for partial in
+            ["--release-version 4", "--expires 2027-06-01 --min-build 1", "--patch-from m/3.smanifest"]
+        {
+            let error = parse(partial).unwrap_err().to_string();
+            assert!(error.contains("all three"), "{partial}: {error}");
+        }
     }
 }

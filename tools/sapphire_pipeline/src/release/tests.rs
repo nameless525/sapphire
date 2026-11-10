@@ -7,6 +7,8 @@ use crate::test_util::TempDir;
 
 const TARGETING: &str = include_str!("../../../../crates/sapphire_gameplay/default_targeting.ron");
 const HUD: &str = include_str!("../../../../crates/sapphire_ui/default_hud.ron");
+/// The shipped list of documents, which says which the simulation reads.
+const MANIFEST_FILE_PATH: &str = "documents/game.documents.ron";
 
 /// A key from a fixed seed: tests never make one from entropy, and none is kept in a file.
 fn key(seed: u8) -> SigningKey {
@@ -74,6 +76,7 @@ fn options(version: u64) -> ReleaseOptions {
         expires: date("2027-06-01").unwrap(),
         min_app_build: 1200,
         successor_keys: None,
+        patch_from: None,
     }
 }
 
@@ -197,6 +200,66 @@ fn a_release_can_hand_its_successor_to_a_new_key() {
     );
     assert_eq!(published.manifest.successor_keys, [public(8)]);
     assert!(matches!(publish(&cooked.packs(), &cooked.out(), &options(3), &[]), Err(ReleaseError::NoKey)));
+}
+
+/// `--patch-from`: a patch carries presentation only, and must be what an install of the release it patches
+/// takes. Each refusal names what's wrong and writes nothing.
+#[test]
+fn a_patch_carries_only_what_a_patch_may_and_names_what_it_may_not() {
+    let cooked = Cooked::new("release_patch");
+    let out = cooked.out();
+    publish(&cooked.packs(), &out, &options(1), &[key(7)]).unwrap();
+    let patch = |version: u64| ReleaseOptions {
+        patch_from: Some(out.join("manifests/1.smanifest")),
+        ..options(version)
+    };
+    let recook = |path: &str, text: &str, cook: Cook| {
+        fs::write(cooked.packs().join(path), text).unwrap();
+        write_manifest(&cooked.packs(), cook).unwrap();
+    };
+
+    // The simulation's tuning, changed: refused, naming it, with nothing published.
+    recook("documents/tuning/targeting.ron", &format!("{TARGETING}\n// retuned\n"), Cook::Desktop);
+    let refused = publish(&cooked.packs(), &out, &patch(2), &[key(7)]).unwrap_err();
+    assert!(
+        matches!(&refused, ReleaseError::NotPatchable { path, from: 1 } if path == "documents/tuning/targeting.ron"),
+        "{refused}"
+    );
+    assert!(refused.to_string().starts_with("documents/tuning/targeting.ron isn't release 1's"), "{refused}");
+    assert!(!out.join("manifests/2.smanifest").exists(), "a refused patch publishes nothing");
+    // The list of what the simulation reads is the simulation's too.
+    recook("documents/tuning/targeting.ron", TARGETING, Cook::Desktop);
+    let list = fs::read_to_string(cooked.packs().join(MANIFEST_FILE_PATH)).unwrap();
+    recook(MANIFEST_FILE_PATH, &format!("{list}\n"), Cook::Desktop);
+    assert!(matches!(
+        publish(&cooked.packs(), &out, &patch(2), &[key(7)]),
+        Err(ReleaseError::NotPatchable { path, .. }) if path == MANIFEST_FILE_PATH
+    ));
+    recook(MANIFEST_FILE_PATH, &list, Cook::Desktop);
+
+    // Not something an install of release 1 would take.
+    recook("documents/hud.ron", &format!("{HUD}\n// a new HUD\n"), Cook::Desktop);
+    assert!(matches!(
+        publish(&cooked.packs(), &out, &patch(2), &[key(8)]),
+        Err(ReleaseError::PatchNotTrusted { from: 1 })
+    ));
+    assert!(matches!(
+        publish(&cooked.packs(), &out, &patch(1), &[key(7)]),
+        Err(ReleaseError::PatchNotNewer { from: 1, version: 1 })
+    ));
+    write_manifest(&cooked.packs(), Cook::Mobile).unwrap();
+    assert!(matches!(
+        publish(&cooked.packs(), &cooked.dir.path().join("mobile"), &patch(2), &[key(7)]),
+        Err(ReleaseError::PatchOtherCook { from: 1, .. })
+    ));
+    write_manifest(&cooked.packs(), Cook::Desktop).unwrap();
+
+    // Presentation changed, by a key release 1 trusts: a patch.
+    let published = publish(&cooked.packs(), &out, &patch(2), &[key(7)]).unwrap();
+    assert_eq!(published.manifest.version, 2);
+    let first = Manifest::read(&fs::read(out.join("manifests/1.smanifest")).unwrap()).unwrap();
+    let signed = fs::read(&published.current).unwrap();
+    assert_eq!(first.accept_successor(&signed, 1_800_000_000, 1200), Ok(published.manifest));
 }
 
 #[test]

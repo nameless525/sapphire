@@ -14,21 +14,15 @@ use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_core::Name;
 use sapphire_gameplay::replay::compile_document;
 use sapphire_gameplay::{ActorId, ActorSpawn, CurrentMove, SimConfig, Simulation, TickActions, WarpTarget};
-use sapphire_moves::{Move, MoveSet, MoveSetDocument, MoveSetError, Phase};
+use sapphire_moves::{ClipMotionDocument, Move, MoveDocument, MoveSet, MoveSetDocument, MoveSetError, Phase};
 use sapphire_pipeline::clip::SampledClip;
 use sapphire_pipeline::clip::retarget::HumanMap;
 use sapphire_pipeline::import::vrm;
 use sapphire_pipeline::keypose::{self, KeyPoseClip};
 use sapphire_pipeline::{meta, moves};
 
-/// The moves, in the order they're fought: the string, then what gets out of it, then the ultimate.
-const MOVES: [&str; 7] = ["light_1", "light_2", "light_3", "dodge", "dash_attack", "skill", "ultimate"];
-/// The attacks, each with a hit.
-const ATTACKS: [&str; 6] = ["light_1", "light_2", "light_3", "dash_attack", "skill", "ultimate"];
 /// What a hit forces, with no clip of their own: the character's graph draws them.
 const REACTIONS: [&str; 5] = ["flinch", "stagger", "knockdown", "dazed", "defeat"];
-/// A party's assist, and the clip it plays: it has none of its own (M2 G7).
-const ASSIST: (&str, &str) = ("swap_in", "dash_attack");
 /// How far along its +Y the blade path's middle is from either end of the blade.
 const HALF_BLADE: f32 = 0.45;
 /// The ball of the foot's height over the sole, at rest.
@@ -90,9 +84,15 @@ impl Clip {
 struct Player {
     rig: CharacterRig,
     skeleton: Skeleton,
-    clips: BTreeMap<&'static str, Clip>,
+    /// Each key-pose document a move plays, by its file's name: the move's own.
+    clips: BTreeMap<String, Clip>,
     document: MoveSetDocument,
     set: MoveSet,
+    /// The moves with a clip of their own, `<name>.keypose.ron`, in the document's order. A party's assist
+    /// plays another's (M2 G7), and a reaction none.
+    moves: Vec<String>,
+    /// Those of them with a hit.
+    attacks: Vec<String>,
 }
 
 impl Player {
@@ -143,8 +143,16 @@ fn player() -> &'static Player {
         let skeleton = Skeleton::new(&imported.mesh.skin.as_ref().expect("skinned").joints);
         let map = HumanMap::from_rig(&rig);
 
+        let text = std::fs::read_to_string(folder.join("player.moves.ron")).expect("the moves");
+        let document = MoveSetDocument::parse(&text).expect("they parse");
+        let with_a_clip = document.moves.iter().filter(|mv| mv.motion.clip.is_some());
+        let own = |mv: &&MoveDocument| folder.join(format!("{}.keypose.ron", mv.name)).is_file();
+        let moves: Vec<String> = with_a_clip.filter(own).map(|mv| mv.name.clone()).collect();
+        let attacks = document.moves.iter().filter(|mv| moves.contains(&mv.name) && !mv.hitboxes.is_empty());
+        let attacks: Vec<String> = attacks.map(|mv| mv.name.clone()).collect();
+
         let mut clips = BTreeMap::new();
-        for mv in MOVES {
+        for mv in &moves {
             let path = folder.join(format!("{mv}.keypose.ron"));
             let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{mv}: {error}"));
             let document = keypose::read(&bytes).unwrap_or_else(|error| panic!("{mv}: {error:?}"));
@@ -153,32 +161,30 @@ fn player() -> &'static Player {
             let model =
                 (0..=usize::from(sampled.ticks)).map(|tick| model_of(&sampled, &skeleton, tick)).collect();
             let id = meta::read(&meta::sidecar_path(&path)).expect("its sidecar").id;
-            clips.insert(mv, Clip { document, sampled, model, id });
+            clips.insert(mv.clone(), Clip { document, sampled, model, id });
         }
 
-        let text = std::fs::read_to_string(folder.join("player.moves.ron")).expect("the moves");
-        let document = MoveSetDocument::parse(&text).expect("they parse");
         let set = cook_against(&document, &clips, &skeleton, &rig).expect("it compiles against its clips");
-        Player { rig, skeleton, clips, document, set }
+        Player { rig, skeleton, clips, document, set, moves, attacks }
     })
 }
 
-/// The clip a move plays: its name's, but for the assist's.
-fn played_by(mv: &str) -> &str {
-    if mv == ASSIST.0 { ASSIST.1 } else { mv }
+/// The key-pose document whose ID a move's `source` names, among `clips`.
+fn played_by<'a>(clips: &'a BTreeMap<String, Clip>, motion: &ClipMotionDocument) -> Option<&'a Clip> {
+    clips.values().find(|clip| clip.id.to_string() == motion.source)
 }
 
 /// `document` baked from `clips`, as a cook bakes it.
 fn cook_against(
     document: &MoveSetDocument,
-    clips: &BTreeMap<&'static str, Clip>,
+    clips: &BTreeMap<String, Clip>,
     skeleton: &Skeleton,
     rig: &CharacterRig,
 ) -> Result<MoveSet, MoveSetError> {
     let map = HumanMap::from_rig(rig);
     document.compile_with(|mv| {
         let Some(motion) = mv.motion.clip.as_ref() else { return Ok(None) };
-        let clip = clips.get(played_by(&mv.name)).ok_or("its clip has its name")?;
+        let clip = played_by(clips, motion).ok_or("its `source` is a move's key-pose document")?;
         let input = moves::TableInput {
             sampled: &clip.sampled,
             skeleton,
@@ -295,19 +301,29 @@ fn what_a_saved_document_cant_change_waits_for_a_cook() {
 // ---- What each clip has to be for the move document.
 
 /// A move's clip has its name and its ID, and is as long as the move's phases: a cook refuses less,
-/// and this says so in the plain words of what a person edits.
+/// and this says so in the plain words of what a person edits. Every move in `player.moves.ron` is held:
+/// one with a `<name>.keypose.ron` beside it plays that, an assist plays another move's (M2 G7), and only
+/// a reaction a hit forces has none.
 #[test]
 fn each_move_plays_the_clip_of_its_name() {
     let player = player();
-    assert_eq!(player.document.moves.len(), MOVES.len() + REACTIONS.len() + 1, "every move is listed here");
+    assert!(!player.attacks.is_empty(), "the document's moves: {:?}", player.moves);
     for mv in &player.document.moves {
         if REACTIONS.contains(&mv.name.as_str()) {
             assert!(mv.motion.clip.is_none(), "{}: a graph draws it, so nothing bakes from a clip", mv.name);
             continue;
         }
-        let clip = player.clip(played_by(&mv.name));
-        let motion = mv.motion.clip.as_ref().expect("it names a clip");
-        assert_eq!(motion.source, clip.id.to_string(), "{}: its `source` is its document", mv.name);
+        let motion = mv.motion.clip.as_ref().unwrap_or_else(|| {
+            panic!(
+                "{}: a move names a clip, `<name>.keypose.ron` beside the document, or is a reaction",
+                mv.name
+            )
+        });
+        let clip = played_by(&player.clips, motion)
+            .unwrap_or_else(|| panic!("{}: its `source` is no move's key-pose document", mv.name));
+        if let Some(own) = player.clips.get(&mv.name) {
+            assert_eq!(motion.source, own.id.to_string(), "{}: its `source` is its document", mv.name);
+        }
         assert_eq!(
             (mv.startup + mv.active + mv.recovery) as usize,
             clip.ticks(),
@@ -363,11 +379,11 @@ fn every_attack_cuts_along_one_blade() {
         .document
         .moves
         .iter()
-        .filter(|mv| ATTACKS.contains(&mv.name.as_str()))
+        .filter(|mv| player.attacks.contains(&mv.name))
         .flat_map(|mv| mv.motion.clip.as_ref().expect("a clip").paths.iter())
         .map(|path| (path.name.clone(), path.follows.clone(), path.offset, path.rotation))
         .collect();
-    assert_eq!(sockets.len(), ATTACKS.len(), "one path each: {sockets:?}");
+    assert_eq!(sockets.len(), player.attacks.len(), "one path each: {sockets:?}");
     assert!(sockets.iter().all(|socket| *socket == sockets[0] && socket.0 == "blade"), "{sockets:?}");
 }
 
@@ -376,7 +392,7 @@ fn every_attack_cuts_along_one_blade() {
 #[test]
 fn a_press_moves_the_character_within_three_ticks() {
     let player = player();
-    for mv in MOVES {
+    for mv in &player.moves {
         let clip = player.clip(mv);
         let moved = (0..player.skeleton.rest.len())
             .map(|joint| {
@@ -401,7 +417,7 @@ fn tip(player: &Player, mv: &str, tick: usize) -> Vec3 {
 #[test]
 fn the_blade_is_fastest_on_the_hit() {
     let player = player();
-    for mv in ATTACKS {
+    for mv in &player.attacks {
         let found = player.mv(mv);
         let speed: Vec<f32> = (0..found.ticks() as usize)
             .map(|tick| tip(player, mv, tick + 1).distance(tip(player, mv, tick)))
@@ -424,7 +440,7 @@ fn the_blade_is_fastest_on_the_hit() {
 #[test]
 fn every_hit_reaches_forward() {
     let player = player();
-    for mv in ATTACKS {
+    for mv in &player.attacks {
         let found = player.mv(mv);
         let table = &found.tables;
         for hit in found.hitboxes.iter() {
@@ -471,7 +487,7 @@ fn limit(bone: HumanBone) -> f32 {
 #[test]
 fn no_joint_leaves_human_limits() {
     let player = player();
-    for mv in MOVES {
+    for mv in &player.moves {
         for key in &player.clip(mv).document.keys {
             for (bone, turn) in &key.pose {
                 let degrees = 2.0 * turn.quat().w.abs().min(1.0).acos().to_degrees();
@@ -503,7 +519,7 @@ fn no_joint_leaves_human_limits() {
 #[test]
 fn root_motion_doesnt_jump() {
     let player = player();
-    for mv in MOVES {
+    for mv in &player.moves {
         let clip = player.clip(mv);
         for tick in 1..=clip.ticks() {
             let (at, turn) = clip.root(tick);
@@ -527,7 +543,7 @@ fn feet_keep_to_the_ground() {
         (player.bone(HumanBone::LeftFoot), player.bone(HumanBone::LeftToes)),
         (player.bone(HumanBone::RightFoot), player.bone(HumanBone::RightToes)),
     ];
-    for mv in MOVES {
+    for mv in &player.moves {
         let clip = player.clip(mv);
         for tick in 0..=clip.ticks() {
             for (foot, toes) in feet {

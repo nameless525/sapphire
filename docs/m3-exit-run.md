@@ -255,7 +255,7 @@ cargo test -p game_app --features dev --locked --test wins_the_ward -- --ignored
 
 A walk by hand: `SAPPHIRE_CONTENT_DIR=target/content/desktop target/release/sapphire_sandbox --bench 240 --zone lantern_ward --zone-walk tour --tier mobile-low --size 640x360`. Read the `zone walk` row's `first_use=` and `rebuilt=`.
 
-**CI's** `App tests (vulkan-lavapipe)` runs all of these, and it's CI's slowest job (about 75 minutes before `wins_the_ward`, which raised its limit from 90 minutes to 110). There `wins_the_ward` steps every step but draws one frame in eight (`SAPPHIRE_WALK_STEPS_PER_FRAME=8`), as lavapipe can't draw the walk's frames twice in the job's time; this Mac draws every one.
+**CI's** `App tests (vulkan-lavapipe)` runs all of these, and it's CI's slowest job (about 75 minutes before `wins_the_ward`, which raised its limit from 90 minutes to 110, and to 150 once the final run's took 1 h 48 min). There `wins_the_ward` steps every step but draws one frame in eight (`SAPPHIRE_WALK_STEPS_PER_FRAME=8`), as lavapipe can't draw the walk's frames twice in the job's time; this Mac draws every one.
 
 **Only a device:** a phone's driver compiles at its own pace. Cold, the load blocks 6–7 s on an M5, and the simulator built for 5.7 s and the emulator for 4.0 s on first launch (M3 S2).
 

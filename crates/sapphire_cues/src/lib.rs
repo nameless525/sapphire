@@ -117,7 +117,7 @@ mod rumble;
 mod table;
 
 pub use dispatch::{
-    CueDispatcher, CueStats, CueStep, MAX_FRAME_LINES, MAX_FRAME_SOUNDS, ShakeSink, actor_emitter,
+    CueDispatcher, CueStats, CueStep, MAX_FRAME_LINES, MAX_FRAME_SOUNDS, SaidLine, ShakeSink, actor_emitter,
     emitter_of, owner_of,
 };
 pub use rumble::{MAX_RUMBLES, Rumble, RumbleMixer, RumbleSink};

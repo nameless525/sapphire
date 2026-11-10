@@ -152,6 +152,27 @@ enum Place {
     On(EmitterId),
 }
 
+/// The player's volumes (M4 A2), each a share of full: every sound's, and on top of it each kind's. The
+/// effects' is the world's buses' and the interface's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Volumes {
+    pub all: f32,
+    pub music: f32,
+    pub effects: f32,
+    pub voice: f32,
+}
+
+impl Volumes {
+    /// Everything at full, as a mix starts.
+    pub const FULL: Self = Self { all: 1.0, music: 1.0, effects: 1.0, voice: 1.0 };
+}
+
+impl Default for Volumes {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 /// A live voice.
 #[derive(Clone, Copy, Debug)]
 struct Voice {
@@ -197,6 +218,8 @@ pub struct AudioSystem<B: AudioBackend> {
     interrupted: bool,
     /// What the player's volume takes off every voice.
     volume_db: f32,
+    /// What the player's volume for each bus takes off its voices on top (M4 A2), by [`Bus::index`].
+    bus_volume_db: [f32; Bus::ALL.len()],
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
@@ -224,6 +247,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             background: false,
             interrupted: false,
             volume_db: 0.0,
+            bus_volume_db: [0.0; Bus::ALL.len()],
             stats: AudioStats::default(),
             warned_unknown: false,
             warned_no_output: false,
@@ -277,9 +301,32 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     /// The player's volume, a share of full: every voice and the music follow at the next update.
     pub fn set_volume(&mut self, volume: f32) {
-        // Below it, the mixer's silent anyway. Finite whatever it's given: see `VoiceParams`.
-        self.volume_db =
-            if volume > 0.0 { (20.0 * volume.log10()).clamp(SILENCE_DB, 0.0) } else { SILENCE_DB };
+        self.volume_db = decibels_of(volume);
+    }
+
+    /// The player's volumes (M4 A2): [`Self::set_volume`]'s, and each bus's.
+    pub fn set_volumes(&mut self, volumes: Volumes) {
+        self.set_volume(volumes.all);
+        for bus in Bus::ALL {
+            let volume = match bus {
+                Bus::Sfx | Bus::Ambience | Bus::Ui => volumes.effects,
+                Bus::Music => volumes.music,
+                Bus::Voice => volumes.voice,
+            };
+            self.set_bus_volume(bus, volume);
+        }
+    }
+
+    /// The player's volume for one bus (M4 A2), a share of full on top of [`Self::set_volume`]'s: its
+    /// voices, and for the music its stems, follow at the next update.
+    pub fn set_bus_volume(&mut self, bus: Bus, volume: f32) {
+        self.bus_volume_db[bus.index()] = decibels_of(volume);
+    }
+
+    /// Folds the whole mix to mono, or back (M4 A2): for a player who hears with one ear, or through one
+    /// speaker, so nothing panned away is lost.
+    pub fn set_mono(&mut self, mono: bool) {
+        self.backend.set_mono(mono);
     }
 
     /// The OS took audio away or gave it back (iOS: calls, Siri).
@@ -514,7 +561,8 @@ impl<B: AudioBackend> AudioSystem<B> {
     fn follow_music_gain(&mut self) {
         let speaking = self.voices.iter().any(|voice| voice.bus == Bus::Voice && !voice.stopped);
         let duck_db = if speaking { self.music.duck_db() } else { 0.0 };
-        let gain_db = (self.volume_db + duck_db).max(SILENCE_DB);
+        let volume_db = self.volume_db + self.bus_volume_db[Bus::Music.index()];
+        let gain_db = (volume_db + duck_db).max(SILENCE_DB);
         if gain_db != self.music_gain_db {
             let fade = if gain_db < self.music_gain_db { DUCK_ATTACK } else { DUCK_RELEASE };
             self.backend.set_bus_gain(Bus::Music, gain_db, fade);
@@ -538,7 +586,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                 .find(|tracked| tracked.emitter.id == id)
                 .map(|tracked| tracked.emitter.position),
         };
-        let mut gain_db = voice.gain_db + self.volume_db;
+        let mut gain_db = voice.gain_db + self.volume_db + self.bus_volume_db[voice.bus.index()];
         let mut pan = 0.0;
         if let (Some(position), Some(attenuation)) = (position, voice.attenuation) {
             let (distance, side) = relative(listener, position);
@@ -555,6 +603,12 @@ impl<B: AudioBackend> AudioSystem<B> {
         let pitch = if voice.bus.follows_world_clock() { voice.pitch * self.mix.pitch } else { voice.pitch };
         VoiceParams { gain_db, pan, pitch }
     }
+}
+
+/// A share of full volume in decibels. Below [`SILENCE_DB`] the mixer's silent anyway, and it's finite
+/// whatever it's given: see `VoiceParams`.
+fn decibels_of(volume: f32) -> f32 {
+    if volume > 0.0 { (20.0 * volume.log10()).clamp(SILENCE_DB, 0.0) } else { SILENCE_DB }
 }
 
 /// Distance to `position` and how far to the listener's right it lies, -1 to 1.
@@ -757,6 +811,40 @@ mod tests {
         }
         system.set_volume(3.0);
         assert_eq!(system.volume_db, 0.0);
+    }
+
+    #[test]
+    fn each_kinds_volume_reaches_its_buses_on_top_of_every_sounds() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
+        assert_eq!(started(&mut system).gain_db, 0.0);
+        // The voices' and the music's leave an effect alone.
+        system.set_volumes(Volumes { voice: 0.1, music: 0.1, ..Volumes::FULL });
+        system.update(&frame(&[], &[]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let [MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] = calls[..] else { panic!("{calls:?}") };
+        assert!((gain_db + 20.0).abs() < 0.01, "{gain_db}");
+        // The effects' and every sound's add up.
+        system.set_volumes(Volumes { all: 0.5, effects: 0.5, ..Volumes::FULL });
+        system.update(&frame(&[], &[]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] =
+            calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert!((params.gain_db + 12.04).abs() < 0.01, "{params:?}");
+        assert!((gain_db + 6.02).abs() < 0.01, "the music under every sound's alone: {gain_db}");
+        assert_eq!(Volumes::default(), Volumes::FULL);
+    }
+
+    #[test]
+    fn mono_reaches_the_mixer() {
+        let mut system = system_with(plain_cue());
+        system.set_mono(true);
+        system.set_mono(false);
+        assert_eq!(system.backend_mut().take_calls(), [MockCall::SetMono(true), MockCall::SetMono(false)]);
     }
 
     #[test]

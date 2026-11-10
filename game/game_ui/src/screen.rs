@@ -26,6 +26,13 @@ const PLAIN_BACKDROP: &str = r#"(
 #[derive(Clone, Debug, Default, bevy_reflect::Reflect)]
 struct NoModel;
 
+/// A frame shorter than this, in points, is a phone's, where the player's text grows to
+/// [`PHONE_TEXT_SCALE`] at most (M4 A2): the game's screens have no room for more there, and a phone's held
+/// closer than a Deck.
+pub const PHONE_HEIGHT: f32 = 480.0;
+/// See [`PHONE_HEIGHT`]: the player's "large" text size.
+pub const PHONE_TEXT_SCALE: f32 = 1.25;
+
 /// How a [`ScreenStack`] shows what it's handed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StackSetup {
@@ -55,6 +62,8 @@ pub struct ScreenStack {
     atlas: Atlas,
     loc: Localizer,
     scale: f32,
+    /// What every screen's text is multiplied by: the player's text size.
+    text_scale: f32,
     /// A window's metrics, read this frame. Offscreen there's only a target's pixels.
     metrics: Option<UiMetrics>,
     pages: UiPageState,
@@ -97,6 +106,7 @@ impl ScreenStack {
             atlas,
             loc,
             scale,
+            text_scale: 1.0,
             metrics: None,
             pages: UiPageState::NO_RENDERER,
             now: Timestamp::default(),
@@ -175,6 +185,12 @@ impl ScreenStack {
     /// Pixels per point where there's no window.
     pub fn set_scale(&mut self, scale: f32) {
         self.scale = scale;
+    }
+
+    /// Draws every screen's text `scale` times its size from the next frame: the player's text size, over the
+    /// interface's ([`UiTree::set_text_scale`]), and no more than [`PHONE_TEXT_SCALE`] on a phone's frame.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale;
     }
 
     /// Shows every screen in `locale`, from the next frame.
@@ -282,7 +298,13 @@ impl ScreenStack {
         let metrics =
             self.metrics.unwrap_or_else(|| UiMetrics::of_pixels(size, self.scale, Insets::default()));
         self.fonts.begin_frame(self.pages, &self.loc);
+        let text_scale = if metrics.size.y < PHONE_HEIGHT {
+            self.text_scale.min(PHONE_TEXT_SCALE)
+        } else {
+            self.text_scale
+        };
         for screen in &mut self.screens {
+            screen.tree.set_text_scale(text_scale);
             let model = screen.model.as_partial_reflect();
             if !screen.opened {
                 screen.opened = true;

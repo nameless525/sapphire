@@ -116,6 +116,22 @@ struct RowEffect {
     clock: EffectOwner,
 }
 
+/// A voice line a step asked for, by its key in the table, and who said it (M4 A2): what a caption shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaidLine<'a> {
+    /// The line's key, as the table's row names it.
+    pub key: &'a str,
+    /// The actor whose cue it was, or none for a cue at a place.
+    pub actor: Option<ActorId>,
+}
+
+/// A line a row speaks: its key hashed for the voice route, and where its text is in the dispatcher's keys.
+#[derive(Clone, Copy, Debug)]
+struct RowLine {
+    key: LineKey,
+    text: u16,
+}
+
 /// A table's row with its names resolved. Plain data, so firing touches no heap.
 #[derive(Clone, Copy, Debug)]
 struct Row {
@@ -123,7 +139,7 @@ struct Row {
     weight: Option<Weight>,
     effects: [Option<RowEffect>; MAX_ROW_EFFECTS],
     sounds: [Option<AssetId>; MAX_ROW_SOUNDS],
-    line: Option<LineKey>,
+    line: Option<RowLine>,
     shake: Option<(ShakeId, f32)>,
     screen: Option<(EffectPresetId, ScreenCenter)>,
     rumble: Option<Rumble>,
@@ -135,13 +151,21 @@ impl Row {
         effects: &VfxLibrary,
         presets: &ScreenLibrary,
         camera: &CameraTuning,
+        line_keys: &mut Vec<Box<str>>,
     ) -> Result<Self, CueTableError> {
+        let line = row.line.as_deref().map(|line| {
+            let text = line_keys.iter().position(|key| **key == *line).unwrap_or_else(|| {
+                line_keys.push(line.into());
+                line_keys.len() - 1
+            });
+            RowLine { key: LineKey::of(line), text: text as u16 }
+        });
         let mut resolved = Self {
             cue: Name::intern(&row.cue),
             weight: row.weight,
             effects: [None; MAX_ROW_EFFECTS],
             sounds: [None; MAX_ROW_SOUNDS],
-            line: row.line.as_deref().map(LineKey::of),
+            line,
             shake: None,
             screen: None,
             rumble: row.rumble,
@@ -185,6 +209,10 @@ pub struct CueDispatcher {
     sounds: Vec<CueRequest>,
     /// This frame's voice lines, the same.
     lines: Vec<LineRequest>,
+    /// Who said each of them, and where its key is in `line_keys`.
+    said: Vec<(Option<ActorId>, u16)>,
+    /// The keys of the lines the rows speak, each once.
+    line_keys: Vec<Box<str>>,
     mixer: RumbleMixer,
     /// The tick last read, so a step with nothing after it isn't read twice.
     read_tick: Option<u64>,
@@ -205,6 +233,8 @@ impl CueDispatcher {
             rows: Vec::new(),
             sounds: Vec::with_capacity(MAX_FRAME_SOUNDS),
             lines: Vec::with_capacity(MAX_FRAME_LINES),
+            said: Vec::with_capacity(MAX_FRAME_LINES),
+            line_keys: Vec::new(),
             mixer: RumbleMixer::new(),
             read_tick: None,
             owners: Vec::new(),
@@ -239,8 +269,12 @@ impl CueDispatcher {
         presets: &ScreenLibrary,
         camera: &CameraTuning,
     ) -> Result<(), CueTableError> {
-        let rows = table.rows().iter().map(|row| Row::resolve(row, effects, presets, camera));
+        let mut line_keys = Vec::new();
+        let rows = table.rows().iter().map(|row| Row::resolve(row, effects, presets, camera, &mut line_keys));
         self.rows = rows.collect::<Result<_, _>>()?;
+        // What was said points into the old keys.
+        self.said.clear();
+        self.line_keys = line_keys;
         Ok(())
     }
 
@@ -296,7 +330,11 @@ impl CueDispatcher {
             self.queue_sound(*sound, site);
         }
         if let Some(line) = row.line {
-            self.queue_line(line);
+            let actor = match site {
+                Site::Actor { actor, .. } => Some(actor),
+                Site::Place(_) => None,
+            };
+            self.queue_line(line, actor);
         }
         if let Some((id, strength)) = row.shake {
             step.shakes.fire_shake(id, strength);
@@ -358,12 +396,13 @@ impl CueDispatcher {
 
     /// A line is spoken flat, as the player's ear hears a voice: it names no emitter, so a fighter gone
     /// before the frame's audio still has it said.
-    fn queue_line(&mut self, line: LineKey) {
+    fn queue_line(&mut self, line: RowLine, actor: Option<ActorId>) {
         if self.lines.len() == MAX_FRAME_LINES {
             self.stats.lines_dropped += 1;
             return;
         }
-        self.lines.push(LineRequest { line, target: CueTarget::Flat });
+        self.lines.push(LineRequest { line: line.key, target: CueTarget::Flat });
+        self.said.push((actor, line.text));
         self.stats.lines += 1;
     }
 
@@ -393,12 +432,19 @@ impl CueDispatcher {
         &self.lines
     }
 
+    /// The same lines, in the same order, by their keys and who said them: what a caption shows (M4 A2),
+    /// whether or not anything is heard. Allocates nothing.
+    pub fn said(&self) -> impl ExactSizeIterator<Item = SaidLine<'_>> + '_ {
+        self.said.iter().map(|&(actor, text)| SaidLine { key: &self.line_keys[usize::from(text)], actor })
+    }
+
     /// Once a frame, after the frame's `AudioSystem::update` took [`Self::sounds`] and [`Self::lines`], `dt`
     /// real seconds after the last: forgets them, so a capture or a bench with no audio just never hears them,
     /// and tells `rumble` what changed. `()` is no rumble.
     pub fn end_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) {
         self.sounds.clear();
         self.lines.clear();
+        self.said.clear();
         self.mixer.update(dt, rumble);
     }
 
@@ -423,6 +469,7 @@ impl CueDispatcher {
     pub fn forget_sounds(&mut self) {
         self.sounds.clear();
         self.lines.clear();
+        self.said.clear();
     }
 
     /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored). What's playing takes it
@@ -715,6 +762,29 @@ mod tests {
         assert_eq!((stats.lines, stats.lines_dropped), (MAX_FRAME_LINES as u64, 2));
         dispatcher.end_frame(TICK, &mut ());
         assert!(dispatcher.lines().is_empty());
+    }
+
+    /// What a caption reads (M4 A2): each line by its key, and who said it, as long as the frame's lines last.
+    #[test]
+    fn what_was_said_names_its_line_and_who_said_it_until_the_frame_ends() {
+        let rows = vec![
+            CueRow { line: Some("perfect-dodge".to_owned()), ..row("dodge") },
+            CueRow { line: Some("swap-in".to_owned()), ..row("swap") },
+            CueRow { line: Some("perfect-dodge".to_owned()), ..row("dodge-again") },
+        ];
+        let mut dispatcher = dispatcher(rows);
+        let mut sinks = Sinks::new();
+        sinks.read(
+            &mut dispatcher,
+            1,
+            &[event("dodge", None), event("swap", None), event("dodge-again", None)],
+        );
+        let keys: Vec<_> = dispatcher.said().map(|line| line.key).collect();
+        assert_eq!(keys, ["perfect-dodge", "swap-in", "perfect-dodge"]);
+        assert!(dispatcher.said().all(|line| line.actor == Some(ATTACKER)));
+        assert_eq!(dispatcher.said().len(), dispatcher.lines().len());
+        dispatcher.end_frame(TICK, &mut ());
+        assert_eq!(dispatcher.said().len(), 0);
     }
 
     /// A fight starting over takes back what it hadn't started, and goes on from there.

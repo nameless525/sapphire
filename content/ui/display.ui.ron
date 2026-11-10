@@ -1,5 +1,6 @@
 // The settings' display page (M4 A1): the interface's and the text's sizes, and how much the screen
-// moves and flashes. Each row steps what it shows on a press, which a pad, a key and a finger all have.
+// moves and flashes. Each row steps what it shows on a press, which a pad, a key and a finger all have. A
+// row's label wraps, so at a larger text size (M4 A2) a long one takes a second line, not its value's room.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -74,6 +75,7 @@
                     key: "display-size",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
             (
@@ -120,6 +122,7 @@
                     key: "display-text",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
             (
@@ -166,6 +169,7 @@
                     key: "display-shake",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
             (
@@ -212,6 +216,7 @@
                     key: "display-flashes",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
             (
@@ -258,6 +263,7 @@
                     key: "display-camera",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
             (
@@ -309,6 +315,7 @@
                     key: "display-back",
                     style: "row",
                     color: (240, 246, 255, 255),
+                    wrap: true,
                 ),
             ),
         ],

@@ -10,3 +10,8 @@ speaker-warden = 門の守り手
 subtitle-court-gate-quiet = 神殿の中庭……さっきまで静かだったのに。
 subtitle-court-gate-warning = 灯籠の門を越える者はいない。
 subtitle-court-gate-answer = なら、あなたを越えて行く。
+
+## 戦闘のボイス (M4 A2): `crates/sapphire_cues/default_cues.ron` の行が話す台詞の字幕
+
+subtitle-perfect-dodge = 見切った！
+subtitle-swap-in = 任せて！

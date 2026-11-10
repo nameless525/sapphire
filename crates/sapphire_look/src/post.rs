@@ -403,6 +403,48 @@ impl Default for PostEffects {
     }
 }
 
+impl PostEffects {
+    /// These effects as `scale` lets them show (M4 A2): each one's strength, amount or opacity times its
+    /// share, everything else as it was. [`EffectScale::FULL`] gives them back exactly.
+    #[must_use]
+    pub fn scaled(mut self, scale: EffectScale) -> Self {
+        // Not a number reads as none.
+        let share = |value: f32| if value >= 0.0 { value.min(1.0) } else { 0.0 };
+        let (flashes, motion) = (share(scale.flashes), share(scale.motion));
+        self.inversion.amount *= flashes;
+        self.duotone.amount *= flashes;
+        self.speed_lines.opacity *= flashes;
+        self.radial_blur.strength *= motion;
+        self.chromatic_aberration.strength *= motion;
+        self
+    }
+}
+
+/// How much of combat's screen effects a player lets show, by what each does to the eye (M4 A2): the one
+/// input the player's flashes and camera motion settings reach post through, which the effect stack's
+/// resolved values pass through last ([`PostEffects::scaled`]). Each share is 0 (none) to 1 (as authored).
+///
+/// - **Flashes** are what swings the frame's light: the inversion and duotone of an impact frame, and speed
+///   lines, which redraw several times a second over the whole frame.
+/// - **Motion** is what reads as the camera itself moving: the radial blur's zoom toward a hit and the
+///   chromatic aberration's punch of split colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectScale {
+    pub flashes: f32,
+    pub motion: f32,
+}
+
+impl EffectScale {
+    /// Every effect as authored.
+    pub const FULL: Self = Self { flashes: 1.0, motion: 1.0 };
+}
+
+impl Default for EffectScale {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 /// How much of an effect shows on the world and how much on characters: the character mask
 /// (scene color's alpha; the post module's docs) tells them apart per pixel. Each is 0 to 1;
 /// blending effects blends these too.
@@ -531,4 +573,53 @@ impl SpeedLines {
         seed: 0,
         coverage: EffectCoverage::EVERYWHERE,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Everything a hit's impact frame can push at once.
+    fn every_effect() -> PostEffects {
+        PostEffects {
+            radial_blur: RadialBlur { center: Vec2::new(0.4, 0.6), strength: 0.08 },
+            chromatic_aberration: ChromaticAberration { center: Vec2::new(0.4, 0.6), strength: 0.05 },
+            inversion: Inversion { amount: 0.9, coverage: EffectCoverage::WORLD },
+            duotone: Duotone { amount: 0.7, threshold: 0.72, ..Duotone::NONE },
+            speed_lines: SpeedLines { opacity: 0.6, seed: 7, ..SpeedLines::NONE },
+        }
+    }
+
+    #[test]
+    fn full_scale_changes_nothing() {
+        assert_eq!(every_effect().scaled(EffectScale::FULL), every_effect());
+        let none = EffectScale { flashes: 0.0, motion: 0.0 };
+        assert_eq!(PostEffects::NONE.scaled(none), PostEffects::NONE);
+    }
+
+    /// Flashes take the light's swings and motion the lens's, and neither touches the other's or anything
+    /// but an effect's strength.
+    #[test]
+    fn each_share_scales_its_own_effects() {
+        let all = every_effect();
+        let flashes = all.scaled(EffectScale { flashes: 0.5, motion: 1.0 });
+        assert_eq!(flashes.inversion.amount, 0.45);
+        assert_eq!(flashes.duotone.amount, 0.35);
+        assert_eq!(flashes.speed_lines.opacity, 0.3);
+        assert_eq!(flashes.radial_blur, all.radial_blur);
+        assert_eq!(flashes.chromatic_aberration, all.chromatic_aberration);
+        assert_eq!(flashes.duotone.threshold, all.duotone.threshold);
+        assert_eq!(flashes.speed_lines.seed, all.speed_lines.seed);
+
+        let still = all.scaled(EffectScale { flashes: 1.0, motion: 0.0 });
+        assert_eq!(still.radial_blur.strength, 0.0);
+        assert_eq!(still.chromatic_aberration.strength, 0.0);
+        assert_eq!(still.radial_blur.center, all.radial_blur.center);
+        assert_eq!((still.inversion, still.duotone), (all.inversion, all.duotone));
+        assert_eq!(still.speed_lines, all.speed_lines);
+
+        let past = all.scaled(EffectScale { flashes: 3.0, motion: -1.0 });
+        assert_eq!(past.inversion.amount, all.inversion.amount, "a share past 1 reads as 1");
+        assert_eq!(past.radial_blur.strength, 0.0, "and one under 0 as 0");
+    }
 }

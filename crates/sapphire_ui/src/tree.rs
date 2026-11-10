@@ -278,6 +278,8 @@ struct Node {
     shown: bool,
     bound_opacity: f32,
     fill: f32,
+    /// What the model says its text's size is multiplied by ([`UiBindTarget::TextScale`]).
+    bound_text_scale: f32,
     /// Has a problem, and draws a frame saying so.
     failed: bool,
     focus: Option<FocusRule>,
@@ -341,6 +343,8 @@ pub struct UiTree {
     revision: Option<u64>,
     dirty: bool,
     scale: f32,
+    /// What every text's size is multiplied by: the player's text size ([`Self::set_text_scale`]).
+    text_scale: f32,
     size: Vec2,
     scratch: String,
     player: Player,
@@ -441,6 +445,7 @@ impl UiTree {
                 shown: true,
                 bound_opacity: 1.0,
                 fill: 1.0,
+                bound_text_scale: 1.0,
                 failed: false,
                 focus: None,
                 scroll: node.scroll.map(Scroll::new),
@@ -494,6 +499,7 @@ impl UiTree {
             revision: None,
             dirty: true,
             scale: 1.0,
+            text_scale: 1.0,
             size: Vec2::ZERO,
             scratch: String::new(),
             player,
@@ -819,6 +825,15 @@ impl UiTree {
                             self.stats.bound_changes += 1;
                         }
                     }
+                    UiBindTarget::TextScale => {
+                        let scale = value.as_text_scale();
+                        if scale != node.bound_text_scale {
+                            node.bound_text_scale = scale;
+                            self.stats.bound_changes += 1;
+                            self.taffy.mark_dirty(node.id).expect("the tree's own node");
+                            self.dirty = true;
+                        }
+                    }
                 }
             }
             if let Some(text) = &mut node.text {
@@ -868,6 +883,33 @@ impl UiTree {
         self.size
     }
 
+    /// Multiplies every text's size by `scale` from the next update, over what its style says and any
+    /// [`UiBindTarget::TextScale`]: the player's text size (spec §6.8, M4 A2). It lays out again only if
+    /// it moved; one outside [`TEXT_SCALES`](sapphire_assets::ui::TEXT_SCALES) reads as its nearest end.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        let scale = text_scale_within(scale);
+        if scale == self.text_scale {
+            return;
+        }
+        self.text_scale = scale;
+        for node in self.nodes.iter().filter(|node| node.text.is_some()) {
+            self.taffy.mark_dirty(node.id).expect("the tree's own node");
+        }
+        self.dirty = true;
+    }
+
+    /// Every text that shows, by its node's name, with the size it's set at in pixels, its style's times
+    /// every scale on it, as of the last update: what a legibility floor is held to (M4 A2). A node out of
+    /// the layout or faded right out isn't there, and neither is one that says nothing.
+    pub fn text_pixels(&self) -> impl Iterator<Item = (&str, f32)> + '_ {
+        self.nodes.iter().filter_map(|node| {
+            let text = node.text.as_ref()?;
+            let shows = node.visible && node.final_opacity > 0.0 && !text.resolved.trim().is_empty();
+            let style = &self.styles[usize::from(text.style)];
+            shows.then_some((&*node.name, style.size * self.text_scale * node.bound_text_scale * self.scale))
+        })
+    }
+
     /// New metrics: the root takes the frame's size, and what asks for the safe area its insets.
     fn follow_metrics(&mut self, metrics: UiMetrics) {
         for (at, node) in self.nodes.iter().enumerate() {
@@ -880,7 +922,7 @@ impl UiTree {
     fn lay_out(&mut self, fonts: &mut UiFonts) {
         profiling::scope!("UiTree layout");
         self.stats.layouts += 1;
-        let (scale, size) = (self.scale, self.size);
+        let (scale, size, text_scale) = (self.scale, self.size, self.text_scale);
         let UiFonts { text: system, families, locale, .. } = fonts;
         let (nodes, styles) = (&self.nodes, &self.styles);
         let available =
@@ -889,7 +931,9 @@ impl UiTree {
             self.root,
             available,
             |input: LayoutInput, _, at: Option<&mut u32>, style: &TaffyStyle| {
-                let text = at.and_then(|at| nodes[*at as usize].text.as_ref());
+                let node = at.map(|at| &nodes[*at as usize]);
+                let text = node.and_then(|node| node.text.as_ref());
+                let times = node.map_or(1.0, |node| text_scale * node.bound_text_scale);
                 // Padding and limits are the leaf's own, and what's measured is inside them.
                 compute_leaf_layout(
                     input,
@@ -905,7 +949,8 @@ impl UiTree {
                                 AvailableSpace::MaxContent => None,
                             })
                         });
-                        let style = text_style(&styles[usize::from(text.style)], families, family, locale);
+                        let style =
+                            text_style(&styles[usize::from(text.style)], times, families, family, locale);
                         let shaped = system.shape(&text.resolved, &style, scale, width.flatten());
                         TaffySize {
                             // Whole pixels up, so the same text fits the box it asked for.
@@ -1053,7 +1098,9 @@ impl UiTree {
                 && let Some(family) = text.family
             {
                 let UiFonts { text: system, atlas: glyphs, families, locale, warm_left, .. } = fonts;
-                let style = text_style(&self.styles[usize::from(text.style)], families, family, locale);
+                let times = self.text_scale * node.bound_text_scale;
+                let style =
+                    text_style(&self.styles[usize::from(text.style)], times, families, family, locale);
                 let width = text.wrap.then_some(node.content.width());
                 let shaped = system.shape(&text.resolved, &style, scale, width);
                 if shows {
@@ -1121,16 +1168,17 @@ fn node_style(node: &Node, root: bool, metrics: Option<UiMetrics>) -> TaffyStyle
     style
 }
 
-/// A style as shaping reads it: one of its role's family lists.
+/// A style as shaping reads it, its size `times` as large: one of its role's family lists.
 fn text_style<'a>(
     style: &UiTextStyle,
+    times: f32,
     families: &'a [(Box<str>, Option<String>)],
     family: u16,
     locale: &'a str,
 ) -> TextStyle<'a> {
     TextStyle {
         families: families[usize::from(family)].1.as_deref().unwrap_or_default(),
-        size: style.size,
+        size: style.size * times,
         weight: style.weight,
         line_height: style.line_height,
         locale: Some(locale),
@@ -1156,4 +1204,11 @@ fn drawing_order(document: &UiDocument) -> Vec<usize> {
         stack.extend(children[at].iter().rev());
     }
     order
+}
+
+/// A text scale as a tree takes it: within [`TEXT_SCALES`](sapphire_assets::ui::TEXT_SCALES), and 1 for
+/// what isn't a number.
+pub(crate) fn text_scale_within(scale: f32) -> f32 {
+    let scales = sapphire_assets::ui::TEXT_SCALES;
+    if scale.is_nan() { 1.0 } else { scale.clamp(*scales.start(), *scales.end()) }
 }

@@ -25,8 +25,8 @@ use game_combat::documents::{FightDocuments, error_chain};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::menus::{
-    CharacterModel, GameMenus, HudModel, MenuCommand, MenuDocument, MenuScreen, MenuSetup, PlayerSettings,
-    ScreenModel,
+    CharacterModel, GameMenus, HudModel, MenuCommand, MenuDocument, MenuScreen, MenuSetup, PLAYER_SPEAKER,
+    PlayerSettings, ScreenModel,
 };
 use game_ui::wipe::ZoneWipe;
 use sapphire_controls::{CombatControls, ControlsError};
@@ -426,6 +426,7 @@ impl GameShow {
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
         menus.open(MenuScreen::TITLE);
         self.menus = Some(menus);
+        self.follow_presentation();
         // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
         let trips =
             game_ui::wipe::cover_trips(&mut self.shown, self.atlas.clone(), content, renderer, gpu, tier)?;
@@ -501,6 +502,7 @@ impl GameShow {
         let mut hud = FightHud::for_fight_with_atlas(options, self.atlas.clone());
         hud.set_design(self.shown.fight.documents.hud);
         self.shown.hud = Some(hud);
+        self.follow_presentation();
         if let Some(menus) = &mut self.menus {
             menus.close(MenuScreen::TITLE);
             menus.open_under(MenuScreen::HUD);
@@ -568,8 +570,21 @@ impl GameShow {
 
     fn follow_settings(&mut self) {
         self.settings_changed = true;
-        if let (Some(menus), Some(hud)) = (&self.menus, &mut self.shown.hud) {
-            hud.set_scale(menus.settings().scale());
+        self.follow_presentation();
+    }
+
+    /// What of the player's settings the fight's presentation follows (M4 A2): its shakes and rumble, its
+    /// screen effects, and the HUD's size and text. None of it reaches a run, whose share is
+    /// [`give_the_run`]'s; the subtitles follow theirs as they're drawn.
+    fn follow_presentation(&mut self) {
+        let Some(menus) = &self.menus else { return };
+        let settings = menus.settings();
+        let show = &mut self.shown.fight.show;
+        show.set_shake(settings.shake_share());
+        show.set_effect_scale(settings.effect_scale());
+        if let Some(hud) = &mut self.shown.hud {
+            hud.set_scale(settings.scale());
+            hud.set_text_scale(settings.text_size.scale());
         }
     }
 
@@ -823,13 +838,21 @@ impl SceneShow for GameShow {
         if let Some(menus) = &mut self.menus {
             self.panel.follow(menus, &self.shown.fight.dialogue);
             // What a cutscene says at the playhead this frame shows, so a line comes up with its frame and
-            // its cue. A conversation's panel says its own lines, so none shows over it. The fight's words
-            // step aside for a cutscene, as its bars and buttons do.
+            // its cue; with none, the caption of a fight's voice line (M4 A2), the player's side's named as
+            // theirs. A conversation's panel says its own lines, so none shows over it. The fight's words
+            // step aside for a cutscene, as its bars and buttons do. The player's choices say whether
+            // subtitles show, whether they name who's speaking, and how they look.
             let show = &self.shown.fight.show;
+            let subtitles = menus.settings().subtitles.clone();
             let said = show.timeline_player().and_then(|player| player.subtitle());
-            let said = said.filter(|_| !self.panel.is_up());
+            let said = said.map(|line| (line.key, line.speaker)).or_else(|| {
+                show.caption().map(|caption| (caption.key, caption.by_player.then_some(PLAYER_SPEAKER)))
+            });
+            let said = said.filter(|_| subtitles.shown && !self.panel.is_up());
+            let speaker = said.and_then(|(_, speaker)| speaker).filter(|_| subtitles.speakers);
             if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
-                model.follow_subtitle(said.map(|line| line.key), said.and_then(|line| line.speaker));
+                model.follow_subtitle_look(&subtitles);
+                model.follow_subtitle(said.map(|(key, _)| key), speaker);
                 model.fight_words = if show.plays_cutscene() { 0.0 } else { 1.0 };
             }
             menus.draw(size, list);
@@ -1130,6 +1153,19 @@ mod tests {
         assert_eq!(show.take_changed_settings(), None, "once");
         let hud = show.shown.hud.as_ref().unwrap();
         assert_eq!(hud.scale(), SIZES[2].1);
+        // The text's size reaches the HUD's numbers, and the flashes the fight's screen effects (M4 A2).
+        let fight = &show.shown.fight.show;
+        assert_eq!((hud.text_scale(), fight.effect_scale()), (1.0, sapphire_render::EffectScale::FULL));
+        press(&mut show, &mut clock, Scancode::DOWN);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        assert_eq!(show.take_changed_settings().expect("the text stepped").text_size.scale(), 1.25);
+        assert_eq!(show.shown.hud.as_ref().unwrap().text_scale(), 1.25);
+        for _ in 0..2 {
+            press(&mut show, &mut clock, Scancode::DOWN);
+        }
+        press(&mut show, &mut clock, Scancode::RETURN);
+        let reduced = sapphire_render::EffectScale { flashes: game_ui::menus::REDUCED_FLASHES, motion: 1.0 };
+        assert_eq!(show.shown.fight.show.effect_scale(), reduced);
     }
 
     #[test]

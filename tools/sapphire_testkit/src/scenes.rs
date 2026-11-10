@@ -240,7 +240,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 269] {
+pub fn scenes() -> [Scene; 273] {
     [
         Scene {
             name: "turntable-start",
@@ -4899,6 +4899,48 @@ pub fn scenes() -> [Scene; 269] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The player's settings, seen (M4 A2). The impact frame with flashes reduced and no camera motion: a
+        // quarter of its duotone and speed lines, and none of its radial blur or chromatic aberration, against
+        // `effects-impact-frame`.
+        Scene {
+            name: "effects-impact-frame-calmer",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--post-effect",
+                "impact_frame@0.03",
+                "--effect-scale",
+                "0.25:0",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The display page at the largest text, its long labels taking a second line; the HUD's subtitles
+        // large on a solid band, in Japanese, and small with no band at all, in English.
+        game_scene!("game-display-larger-text-wide-en", "display", "1280x720", "en", "--ui-text", "larger"),
+        game_scene!(
+            "game-subtitle-band-large-solid-wide-ja",
+            "hud",
+            "1280x720",
+            "ja",
+            "--ui-subtitle",
+            "large:solid"
+        ),
+        game_scene!(
+            "game-subtitle-band-small-off-wide-en",
+            "hud",
+            "1280x720",
+            "en",
+            "--ui-subtitle",
+            "small:off"
+        ),
     ]
 }
 

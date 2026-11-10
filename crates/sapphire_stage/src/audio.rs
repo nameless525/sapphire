@@ -29,6 +29,7 @@ use sapphire_assets::cue::Cue;
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_assets::voice::VoiceLines;
+pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
     EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput,
@@ -245,6 +246,16 @@ impl DeviceAudio {
         self.system.set_volume(volume);
     }
 
+    /// The player's volumes (M4 A2): every sound's, and each kind's under it.
+    pub fn set_volumes(&mut self, volumes: Volumes) {
+        self.system.set_volumes(volumes);
+    }
+
+    /// Whether every sound plays in one channel (M4 A2).
+    pub fn set_mono(&mut self, mono: bool) {
+        self.system.set_mono(mono);
+    }
+
     /// Chooses the language voice lines are spoken in, a BCP 47 tag, apart from the text's: whether the
     /// fight's lines are in it.
     pub fn set_voice_language(&mut self, locale: &str) -> bool {
@@ -446,6 +457,16 @@ impl OfflineAudio {
     /// As [`DeviceAudio::set_voice_language`].
     pub fn set_voice_language(&mut self, locale: &str) -> bool {
         self.system.set_voice_language(locale)
+    }
+
+    /// As [`DeviceAudio::set_volumes`].
+    pub fn set_volumes(&mut self, volumes: Volumes) {
+        self.system.set_volumes(volumes);
+    }
+
+    /// As [`DeviceAudio::set_mono`].
+    pub fn set_mono(&mut self, mono: bool) {
+        self.system.set_mono(mono);
     }
 
     /// Mixes `dt` seconds of sound, and says how long that took.

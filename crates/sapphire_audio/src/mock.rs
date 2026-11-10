@@ -60,6 +60,7 @@ pub enum MockCall {
     },
     Suspend,
     Resume,
+    SetMono(bool),
 }
 
 /// A backend that plays nothing and writes everything down. Voices last until [`Self::finish`], and
@@ -204,5 +205,9 @@ impl AudioBackend for MockBackend {
 
     fn status(&mut self) -> DeviceStatus {
         DeviceStatus { state: self.state, ..DeviceStatus::default() }
+    }
+
+    fn set_mono(&mut self, mono: bool) {
+        self.calls.push(MockCall::SetMono(mono));
     }
 }

@@ -12,6 +12,7 @@
 use bevy_reflect::TypePath;
 use sapphire_gameplay::targeting::AutoTarget;
 use sapphire_loc::LocaleSettings;
+use sapphire_look::EffectScale;
 use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,61 @@ choices! {
     /// The band behind a subtitle: none, or lighter, as authored, or solid.
     #[derive(Default)]
     SubtitleBackground { Off = "off", Light = "light", #[default] Normal = "normal", Solid = "solid" }
+}
+
+impl TextSize {
+    /// What every screen's text and the HUD's digits are drawn times their size by, over the interface's
+    /// size: the larger two are what Steam's and Xbox's guidelines ask a player be able to choose.
+    #[must_use]
+    pub const fn scale(self) -> f32 {
+        match self {
+            Self::Normal => 1.0,
+            Self::Large => 1.25,
+            Self::Larger => 1.5,
+        }
+    }
+}
+
+/// How much of the screen's flashes show with them [`Flashes::Reduced`], of what's authored: a stand-in
+/// until A3 measures WCAG 2.3.1's thresholds and caps each effect by them.
+pub const REDUCED_FLASHES: f32 = 0.25;
+
+impl Flashes {
+    /// How much of an impact frame's inversion and duotone and of speed lines shows, 0 to 1.
+    #[must_use]
+    pub const fn share(self) -> f32 {
+        match self {
+            Self::Normal => 1.0,
+            Self::Reduced => REDUCED_FLASHES,
+        }
+    }
+}
+
+impl SubtitleSize {
+    /// What a subtitle's words are drawn times their size by, with the player's text size on top.
+    #[must_use]
+    pub const fn scale(self) -> f32 {
+        match self {
+            Self::Small => 0.8,
+            Self::Normal => 1.0,
+            Self::Large => 1.25,
+            Self::Larger => 1.5,
+        }
+    }
+}
+
+impl SubtitleBackground {
+    /// How much of the band the HUD document authors behind a subtitle shows, 0 to 1, and whether an
+    /// opaque one stands under it: none for off, half for light, all of it as authored, and solid.
+    #[must_use]
+    pub const fn band(self) -> (f32, bool) {
+        match self {
+            Self::Off => (0.0, false),
+            Self::Light => (0.5, false),
+            Self::Normal => (1.0, false),
+            Self::Solid => (1.0, true),
+        }
+    }
 }
 
 choices! {
@@ -315,6 +371,19 @@ impl PlayerSettings {
         Self::share(self.sound)
     }
 
+    /// How much of combat's screen effects shows (M4 A2): the flashes setting's share of the impact frames
+    /// and speed lines, and camera motion's of the zoom blur and colour punch.
+    #[must_use]
+    pub fn effect_scale(&self) -> EffectScale {
+        EffectScale { flashes: self.flashes.share(), motion: Self::share(self.camera_motion) }
+    }
+
+    /// How much of each shake and rumble plays, 0 to 1.
+    #[must_use]
+    pub fn shake_share(&self) -> f32 {
+        Self::share(self.shake)
+    }
+
     /// The languages the game reads and speaks in. Voices follow the chosen language: the engine keeps the
     /// two apart (M3 A1), but the settings screen has one control for both until a game wants a second.
     #[must_use]
@@ -369,6 +438,25 @@ pub(super) const fn auto_target_name(strength: AutoTarget) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defaults draw what the game drew before the settings acted (M4 A2): every effect, shake and
+    /// rumble at full, every text at its own size, and the subtitles' band as authored.
+    #[test]
+    fn the_defaults_change_nothing_and_each_setting_scales_what_it_names() {
+        let settings = PlayerSettings::default();
+        assert_eq!(settings.effect_scale(), EffectScale::FULL);
+        let sizes = (settings.shake_share(), settings.text_size.scale(), settings.subtitles.size.scale());
+        assert_eq!(sizes, (1.0, 1.0, 1.0));
+        assert_eq!(settings.subtitles.background.band(), (1.0, false));
+        let calmer = PlayerSettings {
+            flashes: Flashes::Reduced,
+            camera_motion: 0,
+            shake: 50,
+            ..PlayerSettings::default()
+        };
+        assert_eq!(calmer.effect_scale(), EffectScale { flashes: REDUCED_FLASHES, motion: 0.0 });
+        assert_eq!(calmer.shake_share(), 0.5);
+    }
 
     /// Every setting a press steps comes round to where it started, through every value it has, and moves
     /// nothing else.

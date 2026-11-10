@@ -237,6 +237,29 @@ fn every_subtitle_is_one_the_hud_can_show() {
     }
 }
 
+/// Every voice line a fight's cues speak has a caption (M4 A2): `subtitle-<line>`, a key the HUD's subtitle
+/// shows, plain text in every language.
+#[test]
+fn every_voice_line_in_a_fight_has_a_caption() {
+    let table = sapphire_cues::CueTable::default_table();
+    let lines: BTreeSet<_> = table.rows().iter().filter_map(|row| row.line.as_deref()).collect();
+    assert!(!lines.is_empty(), "the fight says something");
+    for locale in LOCALES {
+        let strings = support::table(locale);
+        for line in &lines {
+            let key = format!("{}{line}", game_combat::cues::CAPTION_PREFIX);
+            let entry = strings.entry(&key).unwrap_or_else(|| panic!("{locale} lacks {key}"));
+            assert!(matches!(entry.pattern, Pattern::Plain(_)), "{locale}: {key} takes a variable");
+        }
+    }
+    assert!(strings_hold(game_ui::menus::PLAYER_SPEAKER), "the player's side is named");
+}
+
+/// Whether every language has `key`.
+fn strings_hold(key: &str) -> bool {
+    LOCALES.iter().all(|locale| table(locale).entry(key).is_some())
+}
+
 #[test]
 fn both_languages_have_the_same_keys_taking_the_same_variables() {
     let (en, ja) = (table("en"), table("ja"));

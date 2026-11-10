@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
-use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
+use sapphire_render::{
+    DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind,
+};
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
@@ -236,7 +238,8 @@ pub(crate) struct Options {
     /// (M2 I2).
     pub hud: Option<HudOptions>,
     /// `--ui-game`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-plain`, `--ui-time`, `--ui-walk`,
-    /// `--ui-turn`, `--ui-spin` and `--ui-dialogue`: one of the game's screens over the scene (M3 U7, C3, Q2b).
+    /// `--ui-turn`, `--ui-spin`, `--ui-dialogue`, `--ui-text` and `--ui-subtitle`: one of the game's screens
+    /// over the scene (M3 U7, C3, Q2b, M4 A2).
     pub ui_screen: Option<ScreenOptions>,
     /// `--display-text latin|japanese`: a title in the display face at four sizes over the frame
     /// (M3 U8, `display_text.rs`).
@@ -313,6 +316,9 @@ pub(crate) struct Options {
     /// (M1 P3), each playing from its start, or held that many seconds into it (for captures and
     /// benches). The scene checks the names against its presets.
     pub post_effects: Vec<(String, Option<f32>)>,
+    /// `--effect-scale <flashes>:<motion>`: the player's flashes and camera motion on the fight's screen
+    /// effects (M4 A2, `FightShow::set_effect_scale`), each 0 to 1. None draws them as authored.
+    pub effect_scale: Option<EffectScale>,
     /// `--vfx arc|hit|dust|duel`: plays effects at fixed ticks (M2 E2).
     pub vfx: Option<VfxShow>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
@@ -661,6 +667,7 @@ impl Options {
         let (mut ui_game, mut ui_time, mut ui_walk) = (None, None, Vec::new());
         let (mut ui_locale, mut ui_scale, mut ui_pseudo) = (None, None, false);
         let (mut ui_turn, mut ui_spin, mut ui_dialogue) = (None, None, None);
+        let (mut ui_text, mut ui_subtitle) = (None, None);
         let mut ui_plain = false;
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
@@ -879,6 +886,10 @@ impl Options {
                     ui_spin = Some(across);
                 }
                 "--ui-dialogue" => ui_dialogue = Some(DialoguePreview::parse(&value("--ui-dialogue")?)?),
+                "--ui-text" => ui_text = Some(crate::screen::parse_text_size(&value("--ui-text")?)?),
+                "--ui-subtitle" => {
+                    ui_subtitle = Some(crate::screen::parse_subtitles(&value("--ui-subtitle")?)?)
+                }
                 "--ui-time" => {
                     let seconds: f32 = number(&value("--ui-time")?, "--ui-time")?;
                     if !(seconds >= 0.0 && seconds.is_finite()) {
@@ -1061,6 +1072,9 @@ impl Options {
                     options.sharpening = Some(amount);
                 }
                 "--post-effect" => options.post_effects.push(parse_post_effect(&value("--post-effect")?)?),
+                "--effect-scale" => {
+                    options.effect_scale = Some(parse_effect_scale(&value("--effect-scale")?)?)
+                }
                 "--cue" => cue = Some(sapphire_stage::audio::named_cue(&value("--cue")?)?),
                 "--cue-repeat" => {
                     let seconds: f32 = number(&value("--cue-repeat")?, "--cue-repeat")?;
@@ -1176,10 +1190,12 @@ impl Options {
             || !ui_walk.is_empty()
             || ui_turn.is_some()
             || ui_spin.is_some()
-            || ui_dialogue.is_some();
+            || ui_dialogue.is_some()
+            || ui_text.is_some()
+            || ui_subtitle.is_some();
         if ui_game.is_none() && companions {
-            return Err("--ui-locale, --ui-scale, --ui-pseudo, --ui-plain, --ui-time, --ui-walk, --ui-turn, --ui-spin \
-                        and --ui-dialogue need --ui-game"
+            return Err("--ui-locale, --ui-scale, --ui-pseudo, --ui-plain, --ui-time, --ui-walk, --ui-turn, --ui-spin, \
+                        --ui-dialogue, --ui-text and --ui-subtitle need --ui-game"
                 .to_owned());
         }
         options.ui_screen = ui_game.map(|screen| {
@@ -1194,6 +1210,8 @@ impl Options {
                 turn: ui_turn.unwrap_or(shown.turn),
                 spin: ui_spin.unwrap_or(shown.spin),
                 dialogue: ui_dialogue,
+                text: ui_text.unwrap_or(shown.text),
+                subtitle: ui_subtitle,
                 ..shown
             }
         });
@@ -1632,6 +1650,17 @@ fn parse_view(raw: &str) -> Result<(f32, f32), String> {
 }
 
 /// `<preset>` or `<preset>@<seconds>`.
+/// `--effect-scale`'s `<flashes>:<motion>`, each 0 to 1.
+fn parse_effect_scale(raw: &str) -> Result<EffectScale, String> {
+    let invalid = || format!("--effect-scale expects <flashes>:<motion>, each 0 to 1, got {raw}");
+    let (flashes, motion) = raw.split_once(':').ok_or_else(invalid)?;
+    let share = |value: &str| value.parse::<f32>().ok().filter(|share| (0.0..=1.0).contains(share));
+    Ok(EffectScale {
+        flashes: share(flashes).ok_or_else(invalid)?,
+        motion: share(motion).ok_or_else(invalid)?,
+    })
+}
+
 fn parse_post_effect(raw: &str) -> Result<(String, Option<f32>), String> {
     let invalid = || format!("--post-effect expects PRESET or PRESET@SECONDS, got {raw:?}");
     let (name, at) = match raw.split_once('@') {
@@ -2944,6 +2973,25 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().0.vfx, None);
         let error = parse(&["--vfx", "fireworks"]).unwrap_err();
         assert!(error.contains("arc, hit, dust, duel"), "{error}");
+    }
+
+    /// The player's settings as a capture takes them (M4 A2).
+    #[test]
+    fn the_players_effect_scale_text_and_subtitles_parse() {
+        let (options, _) = parse(&["--effect-scale", "0.25:0"]).unwrap();
+        assert_eq!(options.effect_scale, Some(EffectScale { flashes: 0.25, motion: 0.0 }));
+        for wrong in ["0.25", "2:0", "a:b", "0.5:-1"] {
+            assert!(parse(&["--effect-scale", wrong]).is_err(), "{wrong}");
+        }
+        let (options, _) =
+            parse(&["--ui-game", "hud", "--ui-text", "larger", "--ui-subtitle", "large:solid"]).unwrap();
+        let screen = options.ui_screen.unwrap();
+        assert_eq!(screen.text, game_ui::menus::TextSize::Larger);
+        let subtitles = screen.subtitle.unwrap();
+        assert_eq!((subtitles.size.name(), subtitles.background.name()), ("large", "solid"));
+        assert!(parse(&["--ui-text", "large"]).is_err(), "it needs --ui-game");
+        assert!(parse(&["--ui-game", "hud", "--ui-text", "huge"]).is_err());
+        assert!(parse(&["--ui-game", "hud", "--ui-subtitle", "large"]).is_err());
     }
 
     #[test]

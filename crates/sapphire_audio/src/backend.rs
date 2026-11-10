@@ -208,4 +208,7 @@ pub trait AudioBackend {
 
     /// What the output has done.
     fn status(&mut self) -> DeviceStatus;
+
+    /// Folds the whole mix to mono, or back to stereo (M4 A2), smoothly enough not to click.
+    fn set_mono(&mut self, mono: bool);
 }

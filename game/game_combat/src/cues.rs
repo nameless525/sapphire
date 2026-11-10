@@ -49,6 +49,13 @@ use sapphire_stage::audio::{CueSounds, RUNNING, ShowSounds};
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
 const SEED: u64 = 0x5EED;
 
+/// What a fight's voice line is captioned by (M4 A2): its key under this, a string the HUD's subtitle shows
+/// as it shows a cutscene's line (`content/loc/*/cutscenes.ftl`).
+pub const CAPTION_PREFIX: &str = "subtitle-";
+/// How long a caption stays up after its line is said, in real seconds: long enough to read the fight's
+/// short lines twice over, since nothing says how long each one sounds.
+pub const CAPTION_SECONDS: f32 = 2.5;
+
 /// How a hurtbox's surface maps onto the character's: the test moves' capsule is 0.7 m across and 1.75 m
 /// tall, and the character about half as wide and 1.55 m tall, so a hit on one's edge lands on the other's.
 const ON_THE_CHARACTER: Vec3 = Vec3::new(0.5, 0.88, 0.5);
@@ -100,6 +107,24 @@ pub(crate) enum CueStage<'a> {
     /// their shakes. `fighters` are those drawn, the player first, each a warrior's blade to leave a trail,
     /// and the player only with `player_blade`.
     Actors { director: Option<&'a mut CameraDirector>, fighters: &'a [Option<ActorView>], player_blade: bool },
+}
+
+/// A fight's voice line on screen (M4 A2): its caption's key, whether the player's side said it, and how
+/// long it has left.
+#[derive(Debug, Default)]
+struct Caption {
+    /// Under [`CAPTION_PREFIX`], written in place, so a line no longer than the last allocates nothing.
+    key: String,
+    by_player: bool,
+    left: f32,
+}
+
+/// What a caption shows: the string key of the line, and whether the player's side said it, which names
+/// the player's character as its speaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Captioned<'a> {
+    pub key: &'a str,
+    pub by_player: bool,
 }
 
 /// The camera's shakes, for a view that plays them itself.
@@ -154,6 +179,8 @@ pub struct CueShow {
     music_phase: Option<&'static str>,
     /// A boss's named phase, as of the latest step, which the score plays in its place if it has it.
     boss_phase: Option<Name>,
+    /// The line said last, while its caption's up.
+    caption: Caption,
 }
 
 impl CueShow {
@@ -196,6 +223,7 @@ impl CueShow {
             started_over: false,
             music_phase: None,
             boss_phase: None,
+            caption: Caption::default(),
         })
     }
 
@@ -261,7 +289,21 @@ impl CueShow {
         let mut step =
             CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, root_of: &root_of };
         let cues = sim.cues().map(|cue| stand.map_or(cue, |stand| on_stage(cue, sim, stand)));
+        let said_before = self.dispatcher.said().len();
         self.dispatcher.read_step(tick, cues, &mut step);
+        // The step's last line is the one to read: on the one character every line is the player's.
+        if let Some(said) = self.dispatcher.said().skip(said_before).last() {
+            let player = fighters.first().and_then(|view| view.as_ref()).map(|view| view.id);
+            let by_player = stand.is_some()
+                || said.actor.is_some_and(|actor| {
+                    Some(actor) == player || sim.party().slots().any(|slot| slot.actor == actor)
+                });
+            let caption = &mut self.caption;
+            caption.key.clear();
+            caption.key.push_str(CAPTION_PREFIX);
+            caption.key.push_str(said.key);
+            (caption.by_player, caption.left) = (by_player, CAPTION_SECONDS);
+        }
         let blades = fighters.iter().enumerate();
         let blades = blades.map(|(place, view)| view.as_ref().filter(|_| place > 0 || player_blade));
         self.trails.read_step(blades, sim.move_library(), &mut self.world);
@@ -364,8 +406,22 @@ impl CueShow {
     ) -> (Vec3, Vec3) {
         self.dispatcher.end_frame(dt, rumble);
         self.started_over = false;
+        self.caption.left = (self.caption.left - view_dt).max(0.0);
         self.shakes.stack.advance(view_dt, behind_latest(alpha));
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
+    }
+
+    /// The fight's voice line that's still to be read, if any: up for [`CAPTION_SECONDS`] of the view's time
+    /// after it's said, so a pause holds it.
+    pub(crate) fn caption(&self) -> Option<Captioned<'_>> {
+        let caption = &self.caption;
+        (caption.left > 0.0).then_some(Captioned { key: &caption.key, by_player: caption.by_player })
+    }
+
+    /// The player's shake setting, 0 to 1: the shakes this plays on a view of its own, and every rumble.
+    pub(crate) fn set_shake(&mut self, share: f32) {
+        self.shakes.stack.set_setting(share);
+        self.dispatcher.set_rumble_setting(share);
     }
 
     /// Stops any rumble at once: the app lost focus or the foreground.
@@ -397,6 +453,7 @@ impl CueShow {
         self.world_time_scale = 1.0;
         self.tick = None;
         self.started_over = true;
+        self.caption.left = 0.0;
         screen.start_over();
     }
 
@@ -820,6 +877,50 @@ mod tests {
         let show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("every name's there");
         assert_ne!(show.post_variants(&presets), PostVariants::NONE);
         assert!(!show.table().sound_cues().is_empty());
+    }
+
+    /// A fight's voice line is captioned (M4 A2) under its key, for [`CAPTION_SECONDS`] of the view's time,
+    /// which a pause holds, and not past a start over. On the one character, every line is the player's.
+    #[test]
+    fn a_said_line_is_captioned_while_its_time_lasts() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        let landed = || Name::new("hit_landed");
+        for _ in 0..600 {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            if sim.cues().any(|cue| cue.cue == landed()) {
+                break;
+            }
+        }
+        assert!(sim.cues().any(|cue| cue.cue == landed()), "the fixture reaches a hit");
+        let speaking = CueTable::from_ron(
+            r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [
+                (cue: "hit_landed", line: Some("perfect-dodge")),
+            ]))"#,
+        )
+        .expect("valid on its own");
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let mut show =
+            CueShow::with_table(speaking, VfxLibrary::default_effects(), VfxBudget::DESKTOP_LOW, &presets)
+                .expect("resolves");
+        show.prepare(&sim);
+        assert_eq!(show.caption(), None);
+        let stage = || CueStage::OneCharacter { stand: Vec3::ZERO };
+        show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage());
+        let said = Captioned { key: "subtitle-perfect-dodge", by_player: true };
+        assert_eq!(show.caption(), Some(said));
+        // Paused, it stays; played, it goes once its time's up.
+        show.end_frame(10.0, 0.0, 1.0, &mut ());
+        assert_eq!(show.caption(), Some(said));
+        show.end_frame(1.0, CAPTION_SECONDS - 0.5, 1.0, &mut ());
+        assert_eq!(show.caption(), Some(said));
+        show.end_frame(1.0, 0.5, 1.0, &mut ());
+        assert_eq!(show.caption(), None);
+        show.start_over(&mut screen);
+        assert_eq!(show.caption(), None, "a fight started over says nothing yet");
     }
 
     /// A new table naming what the libraries lack is refused, and the one firing stays.

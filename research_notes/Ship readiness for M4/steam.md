@@ -17,7 +17,7 @@ A scout's read on 2026-11-10, web only, nothing built or run. "ours:" marks infe
 - Input: full controller support with a default controller config; glyphs must match Deck controls (Xbox-style is accepted as Playable, not Verified, may be stale); no mouse/keyboard needed. Same page.
 - Text entry: a game that needs text must open the on-screen keyboard through a Steamworks API, or provide its own controller-usable entry. Same page.
 - Display: supports 1280x800 (16:10) or 1280x720 with letterboxing; default settings must run at playable framerates. Same page.
-- Legibility: the smallest on-screen font must not fall below 9 px tall at 1280x800, 12 px recommended, readable at 30 cm; user-configurable text size recommended. Same page.
+- Legibility: the smallest on-screen font must not fall below 9 px tall at 1280x800, 12 px recommended, readable at 30 cm; user-configurable text size recommended. Same page. Checked against the page on 2026-11-10 (M4 A2): as it says, though it never says which height of a character it means, so A2 measures the em.
 - Seamlessness: no launcher, or a launcher fully navigable by controller; no anti-cheat incompatibility. Same page; sleep/resume expectation is from memory, may be stale.
 - 2026: the same programme now spans "SteamOS Verified" for Steam Machine and Steam Frame; display tests are not run for Steam Machine. https://partner.steamgames.com/doc/steamhardware/compat , https://www.gamingonlinux.com/guides/view/what-steam-deck-steam-machine-steam-frame-and-steamos-verified-ratings-mean/
 - ours: our text-size setting scales UI points; we need a check that the smallest default font is >= 12 px at 1280x800, and the settings screen needs a resolution/quality preset that defaults sanely there.

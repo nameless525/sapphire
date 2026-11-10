@@ -101,6 +101,9 @@ pub(super) fn taffy_style(layout: &UiLayout, insets: Insets) -> TaffyStyle {
         grid_template_rows: layout.rows.iter().copied().map(track).collect(),
         ..TaffyStyle::default()
     };
+    // A node in flow is still what its anchored children are placed against: `taffy`'s default, static,
+    // would hand them to the nearest anchored ancestor, and `place` reads where they are from their parent.
+    style.position = Position::Relative;
     if let Some(anchors) = layout.anchored {
         style.position = Position::Absolute;
         style.inset = TaffyRect {

@@ -1192,7 +1192,13 @@ pub enum UiBindTarget {
     Opacity,
     /// A number from 0 to 1: how much of the node's look draws, from its left, as a bar's fill.
     Fill,
+    /// A number from [`TEXT_SCALES`]' least to its most, multiplying the size of the node's text: what a
+    /// player chose for one kind of words, such as a subtitle's size (M4 A2). Only a node with text has it.
+    TextScale,
 }
+
+/// How far a [`UiBindTarget::TextScale`] can take a node's text: a value outside reads as the nearest end.
+pub const TEXT_SCALES: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
 impl UiBindTarget {
     /// The kind of value it reads.
@@ -1200,7 +1206,7 @@ impl UiBindTarget {
     pub const fn kind(self) -> UiValueKind {
         match self {
             Self::Shown => UiValueKind::Bool,
-            Self::Opacity | Self::Fill => UiValueKind::Number,
+            Self::Opacity | Self::Fill | Self::TextScale => UiValueKind::Number,
         }
     }
 }
@@ -1335,6 +1341,9 @@ impl UiDocument {
                 }
                 if node.binds[..at].iter().any(|earlier| earlier.to == bind.to) {
                     issue(&format!(".binds[{at}].to"), format!("{:?} is bound twice", bind.to));
+                }
+                if bind.to == UiBindTarget::TextScale && node.text.is_none() {
+                    issue(&format!(".binds[{at}].to"), "a text scale needs text to scale".to_owned());
                 }
             }
             if node.scroll.is_some() {
@@ -2135,7 +2144,7 @@ mod tests {
 
     #[test]
     fn each_check_names_its_field() {
-        let cases: [(&str, &str); 19] = [
+        let cases: [(&str, &str); 20] = [
             (r#"(name: "root", parent: "x"),"#, "nodes[0] `root`.parent"),
             (r#"(name: "root"),(name: "a"),"#, "nodes[1] `a`.parent"),
             (
@@ -2179,6 +2188,7 @@ mod tests {
                 r#"(name: "root", binds: [(to: Fill, path: "a"), (to: Fill, path: "b")]),"#,
                 "nodes[0] `root`.binds[1].to",
             ),
+            (r#"(name: "root", binds: [(to: TextScale, path: "a")]),"#, "nodes[0] `root`.binds[0].to"),
         ];
         for (nodes, field) in cases {
             assert_eq!(one_issue(nodes).field, field, "{nodes}");

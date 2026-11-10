@@ -270,8 +270,8 @@ pub(crate) use layers::{SunDisc, SunOnScreen};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use sapphire_look::post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,
-    GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects,
-    PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
+    EffectScale, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS,
+    PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use variants::PostVariants;
 use variants::{Builder, Pipelines, Slot};

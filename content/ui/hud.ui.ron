@@ -11,6 +11,7 @@
             (name: "small", role: "body", size: 14, weight: 700),
             (name: "banner", role: "display", size: 32, weight: 700),
             (name: "subtitle", role: "body", size: 20, weight: 500, line_height: 1.4),
+            (name: "speaker", role: "body", size: 16, weight: 700),
         ],
         nodes: [
             (
@@ -167,8 +168,10 @@
                     shadow: (color: (0, 0, 0, 235), offset: (2, 2)),
                 ),
             ),
-            // What a cutscene says (M3 Q4): who speaks and the line, low and centered, on a band that keeps it
-            // readable over the ward's white plaster. Its timeline's subtitles choose both keys.
+            // What a cutscene or a fight's voice says (M3 Q4, M4 A2): who speaks and the line, low and centered,
+            // on a band that keeps it readable over the ward's white plaster. Its timeline's subtitles, or the
+            // fight's line, choose both keys, and the player's settings their size and the band: as authored, a
+            // fainter one, none, or an opaque one under it.
             (
                 name: "subtitle",
                 parent: "root",
@@ -179,15 +182,28 @@
                 name: "subtitle-band",
                 parent: "subtitle",
                 layout: (direction: Column, align: Center, gap: 2, max_width: Points(880), padding: (left: 24, right: 24, top: 8, bottom: 10)),
+            ),
+            (
+                name: "subtitle-solid",
+                parent: "subtitle-band",
+                layout: (anchored: (left: Points(0), right: Points(0), top: Points(0), bottom: Points(0))),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 255))),
+                binds: [(to: Shown, path: "subtitle_solid")],
+            ),
+            (
+                name: "subtitle-box",
+                parent: "subtitle-band",
+                layout: (anchored: (left: Points(0), right: Points(0), top: Points(0), bottom: Points(0))),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 150))),
+                binds: [(to: Opacity, path: "subtitle_band")],
             ),
             (
                 name: "subtitle-speaker",
                 parent: "subtitle-band",
-                binds: [(to: Shown, path: "has_speaker")],
+                binds: [(to: Shown, path: "has_speaker"), (to: TextScale, path: "subtitle_scale")],
                 text: (
                     key: "speaker-wanderer",
-                    style: "name",
+                    style: "speaker",
                     color: (255, 192, 56, 255),
                     key_from: (path: "speaker", prefix: "speaker-"),
                     shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
@@ -197,6 +213,7 @@
                 name: "subtitle-line",
                 parent: "subtitle-band",
                 layout: (shrink: 0),
+                binds: [(to: TextScale, path: "subtitle_scale")],
                 text: (
                     key: "subtitle-court-gate-quiet",
                     style: "subtitle",

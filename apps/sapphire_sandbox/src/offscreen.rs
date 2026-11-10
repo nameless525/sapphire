@@ -226,6 +226,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;
     let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud, screen: shown_screen, .. } =
         &mut *show;
+    if let Some(scale) = options.effect_scale {
+        fight.set_effect_scale(scale);
+    }
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }

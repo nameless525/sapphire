@@ -33,6 +33,15 @@ impl Read<'_> {
         };
         if share.is_nan() { 0.0 } else { share.clamp(0.0, 1.0) }
     }
+
+    /// As a text scale: within `TEXT_SCALES`, and what isn't there, or isn't a number, is 1.
+    pub(super) fn as_text_scale(self) -> f32 {
+        match self {
+            Self::Integer(value) => super::text_scale_within(value as f32),
+            Self::Float(value) => super::text_scale_within(value as f32),
+            _ => 1.0,
+        }
+    }
 }
 
 /// What `path` holds in `model`.

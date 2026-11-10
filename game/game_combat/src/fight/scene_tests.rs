@@ -1577,3 +1577,26 @@ fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
         "ultimate eye: fastest {fastest} m a frame, sharpest {sharpest}, the fight's own {fights_sharpest}"
     );
 }
+
+/// The player's flashes and camera motion (M4 A2) reach the fight's screen effects after anything else that
+/// sets them, and at full they're left as they were, bit for bit.
+#[test]
+fn the_players_effect_scale_reaches_the_screen_effects() {
+    use sapphire_render::{EffectScale, PostParams};
+    use sapphire_stage::SceneShow;
+
+    let mut post = PostParams::default();
+    post.effects.inversion.amount = 1.0;
+    post.effects.radial_blur.strength = 0.08;
+    post.effects.speed_lines.opacity = 0.6;
+    let authored = post.effects;
+    let mut show = FightShow::default();
+    let mut adjusted = post;
+    show.adjust_post(&mut adjusted);
+    assert_eq!(adjusted.effects, authored, "as authored at full");
+    show.set_effect_scale(EffectScale { flashes: 0.25, motion: 0.0 });
+    show.adjust_post(&mut adjusted);
+    assert_eq!(adjusted.effects, authored.scaled(EffectScale { flashes: 0.25, motion: 0.0 }));
+    assert_eq!(adjusted.effects.inversion.amount, 0.25);
+    assert_eq!(adjusted.effects.radial_blur.strength, 0.0);
+}

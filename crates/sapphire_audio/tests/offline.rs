@@ -172,6 +172,27 @@ fn gain_and_pan_really_reach_the_channels() {
     assert!(panned_left < panned_right * 0.01, "{panned_left} against {panned_right}");
 }
 
+#[test]
+fn mono_puts_a_hard_pan_in_both_ears_and_stereo_takes_it_back() {
+    let sound = tones(&[1_000.0], 2.0);
+    let mut backend = mixer(&sound);
+    start(&mut backend, VoiceParams { pan: 1.0, ..NEUTRAL });
+    let stereo = render(&mut backend, 0.1);
+    assert!(rms(&left(&stereo)) < rms(&right(&stereo)) * 0.01, "panned hard right");
+    backend.set_mono(true);
+    // Past the fold's ease, every frame is the same in both ears: half the hard pan's in each.
+    let _easing = render(&mut backend, 0.05);
+    let mono = render(&mut backend, 0.2);
+    let (mono_left, mono_right) = (left(&mono), right(&mono));
+    assert!(mono_left.iter().zip(&mono_right).all(|(left, right)| (left - right).abs() < 1e-6));
+    let share = rms(&mono_left) / rms(&right(&stereo));
+    assert!((share - 0.5).abs() < 0.02, "{share}");
+    backend.set_mono(false);
+    let _easing = render(&mut backend, 0.05);
+    let back = render(&mut backend, 0.2);
+    assert!(rms(&left(&back)) < rms(&right(&back)) * 0.01, "panned hard right again");
+}
+
 /// A tone whose samples miss zero: 1 kHz at 48 kHz lands on it twice a cycle, and would read as
 /// silence in [`sounding`].
 const QUIET_FREE_TONE: f32 = 997.0;

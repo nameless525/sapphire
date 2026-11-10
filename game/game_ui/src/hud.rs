@@ -266,6 +266,17 @@ impl FightHud {
         self.options.scale
     }
 
+    /// The player's text size (M4 A2), from the next frame: see [`CombatHud::set_text_scale`].
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.hud.set_text_scale(scale);
+    }
+
+    /// The player's text size, as [`Self::set_text_scale`] last said.
+    #[must_use]
+    pub const fn text_scale(&self) -> f32 {
+        self.hud.text_scale()
+    }
+
     /// Whether the on-screen controls show, as [`Self::follow_devices`] last said.
     #[must_use]
     pub const fn shows_controls(&self) -> bool {
@@ -412,7 +423,9 @@ impl FightHud {
         let layout = self.layout;
         self.controls = TouchControls::new(layout);
         self.controls.show_ultimate(self.options.energy.is_some());
+        let text_scale = self.hud.text_scale();
         self.hud = CombatHud::with_atlas(self.atlas.clone());
+        self.hud.set_text_scale(text_scale);
         let before = HudValues {
             player: FighterValues { hp: 0.78, poise: 0.82, hp_points: Some(5054) },
             enemy: Some(FighterValues { hp: 0.83, poise: 0.35, hp_points: None }),

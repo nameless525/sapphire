@@ -33,7 +33,7 @@ use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
-use sapphire_render::{MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
+use sapphire_render::{EffectScale, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_sequencer::{Origin, Playing, TimelinePlayer};
 use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
@@ -352,6 +352,11 @@ pub struct FightShow {
     camera_time: Duration,
     /// Zone trips (M3 W4).
     trips: trip::Trips,
+    /// The player's shake setting (M4 A2), 0 to 1, for every shake and rumble the fight's cues fire: none
+    /// plays them as authored.
+    shake: Option<f32>,
+    /// How much of the screen effects shows, as the player's flashes and camera motion say (M4 A2).
+    effect_scale: EffectScale,
 }
 
 impl FightShow {
@@ -1112,6 +1117,12 @@ impl FightShow {
         scene.with_screen_effects(|stack, presets| cues.step(sim, stack, presets, view_projection, stage));
     }
 
+    /// The fight's voice line whose caption is up (M4 A2), if any: what the HUD's subtitle shows when no
+    /// cutscene has it.
+    pub fn caption(&self) -> Option<crate::cues::Captioned<'_>> {
+        self.cues.as_ref().and_then(CueShow::caption)
+    }
+
     /// What a fight's cues ask of the audio system this frame.
     pub fn cue_sounds(&self) -> CueSounds<'_> {
         self.cues.as_ref().map_or(CueSounds::NONE, CueShow::sounds)
@@ -1129,11 +1140,37 @@ impl FightShow {
         rumble: &mut dyn RumbleSink,
     ) {
         let Some(cues) = &mut self.cues else { return };
+        if let Some(shake) = self.shake {
+            cues.set_shake(shake);
+            if let Some(director) = self.arena.as_mut().and_then(|arena| arena.director()) {
+                director.set_shake_setting(shake);
+            }
+        }
         let (turn, offset) = cues.end_frame(dt, view_dt, alpha, rumble);
         // With a director on, its own frame has the shakes, and a turn its roll.
         if self.arena.as_mut().is_none_or(|arena| arena.director().is_none()) {
             scene.camera_mut().set_shake(turn, offset);
         }
+    }
+
+    /// How much of the fight's screen effects shows from the next frame (M4 A2): the player's flashes and
+    /// camera motion, through [`PostEffects::scaled`](sapphire_render::PostEffects::scaled), after a
+    /// timeline's post. [`EffectScale::FULL`], where it starts, draws them as authored.
+    pub fn set_effect_scale(&mut self, scale: EffectScale) {
+        self.effect_scale = scale;
+    }
+
+    /// The screen effects' scale, as [`Self::set_effect_scale`] last said.
+    #[must_use]
+    pub const fn effect_scale(&self) -> EffectScale {
+        self.effect_scale
+    }
+
+    /// The player's shake setting (M4 A2), 0 (none) to 1 (as authored): how much of each shake the cues fire
+    /// moves the camera, whichever plays it, and how hard each rumble shakes the pad. It holds for every fight
+    /// and camera from here on, and reaches what's playing at the next [`Self::end_cue_frame`].
+    pub fn set_shake(&mut self, share: f32) {
+        self.shake = Some(share);
     }
 
     /// Stops a fight's rumble at once: the app lost focus or the foreground.
@@ -1797,6 +1834,9 @@ impl SceneShow for FightShow {
     fn adjust_post(&mut self, post: &mut PostParams) {
         if let Some(show) = &self.timeline {
             show.player().apply_post(post);
+        }
+        if self.effect_scale != EffectScale::FULL {
+            post.effects = post.effects.scaled(self.effect_scale);
         }
     }
 

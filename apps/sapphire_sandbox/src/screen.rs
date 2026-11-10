@@ -7,7 +7,10 @@
 //! (M3 Q2b), found by its name with no list in code (M3 Z5e), and the Lantern Ward guide's with no name.
 
 use bevy_reflect::PartialReflect;
-use game_ui::menus::{DialogueModel, MenuDocument, ScreenModel};
+use game_ui::menus::{
+    DialogueModel, HudModel, MenuDocument, MenuModel, PlayerSettings, ScreenModel, SubtitleBackground,
+    SubtitleSize, Subtitles, TextSize,
+};
 use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
 use sapphire_dialogue::{ConditionId, Dialogue, DialogueWalk, DialogueWorld, EffectId};
@@ -82,6 +85,36 @@ pub struct ScreenOptions {
     /// `--ui-dialogue`: the panel on that conversation, its lines past its first, in a world where none of
     /// its conditions holds and nothing it sets lands.
     pub dialogue: Option<DialoguePreview>,
+    /// `--ui-text`: the player's text size (M4 A2).
+    pub text: TextSize,
+    /// `--ui-subtitle <size>:<background>`, with `--ui-game hud`: the sample says a cutscene's line, with
+    /// its speaker, in subtitles of that size on that background (M4 A2).
+    pub subtitle: Option<Subtitles>,
+}
+
+/// `--ui-text`'s size, by its name in the settings (`normal`, `large`, `larger`).
+pub fn parse_text_size(raw: &str) -> Result<TextSize, String> {
+    let names = || TextSize::ALL.iter().map(|size| size.name()).collect::<Vec<_>>().join(", ");
+    TextSize::ALL
+        .iter()
+        .copied()
+        .find(|size| size.name() == raw)
+        .ok_or_else(|| format!("--ui-text expects one of {}, got {raw}", names()))
+}
+
+/// `--ui-subtitle`'s `<size>:<background>`, by their names in the settings (`small`, `normal`, `large`,
+/// `larger`; `off`, `light`, `normal`, `solid`).
+pub fn parse_subtitles(raw: &str) -> Result<Subtitles, String> {
+    let invalid =
+        || format!("--ui-subtitle expects <size>:<background>, as the settings name them, got {raw}");
+    let (size, background) = raw.split_once(':').ok_or_else(invalid)?;
+    let size = SubtitleSize::ALL.iter().copied().find(|choice| choice.name() == size).ok_or_else(invalid)?;
+    let background = SubtitleBackground::ALL
+        .iter()
+        .copied()
+        .find(|choice| choice.name() == background)
+        .ok_or_else(invalid)?;
+    Ok(Subtitles { size, background, ..Subtitles::default() })
 }
 
 /// Where the screen's clock stands with no `--ui-time`: well past what any screen does as it opens.
@@ -103,6 +136,8 @@ impl ScreenOptions {
             turn: 0.0,
             spin: 0.0,
             dialogue: None,
+            text: TextSize::Normal,
+            subtitle: None,
         }
     }
 
@@ -114,6 +149,12 @@ impl ScreenOptions {
         })?;
         if self.dialogue.is_some() && screen.model != ScreenModel::Dialogue {
             return Err(format!("--ui-dialogue fills a dialogue panel, and `{}` isn't one", self.screen));
+        }
+        if self.subtitle.is_some() && screen.model != ScreenModel::Hud {
+            return Err(format!(
+                "--ui-subtitle fills the HUD's subtitle, and `{}` isn't the HUD",
+                self.screen
+            ));
         }
         Ok((screen.document, screen.model))
     }
@@ -163,15 +204,30 @@ impl ScreenOptions {
         let shown = |error| format!("--ui-game: {error}");
         let mut stack = ScreenStack::new(assets.tables, assets.fonts, atlas, setup).map_err(shown)?;
         let start = Timestamp::from_nanos(0);
-        let model = match (&self.dialogue, dialogue) {
+        let model: Box<dyn PartialReflect> = match (&self.dialogue, dialogue) {
             (Some(preview), Some(dialogue)) => conversation(dialogue, preview.lines)?,
             (Some(preview), None) => return Err(format!("--ui-dialogue: `{}` wasn't loaded", preview.name)),
-            (None, _) => model.sample(),
+            (None, _) => match &self.subtitle {
+                Some(subtitles) => {
+                    let mut hud =
+                        HudModel { touch: true, has_banner: true, can_skip: true, ..HudModel::default() };
+                    hud.follow_subtitle(Some("subtitle-court-gate-warning"), Some("speaker-warden"));
+                    hud.follow_subtitle_look(subtitles);
+                    Box::new(hud)
+                }
+                // A menu says what text size it's drawn at.
+                None if model == ScreenModel::Menu && self.text != TextSize::Normal => {
+                    let settings = PlayerSettings { text_size: self.text, ..PlayerSettings::default() };
+                    Box::new(MenuModel::of(&settings, true, true))
+                }
+                None => model.sample(),
+            },
         };
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
         if self.plain {
             stack.push_plain_under(start).map_err(shown)?;
         }
+        stack.set_text_scale(self.text.scale());
         stack.set_now(Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64));
         stack.turn_insets(self.turn);
         Ok(stack)

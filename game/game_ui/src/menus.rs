@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 
 pub use self::document::{MenuDocument, MenuScreen, RowAction, ScreenEntry, ScreenModel, ScreenRow};
 pub use self::settings::{
-    Flashes, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, SIZES, Setting, SubtitleBackground,
-    SubtitleSize, Subtitles, TextSize,
+    Flashes, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, REDUCED_FLASHES, SIZES, Setting,
+    SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use crate::screen::{ScreenStack, StackSetup};
 
@@ -123,7 +123,10 @@ pub struct MenuModel {
 }
 
 impl MenuModel {
-    fn of(settings: &PlayerSettings, can_leave: bool, can_continue: bool) -> Self {
+    /// What a menu shows of `settings`, with a way out if `can_leave` and a run to go on with if
+    /// `can_continue`.
+    #[must_use]
+    pub fn of(settings: &PlayerSettings, can_leave: bool, can_continue: bool) -> Self {
         let mut model = Self { can_leave, can_continue, ..Self::default() };
         model.show_settings(settings);
         model
@@ -262,6 +265,12 @@ pub struct HudModel {
     pub has_speaker: bool,
     /// How much of the fight's words show, 0 to 1: its names and objective, which a cutscene hides.
     pub fight_words: f32,
+    /// What a subtitle's words and its speaker's name are drawn times their size by (M4 A2).
+    pub subtitle_scale: f32,
+    /// How much of the band behind a subtitle shows, 0 to 1.
+    pub subtitle_band: f32,
+    /// Whether an opaque band stands under it.
+    pub subtitle_solid: bool,
 }
 
 impl Default for HudModel {
@@ -285,9 +294,16 @@ impl Default for HudModel {
             speaker: String::new(),
             has_speaker: false,
             fight_words: 1.0,
+            subtitle_scale: 1.0,
+            subtitle_band: 1.0,
+            subtitle_solid: false,
         }
     }
 }
+
+/// Who a fight's voice line said by the player's side is captioned as (M4 A2): the player's character, by
+/// the speaker key the cutscenes name them by.
+pub const PLAYER_SPEAKER: &str = "speaker-wanderer";
 
 impl HudModel {
     /// Follows the fight's bars: whether there's a foe, and its name, a boss's by `boss_name` (the key
@@ -303,6 +319,13 @@ impl HudModel {
         {
             boss.clone_into(&mut self.boss);
         }
+    }
+
+    /// Follows the player's choices for subtitles (M4 A2): their size, and the band behind them. Whether
+    /// they show, and their speakers, is [`Self::follow_subtitle`]'s caller's to filter.
+    pub fn follow_subtitle_look(&mut self, subtitles: &Subtitles) {
+        self.subtitle_scale = subtitles.size.scale();
+        (self.subtitle_band, self.subtitle_solid) = subtitles.background.band();
     }
 
     /// Follows what a cutscene says at its playhead: `line`'s key and, if it names one, its speaker's (the
@@ -405,12 +428,13 @@ impl GameMenus {
                 assets.documents.len()
             ));
         }
-        let stack = ScreenStack::new(
+        let mut stack = ScreenStack::new(
             assets.tables,
             assets.fonts,
             atlas,
             StackSetup { locale: settings.known_language().to_owned(), pseudo, scale: settings.scale() },
         )?;
+        stack.set_text_scale(settings.text_size.scale());
         let mut controls = MenuControls::with_defaults().map_err(|error: MenuError| error.to_string())?;
         controls.set_player_scale(settings.scale());
         Ok(Self {
@@ -714,6 +738,7 @@ impl GameMenus {
             tracing::error!(target: crate::LOG_TARGET, %error, "the language can't change");
         }
         self.stack.set_scale(scale);
+        self.stack.set_text_scale(settings.text_size.scale());
         self.controls.set_player_scale(scale);
         let settings = self.settings.clone();
         self.visit_models(|model: &mut MenuModel| model.show_settings(&settings));

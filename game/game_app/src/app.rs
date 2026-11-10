@@ -24,7 +24,7 @@ use sapphire_rhi::{
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
 use sapphire_stage::Stage;
-use sapphire_stage::audio::DeviceAudio;
+use sapphire_stage::audio::{DeviceAudio, Volumes};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
@@ -90,7 +90,7 @@ impl App for GameApp {
             .create_window(&WindowDesc { title: Self::METADATA.name.to_owned(), ..WindowDesc::default() })?;
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let rumble = chosen.rumble;
-        let volume = chosen.volume();
+        let (volumes, mono) = (volumes_of(&chosen), chosen.mono);
         let voice = chosen.locale().voice;
         let mut on_device =
             stand_on_device(platform, &window, &options, chosen).map_err(|failed| failed.error)?;
@@ -100,7 +100,8 @@ impl App for GameApp {
             None => None,
         };
         if let Some(audio) = &mut audio {
-            audio.set_volume(volume);
+            audio.set_volumes(volumes);
+            audio.set_mono(mono);
             speak_in(audio, &voice);
         }
         // Only the first show starts past its title: a reload goes back where the game was.
@@ -286,7 +287,8 @@ impl GameApp {
             name_window(&self.window, &on_device.stage.show);
         }
         if let Some(audio) = &mut self.audio {
-            audio.set_volume(chosen.volume());
+            audio.set_volumes(volumes_of(chosen));
+            audio.set_mono(chosen.mono);
             speak_in(audio, &chosen.locale().voice);
         }
         if self.rumble && !chosen.rumble {
@@ -605,6 +607,17 @@ fn rebuild_surface(window: &Window, gpu: &GpuContext) -> Option<RenderSurface> {
 fn name_window(window: &Window, show: &GameShow) {
     if let Some(title) = show.window_title() {
         window.set_title(title);
+    }
+}
+
+/// The player's volumes (M4 A2): every sound's, and the music's, the effects' and the voices' under it.
+fn volumes_of(chosen: &PlayerSettings) -> Volumes {
+    let share = PlayerSettings::share;
+    Volumes {
+        all: chosen.volume(),
+        music: share(chosen.music),
+        effects: share(chosen.effects),
+        voice: share(chosen.voice),
     }
 }
 

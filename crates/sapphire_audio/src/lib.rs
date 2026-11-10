@@ -73,7 +73,7 @@ pub use rng::{CueRandom, CueRng};
 pub use snapshot::{ClockSnapshot, SnapshotMix, SnapshotTuning};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
-    MAX_VOICES,
+    MAX_VOICES, Volumes,
 };
 pub use voice::{LineKey, VoiceRoute, VoiceRouteError};
 

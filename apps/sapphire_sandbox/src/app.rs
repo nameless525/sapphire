@@ -375,6 +375,9 @@ impl App for SandboxApp {
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
+        if let Some(scale) = options.effect_scale {
+            show.fight.show.set_effect_scale(scale);
+        }
         if let Some(show) = options.vfx {
             scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
         }

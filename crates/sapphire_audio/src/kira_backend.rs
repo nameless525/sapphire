@@ -8,13 +8,18 @@
 //! kira clock that counts the score's beats: a stem's fade waits on the clock for its beat, so it
 //! lands on the bar in the mixer's own time, to within one internal buffer, however late the frame
 //! that asked.
+//!
+//! The main track ends in a fold to mono (M4 A2), out of the signal until the player asks for it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
+use kira::effect::{Effect, EffectBuilder};
+use kira::info::Info;
 use kira::sound::PlaybackState;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings};
 use kira::track::{MainTrackBuilder, TrackBuilder, TrackHandle};
@@ -42,6 +47,8 @@ const VOICE_TWEEN: Duration = Duration::from_millis(30);
 const FREEZE_TWEEN: Duration = Duration::from_millis(5);
 /// How long a bus's filter takes to move.
 const FILTER_TWEEN: Duration = Duration::from_millis(30);
+/// How long the fold to mono takes to come in or go: long enough not to click.
+const MONO_EASE_SECONDS: f32 = 0.03;
 
 /// A bus: its track and, where the world's clock can reach it, its filter.
 struct BusTrack {
@@ -74,14 +81,19 @@ pub struct KiraBackend<O: Output> {
     sounds: HashMap<AssetId, StaticSoundData>,
     voices: Vec<Option<StaticSoundHandle>>,
     music: Music,
+    /// Whether the main track folds to mono, which its effect reads in the mixer's own time.
+    mono: Arc<AtomicBool>,
 }
 
 impl<O: Output> KiraBackend<O> {
     /// Starts the mixer on an output made with `settings`.
     pub fn new(settings: O::Settings) -> Result<Self, O::Error> {
+        let mono = Arc::new(AtomicBool::new(false));
+        let mut main_track_builder = MainTrackBuilder::default();
+        main_track_builder.add_effect(MonoFoldBuilder(Arc::clone(&mono)));
         let mut manager = AudioManager::<O>::new(AudioManagerSettings {
             capacities: Capacities::default(),
-            main_track_builder: MainTrackBuilder::default(),
+            main_track_builder,
             internal_buffer_size: INTERNAL_BUFFER_FRAMES,
             backend_settings: settings,
         })?;
@@ -109,6 +121,7 @@ impl<O: Output> KiraBackend<O> {
             sounds: HashMap::new(),
             voices: std::iter::repeat_with(|| None).take(MAX_VOICES).collect(),
             music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
+            mono,
         })
     }
 
@@ -119,6 +132,61 @@ impl<O: Output> KiraBackend<O> {
 
     fn voice(&mut self, slot: VoiceSlot) -> Option<&mut StaticSoundHandle> {
         self.voices.get_mut(slot.0 as usize)?.as_mut()
+    }
+}
+
+/// Folds the mix to mono for a player who hears with one ear, or through one speaker (M4 A2): each
+/// frame's two sides ease toward their average over [`MONO_EASE_SECONDS`], and back. Off, it leaves the
+/// mix untouched, sample for sample.
+struct MonoFold {
+    on: Arc<AtomicBool>,
+    /// How far folded, 0 to 1.
+    share: f32,
+    /// How far a frame moves `share`.
+    step: f32,
+}
+
+impl MonoFold {
+    fn ease_at(&mut self, sample_rate: u32) {
+        self.step = 1.0 / (MONO_EASE_SECONDS * sample_rate as f32).max(1.0);
+    }
+}
+
+impl Effect for MonoFold {
+    fn init(&mut self, sample_rate: u32, _internal_buffer_size: usize) {
+        self.ease_at(sample_rate);
+    }
+
+    fn on_change_sample_rate(&mut self, sample_rate: u32) {
+        self.ease_at(sample_rate);
+    }
+
+    fn process(&mut self, input: &mut [Frame], _dt: f64, _info: &Info<'_>) {
+        let target = if self.on.load(Ordering::Relaxed) { 1.0 } else { 0.0 };
+        if target == 0.0 && self.share == 0.0 {
+            return;
+        }
+        for frame in input {
+            self.share = if target > self.share {
+                (self.share + self.step).min(target)
+            } else {
+                (self.share - self.step).max(target)
+            };
+            let middle = (frame.left + frame.right) * 0.5;
+            frame.left += (middle - frame.left) * self.share;
+            frame.right += (middle - frame.right) * self.share;
+        }
+    }
+}
+
+/// Builds a [`MonoFold`] that follows `0`.
+struct MonoFoldBuilder(Arc<AtomicBool>);
+
+impl EffectBuilder for MonoFoldBuilder {
+    type Handle = ();
+
+    fn build(self) -> (Box<dyn Effect>, ()) {
+        (Box::new(MonoFold { on: self.0, share: 0.0, step: 1.0 }), ())
     }
 }
 
@@ -286,5 +354,9 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
 
     fn status(&mut self) -> DeviceStatus {
         self.manager.backend_mut().status()
+    }
+
+    fn set_mono(&mut self, mono: bool) {
+        self.mono.store(mono, Ordering::Relaxed);
     }
 }

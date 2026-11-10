@@ -59,8 +59,8 @@ pub use light::{
 };
 pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,
-    GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects,
-    PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
+    EffectScale, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS,
+    PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
 pub use ui::{

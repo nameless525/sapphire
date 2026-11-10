@@ -27,9 +27,10 @@ use support::{
 const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
 
 /// The settings' pages (M4 A1): the hub's row that opens each, the page, and each of its rows in the order a
-/// walk steps them. The interface's size comes round to where it started, so the rest walks at it.
+/// walk steps them. The interface's size and the text's come round to where they started, so the rest walks
+/// at them.
 const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 4] = [
-    ("display", DISPLAY, &["size", "text", "shake", "flashes", "camera", "size", "size"]),
+    ("display", DISPLAY, &["size", "text", "shake", "flashes", "camera", "size", "size", "text", "text"]),
     ("sound", SOUND, &["volume", "music", "effects", "voice", "mono", "rumble", "mono"]),
     ("subtitles", SUBTITLES, &["shown", "size", "background", "speakers", "shown"]),
     (

@@ -730,6 +730,8 @@ pub struct CombatHud {
     damage: [Option<DamageNumber>; MAX_DAMAGE_NUMBERS],
     /// The next damage number's `order`.
     next_damage: u64,
+    /// The player's text size (M4 A2), on the bars' numbers and the damage numbers.
+    text_scale: f32,
 }
 
 impl Default for CombatHud {
@@ -760,7 +762,21 @@ impl CombatHud {
             ultimate_ready_at: None,
             damage: [None; MAX_DAMAGE_NUMBERS],
             next_damage: 0,
+            text_scale: 1.0,
         }
+    }
+
+    /// The player's text size (M4 A2), 1 as designed: the bars' numbers and the damage numbers grow by it.
+    /// The skill's countdown, inside its button and twice the bars' numbers already, stays as designed.
+    /// Anything that can't be a size reads as 1.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    }
+
+    /// The player's text size, as [`Self::set_text_scale`] last said.
+    #[must_use]
+    pub const fn text_scale(&self) -> f32 {
+        self.text_scale
     }
 
     /// Whether the stick and buttons draw, where a pad has taken over or there's no touch to speak of
@@ -944,7 +960,8 @@ impl CombatHud {
         painter.bar(bars.poise, SLANT, (0.0, values.poise), Paint::fill(AMBER));
         if let Some(points) = values.hp_points {
             let digits = Paint::outlined(WHITE, OUTLINE, 1.6 * scale);
-            painter.digits(points, bars.digits, bars.digit_height, bars.digits_align, SLANT, digits);
+            let height = bars.digit_height * self.text_scale;
+            painter.digits(points, bars.digits, height, bars.digits_align, SLANT, digits);
         }
     }
 
@@ -1090,7 +1107,7 @@ impl CombatHud {
             DamageKind::Normal => (26.0, WHITE),
             DamageKind::Heavy => (36.0, AMBER),
         };
-        let height = height * scale * punch;
+        let height = height * scale * self.text_scale * punch;
         let paint = Paint::outlined(faded(color, fade), faded(OUTLINE, fade), 2.2 * scale * punch);
         let at = number.position - Vec2::new(0.0, rise);
         painter.digits(number.value, at, height, Align::Center, SLANT, paint);

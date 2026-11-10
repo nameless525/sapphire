@@ -53,6 +53,23 @@ fn a_screen_holds_its_anchors_at_each_aspect() {
 }
 
 #[test]
+fn an_anchored_node_is_placed_against_its_own_parent_inside_an_anchored_one() {
+    // A box behind a centered band, the band inside a strip anchored to the frame's foot (M4 A2's subtitles).
+    let data = r#"nodes: [
+        (name: "root"),
+        (name: "strip", parent: "root", layout: (
+            anchored: (left: Points(0), right: Points(0), bottom: Points(40)), direction: Column, align: Center,
+        )),
+        (name: "band", parent: "strip", layout: (width: Points(300), height: Points(60), padding: (left: 24))),
+        (name: "box", parent: "band", layout: (anchored: (left: Points(0), right: Points(0), top: Points(0), bottom: Points(0)))),
+    ],"#;
+    let (tree, _) = run_once(data, &Model::default(), "en", [1280.0, 720.0]);
+    let rect = |name| tree.rect(tree.find(name).unwrap());
+    assert_eq!(rect("band").min, Vec2::new(490.0, 620.0));
+    assert_eq!(rect("box"), rect("band"));
+}
+
+#[test]
 fn the_safe_area_moves_what_asks_for_it() {
     let doc = document(
         r#"nodes: [
@@ -194,6 +211,47 @@ fn shown_takes_a_node_out_of_the_layout_with_its_children() {
     assert!(!tree.is_visible(tree.find("in-panel").unwrap()));
     assert!(drawn_with(&list, [9, 9, 9, 255]).is_empty());
     assert!(drawn_with(&list, [8, 8, 8, 255]).is_empty());
+}
+
+/// The player's text size (M4 A2): the tree's scale on every text, and a bound one on its own node's, which
+/// lays out larger too. What can't be a scale reads as the nearest that can.
+#[test]
+fn text_grows_by_the_trees_scale_and_a_bound_one() {
+    let data = format!(
+        r#"{STYLES} model: "m.model.ron", nodes: [
+        (name: "root", layout: (direction: Column, align: Start)),
+        (name: "plain", parent: "root", text: (key: "title", style: "label", color: (255, 255, 255, 255))),
+        (name: "bound", parent: "root", binds: [(to: TextScale, path: "player.health")],
+            text: (key: "title", style: "label", color: (255, 255, 255, 255))),
+    ],"#
+    );
+    let mut tree = UiTree::new(&document(&data)).unwrap();
+    let (mut fonts, loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
+    let size = metrics([800.0, 600.0]);
+    let mut model = Model { player: Player { health: 1.0, ..Player::default() }, ..Model::default() };
+    frame(&mut tree, &mut fonts, &loc, &model, size, &atlas, &mut list);
+    let pixels = |tree: &UiTree| tree.text_pixels().map(|(_, pixels)| pixels).collect::<Vec<_>>();
+    let width = |tree: &UiTree| tree.rect(tree.find("bound").unwrap()).width();
+    let [base, same] = pixels(&tree)[..] else { panic!("two texts") };
+    assert_eq!(base, same);
+    let narrow = width(&tree);
+    let mut times = |tree: &mut UiTree, model: &Model| {
+        frame(tree, &mut fonts, &loc, model, size, &atlas, &mut list);
+        pixels(tree).iter().map(|pixels| pixels / base).collect::<Vec<_>>()
+    };
+    model.player.health = 2.0;
+    assert_eq!(times(&mut tree, &model), [1.0, 2.0]);
+    assert!(width(&tree) > narrow * 1.8, "{} against {narrow}", width(&tree));
+    tree.set_text_scale(1.5);
+    assert_eq!(times(&mut tree, &model), [1.5, 3.0]);
+    model.player.health = f32::NAN;
+    assert_eq!(times(&mut tree, &model), [1.5, 1.5]);
+    model.player.health = 100.0;
+    assert_eq!(times(&mut tree, &model), [1.5, 6.0]);
+    tree.set_text_scale(1.0);
+    model.player.health = 1.0;
+    assert_eq!(times(&mut tree, &model), [1.0, 1.0]);
+    assert_eq!(width(&tree), narrow, "back as it was");
 }
 
 #[test]

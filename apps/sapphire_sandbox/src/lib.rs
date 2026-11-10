@@ -172,7 +172,9 @@
 //!   share of its width would, and `--ui-spin <across>` turns it that much more each frame of a bench, so it
 //!   draws every frame. `--ui-dialogue [<name>:]<lines>`, with `--ui-game dialogue`, puts the panel on
 //!   `content/dialogue/<name>.dialogue.ron`'s cooked conversation that many lines in, in place of its
-//!   sample (M3 Q2b, Z5e); with no name, the Lantern Ward guide's.
+//!   sample (M3 Q2b, Z5e); with no name, the Lantern Ward guide's. `--ui-text normal|large|larger` sets the
+//!   player's text size, and `--ui-subtitle <size>:<background>` (`small` to `larger`, `off` to `solid`),
+//!   with `--ui-game hud`, has the sample say a cutscene's line in subtitles of that look (M4 A2).
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,
@@ -305,6 +307,9 @@
 //!   benches. An unknown name fails with the presets' names. The renderer prewarms the post
 //!   variants of the presets pushed (`Renderer::prewarm_post`), or in `dev` builds of every
 //!   preset, which the overlay fires, so a scene without effects builds none of theirs.
+//! - `--effect-scale <flashes>:<motion>`: the player's flashes and camera motion (M4 A2), each 0 to 1, on
+//!   every screen effect: flashes on the inversion, the duotone and speed lines, camera motion on the
+//!   radial blur and chromatic aberration (`PostEffects::scaled`). `effects-impact-frame-calmer` shows it.
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't

@@ -18,6 +18,7 @@ mod layers;
 mod link;
 mod patch;
 mod platforms;
+mod playtest;
 mod release;
 mod replay;
 mod script_api;
@@ -176,6 +177,19 @@ Commands:
       --addr <host:port> is the device (default 127.0.0.1:7811: desktop, the iOS Simulator,
       `iproxy` and `adb forward`); --listen <host:port> waits for a device that dials, behind
       `adb reverse` (the app's `--live-link connect=<addr>`).
+  playtest --platform <platform> [--features <list>] [--dry-run]
+      [--identity <name> --profile <file> --device <name>] [-- <app args>]
+      Build the game (game_app) for release with its `playtest` feature, which keeps a session of
+      each time someone plays under the player's directory (`sessions/`), then install and launch
+      it as `run` does. No store build has the feature (xtask/layers.toml).
+  playtest pull --platform <platform> [--from <dir>] [--device <id>] [--no-replay]
+      Copy every session from the device to target/playtest/<platform>/sessions/, and replay each
+      run in it to the device's checksums; a failure names the first tick that differs.
+        desktop, macos  the player's directory here, or --from (a --save-dir)
+        ios-sim         the booted simulator, or --device <UDID>
+        android         ANDROID_SERIAL's device or the one connected, or --device <serial>,
+                        through `run-as` (a playtest build is debuggable)
+        ios             --device <name or UDID>, through devicectl
   replay [--update] [--replay <name>]
       Run the recorded combat replays in tests/replays/ with no window or GPU (spec §9, gates 2
       and 4): each must reach this architecture's checksums (checksums.<arch>.txt) with no heap
@@ -352,6 +366,7 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             args.finish(false)?;
             script_api::run(check)
         }
+        "playtest" => playtest::run(&playtest::Command::parse(args)?),
         "replay" => {
             let command = replay::Command::parse(&mut args)?;
             args.finish(false)?;

@@ -47,6 +47,7 @@ use serde::Deserialize;
 use crate::content;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
+pub use android::adb;
 pub use host::HostExecutable;
 pub use package::{Target as PackageTarget, default_out as default_package_dir, package};
 pub use steampipe::steampipe;

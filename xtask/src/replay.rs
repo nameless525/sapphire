@@ -50,12 +50,16 @@ impl Command {
     }
 }
 
-pub fn run(command: &Command) -> anyhow::Result<()> {
-    let runner = workspace::build_binary(
+/// Builds the runner, and gives its path.
+pub fn runner() -> anyhow::Result<std::path::PathBuf> {
+    workspace::build_binary(
         &CargoBuild { package: RUNNER, target: None, profile: BuildProfile::Dev, features: &[], env: &[] },
         RUNNER,
-    )?;
-    let mut process = Process::new(runner);
+    )
+}
+
+pub fn run(command: &Command) -> anyhow::Result<()> {
+    let mut process = Process::new(runner()?);
     match command {
         Command::Check { update, replay } => {
             process.arg("check");

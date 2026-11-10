@@ -571,6 +571,11 @@ pub(super) fn ndk_root() -> anyhow::Result<PathBuf> {
     Ok(Ndk::locate(&sdk_dir()?)?.root)
 }
 
+/// The SDK's `adb`.
+pub fn adb() -> anyhow::Result<PathBuf> {
+    Ok(sdk_dir()?.join("platform-tools/adb"))
+}
+
 /// The Android SDK: `ANDROID_HOME`, else the deprecated `ANDROID_SDK_ROOT`, else Android
 /// Studio's default location.
 fn sdk_dir() -> anyhow::Result<PathBuf> {

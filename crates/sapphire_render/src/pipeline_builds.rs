@@ -484,6 +484,87 @@ mod tests {
         assert_eq!(builds.stats().built(), 3);
     }
 
+    /// Error scopes are per thread in wgpu 30, so a build on the job pool scopes itself on the thread that runs it.
+    /// What wgpu refuses then reaches that build's scope alone, whichever thread the pool gave it (the waiting thread
+    /// runs some), and neither the waiting thread's own scope nor the device's uncaptured handler sees it. M4's
+    /// warm-up builds on this (H0).
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_build_refused_on_the_pool_reaches_only_its_own_scope() {
+        use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
+
+        use crate::shader_builds::scope_error;
+
+        /// The one build whose fragment entry point doesn't exist.
+        const REFUSED: usize = 5;
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let device = gpu.device().clone();
+        let uncaptured = Arc::new(AtomicU32::new(0));
+        let counted = uncaptured.clone();
+        device.on_uncaptured_error(Arc::new(move |_| {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }));
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(
+                "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }
+                 @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
+                    .into(),
+            ),
+        });
+        let builds = PipelineBuilds::new(None);
+        let _warming = builds.warming();
+        let waiting = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let caught = sapphire_jobs::scope(|scope| {
+            for build in 0..16 {
+                let (device, module, builds) = (device.clone(), module.clone(), builds.clone());
+                scope.spawn(move || {
+                    let fragment = if build == REFUSED { "missing" } else { "fs" };
+                    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+                    builds.render(
+                        &device,
+                        PipelineFamily::Debug,
+                        &wgpu::RenderPipelineDescriptor {
+                            label: None,
+                            layout: None,
+                            vertex: wgpu::VertexState {
+                                module: &module,
+                                entry_point: Some("vs"),
+                                compilation_options: Default::default(),
+                                buffers: &[],
+                            },
+                            primitive: Default::default(),
+                            depth_stencil: None,
+                            multisample: Default::default(),
+                            fragment: Some(wgpu::FragmentState {
+                                module: &module,
+                                entry_point: Some(fragment),
+                                compilation_options: Default::default(),
+                                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                            }),
+                            multiview_mask: None,
+                            cache: None,
+                        },
+                    );
+                    let internal = scope_error(internal.pop());
+                    let validation = scope_error(validation.pop());
+                    internal.or(validation).is_some()
+                });
+            }
+        });
+        assert!(
+            scope_error(waiting.pop()).is_none(),
+            "the waiting thread's own scope sees no worker's refusal"
+        );
+        let refused: Vec<usize> =
+            caught.iter().enumerate().filter(|&(_, &refused)| refused).map(|(build, _)| build).collect();
+        assert_eq!(refused, [REFUSED], "only the refused build's scope caught it");
+        assert_eq!(uncaptured.load(Ordering::Relaxed), 0, "nothing reached the uncaptured handler");
+        assert_eq!(builds.stats().prewarmed, 16);
+    }
+
     #[test]
     fn an_unlisted_key_is_named_once() {
         let builds = PipelineBuilds::new(None);

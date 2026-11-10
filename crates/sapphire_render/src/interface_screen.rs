@@ -8,8 +8,8 @@
 //! pipeline, before the screen's first frame, which a load counts as prewarmed. The renderer's own interface
 //! builds its copy on the warm-up pool, against the cache this one has just warmed.
 //!
-//! It keeps its own glyph pages ([`Self::page_state`]): a screen's glyph atlas starts over when it moves to the
-//! renderer, as it does for any new renderer.
+//! It keeps its own glyph pages ([`InterfaceScreen::page_state`]): a screen's glyph atlas starts over when it
+//! moves to the renderer, as it does for any new renderer.
 
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_rhi::{GpuContext, wgpu};
@@ -23,7 +23,7 @@ use crate::ui::{Ui, UiStats};
 /// What the staging belt maps at a time: a screen's quads are a few kilobytes.
 const UPLOAD_CHUNK_SIZE: u64 = 64 * 1024;
 
-/// Draws an interface over a cleared target, with nothing under it: see the [module docs](self).
+/// Draws an interface over a cleared target, with nothing under it: what a game shows before it has a renderer.
 #[derive(Debug)]
 pub struct InterfaceScreen {
     ui: Ui,

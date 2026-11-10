@@ -28,7 +28,7 @@
 //! # Adding a step (M4 P4's update)
 //!
 //! A step is a variant of [`Step`] with a key under `boot-step-` in both languages' `game_ui.ftl`, its share of
-//! the bar ([`Step::share`]), and what moves it on in [`Boot::advance`]. An update check and its download go
+//! the bar ([`Step::share`]), and what moves it on in `Boot::advance`. An update check and its download go
 //! first, before [`Step::Renderer`], which keeps building beside them, and finish before [`Step::Packs`] reads
 //! what the mounted packs list, so packs mounted over the installed ones are what warms and stands. The boot
 //! screen's own strings and fonts are the installed ones, read in [`Boot::start`].

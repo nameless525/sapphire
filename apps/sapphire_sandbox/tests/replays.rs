@@ -666,8 +666,11 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
         .iter()
         .filter(|row| row[phase] == "gpu" && row[frame] != "0" && row[timed] == "1" && !row[span].is_empty())
         .count();
-    let frame_row = log.lines().find(|line| line.contains("row=\"gpu frame\""));
+    // The row's own line, not the one that says nothing gave it a span (M3 Z1).
+    let lines = || log.lines().filter(|line| line.contains("row=\"gpu frame\""));
+    let frame_row = lines().find(|line| !line.contains("not exercised"));
     assert_eq!(frame_row.is_some(), span_samples > 0, "{log}");
+    assert_eq!(lines().any(|line| line.contains("not exercised")), span_samples == 0, "{log}");
     if let Some(frame_row) = frame_row {
         assert!(frame_row.contains(&format!(" samples={span_samples} ")), "{log}");
     }

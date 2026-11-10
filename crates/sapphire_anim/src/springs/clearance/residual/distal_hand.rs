@@ -304,6 +304,9 @@ pub(super) struct DistalHand {
     side: [Option<Vec3>; FINGERS],
     extra: DistalAngles,
     final_angles: Option<DistalAngles>,
+    /// A frame's posed samples, one for each of `samples`: kept, since on the stack the most a hand
+    /// can have would take about 240 KB of a mobile worker thread's stack every call, and filling it.
+    posed: Vec<DrawSample>,
 }
 
 impl DistalHand {
@@ -434,6 +437,8 @@ impl DistalHand {
         let points = vec![Vec3::ZERO; samples.len()];
         let preceding = points.clone();
         let triangle_bounds = vec![Bounds::EMPTY; faces.len()];
+        let empty = WeightedPoint { position: Vec3::ZERO, affected: None, weight: 0.0 };
+        let posed = vec![[empty; 12]; samples.len()];
         let shaft =
             Vec3::from_array(skeleton.rest[lock.joints[3]].to_native().translation).normalize_or_zero();
         Some(Self {
@@ -451,6 +456,7 @@ impl DistalHand {
             side: [None; FINGERS],
             extra: [Vec3::ZERO; 2],
             final_angles: None,
+            posed,
         })
     }
 
@@ -661,10 +667,9 @@ impl DistalHand {
                     b: chest.transform_point3(end),
                 }
             });
-            // Small fixed rig patch. Its transient posed data is stack-backed.
-            let empty = WeightedPoint { position: Vec3::ZERO, affected: None, weight: 0.0 };
-            let mut posed = [[empty; 12]; 512];
-            let posed = &mut posed[..self.samples.len()];
+            // Taken while the solve borrows the hand, and given back after.
+            let mut kept = std::mem::take(&mut self.posed);
+            let posed = kept.as_mut_slice();
             for (out, sample) in posed.iter_mut().zip(&self.samples) {
                 *out = posed_sample(sample, pose.model(), chest);
             }
@@ -842,6 +847,7 @@ impl DistalHand {
             }
             self.previous_bones = bones;
             self.had_pose = true;
+            self.posed = kept;
         }
         let mut changed = false;
         for (&joint, angle) in lock.joints[2..].iter().zip(self.extra) {

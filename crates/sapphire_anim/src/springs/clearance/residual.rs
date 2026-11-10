@@ -207,6 +207,14 @@ impl Field {
         remembered: Option<usize>,
     ) -> (Contact, Option<usize>) {
         let mut best = (FIND_RADIUS * FIND_RADIUS, None);
+        // Starting from the remembered triangle finds the same one: a node is passed over only when
+        // every triangle in it is farther, and among equals the lowest index still wins.
+        if let Some(i) = remembered {
+            let distance = self.triangles[i].distance(point).0;
+            if distance < best.0 {
+                best = (distance, Some(i));
+            }
+        }
         self.search(nodes, 0, point, &mut best);
         if let Some(root) = leg_root {
             self.search(nodes, root, point, &mut best);
@@ -548,7 +556,7 @@ impl Residual {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct WeightedPoint {
     position: Vec3,
     affected: Option<usize>,

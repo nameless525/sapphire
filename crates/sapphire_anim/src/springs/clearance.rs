@@ -126,14 +126,34 @@ impl Interval {
 #[derive(Clone, Debug, PartialEq)]
 struct Garment {
     grids: [Vec<Interval>; 3],
+    /// Per grid, the rows and columns the last refit wrote in, `None` if none: every other cell is
+    /// empty, so a refit clears only these.
+    written: [Option<Cells>; 3],
     min: Vec3,
     max: Vec3,
+}
+
+/// Columns `x` and rows `y` of a grid, inclusive.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cells {
+    x: (usize, usize),
+    y: (usize, usize),
+}
+
+impl Cells {
+    fn with(cells: Option<Self>, x: (usize, usize), y: (usize, usize)) -> Self {
+        cells.map_or(Self { x, y }, |cells| Self {
+            x: (cells.x.0.min(x.0), cells.x.1.max(x.1)),
+            y: (cells.y.0.min(y.0), cells.y.1.max(y.1)),
+        })
+    }
 }
 
 impl Garment {
     fn new() -> Self {
         Self {
             grids: std::array::from_fn(|_| vec![Interval::EMPTY; GRID * GRID]),
+            written: [None; 3],
             min: Vec3::ZERO,
             max: Vec3::ZERO,
         }
@@ -142,8 +162,12 @@ impl Garment {
     fn refit(&mut self, vertices: &[Vec3], triangles: &[[usize; 3]]) {
         self.min = vertices.iter().copied().fold(Vec3::splat(f32::INFINITY), Vec3::min);
         self.max = vertices.iter().copied().fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-        for (axis, grid) in self.grids.iter_mut().enumerate() {
-            grid.fill(Interval::EMPTY);
+        for ((axis, grid), written) in self.grids.iter_mut().enumerate().zip(&mut self.written) {
+            if let Some(cells) = written.take() {
+                for y in cells.y.0..=cells.y.1 {
+                    grid[y * GRID + cells.x.0..=y * GRID + cells.x.1].fill(Interval::EMPTY);
+                }
+            }
             let u = (axis + 1) % 3;
             let v = (axis + 2) % 3;
             for triangle in triangles {
@@ -160,6 +184,11 @@ impl Garment {
                     continue;
                 }
                 let inverse = area.recip();
+                *written = Some(Cells::with(
+                    *written,
+                    (index(min[u]), index(max[u])),
+                    (index(min[v]), index(max[v])),
+                ));
                 for y in index(min[v])..=index(max[v]) {
                     let dy = coordinate(y) - a[v];
                     for x in index(min[u])..=index(max[u]) {

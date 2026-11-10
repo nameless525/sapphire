@@ -17,14 +17,26 @@ pub(super) struct Underarm {
     upper: Bind,
     lower: usize,
     shape: Vec<MorphPoint>,
-    cloth: Vec<([usize; 3], [usize; 3])>,
-    arm: Vec<([usize; 3], [usize; 3])>,
+    /// The garment's triangles the pairs name, by their shirt points.
+    cloth_triangles: Vec<[usize; 3]>,
+    /// The skin's triangles the pairs name, by their points in `skin`.
+    skin_triangles: Vec<[usize; 3]>,
+    /// Two garment triangles that mustn't cut through each other, by index into `cloth_triangles`.
+    cloth: Vec<(u32, u32)>,
+    /// A garment triangle and a skin triangle, by index into `cloth_triangles` and `skin_triangles`.
+    arm: Vec<(u32, u32)>,
     active_cloth: Vec<usize>,
     active_arm: Vec<usize>,
     skin: Vec<Point>,
     posed_skin: Vec<Vec3>,
     candidate: Vec<Vec3>,
     offsets: Vec<Vec3>,
+    /// A solve's bounds of each of `cloth_triangles` as the garment stands, and as it stands or at the
+    /// pose's limit, and of each of `skin_triangles`: taken once a solve, where a pair would take them
+    /// for every pair it's in, about 160,000 of them on the heroine.
+    stock_bounds: Vec<(Vec3, Vec3)>,
+    swept_bounds: Vec<(Vec3, Vec3)>,
+    skin_bounds: Vec<(Vec3, Vec3)>,
 }
 
 impl Underarm {
@@ -70,26 +82,36 @@ impl Underarm {
         let weld = |at: Vec3| (at * 100_000.0).round().as_ivec3();
         let near = |at: Vec3| at.distance_squared(PATCH_CENTER) < PATCH_REACH * PATCH_REACH;
         let cloth_welds: Vec<_> = rest.iter().copied().map(weld).collect();
-        let patch: Vec<_> =
-            shirt_triangles.iter().copied().filter(|tri| tri.iter().any(|&i| changed[i])).collect();
+        // Each shirt triangle a pair names once, in `cloth_triangles`, the first time it's named.
+        let mut cloth_triangles = Vec::new();
+        let mut cloth_slots: Vec<Option<u32>> = vec![None; shirt_triangles.len()];
+        let mut slot = |triangle: usize| {
+            *cloth_slots[triangle].get_or_insert_with(|| {
+                cloth_triangles.push(shirt_triangles[triangle]);
+                (cloth_triangles.len() - 1) as u32
+            })
+        };
+        let patch: Vec<usize> =
+            (0..shirt_triangles.len()).filter(|&i| shirt_triangles[i].iter().any(|&v| changed[v])).collect();
         let mut cloth = Vec::new();
         for (i, &a) in shirt_triangles.iter().enumerate() {
             let moves_a = a.iter().any(|&v| changed[v]);
             if !a.iter().any(|&v| near(rest[v])) {
                 continue;
             }
-            for &b in &shirt_triangles[i + 1..] {
+            for (j, &b) in shirt_triangles.iter().enumerate().skip(i + 1) {
                 if (moves_a || b.iter().any(|&v| changed[v]))
                     && b.iter().any(|&v| near(rest[v]))
                     && !a.iter().any(|&v| b.iter().any(|&w| cloth_welds[v] == cloth_welds[w]))
                 {
-                    cloth.push((a, b));
+                    cloth.push((slot(i), slot(j)));
                 }
             }
         }
         let mut skin = Vec::new();
         let mut skin_welds = Vec::new();
         let mut skin_slots = vec![None; mesh.streams.len()];
+        let mut skin_triangles = Vec::new();
         let mut arm = Vec::new();
         let lod = mesh.lods.first()?;
         for part in
@@ -111,10 +133,17 @@ impl Underarm {
                         i
                     })
                 });
-                for &cloth in &patch {
+                let skin_triangle = skin_triangles.len() as u32;
+                let mut named = false;
+                for &triangle in &patch {
+                    let cloth = shirt_triangles[triangle];
                     if !cloth.iter().any(|&v| tri.iter().any(|&w| cloth_welds[v] == skin_welds[w])) {
-                        arm.push((cloth, tri));
+                        arm.push((slot(triangle), skin_triangle));
+                        named = true;
                     }
+                }
+                if named {
+                    skin_triangles.push(tri);
                 }
             }
         }
@@ -130,6 +159,11 @@ impl Underarm {
             shape,
             active_cloth: Vec::with_capacity(cloth.len()),
             active_arm: Vec::with_capacity(arm.len()),
+            stock_bounds: Vec::with_capacity(cloth_triangles.len()),
+            swept_bounds: Vec::with_capacity(cloth_triangles.len()),
+            skin_bounds: Vec::with_capacity(skin_triangles.len()),
+            cloth_triangles,
+            skin_triangles,
             cloth,
             arm,
             skin,
@@ -175,7 +209,17 @@ impl Underarm {
         if limit <= 0.0 {
             return;
         }
-        if !self.cloth.iter().any(|(a, b)| cut(a.map(|i| stock[i]), b.map(|i| stock[i])) >= FOLD) {
+        let triangles = &self.cloth_triangles;
+        self.stock_bounds.clear();
+        self.stock_bounds.extend(triangles.iter().map(|tri| bounds(tri.map(|i| stock[i]))));
+        // `cut` is 0 for triangles whose bounds don't meet, so a pair whose bounds don't is no fold.
+        let stock_bounds = &self.stock_bounds;
+        let folds = |&(a, b): &(u32, u32)| {
+            let (a, b) = (a as usize, b as usize);
+            overlap(stock_bounds[a], stock_bounds[b])
+                && cut(triangles[a].map(|i| stock[i]), triangles[b].map(|i| stock[i])) >= FOLD
+        };
+        if !self.cloth.iter().any(folds) {
             return;
         }
         for (out, &point) in self.posed_skin.iter_mut().zip(&self.skin) {
@@ -192,19 +236,31 @@ impl Underarm {
         for (morph, offset) in self.shape.iter().zip(&self.offsets) {
             self.candidate[morph.shirt_point] += *offset * limit;
         }
-        let swept = |tri: [usize; 3]| {
-            let a = bounds(tri.map(|i| stock[i]));
-            let b = bounds(tri.map(|i| self.candidate[i]));
+        let candidate = &self.candidate;
+        self.swept_bounds.clear();
+        self.swept_bounds.extend(self.cloth_triangles.iter().zip(&self.stock_bounds).map(|(tri, a)| {
+            let b = bounds(tri.map(|i| candidate[i]));
             (a.0.min(b.0), a.1.max(b.1))
-        };
+        }));
+        let posed_skin = &self.posed_skin;
+        self.skin_bounds.clear();
+        self.skin_bounds.extend(self.skin_triangles.iter().map(|tri| bounds(tri.map(|i| posed_skin[i]))));
+        let swept = &self.swept_bounds;
+        let skin = &self.skin_bounds;
         self.active_cloth.clear();
         self.active_cloth.extend(
-            self.cloth.iter().enumerate().filter_map(|(i, &(a, b))| overlap(swept(a), swept(b)).then_some(i)),
+            self.cloth
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &(a, b))| overlap(swept[a as usize], swept[b as usize]).then_some(i)),
         );
         self.active_arm.clear();
-        self.active_arm.extend(self.arm.iter().enumerate().filter_map(|(i, &(a, b))| {
-            overlap(swept(a), bounds(b.map(|i| self.posed_skin[i]))).then_some(i)
-        }));
+        self.active_arm.extend(
+            self.arm
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &(a, b))| overlap(swept[a as usize], skin[b as usize]).then_some(i)),
+        );
         let mut chosen = 0.0;
         let mut previous = 0.0;
         for step in 1..=6 {
@@ -237,7 +293,8 @@ impl Underarm {
         for (morph, offset) in self.shape.iter().zip(&self.offsets) {
             self.candidate[morph.shirt_point] = stock[morph.shirt_point] + *offset * gain;
         }
-        let moved = |tri: [usize; 3]| tri.map(|i| self.candidate[i]);
+        let cloth = |triangle: u32| self.cloth_triangles[triangle as usize];
+        let moved = |triangle: u32| cloth(triangle).map(|i| self.candidate[i]);
         if self.active_cloth.iter().any(|&i| {
             let (a, b) = self.cloth[i];
             cut(moved(a), moved(b)) >= FOLD
@@ -246,9 +303,9 @@ impl Underarm {
         }
         self.active_arm.iter().all(|&i| {
             let (a, b) = self.arm[i];
-            let skin = b.map(|i| self.posed_skin[i]);
+            let skin = self.skin_triangles[b as usize].map(|i| self.posed_skin[i]);
             let new = cut(moved(a), skin);
-            new < FOLD || new <= cut(a.map(|i| stock[i]), skin)
+            new < FOLD || new <= cut(cloth(a).map(|i| stock[i]), skin)
         })
     }
 }

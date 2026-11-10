@@ -524,11 +524,13 @@ impl GameShow {
     /// What the fight says, on the screens that show it.
     fn show_fight_on_menus(&mut self) {
         let Some(menus) = &mut self.menus else { return };
-        let values = self.shown.fight.show.hud_values().map(|(values, _)| values);
+        let fight = &self.shown.fight;
+        let values = fight.show.hud_values().map(|(values, _)| values);
+        let boss_name = fight.combat.as_ref().and_then(|combat| fight.show.boss_name(combat.simulation()));
         let touch = self.shown.hud.as_ref().is_some_and(FightHud::shows_controls);
         if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::Hud) {
             model.touch = touch;
-            model.has_enemy = values.is_some_and(|values| values.enemy.is_some());
+            model.follow_fight(values.as_ref(), boss_name);
         }
         if let (Some(values), Some(model)) =
             (values, menus.model_mut::<CharacterModel>(MenuScreen::Character))

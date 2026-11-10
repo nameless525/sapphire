@@ -320,6 +320,8 @@ ms, p50 / p99 / worst, on the walk unless named, with §3.2's budget in brackets
 - **Prefetch,** the zones on their way and their pipelines, costs a median of 0.7–1.1 µs a frame, a p99 of 4–6 and at worst 22 µs, on the 400–840 frames a play has one coming.
 - **What it can't see:** a phone's storage, since every pack read here comes from a Mac's SSD and its page cache; and the wipe's look, whose timing is its own (W4).
 
+**Read again at M3's final exit run** (M3 Z2, 2026-11-10), on the head with all of M3 and Z1's fixes, with the machine to itself (a load of 2 to 6), three rounds of the same loads: [m3-exit-run.md](m3-exit-run.md), "Final run at 4fe253e6", has the table. Since the readings above: the ward's walk exercises the script row; the GPU frame row reads on Metal; Desktop-Low's and the phones' secondary motion holds its clearance between solves, so its p50 is within budget and its p99 is a solve's; and a trip allocates nothing in a fixed step.
+
 ---
 
 ## 4. Architecture
@@ -3938,7 +3940,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 **M3 exit run:** [m3-exit-run.md](m3-exit-run.md) is the procedure for all eight exit tests ([m3-plan.md](m3-plan.md) §1): for each, what proves it, the commands, and what CI, this Mac, a device or a person answers. Everything that needs no window and no phone was rehearsed, the iOS Simulator and the Android emulator among it, before the last packages landed (M3 Z2c). The final run on the head with all of M3 is Z2's, and its numbers are there, not here.
 
-**M3 status (2026-11-10): built, and not judged.** Every package in [m3-plan.md](m3-plan.md) has landed, Z2's final exit run aside, and its row says what was built. The exit tests are answered as [m3-exit-run.md](m3-exit-run.md) says.
+**M3 status (2026-11-10): built, and not judged.** Every package in [m3-plan.md](m3-plan.md) has landed, and its row says what was built. Z2's final exit run took all eight tests on the head with all of M3 on 2026-11-10; the exit tests are answered as [m3-exit-run.md](m3-exit-run.md) says, and its "Final run at 4fe253e6" has the figures.
 
 - **The decision.** The maintainer started M3 on 2026-11-03 without having played M2's fight, so review 3 never ran and the go/no-go's question is still open ([m2-go-no-go.md](m2-go-no-go.md)). On 2026-11-10 they asked for M3 to be finished and M4 started. Nobody has played M3's slice either, so whether any of it is fun is unknown, and that's still the project's largest risk. [m4-handoff.md](m4-handoff.md) is what M4 inherits.
 - **Exit tests 1, 2, 3 and 7: hold on replays and app lanes, in CI and on this Mac.** The Lantern Ward's whole walk through the game's flow, from a new game to the Knell Colossus's defeat with the gate watched and the guide answered, is a replay (`ward-whole-walk`, G1c) that reaches its checksums on all three desktop OSes with no allocation in a step, and plays on the stage with no first-use pipeline on Desktop-Low's and Mobile-Low's settings (`wins_the_ward`). The boss is documents and a script (`tests/bosses_are_content.rs`), and a second boss added by the handoff's recipe needed no Rust. The gate cutscene's watch and skip reach one checksum, with its subtitles drawn in either language.

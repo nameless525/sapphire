@@ -2,26 +2,20 @@
 
 M3 ends when its eight exit tests are answered ([m3-plan.md](m3-plan.md) §1): a zone with three encounters walked to its boss, a boss with no Rust in it, one cutscene, the HUD and menus in two languages, all of it on five platforms, the editor, the pipeline inventory, and budgets and durability. This file is the procedure for all eight, for someone coming back to it cold. For each test it says what proves it, the commands, what CI proves, what only this Mac proves, and what only a device or a person can.
 
-Agents ran everything that needs no window and no phone, and "Rehearsal" near the end says what ran. Three parts of the slice weren't on `main` when this was written, so their sections are taken from the plan's rows and marked **lands with** the package that brings them:
-
-- the boss as documents and a script reached from the zone: the chain B3 → B3b → A1 → C2 part 2;
-- the game's flow, `--game title|new-game|continue` with the Lantern Ward as the flow: G1;
-- the zone bench: Z1.
-
-"What the final run must redo", at the end, lists what has to be taken again once those land. **Nobody has played the slice,** and none of these tests asks whether it's fun ([m3-plan.md](m3-plan.md) §1, "Feel stays unknown").
+Agents ran everything that needs no window and no phone. "Final run at 4fe253e6", near the end, is the run on the head with all of M3 (2026-11-10), and "Rehearsal" what ran before it. **Nobody has played the slice,** and none of these tests asks whether it's fun ([m3-plan.md](m3-plan.md) §1, "Feel stays unknown").
 
 | Exit test | Who answers it | Needs | Where it stands |
 |---|---|---|---|
-| 1. A zone | CI, then this Mac | Nothing | Replays of the ward's walk hold on all three desktop OSes. The boss at its end lands with C2 part 2. The whole walk through the game's flow, title to the boss's defeat, is `ward-whole-walk` (G1c) |
-| 2. A boss with no Rust | CI | Nothing | Lands with C2 part 2 (`tests/bosses_are_content.rs`) |
-| 3. One cutscene | CI and this Mac | A person who reads Japanese, for the subtitles' wording | A watch and a skip reach one trail. The HUD draws the subtitles in the chosen language, with goldens at three aspects in two languages (M3 Q4) |
-| 4. HUD and menus | CI and this Mac | A person who reads Japanese | Walked by pad, keyboard and touch, with goldens at three aspects in two languages. The Japanese is machine-quality and owed a reader |
-| 5. Five platforms | CI, this Mac, the rehearsal | A phone and a desktop GPU other than this Mac's | Done, pending devices, as M1 and M2 closed |
+| 1. A zone | CI, then this Mac | Nothing | Holds. The whole walk through the game's flow, from a new game at the title to the Knell Colossus's defeat (`ward-whole-walk`, G1c), and the ward's other replays reach their checksums on all three desktop OSes with no allocation in a step. The Simulator and the emulator reach the same |
+| 2. A boss with no Rust | CI | Nothing | Holds: `bosses_are_content`'s three clauses, the third on CI's Linux leg with the whole history |
+| 3. One cutscene | CI and this Mac | A person who reads Japanese, for the subtitles' wording | Holds. A watch and a skip reach one trail; the whole walk watches it from the court's threshold. The HUD draws the subtitles in the chosen language, with goldens at three aspects in two languages (M3 Q4) |
+| 4. HUD and menus | CI and this Mac | A person who reads Japanese | Holds but for meaning. Walked by pad, keyboard and touch, with goldens at three aspects in two languages; title, new game, continue, the pause and its return to title in a real run. The Japanese is machine-quality and owed a reader |
+| 5. Five platforms | CI, this Mac, the final run | A phone and a desktop GPU other than this Mac's | Done, pending devices, as M1 and M2 closed |
 | 6. The editor | CI | A person with a window | Proved by tests with no window. The window is owed |
-| 7. The inventory | This Mac and CI's app job | Nothing | 0 first-use builds after load on Desktop-Low and Mobile-Low |
-| 8. Budgets and durability | This Mac | A phone for the budgets that matter | Saves hold: kills at every step, and migrations. The zone bench lands with Z1 |
+| 7. The inventory | This Mac and CI's app job | Nothing | Holds: 0 first-use builds after load on Desktop-Low and Mobile-Low, the whole walk through the flow among them (`wins_the_ward`) |
+| 8. Budgets and durability | This Mac | A phone for the budgets that matter | Saves hold: kills at every step, and migrations. On the zone bench, §3.2's script and streaming rows are well within budget on this Mac. Secondary motion meets its rows at p50; its p99 is a solve frame's, over on Desktop-Low on every load and on Mobile-Low's fights and trips. Desktop-Low's TAA and post are over at p99 |
 
-**The shortest path:** `cargo xtask content`, then `cargo xtask replay`, then the app lanes under "Exit test 7". That's tests 1, 3 and 7 on this Mac in about ten minutes once built. Everything else is CI's, a person's, or waits for G1, C2 part 2 and Z1.
+**The shortest path:** `cargo xtask content`, then `cargo xtask replay`, then the app lanes under "Exit test 7". That's tests 1, 3 and 7 on this Mac in about ten minutes once built. Everything else is CI's or a person's.
 
 ## Before anything
 
@@ -43,7 +37,7 @@ The test: one zone with three encounters, walked from its start to its boss. Rep
 - The zone is `content/zones/lantern_ward` (M3 C1): the Gate Square, then a lane each way to the Market Court, the Blossom Garden and the Temple Court with its terrace. Each room has spawners and a threshold trigger, and the encounters are documents (M3 B2) reached from the zone's document.
 - `walk-the-ward` walks the ward's tour end to end and back to the court through its four checkpoints (M3 B4). `zone-trip` goes between zones through their exits (M3 W4). `walk-the-ground`, `from-the-platform` and `walk-the-square` walk the proving ground and the square, and `nav-chase` and `nav-patrol` hold navigation.
 - `tools/sapphire_pipeline/tests/zone_ward.rs` holds that a path and a real body get from `player_start` to every spawner, and that the documents reach each other.
-- **Lands with C2 part 2:** the boss at the walk's end, and a replay that reaches it. **Lands with G1:** the walk as the game's flow (title, new game, the ward, its checkpoints, the boss, a return to title).
+- The boss at the walk's end is the Knell Colossus on the terrace (C2 part 2), and `arena-boss` is its fight on its own. The walk as the game's flow (title, new game, the ward, its checkpoints, the boss) is G1's, below.
 - **The whole walk (M3 G1c):** `ward-whole-walk` is the game's flow from a new game at the title along the ward's tour, through the market's, the garden's and the court's fights, the court's gate cutscene watched and the guide's conversation, to the terrace's Knell Colossus beaten and the flow's victory. `game/game_flow/tests/ward_walk.rs` recorded it from a player who reads the simulation before each step (a walker along the tour who fights whoever's nearest, learns each swing's wind-up once and dodges it from then on); nothing in the fight was tuned for it. `the_whole_walk_replays_to_the_win` plays the file through the same flow, headless, in every OS's tests, and `game_app`'s `wins_the_ward` plays it on the stage (exit test 7). It found the ward's run held 12 actors for 15, so the boss was refused and the terrace cleared with nobody in it: the scenario holds 15 now, and the game refuses a flow whose scenario can't hold its cast and every fighter its encounters bring.
 
 ```bash
@@ -64,21 +58,21 @@ When the fight changes under the whole walk, its file stops reaching the win (th
 
 **Only this Mac** proves the walk beside the renderer on Metal: the app lane above.
 
-**Only a device or a person:** nobody has walked the ward with their own hands. `walk-the-ward` can't be played in the app, since its scenario, `lantern-walk`, isn't one a stage stands (it has no arena colliders); the app plays `zone-trip` and `ward-court-*` instead.
+**Only a device or a person:** nobody has walked the ward with their own hands. The sandbox plays `walk-the-ward` and `ward-whole-walk` to their checksums with `--arena --replay`, on this Mac, the Simulator and the emulator ("Final run at 4fe253e6").
 
 ## Exit test 2: a boss with no Rust changes
 
 The test: the boss is documents and a script under `content/`. A test holds it: the boss's name appears in no `.rs` file, every file it needs is reached from the zone's document, and the commit that adds it to the zone touches only `content/`, `tests/replays/` and `tests/golden/`.
 
-**Lands with C2 part 2** (the chain B3 → B3b → A1 → C2 part 2). From the plan's rows and that chain's hand-back, not run here:
+**What proves it** (the chain B3 → B3b → A1 → C2 part 2):
 
 - The Knell Colossus's moves, brain and encounter are documents. Its script is a Luau file its enemy kind names (`script:` in the `.enemy.ron`, M3 B3), so no Rust names it.
-- `tests/bosses_are_content.rs` holds the three clauses: the name in no `.rs`, every file reached from the zone's document, and the adding commit's paths. The third reads git history, so CI's checkout needs the full history on Linux, or that clause skips.
+- `crates/sapphire_gameplay/tests/bosses_are_content.rs` holds the three clauses: the name in no `.rs`, every file reached from the zone's document, and the adding commit's paths. The third reads git history. A shallow clone skips it, except on CI's Linux leg, which checks out the whole history (`fetch-depth: 0`) and fails rather than skips without it.
 - The boss's figure and clips are first drafts nobody has judged (M3 C2 part 1).
 
 ```bash
-cargo test --test bosses_are_content    # lands with C2 part 2: the package that has it says where
-cargo xtask replay                      # the boss's replay among them
+cargo test -p sapphire_gameplay --test bosses_are_content
+cargo xtask replay                      # the boss's replay, arena-boss, and the whole walk among them
 ```
 
 **CI** runs it with the workspace's tests. **Only a person** can say whether the boss reads as a boss.
@@ -107,11 +101,10 @@ cargo test -p sapphire_sandbox --features dev --locked --test replays -- --ignor
 
 **CI** runs all of it, the goldens on lavapipe and WARP too.
 
-**Open:**
+**In the game:**
 
 - Subtitles are drawn (M3 Q4): the HUD document's `subtitle` node shows the line at the playhead and its speaker, and the fight's HUD steps aside while the cutscene plays. `game-ward-gate-*` capture the warden's line through the game's flow in both languages at 4:3, 16:9 and 21:9.
-- The cutscene plays at a fixed tick in `ward-court`, not at the court's threshold trigger. **Lands with G1**, whose flow reaches the court through the ward.
-- `game_app` can't yet ask for a timeline. **Lands with G1.**
+- In the game's flow the court's threshold trigger starts the cutscene: `ward-whole-walk` watches it on its way to the boss, and `game_app`'s `plays_the_ward` skips it. `ward-court` still plays it at a fixed tick, as the sandbox's smaller pair.
 
 **Only a person** can say whether the blend reads well. The camera's numbers are bounded, and nobody has watched it.
 
@@ -145,7 +138,7 @@ A screen by hand, offscreen: `cargo xtask run --platform desktop -- --capture ta
 
 - The Japanese is machine-quality and owed a Japanese reader's pass (M3 C3). Both `.ftl` files' resource comments say so.
 - A real pad's glyphs and a real thumb on a phone haven't touched a menu. `simctl` can't touch, so iOS touch is unproved; the Android emulator takes real multi-touch events (running.md).
-- **Lands with G1:** title, new game and continue as the game's flow, and the pause and its return to title in a real run.
+- Title, new game and continue as the game's flow, and the pause and its return to title in a real run, are G1's: `game_app`'s `reaches_the_fight` goes from the title through a new game, and `plays_the_ward` continues a save, pauses and goes back to the title. The title's goldens are `game-title-*`.
 
 ## Exit test 5: all on five platforms
 
@@ -158,8 +151,8 @@ The test: Linux and Windows through CI on software rasterizers, macOS on Metal, 
 | Linux | `Test`, `Replays`, `Golden images (vulkan-lavapipe)`, `GPU tests (vulkan-lavapipe)`, `App tests (vulkan-lavapipe)` | CI on every pull request |
 | Windows | `Test`, `Replays`, `Golden images (dx12-warp)`; `GPU tests (dx12-warp)` on pushes to `main` | CI |
 | macOS | `Test`, `Replays`, `Golden images (metal)`, and every `--ignored` lane here | CI's `macos-26`, and this Mac when GitHub's macOS runners are out |
-| iOS | `Mobile build (iOS)` builds both apps for the device and the simulator | CI. Running is the rehearsal's, on a private Simulator |
-| Android | `Mobile build (Android)` builds both APKs | CI. Running is the rehearsal's, on the emulator, replays included since M3 Z2b |
+| iOS | `Mobile build (iOS)` builds both apps for the device and the simulator | CI. Running is the exit run's, on a private Simulator |
+| Android | `Mobile build (Android)` builds both APKs | CI. Running is the exit run's, on the emulator, replays included since M3 Z2b |
 
 **On the iOS Simulator.** Use a private one, so `simctl install` doesn't kill another agent's app, and delete it after. Never open Simulator.app.
 
@@ -175,7 +168,7 @@ xcrun simctl shutdown "$UDID" && xcrun simctl delete "$UDID"
 
 Mobile bundles take `--release`: `--incremental` is for `--platform desktop` and `macos` only. The app can write only inside its own data container, so give `--capture` a path there: `xcrun simctl get_app_container "$UDID" dev.sapphire.game data` names it, and its `tmp/` will do. A container's path changes with each install.
 
-The sandbox plays a recorded zone replay to its checksum the same way. Bundle it with `cargo xtask bundle --platform ios-sim --release --features dev`, copy the replay and `tests/replays/checksums.aarch64.txt` into the sandbox's container, and launch `dev.sapphire.sandbox` with `--capture <png> --arena --replay <file>`, both paths in that container. The app logs `replay reached its recorded checksums` with the checksum. "Rehearsal" has what ran.
+The sandbox plays a recorded zone replay to its checksum the same way. Bundle it with `cargo xtask bundle --platform ios-sim --release --features dev`, copy the replay and `tests/replays/checksums.aarch64.txt` into the sandbox's container, and launch `dev.sapphire.sandbox` with `--capture <png> --arena --replay <file>`, both paths in that container. The app logs `replay reached its recorded checksums` with the checksum. "Final run at 4fe253e6" has what ran.
 
 **On the Android emulator** (the AVD `sapphire_api36`, headless):
 
@@ -285,18 +278,15 @@ cargo test -p sapphire_save --test migrations
 
 **CI** runs them on all three OSes. **Only a device:** a power cut, a phone's flash and `SDL_GetPrefPath`'s real paths. The kill is the process's, so the page cache survives it.
 
-**Budgets: lands with Z1.** §3.2's rows are 0.3 ms (Desktop) and 0.5 ms (Mobile) for script events and Luau's collector step, and 0.5 and 1.0 ms for streaming activation. Until Z1:
-
-- The script row has `hook_cost` (`cargo run --release -p sapphire_script --example hook_cost`, M3 L2) with no zone behind it.
-- The streaming row was read over a synthetic walk (spec §5.21, M3 W2): p99 about 24 µs on both Low tiers at a load average of 33 to 39.
-- A conversation's conditions bind in 16 µs and a condition is asked in 0.6 µs (`dialogue_bench`, Q2b).
-
-Z1 brings `--bench` on the ward's walk with §3.2's rows, memory across the walk and a transition's time, and grows spec §3.5's table. Its command is about:
+**Budgets (M3 Z1).** §3.2's rows are 0.3 ms (Desktop) and 0.5 ms (Mobile) for script events and Luau's collector step, and 0.5 and 1.0 ms for streaming activation. Z1's fight bench plays a replay three times beside the renderer and logs §3.2's and §3.3's rows, memory across the walk and each trip's steps (spec §3.6, `apps/sapphire_sandbox/src/fight_bench.rs`). Each run, on a tier's own size and cook:
 
 ```bash
-SAPPHIRE_CONTENT_DIR=target/content/desktop target/release/sapphire_sandbox \
-  --bench 4000 --zone lantern_ward --zone-walk tour --stream 64:48 --tier mobile-low
+SAPPHIRE_CONTENT_DIR=target/content/<desktop|mobile> target/release/sapphire_sandbox --bench 1 \
+  --tier <tier> --size <size> --arena --replay tests/replays/walk-the-ward.sreplay \
+  --cues --hud live --blade on --time-of-day 10      # and --stream 64:48 or 32:48; zone-trip, arena-scripted
 ```
+
+A measured run needs the machine to itself: nothing else building, a load average under 8 as it starts, and the load written beside each number. `hook_cost` (`sapphire_script`'s example, M3 L2) and `dialogue_bench` (Q2b) read the script's and a conversation's costs alone.
 
 **Only a device:** the rows that matter are a phone's, on Mobile-Low, thermally throttled. This Mac's numbers say the work is there and nothing grows, as M2's did.
 
@@ -399,7 +389,109 @@ The game's lanes (`reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_th
 
 **Failed:** the sandbox's replay lane's `a_bench_of_a_fight_plays_it_whole_beside_the_renderer` (`apps/sapphire_sandbox/tests/replays.rs:670`). It finds the `gpu frame` row by `row="gpu frame"`, which the `fight row not exercised` line also carries, so on Metal, where no frame's span decodes, it expects a row with no samples. Z1's fixes are on it.
 
+### Final run at 4fe253e6 (M3 Z2)
+
+The runbook's "What the final run must redo" on 2026-11-10, on 4fe253e6, the head with all of M3: the chain, G1, Z1's fixes, Q4 and Z5e. An Apple M5 (4 performance and 6 efficiency cores, 10-core GPU, 24 GB), macOS 27.0.1, on AC power, release builds. Headless throughout: a private Simulator, the emulator with `-no-window`, the Mac offscreen. Every timed run had the machine to itself (the gate slots all held, and a load average under 8 before it started), and each figure has the load (1 minute) beside it. Nothing below moved a checksum or a golden.
+
+**Before anything.** Wall times here and under tests 1 to 4 are at loads of 2.5 to 5.9. `cargo metadata --locked` passed. With `target/content/cache` removed, the desktop cook took 76 s and the mobile 15 s; the release sandbox and game 225 s. On iOS the game bundled in 139 s and the sandbox in 204 s; on Android in 141 s and 163 s.
+
+**Exit test 1.** `cargo xtask replay`: 38 of 38 replays reach their committed aarch64 checksums with no allocation in a step (34 s). Among them `ward-whole-walk`, the whole walk from a new game to the Knell Colossus's defeat, 14,320 ticks to `8ea31d36ee8e5d22`, its step 9.6 µs on average and 34.0 at the longest; `walk-the-ward` (`e30e2e2b09cd0e58`), `arena-boss` (`52604d73e73c10e5`) and `zone-trip` (`05a575699a3c001a`). `zone_ward` 6 of 6. The sandbox's replay lane: 22 of 22 in 159 s, so `a_bench_of_a_fight_plays_it_whole_beside_the_renderer`, the rehearsal's failure, passes since Z1's fixes. CI's `Replays` passed on ubuntu-24.04, windows-2025 and macos-26 (run 42790087819); GitHub's macOS runners were back, so no stand-in.
+
+**Exit test 2.** `bosses_are_content` 2 of 2 on this Mac, whose history is whole. On CI's `Test (ubuntu-24.04)`, with `fetch-depth: 0`, `the_commit_that_put_a_boss_in_its_zone_touched_only_content` passed; on CI's Linux leg a shallow clone fails that clause rather than skipping it, so the pass means the third clause ran.
+
+**Exit test 3.** `ward-whole-walk` watches the cutscene from the court's threshold, and `ward-court-watched` and `ward-court-skipped` reach one trail (`b2cd3b39382446ce`), on the Mac, CI's three OSes, the Simulator and the emulator. `timelines` 14 of 14 and `cutscene_strings` 1 of 1. The subtitles in both languages: the `game-ward-gate-*` goldens at three aspects in two languages pass on Metal, lavapipe and WARP (run 42790087819). On lavapipe the English three match their references exactly and the Japanese three read a mean of 0.0024 against 0.01 allowed; WARP matches exactly.
+
+**Exit test 4.** `game_ui`'s menus, dialogue and strings 24 of 24; `reaches_the_fight`, `zone_trip`, `opens_the_guide` and `plays_the_ward` pass, the last walking title, new game, continue, the pause and its return to title in a real run. The `game-title-*` goldens at three aspects in two languages pass on Metal, lavapipe and WARP.
+
+**Exit tests 5 and 7, one checksum on three targets.** The Mac (Metal), a private iPhone 17 Pro Simulator (iOS 26.3, booted in 28 s, deleted after) and the emulator (`sapphire_api36`, Vulkan, headless, killed after), each with 0 first-use builds. Every Simulator and emulator run had the machine to itself, at a load of 2.7 to 4.0:
+
+| Run | Mac | Simulator | Emulator |
+|---|---|---|---|
+| Sandbox `--capture … --arena --replay zone-trip` | `05a575699a3c001a` | the same, `prewarmed=58` | the same |
+| … `ward-court-watched`, `ward-court-skipped` | `b2cd3b39382446ce` | the same, 61 | the same |
+| … `arena-fight-won` | `d82aa8979fe8bc56` | the same, 57 | the same |
+| … `arena-boss` | `52604d73e73c10e5` | the same, 57 | the same |
+| … `walk-the-ward` | `e30e2e2b09cd0e58` | the same, 61 | the same |
+| … `ward-whole-walk`, 14,320 ticks | `8ea31d36ee8e5d22`; its last frame has the Knell Colossus | the same, 61 | the same; `allocations=1`, below |
+| Game `--new-game --ticks 600 --capture` | `9c8d3f44f62bdf27` | the same | the same |
+| Game `--open-fight --script fight-back --ticks 1695 --capture` | `006faccf3917cf07`, `prewarmed=93` | the same, 77 | the same, 77 |
+| Game `--new-game --script walk-the-ward --ticks 4298 --capture` | two runs end, at 2126 (`e910a17177b479a4`) and 2107 (`3ed79d8d86e62164`) | the same | the same |
+| Game's title, `--capture … --ticks 120` | | draws; cold, the packs' prewarm 3,994 ms, warm 17.5 to 18.7 | draws; the prewarm 149 to 161 ms |
+
+- The game's walk script only walks, so the player falls to the market's encounter, as in the rehearsal; the whole walk to the boss is `ward-whole-walk` and `wins_the_ward`.
+- On the emulator the game in its window logs `the device refused the low-latency path; sound plays on its normal one` once, as Z2c left it, and every run ends `main returned status=0`.
+- `wins_the_ward` (188 s): on Desktop-Low the whole walk through the flow wins at tick 14,261 after 14,824 frames drawn in 110.4 s, offscreen and unpaced, with `first_use=0`, no allocation in a step and the checksum `334e854f44c47650`; on Mobile-Low the same in 75.0 s. `reaches_the_fight` reads `prewarmed=83 first_use=0`.
+
+**Exit test 8: durability.** `sapphire_save` 70 of 70, the kill and migration tests among them.
+
+**Exit test 8: the bench,** as §3.6's: `--bench 1` on each tier's own size and cook, three rounds of the same loads, each run alone at a load of 2.2 to 5.7 (the walks 2.2 to 3.3). Each figure is the least across rounds; **worst** is the least of the rounds' worst frames. ms, p50 / p99 / worst, on the walk unless named, the CPU rows from the bench's `cpu` phase and the GPU rows from its `gpu` phase, with §3.2's and §3.3's budget in brackets. **Bold is over.**
+
+| Row | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| CPU frame | 1.835 / 2.317 / 2.505 [8] | 0.631 / 2.344 / 3.235 [12] | 0.480 / 1.538 / 2.968 [12] | 0.837 / 1.549 / 1.718 [22] |
+| Game side | 1.377 / 1.669 / 1.835 | 0.086 / 1.777 / 2.239 [6] | 0.060 / 1.071 / 1.616 | 0.581 / 1.022 / 1.324 [13.6] |
+| Simulation, a frame's steps | 0.019 / 0.044 / 0.091 | 0.020 / 0.044 / 0.083 [1] | 0.013 / 0.028 / 0.080 | 0.012 / 0.029 / 0.059 [3] |
+| Physics, inside it | 0.002 / 0.005 / 0.020 | 0.002 / 0.005 / 0.018 [0.7] | 0.001 / 0.003 / 0.009 | 0.002 / 0.004 / 0.009 [2.4] |
+| Animation + IK | 0.010 / 0.022 / 0.065 | 0.011 / 0.021 / 0.062 [1.5] | 0.008 / 0.017 / 0.060 | 0.007 / 0.014 / 0.062 [3] |
+| Secondary motion | 1.313 / 1.596 / 1.769 | 0.021 / **1.717 / 2.046** [0.5] | 0.013 / 1.022 / 1.385 | 0.547 / 0.970 / **1.266** [1] |
+| VFX simulation | 0.001 / 0.002 / 0.004 | 0.001 / 0.002 / 0.007 [0.3] | 0.001 / 0.001 / 0.006 | 0.001 / 0.001 / 0.003 [0.6] |
+| **Script events + Luau GC** | 0.003 / 0.011 / 0.028 | 0.003 / 0.011 / 0.028 [0.3] | 0.003 / 0.009 / 0.025 | 0.003 / 0.008 / 0.014 [0.5] |
+| … on L3's scripted fight | | 0.003 / 0.013 / 0.022 [0.3] | | 0.004 / 0.011 / 0.014 [0.5] |
+| **Streaming activation**, the tier's radius | 0.000 / 0.001 / 0.007 | 0.000 / 0.001 / 0.006 [0.5] | 0.000 / 0.001 / 0.001 | 0.000 / 0.001 / 0.001 [1] |
+| … with a 48 m radius | | 0.000 / 0.002 / 0.015 [0.5] | | 0.000 / 0.003 / 0.011 [1] |
+| Audio update | 0.000 / 0.002 / 0.004 | 0.001 / 0.002 / 0.004 [0.2] | 0.000 / 0.001 / 0.003 | 0.000 / 0.001 / 0.001 [0.3] |
+| Extract | 0.007 / 0.018 / 0.055 | 0.007 / 0.017 / 0.046 [0.7] | 0.004 / 0.011 / 0.051 | 0.004 / 0.009 / 0.024 [1.2] |
+| Render prepare + record | 0.432 / 0.827 / 0.944 | 0.430 / 0.819 / 1.323 [4] | 0.348 / 0.722 / 1.333 | 0.283 / 0.623 / 0.757 [8] |
+| GPU frame | 8.243 / 9.142 / 9.595 [12] | 4.760 / 5.724 / 6.023 [14] | 2.486 / 3.134 / 3.433 [13] | 1.278 / 2.110 / 2.342 [26] |
+| Main pass | 3.886 / 4.560 / 4.748 | 2.245 / 2.855 / 2.979 [4.9] | 1.464 / 2.028 / 2.174 | 0.801 / 1.550 / 1.743 [11.5] |
+| Shadows | | 0.365 / 0.712 / 1.101 [2] | | |
+| Clustering and AO | | 0.616 / 1.024 / 1.126 [1.5] | | |
+| Prepasses | | 0.222 / 0.540 / 0.956 [1.5] | | |
+| TAA | 1.032 / 1.425 / 1.493 | 0.594 / **0.975 / 1.057** [0.8] | none | none |
+| Post | 0.848 / 1.233 / 1.310 | 0.488 / **0.862 / 0.912** [0.7] | 0.294 / 0.641 / 0.737 | 0.190 / 0.540 / 0.600 [2.5] |
+| UI | 0.015 / 0.040 / 0.323 | 0.017 / 0.021 / **0.312** [0.3] | 0.015 / 0.017 / 0.283 | 0.013 / 0.125 / 0.282 [1] |
+
+- **§3.2's rows hold:** the script row reads on the walk now that the ward's scripts are in it, at 0.011 ms p99 against 0.3 and 0.5; streaming at 0.001 p99, and at 0.002 to 0.003 with a 48 m radius where cells come and go, against 0.5 and 1. The worst frame of either is 0.028 ms.
+- **The GPU frame reads on Metal** on every timed frame of every walk (4,297 of 4,298 on the full-rate tiers, 2,148 of 2,149 on Mobile-Low), and within §3.3's frame on every tier.
+- **What's over:**
+  - **Secondary motion's p99, a solve frame's.** Desktop-Low solves clearance every third tick and the phones every fourth (§5's springs, "Clearance by tier and distance"), so p50 is a held frame and p99 a solving one. On every load Desktop-Low's p50 is at most 0.024 ms and its p99 1.42 to 1.82 against 0.5. Mobile-Low's p99 is 0.91 to 0.99 against 1 on the walk, streaming and the scripted fight, and 1.10 to 1.18 on `arena-fight-won`, `arena-boss` and `zone-trip`; its worst passes 1 on every load. Its p50 on the walk is 0.55 to 0.59, since a 30 Hz frame holds two steps and every other frame holds a solve; on the fights 0.024.
+  - **Desktop-Low's TAA and post at p99,** by 0.18 and 0.16 ms, and UI's worst frame by 0.01.
+  - Nothing else: the rehearsal's one-off CPU frames of 26 to 58 ms aren't there on a quiet machine, where the worst CPU frame is 3.2 ms.
+- **Allocations:** a frame on the walk 764, 760, 637 and 506 by tier. In fixed steps: none after the first play on any load; in the first play's tick 2, 6 on the walk, 167 on `arena-scripted` and 83 on `arena-boss` (each fight's start, once); on `zone-trip` none at all, since Z1's fixes took the trip's copy out of the step. `post_first_use=0` on every run.
+
+**Memory across the walk,** start / most / end in MB, the range across rounds; the engine's own accounting after every frame, the process's footprint as `sapphire_platform::process_memory` reads it, and the OS's most for the process:
+
+| | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Engine resident | 60.9, flat | 60.9, flat | 48.9, flat | 48.9, flat |
+| Heap | 63.3 | 63.2 | 59.3 | 48.0 |
+| Process footprint | 729–739 / 785–789 / 776–780 | 550–557 / 608–615 / 596–604 | 408–428 / 431–449 / 416–432 | 368–376 / 400–415 / 393–410 |
+| The OS's most | 805–814 | 625–632 | 443–460 | 427–430 |
+
+- **Nothing grows across the walk.** With a 48 m radius the ward comes in as the walk reaches it: resident 59.2 to 60.9 MB by tick 3,419 on Desktop-Low, 48.0 to 48.9 by 3,428 on Mobile-Low, and held to the end; the OS's most 604 to 617 and 404 to 410.
+
+**A trip's time,** on `zone-trip`, five trips a play, from the frame its exit was taken (load 2.9 to 5.7). Frames are what a player sees; the bench's ms are unpaced:
+
+| Step | Desktop-Low | Mobile-Low |
+|---|---|---|
+| The wipe covers | 34 frames | 18 |
+| The swap | 35 | 19 |
+| Its first cells placed | 36 | 20 |
+| The wipe gone | 69, at 241–289 ms | 37, at 43.6–45.8 ms |
+
+**CI's half,** run 42790087819 on 4fe253e6: `Test` and `Replays` on all three OSes, `Lint`, both mobile builds, `GPU tests (vulkan-lavapipe)` and every golden shard (Metal, lavapipe 1–2 of 2, WARP 1–6 of 6) passed. `App tests (vulkan-lavapipe)` passed too, `wins_the_ward` among its lanes, in 1 h 48 min against its 110-minute limit. `GPU tests (dx12-warp)` passed on this head as a dispatched run (42795020801).
+
+**Noticed, not fixed:**
+
+- **`ward-whole-walk` on the emulator reports `allocations=1`,** where the Mac and the Simulator report 0, at the same checksum. Android's Rust target has emulated TLS, so `sapphire_core::alloc` counts process-wide there and a scope's count is an upper bound that other threads' allocations can raise (its module doc says so). Over 14,320 ticks one allocation by another thread is plausible, so it isn't evidence of an allocation in the step. Desktop CI and this Mac hold the zero.
+- **Mobile-Low's secondary motion p99 is 0.97 to 0.99 ms on the walk against 1,** on an M5. A reference phone will be over.
+- The new game's capture at tick 600, at the Gate Square, shows the HUD's "Skeleton Warrior" and "Objective: Defeat the enemy" with no enemy in view.
+
+**Still owed:** the reference phones and a desktop GPU other than this Mac's (exit tests 5 and 8); a person in the editor's window (6); a reader of Japanese (3 and 4); and anyone playing the slice.
+
 ## What the final run must redo
+
+**Done at 4fe253e6 on 2026-11-10:** "Final run at 4fe253e6", above, has each item's result. Exit test 8's figures stay there, with a pointer from spec §3.6, the zone walk's section.
 
 The rehearsal ran on Q2b's head, before the chain, G1 and Z1. The final run is on the head after all three land, and it takes again:
 

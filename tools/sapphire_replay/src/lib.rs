@@ -359,7 +359,7 @@ pub fn record(request: &Record<'_>) -> anyhow::Result<()> {
     let known: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
     let scenario = find_scenario(scenarios, scenario)
         .with_context(|| format!("no scenario `{scenario}`: there's {known:?}"))?;
-    let scripts: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
+    let scripts: Vec<&str> = SCRIPTS.iter().map(|script| script.name.as_str()).collect();
     let script = find_script(script).with_context(|| format!("no script `{script}`: there's {scripts:?}"))?;
 
     let mut config = scenario.config;
@@ -415,7 +415,7 @@ pub fn list(dir: &Path, scenarios: &[Scenario]) -> anyhow::Result<()> {
         eprintln!("  {}: {}", scenario.name, scenario.about);
     }
     eprintln!("scripts:");
-    for script in SCRIPTS {
+    for script in SCRIPTS.iter() {
         eprintln!("  {} ({} ticks): {}", script.name, script.ticks, script.about);
     }
     eprintln!("replays in {}:", dir.display());

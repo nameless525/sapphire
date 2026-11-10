@@ -9,9 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use sapphire_colliders::{ArchivedColliderSet, ColliderDocument, ColliderSet};
 use sapphire_gameplay::arena::{cooked_colliders, profile, spawns};
-use sapphire_gameplay::replay::{
-    ARENA_WALK_JUMP, ARENA_WALK_LEGS, Recording, SCENARIOS, arena_walk, find_scenario, find_script,
-};
+use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script, inputs::StickPath};
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, Buttons, GroundMode, ResolvedProfile, SimConfig, Simulation, Stick,
     TickActions, actor_body,
@@ -339,12 +337,14 @@ fn the_arena_walk_collides_with_the_post_and_comes_back() {
     let script = find_script("arena-walk").expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
     let (player, enemy) = (recording.cast()[0], recording.cast()[1]);
-    let mut source = arena_walk;
+    let mut source = script;
     let spawns = spawns();
 
     // The post's face, less the capsule and the skin it keeps.
     let stop = 8.0 - 0.19 - profile().radius - profile().skin;
-    let at_post = u64::from(ARENA_WALK_LEGS[0].2 + ARENA_WALK_LEGS[1].2 + ARENA_WALK_LEGS[2].2);
+    let Some(StickPath::Legs(legs)) = &script.tracks[0].stick else { panic!("it walks its legs") };
+    let at_post = u64::from(legs[..3].iter().map(|leg| leg.ticks).sum::<u32>());
+    let jump_at = script.first_press(Buttons::JUMP).expect("it jumps");
     let mut walked = 0.0;
     let mut highest: f32 = 0.0;
     let mut last = spawns.player.position();
@@ -358,7 +358,7 @@ fn the_arena_walk_collides_with_the_post_and_comes_back() {
         walked += (feet - last).length();
         last = feet;
         highest = highest.max(feet.y);
-        if tick == ARENA_WALK_JUMP - 1 {
+        if tick == jump_at - 1 {
             assert!((feet.x - stop).abs() < 1e-2, "the post stops it at x = {stop}: {feet}");
             assert!((feet.z + 2.5).abs() < 0.49, "it's against the post, not past it: {feet}");
             assert!(feet.y.abs() < 2e-4, "{feet}");

@@ -1511,7 +1511,7 @@ fn the_replay_suites_dodge_counter_plays_what_it_says() {
     let mut started = 0;
     let mut plain_answer = None;
     for tick in 0..u64::from(script.ticks) {
-        sim.step(&(script.actions)(tick, &cast));
+        sim.step(&script.actions(tick, &cast));
         let view = sim.actor(player).expect("alive");
         if view.moves.started != started {
             started = view.moves.started;

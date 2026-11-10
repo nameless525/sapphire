@@ -15,7 +15,7 @@ use sapphire_core::Name;
 use sapphire_dialogue::Dialogue;
 use sapphire_gameplay::replay::{
     LiveMoves, Player, Recording, ReplayCommand, RunStart, SCENARIOS, Scenario, ScenarioError, ScenarioSetup,
-    Trail, find_scenario, find_script,
+    Script, Trail, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, DialogueId, Simulation};
 use sapphire_script::scenarios::ward_guide;
@@ -60,7 +60,7 @@ struct Visit {
     runner: DialogueRunner,
     panel: DialoguePanel,
     walk: Walk,
-    actions: fn(u64, &[ActorId]) -> sapphire_gameplay::TickActions,
+    actions: &'static Script,
 }
 
 impl Visit {
@@ -78,7 +78,7 @@ impl Visit {
         let mut walk = Walk::new(assets(), locale, false, SIZE, device);
         walk.menus.open_under(MenuScreen::HUD);
         walk.settle();
-        let actions = find_script("walk-the-ward").expect("listed").actions;
+        let actions = find_script("walk-the-ward").expect("listed");
         Self { recording, runner, panel: DialoguePanel::default(), walk, actions }
     }
 

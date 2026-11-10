@@ -65,7 +65,7 @@ use sapphire_dialogue::ConditionId;
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, KindOfEnemy, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, RunStart, SCRIPTS, Scenario,
-    ScenarioError, checksums_file_name, find_scenario, find_script,
+    ScenarioError, Script, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
 use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickActions, TimelineId, ZoneStart};
@@ -78,8 +78,8 @@ use sapphire_serialize::cooked::AlignedVec;
 
 use crate::LOG_TARGET;
 
-/// A script's actions: a function of the tick.
-type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
+/// A script's actions: its document's, a tick at a time.
+type ScriptActions = &'static Script;
 
 /// Whether `cast`'s player has fallen in `sim`, or all there was to fight has. A party falls with its last
 /// member: until then, a fall only brings in the next.
@@ -169,7 +169,7 @@ impl CaptureFrames {
 
 /// Where a recording's actions come from: the one seam between what drives a fight and the file.
 ///
-/// A script's function is a source. So are the player's bindings, read a tick at a time
+/// A script is a source. So are the player's bindings, read a tick at a time
 /// (`sapphire_controls::ControlsSource`), which is what's left with no script.
 fn action_source<'a>(
     script: &'a mut Option<ScriptActions>,
@@ -565,7 +565,8 @@ impl Combat {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("{what}: no scenario `{scenario}`; there's {known:?}"));
         };
-        let starts = ScriptStarts::new(script.and_then(find_script).map_or(&[], |script| script.commands));
+        let starts =
+            ScriptStarts::new(script.and_then(find_script).map_or(&[], |script| &script.commands[..]));
         let script = script.map(script_actions).transpose()?;
         let mut recording = Recording::starting_from(scenario, scenario.config, live, start, setup)
             .map_err(|error| format!("{what}: {error}"))?;
@@ -1597,8 +1598,8 @@ impl ScriptStarts {
 }
 
 fn script_actions(name: &str) -> Result<ScriptActions, String> {
-    find_script(name).map(|script| script.actions).ok_or_else(|| {
-        let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
+    find_script(name).ok_or_else(|| {
+        let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name.as_str()).collect();
         format!("--script: no script `{name}`; there's {known:?}")
     })
 }
@@ -1841,7 +1842,7 @@ mod tests {
     fn every_step_reads_the_bindings_exactly_once() {
         let player = ActorId::from_raw(1).expect("not zero");
         let scratch = (Scratch::new("once-player"), Scratch::new("once-script"), Scratch::new("once-replay"));
-        let script = Some(find_script("idle").expect("a script").name);
+        let script = Some(find_script("idle").expect("a script").name.as_str());
         let mut played = recording(&scratch.0.0, None);
         let mut scripted = recording(&scratch.1.0, script);
         let mut for_replay = recording(&scratch.2.0, script);

@@ -249,7 +249,7 @@ fn todays_numbers_in_a_section_change_no_tick_of_a_fight() {
         let (mut sim, cast) = live.start(scenario, scenario.config).expect("sets up");
         let checksums: Vec<u64> = (0..u64::from(script.ticks))
             .map(|tick| {
-                sim.step(&(script.actions)(tick, &cast));
+                sim.step(&script.actions(tick, &cast));
                 sim.checksum()
             })
             .collect();

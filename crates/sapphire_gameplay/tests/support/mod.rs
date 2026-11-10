@@ -33,7 +33,7 @@ pub fn world(seed: u64) -> (Simulation, Vec<ActorId>) {
 /// One tick of the script: every button on its own period, and sticks that sweep.
 #[allow(dead_code, reason = "not every test binary that shares this module runs the script")]
 pub fn script(tick: u64, actors: &[ActorId]) -> TickActions {
-    replay::melee_sweep(tick, actors)
+    replay::find_script("melee-sweep").expect("listed").actions(tick, actors)
 }
 
 /// Runs the script for `ticks` and returns the checksum after every tick.

@@ -13,7 +13,7 @@ use std::process::{Command, Output};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ChecksumFile, FORMAT_VERSION, Played, Player, RecordedTrail, Recording, Replay, SCENARIOS,
-    checksums_file_name, melee_sweep,
+    checksums_file_name, find_script,
 };
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, TickActions};
 
@@ -63,6 +63,11 @@ fn log_of(output: &Output) -> String {
 }
 
 /// The melee scenario on the sweep script, as a headless recording does it.
+/// `melee-sweep`'s actions on `tick`, from its document.
+fn melee_sweep(tick: u64, cast: &[ActorId]) -> TickActions {
+    find_script("melee-sweep").expect("listed").actions(tick, cast)
+}
+
 fn record(ticks: u32, source: impl Fn(u64, &[ActorId]) -> TickActions) -> (Replay, Played) {
     let scenario = &SCENARIOS[0];
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");

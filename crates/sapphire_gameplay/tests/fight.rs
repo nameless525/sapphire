@@ -1754,7 +1754,7 @@ fn the_replay_suites_fight_plays_what_it_says() {
     let mut started = 0;
     let (mut trades, mut armoured, mut finish_froze) = (0, 0, false);
     for tick in 0..u64::from(script.ticks) {
-        sim.step(&(script.actions)(tick, &cast));
+        sim.step(&script.actions(tick, &cast));
         let view = sim.actor(opponent).expect("alive");
         if view.moves.started != started {
             started = view.moves.started;
@@ -1772,7 +1772,7 @@ fn the_replay_suites_fight_plays_what_it_says() {
             })
             .count();
         if sim.cues().any(|cue| cue.cue == DEFEATED) {
-            sim.step(&(script.actions)(tick + 1, &cast));
+            sim.step(&script.actions(tick + 1, &cast));
             let view = sim.actor(opponent).expect("alive");
             reactions.push(view.moves.current.expect("its reaction").name);
             finish_froze = sim.actor(player).expect("alive").hitstop_ticks > 7;

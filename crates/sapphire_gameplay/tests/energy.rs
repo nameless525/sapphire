@@ -4,10 +4,7 @@
 mod support;
 
 use sapphire_core::Name;
-use sapphire_gameplay::replay::{
-    ARENA_ENERGY_TICKS, ARENA_ENERGY_TRIES_EVERY, ARENA_ULTIMATE_AT, Recording, SCENARIOS, arena_energy,
-    find_scenario,
-};
+use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
 use sapphire_gameplay::{ActorId, ActorSpawn, Buttons, SimConfig, Simulation, TickActions};
 use sapphire_math::Vec3;
 use sapphire_moves::{EnergyDocument, MoveSet, MoveSetDocument};
@@ -148,11 +145,12 @@ fn a_meter_the_fight_fills_casts_the_ultimate_again() {
     let full = recording.simulation().actor(player).expect("alive").fighter.max_energy();
     assert_eq!(energy(recording.simulation(), player), full, "a built-in fight starts full");
 
-    let mut source = arena_energy;
+    let script = find_script("arena-energy").expect("listed");
+    let mut source = script;
     let mut casts = Vec::new();
     let mut was = None;
     let mut filled_at = None;
-    while recording.recorded_ticks() < ARENA_ENERGY_TICKS {
+    while recording.recorded_ticks() < script.ticks {
         recording.step(&mut source).expect("short");
         let sim = recording.simulation();
         let now = sim.actor(player).expect("alive");
@@ -168,12 +166,12 @@ fn a_meter_the_fight_fills_casts_the_ultimate_again() {
     let [(first, after_first), (second, after_second)] = casts[..] else {
         panic!("the ultimate should play twice: {casts:?}");
     };
-    assert_eq!(u64::from(first), ARENA_ULTIMATE_AT + 1);
+    assert_eq!(Some(u64::from(first)), script.first_press(Buttons::ULTIMATE).map(|tick| tick + 1));
     assert_eq!((after_first, after_second), (0, 0), "each spent the full meter");
     let filled_at = filled_at.expect("the fight filled the meter");
     assert!(filled_at < second, "it filled at {filled_at}, before the second at {second}");
     // Between moves, as the neutral starts it: on a press, the step after it.
-    let pressed = u64::from(second - 1) - (ARENA_ULTIMATE_AT + 150);
-    assert_eq!(pressed % ARENA_ENERGY_TRIES_EVERY, 0, "cast at {second}, on no press");
+    let pressed = script.player(u64::from(second - 1)).buttons;
+    assert!(pressed.contains(Buttons::ULTIMATE), "cast at {second}, on no press");
     println!("arena-energy: cast at {first} and {second}, refilled at {filled_at}");
 }

@@ -1,11 +1,11 @@
 //! A run that starts from a save's place in its zone (M3 G1): its file holds the start, in format 3, and
 //! plays back from there; a run that starts fresh keeps the bytes it always had.
 
+use sapphire_gameplay::ZoneStart;
 use sapphire_gameplay::replay::{
     COMMANDS_FORMAT_VERSION, FORMAT_VERSION, LiveMoves, PLAIN_FORMAT_VERSION, PlayError, Player, Recording,
-    Replay, ReplayError, RunStart, SCENARIOS, Scenario, find_scenario, walks,
+    Replay, ReplayError, RunStart, SCENARIOS, Scenario, find_scenario, find_script,
 };
-use sapphire_gameplay::{ActorId, ZoneStart};
 
 fn scenario(name: &str) -> &'static Scenario {
     find_scenario(&SCENARIOS, name).expect("listed")
@@ -27,7 +27,7 @@ fn record(start: &RunStart, ticks: u32) -> (Replay, u64) {
     let mut recording =
         Recording::starting_from(cart_yard, cart_yard.config, &LiveMoves::default(), start, |_, _, _| Ok(()))
             .expect("starts");
-    let mut source = |tick: u64, cast: &[ActorId]| walks::from_the_platform(tick, cast);
+    let mut source = find_script("from-the-platform").expect("listed");
     for _ in 0..ticks {
         recording.step(&mut source).expect("records");
     }

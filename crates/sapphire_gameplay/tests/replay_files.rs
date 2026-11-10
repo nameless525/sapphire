@@ -121,7 +121,7 @@ fn a_minute_of_play_costs_little() {
     fn bytes_per_minute(script: &Script) -> usize {
         let scenario = &SCENARIOS[0];
         let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
-        let mut source = script.actions;
+        let mut source = script;
         for _ in 0..3600 {
             recording.step(&mut source).expect("short");
         }

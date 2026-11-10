@@ -62,7 +62,7 @@ SAPPHIRE_CONTENT_DIR=<abs>/target/content/desktop/ target/debug/sapphire_sandbox
 ### Adding a replay
 
 1. **A starting world**, if none fits: write `content/scenarios/<name>.scenario.ron`, which takes no Rust (`crates/sapphire_gameplay/src/replay/document.rs` says what it holds, and a zone and its encounters go in the same way). One with a script on it goes in `SCRIPTED`, in `crates/sapphire_script/src/scenarios.rs`, and only the replay runner plays those. A world only code can say gets a setup function and a row in `CODE_SCENARIOS` in `scenario.rs`: it loads move sets and then spawns, in a fixed order, and returns the actors input drives, the player first.
-2. **Its actions:** write a function of the tick and add a row to `SCRIPTS` in `crates/sapphire_gameplay/src/replay/script.rs`. A session someone plays comes from the app's `--record` instead (below).
+2. **Its actions:** write `content/inputs/<name>.inputs.ron`, which takes no Rust: buttons on a schedule, a stick's legs, and commands at a tick, such as a `PlayTimeline` (`crates/sapphire_gameplay/src/replay/inputs.rs` says what it holds, and `like` starts it from another's). The build compiles every one in, so the headless runner reads no files. A session someone plays comes from the app's `--record` instead (below).
 3. **Record it:** `cargo xtask replay --record <name> --scenario <scenario> --script <script> [--ticks <n>] [--seed <n>]`. This writes `tests/replays/<name>.sreplay`, and adds it to this architecture's checksums. It refuses a name that's taken: delete the file to replace it.
 4. **Commit both files.** The PR's first CI run fails `Replays` on Linux and Windows, because nothing is recorded for x86-64 yet. Fill that in as below.
 

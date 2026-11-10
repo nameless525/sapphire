@@ -147,16 +147,21 @@ mod tests {
     use sapphire_moves::MoveSetDocument;
     use sapphire_physics::PhysicsWorld;
 
+    use super::super::inputs::{Script, find_script};
     use super::super::scenario::{
         PLAYERS, SCENARIOS, ScenarioSetup, WARRIOR_MOVES, WARRIORS, duel_on, find_scenario, player_moves,
         test_moves, warrior_enemy,
     };
-    use super::super::script::{ATTEMPT_EVERY, attempts, fight};
     use super::super::{PlayError, Player, Recording, Replay};
     use super::*;
     use crate::actors::ActorSpawn;
     use crate::controller::ControllerProfile;
     use crate::moves::Tuned;
+
+    /// The script of someone tuning a move: a light press every so often.
+    fn attempts() -> &'static Script {
+        find_script("attempts").expect("listed")
+    }
 
     const SLICE: &str = "slice.moves.ron";
 
@@ -196,7 +201,7 @@ mod tests {
     fn the_next_attempt_reads_a_saved_window_and_the_one_in_progress_doesnt() {
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
         let player = recording.cast()[0];
-        let mut source = attempts;
+        let mut source = attempts();
         for _ in 0..3 {
             recording.step(&mut source).expect("short");
         }
@@ -209,7 +214,9 @@ mod tests {
         recording.step(&mut source).expect("short");
         assert_eq!(the_players_move(&recording, player), Some((light, 0, 5)), "the attempt in progress");
 
-        for _ in 4..=ATTEMPT_EVERY {
+        let again =
+            (1..).find(|&tick| !attempts().player(tick).buttons.is_empty()).expect("it presses again");
+        for _ in 4..=again {
             recording.step(&mut source).expect("short");
         }
         assert_eq!(the_players_move(&recording, player), Some((light, 1, 7)), "the next one");
@@ -220,7 +227,7 @@ mod tests {
     #[test]
     fn a_live_edit_ends_the_file_at_the_last_tick_it_can_answer_for() {
         const EDIT_AT: u32 = 100;
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
         for _ in 0..EDIT_AT {
             recording.step(&mut source).expect("short");
@@ -256,7 +263,7 @@ mod tests {
     #[test]
     fn a_script_cannot_extend_a_recording_ended_by_an_edit() {
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
-        let script = super::super::find_script("idle").expect("listed");
+        let script = find_script("idle").expect("listed");
         recording.run_script(script, 3).expect("records");
         let id = duel().set_of(SLICE).expect("its document");
         assert_eq!(
@@ -291,7 +298,7 @@ mod tests {
     #[test]
     fn an_edit_of_how_someone_moves_ends_the_file_as_an_edit_of_a_move_does() {
         const EDIT_AT: u32 = 90;
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
         for _ in 0..EDIT_AT {
             recording.step(&mut source).expect("short");
@@ -328,7 +335,7 @@ mod tests {
 
         let scenario = Scenario { setup: ScenarioSetup::Code(edited_duel), ..*duel() };
         let mut tuned = Recording::tuned(&scenario, duel().config, &live).expect("sets up");
-        let mut source = attempts;
+        let mut source = attempts();
         for _ in 0..200 {
             tuned.step(&mut source).expect("short");
         }
@@ -372,7 +379,7 @@ mod tests {
                 if tick == 120 {
                     sim.tune_move_set(id, slower_light()).expect("its set");
                 }
-                sim.step(&fight(tick, &cast));
+                sim.step(&find_script("fight").expect("listed").actions(tick, &cast));
             }
             sim.checksum()
         };
@@ -394,7 +401,7 @@ mod tests {
         // What recording from the edit makes.
         let scenario = Scenario { setup: ScenarioSetup::Code(edited_duel), ..*duel() };
         let mut tuned = Recording::tuned(&scenario, duel().config, &live).expect("sets up");
-        let mut source = attempts;
+        let mut source = attempts();
         for _ in 0..200 {
             tuned.step(&mut source).expect("short");
         }
@@ -499,7 +506,7 @@ mod tests {
         let id = duel().set_of(SLICE).expect("it plays this document");
         assert_eq!(sim.move_library().current_revision(id), Some(0));
         assert!(sim.move_library().is_current(id, &slower_light()));
-        sim.step(&attempts(0, &cast));
+        sim.step(&attempts().actions(0, &cast));
         assert_eq!(sim.actor(cast[0]).expect("alive").moves.current.expect("started").at.revision, 0);
     }
 
@@ -662,7 +669,7 @@ mod tests {
         assert_eq!(recording.simulation().targeting(), other_weights());
         assert_ne!(hash, shipped.simulation().tables_hash(), "the weights are in the tables' hash");
 
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         for _ in 0..40 {
             recording.step(&mut source).expect("short");
         }
@@ -689,7 +696,7 @@ mod tests {
         let shipped = Recording::new(duel(), duel().config).expect("sets up");
         assert_ne!(recording.simulation().tables_hash(), shipped.simulation().tables_hash());
 
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         for _ in 0..10 {
             recording.step(&mut source).expect("short");
         }
@@ -703,7 +710,7 @@ mod tests {
     #[test]
     fn a_live_edit_of_the_weights_ends_the_file() {
         const EDIT_AT: u32 = 20;
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
         for _ in 0..EDIT_AT {
             recording.step(&mut source).expect("short");
@@ -730,7 +737,7 @@ mod tests {
         use super::super::ReplayCommand;
         use crate::targeting::AutoTarget;
 
-        let mut source = fight;
+        let mut source = find_script("fight").expect("listed");
         let mut recording = Recording::new(duel(), duel().config).expect("sets up");
         let start = recording.simulation().tables_hash();
         assert!(!recording.set_auto_target(AutoTarget::Normal), "what it starts on");

@@ -5,9 +5,7 @@
 mod support;
 
 use sapphire_core::Name;
-use sapphire_gameplay::replay::{
-    ARENA_ULTIMATE_AT, PlayError, Recording, SCENARIOS, arena_ultimate, find_scenario,
-};
+use sapphire_gameplay::replay::{PlayError, Recording, SCENARIOS, find_scenario, find_script};
 use sapphire_gameplay::{
     ActorId, ActorSpawn, Buttons, CinematicError, SimConfig, Simulation, TickActions, TimelineProgress,
 };
@@ -185,8 +183,8 @@ fn the_players_ultimate_holds_the_warrior_while_its_chop_lands() {
         recording.simulation().actors().map(|view| view.id).find(|&id| id != player).expect("a foe");
     let ultimate = recording.simulation().timelines_played();
     assert_eq!(ultimate, 0);
-    let mut source = arena_ultimate;
-    let at = ARENA_ULTIMATE_AT as u32;
+    let mut source = find_script("arena-ultimate").expect("listed");
+    let at = source.first_press(Buttons::ULTIMATE).expect("it presses") as u32;
     while recording.recorded_ticks() <= at {
         recording.step(&mut source).expect("short");
     }

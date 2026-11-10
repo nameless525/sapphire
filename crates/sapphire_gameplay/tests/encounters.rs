@@ -5,7 +5,7 @@
 use std::alloc::System;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_gameplay::replay::{self, ActionSource, Player, Replay, SCENARIOS, find_scenario};
+use sapphire_gameplay::replay::{self, Player, Replay, SCENARIOS, find_scenario};
 use sapphire_gameplay::{
     ActorActions, ActorId, Buttons, EncounterPhase, Faction, SimConfig, Simulation, Stick, TickActions,
     ZoneCast, ZoneStartError,
@@ -221,7 +221,7 @@ fn an_encounter_says_where_it_starts_and_how_many_are_still_to_come() {
     assert_eq!(start.volume, sapphire_zone::CookedVolume::Box { half_extents: [4.0, 2.0, 4.0] });
     assert_eq!(zone.start_volume(1), None, "one encounter");
     assert_eq!(encounter(&sim).spawned(), 0);
-    let mut script = replay::into_the_yard;
+    let script = replay::find_script("into-the-yard").expect("listed");
     for _ in 0..300 {
         let actions = script.actions(sim.tick(), &cast);
         sim.step(&actions);
@@ -250,7 +250,7 @@ fn a_zone_trigger_starts_its_encounter_when_someone_walks_in() {
         let scenario = find_scenario(&SCENARIOS, "cart-yard").expect("listed");
         scenario.start(scenario.config).expect("sets up")
     };
-    let mut script = replay::into_the_yard;
+    let script = replay::find_script("into-the-yard").expect("listed");
     let mut fired_at = None;
     for _ in 0..300 {
         let actions = script.actions(sim.tick(), &cast);
@@ -384,7 +384,7 @@ fn a_wave_arrives_with_no_heap_in_a_step() {
     for name in ["arena-waves", "cart-yard"] {
         let scenario = find_scenario(&SCENARIOS, name).expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
-        let mut script = replay::into_the_yard;
+        let script = replay::find_script("into-the-yard").expect("listed");
         let ticks: Vec<TickActions> = (0..1500).map(|tick| script.actions(tick, &cast)).collect();
         let ((), counts) = alloc::count_in_scope(|| {
             for actions in &ticks {
@@ -452,7 +452,7 @@ fn a_documents_faction_is_a_simulations() {
 fn the_squares_waves_come_and_wait() {
     let scenario = find_scenario(&SCENARIOS, "arena-waves").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
-    let mut script = replay::idle;
+    let script = replay::find_script("idle").expect("listed");
     let mut most = 0;
     for _ in 0..900 {
         let actions = script.actions(sim.tick(), &cast);

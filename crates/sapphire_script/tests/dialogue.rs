@@ -5,8 +5,8 @@
 use sapphire_core::Name;
 use sapphire_dialogue::{ConditionId, Dialogue, DialogueWalk, DialogueWorld, EffectId, FlagRegistry};
 use sapphire_gameplay::replay::{
-    CHOICE_AT, COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, LIGHT_THE_WARD, LiveMoves, Player, Recording,
-    Replay, ReplayCommand, RunStart, Scenario, ScenarioError, ScenarioSetup, Script, Trail, find_scenario,
+    COMMANDS_FORMAT_VERSION, FLAGS_FORMAT_VERSION, LIGHT_THE_WARD, LiveMoves, Player, Recording, Replay,
+    ReplayCommand, RunStart, Scenario, ScenarioError, ScenarioSetup, Script, Trail, find_scenario,
     find_script,
 };
 use sapphire_gameplay::{ActorId, DialogueEffect, DialogueId, FlagValues, Simulation};
@@ -29,7 +29,12 @@ fn choice_script() -> &'static Script {
 
 /// `dialogue-choice`'s presses with no choice made.
 fn no_choice() -> Script {
-    Script { commands: &[], ..*choice_script() }
+    Script { commands: Vec::new(), ..choice_script().clone() }
+}
+
+/// The tick `dialogue-choice` makes its choice before.
+fn choice_at() -> u32 {
+    choice_script().command_at(ReplayCommand::Dialogue(LIGHT_THE_WARD)).expect("it chooses")
 }
 
 fn conditions(on: &Recording) -> ConditionSet {
@@ -144,7 +149,7 @@ fn a_condition_that_writes_draws_or_fails_is_refused_and_reads_false() {
     dialogue.presentation.conditions = bodies.len() as u16 + 1;
 
     let mut recording = Recording::new(scenario(), scenario().config).expect("starts");
-    recording.step(&mut no_choice().actions).expect("steps");
+    recording.step(&mut &no_choice()).expect("steps");
     let (checksum, tables) = (recording.simulation().checksum(), recording.simulation().tables_hash());
     let host = host_of(recording.simulation());
     let mut set = host.bind_conditions(&dialogue, "=writes").expect("binds");
@@ -208,8 +213,9 @@ fn a_choice_moves_the_fight_from_its_tick_and_no_choice_moves_nothing() {
     );
 
     let first = (0..=chose_trail.ticks()).find(|&tick| chose_trail.at(tick) != plain_trail.at(tick));
-    assert_eq!(first, Some(CHOICE_AT + 1), "the choice comes before tick {CHOICE_AT}'s step");
-    assert_eq!(chose.commands(), [(CHOICE_AT, ReplayCommand::Dialogue(LIGHT_THE_WARD))]);
+    let choice_at = choice_at();
+    assert_eq!(first, Some(choice_at + 1), "the choice comes before tick {choice_at}'s step");
+    assert_eq!(chose.commands(), [(choice_at, ReplayCommand::Dialogue(LIGHT_THE_WARD))]);
 
     let mut player = Player::new(chose, &SCRIPTED).expect("starts");
     player.run_to_end();

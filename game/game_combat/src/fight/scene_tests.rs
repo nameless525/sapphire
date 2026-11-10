@@ -536,7 +536,7 @@ fn a_wave_comes_on_with_no_heap() {
 /// the way in, before its trigger fires, and its waves then take them with no heap.
 #[test]
 fn an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap() {
-    use sapphire_gameplay::replay::{self, ActionSource, SCENARIOS, find_scenario};
+    use sapphire_gameplay::replay::{self, SCENARIOS, find_scenario};
 
     let bytes = clip().to_cooked().expect("cooked");
     let cooked = Clip::read(&bytes).expect("a valid clip");
@@ -550,9 +550,9 @@ fn an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap() {
     assert!(scene.show.spares.is_empty(), "nobody's near yet");
     assert_eq!(scene.show.volume_stats().encounters, 1);
 
-    let mut script = replay::up_the_street;
+    let script = replay::find_script("up-the-street").expect("listed");
     let (mut warm_at, mut fired_at) = (None, None);
-    let mut step = |scene: &mut Staged, sim: &mut Simulation| {
+    let step = |scene: &mut Staged, sim: &mut Simulation| {
         let actions = script.actions(sim.tick(), &cast);
         sim.step(&actions);
         scene.follow_simulation(sim, &cast);
@@ -596,7 +596,7 @@ fn an_encounter_warms_on_the_way_in_and_its_waves_take_no_heap() {
 /// the stage first looks and when the next run on the stage starts the same way.
 #[test]
 fn an_encounter_a_save_cleared_never_starts() {
-    use sapphire_gameplay::replay::{self, ActionSource, SCENARIOS, find_scenario};
+    use sapphire_gameplay::replay::{self, SCENARIOS, find_scenario};
     use sapphire_gameplay::{EncounterPhase, ZoneStart};
 
     let bytes = clip().to_cooked().expect("cooked");
@@ -610,7 +610,7 @@ fn an_encounter_a_save_cleared_never_starts() {
         sim.start_at(&ZoneStart { checkpoint: None, cleared: vec![id] }).expect("a save's start");
         (sim, cast)
     };
-    let mut script = replay::up_the_street;
+    let script = replay::find_script("up-the-street").expect("listed");
     for run in ["the first run", "the next"] {
         let (mut sim, cast) = continued();
         scene.follow_simulation(&sim, &cast);
@@ -927,7 +927,7 @@ fn a_cutscene_holds_the_fight_and_a_skip_lets_it_go() {
 /// someone new in the same place with the camera going on, isn't a cut.
 #[test]
 fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
-    use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario, find_script};
+    use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
 
     let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     let cut_of = |scene: &mut Staged| {
@@ -939,7 +939,7 @@ fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
     assert!(!cut_of(&mut scene), "a first frame has nothing to drop");
     let mut first = Recording::new(scenario, scenario.config).expect("sets up");
     let cast = first.cast().to_vec();
-    let mut source = arena_walk;
+    let mut source = find_script("arena-walk").expect("listed");
     for _ in 0..80 {
         first.step(&mut source).expect("short");
         scene.follow_simulation(first.simulation(), &cast);
@@ -958,7 +958,7 @@ fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
     let party = find_scenario(&SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
     let mut swapping = Recording::new(party, party.config).expect("sets up");
     let cast = swapping.cast().to_vec();
-    let mut source = find_script("party-swap").expect("listed").actions;
+    let mut source = find_script("party-swap").expect("listed");
     let (mut scene, _) = arena_stage(ArenaShot::Follow);
     for _ in 0..240 {
         swapping.step(&mut source).expect("short");
@@ -994,7 +994,7 @@ fn a_directors_shake_rolls_the_view_the_frame_draws() {
 #[test]
 fn the_arena_stands_its_actors_where_the_simulation_has_them() {
     use sapphire_gameplay::arena::spawns;
-    use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
+    use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
 
     let (mut scene, figure) = arena_stage(ArenaShot::Follow);
     assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the look-dev stage's day");
@@ -1024,7 +1024,7 @@ fn the_arena_stands_its_actors_where_the_simulation_has_them() {
 
     let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
-    let mut source = arena_walk;
+    let mut source = find_script("arena-walk").expect("listed");
     let cast = recording.cast().to_vec();
     for _ in 0..80 {
         recording.step(&mut source).expect("short");
@@ -1286,14 +1286,14 @@ fn a_same_tick_restart_cuts_history_and_fighter_poses_once() {
 
 #[test]
 fn an_independent_simulation_at_the_same_tick_cuts_and_snaps_once() {
-    use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
+    use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
 
     let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     for tick in [0, 20] {
         let (mut scene, _) = arena_stage(ArenaShot::Follow);
         let mut previous = Recording::new(scenario, scenario.config).expect("sets up");
         for _ in 0..tick {
-            previous.step(&mut arena_walk).expect("short");
+            previous.step(&mut find_script("arena-walk").expect("listed")).expect("short");
         }
         let old_world = previous.simulation().world().id();
         let old_position = previous.simulation().actor(previous.cast()[0]).expect("player").position;
@@ -1355,6 +1355,13 @@ fn court_gate() -> Arc<Timeline> {
 }
 
 /// A recording of the ward's court on `ward-court-watched`'s script, which starts the gate before step 30.
+/// The tick the ward's court scripts play its gate's cutscene before.
+fn court_gate_tick() -> usize {
+    use sapphire_gameplay::replay::{COURT_GATE_ID, ReplayCommand, find_script};
+    let script = find_script("ward-court-watched").expect("listed");
+    script.command_at(ReplayCommand::PlayTimeline(COURT_GATE_ID)).expect("it plays the gate") as usize
+}
+
 fn ward_recording(name: &str) -> Combat {
     let path = std::env::temp_dir().join(format!("sapphire-q3-{name}-{}.sreplay", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -1401,7 +1408,7 @@ fn the_gate_blends_in_and_out_of_the_fights_camera_with_no_pop() {
     for _ in 0..(30 + 9 * 60 + 120) {
         frames.push(ward_frame(&mut scene, &mut combat));
     }
-    let tick = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    let tick = court_gate_tick();
     assert!(frames[..tick - 1].iter().all(|frame| !frame.held), "the fight goes on up to the gate");
     // The step before the gate is the last that runs, and the frame after it the first held.
     let first_held = frames.iter().position(|frame| frame.held).expect("the gate holds the fight");
@@ -1469,7 +1476,7 @@ fn the_gate_watched_or_skipped_on_a_stage_leaves_the_fight_on_one_checksum() {
         (checksums, frame)
     };
     let (watched, watched_frames) = run(None);
-    let tick = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    let tick = court_gate_tick();
     let (skipped, skipped_frames) = run(Some(tick + 186));
     assert_eq!(watched, skipped);
     assert!(
@@ -1515,7 +1522,7 @@ fn ultimate() -> Arc<Timeline> {
 #[test]
 #[allow(clippy::print_stdout, reason = "the numbers the spec's note reports")]
 fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
-    use sapphire_gameplay::replay::{ARENA_ULTIMATE_AT, SCENARIOS, find_scenario};
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario, find_script};
 
     let (mut scene, _) = arena_stage(ArenaShot::Director);
     scene.show.timelines = vec![ultimate()];
@@ -1527,7 +1534,10 @@ fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
     let player = combat.cast()[0];
     let mut frames = Vec::new();
     let mut origin = None;
-    let at = ARENA_ULTIMATE_AT as usize;
+    let at = find_script("arena-ultimate")
+        .expect("listed")
+        .first_press(sapphire_gameplay::Buttons::ULTIMATE)
+        .expect("pressed") as usize;
     for frame in 0..(at + 144 + 180) {
         let drawn = ward_frame(&mut scene, &mut combat);
         assert!(!drawn.held, "a move's cinematic runs the fight beneath it");

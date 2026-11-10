@@ -212,7 +212,7 @@ mod tests {
         let cast = [player];
         let mut searches = 0;
         for tick in 0..u64::from(script.ticks) {
-            sim.step(&(script.actions)(tick, &cast));
+            sim.step(&script.actions(tick, &cast));
             let stats = sim.navigation_mut().expect("it has one").take_stats();
             assert!(stats.worst_tick <= NODES_PER_TICK, "tick {tick}: {stats:?}");
             searches += stats.searches;
@@ -349,7 +349,7 @@ mod tests {
         let mut gave_up = [false; GUARDS];
         let mut points = [[false; 4]; GUARDS];
         for tick in 0..u64::from(script.ticks) {
-            sim.step(&(script.actions)(tick, &cast));
+            sim.step(&script.actions(tick, &cast));
             for (index, guard) in guards.iter().enumerate() {
                 let brain = sim.actor(*guard).expect("alive").brain;
                 if brain.target().is_some() {

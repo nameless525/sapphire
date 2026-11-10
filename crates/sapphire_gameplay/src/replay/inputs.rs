@@ -508,6 +508,25 @@ impl Script {
         }
         actions
     }
+
+    /// What the cast's first, the player, does on `tick`: how a test finds when a script presses what.
+    #[must_use]
+    pub fn player(&self, tick: u64) -> ActorActions {
+        let player = ActorId::from_raw(1).expect("not zero");
+        self.actions(tick, &[player]).get(player)
+    }
+
+    /// The first tick, within its length, the player presses all of `buttons` on.
+    #[must_use]
+    pub fn first_press(&self, buttons: Buttons) -> Option<u64> {
+        (0..u64::from(self.ticks)).find(|&tick| self.player(tick).buttons.contains(buttons))
+    }
+
+    /// The tick `command` first comes before.
+    #[must_use]
+    pub fn command_at(&self, command: ReplayCommand) -> Option<u32> {
+        self.commands.iter().find(|&&(_, at)| at == command).map(|&(tick, _)| tick)
+    }
 }
 
 /// Every document `build.rs` compiled in, as scripts, by name.
@@ -534,4 +553,181 @@ pub static SCRIPTS: LazyLock<Vec<Script>> = LazyLock::new(|| {
 #[must_use]
 pub fn find_script(name: &str) -> Option<&'static Script> {
     SCRIPTS.iter().find(|script| script.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::is_valid_name;
+    use super::*;
+
+    fn document(data: &str) -> Result<InputsDocument, InputsError> {
+        InputsDocument::from_ron(&format!(
+            "(type: \"sapphire::gameplay::InputsDocument\", version: 1, data: ({data}))"
+        ))
+    }
+
+    fn script(data: &str) -> Script {
+        Script::new("test", &document(data).expect("reads"), None).expect("a script")
+    }
+
+    fn cast(size: u32) -> Vec<ActorId> {
+        (1..=size).map(|raw| ActorId::from_raw(raw).expect("a real ID")).collect()
+    }
+
+    #[test]
+    fn every_script_has_a_good_unique_name_and_a_length() {
+        assert_eq!(SCRIPTS.len(), INPUTS_DOCUMENTS.len());
+        for script in SCRIPTS.iter() {
+            assert!(is_valid_name(&script.name), "{}", script.name);
+            assert!(!script.about.is_empty(), "{}", script.name);
+            assert!(script.ticks > 0, "{}", script.name);
+            assert!(std::ptr::eq(find_script(&script.name).expect("found"), script), "{} twice", script.name);
+        }
+        assert!(find_script("no-such-script").is_none());
+    }
+
+    #[test]
+    fn a_schedule_presses_from_its_start_every_so_often_for_its_hold() {
+        let script = script(
+            "about: \"a\", ticks: 100, tracks: [(presses: [(from: 10, every: 20, hold: 2, at: [(3, [Light, Jump])])])]",
+        );
+        let pressed: Vec<u64> = (0..60).filter(|&tick| !script.player(tick).buttons.is_empty()).collect();
+        assert_eq!(pressed, [13, 14, 33, 34, 53, 54]);
+        assert_eq!(script.player(13).buttons, Buttons::LIGHT | Buttons::JUMP);
+        assert_eq!(script.player(13).stick, Stick::CENTER, "a track with no stick leaves it at rest");
+    }
+
+    #[test]
+    fn legs_ease_in_jump_and_end_at_rest_and_a_loop_goes_round() {
+        let legs = "[(stick: (127, -100), ticks: 4, ease: 4, jump: 1), (stick: (0, 64), ticks: 2)]";
+        let once = script(&format!("about: \"a\", ticks: 10, tracks: [(stick: Legs({legs}))]"));
+        let sticks: Vec<Stick> = (0..7).map(|tick| once.player(tick).stick).collect();
+        let expected = [(31, -25), (63, -50), (95, -75), (127, -100), (0, 64), (0, 64), (0, 0)];
+        assert_eq!(
+            sticks,
+            expected.map(|(x, y)| Stick::new(x, y)),
+            "a quarter of the way each tick, toward 0"
+        );
+        let jumped: Vec<u64> = (0..7).filter(|&tick| once.player(tick).buttons == Buttons::JUMP).collect();
+        assert_eq!(jumped, [1]);
+
+        let round = script(&format!("about: \"a\", ticks: 10, tracks: [(stick: Loop({legs}))]"));
+        for tick in 0..6 {
+            assert_eq!(round.player(tick + 6), once.player(tick), "tick {tick}");
+        }
+    }
+
+    #[test]
+    fn a_sweep_counts_up_as_a_signed_byte() {
+        let script = script("about: \"a\", ticks: 10, tracks: [(stick: Sweep(x: 255, y: 101))]");
+        let at = |tick| script.player(tick).stick;
+        assert_eq!(at(0), Stick::new(0, 0));
+        assert_eq!(at(127), Stick::new(127, 26));
+        assert_eq!(at(128), Stick::new(-127, 27), "−128 reads as −127");
+        assert_eq!(at(254), Stick::new(-2, 52));
+        assert_eq!(at(255), Stick::new(0, 53), "and over again");
+    }
+
+    #[test]
+    fn everyone_is_staggered_and_a_place_drives_one() {
+        let script = script(
+            "about: \"a\", ticks: 10, tracks: [
+                (who: Everyone(stagger: 5), presses: [(every: 10, at: [(0, [Light])])]),
+                (who: Cast(1), presses: [(at: [(0, [Heavy])])]),
+            ]",
+        );
+        let cast = cast(3);
+        let at = |tick| {
+            cast.iter().map(|&actor| script.actions(tick, &cast).get(actor).buttons).collect::<Vec<_>>()
+        };
+        assert_eq!(at(0), [Buttons::LIGHT, Buttons::HEAVY, Buttons::LIGHT]);
+        assert_eq!(at(5), [Buttons::NONE, Buttons::LIGHT, Buttons::NONE]);
+        assert_eq!(script.actions(0, &cast[..1]).len(), 1, "a place nobody stands in is nobody's");
+    }
+
+    #[test]
+    fn like_comes_first_and_brings_its_commands() {
+        let base = document(
+            "about: \"base\", ticks: 50, tracks: [(presses: [(at: [(1, [Light])])])], commands: [(10, PlayTimeline(0))]",
+        )
+        .expect("reads");
+        let top = document(
+            "about: \"top\", ticks: 80, like: \"base\", tracks: [(presses: [(at: [(1, [Heavy])])])],
+             commands: [(5, SkipTimeline(at_ms: 9)), (10, AutoTarget(Weak))]",
+        )
+        .expect("reads");
+        let script = Script::new("top", &top, Some(&base)).expect("a script");
+        assert_eq!((script.about.as_str(), script.ticks), ("top", 80));
+        assert_eq!(
+            script.commands,
+            [
+                (5, ReplayCommand::SkipTimeline { at_ms: 9 }),
+                (10, ReplayCommand::PlayTimeline(TimelineId::from_raw(0))),
+                (10, ReplayCommand::AutoTarget(AutoTarget::Weak)),
+            ]
+        );
+        assert_eq!(script.player(1).buttons, Buttons::LIGHT | Buttons::HEAVY);
+
+        let error = |result: Result<Script, InputsError>| result.expect_err("refused").to_string();
+        assert!(error(Script::new("top", &top, None)).contains("there's no `base`"));
+        assert!(error(Script::new("base", &base, Some(&top))).contains("like nothing"));
+        let deeper = Script::new(
+            "deeper",
+            &document("about: \"a\", ticks: 1, like: \"top\"").expect("reads"),
+            Some(&top),
+        );
+        assert!(error(deeper).contains("like another itself"));
+    }
+
+    /// What can't be read as a script is refused with the field it's in.
+    #[test]
+    fn what_cant_be_a_script_is_refused_naming_its_field() {
+        let refused = [
+            ("about: \"a\", ticks: 1, speed: 2", "speed"),
+            ("about: \"\", ticks: 1", "`about`"),
+            ("about: \"a\", ticks: 0", "`ticks`"),
+            ("about: \"a\", ticks: 1, tracks: [(presses: [(every: 0, at: [(0, [Light])])])]", "presses[0]"),
+            (
+                "about: \"a\", ticks: 1, tracks: [(presses: [(at: [(4, [Light]), (4, [Heavy])])])]",
+                "each tick once",
+            ),
+            (
+                "about: \"a\", ticks: 1, tracks: [(presses: [(every: 4, hold: 2, at: [(3, [Light])])])]",
+                "held past",
+            ),
+            ("about: \"a\", ticks: 1, tracks: [(presses: [(at: [(0, [])])])]", "no buttons"),
+            ("about: \"a\", ticks: 1, tracks: [(presses: [(at: [])])]", "no presses"),
+            ("about: \"a\", ticks: 1, tracks: [(presses: [(at: [(0, [Touch])])])]", "Touch"),
+            ("about: \"a\", ticks: 1, tracks: [(stick: Legs([(stick: (-128, 0), ticks: 1)]))]", "stick[0]"),
+            (
+                "about: \"a\", ticks: 1, tracks: [(stick: Legs([(stick: (1, 0), ticks: 2, ease: 3)]))]",
+                "eased",
+            ),
+            ("about: \"a\", ticks: 1, tracks: [(stick: Legs([(stick: (1, 0), ticks: 2, jump: 2)]))]", "jump"),
+            ("about: \"a\", ticks: 1, tracks: [(stick: Loop([]))]", "no legs"),
+            ("about: \"a\", ticks: 1, tracks: [(stick: Sweep(x: 0, y: 1))]", "sweep"),
+            ("about: \"a\", ticks: 1, tracks: [(who: Cast(8), stick: Sweep(x: 1, y: 1))]", "`tracks[0].who`"),
+            ("about: \"a\", ticks: 1, tracks: [()]", "does nothing"),
+            ("about: \"a\", ticks: 9, commands: [(5, PlayTimeline(0)), (4, PlayTimeline(1))]", "commands[1]"),
+            ("about: \"a\", ticks: 9, commands: [(10, PlayTimeline(0))]", "after the last tick"),
+        ];
+        for (data, field) in refused {
+            let error = document(data).expect_err(data).to_string();
+            assert!(error.contains(field), "{data}: {error}");
+        }
+
+        let two_sticks = document(
+            "about: \"a\", ticks: 1, tracks: [(who: Everyone(stagger: 0), stick: Sweep(x: 1, y: 1)),
+             (who: Cast(3), stick: Legs([(stick: (1, 0), ticks: 1)]))]",
+        )
+        .expect("reads");
+        let error = Script::new("two", &two_sticks, None).expect_err("refused").to_string();
+        assert!(error.contains("one of the cast's stick"), "{error}");
+        let apart = document(
+            "about: \"a\", ticks: 1, tracks: [(who: Cast(0), stick: Sweep(x: 1, y: 1)),
+             (who: Cast(1), stick: Sweep(x: 1, y: 1)), (who: Cast(0), presses: [(at: [(0, [Light])])])]",
+        )
+        .expect("reads");
+        assert!(Script::new("apart", &apart, None).is_ok(), "one stick each, and presses beside one");
+    }
 }

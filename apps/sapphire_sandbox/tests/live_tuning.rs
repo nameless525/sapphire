@@ -446,7 +446,7 @@ fn a_saved_timing_of_the_real_moves_plays_in_a_fight_and_the_next_fight_starts_f
     let baked = player_moves().expect("the simulation's copy reads");
     live.remember(PLAYER_FILE, compile_document(&edited, Some(&baked)).expect("compiles").set);
     live.remember(WARRIOR_FILE, compile_document(&frail, None).expect("compiles").set);
-    let script = find_script("attempts").expect("listed").actions;
+    let script = find_script("attempts").expect("listed");
     let mut held = 0;
     for line in log.lines().filter(|line| line.contains("a fight ended")).skip(1) {
         let field = |name: &str| {
@@ -456,7 +456,7 @@ fn a_saved_timing_of_the_real_moves_plays_in_a_fight_and_the_next_fight_starts_f
         let ticks: u64 = field(" ticks=").parse().expect("a number");
         let (mut sim, cast) = live.start(scenario, scenario.config).expect("sets up");
         for tick in 0..ticks {
-            sim.step(&script(tick, &cast));
+            sim.step(&script.actions(tick, &cast));
         }
         assert_eq!(format!("{:016x}", sim.checksum()), field(" checksum="), "{line}");
         assert!(line.contains("allocations=0"), "{line}");

@@ -125,9 +125,9 @@ fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
     let mut fight = Recording::new(party, party.config).expect("sets up");
     let cast = fight.cast().to_vec();
     // Its schedule goes round to the first again, and pressing on brings back those the warrior hurt.
-    let script = find_script("party-swap").expect("listed").actions;
+    let script = find_script("party-swap").expect("listed");
     let mut source = |tick: u64, cast: &[ActorId]| {
-        let mut actions = script(tick, cast);
+        let mut actions = script.actions(tick, cast);
         if tick >= 352 && tick.is_multiple_of(2) {
             let swap = ActorActions { buttons: Buttons::SWAP, ..ActorActions::NEUTRAL };
             actions.set(cast[0], swap).expect("one actor fits a tick");

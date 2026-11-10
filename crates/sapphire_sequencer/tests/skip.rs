@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use sapphire_gameplay::replay::{SCENARIOS, Scenario, find_scenario, melee_sweep};
+use sapphire_gameplay::replay::{SCENARIOS, Scenario, find_scenario, find_script};
 use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineId};
 use sapphire_sequencer::{Origin, Playing, StepClock, TimelinePlayer};
 use sapphire_timeline::{Timeline, TimelineDocument};
@@ -47,7 +47,8 @@ struct Run {
 fn run(timeline: &Arc<Timeline>, skip_at: Option<u32>) -> Run {
     let (mut sim, cast, id) = world(timeline);
     let mut trail = Vec::new();
-    let actions = |tick: u64, cast: &[ActorId]| melee_sweep(tick, cast);
+    let sweep = find_script("melee-sweep").expect("listed");
+    let actions = |tick: u64, cast: &[ActorId]| sweep.actions(tick, cast);
     for tick in 0..PLAY_AT {
         sim.step(&actions(tick, &cast));
         trail.push(sim.checksum());

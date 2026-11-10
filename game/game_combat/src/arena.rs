@@ -53,7 +53,7 @@
 //!   keeps the view upright, so a shake's roll goes through `OrbitCamera::set_shake` ([`roll_of`]).
 //! - **Moves (G2, O3, in) and hits (G3):** `arena-fight` loads the player's real moves and the
 //!   `arena` scenario the test moves, and both aim warps, so a script's `Buttons` start them; the script
-//!   `arena-walk` (`replay/script.rs`) presses only jump. Hits ask the simulation's `PhysicsWorld`, in
+//!   `arena-walk` (`content/inputs/`) presses only jump. Hits ask the simulation's `PhysicsWorld`, in
 //!   `CombatSet::Hits`.
 //! - **Animation (N3, in):** `sapphire_stage::scene::Scene::play_fighters` gives each fighter a graph, and each
 //!   frame [`ArenaActors::graph_input`] turns what the last step said of it into what its graph plays:
@@ -1742,7 +1742,7 @@ mod tests {
     /// The warrior, felled through real hits: the player's fists on the fight's first thousands of
     /// ticks, from a dash attack's reach.
     fn fallen_fighter(sim: &mut Simulation, cast: &[ActorId]) -> sapphire_gameplay::Fighter {
-        let mut source = sapphire_gameplay::replay::fight_back;
+        let mut source = sapphire_gameplay::replay::find_script("fight-back").expect("listed");
         for _ in 0..4000 {
             let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), cast);
             sim.step(&actions);
@@ -1759,7 +1759,7 @@ mod tests {
     #[test]
     fn a_new_fight_stands_where_it_stands() {
         let (mut actors, mut world, mut sim, cast) = fight();
-        let mut source = sapphire_gameplay::replay::fight_back;
+        let mut source = sapphire_gameplay::replay::find_script("fight-back").expect("listed");
         for _ in 0..200 {
             let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), &cast);
             sim.step(&actions);

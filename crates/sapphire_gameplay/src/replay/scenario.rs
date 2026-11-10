@@ -16,6 +16,7 @@ use std::sync::LazyLock;
 
 use sapphire_colliders::{ColliderError, ColliderSet};
 use sapphire_core::Name;
+use sapphire_dialogue::EffectId;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_moves::{Enemy, EnemyDocument, EnemyError, EnemyMind, MoveSet, MoveSetDocument, MoveSetError};
@@ -34,7 +35,7 @@ use super::play::RunStart;
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
-use crate::dialogue::DialogueId;
+use crate::dialogue::{DialogueEffect, DialogueId};
 use crate::encounter::{ZoneCast, ZoneStartError};
 use crate::faction::Faction;
 use crate::movement::ActorTransform;
@@ -51,8 +52,21 @@ use crate::zone::{ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneLoadError};
 const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slice.moves.ron");
 
 /// Synthetic timelines, for the scripts that hold a skip to the same checksums as a watch.
-const CINEMATIC: &str = include_str!("../../../sapphire_timeline/test_content/cinematic.timeline.ron");
-const CUTSCENE: &str = include_str!("../../../sapphire_timeline/test_content/cutscene.timeline.ron");
+const CINEMATIC_DOCUMENT: &str =
+    include_str!("../../../sapphire_timeline/test_content/cinematic.timeline.ron");
+const CUTSCENE_DOCUMENT: &str = include_str!("../../../sapphire_timeline/test_content/cutscene.timeline.ron");
+
+/// What the `timelines` scenario loads, in order: what its scripts' `PlayTimeline(0)` and `(1)` play.
+pub const CINEMATIC: TimelineId = TimelineId::from_raw(0);
+pub const CUTSCENE: TimelineId = TimelineId::from_raw(1);
+
+/// `ward-court`'s gate cutscene: the first of its document's `timelines`.
+pub const COURT_GATE_ID: TimelineId = TimelineId::from_raw(0);
+
+/// The first effect of the first dialogue a scenario loads, which for `dialogue-flag` is choosing to light
+/// the ward: what `dialogue-choice` applies.
+pub const LIGHT_THE_WARD: DialogueEffect =
+    DialogueEffect { dialogue: DialogueId::from_raw(0), effect: EffectId(0) };
 
 /// That document, from the repository's root.
 const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
@@ -123,6 +137,14 @@ pub fn baked_zone(stem: &str) -> Option<&'static BakedZone> {
 
 /// What the `zone-trip` scenario's shelf holds, by stem, in the order its script's entries name them.
 pub const ZONE_TRIP_SHELF: [&str; 2] = ["proving_hub", "proving_ground"];
+
+/// Those zones' rows on the shelf, and the entries the `zone-trip` script makes: each zone's spawners count in
+/// the order of their IDs, which `tests/zone_trip.rs` holds to their names.
+pub const PROVING_HUB: ZoneId = ZoneId::from_raw(0);
+pub const PROVING_GROUND: ZoneId = ZoneId::from_raw(1);
+pub const HUB_START: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 0 };
+pub const HUB_FROM_GROUND: ZoneEntry = ZoneEntry { zone: PROVING_HUB, spawner: 1 };
+pub const GROUND_START: ZoneEntry = ZoneEntry { zone: PROVING_GROUND, spawner: 3 };
 
 /// What `nav-chase`'s chasers run: an attack they never get near enough to press.
 pub(super) const CHASER_MOVES: &str = include_str!("../../../sapphire_moves/test_content/chaser.moves.ron");
@@ -619,7 +641,7 @@ pub(super) fn duel_on(sim: &mut Simulation, set: MoveSet) -> Result<Vec<ActorId>
 /// [`duel`], with the synthetic timelines loaded: first the cinematic, then the cutscene. Their simulation
 /// halves are decimal text cooked to whole numbers, so they come out the same on every architecture.
 pub fn timelines(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    for document in [CINEMATIC, CUTSCENE] {
+    for document in [CINEMATIC_DOCUMENT, CUTSCENE_DOCUMENT] {
         let timeline = TimelineDocument::from_ron(document)?.cook()?;
         sim.add_timeline(timeline.simulation)?;
     }
@@ -959,7 +981,8 @@ mod tests {
         let mut live = super::super::LiveMoves::default();
         let mut world = prepared.start_resettable(scenario.config, &live).expect("starts");
         for tick in 0..120 {
-            let actions = super::super::script::fight_back(tick, world.cast());
+            let actions =
+                super::super::find_script("fight-back").expect("listed").actions(tick, world.cast());
             world.step(&actions);
         }
         let running_player = player_moves().expect("loads");
@@ -988,7 +1011,7 @@ mod tests {
         let (mut fresh, cast) = live.start(scenario, scenario.config).expect("independent fresh setup");
         for tick in 0..300 {
             assert_eq!(world.checksum(), fresh.checksum(), "tick={tick}");
-            let actions = super::super::script::fight_back(tick, &cast);
+            let actions = super::super::find_script("fight-back").expect("listed").actions(tick, &cast);
             world.step(&actions);
             fresh.step(&actions);
         }
@@ -1017,7 +1040,8 @@ mod tests {
                 assert_eq!(prepared_cast, cast);
                 for tick in 0..300 {
                     assert_eq!(actual.checksum(), expected.checksum(), "{name} edited={edited} tick={tick}");
-                    let actions = super::super::script::fight_back(tick, &cast);
+                    let actions =
+                        super::super::find_script("fight-back").expect("listed").actions(tick, &cast);
                     expected.step(&actions);
                     actual.step(&actions);
                 }

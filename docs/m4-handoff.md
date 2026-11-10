@@ -134,7 +134,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs`, a replay's new scripted input in `script.rs`, a placeholder sound, and a screen showing a value no model holds. The first two are test lists, which a commit of documents alone can do without: a golden or a standalone replay is a check someone chooses to add. A zone a scenario shelves needs no row since M4 R3: the build finds it. No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
+**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs`, a placeholder sound, and a screen showing a value no model holds. The first is a test list, which a commit of documents alone can do without: a golden is a check someone chooses to add. A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -204,7 +204,7 @@ Walked, as part of both recipes above.
    ```bash
    cargo xtask replay --record <name> --scenario <scenario> --script fight-back --ticks <n>
    ```
-   The script is any row of `SCRIPTS`, whose `fight-back` serves any encounter. **Rust step,** only for an input none of them gives: a new scripted input is a row in `crates/sapphire_gameplay/src/replay/script.rs`.
+   The script is any document in `content/inputs/`, whose `fight-back` serves any encounter. An input none of them gives is a new `<name>.inputs.ron` there, which takes no Rust (M4 R2).
 5. **Every replay on the zone moves,** because the zone's digest is in `tables_hash`. Re-stamp them with `cargo xtask replay --update`. The walk moved six. x86-64's lines are owed from CI. On the Lantern Ward, a fight that plays differently also needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data. No test counts the ward's kinds or fighters (Z5e): `a_zones_encounters_bring_the_kinds_they_spawn` reads them from every zone's spawners.
 6. **A golden** of the fight in its zone, if you want one. **Rust step:** a golden scene is a row in `tools/sapphire_testkit/src/scenes.rs`, with the replay's `--arena --replay` capture and a tick. It's a test list, so a fight lands without it: exit test 2 allows the PNG in the boss's commit, and the row goes in a commit of its own, as the ward's did.
 
@@ -242,7 +242,7 @@ The worked example is [court_gate.timeline.ron](../content/zones/lantern_ward/co
 2. **A new pose:** a `.keypose.ron` and its sidecar, named as a clip and a move in [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron).
 3. **Subtitles:** keys and speakers in `content/loc/{en,ja}/cutscenes.ftl`, a line under `subtitle-` and a speaker under `speaker-`: the HUD shows only keys under those prefixes. `tools/sapphire_pipeline/tests/cutscene_strings.rs` and `game_ui --test strings` hold them.
 4. **Look at it:** `--arena --timeline <id>` plays one on the sandbox, and the editor's sequencer pane scrubs it.
-5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads, and each timeline it names to its sidecar's ID and its place; the whole walk counts at least one cutscene (Z5e). A beat's timeline is recorded into the run's file, so the whole walk's replay holds it with no scripted input. **Rust steps,** for checks you choose to add: a replay that plays it on a scenario with no flow is a scripted input (`PlayTimeline` at a tick in `script.rs`), and its goldens are rows in `scenes.rs`.
+5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads, and each timeline it names to its sidecar's ID and its place; the whole walk counts at least one cutscene (Z5e). A beat's timeline is recorded into the run's file, so the whole walk's replay holds it with no scripted input. A replay that plays it on a scenario with no flow is a scripted input document with a `PlayTimeline` at a tick (`content/inputs/`, M4 R2), which takes no Rust. **Rust step,** for a check you choose to add: its goldens are rows in `scenes.rs`.
 
 ### A game screen
 
@@ -293,10 +293,9 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 
 ### Rust steps left in the "How to add" recipes
 
-M3's first pillar counts each of these as a bug. The first two are test lists: a commit of documents alone lands without them, and they're the Rust a check someone chooses to add takes.
+M3's first pillar counts each of these as a bug. The first is a test list: a commit of documents alone lands without it, and it's the Rust a check someone chooses to add takes.
 
 - **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
-- **A replay's scripted input** is a row in `crates/sapphire_gameplay/src/replay/script.rs`, timed buttons or a `PlayTimeline` at a tick. Recording on an existing script needs none, and a run through the flow records its beats' commands into its own file. Making scripts documents would be a format of their own: not done in Z5e.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 

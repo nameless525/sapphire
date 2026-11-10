@@ -445,7 +445,7 @@ fn a_step_stops_answering_when_its_interrupts_have_gone() {
     // Every warrior starts a move at some point: the step that has more than three events shows it.
     let fight_back = find_script("fight-back").unwrap();
     for tick in 0..400 {
-        sim.step(&(fight_back.actions)(tick, &cast));
+        sim.step(&fight_back.actions(tick, &cast));
     }
     let stats = stats(&sim);
     assert!(stats.hooks_over_budget > 0, "{stats:?}");

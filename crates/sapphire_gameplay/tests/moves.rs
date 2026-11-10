@@ -1910,7 +1910,7 @@ fn the_replay_suites_scripts_play_what_they_say() {
         let mut played = Played { starts: Vec::new(), warp_ticks: 0, opponent_started: 0 };
         let mut started = 0;
         for tick in 0..u64::from(script.ticks) {
-            sim.step(&(script.actions)(tick, &cast));
+            sim.step(&script.actions(tick, &cast));
             let view = sim.actor(cast[0]).expect("alive");
             if view.moves.started != started {
                 started = view.moves.started;

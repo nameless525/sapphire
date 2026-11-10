@@ -3,8 +3,8 @@
 use sapphire_core::Name;
 use sapphire_gameplay::replay::{
     FightWorld, GROUND_START, HUB_FROM_GROUND, HUB_START, LiveMoves, PROVING_GROUND, PROVING_HUB, Player,
-    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario, ZONE_TRIP_ENTRIES,
-    ZONE_TRIP_SHELF, baked_zone, find_scenario, find_script,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario, ZONE_TRIP_SHELF,
+    baked_zone, find_scenario, find_script,
 };
 use sapphire_gameplay::{
     ActorId, EncounterPhase, Place, Simulation, TickActions, ZoneEntry, ZoneEntryError, ZoneGround, ZoneId,
@@ -167,11 +167,9 @@ fn record() -> (Replay, RecordedTrail) {
 #[test]
 fn a_replay_across_a_trip_reproduces() {
     let (replay, recorded) = record();
-    assert_eq!(replay.commands().len(), ZONE_TRIP_ENTRIES.len());
-    assert_eq!(
-        replay.commands()[0],
-        (ZONE_TRIP_ENTRIES[0].0, ReplayCommand::EnterZone(ZONE_TRIP_ENTRIES[0].1))
-    );
+    let script = find_script("zone-trip").expect("listed");
+    assert_eq!(replay.commands(), script.commands, "what the script does between steps");
+    assert_eq!(replay.commands()[0], (120, ReplayCommand::EnterZone(HUB_START)));
     let bytes = replay.encode();
     let decoded = Replay::decode(&bytes).expect("it reads");
     assert_eq!(decoded.commands(), replay.commands());
@@ -199,7 +197,8 @@ fn a_show_can_ask_and_enter_ahead_of_the_step_and_it_changes_nothing() {
             break;
         }
     }
-    assert_eq!(asked, ZONE_TRIP_ENTRIES.map(|(_, entry)| entry));
+    let entries = [HUB_START, GROUND_START, HUB_FROM_GROUND, GROUND_START, HUB_FROM_GROUND];
+    assert_eq!(asked, entries, "there and back, and there and back again");
     assert_eq!(recorded.first_difference(&player.finish().trail), None);
 }
 

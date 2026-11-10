@@ -37,7 +37,7 @@ use sapphire_assets::pack::PackReader;
 use sapphire_camera::{CameraPose, CameraStats};
 use sapphire_gameplay::TickActions;
 use sapphire_gameplay::replay::{
-    Player, Recording, Replay, SCENARIOS, Scenario, fight_back, find_scenario, find_script,
+    Player, Recording, Replay, SCENARIOS, Scenario, Script, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorActions, Stick};
 use sapphire_physics::{ColliderId, Group, GroupMask, RayHit, Shape, StaticCollider, StaticShape};
@@ -880,7 +880,7 @@ fn stick_along(direction: Vec2) -> Stick {
 
 /// What the player presses while fighting: `fight-back`'s round.
 fn fight_buttons(tick: u64, cast: &[ActorId]) -> Buttons {
-    fight_back(tick, &cast[..1]).get(cast[0]).buttons
+    find_script("fight-back").expect("listed").actions(tick, &cast[..1]).get(cast[0]).buttons
 }
 
 /// A thumb swinging the view: a second's push one way, every few seconds, in radians this frame.
@@ -902,7 +902,7 @@ const START_OVER_TICKS: u64 = 240;
 /// Whatever steps a fight.
 enum Stepper {
     Played(Box<Player>),
-    Recorded { recording: Box<Recording>, script: Option<fn(u64, &[ActorId]) -> TickActions> },
+    Recorded { recording: Box<Recording>, script: Option<&'static Script> },
 }
 
 impl Stepper {
@@ -928,7 +928,7 @@ impl Stepper {
                 let cast = recording.cast();
                 let tick = recording.simulation().tick();
                 let actions = match (script, walker) {
-                    (Some(script), _) => script(tick, cast),
+                    (Some(script), _) => script.actions(tick, cast),
                     (None, Some(walker)) => walker.actions(tick, recording.simulation(), cast),
                     (None, None) => TickActions::NEUTRAL,
                 };
@@ -971,10 +971,9 @@ impl Fight {
                 let replay = Replay::decode(&bytes).expect("it decodes");
                 Stepper::Played(Box::new(Player::new(replay, &SCENARIOS).expect("it starts")))
             }
-            Drive::Script(name) => Stepper::Recorded {
-                recording: recording(),
-                script: Some(find_script(name).expect("listed").actions),
-            },
+            Drive::Script(name) => {
+                Stepper::Recorded { recording: recording(), script: Some(find_script(name).expect("listed")) }
+            }
             Drive::Tour(_) => Stepper::Recorded { recording: recording(), script: None },
         }
     }

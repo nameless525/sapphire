@@ -11,7 +11,7 @@ use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
     CINEMATIC, CUTSCENE, Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, ScenarioSetup,
-    StepAllocated, add_melee_buttons, find_scenario, find_script, melee, melee_sweep,
+    StepAllocated, add_melee_buttons, find_scenario, find_script, melee,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, Faction,
@@ -66,7 +66,8 @@ fn a_timelines_run_does_not_allocate_from_the_first_tick() {
     }
     let scenario = find_scenario(&SCENARIOS, "timelines").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
-    let ticks: Vec<TickActions> = (0..400).map(|tick| melee_sweep(tick, &cast)).collect();
+    let ticks: Vec<TickActions> =
+        (0..400).map(|tick| find_script("melee-sweep").expect("listed").actions(tick, &cast)).collect();
 
     let ((), counts) = alloc::count_in_scope(|| {
         for (tick, actions) in ticks.iter().enumerate() {
@@ -137,7 +138,7 @@ fn a_partys_fight_does_not_allocate_from_the_first_tick() {
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let script = find_script("party-swap").expect("listed");
     let ticks: Vec<TickActions> =
-        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+        (0..u64::from(script.ticks)).map(|tick| script.actions(tick, &cast)).collect();
 
     let ((), counts) = alloc::count_in_scope(|| {
         for actions in &ticks {
@@ -271,7 +272,7 @@ fn checksums_do_not_allocate() {
 fn recorded(ticks: u32) -> Replay {
     let scenario = &SCENARIOS[0];
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
-    let mut source = find_script("melee-sweep").expect("listed").actions;
+    let mut source = find_script("melee-sweep").expect("listed");
     for _ in 0..ticks {
         recording.step(&mut source).expect("short");
     }
@@ -695,7 +696,7 @@ fn perfect_dodges_and_counters_allocate_nothing_from_the_first_step() {
     let script = find_script("dodge-counter").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let scripted: Vec<TickActions> =
-        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+        (0..u64::from(script.ticks)).map(|tick| script.actions(tick, &cast)).collect();
 
     let ((), counts) = alloc::count_in_scope(|| {
         for actions in &scripted {
@@ -769,7 +770,7 @@ fn a_brain_allocates_nothing_from_the_first_step() {
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let script = find_script("fight-back").expect("listed");
     let scripted: Vec<TickActions> =
-        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+        (0..u64::from(script.ticks)).map(|tick| script.actions(tick, &cast)).collect();
 
     let ((), counts) = alloc::count_in_scope(|| {
         for actions in &scripted {
@@ -873,7 +874,7 @@ fn restarting_a_builtin_fight_reuses_capacity_and_matches_a_fresh_world() {
             assert_eq!(world.cast(), cast);
             for tick in 0..length {
                 assert_eq!(world.checksum(), fresh.checksum(), "party={party}, tick={tick}");
-                let actions = sapphire_gameplay::replay::fight_back(tick, &cast);
+                let actions = find_script("fight-back").expect("listed").actions(tick, &cast);
                 world.step(&actions);
                 fresh.step(&actions);
             }

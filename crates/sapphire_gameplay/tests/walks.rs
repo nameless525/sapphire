@@ -1,13 +1,13 @@
-//! Walks through zones and back to their checkpoints (M3 B4): where `replay::walks`' scripts take the
-//! player, a teleport that forgets how anyone got there, and a load at a checkpoint that walks on as the
+//! Walks through zones and back to their checkpoints (M3 B4): where the walking scripts' documents
+//! (`content/inputs/`, M4 R2) take the player, a teleport that forgets how anyone got there, and a load at a checkpoint that walks on as the
 //! teleport did. The scripts' replays (`walk-the-ground`, `from-the-platform`, `walk-the-square`) hold the
 //! checksums; this says what those checksums are of.
 
 use std::alloc::System;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_gameplay::replay::walks::{self, Leg};
-use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+use sapphire_gameplay::replay::inputs::{Leg, StickPath, Track, Who};
+use sapphire_gameplay::replay::{ReplayCommand, SCENARIOS, Script, find_scenario, find_script};
 use sapphire_gameplay::{
     ActorId, CheckpointId, EncounterPhase, GroundMode, Place, Simulation, TeleportError, TickActions,
     ZoneStart, ZoneStartError,
@@ -45,18 +45,56 @@ fn start(name: &str) -> (Simulation, Vec<ActorId>) {
     scenario.start(scenario.config).expect("sets up")
 }
 
-/// Steps `sim` through `ticks` ticks of `script`, from its tick 0, calling `each` after every step.
+fn script(name: &str) -> &'static Script {
+    find_script(name).expect("listed")
+}
+
+/// The tick a walk returns to a checkpoint before, and which.
+fn return_of(script: &Script) -> (u32, CheckpointId) {
+    let returns = script.commands.iter().find_map(|&(tick, command)| match command {
+        ReplayCommand::ReturnTo(checkpoint) => Some((tick, checkpoint)),
+        _ => None,
+    });
+    returns.unwrap_or_else(|| panic!("{} returns", script.name))
+}
+
+/// Where `walk-the-ground` returns to.
+fn platform() -> CheckpointId {
+    return_of(script("walk-the-ground")).1
+}
+
+/// Steps `sim` through `ticks` ticks of `script`, from its tick `from`, calling `each` after every step.
 fn run(
     sim: &mut Simulation,
     cast: &[ActorId],
-    script: fn(u64, &[ActorId]) -> TickActions,
+    script: &Script,
+    from: u32,
     ticks: u32,
     mut each: impl FnMut(&Simulation),
 ) {
-    for tick in 0..u64::from(ticks) {
-        sim.step(&script(tick, cast));
+    for tick in u64::from(from)..u64::from(from + ticks) {
+        sim.step(&script.actions(tick, cast));
         each(sim);
     }
+}
+
+/// The player walking `legs`, and only that.
+fn walk(legs: &[Leg]) -> Script {
+    Script {
+        name: "tried".to_owned(),
+        about: "a walk tried".to_owned(),
+        ticks: legs.iter().map(|leg| leg.ticks).sum(),
+        tracks: vec![Track {
+            who: Who::Cast(0),
+            presses: Vec::new(),
+            stick: Some(StickPath::Legs(legs.to_vec())),
+        }],
+        commands: Vec::new(),
+    }
+}
+
+const fn leg(stick: (i8, i8), ticks: u32, jump: Option<u32>) -> Leg {
+    Leg { stick, ticks, ease: 0, jump }
 }
 
 fn place_of(sim: &Simulation, actor: ActorId) -> Place {
@@ -69,19 +107,21 @@ fn latest_name(sim: &Simulation) -> Option<String> {
     zone.latest_checkpoint().and_then(|id| zone.checkpoint_name(id)).map(str::to_owned)
 }
 
-/// [`walks::walk_the_ground`] up to its return.
+/// `walk-the-ground` up to its return.
 fn walked_out() -> (Simulation, Vec<ActorId>) {
     let (mut sim, cast) = start("ground-walk");
-    run(&mut sim, &cast, walks::walk_the_ground, walks::GROUND_RETURN_AT, |_| {});
+    let ground = script("walk-the-ground");
+    run(&mut sim, &cast, ground, 0, return_of(ground).0, |_| {});
     (sim, cast)
 }
 
 #[test]
 fn the_scripts_name_the_platform_by_its_place() {
     let (sim, _) = start("ground-walk");
-    assert_eq!(sim.zone().expect("a zone").checkpoint("platform"), Some(walks::PLATFORM));
+    assert_eq!(sim.zone().expect("a zone").checkpoint("platform"), Some(platform()));
     let (ward, _) = start("lantern-walk");
-    assert_eq!(ward.zone().expect("a zone").checkpoint("court"), Some(walks::WARD_COURT));
+    let court = return_of(script("walk-the-ward")).1;
+    assert_eq!(ward.zone().expect("a zone").checkpoint("court"), Some(court));
 }
 
 /// The Lantern Ward's walk goes the length of its tour on its real ground: to the Market Court's far end
@@ -94,7 +134,9 @@ fn the_ward_walk_goes_the_whole_ward() {
     let player = cast[0];
     let (mut east, mut west, mut highest) = (f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
     let mut reached = Vec::new();
-    run(&mut sim, &cast, walks::walk_the_ward, walks::WARD_RETURN_AT, |sim| {
+    let ward = script("walk-the-ward");
+    let (return_at, court_id) = return_of(ward);
+    run(&mut sim, &cast, ward, 0, return_at, |sim| {
         let view = sim.actor(player).expect("there");
         east = east.max(view.position.x);
         west = west.min(view.position.x);
@@ -116,12 +158,10 @@ fn the_ward_walk_goes_the_whole_ward() {
     assert_eq!(sim.stats().controllers_refused, 0);
 
     // The return, as the replay's command makes it: to the court's checkpoint, and up the court.
-    let court = sim.zone().expect("a zone").checkpoint_place(walks::WARD_COURT).expect("the court");
-    let actions =
-        |tick: u64, cast: &[ActorId]| walks::walk_the_ward(tick + u64::from(walks::WARD_RETURN_AT), cast);
-    sim.return_to_checkpoint(walks::WARD_COURT).expect("it returns");
+    let court = sim.zone().expect("a zone").checkpoint_place(court_id).expect("the court");
+    sim.return_to_checkpoint(court_id).expect("it returns");
     assert_eq!(place_of(&sim, player), court);
-    run(&mut sim, &cast, actions, walks::WARD_WALK_TICKS - walks::WARD_RETURN_AT, |_| {});
+    run(&mut sim, &cast, ward, return_at, ward.ticks - return_at, |_| {});
     let end = place_of(&sim, player).position;
     assert!(end.z < court.position.z - 10.0, "it ran up the court: {end}");
     assert_eq!(latest_name(&sim).as_deref(), Some("court"));
@@ -137,7 +177,8 @@ fn the_walk_out_crosses_the_whole_course() {
     let (mut on_platform, mut slid, mut furthest, mut rises) =
         (false, false, f32::INFINITY, Rises::default());
     let mut reached = Vec::new();
-    run(&mut sim, &cast, walks::walk_the_ground, walks::GROUND_RETURN_AT, |sim| {
+    let ground = script("walk-the-ground");
+    run(&mut sim, &cast, ground, 0, return_of(ground).0, |sim| {
         let view = sim.actor(player).expect("there");
         let state = view.controller.state;
         on_platform |= state.mode == GroundMode::Grounded && (view.position.y - 1.0).abs() < 1e-3;
@@ -163,28 +204,29 @@ fn the_walk_out_crosses_the_whole_course() {
 /// the square's bench, never rise faster than they were, nor higher than a jump from where they stood.
 #[test]
 fn nothing_met_in_the_air_throws_anyone() {
-    let out = Leg { stick: (0, -127), ticks: 208, jump: None };
-    let over = Leg { stick: (-127, 0), ticks: 300, jump: Some(263) };
+    let out = leg((0, -127), 208, None);
+    let over = leg((-127, 0), 300, Some(263));
     let mut tried: Vec<(&str, Vec<Leg>)> = Vec::new();
     for at in 186..230 {
-        tried.push(("ground-walk", vec![out, Leg { stick: (-127, 0), ticks: 270, jump: Some(at) }]));
+        tried.push(("ground-walk", vec![out, leg((-127, 0), 270, Some(at))]));
     }
     for at in 228..280 {
-        tried.push(("ground-walk", vec![out, Leg { stick: (-127, 0), ticks: 330, jump: Some(at) }]));
+        tried.push(("ground-walk", vec![out, leg((-127, 0), 330, Some(at))]));
     }
     for at in 0..24 {
-        tried.push(("ground-walk", vec![out, over, Leg { stick: (-127, 0), ticks: 80, jump: Some(at) }]));
+        tried.push(("ground-walk", vec![out, over, leg((-127, 0), 80, Some(at))]));
     }
     for at in 196..240 {
-        tried.push(("square-walk", vec![Leg { stick: (0, -127), ticks: 300, jump: Some(at) }]));
+        tried.push(("square-walk", vec![leg((0, -127), 300, Some(at))]));
     }
     for (scenario, legs) in &tried {
         let (mut sim, cast) = start(scenario);
         let player = cast[0];
         let mut before: Option<(GroundMode, f32)> = None;
         let mut rises = Rises::default();
-        for tick in 0..u64::from(walks::length(legs)) {
-            sim.step(&walks::walk(legs, tick, &cast));
+        let walk = walk(legs);
+        for tick in 0..u64::from(walk.ticks) {
+            sim.step(&walk.actions(tick, &cast));
             let view = sim.actor(player).expect("there");
             let state = view.controller.state;
             let label = format!("{scenario} {legs:?}, tick {tick}");
@@ -209,16 +251,18 @@ fn nothing_met_in_the_air_throws_anyone() {
 fn a_teleport_forgets_how_anyone_got_there() {
     let (mut walked, cast) = walked_out();
     let (mut stood, stood_cast) = start("ground-walk");
-    run(&mut stood, &stood_cast, |_, _| TickActions::NEUTRAL, walks::GROUND_RETURN_AT, |_| {});
+    for _ in 0..return_of(script("walk-the-ground")).0 {
+        stood.step(&TickActions::NEUTRAL);
+    }
     assert_eq!(cast, stood_cast);
     assert_ne!(walked.checksum(), stood.checksum(), "they went different ways");
 
     for sim in [&mut walked, &mut stood] {
-        assert_eq!(sim.return_to_checkpoint(walks::PLATFORM), Ok(cast[0]));
+        assert_eq!(sim.return_to_checkpoint(platform()), Ok(cast[0]));
     }
-    let ticks = walks::length(&walks::GROUND_ONWARD_LEGS);
-    for tick in 0..u64::from(ticks) {
-        let actions = walks::from_the_platform(tick, &cast);
+    let onward = script("from-the-platform");
+    for tick in 0..u64::from(onward.ticks) {
+        let actions = onward.actions(tick, &cast);
         walked.step(&actions);
         stood.step(&actions);
         assert_eq!(walked.checksum(), stood.checksum(), "tick {tick} after the return");
@@ -231,14 +275,14 @@ fn a_teleport_forgets_how_anyone_got_there() {
 #[test]
 fn a_load_at_a_checkpoint_walks_on_as_the_teleport_did() {
     let (mut walked, cast) = walked_out();
-    walked.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    walked.return_to_checkpoint(platform()).expect("returns");
     let (mut loaded, loaded_cast) = start("ground-platform");
     assert_eq!(place_of(&walked, cast[0]), place_of(&loaded, loaded_cast[0]), "they stand in one place");
 
-    let ticks = walks::length(&walks::GROUND_ONWARD_LEGS);
-    for tick in 0..u64::from(ticks) {
-        walked.step(&walks::from_the_platform(tick, &cast));
-        loaded.step(&walks::from_the_platform(tick, &loaded_cast));
+    let onward = script("from-the-platform");
+    for tick in 0..u64::from(onward.ticks) {
+        walked.step(&onward.actions(tick, &cast));
+        loaded.step(&onward.actions(tick, &loaded_cast));
         let (a, b) = (walked.actor(cast[0]).expect("there"), loaded.actor(loaded_cast[0]).expect("there"));
         assert_eq!(
             a.position.to_array().map(f32::to_bits),
@@ -257,8 +301,8 @@ fn a_load_at_a_checkpoint_walks_on_as_the_teleport_did() {
 fn a_saved_zone_start_comes_back_as_the_load_starts() {
     let (mut walked, cast) = walked_out();
     assert_eq!(latest_name(&walked).as_deref(), Some("lane_end"));
-    walked.return_to_checkpoint(walks::PLATFORM).expect("returns");
-    walked.step(&walks::from_the_platform(0, &cast));
+    walked.return_to_checkpoint(platform()).expect("returns");
+    walked.step(&script("from-the-platform").actions(0, &cast));
     let saved = walked.zone_start().expect("a zone");
     assert_eq!(saved, ZoneStart { checkpoint: Some("platform".to_owned()), cleared: Vec::new() });
 
@@ -286,7 +330,8 @@ fn a_cleared_encounter_stays_cleared() {
         zone.zone_start(),
         ZoneStart { checkpoint: Some("south_paving".to_owned()), cleared: vec![id] }
     );
-    run(&mut sim, &cast, walks::walk_the_square, walks::length(&walks::SQUARE_LEGS), |_| {});
+    let square = script("walk-the-square");
+    run(&mut sim, &cast, square, 0, square.ticks, |_| {});
     assert_eq!(sim.actors().len(), 1, "nobody came");
     assert!(
         sim.zone()
@@ -364,7 +409,7 @@ fn a_teleport_refuses_what_it_cant_do() {
     let ninth = CheckpointId::from_raw(9);
     assert_eq!(sim.return_to_checkpoint(ninth), Err(TeleportError::UnknownCheckpoint(ninth)));
     let (mut bare, _) = start("melee");
-    assert_eq!(bare.return_to_checkpoint(walks::PLATFORM), Err(TeleportError::NoZone));
+    assert_eq!(bare.return_to_checkpoint(platform()), Err(TeleportError::NoZone));
     assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 0, "nothing refused is counted");
 }
 
@@ -380,11 +425,11 @@ fn a_teleport_is_counted_for_presentation_alone() {
     sim.teleport(cast[0], here).expect("alive");
     assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 1);
     assert_eq!(still.actor(cast[0]).expect("alive").teleports, 0);
-    sim.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    sim.return_to_checkpoint(platform()).expect("returns");
     assert_eq!(sim.actor(cast[0]).expect("alive").teleports, 2);
     let (mut once, _) = start("ground-walk");
     once.step(&TickActions::NEUTRAL);
-    once.return_to_checkpoint(walks::PLATFORM).expect("returns");
+    once.return_to_checkpoint(platform()).expect("returns");
     for _ in 0..30 {
         sim.step(&TickActions::NEUTRAL);
         once.step(&TickActions::NEUTRAL);
@@ -399,9 +444,11 @@ fn a_return_takes_no_heap() {
         return;
     }
     let (mut sim, cast) = walked_out();
-    let ticks: Vec<TickActions> = (0..120).map(|tick| walks::from_the_platform(tick, &cast)).collect();
+    let onward = script("from-the-platform");
+    let ticks: Vec<TickActions> = (0..120).map(|tick| onward.actions(tick, &cast)).collect();
+    let platform = platform();
     let ((), returned) = alloc::count_in_scope(|| {
-        sim.return_to_checkpoint(walks::PLATFORM).expect("returns");
+        sim.return_to_checkpoint(platform).expect("returns");
     });
     let ((), stepped) = alloc::count_in_scope(|| {
         for actions in &ticks {

@@ -7,8 +7,9 @@ use sapphire_moves::MoveSet;
 
 use super::checksums::Trail;
 use super::file::{Cursor, MAX_TICKS, Recorder, Replay, ReplayCommand, ReplayError};
+use super::inputs::Script;
 use super::scenario::{Scenario, ScenarioError, find_scenario};
-use super::script::{ActionSource, Script};
+use super::script::ActionSource;
 use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
@@ -580,7 +581,7 @@ impl Recording {
         {
             return Err(PlayError::RecordingEnded { tick });
         }
-        let mut source = script.actions;
+        let mut source = script;
         let mut commands = script.commands.iter().peekable();
         while self.recorded_ticks() < ticks {
             if let Some(tick) = self.filled_at {
@@ -667,13 +668,20 @@ impl LendsFrame for Recording {
 
 #[cfg(test)]
 mod tests {
-    use super::super::script::{SCRIPTS, melee_sweep};
-    use super::super::{MAX_ACTORS, SCENARIOS, ScenarioSetup};
+    use super::super::{MAX_ACTORS, SCENARIOS, SCRIPTS, ScenarioSetup, find_script};
     use super::*;
     use crate::actions::{ActorActions, Buttons};
 
     fn melee() -> &'static Scenario {
         &SCENARIOS[0]
+    }
+
+    fn sweep() -> &'static Script {
+        find_script("melee-sweep").expect("listed")
+    }
+
+    fn idle() -> &'static Script {
+        find_script("idle").expect("listed")
     }
 
     fn record(ticks: u32, mut source: impl ActionSource) -> (Replay, Played) {
@@ -689,21 +697,21 @@ mod tests {
     #[test]
     fn a_recording_so_far_is_a_whole_replay_of_those_ticks() {
         let mut recording = Recording::new(melee(), melee().config).unwrap();
-        let mut source = melee_sweep;
+        let mut source = sweep();
         for _ in 0..100 {
             recording.step(&mut source).unwrap();
         }
         let so_far = recording.so_far();
         assert_eq!(so_far.ticks(), 100);
         assert_eq!(recording.scenario(), melee().name);
-        let (replay, _) = record(100, melee_sweep);
+        let (replay, _) = record(100, sweep());
         assert_eq!(so_far.encode(), replay.encode());
 
         for _ in 0..100 {
             recording.step(&mut source).unwrap();
         }
         let (whole, _) = recording.finish();
-        let (replay, _) = record(200, melee_sweep);
+        let (replay, _) = record(200, sweep());
         assert_eq!(whole.encode(), replay.encode());
     }
 
@@ -712,7 +720,7 @@ mod tests {
     #[test]
     fn a_run_that_goes_on_past_the_limit_plays_on_and_its_file_stops_there() {
         let ward = find_scenario(&SCENARIOS, "ward-court").expect("listed");
-        let mut source = super::super::script::idle;
+        let mut source = idle();
 
         let mut file = Recording::new(ward, ward.config).unwrap();
         file.step(&mut source).unwrap();
@@ -731,13 +739,13 @@ mod tests {
         run.step(&mut source).expect("plays on");
         assert_eq!(run.simulation().tick(), 3);
         assert!(run.so_far().commands().is_empty(), "and the file holds nothing past its end");
-        let script = super::super::find_script("idle").expect("listed");
+        let script = find_script("idle").expect("listed");
         assert!(matches!(run.run_script(script, MAX_TICKS + 5), Err(PlayError::RecordingEnded { .. })));
     }
 
     #[test]
     fn a_recording_plays_back_to_the_same_trail() {
-        let (replay, recorded) = record(300, melee_sweep);
+        let (replay, recorded) = record(300, sweep());
         assert_eq!(replay.ticks(), 300);
         assert_eq!(recorded.trail.ticks(), 300);
 
@@ -770,7 +778,7 @@ mod tests {
     fn a_scenario_this_build_lacks_is_named() {
         let scenario = Scenario { name: "gone", ..*melee() };
         let mut recording = Recording::new(&scenario, melee().config).unwrap();
-        recording.step(&mut super::super::script::idle).unwrap();
+        recording.step(&mut idle()).unwrap();
         let (replay, _) = recording.finish();
         let error = Player::new(replay, &SCENARIOS).err().expect("refused");
         assert!(matches!(&error, PlayError::UnknownScenario { name, .. } if name == "gone"));
@@ -851,7 +859,7 @@ mod tests {
 
     #[test]
     fn legacy_replay_keeps_the_exact_unconfigured_path() {
-        let (replay, recorded) = record(30, melee_sweep);
+        let (replay, recorded) = record(30, sweep());
         let mut player = Player::new_with_setup(replay, &SCENARIOS, |_, _, _| {
             panic!("legacy replay tried to load the optional profiles");
         })
@@ -866,7 +874,7 @@ mod tests {
             Recording::tuned_with_setup(melee(), melee().config, &LiveMoves::default(), configure_tables)
                 .unwrap();
         for _ in 0..30 {
-            recording.step(&mut melee_sweep).unwrap();
+            recording.step(&mut sweep()).unwrap();
         }
         let (replay, recorded) = recording.finish();
         assert!(matches!(Player::new(replay.clone(), &SCENARIOS), Err(PlayError::MovesChanged { .. })));
@@ -917,7 +925,7 @@ mod tests {
             sim.add_move_set(crate::replay::scenario::test_moves()?);
             Ok(cast)
         }
-        let (mut replay, played) = record(30, melee_sweep);
+        let (mut replay, played) = record(30, sweep());
         let scenarios = [Scenario { setup: ScenarioSetup::Code(moved), ..*melee() }];
 
         let error = Player::new(replay.clone(), &scenarios).err().expect("refused");
@@ -948,7 +956,7 @@ mod tests {
             sim.add_controller_profile(&run_speed)?;
             Ok(cast)
         }
-        let (replay, _) = record(30, melee_sweep);
+        let (replay, _) = record(30, sweep());
         let scenarios = [Scenario { setup: ScenarioSetup::Code(retuned), ..*melee() }];
         let error = Player::new(replay, &scenarios).err().expect("refused");
         assert!(matches!(error, PlayError::MovesChanged { .. }), "{error}");
@@ -959,12 +967,12 @@ mod tests {
     #[test]
     fn a_tick_changed_in_the_actions_is_named_by_the_recorded_trail() {
         use super::super::checksums::RecordedTrail;
-        let (_, played) = record(200, melee_sweep);
+        let (_, played) = record(200, sweep());
         let recorded = RecordedTrail::from_trail(&played.trail);
         let actor = ActorId::from_raw(2).unwrap();
         for changed in [0_u64, 1, 59, 60, 61, 120, 199] {
             let (other, _) = record(200, move |tick: u64, cast: &[ActorId]| {
-                let mut actions = melee_sweep(tick, cast);
+                let mut actions = sweep().actions(tick, cast);
                 if tick == changed {
                     let was = actions.get(actor);
                     let pressed = ActorActions { buttons: was.buttons | Buttons::JUMP, ..was };
@@ -983,9 +991,9 @@ mod tests {
     #[test]
     fn every_script_records_and_plays_back_on_every_scenario() {
         for scenario in SCENARIOS.iter() {
-            for script in SCRIPTS {
+            for script in SCRIPTS.iter() {
                 let mut recording = Recording::new(scenario, scenario.config).unwrap();
-                let mut source = script.actions;
+                let mut source = script;
                 for _ in 0..200 {
                     recording.step(&mut source).unwrap();
                 }

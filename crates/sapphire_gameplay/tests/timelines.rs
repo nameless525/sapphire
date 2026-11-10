@@ -4,7 +4,7 @@
 
 use sapphire_gameplay::replay::{
     CINEMATIC, COMMANDS_FORMAT_VERSION, CUTSCENE, PLAIN_FORMAT_VERSION, Player, Recording, Replay,
-    ReplayCommand, ReplayError, SCENARIOS, Scenario, arena_fight, find_scenario, find_script, melee_sweep,
+    ReplayCommand, ReplayError, SCENARIOS, Scenario, arena_fight, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineId, TimelinePlayError};
 use sapphire_timeline::{Beat, BeatKind, TimelineDocument, TimelineSimulation};
@@ -27,7 +27,7 @@ fn recording() -> Recording {
 }
 
 fn run_to(recording: &mut Recording, ticks: u32) {
-    let mut source = melee_sweep;
+    let mut source = find_script("melee-sweep").expect("listed");
     while recording.recorded_ticks() < ticks {
         recording.step(&mut source).expect("short");
     }
@@ -137,7 +137,7 @@ fn run_sim(sim: &mut Simulation, cast: &[ActorId], id: TimelineId, skip_after: O
                 tick += 1;
             }
         }
-        step(sim, &melee_sweep(u64::from(tick), cast));
+        step(sim, &find_script("melee-sweep").expect("listed").actions(u64::from(tick), cast));
         tick += 1;
     }
     trail
@@ -399,7 +399,10 @@ fn the_wards_gate_watched_or_skipped_leaves_its_fight_on_one_trail() {
     let (plain, watched, skipped) =
         (trail("ward-court"), trail("ward-court-watched"), trail("ward-court-skipped"));
     assert_eq!(watched, skipped);
-    let gate = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    let gate = find_script("ward-court-watched").expect("listed");
+    let gate = gate
+        .command_at(ReplayCommand::PlayTimeline(sapphire_gameplay::replay::COURT_GATE_ID))
+        .expect("it plays") as usize;
     assert_eq!(plain[..=gate], watched[..=gate], "the fight before the gate is the fight without it");
     assert_ne!(plain[gate + 1..], watched[gate + 1..], "the gate's event is in the checksum");
 }

@@ -52,7 +52,7 @@ fn round(apart: f32) -> (Vec<Duration>, NavStats) {
     let mut times = Vec::with_capacity(script.ticks as usize);
     let mut stats = NavStats::default();
     for tick in 0..u64::from(script.ticks) {
-        sim.step(&(script.actions)(tick, &cast));
+        sim.step(&script.actions(tick, &cast));
         times.push(sim.stats().last_step);
         let spent = sim.navigation_mut().expect("it has one").take_stats();
         stats.searches += spent.searches;

@@ -74,14 +74,14 @@ fn each_kinds_script_answers_its_own_fighters_phases_in_one_zone() {
     }
     attach(&mut sim, host);
     assert!(host_of(&sim).scopes().eq(kinds.map(ScriptScope::Kind)), "a script for each kind, in one host");
-    let input = find_script("into-the-market").expect("the market's replay's input").actions;
+    let input = find_script("into-the-market").expect("the market's replay's input");
 
     // Who played what, what each script had heard by each step's end, and each step's running moves.
     let mut seen: Vec<(ActorId, Option<MoveSetId>)> = Vec::new();
     let mut heard_at: Vec<(u64, usize, usize)> = Vec::new();
     let mut running: Vec<(u64, ActorId, Option<Name>)> = Vec::new();
     while sim.tick() < TICKS {
-        sim.step(&input(sim.tick(), &cast));
+        sim.step(&input.actions(sim.tick(), &cast));
         let tick = sim.tick();
         for actor in sim.actors() {
             if !seen.iter().any(|(id, _)| *id == actor.id) {

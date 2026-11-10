@@ -20,7 +20,7 @@ use crate::show::GameShow;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// What a capture draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameCapture {
     /// What the title's chosen at once, as its row would: a new game or a continue. `None` stays on it.
     pub choose: Option<FlowCommand>,
@@ -28,6 +28,9 @@ pub struct GameCapture {
     pub size: (u32, u32),
     /// Frames drawn, a tick each.
     pub ticks: u32,
+    /// The player's quality settings: the defaults, so the device's tier, for the game's own; a golden pins
+    /// its tier, since a device chooses its own (CI's Metal runner a lower one than a Mac's).
+    pub quality: QualitySettings,
 }
 
 /// A capture's last frame.
@@ -49,7 +52,7 @@ pub fn capture(
     capture: &GameCapture,
 ) -> Result<Captured, AppInitError> {
     let gpu = headless_gpu()?;
-    let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
+    let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, capture.quality));
     let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
     let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
     let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);

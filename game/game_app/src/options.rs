@@ -10,6 +10,7 @@ use game_flow::progress::progress_store;
 use game_flow::show::GameShow;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform, durable_replace};
+use sapphire_render::quality::QualitySettings;
 
 const CAPTURE_FLAG: &str = "--capture";
 
@@ -109,7 +110,12 @@ impl Options {
 
     /// What `--capture` draws.
     pub(crate) fn capture(&self) -> GameCapture {
-        GameCapture { choose: self.choose, size: self.size, ticks: self.ticks }
+        GameCapture {
+            choose: self.choose,
+            size: self.size,
+            ticks: self.ticks,
+            quality: QualitySettings::default(),
+        }
     }
 }
 
@@ -137,7 +143,12 @@ mod tests {
         assert_eq!((options.size, options.ticks), ((640, 360), 9));
         assert_eq!(
             options.capture(),
-            GameCapture { choose: Some(FlowCommand::NewGame), size: (640, 360), ticks: 9 }
+            GameCapture {
+                choose: Some(FlowCommand::NewGame),
+                size: (640, 360),
+                ticks: 9,
+                quality: QualitySettings::default()
+            }
         );
         assert!(!options.saves());
         assert!(is_offscreen_flag("--capture") && is_offscreen_flag("--capture=a.png"));

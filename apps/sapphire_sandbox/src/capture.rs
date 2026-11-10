@@ -23,6 +23,7 @@ use game_flow::progress::{Progress, progress_store};
 use game_flow::show::GameShow;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform};
+use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_save::ProgressStore;
 
@@ -76,20 +77,21 @@ fn step(
 }
 
 /// `--game`: the game's own show on the content's flow, from `start`, over `progress`'s save if there is one,
-/// drawn `ticks` frames with no window and written as any capture is (M3 G1). It keeps no run's file, and the
-/// save only in a scratch directory it takes away after.
+/// drawn `ticks` frames with no window on the player's `quality` settings (`--tier` and the rest of the
+/// command line's) and written as any capture is (M3 G1). It keeps no run's file, and the save only in a
+/// scratch directory it takes away after.
 pub(crate) fn game(
     platform: &Platform,
     path: &Path,
     (start, progress): (GameStart, Option<&Path>),
-    ticks: u32,
-    size: (u32, u32),
+    (ticks, size): (u32, (u32, u32)),
+    quality: QualitySettings,
 ) -> Result<(), AppInitError> {
     let scratch = progress.map(Scratch::holding).transpose()?;
     let setup =
         GameSetup { store: scratch.as_ref().map(|scratch| scratch.store.clone()), ..GameSetup::default() };
     let (show, first) = GameShow::from_content(platform.content(), PlayerSettings::default(), setup)?;
-    let capture = GameCapture { choose: start.command(), size, ticks };
+    let capture = GameCapture { choose: start.command(), size, ticks, quality };
     let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
     write_png(path, size.0, size.1, &captured.pixels)?;
     write_adapter_info(path, &captured.adapter)?;

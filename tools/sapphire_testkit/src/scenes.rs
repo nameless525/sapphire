@@ -3961,11 +3961,21 @@ pub fn scenes() -> [Scene; 211] {
         game_scene!("game-character-ultrawide-en", "character", "1680x720", "en"),
         game_scene!("game-character-ultrawide-ja", "character", "1680x720", "ja"),
         // The game's own show on its flow (M3 G1) in the Lantern Ward, through the sandbox's `--game`, which
-        // stands the game as it ships and so pins nothing: its title over the run it would continue, and a
-        // continue from a save at the court's checkpoint, a second and a half in.
+        // stands the game as it ships, its look unpinned but for its tier, which a device would choose
+        // (CI's Metal runner Desktop-Low, a Mac Desktop-High): its title over the run it would continue, and
+        // a continue from a save at the court's checkpoint, a second and a half in.
         Scene {
             name: "game-ward-title",
-            args: &["--size", "640x360", "--capture-ticks", "30", "--game", "title"],
+            args: &[
+                "--size",
+                "640x360",
+                "--capture-ticks",
+                "30",
+                "--tier",
+                "desktop-high",
+                "--game",
+                "title",
+            ],
             thresholds: Thresholds::default(),
         },
         Scene {
@@ -3975,6 +3985,8 @@ pub fn scenes() -> [Scene; 211] {
                 "640x360",
                 "--capture-ticks",
                 "90",
+                "--tier",
+                "desktop-high",
                 "--game",
                 "continue",
                 "--progress",
@@ -4946,8 +4958,9 @@ mod tests {
             } else if scene.name.starts_with("zone-") {
                 assert!(scene.args.contains(&"--zone"), "{}", scene.name);
             } else if scene.name.starts_with("game-ward-") {
-                // The game as it ships, on the zone's own look.
+                // The game as it ships, on the zone's own look, at a tier no device chooses for it.
                 assert!(scene.args.contains(&"--game"), "{}", scene.name);
+                assert!(pinned("--tier", "desktop-high"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);

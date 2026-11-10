@@ -2,11 +2,7 @@
 
 What M4 inherits from M3, for whoever starts M4. Like [m3-handoff.md](m3-handoff.md), it's a map. Each item gets a line or two and a pointer to where the detail lives: the spec ([engine-spec.md](engine-spec.md)) by section, the plan ([m3-plan.md](m3-plan.md)) by package ID, the runbook ([m3-exit-run.md](m3-exit-run.md)), or the code.
 
-**Written on 2026-11-10** on top of all of M3's packages but three. Each of those has a mark where it changes something:
-
-- **Lands with Z2:** the final exit run's head, its numbers and its date, which also go in the spec's §10.
-- **Lands with Z1's fixes:** secondary motion over its budget, and the GPU frame row Metal doesn't read.
-- **Lands with S3b:** the simulation's bodies get their own table, and `CHECKSUM_LAYOUT` goes to 9.
+**Written on 2026-11-10** on top of all of M3's packages (Z4, in three parts). The final exit run's head, its numbers and its date are Z2's, in [m3-exit-run.md](m3-exit-run.md).
 
 **Nobody has played anything.** The maintainer started M3 on 2026-11-03 without having played M2's fight, so review 3 from [m2-exit-run.md](m2-exit-run.md) was never run. Nobody has played M3's slice either. Whether any of it is fun is unknown, and that is still the largest risk in the project.
 
@@ -16,14 +12,14 @@ M3 built a small game, `game_app`. It has a title with a new game and a continue
 
 | Exit test ([m3-plan.md](m3-plan.md) §1) | Where it stands |
 |---|---|
-| 1. A zone with three encounters, walked to its boss | Replays of the ward's walk and its fights hold on all three desktop OSes, with no allocation in a step. The game's flow (G1) plays the ward with every encounter live, and the terrace's clearing wins. `plays_the_ward` runs on a stage: a continue at the court, the gate skipped, the guide's choice, back to the title, and a continue that replays neither. **Lands with Z2:** a walk from the title to the boss's win through the flow. No lane plays the boss through the flow yet. |
+| 1. A zone with three encounters, walked to its boss | Replays of the ward's walk and its fights hold on all three desktop OSes, with no allocation in a step. The game's flow (G1) plays the ward with every encounter live, and the terrace's clearing wins. The whole walk through the flow, from a new game to the Knell Colossus's defeat with the gate watched and the guide answered, is `ward-whole-walk` (G1c): `game_flow`'s `the_whole_walk_replays_to_the_win` in every OS's tests, and `game_app`'s `wins_the_ward` on the stage in CI's App tests. `plays_the_ward` holds a continue at the court, the gate skipped, the guide's choice, back to the title, and a continue that replays neither. |
 | 2. A boss with no Rust changes | Holds. `crates/sapphire_gameplay/tests/bosses_are_content.rs` finds the Knell Colossus by its being a boss. Its name is in no `.rs` file, its files and script are reached from the zone's document, and the commit that put it in the zone touched only `content/`, `tests/replays/` and `tests/golden/`. CI's Linux leg reads the whole history for that last clause. A second boss was added by the recipe below with no Rust. |
 | 3. One cutscene | The court encounter's start plays the gate through a flow beat, aligned to the court's checkpoint, and the guide's conversation follows. A watch and a skip reach one checksum (`ward-court-watched`, `ward-court-skipped`). The HUD draws the subtitles in the chosen language, held by goldens at three aspects in both (`game-ward-gate-*`, M3 Q4). |
 | 4. HUD and menus in two languages | The menus are walked by pad, keyboard and touch at three aspects in both languages, with goldens. A real run has a title with continue and new game, a pause with a way back to the title, and a HUD with a cutscene's skip and banners (G1). The goldens `game-ward-title` and `game-ward-checkpoint` draw the ward's title and a continue from its court. The Japanese is machine-quality, and a reader is owed. |
 | 5. Five platforms | Done, pending devices, as M1 and M2 closed. Linux and Windows run on CI's software rasterizers, and macOS on Metal. The iOS Simulator played a scripted fight to this Mac's checksum. The Android emulator plays committed replays offscreen (Z2b): `zone-trip`, `ward-court-watched` and `arena-fight-won` reached their checksums with no allocation in a step ([m3-exit-run.md](m3-exit-run.md)). No phone has run anything. |
 | 6. The editor | Proved by tests with no window. The window is owed to a person. |
-| 7. The inventory | 0 first-use pipeline builds after load on Desktop-Low and Mobile-Low, in every app lane and bench (`plays_the_ward` and `zone_trip` among them). **Lands with Z2:** a recorded walk through the flow, read on both tiers. No such replay is committed yet. |
-| 8. Budgets and durability | Saves survive a kill at every step of a write, and old saves migrate. The game's own save types have their version 1 bytes frozen (Z3c). On the zone bench (Z1, spec §3.6), §3.2's script and streaming rows are inside budget on every tier. Memory holds flat across the walk: the asset server at 59.6 MB on desktop and 47.7 MB on mobile, and the process at 404–775 MB by tier. A trip's wipe is gone 69 frames after its exit on Desktop-Low (425–497 ms), and 37 on Mobile-Low. **Lands with Z1's fixes:** secondary motion, over on every tier (Desktop-Low 1.947 ms p50 against 0.5, Mobile-Low 1.535 against 1), and the GPU frame row Metal reads on no frame. |
+| 7. The inventory | 0 first-use pipeline builds after load on Desktop-Low and Mobile-Low, in every app lane and bench, `wins_the_ward`'s whole walk through the flow among them. |
+| 8. Budgets and durability | Saves survive a kill at every step of a write, and old saves migrate. The game's own save types have their version 1 bytes frozen (Z3c). On the zone bench (Z1, spec §3.6), §3.2's script and streaming rows are inside budget on every tier. Memory holds flat across the walk: the asset server at 59.6 MB on desktop and 47.7 MB on mobile, and the process at 404–775 MB by tier. A trip's wipe is gone 69 frames after its exit on Desktop-Low (425–497 ms), and 37 on Mobile-Low. Z1's fixes read the GPU rows on Metal again, took the allocation out of a trip's step, and scaled the springs' clearance pass by tier, so secondary motion's p50 is inside its rows on Desktop-Low and Mobile-Low; its p99 is still a solve frame's, and Desktop-Low's mean is over (see "Known to the run"). |
 
 **The reviews (Z3a–Z3f)** gave six areas a fresh read after their packages landed, the way M2's did:
 
@@ -42,8 +38,9 @@ Nothing here has been run, for want of a device or a person. [m3-exit-run.md](m3
 - **Review 3, and the same for M3's slice.** Thirty minutes with a gamepad on [m2-exit-run.md](m2-exit-run.md)'s sheet. Then the Lancer and the boss, three enemies in a room with tokens, the boss's second wind, the ultimate and its meter, and the ward from the title to the boss.
 - **Motion nobody has judged:** the Lancer's and the Knell Colossus's key-posed and retargeted clips (C2 part 1), the gate cutscene's poses (Q3) and the ultimate's chop (Q3b).
 - **A reader of Japanese** for every string in `content/loc/ja/` (C3, and the bosses' names from Z3e). Both files' resource comments say they're machine-quality.
-- **Anything heard.** Nobody has heard A1's music or voice lines, which are placeholders `tools/sapphire_soundgen` synthesizes, or any of M2's cues. On the emulator, audio warns that real-time scheduling was refused, and nobody has listened.
+- **Anything heard.** Nobody has heard A1's music or voice lines, which are placeholders `tools/sapphire_soundgen` synthesizes, or any of M2's cues. On the emulator, audio says once that the device refused the low-latency path, which an emulator always does (Z2c), and nobody has listened.
 - **A window on this Mac, or any desktop,** since agents may not open one here. The game's first run in a window. The editor (`cargo xtask editor`): docking by hand, a real drag on the gizmo, keyboard focus, and a lost device (E3, E4, E5). A cutscene's blend, whose camera numbers are bounded but which nobody has watched.
+- **Exit test 5's devices:** a phone of each OS, and a desktop GPU other than this Mac's. Windows and Linux have drawn only on CI's software rasterizers.
 - **A phone.** Only sizes were measured on the Android and iOS builds. Nothing of Luau, `parley` text, ICU plurals, zones and streaming, or the 3D inset has run on one. Neither have saves on `SDL_GetPrefPath`'s real paths, a phone's flash or a power cut, nor a phone driver's cold compile of the packs' pipelines, which blocks a load for 6–7 s on an M5 (K1). Mobile-Low's numbers come from this Mac at Mobile-Low's settings.
 - **Touch on iOS.** `simctl` can't touch, so iOS touch is unproved. The Android emulator took real taps (S2).
 - **x86-64 Android** links Luau and has never run it (L1).
@@ -74,20 +71,20 @@ There are 46 crates in `crates/`, four in `game/`, the sandbox and the tools. Ea
 
 - **L2, plain data:** `sapphire_zone`, `sapphire_navmesh`, `sapphire_timeline`, `sapphire_dialogue`, `sapphire_strings`, `sapphire_loc`, and `sapphire_bytecode`, a Luau compile and scan the cooker can link.
 - **L3:** `sapphire_text` (`parley`, `swash`, the glyph atlas), and `sapphire_body_pose`, the CPU pose evaluator that presentation and the simulation's bodies share.
-- **Simulation and above:** `sapphire_nav`, `sapphire_script` (Luau), `sapphire_sequencer`, `sapphire_save` (L4), and `sapphire_stage` (L5). The stage is the one road from a simulation and cooked content to a `FramePacket`, shared by the sandbox, the game and the editor's viewport.
+- **Simulation and above:** `sapphire_nav`, `sapphire_script` (Luau), `sapphire_sequencer`, `sapphire_save` (L4), and `sapphire_stage` (L5). The stage is the one road from a simulation and cooked content to a `FramePacket`, shared by the sandbox, the game and the editor's viewport. What only the sandbox's sample scenes build is behind its `samples` feature, which a game leaves off (Z5d).
 - **L6, the game:** `game_combat` (a fight's app side), `game_ui` (HUD, touch, menus and the dialogue panel), `game_flow` (the title-to-victory machine and the save, spec §5.30) and `game_app`.
 - **Tools and dev:** `sapphire_document` (the editor's change records), `sapphire_soundgen`, and `sapphire_synthetic_zone` (dev only).
 
 **`[simulation]`** lists twelve crates, whose trees may hold no SDL, wgpu, renderer, world, anim, input or platform code. A new simulation crate joins the list and holds the same `clippy.toml`. **`[cooker]`** keeps the renderer and world out of `sapphire_pipeline`, which is why `sapphire_bytecode` exists.
 
-**Kinds and versions follow the landing order.** `AssetKind` numbers are contiguous, up to `VoiceLines` 25. `MoveSet` is version 9, `Zone` 5, and `Progress` and `FlowDocument` 1. The replay format is 4, written only for a run with a zone start (G1). `CHECKSUM_LAYOUT` is 8 (**lands with S3b:** 9). A new kind or version takes the next number at its final rebase. A pack encoding's cache key holds the kind's number, so a renumbered kind re-encodes on its own (Z3d).
+**Kinds and versions follow the landing order.** `AssetKind` numbers are contiguous, up to `VoiceLines` 25. `MoveSet` is version 9, `Zone` 5, and `Progress` and `FlowDocument` 1. The replay format is 4, written only for a run with a zone start (G1). `CHECKSUM_LAYOUT` is 9 (S3b). A new kind or version takes the next number at its final rebase. A pack encoding's cache key holds the kind's number, so a renumbered kind re-encodes on its own (Z3d).
 
 ### Data path
 
 - **New cooked kinds** (spec §5.10): zone (`.szone`) and its cells' meshes, navmesh (`.snav`), encounter (`.sencounter`), timeline, Luau script (`.sscript`), dialogue (`.sdialogue`), font (`.sfont`) and font chains (`.sfontc`), locale (`.sloc`), UI screen (`.sui`), kind of enemy (`.senemy`), `Score` and `VoiceLines`.
 - **Packs:** one per zone, `zone_<name>.spack`, holding what only that zone reaches (W1), plus `fonts`, `loc` and `ui`. A pack's table lists each submesh's pipeline key (K1) and the names of clips and move sets (S3).
 - **What the simulation reads is pinned:** a zone's digest and its encounters' tables, each script's bytes, each timeline's and dialogue's simulation half, and each kind's mind. All go into `tables_hash`, so a replay can't run on other data. Zones load whole before the first step, and only presentation streams (plan §3, "The simulation streams nothing").
-- **Compiled in,** so an edit needs a rebuild: scenario documents, by `crates/sapphire_gameplay/build.rs`, which also embeds every `.enemy.ron` under `content/combat/` with the moves and script it names; and the cue table, `crates/sapphire_cues/default_cues.ron`.
+- **Compiled in,** so an edit needs a rebuild: scenario documents, by `crates/sapphire_gameplay/build.rs`, which also embeds every `.enemy.ron` under `content/combat/` with the moves and script it names, and every `.timeline.ron` beside a moves document, a cinematic its moves may name (Z5a); and the cue table, `crates/sapphire_cues/default_cues.ron`.
 
 ### The combat stack
 
@@ -125,7 +122,8 @@ From the bottom up, on M2's ([m3-handoff.md](m3-handoff.md)). Spec §5.19 and §
 - **Benches and lanes:**
   - `--bench` for a fight or a zone walk (`--arena --replay tests/replays/walk-the-ward.sreplay`, with `--stream <entities>:<radius>`), logging memory and each trip's time (spec §3.6);
   - the sandbox's `--ignored` replay lane;
-  - `game_app`'s lanes `reaches_the_fight`, `zone_trip`, `opens_the_guide` and `plays_the_ward`, each `cargo test -p game_app --features dev --test <name> -- --ignored`.
+  - `game_app`'s lanes `reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_the_ward` and `wins_the_ward`, each `cargo test -p game_app --features dev --test <name> -- --ignored`;
+  - the whole walk's recorder, `cargo test -p game_flow --test ward_walk -- --ignored`, with `SAPPHIRE_WALK_OUT=<file>` to write the replay again when the fight changes under it.
 - **Look-dev for a new figure:** `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]`. **Generators:** `sapphire_pipeline gen-figures --specs tools/figures --out content` for figures from specs, `tools/motion/` for key poses in plain Python, and `tools/sapphire_soundgen` for placeholder sound.
 
 ## How to add
@@ -196,12 +194,14 @@ Walked, as part of both recipes above.
 3. **Every scenario on that zone** (`content/scenarios/*.scenario.ron` whose `zone` is it) must list the new encounter in `encounters`, and in `cleared` if it shouldn't run there. A scenario that doesn't fails to set up.
 
    Its kinds needn't be listed anywhere else. The zone's spawners say what it spawns, so a scenario adds each kind that its encounters' spawners name after the kinds it lists, with that kind's moves and script. Cleared encounters count too. The kind is the `<spawns>.enemy.ron` under `content/combat/`, which the build compiles in. A kind's name is its file's, so two `.enemy.ron` files with one name fail the build. A name with no kind fails the scenario's setup, naming the spawner.
+
+   A scenario's `max_actors` must hold its cast and every fighter its encounters bring, cleared ones aside, since a fallen fighter keeps its place: a game's flow refuses a scenario that's too small (`Game::new`, G1c), where the last arrivals would come to nobody and their encounter clear with no fight.
 4. **A scenario of its own:** a `cast` member with `moves: "player"` standing at a player spawner inside the trigger, as [ward-terrace.scenario.ron](../content/scenarios/ward-terrace.scenario.ron) does. Then record a replay:
    ```bash
    cargo xtask replay --record <name> --scenario <scenario> --script fight-back --ticks <n>
    ```
    The script is any row of `SCRIPTS`. **Rust step:** a new scripted input is a row in `crates/sapphire_gameplay/src/replay/script.rs`.
-5. **Every replay on the zone moves,** because the zone's digest is in `tables_hash`. Re-stamp them with `cargo xtask replay --update`. The walk moved six. x86-64's lines are owed from CI.
+5. **Every replay on the zone moves,** because the zone's digest is in `tables_hash`. Re-stamp them with `cargo xtask replay --update`. The walk moved six. x86-64's lines are owed from CI. On the Lantern Ward, a fight that plays differently also needs `ward-whole-walk` recorded again by its recorder (see "Tools"), and the tests that pin the ward's content need their numbers changed: a **Rust step**, listed under "Everything deferred".
 6. **A golden** of the fight in its zone. **Rust step:** a golden scene is a row in `tools/sapphire_testkit/src/scenes.rs`, with the replay's `--arena --replay` capture and a tick. Exit test 2 allows the PNG in the boss's commit, and the row goes in a commit of its own, as the ward's did.
 
 ### A zone, with checkpoints and exits
@@ -213,7 +213,7 @@ The worked examples are [content/zones/lantern_ward/](../content/zones/lantern_w
 3. **Checkpoints:** `(name, position, yaw_degrees, volume)`, reached outside a fight. A save names the latest. The cook refuses one off the navmesh.
 4. **Exits:** `(name, to: "<zone id>", arrive: "<spawner there>", prefetch)`, with a trigger whose `event` is the exit's name. The cook reads the other zone to check `arrive`. A hub's `prefetch` brings the next zone in ahead of time.
 5. **Look at it:** `--zone <name>[:<spawner>]` on the sandbox, with `--capture`. In the editor, `cargo xtask content --cook editor` first, then the zone pane moves placements.
-6. **A scenario and a walk:** a scenario document on the zone, as above, with the zones a trip reaches in its `shelf`. **Rust step:** a shelved zone must be a row of `BAKED_ZONES` in `crates/sapphire_gameplay/src/replay/scenario.rs`, since its navmesh takes a bake, and a replay test that names a zone's entry uses that file's constants. A trip in the game itself is data.
+6. **A scenario and a walk:** a scenario document on the zone, as above, with the zones a trip reaches in its `shelf`. **Rust step:** a shelved zone must be a row of `BAKED_ZONES` in `crates/sapphire_gameplay/src/replay/scenario.rs`, since its navmesh takes a bake, and a replay test that names a zone's entry uses that file's constants. A trip in the game itself is data. A new zone is otherwise documents, held by the cook's checks; a checkpoint added to the Lantern Ward fails `zone_ward.rs`'s list of its four (a **Rust step**).
 
 ### A dialogue, with story flags
 
@@ -222,7 +222,7 @@ The worked example is [ward_guide.dialogue.ron](../content/dialogue/ward_guide.d
 1. **Flags:** add the names to [content/flags.ron](../content/flags.ron), at most 256. A flag is an `i32` that reads 0 until set. The cook refuses a flag that isn't listed.
 2. **The dialogue:** `content/dialogue/<name>.dialogue.ron` with a `Dialogue` sidecar. It holds `start`, optionally `opens_on` (an event name), and `nodes`. Each node has `say: (speaker, line, vo)`, `set` flag writes, `next`, up to 4 `choices` (each with `line`, `to`, `when`, `set`) and `branch` arms with `otherwise`. A condition is a small language over flags: `flag.x >= 1 and not (flag.y == 2)`.
 3. **Strings:** every key starts `dialogue-`. Add them to `content/loc/en/dialogue.ftl` and `content/loc/ja/dialogue.ftl`, and new Han to `content/fonts/ui.charset.ron`.
-4. **Opening it:** the run's scenario lists it in `dialogues`, with `flags` naming the registry, as `ward-run` does. Then either a beat in [game.flow.ron](../content/game.flow.ron) opens it (`then: Dialogue("<id>")`, as the guide opens after the gate), or a zone trigger whose `event` is its `opens_on` does. The fight holds while it's open.
+4. **Opening it:** the run's scenario lists it in `dialogues`, with `flags` naming the registry, as `ward-run` does. Then either a beat in [game.flow.ron](../content/game.flow.ron) opens it (`then: Dialogue("<id>")`, as the guide opens after the gate), or a zone trigger whose `event` is its `opens_on` does. The fight holds while it's open. `Game::new` refuses a flow whose beats name a dialogue its scenario doesn't load. **Rust step,** in the shipped run only: `ward_flow` pins `ward-run`'s dialogues to the guide alone, `plays_the_ward` counts one, and the whole walk's recorder answers only the guide.
 5. **Look at it:** `--ui-game dialogue --ui-dialogue <n>` previews the panel. **Rust step:** it always shows the ward's guide (`apps/sapphire_sandbox/src/screen.rs`). In the game: `cargo test -p game_app --features dev --test opens_the_guide -- --ignored`, and `plays_the_ward` for the flow's.
 
 ### A cutscene
@@ -233,7 +233,7 @@ The worked example is [court_gate.timeline.ron](../content/zones/lantern_ward/co
 2. **A new pose:** a `.keypose.ron` and its sidecar, named as a clip and a move in [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron).
 3. **Subtitles:** keys and speakers in `content/loc/{en,ja}/cutscenes.ftl`, a line under `subtitle-` and a speaker under `speaker-`: the HUD shows only keys under those prefixes. `tools/sapphire_pipeline/tests/cutscene_strings.rs` and `game_ui --test strings` hold them.
 4. **Look at it:** `--arena --timeline <id>` plays one on the sandbox, and the editor's sequencer pane scrubs it.
-5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. A replay that plays it is a scripted input, a Rust step above, and its goldens are rows in `scenes.rs`.
+5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads. **Rust steps:** a replay that plays it on its own scenario is a scripted input (`PlayTimeline` at a tick in `script.rs`), its goldens are rows in `scenes.rs`, and in the shipped run `ward_flow` pins `ward-run`'s timelines to the gate alone while the whole walk counts one cutscene.
 
 ### A game screen
 
@@ -248,7 +248,7 @@ The worked examples are the six documents in [content/ui/](../content/ui/). Spec
    ```bash
    cargo xtask run --platform desktop -- --capture <png> --ui-plain --ui-game <name> --ui-locale ja
    ```
-   with `--ui-pseudo` for pseudo-localization. Goldens at 4:3, 16:9 and 21:9 are rows in `scenes.rs`.
+   with `--ui-pseudo` for pseudo-localization. **Rust step:** goldens at 4:3, 16:9 and 21:9 are rows in `scenes.rs`.
 
 ### Music by encounter phase, and voice lines
 
@@ -288,16 +288,18 @@ M3's first pillar counts each of these as a bug:
 
 - **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
 - **A replay's scripted input** is a row in `crates/sapphire_gameplay/src/replay/script.rs`. Recording on an existing script needs none.
-- **A new player move** joins `MOVES` (and `ATTACKS`) in `tools/sapphire_pipeline/tests/player_moves.rs`.
+- **A new player move** joins `MOVES` (and `ATTACKS`) in `tools/sapphire_pipeline/tests/player_moves.rs`, which could read both from `player.moves.ron` (a move with a clip, and one with hitboxes).
 - **The sandbox's dialogue preview** always shows the guide.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
 - **A shelved zone** is a row of `BAKED_ZONES` in `replay/scenario.rs`.
+- **The shipped Lantern Ward's content is pinned by tests** (found by Z4's last part, reading the recipes against the code). A kind added to the ward fails `sapphire_gameplay`'s `a_zones_encounters_bring_the_kinds_they_spawn` (three kinds, four sets on `lantern-walk`); a fighter more in its encounters fails `room_for_everyone_counts_the_cast_and_every_fighter_to_come` (15 on `ward-run`); a checkpoint fails `zone_ward.rs`'s list of four; a timeline or dialogue more in `ward-run` fails `game_flow`'s `ward_flow`, and `plays_the_ward` counts one dialogue. The whole walk's recorder (`game_flow --test ward_walk`) walks the ward's `tour` by points written in the test, answers only the guide and counts one cutscene, as `wins_the_ward` plays its file. Each wants reading from the documents, or a test zone of its own, so that a new boss in the ward can still land in a commit that touches only `content/`.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 
 **Fixed in M3:**
 
 - **Starting a cutscene, and holding a dialogue in a scenario.** G1 fixed both: beats and a scenario's lists are documents.
 - **Exit test 2's third clause** charged a boss to every zone that reached it through an exit. It now looks only in the zone whose spawner names it ("Look for a boss's commit in the zone that has it").
+- **A cinematic and a boss's music** (Z5a): a move names its cinematic by its timeline's file name, and a boss's named phase chooses the score's phase of that name. **A new screen** (U9): which screens there are and what their rows do is `content/ui/menus.ron`.
 - **One kind with a script per zone.** A fight bound one script, and a scenario had to list every kind its zone's spawners name. Now each kind's script is bound for its own fighters in the fight's one VM, and a scenario on a zone adds the kinds its encounters spawn ("Bind each kind's script for its own fighters"). The Lantern Ward's six replays moved, since the Knell Colossus's script no longer hears anyone else.
 
 ### Known to the run
@@ -310,13 +312,7 @@ M3's first pillar counts each of these as a bug:
 - **No production path loads a pack's `.sscript`.** Dialogues carry their conditions' source and compile at bind (Q2b), and a script could do the same (71 µs for `arena-scripted`). The cooked kind doesn't carry its script either, so a game reading kinds from packs needs a format change.
 - **The editor's scenario choice.** Its viewport fights only `arena-fight`, so another kind never reaches it. **Live tuning of kinds:** neither a kind's `.enemy.ron` nor its graph reaches a running fight, only the warrior's graph. Each is about half a day (spec §5.22, C2 part 2's "Can't do, in the tools").
 - **Post's gradient packing** (`pack_linear_gradient` and `pack_radial_gradient` in `crates/sapphire_render/src/post/layers.rs`) is heavy defensive code to keep up, not a bug (Z3a).
-- **The springs' clearance** (Z3e, by reading only; **Z1's fixes may take these**):
-  - a side taken from the sign of a near-zero dot product can jitter on the back (`crates/sapphire_anim/src/springs.rs`, near 1300);
-  - the underarm morph snaps to 0 when no gain level clears (`springs/clearance/underarm.rs`);
-  - each call of `springs/clearance/residual/distal_hand.rs` takes about 200 KB of stack;
-  - the spec's springs cost (34 µs p50) predates clearance.
-- **A trip allocates in a step** (Z1): `Fight::holds_step` makes a `ZoneTarget` with an owned pack name once a trip. **Lands with Z1's fixes.**
-- **The bodies' foot and look settings** reach the simulation's own bodies only as defaults, since a game's document would be a simulation table in `tables_hash` (S3). **Lands with S3b:** that table (`BodyTuning`), and a brain's optional checksum fields written whole (Z3c's finding, `CHECKSUM_LAYOUT` 9). Every replay moves.
+- **Secondary motion's worst frame** (Z1's fixes; spec §3.6, and §5's springs, "Clearance by tier and distance"). On Desktop-Low the clearance pass solves every third tick and on the phones' tiers every fourth, writing the last solve's corrections between, so p50 is inside §3.2's rows. p99 is still a solve frame's on every tier (2.10 ms on Desktop-Low and 1.28 on Mobile-Low with the machine to itself), and Desktop-Low's mean is 0.56 ms against its 0.5. Spreading a solve's parts over the frames it holds would cut both. Desktop-High keeps the full pass every frame, about 2.6 ms, which §3.2 doesn't budget.
 
 ### From the spec's "Can't do" lines
 
@@ -328,7 +324,7 @@ Each is in its section, with what it would take:
 - **Encounters (§5.22):** one side per encounter; `ReturnTo` names a checkpoint by its place in the zone's list.
 - **Timelines and cinematics (§5.23):** a cinematic's run goes on if its move is cut short; a freeze can't be counter-scaled; the editor's live run plays a set without its cinematic; a `TodCutscene` isn't a track.
 - **Dialogue (§5.23):** a dialogue's keys aren't added to font subsets; script writes aren't held to the registry; quests don't step.
-- **Music (§5.15):** stems decode whole, about 6.1 MB for the score; no horizontal re-sequencing or stingers; one Language setting drives text and voice.
+- **Music (§5.15):** stems decode whole, about 7.7 MB for the score with Z5a's toll; no horizontal re-sequencing or stingers; one Language setting drives text and voice; two bosses up at once play the first's phase (Z5a).
 - **Renderer (§5.12):** the mesh pool's buffers never shrink; no LOD selection; the inventory's warm-up blocks a load, which M4's warm-up screen and driver cache answer.
 - **Scripts (plan L2):** no real type check of `sapphire.d.luau`, since there's no `luau-analyze` here.
 
@@ -348,7 +344,7 @@ Each is in its section, with what it would take:
 ## Known limits and risks
 
 - **Feel is unknown, and M3 built a game on it.** Nobody has played review 3, M2's fight or M3's slice, and every brain, encounter, number and clip is a first guess. All of M2 and M3 could be well built and still not fun. The answer is cheaper to act on now, since a move, a brain, an encounter or a boss is a document. If it's the off-ramp, the Rust systems in "What M4 builds on" stay, and `game/` and the editor are what go ([m3-plan.md](m3-plan.md) §6).
-- **More bugs are likely.** The reviews landed 34 fixes and holds. Walking this handoff's recipes found two bugs, the exit run's rehearsal found one, and most packages fixed something they found below them.
+- **More bugs are likely.** The reviews landed 34 fixes and holds. Walking this handoff's recipes found two bugs, the exit run's rehearsal found one, and the whole walk found one: the ward's pool of 12 refused its boss, so the terrace cleared empty and the flow won with no fight (G1c). Most packages fixed something they found below them.
 - **No phone has run anything,** after four milestones. Every mobile number is an M5 at the Mobile tiers' settings, the iOS Simulator or the Android emulator. Parley, ICU, Luau and zones land on phones untested.
 - **Motion without an animator,** now for two enemies, a boss, a cutscene and an ultimate. The fallback is still a commissioned animator or a bought pack, and a pack that bars redistribution can't go in a public repo.
 - **Machine translation** in a language nobody here reads.

@@ -109,6 +109,8 @@ From the bottom up. Spec §5.13–§5.18 and §5.22 are the reference, and each 
 
 ### How to add a move
 
+These three recipes are as M2 left them. [m4-handoff.md](m4-handoff.md)'s "How to add" replaces them, read against the code at M3's close: an enemy is a kind of enemy's documents, a stage is a zone, and the Rust steps still left are listed there.
+
 To the player, on a clip of its own:
 
 1. **Pose it:** a function in [tools/motion/moves.py](../tools/motion/moves.py), added to its `MOVES`, and an ID of its own in `frames.py`'s `IDS`. `--write` writes `<name>.keypose.ron` and its sidecar, naming `rig`. Read a sheet with `sheet.py`, by its name once it has cooked (M3 S3).

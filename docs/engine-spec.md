@@ -3908,8 +3908,6 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 **M2 exit run:** [m2-exit-run.md](m2-exit-run.md) is the procedure for all four exit tests: a fight on a gamepad, the feel reviews' sheet with which file and field changes what, a fight on a phone, timing a saved move, checking replays by hand and a phone's soak with its pass and fail lines. Everything that needs no window and no phone was rehearsed on 2026-11-02, and its last section says what ran.
 
-**M3 status (2026-11-03): in progress.** [m3-plan.md](m3-plan.md) is the plan, and its packages' rows say what has landed.
-
 **M2 status (2026-11-02): built, and not judged.** "Done, pending devices" is true of exit tests 2 and 4 and of test 1's touch half. It isn't true of test 1 on a gamepad, which needs no device beyond a pad and has simply not been done.
 
 - **The decision, as of 2026-11-03.** The maintainer told the run to start M3 and carry on without asking, with nobody having played the fight, so M3 is in Rust ([m3-plan.md](m3-plan.md)) and the go/no-go's question is still unanswered. M2 is the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer would decide from. They were away for the whole of M2 and told the run to carry on without asking, so every package was built, phase 5 included, with none of the three feel reviews behind it, against the plan's order ([m2-plan.md](m2-plan.md) §5). [m3-handoff.md](m3-handoff.md) is what M3 would inherit.
@@ -3928,6 +3926,26 @@ These windows are rough estimates for a small, senior team. A solo developer sho
   - A phone: touch by thumb, exit tests 2 and 4, audio on a device, and §3.5's list. iOS has had one mouse touch, an outside reviewer's, through Simulator's window. No phone has run anything in M0, M1 or M2.
   - M1's device checks, all still owed (M1 status above), Q3, Q4, Q5, Q9 and Q14 among them.
   - End-to-end input latency, press to glass (§4.2).
+
+**M3 exit run:** [m3-exit-run.md](m3-exit-run.md) is the procedure for all eight exit tests ([m3-plan.md](m3-plan.md) §1): for each, what proves it, the commands, and what CI, this Mac, a device or a person answers. Everything that needs no window and no phone was rehearsed, the iOS Simulator and the Android emulator among it, before the last packages landed (M3 Z2c). The final run on the head with all of M3 is Z2's, and its numbers are there, not here.
+
+**M3 status (2026-11-10): built, and not judged.** Every package in [m3-plan.md](m3-plan.md) has landed, Z2's final exit run aside, and its row says what was built. The exit tests are answered as [m3-exit-run.md](m3-exit-run.md) says.
+
+- **The decision.** The maintainer started M3 on 2026-11-03 without having played M2's fight, so review 3 never ran and the go/no-go's question is still open ([m2-go-no-go.md](m2-go-no-go.md)). On 2026-11-10 they asked for M3 to be finished and M4 started. Nobody has played M3's slice either, so whether any of it is fun is unknown, and that's still the project's largest risk. [m4-handoff.md](m4-handoff.md) is what M4 inherits.
+- **Exit tests 1, 2, 3 and 7: hold on replays and app lanes, in CI and on this Mac.** The Lantern Ward's whole walk through the game's flow, from a new game to the Knell Colossus's defeat with the gate watched and the guide answered, is a replay (`ward-whole-walk`, G1c) that reaches its checksums on all three desktop OSes with no allocation in a step, and plays on the stage with no first-use pipeline on Desktop-Low's and Mobile-Low's settings (`wins_the_ward`). The boss is documents and a script (`tests/bosses_are_content.rs`), and a second boss added by the handoff's recipe needed no Rust. The gate cutscene's watch and skip reach one checksum, with its subtitles drawn in either language.
+- **Exit test 4: holds but for meaning.** The HUD and menus are walked by pad, keyboard and touch, with goldens at three aspects in two languages. The Japanese is machine-quality and owed a reader.
+- **Exit tests 5 and 6: done, pending devices,** as M1 and M2 closed. Linux and Windows run on CI's software rasterizers and macOS on Metal; the iOS Simulator and the Android emulator play committed replays to their checksums. No phone has run anything, there's no desktop GPU but this Mac's, and no agent may open a window, so the editor is proved by tests with no window.
+- **Exit test 8: saves hold; the budgets are this Mac's.** A save survives a kill at every step of a write, and old saves migrate. The zone bench reads §3.2's script and streaming rows inside budget (§3.6). Secondary motion meets its rows at p50 by tier, but its p99 is still a solve frame's and Desktop-Low's mean is over (M3 Z1's fixes, §5's springs). Every number is an M5's at the tiers' settings, not a phone's.
+- **Pillar 1, authorable:** a kind of enemy, a boss, an encounter, a zone, a dialogue, a cutscene and a screen are documents. The steps that still take Rust are listed in [m4-handoff.md](m4-handoff.md), "Rust steps left in the 'How to add' recipes", as bugs against the pillar.
+- **The reviews.** Six agents who hadn't built the areas read them after the packages landed (Z3a–Z3f) and landed 34 fixes and holds. [m4-handoff.md](m4-handoff.md) has the rules they made and what they left.
+- **Still open:**
+  - Review 3, and the same for M3's slice: the Lancer, the boss and its second wind, and the ward from the title, with a gamepad. Feel reviews 1, 2 and 3, and the go/no-go.
+  - Anything heard: the music, the voice lines and M2's cues are placeholders nobody has listened to.
+  - Motion nobody has judged: the Lancer's and the boss's clips, the cutscene's poses and the ultimate.
+  - A reader of Japanese, for every string in `content/loc/ja/`.
+  - A window on any desktop: the game's first run in one, the editor's (E3, E4 and E5), and a cutscene's blend.
+  - A phone, for exit test 5 and everything on [m4-handoff.md](m4-handoff.md)'s device list: Luau, text, zones and saves on a device, iOS touch, a phone driver's cold compile. A desktop GPU other than this Mac's.
+  - M2's and M1's device checks, all still owed (above).
 
 
 ---

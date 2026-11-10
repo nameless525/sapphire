@@ -924,6 +924,58 @@ fn an_encounter_that_doesnt_fit_its_zone_fails_the_cook_naming_the_field() {
     }
 }
 
+/// The ground, and a box where the zone draws a block at `x` (a 2 m cube about its `at`).
+fn block_colliders(x: f32) -> String {
+    format!(
+        r##"(type: "sapphire::colliders::ColliderDocument", version: 1, data: (colliders: [
+            (name: "ground", shape: Box(half_extents: (32.0, 0.5, 32.0)), position: (0.0, -0.5, 0.0)),
+            (name: "block", shape: Box(half_extents: (1.0, 1.0, 1.0)), position: ({x:?}, 0.0, 5.0)),
+        ]))"##
+    )
+}
+
+/// A zone whose block at `x` names its collider, among the other placements.
+fn claimed_block(x: f32, claims: &str) -> String {
+    let placements = placements()
+        .replace(r#"at: (5.0, 0.0, 5.0))"#, &format!(r#"at: ({x:?}, 0.0, 5.0), colliders: [{claims}])"#));
+    format!(r##"colliders: Some("{COLLIDERS}"), {placements}"##)
+}
+
+/// A placement moved without the collider that stands for it, or a collider without its placement, is refused,
+/// naming both (M4 X1): P0 moved a lantern post in the Lantern Ward, and the cell's mesh moved while its
+/// collider stayed. Moved together, they cook, and a cook after only the colliders' document changed sees it.
+#[test]
+fn a_placement_and_the_collider_it_names_move_together_or_the_cook_refuses() {
+    let tree = tree("zone-claims");
+    let colliders = tree.write("zone.colliders.ron", block_colliders(5.0).as_bytes());
+    tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    let zone = write_zone(&tree, &claimed_block(5.0, r#""block""#));
+    tree.cook();
+
+    // The placement moves and its collider doesn't: the box's sides have nothing drawn at them.
+    tree.write_at(&zone, zone_text(&claimed_block(8.0, r#""block""#)).as_bytes());
+    let text = chain(&tree.try_cook(false).expect_err("a moved placement"));
+    for said in ["town.zone.ron", "`placements[1].colliders`", "collider `block`", "placements[1] draws"] {
+        assert!(text.contains(said), "`{text}` must say {said}");
+    }
+
+    // Both move: it cooks.
+    tree.write_at(&colliders, block_colliders(8.0).as_bytes());
+    tree.cook();
+
+    // Only the collider moves: the zone cooks again for it, and refuses.
+    tree.write_at(&colliders, block_colliders(8.5).as_bytes());
+    let text = chain(&tree.try_cook(false).expect_err("a moved collider"));
+    assert!(text.contains("collider `block`") && text.contains("its +x side 0.500 m"), "`{text}`");
+    tree.write_at(&colliders, block_colliders(8.0).as_bytes());
+    tree.cook();
+
+    // A collider the set doesn't have, by its field.
+    tree.write_at(&zone, zone_text(&claimed_block(8.0, r#""block", "wall""#)).as_bytes());
+    let text = chain(&tree.try_cook(false).expect_err("no such collider"));
+    assert!(text.contains("`placements[1].colliders[1]`") && text.contains("`wall`"), "`{text}`");
+}
+
 #[test]
 fn a_zones_navmesh_cooks_from_its_colliders_and_ships_with_it() {
     let data = format!("{} {NAV_SPAWNERS}", nav_zone(&placements()));

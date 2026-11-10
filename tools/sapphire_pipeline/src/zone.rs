@@ -80,11 +80,17 @@
 //! they'd be without them; in an editor's, the packer puts them in the zone's pack with it. A zone with a
 //! `split` placement has none: its prefab is a whole town.
 //!
+//! # Colliders
+//!
+//! A prefab carries no colliders: `colliders` is one set the zone names, as `PhysicsWorld::from_cooked`
+//! takes, written apart from what's drawn. A placement or an instance names the colliders that stand for
+//! it, and the `.szone`'s cook holds the two together ([`claims`]), so its key holds the colliders' too
+//! whenever something names one.
+//!
 //! # What it doesn't do
 //!
 //! The coplanar check runs within an assembly and not between placements, so two prefabs fighting in
-//! one plane aren't refused yet, and a prefab carries no colliders: `colliders` is one set the zone
-//! names, as `PhysicsWorld::from_cooked` takes.
+//! one plane aren't refused yet.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -111,6 +117,8 @@ use crate::mesh::{ImportedMaterial, ImportedMesh};
 use crate::meta::{ImportSettings, SourceAsset};
 use crate::nav::{self, BakeSettings, NavBakeError, Seed};
 use crate::optimize::LodSettings;
+
+pub mod claims;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -399,6 +407,24 @@ impl ZonePlan {
             }
             materials.push(resolved);
         }
+        // An instance is held to its colliders by what its assembly draws, as a placement is.
+        for (index, instance) in document.instances.iter().enumerate() {
+            if instance.colliders.is_empty() {
+                continue;
+            }
+            if let Entry::Vacant(entry) = read.entry(instance.mesh) {
+                let field = format!("instances[{index}]");
+                let source = prefabs.get(&instance.mesh).ok_or_else(|| {
+                    let problem = format!(
+                        "{} isn't an assembly of this content tree, so nothing can hold colliders to what it \
+                         draws",
+                        instance.mesh
+                    );
+                    ZoneCookError::invalid(format!("{field}.colliders"), problem)
+                })?;
+                entry.insert(Prefab::read(source, &field)?);
+            }
+        }
 
         let mut pieces: BTreeMap<Place, Vec<Piece>> = BTreeMap::new();
         for (index, placement) in document.placements.iter().enumerate() {
@@ -490,6 +516,33 @@ impl ZonePlan {
             settings: BakeSettings::CHARACTER,
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
+    }
+
+    /// Whether a placement or an instance names colliders that stand for it, which the `.szone`'s cook then
+    /// holds to it ([`claims`]).
+    pub fn has_claims(&self) -> bool {
+        let placements = self.document.placements.iter().map(|placement| &placement.colliders);
+        let instances = self.document.instances.iter().map(|instance| &instance.colliders);
+        placements.chain(instances).any(|claims| !claims.is_empty())
+    }
+
+    /// The triangles of a prefab the plan read, in its own space, all of it at full detail: what a collider
+    /// that names it is held to. `field` is what's blamed if it doesn't import.
+    fn triangles(&self, prefab: AssetId, field: &str) -> Result<Vec<[Vec3; 3]>, ZoneCookError> {
+        let read = &self.prefabs[&prefab];
+        let geometry = read.geometry(Detail::Full).map_err(|source| ZoneCookError::Prefab {
+            field: field.to_owned(),
+            path: read.path.clone(),
+            source: Box::new(source),
+        })?;
+        let corner = |index: u32| Vec3::from(geometry.vertices[index as usize].position);
+        Ok(geometry
+            .parts
+            .iter()
+            .flatten()
+            .flat_map(|triangles| triangles.indices.as_chunks::<3>().0)
+            .map(|&[a, b, c]| [corner(a), corner(b), corner(c)])
+            .collect())
     }
 
     /// The ID of a place's mesh.

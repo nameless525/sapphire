@@ -2527,21 +2527,31 @@ fn zone_mesh(
 /// A zone's navmesh, from the cooked colliders it names.
 fn cook_navigation(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
     let plan = &assets.zones[path];
-    let id = plan.document().colliders.expect("a document with `navigation` names `colliders`");
+    let bytes = zone_colliders(path, assets)?;
+    zone::cook_navigation(plan, &bytes, assets.cache).map_err(zone_error(path))
+}
+
+/// The cooked collider set the zone at `path` names, which it must.
+fn zone_colliders(
+    path: &Path,
+    assets: &Assets<'_>,
+) -> Result<sapphire_serialize::cooked::AlignedVec<16>, CookError> {
+    let id = assets.zones[path].document().colliders.expect("only a zone that names `colliders` reads them");
     let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
         path: path.to_owned(),
         field: "colliders".to_owned(),
         what: "a collider document",
         id,
     })?;
-    let bytes =
-        read_cooked(cooked).map_err(|source| CookError::Read { path: cooked.output.clone(), source })?;
-    zone::cook_navigation(plan, &bytes, assets.cache).map_err(zone_error(path))
+    read_cooked(cooked).map_err(|source| CookError::Read { path: cooked.output.clone(), source })
 }
 
-/// A zone's `.szone`, from its plan and its cooked meshes.
+/// A zone's `.szone`, from its plan and its cooked meshes, once what names a collider is held to it.
 fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
     let plan = &assets.zones[path];
+    if plan.has_claims() {
+        zone::claims::check(plan, &zone_colliders(path, assets)?).map_err(zone_error(path))?;
+    }
     let bounds_of = |id: AssetId| -> Result<sapphire_zone::Bounds, CookError> {
         let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
             path: path.to_owned(),
@@ -3252,6 +3262,11 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     }
     if let Some(id) = plan.navigation_id() {
         dependencies.push(cooked_key(id, "navigation".to_owned(), "a navmesh")?);
+    }
+    // What names a collider is held to it as the `.szone` cooks, so a collider moved cooks it again.
+    if plan.has_claims() {
+        let id = document.colliders.expect("a document that names a collider names `colliders`");
+        dependencies.push(cooked_key(id, "colliders".to_owned(), "a collider document")?);
     }
     for (index, instance) in document.instances.iter().enumerate() {
         let field = format!("instances[{index}].mesh");

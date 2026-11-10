@@ -1,6 +1,7 @@
 // What a body walks on and is stopped by in the Lantern Ward, and what its navmesh bakes from (M3 P1's rule). Each
 // box stands where `lantern_ward.zone.ron` draws something at a character's height;
-// `tools/sapphire_pipeline/tests/zone_ward.rs` holds them to each other both ways.
+// `tools/sapphire_pipeline/tests/zone_ward.rs` holds them to each other both ways, and a cook holds each box to what
+// names it there (M4 X1).
 (
     type: "sapphire::colliders::ColliderDocument",
     version: 1,

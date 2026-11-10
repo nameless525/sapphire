@@ -7,8 +7,9 @@
 //!     data: (
 //!         grid: (cell_size: 32.0),
 //!         placements: [
-//!             // A prefab: an assembly, by its sidecar's ID. Its geometry joins its cell's mesh.
-//!             (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (4.0, 0.0, -9.0), turn: 30.0),
+//!             // A prefab: an assembly, by its sidecar's ID. Its geometry joins its cell's mesh, and the
+//!             // zone's collider `crate_0` stands for it.
+//!             (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (4.0, 0.0, -9.0), turn: 30.0, colliders: ["crate_0"]),
 //!             // With a transform and a material swapped for this placement.
 //!             (
 //!                 prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f",
@@ -163,6 +164,11 @@ pub struct Placement {
     /// the whole being one piece at `at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split: Option<Split>,
+    /// The zone's colliders that stand for what this draws, by name: what a body meets of it, since a zone's
+    /// colliders are a document of their own. A cook holds each to what this draws, so moving one without
+    /// the other is refused (M4 X1). With none, nothing holds it to the colliders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colliders: Vec<String>,
 }
 
 /// How a [`Placement`] of a whole town is cut along the grid.
@@ -192,6 +198,11 @@ pub struct Instance {
     /// Stays for as long as the zone does, in no cell.
     #[serde(default, skip_serializing_if = "is_false")]
     pub backdrop: bool,
+    /// The zone's colliders that stand for what this draws, by name: what a body meets of it, since a zone's
+    /// colliders are a document of their own. A cook holds each to what this draws, so moving one without
+    /// the other is refused (M4 X1). With none, nothing holds it to the colliders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colliders: Vec<String>,
 }
 
 /// A local light, as the renderer's `LocalLight` takes one.
@@ -448,12 +459,14 @@ impl ZoneDocument {
                     "a split placement puts pieces in cells: name those for the backdrop in `split.backdrop`",
                 ));
             }
+            self.check_claims(&placement.colliders, &field("colliders"))?;
         }
         for (index, instance) in self.instances.iter().enumerate() {
             let field = |name: &str| format!("instances[{index}].{name}");
             check_position(instance.at).map_err(invalid(field("at")))?;
             check_finite(instance.turn).map_err(invalid(field("turn")))?;
             check_scale(instance.scale).map_err(invalid(field("scale")))?;
+            self.check_claims(&instance.colliders, &field("colliders"))?;
         }
         for (index, light) in self.lights.iter().enumerate() {
             let field = |name: &str| format!("lights[{index}].{name}");
@@ -507,6 +520,23 @@ impl ZoneDocument {
         check_names("exits", self.exits.iter().map(|exit| exit.name.as_str()))?;
         for (index, exit) in self.exits.iter().enumerate() {
             check_name(&exit.arrive).map_err(invalid(format!("exits[{index}].arrive")))?;
+        }
+        Ok(())
+    }
+
+    /// What a placement's or an instance's `colliders` (`field`) may name: the zone's colliders, by names that
+    /// name something, each once. Whether the zone's set has them is the cook's to say.
+    fn check_claims(&self, claims: &[String], field: &str) -> Result<(), ZoneError> {
+        if !claims.is_empty() && self.colliders.is_none() {
+            return Err(ZoneError::invalid(field, "it names colliders, and the zone names no `colliders`"));
+        }
+        let mut seen = BTreeSet::new();
+        for (index, claim) in claims.iter().enumerate() {
+            let field = format!("{field}[{index}]");
+            check_name(claim).map_err(|problem| ZoneError::invalid(field.clone(), problem))?;
+            if !seen.insert(claim.as_str()) {
+                return Err(ZoneError::invalid(field, format!("`{claim}` is named twice")));
+            }
         }
         Ok(())
     }
@@ -977,12 +1007,12 @@ mod tests {
         parse(&format!(
             r#"
             placements: [
-                (prefab: "{PREFAB}", at: (4.0, 0.0, -9.0), turn: 30.0),
+                (prefab: "{PREFAB}", at: (4.0, 0.0, -9.0), turn: 30.0, colliders: ["crate_0"]),
                 (prefab: "{PREFAB}", at: (40.0, 0.0, -9.0), scale: (1.2, 1.2, 1.2), materials: {{"timber": "{PREFAB}"}}),
                 (prefab: "{PREFAB}", backdrop: true),
                 (prefab: "{PREFAB}", split: Some((backdrop: ["kenney/rock-*"]))),
             ],
-            instances: [(mesh: "{PREFAB}", at: (-15.6, 0.0, -15.4), turn: 20.0)],
+            instances: [(mesh: "{PREFAB}", at: (-15.6, 0.0, -15.4), turn: 20.0, colliders: ["tree_0"])],
             lights: [
                 (position: (0.3, 2.4, -35.4), color: (1.0, 0.7, 0.4), intensity: 6.0, range: 9.0, at_night: true),
                 (
@@ -1065,7 +1095,7 @@ mod tests {
     #[test]
     fn every_check_names_the_field() {
         type Tamper = fn(&mut ZoneDocument);
-        let cases: [(&str, Tamper); 28] = [
+        let cases: [(&str, Tamper); 31] = [
             ("grid.cell_size", |d| d.grid.cell_size = 1.0),
             ("grid.cell_size", |d| d.grid.cell_size = f32::NAN),
             ("placements[1].at", |d| d.placements[1].at[2] = f32::INFINITY),
@@ -1073,6 +1103,9 @@ mod tests {
             ("placements[0].turn", |d| d.placements[0].turn = f32::NAN),
             ("placements[1].scale", |d| d.placements[1].scale[1] = 0.0),
             ("placements[3].split", |d| d.placements[3].backdrop = true),
+            ("placements[0].colliders[1]", |d| d.placements[0].colliders = vec!["post".to_owned(); 2]),
+            ("placements[0].colliders", |d| (d.colliders, d.navigation) = (None, None)),
+            ("instances[0].colliders[0]", |d| d.instances[0].colliders = vec![String::new()]),
             ("instances[0].at", |d| d.instances[0].at[1] = f32::NAN),
             ("instances[0].scale", |d| d.instances[0].scale = [0.0; 3]),
             ("lights[0].color", |d| d.lights[0].color = [0.0; 3]),

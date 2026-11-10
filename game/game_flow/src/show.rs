@@ -11,6 +11,11 @@
 //! the panel's commands go to it, and the dialogue screen follows it before the menus draw. While one's open
 //! the fight holds its steps, and the panel has the presses. [`GameShow::take_dialogue_ended`] says when one
 //! closed. With a game, a beat's dialogue opens on the same runner, and its end is the flow's to go on from.
+//!
+//! **Leaving the foreground, and a lost device (M4 S6):** [`GameShow::leave_foreground`] pauses a run someone's
+//! playing and writes what's on its way to disk, so a phone that never brings the app back loses nothing kept,
+//! and one that does lands on the pause. A lost device takes the stage with this show: the next show, on the
+//! next device, is made from the save, and [`GameShow::reload_from`] takes it back to where the save has it.
 
 use std::time::Duration;
 
@@ -52,6 +57,19 @@ const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
 const CHARACTER_INSET: u16 = 0;
 /// How often a fight says how it's going.
 const REPORT_EVERY: Duration = Duration::from_secs(1);
+
+/// Where a game goes back to when its show ends for another, as on a new device after a lost one (M4 S6): what
+/// [`GameShow::end_for_reload`] returns and [`GameShow::reload_from`] takes. The next show is made from what's
+/// on disk, the save and the run's file, with these settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reload {
+    /// What the player had chosen: what the next show is made with.
+    pub settings: PlayerSettings,
+    /// A run was open, past the title.
+    run: bool,
+    /// Someone was playing it.
+    played: bool,
+}
 
 /// See this module.
 pub struct GameShow {
@@ -204,6 +222,69 @@ impl GameShow {
             game.finish();
         }
         self.shown.fight.finish()
+    }
+
+    /// Whether someone's playing the run that's open: past the title, and not a script or a replay.
+    #[must_use]
+    pub fn is_played(&self) -> bool {
+        self.fight_open && self.shown.fight.combat.as_ref().is_some_and(Combat::is_played)
+    }
+
+    /// The app is leaving the foreground (spec §6.5), and a phone may never bring it back (M4 S6). A run
+    /// someone's playing pauses, so the return lands on the pause's screen, which is the "tap to continue": the
+    /// steps stop, as any pause stops them, and no clock is scaled. Then what's on its way to disk gets there: a
+    /// run that keeps a file writes it as far as it's got, and the save's writes finish. What isn't played
+    /// steps on when it's back.
+    pub fn leave_foreground(&mut self) {
+        if self.is_played() {
+            self.controls.set_paused(true);
+            self.pause_flow();
+            self.follow_pause();
+            tracing::info!(target: LOG_TARGET, "the run waits at the pause for the player's return");
+        }
+        if let Some(combat) = &mut self.shown.fight.combat {
+            combat.keep_so_far();
+        }
+        if let Some(game) = &mut self.game {
+            game.finish();
+        }
+    }
+
+    /// Ends the show for another stood in its place, as on a new device after a lost one (M4 S6): the run's
+    /// file and the save are written, as a quit writes them, and what's returned says where the next show
+    /// takes the game back to ([`Self::reload_from`]).
+    pub fn end_for_reload(&mut self) -> Reload {
+        let reload = Reload {
+            settings: self.menus.as_ref().map_or(&self.setup.settings, GameMenus::settings).clone(),
+            run: self.fight_open,
+            played: self.is_played(),
+        };
+        if let Err(error) = self.finish() {
+            tracing::warn!(target: LOG_TARGET, %error, "the run didn't end well");
+        }
+        reload
+    }
+
+    /// Takes the game back where the show [`Self::end_for_reload`] ended was, once this one's stood: where a
+    /// run was open, past the title as its continue goes, to the save, or to the fight's start where the
+    /// content names no flow. A run someone was playing waits at the pause, the "tap to continue".
+    pub fn reload_from(&mut self, reload: &Reload) {
+        if !reload.run {
+            return;
+        }
+        self.choose(FlowCommand::Continue);
+        if reload.played && self.is_played() {
+            self.controls.set_paused(true);
+            self.pause_flow();
+            self.follow_pause();
+        }
+        tracing::info!(target: LOG_TARGET, paused = self.controls.is_paused(), "the game is back where it was saved");
+    }
+
+    /// The menus, from [`Self::stand`] on.
+    #[must_use]
+    pub fn menus(&self) -> Option<&GameMenus> {
+        self.menus.as_ref()
     }
 
     /// A command for the flow, and what it asks of the show.

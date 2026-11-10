@@ -417,7 +417,8 @@ impl Game {
         }
     }
 
-    /// Waits for the save's writes: the game's on its way out.
+    /// Waits for the save's writes: the game's on its way out, or may be (a trip to the background). It keeps
+    /// what's asked after, as before.
     pub fn finish(&mut self) {
         if let Some(kept) = &mut self.kept {
             kept.finish();

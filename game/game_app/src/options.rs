@@ -27,6 +27,11 @@ pub(crate) struct Options {
     pub capture: Option<PathBuf>,
     pub size: (u32, u32),
     pub ticks: u32,
+    /// `--lose-device <frames>` (dev builds): the window's GPU device is destroyed once, after that many frames
+    /// were presented, so the game's rebuild runs where no device is lost when asked (M4 S6), as the sandbox's
+    /// `debug.lose_device` does.
+    #[cfg(feature = "dev")]
+    pub lose_device: Option<u64>,
 }
 
 impl Default for Options {
@@ -39,6 +44,8 @@ impl Default for Options {
             capture: None,
             size: (1280, 720),
             ticks: 180,
+            #[cfg(feature = "dev")]
+            lose_device: None,
         }
     }
 }
@@ -78,6 +85,14 @@ impl Options {
                     let raw = value()?;
                     options.ticks =
                         raw.parse().map_err(|_| format!("--ticks expects a count, got {raw:?}"))?;
+                }
+                #[cfg(feature = "dev")]
+                "--lose-device" => {
+                    let raw = value()?;
+                    options.lose_device = Some(
+                        raw.parse()
+                            .map_err(|_| format!("--lose-device expects a count of frames, got {raw:?}"))?,
+                    );
                 }
                 _ => return Err(format!("unknown argument {arg:?}")),
             }
@@ -183,5 +198,13 @@ mod tests {
         let refused = parse(&["--capture", "a.png", "--continue"]).expect_err("nothing to continue");
         assert!(refused.contains("--save-dir"), "{refused}");
         assert!(parse(&["--continue"]).is_ok(), "a window's game keeps its save");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_dev_build_loses_its_device_when_told_to() {
+        assert_eq!(parse(&["--lose-device", "120"]).unwrap().lose_device, Some(120));
+        assert_eq!(parse(&[]).unwrap().lose_device, None);
+        assert!(parse(&["--lose-device", "soon"]).is_err());
     }
 }

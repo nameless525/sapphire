@@ -555,6 +555,7 @@ jobs:
           tests --package game_app --features dev --test opens_the_guide
           tests --package game_app --features dev --test plays_the_ward
           tests --package game_app --features dev --test wins_the_ward
+          tests --package game_app --features dev --test comes_back
           tests --package sapphire_sandbox --features dev --test replays
           tests --package sapphire_sandbox --features dev --test live_tuning
           tests --package sapphire_editor --test preview --test sandbox_push --test viewport_stage
@@ -649,6 +650,12 @@ jobs:
       - name: The game's flow through the ward
         if: matrix.lane == 'the-rest'
         run: python3 .github/scripts/app_tests_bundle.py run plays_the_ward -- --ignored
+      # A trip to the background at the ward's court: the run pauses, its save and file are on disk, nothing
+      # steps till the pause's row goes on, and no checksum moves; then a lost device, and the game back at the
+      # save, at the pause, drawing on a new one (M4 S6).
+      - name: The game leaving the foreground and losing its device
+        if: matrix.lane == 'the-rest'
+        run: python3 .github/scripts/app_tests_bundle.py run comes_back -- --ignored
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
       # compares, tick by tick, with what a headless run in the test wrote. The wave's bench has its lane.
       - name: Replays in the app (dev sandbox, offscreen)

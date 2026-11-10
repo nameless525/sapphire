@@ -27,10 +27,19 @@
 //! - `--record <dir>`: each run's replay is kept here, `<scenario>-<n>.sreplay`.
 //! - `--capture <png>`, with `--size <w>x<h>` and `--ticks <n>`: draws that many steps with no window, writes
 //!   the last frame and exits.
+//! - `--lose-device <frames>` (dev builds): destroys the GPU device once, after that many frames presented, so
+//!   the rebuild below runs where nothing loses a device when asked.
+//!
+//! # Leaving the foreground, and a lost device (M4 S6)
+//!
+//! A trip to the background pauses a run someone's playing, writes the save, the settings and a kept run's
+//! file, and suspends the audio; the return lands on the pause's screen, the "tap to continue" (`app.rs`). A
+//! lost device takes the stage: the game stands again on a new device and goes back where its save has it,
+//! paused if someone was playing ([`stand_game`], `game_flow`'s `Reload`).
 //!
 //! # What it doesn't do yet
 //!
-//! A lost device ends the run, where the sandbox rebuilds its stack. It stays on the tier it started on.
+//! It stays on the tier it started on. A lost device costs what was played since the save.
 
 mod app;
 mod offscreen;
@@ -39,10 +48,15 @@ mod settings;
 
 use std::sync::{Mutex, Once};
 
+use game_combat::combat::CombatOption;
+use game_combat::fight::fight_stage;
 use sapphire_core::alloc::EngineAllocator;
 use sapphire_core::log::{LogConfig, LogSink};
 use sapphire_crash::{CrashConfig, CrashGuard};
-use sapphire_platform::{App, DeviceClass, Os, PlatformLogSink};
+use sapphire_platform::{App, AppInitError, DeviceClass, Host, Os, PlatformLogSink};
+use sapphire_render::quality::QualitySettings;
+use sapphire_rhi::{GpuContext, wgpu};
+use sapphire_stage::{Content, Stage, StageDesc};
 
 pub use app::GameApp;
 pub use game_flow::show::GameShow;
@@ -76,6 +90,30 @@ pub fn startup() {
         *CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = guard;
         sapphire_jobs::init(sapphire_jobs::JobConfig::default());
     });
+}
+
+/// The game's `show` stood on a stage on `gpu`, drawing into `format` targets, at its title with `first` the
+/// run behind it: what the window does at startup and again on a new device after one's lost (M4 S6), and what
+/// a test does with no window. Fails if the device is lost while it stands, rather than hand back a stage of
+/// dead objects.
+pub fn stand_game(
+    host: &Host,
+    gpu: GpuContext,
+    format: wgpu::TextureFormat,
+    mut show: GameShow,
+    first: &CombatOption,
+) -> Result<Stage<GameShow>, AppInitError> {
+    let desc = fight_stage(StageDesc::new(host, &gpu, format, QualitySettings::default()));
+    let mut content = Content::new(host, desc.character, desc.sky)?;
+    let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
+    let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
+    let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
+    show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+    // Uploads to a lost device do nothing, so what stood on it holds dead objects.
+    if stage.gpu.is_lost() {
+        return Err(AppInitError::msg("the GPU device was lost while the game stood"));
+    }
+    Ok(stage)
 }
 
 /// Whether the arguments ask for [`OffscreenGame`] in the background, not the window.

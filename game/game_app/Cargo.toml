@@ -77,5 +77,10 @@ harness = false
 name = "wins_the_ward"
 harness = false
 
+# A trip to the background and a lost device, in the game at the ward's court (M4 S6).
+[[test]]
+name = "comes_back"
+harness = false
+
 [lints]
 workspace = true

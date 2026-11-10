@@ -128,6 +128,8 @@ pub struct FightHud {
     metrics: Option<UiMetrics>,
     /// A finger has landed on the zones.
     touched: bool,
+    /// Whether the on-screen controls show, as its [`CombatHud`] draws them: shown until
+    /// [`Self::follow_devices`] asks, which a capture never does.
     shows_controls: bool,
     last_stats: HudStats,
     last_cost: Duration,
@@ -169,7 +171,7 @@ impl FightHud {
             window_metrics: None,
             metrics: None,
             touched: false,
-            shows_controls: false,
+            shows_controls: true,
             last_stats: HudStats::default(),
             last_cost: Duration::ZERO,
         }

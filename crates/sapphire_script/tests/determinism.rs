@@ -831,7 +831,7 @@ fn the_same_hook_reads_one_checksum_under_aslr() {
 
 /// What the attack reads on every machine, including the stock movement and moves in its replay: a Luau
 /// upgrade or a change to `ATTACK` moves them on purpose, and a moved `arena-fight-won` moves the first.
-const ATTACK_SIM: u64 = 0xe824_3733_5853_2d9d;
+const ATTACK_SIM: u64 = 0x0475_02f8_df7b_fc39;
 const ATTACK_DIGEST: u64 = 0xe226_e06f_14dd_0bb9;
 const ATTACK_COOKED: u64 = 0xaeb4_3be9_564b_eb34;
 const CORPUS_COOKED: [u64; 3] = [0x5242_6308_ea97_c17b, 0x4e2e_a36b_d34f_f76d, 0x4e2e_a36b_d34f_f76d];

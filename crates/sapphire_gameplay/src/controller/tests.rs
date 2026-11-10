@@ -808,12 +808,12 @@ fn a_stick_is_world_space() {
 mod mesh_arena;
 
 /// arm64: an Apple M5. CI's macOS runners must agree.
-const CHECKSUM_AARCH64: u64 = 0x18b6_f2eb_a1d1_1a99;
+const CHECKSUM_AARCH64: u64 = 0x2392_9d77_538b_475c;
 
 /// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run fails,
 /// printing the value to put here. Linux and Windows failing with different values is what this exists
 /// to find: something on that path reaches a platform's C math library.
-const CHECKSUM_X86_64: Option<u64> = Some(0x18b6_f2eb_a1d1_1a99);
+const CHECKSUM_X86_64: Option<u64> = Some(0x2392_9d77_538b_475c);
 
 const EXPECTED: Option<u64> = if cfg!(target_arch = "aarch64") {
     Some(CHECKSUM_AARCH64)

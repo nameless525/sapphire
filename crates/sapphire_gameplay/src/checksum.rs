@@ -45,8 +45,9 @@ use crate::zone::ZoneShelf;
 /// 8: M2 G7's party, which writes nothing without one. M3 P2's paths write nothing without a navmesh
 /// either, and none of what's recorded before them has one, so they left this where it was. So with M3
 /// L2's scripts, which write nothing in a world with no [`ScriptWorld`], and Q2's flags, which write
-/// nothing until one is set.
-const CHECKSUM_LAYOUT: u32 = 8;
+/// nothing until one is set. 9: M3 S3b, a brain's `on`, `encounter` and `mind` each written in full, with a
+/// presence byte for the encounter (Z3c).
+const CHECKSUM_LAYOUT: u32 = 9;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -330,18 +331,17 @@ fn write_soft_lock(hasher: &mut StateHasher, lock: &SoftLock) {
 fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
     let Brain { on, target, state, patience_until, circle, stick, last_used, encounter, patrol, mind } =
         *brain;
-    // Nothing for one that's off, which is most actors: their checksums stay what they were.
-    if on {
-        hasher.u8(1);
+    // Each in full, with a presence byte for the option, so one field's value can't pass for another's
+    // absence: "encounter 0, mind 0" and "no encounter, mind 1" once wrote the same byte (Z3c).
+    hasher.u8(u8::from(on));
+    match encounter {
+        Some(encounter) => {
+            hasher.u8(1);
+            hasher.u8(encounter);
+        }
+        None => hasher.u8(0),
     }
-    // Nor for one no encounter spawned.
-    if let Some(encounter) = encounter {
-        hasher.u8(encounter.wrapping_add(1));
-    }
-    // Nor for one on the brain its kind starts with.
-    if mind != 0 {
-        hasher.u8(mind);
-    }
+    hasher.u8(mind);
     hasher.u32(target.map_or(0, |id| id.raw()));
     match state {
         BrainState::Pacing => hasher.u8(0),
@@ -841,6 +841,27 @@ mod sensitivity_tests {
         sim.give_soft_lock(swinging);
         assert_ne!(sim.checksum(), before);
         flips::<SoftLock>(&mut sim, swinging, "who it has", |lock| lock.target = ActorId::from_raw(99));
+    }
+
+    /// Being on, the encounter that spawned it and which brain it fights with are written each in full, so no
+    /// mix of them hashes as another: "encounter 0, mind 0" and "no encounter, mind 1" once did (Z3c).
+    #[test]
+    fn a_brains_optional_fields_cant_stand_in_for_each_other() {
+        let mut sums = Vec::new();
+        for on in [false, true] {
+            for encounter in [None, Some(0), Some(1)] {
+                for mind in [0, 1] {
+                    let mut hasher = StateHasher::new();
+                    write_brain(&mut hasher, &Brain { on, encounter, mind, ..Brain::default() });
+                    sums.push((hasher.finish(), (on, encounter, mind)));
+                }
+            }
+        }
+        for (index, (sum, state)) in sums.iter().enumerate() {
+            for (other, other_state) in &sums[index + 1..] {
+                assert_ne!(sum, other, "{state:?} and {other_state:?}");
+            }
+        }
     }
 
     #[test]

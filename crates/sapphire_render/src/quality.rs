@@ -33,6 +33,11 @@
 //!   ([`QualitySettings::ambient_occlusion`]).
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
+//! The player's settings can also shed [`OptionalPass`]es, each a step of what the tier draws that
+//! the look can spare (GTAO, the cirrus, a wind level, half the sky's face rate, a bloom level):
+//! [`QualitySettings::shed`], the thermal ladder's second rung (M4 plan §3) and the sandbox's
+//! `--shed`.
+//!
 //! One more knob is a cvar rather than a tier's: `r.outline_distance`, a scale on every
 //! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
 //! the sandbox's `--outline-distance`). Every tier draws the same lines today, within its budget.
@@ -719,6 +724,113 @@ pub struct QualitySettings {
     pub shadows: Switch,
     /// Ambient occlusion: the tier's, or a level of the player's (M1 W5).
     pub ambient_occlusion: OcclusionSetting,
+    /// Optional passes to go without, after the settings above: the thermal ladder's second rung
+    /// (M4 plan §3, "The ladder"), and the sandbox's `--shed` for captures and benches (M4 T0).
+    pub shed: OptionalPasses,
+}
+
+/// A pass a tier can go without and keep the look (M4 plan §3, "The ladder"): shedding one never
+/// touches the character family, the outlines, the ramps or the grade. Each sheds one step of what
+/// its tier draws, and nothing where the tier draws none. M4 T0 measured what each saves.
+///
+/// The ladder's list names two more that nothing here sheds: volumetric fog, which no package
+/// builds yet (`QualityTier::volumetric_fog` is plain data), and the particle cap, which is
+/// `sapphire_vfx`'s budget row and not the renderer's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum OptionalPass {
+    /// GTAO, leaving capsule AO, which grounds the characters.
+    Gtao,
+    /// The sky's cirrus layer; the card clouds stay.
+    Cirrus,
+    /// Foliage's finest wind level: leaf flutter on a tier with three, branch bend with two.
+    WindLevel,
+    /// Half the sky cube's face rate: a face every other frame where it drew one a frame.
+    SkyFaceRate,
+    /// Bloom's lowest level, its widest glow.
+    BloomLevel,
+}
+
+impl OptionalPass {
+    pub const ALL: [Self; 5] =
+        [Self::Gtao, Self::Cirrus, Self::WindLevel, Self::SkyFaceRate, Self::BloomLevel];
+
+    /// How the command line spells it: `sky-face-rate`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Gtao => "gtao",
+            Self::Cirrus => "cirrus",
+            Self::WindLevel => "wind-level",
+            Self::SkyFaceRate => "sky-face-rate",
+            Self::BloomLevel => "bloom-level",
+        }
+    }
+
+    /// The pass [`Self::key`] spells, ignoring case.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|pass| pass.key().eq_ignore_ascii_case(key))
+    }
+
+    /// `settings` without this pass: as they are where they draw none of it.
+    pub fn shed(self, settings: RenderSettings) -> RenderSettings {
+        let RenderSettings { ambient_occlusion, sky, foliage, bloom_levels, .. } = settings;
+        match self {
+            Self::Gtao => RenderSettings {
+                ambient_occlusion: AmbientOcclusion { gtao: None, ..ambient_occlusion },
+                ..settings
+            },
+            Self::Cirrus => RenderSettings { sky: SkySettings { cirrus: false, ..sky }, ..settings },
+            Self::WindLevel => RenderSettings {
+                foliage: FoliageSettings { wind_levels: foliage.wind_levels.saturating_sub(1), ..foliage },
+                ..settings
+            },
+            Self::SkyFaceRate => RenderSettings {
+                sky: SkySettings {
+                    cube_interval: (sky.cube_interval * 2).min(SkySettings::MAX_CUBE_INTERVAL),
+                    ..sky
+                },
+                ..settings
+            },
+            Self::BloomLevel => RenderSettings { bloom_levels: bloom_levels.saturating_sub(1), ..settings },
+        }
+    }
+}
+
+/// A set of [`OptionalPass`]es.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct OptionalPasses(u8);
+
+impl OptionalPasses {
+    pub const NONE: Self = Self(0);
+
+    /// The set with `pass` added.
+    pub fn with(self, pass: OptionalPass) -> Self {
+        Self(self.0 | 1 << pass as u8)
+    }
+
+    pub fn contains(self, pass: OptionalPass) -> bool {
+        self.0 & 1 << pass as u8 != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Its passes, in [`OptionalPass::ALL`]'s order.
+    pub fn iter(self) -> impl Iterator<Item = OptionalPass> {
+        OptionalPass::ALL.into_iter().filter(move |&pass| self.contains(pass))
+    }
+
+    /// `settings` without any of its passes.
+    pub fn shed(self, settings: RenderSettings) -> RenderSettings {
+        self.iter().fold(settings, |settings, pass| pass.shed(settings))
+    }
+}
+
+impl FromIterator<OptionalPass> for OptionalPasses {
+    fn from_iter<I: IntoIterator<Item = OptionalPass>>(passes: I) -> Self {
+        passes.into_iter().fold(Self::NONE, Self::with)
+    }
 }
 
 /// The player's ambient occlusion setting (M1 W5; the sandbox's `--ao`).
@@ -859,11 +971,11 @@ impl Quality {
     /// What a renderer for the active tier is created with, under the player's settings.
     pub fn render_settings(&self) -> RenderSettings {
         let tier = self.tier().render_settings();
-        RenderSettings {
+        self.settings.shed.shed(RenderSettings {
             shadows: tier.shadows.filter(|_| self.settings.shadows.resolve(true)),
             ambient_occlusion: self.settings.ambient_occlusion.resolve(tier.ambient_occlusion),
             ..tier
-        }
+        })
     }
 
     /// Follows `r.tier`. When it changed since the last call to a choice that selects another
@@ -1265,6 +1377,71 @@ mod tests {
         assert_eq!(controller.factor(), 1.0);
     }
 
+    /// Each optional pass sheds one step of what its tier draws, nothing where it draws none,
+    /// and nothing else: the look's own settings stay the tier's.
+    #[test]
+    fn optional_passes_shed_one_step_and_nothing_else() {
+        let table = TierTable::shipped();
+        let desktop_low = table.get(TierId::DesktopLow).render_settings();
+        let mobile_low = table.get(TierId::MobileLow).render_settings();
+        let shed = |pass: OptionalPass, settings| pass.shed(settings);
+        assert_eq!(
+            shed(OptionalPass::Gtao, desktop_low).ambient_occlusion,
+            AmbientOcclusion { capsules: true, gtao: None }
+        );
+        assert_eq!(shed(OptionalPass::Gtao, mobile_low), mobile_low, "Mobile-Low has no GTAO");
+        assert!(!shed(OptionalPass::Cirrus, desktop_low).sky.cirrus);
+        assert_eq!(shed(OptionalPass::Cirrus, mobile_low), mobile_low, "Mobile-Low has no cirrus");
+        assert_eq!(shed(OptionalPass::WindLevel, desktop_low).foliage.wind_levels, 2);
+        assert_eq!(shed(OptionalPass::WindLevel, mobile_low).foliage.wind_levels, 1);
+        assert_eq!(shed(OptionalPass::SkyFaceRate, desktop_low).sky.cube_interval, 2);
+        assert_eq!(shed(OptionalPass::SkyFaceRate, mobile_low).sky.cube_interval, 4);
+        assert_eq!(shed(OptionalPass::BloomLevel, desktop_low).bloom_levels, 4);
+        assert_eq!(shed(OptionalPass::BloomLevel, mobile_low).bloom_levels, 3);
+        let still = RenderSettings {
+            foliage: FoliageSettings { wind_levels: 0, ..mobile_low.foliage },
+            ..mobile_low
+        };
+        assert_eq!(shed(OptionalPass::WindLevel, still), still, "still foliage stays still");
+        let slowest =
+            RenderSettings { sky: SkySettings { cube_interval: 60, ..mobile_low.sky }, ..mobile_low };
+        assert_eq!(shed(OptionalPass::SkyFaceRate, slowest).sky.cube_interval, 60);
+
+        let all: OptionalPasses = OptionalPass::ALL.into_iter().collect();
+        for tier in table.tiers() {
+            let settings = tier.render_settings();
+            let shed = all.shed(settings);
+            assert!(shed.sky.validate().is_ok() && shed.foliage.validate().is_ok(), "{}", tier.id);
+            // Put back what may be shed: everything else, the look's own, is the tier's.
+            let restored = RenderSettings {
+                ambient_occlusion: settings.ambient_occlusion,
+                sky: settings.sky,
+                foliage: settings.foliage,
+                bloom_levels: settings.bloom_levels,
+                ..shed
+            };
+            assert_eq!(restored, settings, "{}", tier.id);
+        }
+        for pass in OptionalPass::ALL {
+            assert_eq!(OptionalPass::from_key(pass.key()), Some(pass));
+            assert!(all.contains(pass) && !OptionalPasses::NONE.contains(pass));
+        }
+        assert_eq!(OptionalPass::from_key("Cirrus"), Some(OptionalPass::Cirrus));
+        assert_eq!(OptionalPass::from_key("fog"), None);
+        assert_eq!(all.iter().collect::<Vec<_>>(), OptionalPass::ALL);
+        let one = OptionalPasses::NONE.with(OptionalPass::Cirrus);
+        assert_eq!(one.iter().collect::<Vec<_>>(), [OptionalPass::Cirrus]);
+        assert!(OptionalPasses::NONE.is_empty() && !one.is_empty());
+
+        // The player's settings apply first: GTAO asked for and shed is gone.
+        let full = quality(QualitySettings {
+            ambient_occlusion: OcclusionSetting::Full,
+            shed: OptionalPasses::NONE.with(OptionalPass::Gtao),
+            ..QualitySettings::default()
+        });
+        assert_eq!(full.render_settings().ambient_occlusion.gtao, None);
+    }
+
     // The tests below set the module's cvars, which are process-wide, so they run as one.
     #[test]
     fn quality_follows_cvars_and_settings() {
@@ -1276,6 +1453,7 @@ mod tests {
             dynamic_resolution: false,
             shadows: Switch::Auto,
             ambient_occlusion: OcclusionSetting::Auto,
+            shed: OptionalPasses::NONE,
         });
         assert_eq!(player.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
         assert_eq!(player.render_scale((1920, 1080), &timing), 0.7);

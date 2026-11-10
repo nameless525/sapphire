@@ -74,6 +74,9 @@
 //!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before
 //!   W5 pin, compiles the environment shader as it was before ambient occlusion.
+//! - `--shed gtao|cirrus|wind-level|sky-face-rate|bloom-level`, repeatable: an optional pass the
+//!   tier goes without (`sapphire_render::quality::OptionalPass`, the thermal ladder's second
+//!   rung), after `--ao`: one step of what the tier draws, and nothing where it draws none.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
 //! - `--vfx arc|hit|dust|duel`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark

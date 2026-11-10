@@ -4,7 +4,9 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
-use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
+use sapphire_render::quality::{
+    OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
+};
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -166,6 +168,8 @@ pub(crate) struct Options {
     /// `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's
     /// without it.
     pub ambient_occlusion: Option<OcclusionSetting>,
+    /// `--shed <pass>`, repeatable: optional passes the tier goes without (M4 T0).
+    pub shed: OptionalPasses,
     /// `--stage floor|pillar|plinth`: a floor under the character, and a pillar shadowing it or
     /// a stone plinth in place of its pedestal.
     pub stage: Option<StudioLayout>,
@@ -625,6 +629,7 @@ impl Options {
             dynamic_resolution: self.dynamic_resolution,
             shadows: self.shadows.unwrap_or_default(),
             ambient_occlusion: self.ambient_occlusion.unwrap_or_default(),
+            shed: self.shed,
         }
     }
 
@@ -710,6 +715,14 @@ impl Options {
                         "full" => OcclusionSetting::Full,
                         other => return Err(format!("--ao expects off, capsule or full, got {other:?}")),
                     });
+                }
+                "--shed" => {
+                    let raw = value("--shed")?;
+                    let pass = OptionalPass::from_key(&raw).ok_or_else(|| {
+                        let keys: Vec<&str> = OptionalPass::ALL.iter().map(|pass| pass.key()).collect();
+                        format!("--shed expects one of {}, got {raw:?}", keys.join(", "))
+                    })?;
+                    options.shed = options.shed.with(pass);
                 }
                 "--stage" => {
                     let raw = value("--stage")?;
@@ -1770,8 +1783,15 @@ mod tests {
                 dynamic_resolution: true,
                 shadows: Switch::Auto,
                 ambient_occlusion: OcclusionSetting::Auto,
+                shed: OptionalPasses::NONE,
             }
         );
+        let (shedding, _) = parse(&["--shed", "cirrus", "--shed=bloom-level"]).unwrap();
+        assert_eq!(
+            shedding.quality_settings().shed,
+            [OptionalPass::Cirrus, OptionalPass::BloomLevel].into_iter().collect()
+        );
+        assert!(parse(&["--shed", "fog"]).unwrap_err().contains("sky-face-rate"));
         let (pinned, _) = parse(&["--ao", "off"]).unwrap();
         assert_eq!(pinned.quality_settings().ambient_occlusion, OcclusionSetting::Off, "a real setting");
         assert_eq!(parse(&["--ao=capsule"]).unwrap().0.ambient_occlusion, Some(OcclusionSetting::Capsules));

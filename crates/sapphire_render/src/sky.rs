@@ -176,12 +176,15 @@ impl Default for SkySettings {
 }
 
 impl SkySettings {
+    /// The most frames between face updates: a whole cube every 6 seconds at 60 fps.
+    pub const MAX_CUBE_INTERVAL: u32 = 60;
+
     /// Checks the cube's size and interval, returning the field and what is wrong.
     pub fn validate(&self) -> Result<(), (&'static str, &'static str)> {
         if !(self.cube_size.is_power_of_two() && (16..=1024).contains(&self.cube_size)) {
             return Err(("sky.cube_size", "must be a power of two in 16..=1024"));
         }
-        if !(1..=60).contains(&self.cube_interval) {
+        if !(1..=Self::MAX_CUBE_INTERVAL).contains(&self.cube_interval) {
             return Err(("sky.cube_interval", "must be within 1..=60"));
         }
         Ok(())

@@ -43,6 +43,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 sapphire_loc.workspace = true
+# A move's phase, which the whole walk's player reads to time its dodges.
+sapphire_moves.workspace = true
+# The guide's conversation as the ward's run loads it, for the whole walk's test to answer.
+sapphire_script.workspace = true
 # The counting allocator, for the test that `observe` allocates nothing.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 

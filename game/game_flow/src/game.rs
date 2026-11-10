@@ -76,6 +76,12 @@ pub struct GameSetup {
     pub script: Option<String>,
     /// The directory each run's replay is kept in, `<scenario>-<n>.sreplay`; with none, they're kept nowhere.
     pub record: Option<PathBuf>,
+    /// A run's replay that each run plays in place of a new one, from its start (M3 G1c): a lane's whole
+    /// walk. The file applies a boundary's commands right after the step before it, so the beats look at the
+    /// run after what the recording's beats asked for there: a beat's timeline is already playing when it
+    /// fires, and nothing is asked of the run again; a conversation's answers have landed, so a beat whose
+    /// `unless` they set passes it by.
+    pub replay: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for GameSetup {
@@ -84,6 +90,7 @@ impl std::fmt::Debug for GameSetup {
             .field("saves", &self.store.is_some())
             .field("script", &self.script)
             .field("record", &self.record)
+            .field("replay", &self.replay)
             .finish()
     }
 }
@@ -274,6 +281,9 @@ impl Game {
         };
         self.stats.runs += 1;
         self.seen = RunSeen::default();
+        if let Some(path) = &self.setup.replay {
+            return CombatOption::Replay { path: path.clone(), to_end: false };
+        }
         let scenario = document.scenario.clone();
         let keep =
             self.setup.record.as_ref().map(|dir| dir.join(format!("{scenario}-{}.sreplay", self.stats.runs)));
@@ -418,6 +428,10 @@ impl Game {
 /// A beat's timeline: the player brought to `align` first, then it plays, each a recorded command. One the
 /// run can't play, as when a move's cinematic is playing, has ended, so the flow goes on. What takes
 /// allocates nothing.
+///
+/// A replay's run is asked nothing: it applies what it recorded by itself, a boundary's commands right after
+/// the step before it, so a timeline the recording's beat played is already playing when the same beat fires
+/// here (M3 G1c). That one is followed to its end as a played one is; any other has ended.
 fn play_beat(
     combat: &mut Combat,
     timelines: &[(AssetId, TimelineId)],
@@ -426,7 +440,9 @@ fn play_beat(
     timeline: AssetId,
     align: Option<&str>,
 ) {
-    if let Some(checkpoint) = align
+    let replay = combat.is_replay();
+    if !replay
+        && let Some(checkpoint) = align
         && let Err(error) = combat.return_to_checkpoint(checkpoint)
     {
         stats.refused += 1;
@@ -438,7 +454,17 @@ fn play_beat(
         tracing::error!(target: LOG_TARGET, %timeline, "the run's scenario loads no such timeline");
         return;
     };
-    match combat.play_timeline(timelines[place].1) {
+    let played = if replay {
+        let playing = combat.simulation().timeline().map(|playing| playing.id);
+        if playing == Some(timelines[place].1) {
+            Ok(())
+        } else {
+            Err("the replay didn't play it here".to_owned())
+        }
+    } else {
+        combat.play_timeline(timelines[place].1)
+    };
+    match played {
         Ok(()) => seen.playing = Some(place),
         Err(error) => {
             stats.refused += 1;

@@ -110,6 +110,7 @@ impl Options {
             store: self.saves().then(|| progress_store(&dir, durable_replace)),
             script: self.script.clone(),
             record: self.record.clone(),
+            replay: None,
         };
         GameShow::from_content(platform.content(), settings, setup)
     }

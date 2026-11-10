@@ -262,10 +262,15 @@ impl GameShow {
 
     /// After a step of the run: the flow's beats and save. A dialogue a beat opens opens on the fight's
     /// runner, and the flow waits in it until the runner says it ended ([`Self::follow_dialogue_end`]). One
-    /// the run can't open has ended at once, so the flow goes on.
+    /// the run can't open has ended at once, so the flow goes on. A replay opens none: it applies what the
+    /// conversation chose by itself, between the same two steps it was chosen between (M3 G1c).
     fn follow_game_step(&mut self) {
         let (Some(game), Some(combat)) = (&mut self.game, &mut self.shown.fight.combat) else { return };
         let Some(asset) = game.after_step(combat) else { return };
+        if combat.is_replay() {
+            game.command(FlowCommand::DialogueEnded);
+            return;
+        }
         let opened = match game.dialogue_of(asset) {
             Some(id) => {
                 self.shown.fight.dialogue.open(id, combat).map(|()| id).map_err(|error| error.to_string())

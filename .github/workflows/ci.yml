@@ -305,7 +305,9 @@ jobs:
       matrix:
         shard: [1, 2]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Shard 1 took 43 m 24 s on M3's last run (2026-11-10), against 45; shard 2 took 28. M4 I1 is to
+    # even them out or add a shard.
+    timeout-minutes: 60
     env:
       SAPPHIRE_GPU_BACKEND: vulkan
       SAPPHIRE_GPU_DEBUG: none

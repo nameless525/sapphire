@@ -197,6 +197,9 @@ impl TextSystem {
 
     /// `text` shaped in `style` at `scale` pixels per point, wrapped to `max_width` points. The same
     /// arguments again allocate nothing and return what they did last time.
+    ///
+    /// A width that isn't a number, or is infinite, wraps nowhere, as `None` does; a negative one
+    /// wraps as zero does, at every break the text allows.
     pub fn shape(
         &mut self,
         text: &str,
@@ -274,10 +277,21 @@ impl TextSystem {
         let locale = style.locale.and_then(|tag| parley::style::Language::parse(tag).ok());
         builder.push_default(StyleProperty::Locale(locale));
         builder.build_into(&mut self.scratch, text);
-        self.scratch.break_all_lines(max_width.map(|width| width * scale));
+        self.scratch.break_all_lines(wrap_width(max_width, scale));
         self.scratch.align(Alignment::Start, AlignmentOptions::default());
         flatten(&self.scratch, &self.faces)
     }
+}
+
+/// The width in pixels a layout wraps at: `max_width` points times `scale`, with what a width that
+/// isn't one means settled here, since `parley` panics on a NaN in a debug build and has no word on
+/// the rest. A NaN (from the width or a scale that isn't finite) has no width to wrap at, so it wraps
+/// nowhere, and so does an infinite one, which every line fits. A negative one is narrower than any
+/// line, as zero is: a box squeezed past its padding wraps at every break, as one just short of it
+/// does, rather than not at all. The cache keys the caller's bits, so each of these is a hit again.
+fn wrap_width(max_width: Option<f32>, scale: f32) -> Option<f32> {
+    let width = max_width? * scale;
+    (!width.is_nan() && width != f32::INFINITY).then(|| width.max(0.0))
 }
 
 fn flatten(layout: &Layout<()>, faces: &HashMap<u64, FaceOptions>) -> ShapedText {
@@ -361,5 +375,38 @@ mod tests {
         text.frame = LAYOUT_KEEP_FRAMES;
         text.begin_frame();
         assert_eq!(text.take_stats(), ShapeStats::default());
+    }
+
+    #[test]
+    fn a_width_that_is_no_number_wraps_nowhere_and_a_negative_one_wraps_everywhere() {
+        assert_eq!(wrap_width(None, 2.0), None);
+        assert_eq!(wrap_width(Some(50.0), 2.0), Some(100.0));
+        assert_eq!(wrap_width(Some(f32::NAN), 2.0), None);
+        assert_eq!(wrap_width(Some(f32::INFINITY), 2.0), None);
+        assert_eq!(wrap_width(Some(50.0), f32::NAN), None, "a scale that isn't a number");
+        assert_eq!(wrap_width(Some(f32::INFINITY), 0.0), None, "infinity times zero");
+        assert_eq!(wrap_width(Some(-5.0), 2.0), Some(0.0));
+        assert_eq!(wrap_width(Some(f32::NEG_INFINITY), 2.0), Some(0.0));
+    }
+
+    /// `parley` panics on a NaN width in a debug build (its `line_break.rs`), which this build is.
+    #[test]
+    fn shaping_takes_any_width_and_caches_it_by_its_bits() {
+        let mut text = TextSystem::new();
+        text.register_font(Arc::new(epaint_default_fonts::UBUNTU_LIGHT.to_vec()));
+        const WORDS: &str = "three short words";
+        let lines = |text: &mut TextSystem, width| text.shape(WORDS, &STYLE, 1.0, width).lines.clone();
+        let one_line = lines(&mut text, None);
+        let narrowest = lines(&mut text, Some(0.0));
+        assert_eq!(one_line.len(), 1);
+        assert_eq!(narrowest.len(), 3, "a word a line");
+        assert_eq!(lines(&mut text, Some(f32::NAN)), one_line);
+        assert_eq!(lines(&mut text, Some(f32::INFINITY)), one_line);
+        assert_eq!(lines(&mut text, Some(-40.0)), narrowest);
+        assert_eq!(lines(&mut text, Some(f32::NEG_INFINITY)), narrowest);
+        text.take_stats();
+        lines(&mut text, Some(f32::NAN));
+        lines(&mut text, Some(-40.0));
+        assert_eq!(text.take_stats().hits, 2, "the same width again is the same layout");
     }
 }

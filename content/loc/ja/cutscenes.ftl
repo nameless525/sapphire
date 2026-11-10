@@ -7,6 +7,6 @@
 
 speaker-wanderer = 旅人
 speaker-warden = 門の守り手
-court-gate-quiet = 神殿の中庭……さっきまで静かだったのに。
-court-gate-warning = 灯籠の門を越える者はいない。
-court-gate-answer = なら、あなたを越えて行く。
+subtitle-court-gate-quiet = 神殿の中庭……さっきまで静かだったのに。
+subtitle-court-gate-warning = 灯籠の門を越える者はいない。
+subtitle-court-gate-answer = なら、あなたを越えて行く。

@@ -13,8 +13,8 @@
 ### 5. Run `cargo test -p game_ui --test strings`, which holds all of this, and `--test menus`, which walks
 ###    every screen in both languages and under pseudo-localization.
 ### A new file of strings goes beside this one, in both languages, each with its own `.meta` sidecar.
-### A cutscene's lines and speakers go in `cutscenes.ftl` instead, named by its timeline's `subtitles`; the
-### same test holds them.
+### A cutscene's lines and speakers go in `cutscenes.ftl` instead, named by its timeline's `subtitles`, under
+### `subtitle-` and `speaker-` for the HUD to draw; the same test holds them.
 ### The window's title is the one key no document names: the app sets it (`game_ui::menus::WINDOW_TITLE`).
 
 window-title = Sapphire

@@ -56,9 +56,9 @@
             (parameter: Bloom, keys: [(at: 0.0, value: 0.0), (at: 5.6, value: 0.0), (at: 6.0, value: 0.25), (at: 7.2, value: 0.0)]),
         ],
         subtitles: [
-            (from: 0.8, to: 2.4, key: "court-gate-quiet", speaker: Some("speaker-wanderer")),
-            (from: 2.9, to: 4.9, key: "court-gate-warning", speaker: Some("speaker-warden")),
-            (from: 5.4, to: 7.3, key: "court-gate-answer", speaker: Some("speaker-wanderer")),
+            (from: 0.8, to: 2.4, key: "subtitle-court-gate-quiet", speaker: Some("speaker-wanderer")),
+            (from: 2.9, to: 4.9, key: "subtitle-court-gate-warning", speaker: Some("speaker-warden")),
+            (from: 5.4, to: 7.3, key: "subtitle-court-gate-answer", speaker: Some("speaker-wanderer")),
         ],
         // Told to the court's fight as it's let go, for whatever starts there to hear.
         events: [(at: 9.0, event: "court_gate_seen")],

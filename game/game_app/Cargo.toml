@@ -73,5 +73,9 @@ harness = false
 name = "plays_the_ward"
 harness = false
 
+[[test]]
+name = "wins_the_ward"
+harness = false
+
 [lints]
 workspace = true

@@ -29,8 +29,11 @@
 //! An inset draws only in a frame where what it shows changed: its view (camera, size, exposure,
 //! ambient, backdrop), its instances' deltas, the poses sent for them, their character entries, or
 //! the grade. Otherwise its picture holds, costing the interface's one draw. A frame that never ran
-//! leaves every picture it would have drawn to draw again. Time alone doesn't move a held picture,
-//! so a breathing emission or an eye highlight's drift stops while nothing else moves.
+//! leaves every picture it would have drawn to draw again, and so does replacing what drew one
+//! (M3 Z5c): a shader reload's pipelines (or the fallback to the compiled-in shaders), a mesh or
+//! material reloaded in place or adopted, or a probe grid set. Each is caught where the renderer
+//! replaces it, not compared each frame. Time alone doesn't move a held picture, so a breathing
+//! emission or an eye highlight's drift stops while nothing else moves.
 //!
 //! # Memory
 //!
@@ -296,6 +299,15 @@ impl Insets {
         let drawn = self.targets.iter().filter(|target| target.draw);
         let drawn_bytes = drawn.map(|target| InsetSettings::drawn_bytes(target.scene_size, samples)).sum();
         InsetStats { drawn_bytes, ..self.stats }
+    }
+
+    /// Every held picture draws again in the next frame that shows it: what drew it was replaced, a
+    /// pipeline by a shader reload, or a mesh, material or probe grid by a content reload. The
+    /// renderer calls it where each is replaced, so a frame with no reload pays nothing for it.
+    pub(crate) fn redraw(&mut self) {
+        for target in &mut self.targets {
+            target.drawn = None;
+        }
     }
 
     /// Every picture the last frame would have drawn draws again: it never ran.

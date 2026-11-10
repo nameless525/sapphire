@@ -1072,6 +1072,8 @@ impl Renderer {
     fn material_changed(&mut self, handle: MaterialHandle, before: Option<(MaterialFlags, u32, bool)>) {
         let record = self.materials.record(handle).expect("updated material is current");
         let (family, flags, layer, reflects) = (record.family, record.flags, record.layer, record.reflects);
+        // A held inset picture showing it shows the old payload.
+        self.insets.redraw();
         // An eye that moves to another layer keeps its pipelines, but its draws move among the
         // variant's (M1 C6). A material that starts or stops reflecting changes whether the
         // ambient pass prefilters the reflection cube, which the draw list's rebuild decides
@@ -1377,6 +1379,7 @@ impl Renderer {
         self.prepare_mesh(handle, &materials, moves);
         self.lights.mesh_replaced();
         self.scene.mesh_replaced(handle);
+        self.insets.redraw();
         self.update_pool_stats();
         Ok(())
     }
@@ -1406,6 +1409,7 @@ impl Renderer {
         }
         if !replacements.is_empty() {
             self.lights.mesh_replaced();
+            self.insets.redraw();
             self.update_pool_stats();
         }
         Ok(())
@@ -1716,6 +1720,8 @@ impl Renderer {
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
         self.stats.shader_rebuilds += 1;
+        // Held inset pictures were drawn by the pipelines just replaced.
+        self.insets.redraw();
         tracing::info!(target: LOG_TARGET, programs = update.programs, pipelines = update.pipelines, "shaders rebuilt");
         update
     }
@@ -3003,6 +3009,8 @@ impl Renderer {
         self.checked_build(|renderer| renderer.pipelines.set_ambient_constants(&renderer.device, constants));
         // Entries the character pass wrote for the old grid go back to the CPU's.
         self.characters.invalidate();
+        // Held inset pictures were lit by the old grid, through pipelines built for it.
+        self.insets.redraw();
         result
     }
 

@@ -5223,9 +5223,9 @@ mod tests {
 
     #[test]
     fn splitting_by_cost_shortens_ci_s_slowest_shard() {
-        // CI's split: lavapipe in 2, WARP in 6.
+        // CI's split: lavapipe in 3, WARP in 6.
         let scenes = scenes();
-        for (family, count) in [(Family::Lavapipe, 2), (Family::Warp, 6)] {
+        for (family, count) in [(Family::Lavapipe, 3), (Family::Warp, 6)] {
             let costs = costs(&scenes, Some(family));
             let slowest = |slices: &[usize]| {
                 let mut loads = vec![0_u64; count];

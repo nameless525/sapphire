@@ -340,6 +340,58 @@ All three replays reached the committed aarch64 checksums, so the Mac, the Simul
 - On the emulator, audio warns that real-time scheduling was refused. Sound wasn't checked.
 - `--capture-ticks` without a replay's end counts the steps a trip holds: a capture at 600 on `zone-trip` stops at the replay's tick 120. That's by design (the capture's steps are frames), and worth knowing before choosing a tick.
 
+### Rehearsal at 00d05300 (M3 Z2c)
+
+The runbook again on 2026-11-10, on the line after the chain, G1, zone-scripts and Z3e (00d05300), before Z1's fixes, Z3f and S3b. Not a final measurement: an M5 with other agents building, at load averages of 30 to 720 (each figure has its load beside it).
+
+**Builds:** the desktop cook in 193 s, the mobile in 8 s, the release sandbox and game in 768 s; on iOS the game in 1,577 s and the sandbox in 1,026 s; on Android the game in 537 s and the sandbox in 706 s. Gradle needs `JAVA_HOME` set, as `running.md` says.
+
+**Exit test 1:** `cargo xtask replay`: 37 of 37 replays reach their aarch64 checksums (432 s). The sandbox's replay lane: 21 of 22, the one failure below. `zone_ward` 6 of 6, `sapphire_save` 70 of 70.
+
+**Exit test 2:** `bosses_are_content` 2 of 2, with this checkout's whole history.
+
+**Exit tests 5 and 7, one checksum on three targets.** The Mac (Metal, release), a private iPhone 17 Pro Simulator (iOS 26.3, Mobile-Low) and the emulator (`sapphire_api36`, Vulkan, Mobile-Low, headless), each with 0 first-use builds:
+
+| Run | Mac | Simulator | Emulator |
+|---|---|---|---|
+| Sandbox `--capture … --arena --replay zone-trip` | `83b541032f77330b` | the same, `prewarmed=58` | the same |
+| … `ward-court-watched` | `e40bf9319bda39cc` | the same, 61 | the same |
+| … `arena-fight-won` | `3357fdf8b6651dc5` | the same, 57 | the same |
+| … `arena-boss` | `21f263cd61ff61a9` | the same, 57 | the same |
+| … `walk-the-ward`, now standable | `512b7b7cf30583c8` | the same, 61 | the same |
+| Game `--open-fight --script fight-back --ticks 1695 --capture` | `53054fedc47e8922`, `prewarmed=93` | the same, 77 | the same, 77 |
+| Game `--new-game --script walk-the-ward --ticks 4298 --capture` | two runs end, at 2126 (`32e4246e8074bcb1`) and 2107 (`76dea41f2df08eef`) | the same | the same |
+| Game's title, `--capture … --ticks 120` | | draws, cold prewarm 5.1 s | |
+
+The game's lanes (`reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_the_ward`) pass on the Mac. In the game, `walk-the-ward`'s script only walks: the market's encounter starts at tick 545, the player's health reaches 0 and the run ends at 2126, then again at 2107 after the restart. A walk to the boss through the flow needs a script that fights (G1c).
+
+**Exit test 8, the bench** (`--bench 1`, §3.6's loads), ms p50 / p99 / worst, its "cpu" phase; load average (1 minute) in the last row:
+
+| Row | DH walk | DL walk | MH walk | ML walk | DL walk again | ML walk again |
+|---|---|---|---|---|---|---|
+| CPU frame | 5.56 / 16.1 / 85.5 | 5.43 / 22.4 / 86.3 | 4.50 / 15.5 / 103 | 4.59 / 29.2 / 128 | 5.48 / 25.8 / 126 | 4.63 / 33.7 / 104 |
+| Simulation | 0.070 / 0.178 / 4.09 | 0.069 / 0.306 / 14.2 | 0.071 / 0.306 / 11.4 | 0.091 / 0.481 / 21.6 | 0.069 / 0.258 / 10.6 | 0.090 / 0.253 / 5.84 |
+| Animation + IK | 0.036 / 0.081 / 1.23 | 0.036 / 0.138 / 2.61 | 0.036 / 0.141 / 4.87 | 0.037 / 0.146 / 1.20 | 0.036 / 0.130 / 6.27 | 0.036 / 0.104 / 7.77 |
+| Secondary motion | 4.12 / 7.82 / 84.0 | 4.02 / 12.7 / 84.9 | 3.11 / 8.62 / 100 | 3.21 / 14.5 / 100 | 4.03 / 12.3 / 111 | 3.23 / 18.4 / 66.6 |
+| Script events | 0.008 / 0.033 / 0.888 | 0.008 / 0.036 / 0.398 | 0.008 / 0.040 / 11.3 | 0.015 / 0.060 / 1.01 | 0.008 / 0.033 / 1.26 | 0.015 / 0.040 / 2.13 |
+| Streaming activation | 0.001 / 0.003 / 0.116 | 0.001 / 0.002 / 0.143 | 0.001 / 0.003 / 1.81 | 0.001 / 0.003 / 0.024 | 0.001 / 0.003 / 0.056 | 0.001 / 0.002 / 0.010 |
+| Audio update | 0.002 / 0.004 / 0.027 | 0.002 / 0.004 / 2.57 | 0.002 / 0.004 / 0.269 | 0.002 / 0.004 / 0.202 | 0.002 / 0.005 / 11.6 | 0.002 / 0.003 / 1.18 |
+| Extract | 0.033 / 0.072 / 2.08 | 0.033 / 0.091 / 0.991 | 0.034 / 0.104 / 1.15 | 0.033 / 0.107 / 14.3 | 0.033 / 0.094 / 8.42 | 0.032 / 0.065 / 0.681 |
+| Render prepare + record | 1.19 / 11.0 / 67.4 | 1.20 / 11.4 / 57.2 | 1.13 / 8.43 / 53.4 | 1.07 / 16.1 / 70.7 | 1.22 / 17.2 / 42.1 | 1.07 / 20.8 / 59.3 |
+| Main pass (GPU) | 4.44 / 8.45 / 10.3 | 6.77 / 11.6 / 16.0 | 5.02 / 10.0 / 13.1 | 2.38 / 7.83 / 8.98 | 6.69 / 10.3 / 14.1 | 2.63 / 6.58 / 8.84 |
+| Load | 33 to 41 | 41 to 447 | 447 to 721 | 721 to 693 | 32 to 34 | 34 to 35 |
+
+- **Every CPU row reads about 2 to 2.8 times §3.6's** (secondary motion 4.03 against 1.947 on Desktop-Low, the simulation 0.069 against 0.025), and the second round, at a load of 32 to 35, reads the same as the first at 41 to 720. No row grows apart from the others, so this looks like a saturated machine (§3.6 read at a median load of 9) rather than a change in the code; only a quiet machine can say. Secondary motion is over its budget on both low tiers, as §3.6 found; Z1's fixes are on it.
+- **The script row is read on the walk now:** the ward's scripts are in this base. Its p50 and p99 are within §3.2's 0.3 and 0.5 on both low tiers; single worsts reach 1.3 to 11 ms under this load.
+- **Other loads, once each:** streaming at 48 m on Mobile-Low 0.001 / 0.009 / 3.9 at load 35. `zone-trip`: five trips each play, covered in 34 frames and clear in 69 on Desktop-Low (0.67 to 1.16 s), 18 and 37 on Mobile-Low (0.25 to 0.37 s), at load 300. `arena-scripted`'s script row 0.009 / 0.038 / 0.162 (DL) and 0.021 / 0.038 / 1.34 (ML). `arena-boss` and `arena-fight-won` read no script row.
+- **Allocations:** a frame on the walk 764 / 760 / 637 / 506 by tier, as §3.6. In fixed steps: none on the walks, fights and boss after the first play; on the first play's tick 2, 6 on the walk, 167 on `arena-scripted` and 83 on `arena-boss` (each fight's start, once); on `zone-trip`, one a trip in every play (§3.6's `holds_step` copy, which Z1's fixes take).
+- **Memory across the walk:** the engine's resident 60.9 MB on the desktop tiers and 48.9 on the mobile ones, flat; the process's most 818, 631, 473 and 439 MB by tier.
+- **The GPU frame row** is "not exercised" on Metal in every run, as §3.6 says.
+
+**Found and fixed: the emulator's audio warning.** `cpal`'s `realtime` feature asks AAudio for its low-latency path and reports a refusal through the stream's error callback, which logged a warning on every stream opened. The emulator's audio has no low-latency path, so it always refused. The refusal is now a state (`DeviceStatus::low_latency_refused`, on `audio stats` and the overlay) and one info line. On the emulator now: `the device refused the low-latency path; sound plays on its normal one` once, `low_latency_refused=true` on each stats line, no warning, 0 xruns.
+
+**Failed:** the sandbox's replay lane's `a_bench_of_a_fight_plays_it_whole_beside_the_renderer` (`apps/sapphire_sandbox/tests/replays.rs:670`). It finds the `gpu frame` row by `row="gpu frame"`, which the `fight row not exercised` line also carries, so on Metal, where no frame's span decodes, it expects a row with no samples. Z1's fixes are on it.
+
 ## What the final run must redo
 
 The rehearsal ran on Q2b's head, before the chain, G1 and Z1. The final run is on the head after all three land, and it takes again:

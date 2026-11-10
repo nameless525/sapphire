@@ -154,7 +154,7 @@ The test: Linux and Windows through CI on software rasterizers, macOS on Metal, 
 | Windows | `Test`, `Replays`, `Golden images (dx12-warp)`; `GPU tests (dx12-warp)` on pushes to `main` | CI |
 | macOS | `Test`, `Replays`, `Golden images (metal)`, and every `--ignored` lane here | CI's `macos-26`, and this Mac when GitHub's macOS runners are out |
 | iOS | `Mobile build (iOS)` builds both apps for the device and the simulator | CI. Running is the rehearsal's, on a private Simulator |
-| Android | `Mobile build (Android)` builds both APKs | CI. Running is the rehearsal's, on the emulator |
+| Android | `Mobile build (Android)` builds both APKs | CI. Running is the rehearsal's, on the emulator, replays included since M3 Z2b |
 
 **On the iOS Simulator.** Use a private one, so `simctl install` doesn't kill another agent's app, and delete it after. Never open Simulator.app.
 
@@ -186,7 +186,22 @@ adb logcat -d | grep -i sapphire
 adb emu kill
 ```
 
-Android can't take `--capture`, `--bench` or `--offscreen`: it enters through `SDL_main`, which runs only the windowed app (#115). Read its logcat and take the screen with `screencap`. So **no replay plays on Android:** the windowed sandbox refuses `--replay` ("--replay needs --capture or --bench", since a replay has nothing to show in a window yet). What stands in is the game's scripted fight, `--open-fight --script fight-back`, whose `a fight ended` line carries a checksum to hold against this Mac's at the same tick.
+The windowed apps have no `--capture`: read their logcat and take the screen with `screencap`.
+
+**A replay on the emulator** (M3 Z2b). Android's `SDL_main` runs the sandbox's offscreen app when the intent's arguments ask for `--capture`, `--bench`, `--contact-sheet` or `--offscreen`, as `main` does on the desktop. A relative path goes under the app's cache, so push the replay and the checksums there:
+
+```bash
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+  cargo xtask bundle --platform android --release --features dev
+adb install -r target/android/SapphireSandbox.apk
+adb push tests/replays/zone-trip.sreplay tests/replays/checksums.aarch64.txt /data/local/tmp/
+adb shell run-as dev.sapphire.sandbox cp /data/local/tmp/zone-trip.sreplay /data/local/tmp/checksums.aarch64.txt cache/
+adb shell am start -n dev.sapphire.sandbox/.SandboxActivity --es sapphire.args <base64 of ["--capture","end.png","--size","640x360","--arena","--replay","zone-trip.sreplay"]>
+adb logcat -d | grep -E 'replay reached|captured frame|main returned'
+adb exec-out run-as dev.sapphire.sandbox cat cache/end.png > target/emulator-end.png
+```
+
+`cargo xtask run --platform android --release --features dev -- --capture end.png --arena --replay zone-trip.sreplay` installs, launches and exits with the app's status once the files are in the cache: 0 when the replay reached its checksums, 1 with the reason in the log when it didn't. The activity's window stays black while it runs. The game takes `--capture` the same way: `--open-fight --script fight-back --ticks 1695 --capture fight.png` writes `cache/fight.png` and logs its fight's checksum.
 
 **CI** builds both mobile apps on every pull request and runs nothing on them.
 
@@ -300,15 +315,27 @@ Run on 2026-11-09 on Q2b's head, before the chain, G1 and Z1, on an M5 at a load
 |---|---|
 | The game's fight, windowed, `--open-fight --script fight-back` | Ended at tick 1695 with `checksum=7be80d23e926a16a allocations=0`, this Mac's at tick 1695, and the same `fell_at` and health as the Simulator's. The HUD and touch controls draw. Cold, the packs' pipelines built in 16.4 s under load |
 | The game's title, windowed | Draws on Mobile-Low, Vulkan. Warm, the prewarm took 291 ms, then `prewarmed=68 first_use=0` |
-| The sandbox, `--arena --replay zone-trip.sreplay` | Refused: `--replay needs --capture or --bench`. No replay plays on Android (exit test 5) |
+| The sandbox, `--arena --replay zone-trip.sreplay` | Refused: `--replay needs --capture or --bench`. No replay played on Android then |
 
 So a scripted fight reached one checksum on three targets: this Mac on Metal, the Simulator and the emulator. The zone and cutscene replays reached their committed checksums on the Mac and the Simulator, beside the renderer.
+
+**Replays on the emulator, after M3 Z2b** (on the chain's head, f39fad2b, before G1 and Z1). Android's entry now runs the offscreen app when asked, so the sandbox's `--capture … --size 640x360 --arena --replay <file>`, with the file and the checksums in the app's cache:
+
+| Replay | Result |
+|---|---|
+| `zone-trip` | 720 of 720 ticks, five trips, `checksum=ba5b63eb905b3d70 allocations=0`, `prewarmed=58 first_use=0`, `main returned status=0` |
+| `ward-court-watched` | 1200 of 1200 ticks, `checksum=ff6c6da6027a0857 allocations=0`, `prewarmed=61 first_use=0` |
+| `arena-fight-won` | 1700 of 1700 ticks, `checksum=3357fdf8b6651dc5 allocations=0`, `prewarmed=57 first_use=0`. The fight draws |
+
+| The game, `--open-fight --script fight-back --ticks 1695 --capture fight.png` | `checksum=7be80d23e926a16a allocations=0`, as windowed before, `prewarmed=68 first_use=0`, and `cache/fight.png` with the HUD and touch controls |
+
+All three replays reached the committed aarch64 checksums, so the Mac, the Simulator and the emulator agree on the replays too. `cargo xtask run --platform android` of `zone-trip` exited 0, and of a missing file exited 1, naming it. The windowed sandbox still opened as before.
 
 **Found and fixed: a capture to a replay's end hung on a zone trip.** `--capture` with `--replay zone-trip.sreplay` spun at full CPU forever, on this Mac and on the Simulator alike. A capture of a replay's end steps on through the steps a trip holds, but the trip waits on what only a drawn frame moves: the next zone's load, its first cells, and the wipe covering and clearing. The capture now draws a frame for each step a trip holds, and the sandbox's zone-trip lane captures the end as well as benching it. Nothing else draws differently, since only a trip's held steps take the new frames. The picture at `zone-trip`'s end is the wipe still clearing from the fifth trip, which lands just before the end.
 
 **Noticed, not fixed:**
 
-- No replay plays on Android, as above. Playing one in the window, or giving Android an offscreen entry, is a package of its own.
+- No replay played on Android. Z2b gave Android the offscreen entry, above.
 - `walk-the-ward` plays in no app, since its scenario isn't one a stage stands (exit test 1). The walk through the game's flow lands with G1.
 - On the emulator, audio warns that real-time scheduling was refused. Sound wasn't checked.
 - `--capture-ticks` without a replay's end counts the steps a trip holds: a capture at 600 on `zone-trip` stops at the replay's tick 120. That's by design (the capture's steps are frames), and worth knowing before choosing a tick.
@@ -322,7 +349,7 @@ The rehearsal ran on Q2b's head, before the chain, G1 and Z1. The final run is o
 - **Exit test 2:** `tests/bosses_are_content.rs` on CI's Linux job with the full history, so its third clause runs rather than skips.
 - **Exit test 3:** the cutscene from the court's threshold in the ward's walk, not at a fixed tick. Its subtitles on screen in both languages, by a golden, if G1 draws them; if nothing does, say so as a finding.
 - **Exit test 4:** title, new game, continue, the pause and its return to title in a real run, and the title's goldens (`game-title-*`, with CI's lavapipe and WARP).
-- **Exit test 5:** the whole rehearsal again on the final head, on a fresh private Simulator and the emulator. Add G1's flow to it: `--game new-game` to a capture on the Simulator, and the same arguments windowed on the emulator.
+- **Exit test 5:** the whole rehearsal again on the final head, on a fresh private Simulator and the emulator. The replays this time on both, the walk G1 records and the boss's among them. Add G1's flow to it: `--game new-game` to a capture on both.
 - **Exit test 7:** the app lanes, with G1's replay of the whole walk through the flow reading 0 first-use builds on Desktop-Low and Mobile-Low.
 - **Exit test 8:** Z1's bench on the ward's walk on Desktop-Low and Mobile-Low, §3.2's script and streaming rows, memory across the walk and a transition's time, into spec §3.5's table. Note the load average beside each number. Run it after the chain and G1, since both change what a step runs.
 - **The record:** the table at the top, each test's "Where it stands", and an "As built" line for Z2 in [m3-plan.md](m3-plan.md).

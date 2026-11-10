@@ -14,7 +14,7 @@ Agents ran everything that needs no window and no phone, and "Rehearsal" near th
 |---|---|---|---|
 | 1. A zone | CI, then this Mac | Nothing | Replays of the ward's walk hold on all three desktop OSes. The boss at its end lands with C2 part 2, and the walk through the game's flow with G1 |
 | 2. A boss with no Rust | CI | Nothing | Lands with C2 part 2 (`tests/bosses_are_content.rs`) |
-| 3. One cutscene | CI and this Mac | A window, or a person, for subtitles on screen | A watch and a skip reach one trail. Subtitles resolve in either language, and nothing draws them yet |
+| 3. One cutscene | CI and this Mac | A person who reads Japanese, for the subtitles' wording | A watch and a skip reach one trail. The HUD draws the subtitles in the chosen language, with goldens at three aspects in two languages (M3 Q4) |
 | 4. HUD and menus | CI and this Mac | A person who reads Japanese | Walked by pad, keyboard and touch, with goldens at three aspects in two languages. The Japanese is machine-quality and owed a reader |
 | 5. Five platforms | CI, this Mac, the rehearsal | A phone and a desktop GPU other than this Mac's | Done, pending devices, as M1 and M2 closed |
 | 6. The editor | CI | A person with a window | Proved by tests with no window. The window is owed |
@@ -104,7 +104,7 @@ cargo test -p sapphire_sandbox --features dev --locked --test replays -- --ignor
 
 **Open:**
 
-- Subtitles are resolved, not drawn. Q3 left drawing them to U7 and Q2, and no screen draws them yet. Until one does, "shows subtitles" stands on the strings test alone. **Lands with G1** if its flow draws them; otherwise it's a finding of this run.
+- Subtitles are drawn (M3 Q4): the HUD document's `subtitle` node shows the line at the playhead and its speaker, and the fight's HUD steps aside while the cutscene plays. `game-ward-gate-*` capture the warden's line through the game's flow in both languages at 4:3, 16:9 and 21:9.
 - The cutscene plays at a fixed tick in `ward-court`, not at the court's threshold trigger. **Lands with G1**, whose flow reaches the court through the ward.
 - `game_app` can't yet ask for a timeline. **Lands with G1.**
 
@@ -399,7 +399,7 @@ The rehearsal ran on Q2b's head, before the chain, G1 and Z1. The final run is o
 - **Before anything,** on that head: the lock check and a fresh cook. Remove `target/content/cache` first, since the chain renumbers cooked kinds.
 - **Exit test 1:** `cargo xtask replay` and the sandbox's replay lane, with the boss's replay and the replays G1 records through its flow among them. Then the walk from the title to the boss and back, through the game's flow. CI's `Replays` on all three OSes on that head: a macOS job if GitHub's runners are back, this Mac's stand-in if not.
 - **Exit test 2:** `tests/bosses_are_content.rs` on CI's Linux job with the full history, so its third clause runs rather than skips.
-- **Exit test 3:** the cutscene from the court's threshold in the ward's walk, not at a fixed tick. Its subtitles on screen in both languages, by a golden, if G1 draws them; if nothing does, say so as a finding.
+- **Exit test 3:** the cutscene from the court's threshold in the ward's walk, not at a fixed tick. Its subtitles on screen in both languages, by the `game-ward-gate-*` goldens (M3 Q4), with CI's lavapipe and WARP.
 - **Exit test 4:** title, new game, continue, the pause and its return to title in a real run, and the title's goldens (`game-title-*`, with CI's lavapipe and WARP).
 - **Exit test 5:** the whole rehearsal again on the final head, on a fresh private Simulator and the emulator. The replays this time on both, the walk G1 records and the boss's among them. Add G1's flow to it: `--game new-game` to a capture on both.
 - **Exit test 7:** the app lanes, with G1's replay of the whole walk through the flow reading 0 first-use builds on Desktop-Low and Mobile-Low.

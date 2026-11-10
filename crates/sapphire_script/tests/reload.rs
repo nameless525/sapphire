@@ -165,7 +165,7 @@ fn a_reload_that_changes_nothing_or_fails_keeps_what_runs() {
     let elsewhere = reload(sim, "boss.luau", TUNED).unwrap_err();
     assert!(matches!(&elsewhere, ReloadError::NotBound { bound, .. } if bound == "test.luau"), "{elsewhere}");
     assert_eq!(sim.tables_hash(), tables, "nothing landed");
-    assert_eq!(host_of(sim).source_name(), "test.luau");
+    assert!(host_of(sim).source_names().eq(["test.luau"]));
 
     assert_eq!(reload(sim, "test.luau", TUNED).unwrap(), Reloaded::Replaced);
     assert_ne!(sim.tables_hash(), tables, "a replay recorded before refuses what comes after");

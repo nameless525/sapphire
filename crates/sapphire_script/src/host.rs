@@ -1,6 +1,13 @@
 //! A simulation's script host: the VM and which hooks are bound, and the system that fires them inside a
 //! fixed step.
 //!
+//! **A fight's scripts share its VM** (M3 C2): one for the fight, as a scenario of code binds, and one for
+//! each kind of enemy whose document names one, each hearing only its own fighters' events
+//! ([`ScriptScope`]). Each chunk keeps what it made to itself, since a chunk's tables are frozen and the
+//! globals are, so sharing a VM shares only its memory limit, its collector and a step's interrupts, all
+//! of which are the fight's. The board is the fight's too, as its flags are: every script in it reads and
+//! writes the same slots.
+//!
 //! What a hook reads and writes, and how that reaches the checksum, is gameplay's
 //! ([`sapphire_gameplay::script`]), which knows nothing of this crate. [`attach`] gives a simulation its
 //! script state and adds the system that fires hooks to [`CombatSet::Hooks`], and from then on a step goes: gameplay
@@ -17,7 +24,8 @@ use sapphire_dialogue::{ConditionId, Dialogue};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::script::HookEnding;
 use sapphire_gameplay::{
-    CombatSet, HookEvent, HookFrame, HookWants, LendsFrame, ScriptWorld, SimRng, Simulation, StateHasher,
+    CombatSet, HookEvent, HookFrame, HookWants, LendsFrame, ScriptScope, ScriptWorld, SimRng, Simulation,
+    StateHasher,
 };
 use sapphire_math::Pcg32;
 use sapphire_time::Stopwatch;
@@ -83,20 +91,35 @@ impl ConditionSet {
     }
 }
 
+/// A chunk bound in a host's VM: its hooks, and whose events they hear.
+struct Bound {
+    scope: ScriptScope,
+    /// Its hooks, by [`HOOKS`]' position; swapped whole when it's bound again, between steps.
+    hooks: [Option<Hook>; HOOK_COUNT],
+    /// The hash of its bytes.
+    chunk: u64,
+    /// The name it was bound by, which a reload goes by.
+    name: String,
+    /// Its `names`, which go on the frame for the time one of its hooks runs.
+    names: Vec<Name>,
+}
+
+impl Bound {
+    /// Its source file name: its chunk name without the `=`.
+    fn source_name(&self) -> &str {
+        self.name.strip_prefix('=').unwrap_or(&self.name)
+    }
+}
+
 /// One simulation's VM and what's bound to it, as a resource in its world: a system takes it by `ResMut`,
 /// so firing a hook costs no lock, and whoever swaps a chunk or steps the collector does it between steps
 /// through the simulation that owns it.
 #[derive(Resource)]
 pub struct ScriptHost {
     vm: ScriptVm,
-    /// The bound hooks, by [`HOOKS`]' position; swapped whole by [`Self::bind`], between steps.
-    hooks: [Option<Hook>; HOOK_COUNT],
-    /// The hash of the bound chunk's bytes.
-    chunk: u64,
-    /// The name it was bound by, which a reload goes by.
-    name: String,
-    /// The bound chunk's `names`.
-    names: Vec<Name>,
+    /// What's bound, one chunk for each scope at most: the fight's first, if there is one, then each kind's in
+    /// the order they were bound, which is the order they answer an event in.
+    bound: Vec<Bound>,
     /// See [`ScriptWorld::set_beat_every`].
     beat_every: u64,
     stats: ScriptStats,
@@ -113,51 +136,64 @@ impl ScriptHost {
     pub fn new_with_bindings(limits: Limits, more: &[Binding]) -> Result<Self, VmError> {
         Ok(Self {
             vm: ScriptVm::with_bindings(limits, more)?,
-            hooks: [const { None }; HOOK_COUNT],
-            chunk: 0,
-            name: String::new(),
-            names: Vec::new(),
+            bound: Vec::new(),
             beat_every: 0,
             stats: ScriptStats::default(),
             error: None,
         })
     }
 
-    /// Fires `on_beat` every this many ticks, from the moment it's [`attach`]ed. A scenario's choice,
-    /// so it's in the replay's `tables_hash`.
+    /// Fires every bound `on_beat` every this many ticks, from the moment it's [`attach`]ed. A scenario's
+    /// choice, so it's in the replay's `tables_hash`.
     pub const fn beat_every(&mut self, ticks: u64) {
         self.beat_every = ticks;
     }
 
-    /// Runs a cooked chunk and binds what it returns, replacing every hook. Before [`attach`]: on an attached
-    /// host, [`rebind`] is what tells the simulation. `name` is its chunk name, which errors show: `=` and the
-    /// source's file name, so that a reload finds it ([`Self::source_name`]).
+    /// Runs a cooked chunk and binds what it returns as the fight's script, which hears every event,
+    /// replacing the fight's hooks: [`Self::bind_for`] with [`ScriptScope::Fight`].
     pub fn bind(&mut self, cooked: &CookedScript, name: &str) -> Result<(), VmError> {
+        self.bind_for(ScriptScope::Fight, cooked, name)
+    }
+
+    /// Runs a cooked chunk and binds what it returns for `scope`, replacing what that scope had bound and
+    /// leaving every other's. Before [`attach`]: on an attached host, [`rebind`] is what tells the
+    /// simulation. `name` is its chunk name, which errors show: `=` and the source's file name, so that a
+    /// reload finds it ([`Self::source_names`]).
+    pub fn bind_for(&mut self, scope: ScriptScope, cooked: &CookedScript, name: &str) -> Result<(), VmError> {
+        let bound = self.load(scope, cooked, name)?;
+        self.install(bound);
+        Ok(())
+    }
+
+    /// Runs a chunk and takes its hooks and names, binding nothing yet.
+    fn load(&self, scope: ScriptScope, cooked: &CookedScript, name: &str) -> Result<Bound, VmError> {
         let table = self.vm.load(cooked, name)?;
         let mut hooks = [const { None }; HOOK_COUNT];
         for (slot, (hook, _)) in hooks.iter_mut().zip(HOOKS) {
             *slot = table.hook(hook)?;
         }
-        self.names = table.names()?.iter().map(|name| Name::intern(name)).collect();
-        self.hooks = hooks;
-        let mut hash = StateHasher::new();
-        hash.bytes(cooked.as_ref());
-        self.chunk = hash.finish();
-        name.clone_into(&mut self.name);
-        Ok(())
+        let names = table.names()?.iter().map(|name| Name::intern(name)).collect();
+        Ok(Bound { scope, hooks, chunk: chunk_hash(cooked.as_ref()), name: name.to_owned(), names })
     }
 
-    /// The bound chunk's source file name: its chunk name without the `=`. Empty if nothing's bound.
-    #[must_use]
-    pub fn source_name(&self) -> &str {
-        self.name.strip_prefix('=').unwrap_or(&self.name)
+    /// Binds what [`Self::load`] took, in its scope's place.
+    fn install(&mut self, bound: Bound) {
+        match self.bound.iter_mut().find(|held| held.scope == bound.scope) {
+            Some(held) => *held = bound,
+            None if bound.scope == ScriptScope::Fight => self.bound.insert(0, bound),
+            None => self.bound.push(bound),
+        }
     }
 
-    /// Whether `cooked` is what's bound, byte for byte, as far as a hash can say.
-    fn holds(&self, cooked: &[u8]) -> bool {
-        let mut hash = StateHasher::new();
-        hash.bytes(cooked);
-        !self.name.is_empty() && hash.finish() == self.chunk
+    /// Each bound chunk's source file name, its chunk name without the `=`, in the order they answer: the
+    /// fight's, then each kind's. Two kinds that name one file show it twice.
+    pub fn source_names(&self) -> impl Iterator<Item = &str> {
+        self.bound.iter().map(Bound::source_name)
+    }
+
+    /// Whose events each bound chunk hears, in the order they answer.
+    pub fn scopes(&self) -> impl Iterator<Item = ScriptScope> + '_ {
+        self.bound.iter().map(|bound| bound.scope)
     }
 
     /// Compiles a dialogue's conditions from the source its cook kept, with this build's pinned compiler and
@@ -256,7 +292,8 @@ impl ScriptHost {
         self.stats.longest_collection = self.stats.longest_collection.max(spent);
     }
 
-    /// Answers this step's events, in order, until they're done or the step's interrupts have gone.
+    /// Answers this step's events, in order, each by every bound chunk that hears it, in theirs, until
+    /// they're done or the step's interrupts have gone.
     fn run(&mut self, scripts: &mut ScriptWorld, rng: &mut Pcg32) {
         let count = scripts.events().len();
         if count == 0 {
@@ -268,14 +305,22 @@ impl ScriptHost {
         scripts.frame_mut().rng = *rng;
         for index in 0..count {
             let Some(event) = scripts.events().nth(index) else { break };
-            if ScriptVm::interrupts().wrapping_sub(spent_before) >= limits.step_interrupts {
-                self.stats.hooks_skipped += 1;
-                scripts.record_end(index, HookEnding::Skipped);
-                continue;
-            }
-            let (hook, args) = answer(event, scripts.frame_mut());
-            if self.hooks[hook].is_some() {
-                let ending = self.fire(hook, args, scripts.frame_mut());
+            let hook = hook_of(event);
+            for bound in 0..self.bound.len() {
+                let answers = &self.bound[bound];
+                if answers.hooks[hook].is_none() || !answers.scope.hears(event, scripts.frame_mut()) {
+                    continue;
+                }
+                if ScriptVm::interrupts().wrapping_sub(spent_before) >= limits.step_interrupts {
+                    self.stats.hooks_skipped += 1;
+                    scripts.record_end(index, HookEnding::Skipped);
+                    continue;
+                }
+                let frame = scripts.frame_mut();
+                frame.swap_names(&mut self.bound[bound].names);
+                let args = args_of(event, frame);
+                let ending = self.fire(bound, hook, args, frame);
+                frame.swap_names(&mut self.bound[bound].names);
                 scripts.record_end(index, ending);
             }
         }
@@ -287,9 +332,16 @@ impl ScriptHost {
         self.stats.over_budget_steps += u64::from(spent > limits.step_budget);
     }
 
-    /// Runs one hook. One that doesn't end well leaves no commands and doesn't touch the board.
-    fn fire(&mut self, hook: usize, args: (f64, f64, f64), frame: &mut HookFrame) -> HookEnding {
-        let Some(function) = self.hooks[hook].as_ref() else { return HookEnding::Returned };
+    /// Runs one of a bound chunk's hooks. One that doesn't end well leaves no commands and doesn't touch
+    /// the board.
+    fn fire(
+        &mut self,
+        bound: usize,
+        hook: usize,
+        args: (f64, f64, f64),
+        frame: &mut HookFrame,
+    ) -> HookEnding {
+        let Some(function) = self.bound[bound].hooks[hook].as_ref() else { return HookEnding::Returned };
         let before = alloc::vm_counts();
         frame.fault = false;
         let queued_before = frame.queued().len();
@@ -324,20 +376,34 @@ impl ScriptHost {
     }
 }
 
-/// Which hook answers an event, and what it's handed, as `api.toml` declares each. A hook reads as many of
-/// these as it names.
-fn answer(event: HookEvent, frame: &HookFrame) -> (usize, (f64, f64, f64)) {
+/// The hash of a chunk's bytes, which `tables_hash` holds.
+fn chunk_hash(cooked: &[u8]) -> u64 {
+    let mut hash = StateHasher::new();
+    hash.bytes(cooked);
+    hash.finish()
+}
+
+/// Which hook answers an event.
+const fn hook_of(event: HookEvent) -> usize {
+    match event {
+        HookEvent::Phase { .. } => ON_PHASE,
+        HookEvent::MoveStarted { .. } => ON_MOVE,
+        HookEvent::Hit { .. } => ON_HIT,
+        HookEvent::Defeated { .. } => ON_DEFEAT,
+        HookEvent::Beat { .. } => ON_BEAT,
+    }
+}
+
+/// What an event's hook is handed, as `api.toml` declares each, with the answering chunk's names on
+/// `frame`. A hook reads as many of these as it names.
+fn args_of(event: HookEvent, frame: &HookFrame) -> (f64, f64, f64) {
     let id = |actor: sapphire_gameplay::ActorId| f64::from(actor.raw());
     match event {
-        HookEvent::Phase { actor, phase, health } => {
-            (ON_PHASE, (id(actor), f64::from(phase), f64::from(health)))
-        }
-        HookEvent::MoveStarted { actor, name } => (ON_MOVE, (id(actor), frame.place_of(name) as f64, 0.0)),
-        HookEvent::Hit { attacker, target, damage } => {
-            (ON_HIT, (id(attacker), id(target), f64::from(damage)))
-        }
-        HookEvent::Defeated { actor } => (ON_DEFEAT, (id(actor), 0.0, 0.0)),
-        HookEvent::Beat { tick } => (ON_BEAT, (tick as f64, 0.0, 0.0)),
+        HookEvent::Phase { actor, phase, health } => (id(actor), f64::from(phase), f64::from(health)),
+        HookEvent::MoveStarted { actor, name } => (id(actor), frame.place_of(name) as f64, 0.0),
+        HookEvent::Hit { attacker, target, damage } => (id(attacker), id(target), f64::from(damage)),
+        HookEvent::Defeated { actor } => (id(actor), 0.0, 0.0),
+        HookEvent::Beat { tick } => (tick as f64, 0.0, 0.0),
     }
 }
 
@@ -356,25 +422,23 @@ pub fn attach(sim: &mut Simulation, host: ScriptHost) {
     }
 }
 
-/// Tells a simulation's script state what its host has bound.
+/// Tells a simulation's script state what its host has bound: an event is gathered if any chunk's hook
+/// wants it.
 fn tell(sim: &mut Simulation) {
     let host = host_of(sim);
-    let wants = HookWants {
-        phases: host.hooks[ON_PHASE].is_some(),
-        moves: host.hooks[ON_MOVE].is_some(),
-        hits: host.hooks[ON_HIT].is_some(),
-        defeats: host.hooks[ON_DEFEAT].is_some(),
-    };
-    let (chunk, names) = (host.chunk, host.names.clone());
-    let beat_every = if host.hooks[ON_BEAT].is_some() { host.beat_every } else { 0 };
+    let any = |hook: usize| host.bound.iter().any(|bound| bound.hooks[hook].is_some());
+    let wants =
+        HookWants { phases: any(ON_PHASE), moves: any(ON_MOVE), hits: any(ON_HIT), defeats: any(ON_DEFEAT) };
+    let chunks: Vec<(ScriptScope, u64)> = host.bound.iter().map(|bound| (bound.scope, bound.chunk)).collect();
+    let beat_every = if any(ON_BEAT) { host.beat_every } else { 0 };
     let mut scripts = sim.scripts_mut().expect("whoever attaches a host enables scripts");
-    scripts.bind(wants, chunk, names);
+    scripts.bind(wants, &chunks);
     scripts.set_beat_every(beat_every);
 }
 
-/// Binds a new chunk on an attached host, between steps: the reload. The board stays, with everything else
-/// outside the VM, and the simulation's `tables_hash` says what's bound now, as it does for a live edit of
-/// moves.
+/// Binds a new chunk for `scope` on an attached host, between steps: the reload. The board stays, with
+/// everything else outside the VM, and so does every other scope's chunk, and the simulation's
+/// `tables_hash` says what's bound now, as it does for a live edit of moves.
 ///
 /// # Errors
 ///
@@ -383,8 +447,13 @@ fn tell(sim: &mut Simulation) {
 /// # Panics
 ///
 /// If nothing's been attached.
-pub fn rebind(sim: &mut Simulation, cooked: &CookedScript, name: &str) -> Result<(), VmError> {
-    host_of_mut(sim).bind(cooked, name)?;
+pub fn rebind(
+    sim: &mut Simulation,
+    scope: ScriptScope,
+    cooked: &CookedScript,
+    name: &str,
+) -> Result<(), VmError> {
+    host_of_mut(sim).bind_for(scope, cooked, name)?;
     tell(sim);
     Ok(())
 }
@@ -404,28 +473,43 @@ pub enum Reloaded {
 }
 
 /// A script's source, cooked as the cooker does it ([`cook`](crate::cook): the pinned compiler, then the scan)
-/// and bound on an attached host between steps: what hot reload and live link bring (M3 L3). `source_name`
-/// is the file's name, which a host's chunk name must be (`=` and it), so an edit can't land on another
-/// script. The board and everything else outside the VM stay, so the fight goes on from the same numbers
-/// with new decisions.
+/// and bound on an attached host between steps, wherever a chunk of that file is bound, keeping each one's
+/// scope: what hot reload and live link bring (M3 L3). `source_name` is the file's name, which a host's
+/// chunk name must be (`=` and it), so an edit can't land on another script. The board and everything else
+/// outside the VM stay, so the fight goes on from the same numbers with new decisions.
 ///
 /// # Errors
 ///
-/// If the simulation runs no script, the host's came from another file, the source doesn't cook or the
-/// chunk doesn't load. What was bound stays.
+/// If the simulation runs no script, none of the host's came from this file, the source doesn't cook or
+/// the chunk doesn't load. What was bound stays, all of it.
 pub fn reload(sim: &mut Simulation, source_name: &str, source: &str) -> Result<Reloaded, ReloadError> {
     let Some(host) = sim.world().get_resource::<ScriptHost>() else {
         return Err(ReloadError::NoScript { pushed: source_name.to_owned() });
     };
-    let bound = host.source_name();
-    if bound != source_name {
-        return Err(ReloadError::NotBound { pushed: source_name.to_owned(), bound: bound.to_owned() });
+    let scopes: Vec<ScriptScope> = host
+        .bound
+        .iter()
+        .filter(|bound| bound.source_name() == source_name)
+        .map(|bound| bound.scope)
+        .collect();
+    if scopes.is_empty() {
+        let bound = host.source_names().collect::<Vec<_>>().join(", ");
+        return Err(ReloadError::NotBound { pushed: source_name.to_owned(), bound });
     }
     let cooked = sapphire_bytecode::compile::cook(source).map_err(VmError::Cook)?;
-    if host_of(sim).holds(cooked.as_ref()) {
+    let chunk = chunk_hash(cooked.as_ref());
+    if host.bound.iter().filter(|bound| scopes.contains(&bound.scope)).all(|bound| bound.chunk == chunk) {
         return Ok(Reloaded::Unchanged);
     }
-    rebind(sim, &cooked, &format!("={source_name}"))?;
+    // Every one loads before any is bound, so a chunk that can't leaves all of them as they were.
+    let name = format!("={source_name}");
+    let loaded =
+        scopes.iter().map(|&scope| host.load(scope, &cooked, &name)).collect::<Result<Vec<_>, _>>()?;
+    let mut host = host_of_mut(sim);
+    for bound in loaded {
+        host.install(bound);
+    }
+    tell(sim);
     Ok(Reloaded::Replaced)
 }
 
@@ -434,7 +518,8 @@ pub fn reload(sim: &mut Simulation, source_name: &str, source: &str) -> Result<R
 pub enum ReloadError {
     #[error("{pushed}: this fight runs no script")]
     NoScript { pushed: String },
-    #[error("{pushed} isn't the script this fight runs, which is {bound:?}")]
+    /// `bound` is the file names of what's bound, joined by commas.
+    #[error("{pushed} isn't a script this fight runs, which are {bound:?}")]
     NotBound { pushed: String, bound: String },
     #[error(transparent)]
     Vm(#[from] VmError),
@@ -497,11 +582,11 @@ mod tests {
         )
         .unwrap();
         let mut frame = HookFrame::new(0);
-        host.fire(ON_BEAT, (0.0, 0.0, 0.0), &mut frame);
+        host.fire(0, ON_BEAT, (0.0, 0.0, 0.0), &mut frame);
         assert_eq!(frame.board[0], 1.0);
         for source in ["return {on_phase = function() end, on_beat = 42}", "while true do end return {}"] {
             assert!(host.bind(&cook(source).unwrap(), "=bad").is_err());
-            host.fire(ON_BEAT, (0.0, 0.0, 0.0), &mut frame);
+            host.fire(0, ON_BEAT, (0.0, 0.0, 0.0), &mut frame);
         }
         assert_eq!(frame.board[0], 3.0);
         assert_eq!(host.stats.hooks_fired, 3);

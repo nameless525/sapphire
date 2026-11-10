@@ -18,7 +18,9 @@ use sapphire_gameplay::replay::{
     find_scenario, find_script,
 };
 use sapphire_gameplay::script::BOARD_SLOTS;
-use sapphire_gameplay::{ActorId, ActorSpawn, Faction, HookFrame, ScriptCommand, Simulation, TickActions};
+use sapphire_gameplay::{
+    ActorId, ActorSpawn, Faction, HookFrame, ScriptCommand, ScriptScope, Simulation, TickActions,
+};
 use sapphire_script::scenarios::{ARENA_SCRIPTED, DIALOGUE_FLAG, SCRIPTED};
 use sapphire_script::{
     API, CookedScript, Declared, HOOKS, Limits, ScriptHost, ScriptVm, attach, cook, host_of, rebind,
@@ -485,7 +487,7 @@ fn bytecode_is_in_the_tables_hash_and_a_recording_refuses_another() {
     *WAITING.lock().unwrap() = Some(host);
     let (mut sim, _) = skirmish().start(SCRIPTED[0].config).unwrap();
     let before = sim.tables_hash();
-    rebind(&mut sim, &cook(changed).unwrap(), "=reloaded").unwrap();
+    rebind(&mut sim, ScriptScope::Fight, &cook(changed).unwrap(), "=reloaded").unwrap();
     assert_ne!(sim.tables_hash(), before);
 }
 

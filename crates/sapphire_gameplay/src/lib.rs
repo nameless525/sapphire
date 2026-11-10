@@ -199,7 +199,7 @@ pub use navigation::{SimNavigation, WalkPath};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
 pub use patrol::{MAX_PATROL_POINTS, PatrolError, PatrolId, PatrolWalk};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
-pub use script::{HookEvent, HookFrame, HookWants, ScriptCommand, ScriptWorld};
+pub use script::{HookEvent, HookFrame, HookWants, ScriptCommand, ScriptScope, ScriptWorld};
 pub use simulation::{BetweenSteps, CombatSet, LendsFrame, SimConfig, SimRng, Simulation, StartFlagsError};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,

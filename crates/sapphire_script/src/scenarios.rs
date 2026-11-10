@@ -1,8 +1,10 @@
 //! Replay scenarios with a script in them. They're here rather than in `sapphire_gameplay`'s list because
 //! gameplay can't see this crate, so whoever plays them chains this list to that one.
 //!
-//! Two ways in: the scenarios of code listed here ([`SCRIPTED`]), and every scenario document whose kinds of
-//! enemy name a script (M3 C2), which [`ALL`] binds after the document's setup with nothing here naming it.
+//! Two ways in: the scenarios of code listed here ([`SCRIPTED`]), whose script hears the whole fight, and every
+//! scenario document whose kinds of enemy name scripts (M3 C2), which [`ALL`] binds after the document's
+//! setup with nothing here naming them, each for its own kind's fighters ([`ScriptScope::Kind`]), all in the
+//! fight's one VM.
 
 use std::sync::LazyLock;
 
@@ -10,9 +12,9 @@ use sapphire_dialogue::{Dialogue, DialogueDocument, FlagRegistry};
 use sapphire_gameplay::replay::document::{DocumentScript, ScenarioDocument};
 use sapphire_gameplay::replay::{SCENARIOS, Scenario, ScenarioError, ScenarioSetup, find_scenario};
 use sapphire_gameplay::script::ScriptEdits;
-use sapphire_gameplay::{ActorId, Simulation};
+use sapphire_gameplay::{ActorId, ScriptScope, Simulation};
 
-use crate::{Limits, ScriptHost, attach, cook};
+use crate::{CookedScript, Limits, ScriptHost, attach, cook};
 
 /// The chunk `arena-scripted` binds, in source. Its bytecode is in the replay's `tables_hash`, so changing
 /// what this cooks to refuses the replay until it's recorded again.
@@ -66,17 +68,17 @@ pub static SCRIPTED: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     ]
 });
 
-/// Every scenario a build with a VM plays: gameplay's, each document whose kinds of enemy name a script
-/// binding it after its setup, then those with a script of code, which an app and the replay runner look
+/// Every scenario a build with a VM plays: gameplay's, each document whose kinds of enemy name scripts
+/// binding them after its setup, then those with a script of code, which an app and the replay runner look
 /// names up in.
 pub static ALL: LazyLock<Vec<Scenario>> =
     LazyLock::new(|| SCENARIOS.iter().map(with_its_script).chain(SCRIPTED.iter().copied()).collect());
 
-/// `scenario`, binding the script its document's kinds of enemy name, if they name one.
+/// `scenario`, binding the scripts its document's kinds of enemy name, if they name any.
 fn with_its_script(scenario: &Scenario) -> Scenario {
     match scenario.setup {
         ScenarioSetup::Document(document) if document_scripts(document).next().is_some() => {
-            Scenario { setup: ScenarioSetup::DocumentAnd(document, bind_its_script), ..*scenario }
+            Scenario { setup: ScenarioSetup::DocumentAnd(document, bind_its_scripts), ..*scenario }
         }
         _ => *scenario,
     }
@@ -88,36 +90,48 @@ fn document_scripts(document: &ScenarioDocument) -> impl Iterator<Item = Documen
     document.scripts().unwrap_or_default().into_iter()
 }
 
-/// Binds the script `document`'s kinds of enemy name, or the newest edit of it if the fight is a live one's
-/// ([`ScriptEdits`]). A fight runs one script, so a document whose kinds name two can't start.
-fn bind_its_script(document: &ScenarioDocument, sim: &mut Simulation) -> Result<(), ScenarioError> {
+/// Binds the script each of `document`'s kinds of enemy names for that kind's fighters, or the newest edit
+/// of it if the fight is a live one's ([`ScriptEdits`]), all in one host.
+fn bind_its_scripts(document: &ScenarioDocument, sim: &mut Simulation) -> Result<(), ScenarioError> {
     let scripts = document.scripts()?;
-    let [script] = scripts.as_slice() else {
-        let names: Vec<&str> = scripts.iter().map(|script| script.file).collect();
-        let problem = format!("a fight binds one script, and its kinds of enemy name {names:?}");
-        return Err(ScenarioError::Script { name: names.join(", "), problem });
-    };
-    bind_source(sim, script.file, script.source, None)
+    let first = scripts.first().map_or("", |script| script.file);
+    let mut host = ScriptHost::new(Limits::default()).map_err(refused(first))?;
+    for script in &scripts {
+        let cooked = newest(sim, script.file, script.source)?;
+        let scope = ScriptScope::Kind(script.set);
+        host.bind_for(scope, &cooked, &format!("={}", script.file)).map_err(refused(script.file))?;
+    }
+    attach(sim, host);
+    Ok(())
 }
 
-/// Binds `file`, or the newest edit of it, in `sim`, with `beat` if it's given one.
+/// Binds `file`, or the newest edit of it, in `sim`, as the fight's script, with `beat` if it's given one.
 fn bind_source(
     sim: &mut Simulation,
     file: &str,
     source: &str,
     beat: Option<u64>,
 ) -> Result<(), ScenarioError> {
-    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(file));
-    let source = edit.unwrap_or(source).to_owned();
-    let refused = |problem: String| ScenarioError::Script { name: file.to_owned(), problem };
-    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
-    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
-    host.bind(&cooked, &format!("={file}")).map_err(|error| refused(error.to_string()))?;
+    let cooked = newest(sim, file, source)?;
+    let mut host = ScriptHost::new(Limits::default()).map_err(refused(file))?;
+    host.bind(&cooked, &format!("={file}")).map_err(refused(file))?;
     if let Some(beat) = beat {
         host.beat_every(beat);
     }
     attach(sim, host);
     Ok(())
+}
+
+/// `file`'s source cooked: the newest edit of it if the fight is a live one's ([`ScriptEdits`]), or
+/// `source`, what this build holds.
+fn newest(sim: &Simulation, file: &str, source: &str) -> Result<CookedScript, ScenarioError> {
+    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(file));
+    cook(edit.unwrap_or(source)).map_err(refused(file))
+}
+
+/// What a scenario says of a script of `file`'s that it couldn't bind.
+fn refused<E: std::fmt::Display>(file: &str) -> impl Fn(E) -> ScenarioError + '_ {
+    move |error| ScenarioError::Script { name: file.to_owned(), problem: error.to_string() }
 }
 
 /// The script a scenario here binds: a row of [`SCRIPTS`].
@@ -208,14 +222,7 @@ fn dialogue_flag(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = skirmish().set_up(sim)?;
     sim.add_dialogue(ward_guide().simulation)
         .expect("the committed dialogue's effects are valid: a test holds it");
-    let edit = sim.world().get_resource::<ScriptEdits>().and_then(|edits| edits.source(DIALOGUE_FLAG_FILE));
-    let source = edit.unwrap_or(DIALOGUE_FLAG).to_owned();
-    let refused = |problem: String| ScenarioError::Script { name: DIALOGUE_FLAG_FILE.to_owned(), problem };
-    let cooked = cook(&source).map_err(|error| refused(error.to_string()))?;
-    let mut host = ScriptHost::new(Limits::default()).map_err(|error| refused(error.to_string()))?;
-    host.bind(&cooked, &format!("={DIALOGUE_FLAG_FILE}")).map_err(|error| refused(error.to_string()))?;
-    host.beat_every(DIALOGUE_FLAG_BEAT);
-    attach(sim, host);
+    bind_source(sim, DIALOGUE_FLAG_FILE, DIALOGUE_FLAG, Some(DIALOGUE_FLAG_BEAT))?;
     Ok(cast)
 }
 

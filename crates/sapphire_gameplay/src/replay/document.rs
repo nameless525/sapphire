@@ -28,6 +28,14 @@
 //! kind on the same moves adds them again, after the rest, so the sets `moves` lists keep their IDs. Who
 //! thinks for themselves has to be a kind of enemy, whose brains they fight with.
 //!
+//! **What a zone can spawn is the zone's** (M3 C2): its spawners' `spawns`, by the kind's name, as its cook
+//! keeps them. So a scenario on a zone lists in `enemies` only the kinds its cast needs, and every kind its
+//! encounters' spawners name that `moves` and `enemies` don't is added after them, with its moves if `moves`
+//! hasn't got those, from the kind of that name this build holds: `build.rs` compiles in every `.enemy.ron`
+//! under `content/combat/`, the moves each names and its script. That holds for an encounter `cleared` lists too,
+//! so a save's start loads what it would have loaded fresh. A kind listed anyway keeps its place, and so its
+//! set's number.
+//!
 //! **Where someone stands:** `at` is one of the zone's spawners or checkpoints, in a scenario that has a
 //! zone, and otherwise one of the arena's spawn points (`player`, `enemy`, `crowd_0`...).
 //!
@@ -111,7 +119,8 @@ pub struct ScenarioDocument {
     pub cleared: Vec<String>,
     /// The documents its move sets come from, from the repository's root, in the order they're added.
     pub moves: Vec<String>,
-    /// Its kinds of enemy: `.enemy.ron`s, from the repository's root, each on one of `moves`.
+    /// Its kinds of enemy: `.enemy.ron`s, from the repository's root, each on one of `moves`. Those its
+    /// zone's encounters spawn needn't be here (see the [module docs](self)).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enemies: Vec<String>,
     /// Who stands there at the start, in spawn order.
@@ -239,16 +248,70 @@ pub struct KindOfEnemy {
     pub kind: AssetId,
 }
 
-/// A script one of a scenario's kinds of enemy names (M3 C2), which this build holds: what binds it in a
-/// fight is the script crate's, which gameplay can't see ([`super::ScenarioSetup::DocumentAnd`]).
+/// The script one of a scenario's kinds of enemy names (M3 C2), which this build holds, and the set that
+/// kind's fighters play, whose events alone it hears ([`crate::ScriptScope::Kind`]): what binds it in a fight
+/// is the script crate's, which gameplay can't see ([`super::ScenarioSetup::DocumentAnd`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DocumentScript {
+    /// The set its kind's fighters play, in a simulation the scenario sets up.
+    pub set: crate::moves::MoveSetId,
     /// From the repository's root: what hot reload watches.
     pub path: &'static str,
     /// Its file's name: what it's bound by, and what an edit of it goes by.
     pub file: &'static str,
     /// Its source, as this build holds it.
     pub source: &'static str,
+}
+
+/// What a scenario plays: its `moves` and `enemies`, then what its zone's encounters spawn that those don't
+/// say (see the [module docs](self)). Paths from the repository's root.
+struct Roster<'a> {
+    moves: Vec<&'a str>,
+    enemies: Vec<&'a str>,
+}
+
+impl Roster<'_> {
+    /// Where each of its kinds of enemy goes, in a simulation [`ScenarioDocument::set_up_from`] makes: on the set
+    /// its moves have, the first kind on them, or on a copy added after everything before it.
+    fn planned(&self) -> Result<Vec<PlannedEnemy>, ScenarioError> {
+        let mut taken = vec![false; self.moves.len()];
+        let mut next = self.moves.len() as u32;
+        let mut planned = Vec::with_capacity(self.enemies.len());
+        for path in &self.enemies {
+            let document = EnemyDocument::parse(named(path)?)?;
+            let moves = self.moves.iter().position(|moves| id_of(moves).ok() == Some(document.moves));
+            let moves = moves
+                .ok_or_else(|| invalid(format!("enemies: {path}"), "its moves aren't one of `moves`"))?;
+            let again = std::mem::replace(&mut taken[moves], true);
+            let set = match again {
+                true => {
+                    next += 1;
+                    next - 1
+                }
+                false => moves as u32,
+            };
+            planned.push(PlannedEnemy { document, moves, again, set });
+        }
+        Ok(planned)
+    }
+}
+
+/// The kind of enemy named `name` that this build holds: the `.enemy.ron` of that file name.
+fn kind_named(name: &str) -> Option<&'static str> {
+    let file = format!("{name}.enemy.ron");
+    let found = NAMED_DOCUMENTS.iter().find(|(path, _)| super::scenario::document_file_name(path) == file);
+    found.map(|(path, _)| *path)
+}
+
+/// The set of moves with this ID that this build holds.
+fn moves_with_id(id: AssetId) -> Result<Option<&'static str>, ScenarioError> {
+    for (path, text) in NAMED_DOCUMENTS {
+        let Some(document) = path.strip_suffix(".meta") else { continue };
+        if document.ends_with(".moves.ron") && id_in(text, path)? == id {
+            return Ok(Some(document));
+        }
+    }
+    Ok(None)
 }
 
 /// One of a scenario's `enemies`, read, and where [`ScenarioDocument::set_up_from`] puts it.
@@ -365,8 +428,9 @@ impl ScenarioDocument {
     /// sets up: what draws them is that kind's look, which a stage reads from its cooked document (M3 B3b). The
     /// simulation never reads it.
     pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
-        let planned = self.planned_enemies()?;
-        let kinds = self.enemies.iter().zip(planned).map(|(path, plan)| {
+        let roster = self.roster()?;
+        let planned = roster.planned()?;
+        let kinds = roster.enemies.iter().zip(planned).map(|(path, plan)| {
             Ok(KindOfEnemy { set: crate::moves::MoveSetId(plan.set), kind: id_of(path)? })
         });
         kinds.collect()
@@ -417,18 +481,23 @@ impl ScenarioDocument {
         Ok(())
     }
 
-    /// The document each of its move sets is loaded from, in set order: `moves`, then the one each copy
-    /// for a second kind on the same moves is, so a live edit of a document reaches every set it plays.
+    /// The document each of its move sets is loaded from, in set order: `moves` and those its zone's kinds
+    /// bring, then the one each copy for a second kind on the same moves is, so a live edit of a document
+    /// reaches every set it plays.
     pub(super) fn set_documents(&self) -> Result<Vec<&str>, ScenarioError> {
-        let copies = self.planned_enemies()?.into_iter().filter(|plan| plan.again);
-        let copies: Vec<&str> = copies.map(|plan| self.moves[plan.moves].as_str()).collect();
-        Ok(self.moves.iter().map(String::as_str).chain(copies).collect())
+        let roster = self.roster()?;
+        let copies = roster.planned()?.into_iter().filter(|plan| plan.again);
+        let copies: Vec<&str> = copies.map(|plan| roster.moves[plan.moves]).collect();
+        Ok(roster.moves.iter().copied().chain(copies).collect())
     }
 
-    /// The scripts its kinds of enemy name, each once, in the order of `enemies`: what a fight on it binds.
+    /// The script each of its kinds of enemy names, kind by kind in the order of `enemies` and then those
+    /// its zone brings, with the set that kind plays: what a fight on it binds, each for its own kind's
+    /// fighters. Two kinds that name one file have it twice, a set each.
     pub fn scripts(&self) -> Result<Vec<DocumentScript>, ScenarioError> {
+        let roster = self.roster()?;
         let mut scripts: Vec<DocumentScript> = Vec::new();
-        for (path, plan) in self.enemies.iter().zip(self.planned_enemies()?) {
+        for (path, plan) in roster.enemies.iter().zip(roster.planned()?) {
             let Some(id) = plan.document.script else { continue };
             let found = NAMED_DOCUMENTS
                 .iter()
@@ -436,36 +505,47 @@ impl ScenarioDocument {
             let (named, source) = found.ok_or_else(|| {
                 invalid(format!("enemies: {path}"), format!("this build holds no script {id}"))
             })?;
-            if !scripts.iter().any(|script| script.path == *named) {
-                let file = super::scenario::document_file_name(named);
-                scripts.push(DocumentScript { path: named, file, source });
-            }
+            let file = super::scenario::document_file_name(named);
+            let set = crate::moves::MoveSetId(plan.set);
+            scripts.push(DocumentScript { set, path: named, file, source });
         }
         Ok(scripts)
     }
 
-    /// Where each of `enemies` goes, in a simulation [`Self::set_up_from`] makes: on the set its moves have, the
-    /// first kind on them, or on a copy added after everything before it.
-    fn planned_enemies(&self) -> Result<Vec<PlannedEnemy>, ScenarioError> {
-        let mut taken = vec![false; self.moves.len()];
-        let mut next = self.moves.len() as u32;
-        let mut planned = Vec::with_capacity(self.enemies.len());
-        for path in &self.enemies {
-            let document = EnemyDocument::parse(named(path)?)?;
-            let moves = self.moves.iter().position(|moves| id_of(moves).ok() == Some(document.moves));
-            let moves = moves
-                .ok_or_else(|| invalid(format!("enemies: {path}"), "its moves aren't one of `moves`"))?;
-            let again = std::mem::replace(&mut taken[moves], true);
-            let set = match again {
-                true => {
-                    next += 1;
-                    next - 1
+    /// What it plays: `moves` and `enemies`, then each kind its zone's encounters spawn that those don't
+    /// say, and that kind's moves if they're not there yet (see the [module docs](self)). A spawner of a
+    /// name this build holds no kind of is left for giving the zone to refuse, by the spawner's name.
+    fn roster(&self) -> Result<Roster<'_>, ScenarioError> {
+        let mut moves: Vec<&str> = self.moves.iter().map(String::as_str).collect();
+        let mut enemies: Vec<&str> = self.enemies.iter().map(String::as_str).collect();
+        let Some(zone) = self.zone.as_deref() else { return Ok(Roster { moves, enemies }) };
+        let zone = ZoneDocument::from_ron(named(zone)?)?;
+        for path in &self.encounters {
+            for wave in EncounterDocument::from_ron(named(path)?)?.waves {
+                for name in &wave.spawners {
+                    let Some(spawner) = zone.spawners.iter().find(|spawner| spawner.name == *name) else {
+                        continue;
+                    };
+                    let spawns = spawner.spawns.as_str();
+                    if moves.iter().chain(&enemies).any(|path| kind_of(path) == spawns) {
+                        continue;
+                    }
+                    let Some(kind) = kind_named(spawns) else { continue };
+                    let document = EnemyDocument::parse(named(kind)?)?;
+                    let its_moves = moves_with_id(document.moves)?.ok_or_else(|| {
+                        invalid(
+                            format!("encounters: {path}"),
+                            format!("this build holds no moves for {kind}"),
+                        )
+                    })?;
+                    if !moves.contains(&its_moves) {
+                        moves.push(its_moves);
+                    }
+                    enemies.push(kind);
                 }
-                false => moves as u32,
-            };
-            planned.push(PlannedEnemy { document, moves, again, set });
+            }
         }
-        Ok(planned)
+        Ok(Roster { moves, enemies })
     }
 
     /// Where the stage stands it, if it stands in a zone of its own (M3 C2): one it names, on colliders that
@@ -575,13 +655,14 @@ impl ScenarioDocument {
             sim.add_cinematic(super::ULTIMATE_CINEMATIC, super::ultimate_cinematic()?)?;
         }
         let controller = Some(sim.add_controller_profile(&ControllerProfile::default())?);
-        let mut sets = Vec::with_capacity(self.moves.len() + self.enemies.len());
-        for path in &self.moves {
+        let roster = self.roster()?;
+        let mut sets = Vec::with_capacity(roster.moves.len() + roster.enemies.len());
+        for path in &roster.moves {
             sets.push((kind_of(path), sim.add_move_set(moves_of(path)?)));
         }
-        let planned = self.planned_enemies()?;
-        for (path, plan) in self.enemies.iter().zip(&planned) {
-            let moves = &self.moves[plan.moves];
+        let planned = roster.planned()?;
+        for (path, plan) in roster.enemies.iter().zip(&planned) {
+            let moves = roster.moves[plan.moves];
             let enemy = plan.document.compile(&MoveSetDocument::parse(named(moves)?)?)?;
             let set = match plan.again {
                 false => sets[plan.moves].1,
@@ -926,8 +1007,9 @@ mod tests {
             let mut sim = Simulation::new(document.config());
             document.set_up(&mut sim).unwrap_or_else(|error| panic!("{name}: {error}"));
             let kinds = document.kinds_of_enemy().unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert_eq!(kinds.len(), document.enemies.len(), "{name}");
-            for (kind, path) in kinds.iter().zip(&document.enemies) {
+            let roster = document.roster().expect("it plans");
+            assert_eq!(kinds.len(), roster.enemies.len(), "{name}");
+            for (kind, path) in kinds.iter().zip(&roster.enemies) {
                 let mind = sim.move_library().mind(kind.set).unwrap_or_else(|| panic!("{name}: {path}"));
                 let compiled = EnemyDocument::parse(named(path).expect("held")).expect("reads");
                 assert_eq!(
@@ -944,6 +1026,39 @@ mod tests {
         let captain = id_of("content/combat/enemy/captain.enemy.ron").expect("a sidecar");
         let kinds = boss.kinds_of_enemy().expect("it plans");
         assert_eq!(kinds, [KindOfEnemy { set: crate::moves::MoveSetId(1), kind: captain }]);
+    }
+
+    /// A scenario on a zone needn't list what its encounters spawn, cleared or not (M3 C2): the zone's
+    /// spawners say, and the kinds of those names come after what it lists, with their moves and scripts.
+    /// One that lists them gets them in its own order, and the same kinds.
+    #[test]
+    fn a_zones_encounters_bring_the_kinds_they_spawn() {
+        let text = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "lantern-walk").expect("held").1;
+        let listed: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
+        assert_eq!(listed.cleared.len(), listed.encounters.len(), "every encounter cleared");
+        let mut bare = listed.clone();
+        bare.enemies.clear();
+        bare.moves.retain(|path| kind_of(path) == "player");
+
+        let mut sim = Simulation::new(bare.config());
+        bare.set_up(&mut sim).expect("it starts with no kind listed");
+        let ids = |document: &ScenarioDocument| {
+            let mut ids: Vec<AssetId> =
+                document.kinds_of_enemy().expect("it plans").iter().map(|kind| kind.kind).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids(&bare), ids(&listed));
+        assert_eq!(ids(&bare).len(), 3, "the ward's warrior, Lancer and boss");
+        let roster = bare.roster().expect("it plans");
+        assert_eq!(roster.moves[0], "content/combat/player/player.moves.ron", "what it lists comes first");
+        assert_eq!(roster.moves.len(), 4);
+
+        // Its boss's script, for the boss's set, found by being the boss: exit test 2 holds no code names it.
+        let scripts = bare.scripts().expect("it can say");
+        let [script] = scripts.as_slice() else { panic!("one kind names a script: {scripts:?}") };
+        assert!(script.file.ends_with(".luau"), "{script:?}");
+        assert!(sim.move_library().mind(script.set).and_then(|mind| mind.boss()).is_some(), "{script:?}");
     }
 
     /// A second kind on moves another kind has goes on a copy of them, after every set `moves` lists.

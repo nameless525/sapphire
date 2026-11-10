@@ -271,6 +271,7 @@ fn invalid_numeric_indices_cannot_alias_slot_zero_or_another_actor() {
             position: sapphire_math::Vec3::ZERO,
             soft_lock: None,
             brain_target: None,
+            moves: None,
         }]);
         assert_eq!(vm.fire(&mut frame, &reading_health, index), HookEnd::Returned);
         assert_eq!(frame.queued()[0], ScriptCommand::Mark(0.0));

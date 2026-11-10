@@ -30,7 +30,7 @@ use crate::brain::Brain;
 use crate::checksum::StateHasher;
 use crate::flags::Flags;
 use crate::movement::ActorTransform;
-use crate::moves::{MoveLibrary, MoveRunner};
+use crate::moves::{MoveLibrary, MoveRunner, MoveSetId};
 use crate::resolve::{AppliedHits, Fighter, SlowMotion};
 use crate::simulation::SimRng;
 use crate::targeting::SoftLock;
@@ -93,6 +93,35 @@ pub enum HookEvent {
     Beat { tick: u64 },
 }
 
+/// Whose events a script hears (M3 C2): the whole fight's, as a scenario's own script does, or one kind of
+/// enemy's, as the script a kind's document names does, so two kinds that each name one can share a fight
+/// and each script answers for its own fighters. A fight binds one script for each scope at most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScriptScope {
+    /// Every event.
+    Fight,
+    /// The phases, moves and defeats of the fighters on this set, a kind of enemy's, the hits they land or
+    /// take, and every beat.
+    Kind(MoveSetId),
+}
+
+impl ScriptScope {
+    /// Whether a script of this scope hears `event`, by who plays what on `frame`, which this step's
+    /// gathering wrote: an actor the frame hasn't got is nobody's kind.
+    #[must_use]
+    pub fn hears(self, event: HookEvent, frame: &HookFrame) -> bool {
+        let Self::Kind(set) = self else { return true };
+        let plays = |actor: ActorId| frame.actor(actor.raw()).is_some_and(|facts| facts.moves == Some(set));
+        match event {
+            HookEvent::Phase { actor, .. }
+            | HookEvent::MoveStarted { actor, .. }
+            | HookEvent::Defeated { actor } => plays(actor),
+            HookEvent::Hit { attacker, target, .. } => plays(attacker) || plays(target),
+            HookEvent::Beat { .. } => true,
+        }
+    }
+}
+
 /// Which events are worth gathering, because a hook is bound to them. What's watched moves on whatever
 /// this says, so binding a hook later doesn't answer the past.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,6 +170,8 @@ pub struct ActorFacts {
     pub soft_lock: Option<ActorId>,
     /// Who its brain has picked.
     pub brain_target: Option<ActorId>,
+    /// The set it plays, if it plays one: whose kind's script hears it ([`ScriptScope`]).
+    pub moves: Option<MoveSetId>,
 }
 
 /// What a hook reads and writes: the world as this step left it, the board, the queue. Nothing here
@@ -160,8 +191,9 @@ pub struct HookFrame {
     pub rng: Pcg32,
     /// A binding was handed something it can't use, or the queue ran out: this hook's commands don't count.
     pub fault: bool,
-    /// What the bound chunk calls names: a command's number is a place in this, counting from 1, since
-    /// a binding takes only numbers and a hash doesn't fit in one.
+    /// What the answering chunk calls names: a command's number is a place in this, counting from 1, since
+    /// a binding takes only numbers and a hash doesn't fit in one. Whoever runs hooks puts each chunk's here
+    /// for the time it answers.
     names: Vec<Name>,
     /// The flags as this step began, copied in with the actors.
     flags: Flags,
@@ -314,8 +346,8 @@ pub struct ScriptWorld {
     watched: usize,
     wants: HookWants,
     beat_every: u64,
-    /// The hash of the bound chunk's bytes, for `tables_hash`.
-    chunk: u64,
+    /// Each bound chunk's bytes' hash, by its scope, in the order they were bound: for `tables_hash`.
+    chunks: Vec<(ScriptScope, u64)>,
     /// Every applied command so far, chained.
     commands_hash: u64,
     /// Every hook's end so far, chained.
@@ -334,19 +366,19 @@ impl ScriptWorld {
             watched: 0,
             wants: HookWants::default(),
             beat_every: 0,
-            chunk: 0,
+            chunks: Vec::new(),
             commands_hash: 0,
             ends_hash: 0,
             commands_applied: 0,
         }
     }
 
-    /// Says which events to gather, and which chunk's answering: its hash goes in `tables_hash`, so a
-    /// replay can tell a changed script from a broken simulation.
-    pub fn bind(&mut self, wants: HookWants, chunk: u64, names: Vec<Name>) {
+    /// Says which events to gather, for every bound chunk at once, and which chunks are answering, by the
+    /// hash of each one's bytes and whose events it hears: they go in `tables_hash`, so a replay can tell a
+    /// changed script from a broken simulation. Between steps.
+    pub fn bind(&mut self, wants: HookWants, chunks: &[(ScriptScope, u64)]) {
         self.wants = wants;
-        self.chunk = chunk;
-        self.frame.set_names(names);
+        chunks.clone_into(&mut self.chunks);
     }
 
     /// Sends [`HookEvent::Beat`] every this many ticks, or never at 0. It's what a replay's scenario chose,
@@ -420,10 +452,19 @@ impl ScriptWorld {
         }
     }
 
-    /// Writes what `tables_hash` holds of scripts.
+    /// Writes what `tables_hash` holds of scripts: the fight's chunk, or 0, and the beat, then each kind's
+    /// set and chunk in the order they were bound. A fight with no kind's script hashes as it did before
+    /// there were any (M3 C2).
     pub(crate) fn write_tables(&self, hash: &mut StateHasher) {
-        hash.u64(self.chunk);
+        let fight = self.chunks.iter().find(|(scope, _)| *scope == ScriptScope::Fight);
+        hash.u64(fight.map_or(0, |&(_, chunk)| chunk));
         hash.u64(self.beat_every);
+        for &(scope, chunk) in &self.chunks {
+            if let ScriptScope::Kind(set) = scope {
+                hash.u32(set.raw());
+                hash.u64(chunk);
+            }
+        }
     }
 
     fn push_event(&mut self, event: HookEvent) {
@@ -502,6 +543,7 @@ pub(crate) fn gather_hook_events(
             position: transform.position,
             soft_lock: lock.target(),
             brain_target: brain.target(),
+            moves: runner.set(),
         });
         facts += 1;
     }
@@ -652,6 +694,7 @@ mod tests {
             position: Vec3::ZERO,
             soft_lock: None,
             brain_target: None,
+            moves: None,
         }
     }
 
@@ -688,6 +731,53 @@ mod tests {
         assert_eq!(frame.name(1), Some(Name::new("roar")));
         assert_eq!(frame.name(0), None);
         assert_eq!(frame.name(3), None);
+    }
+
+    /// A kind's script hears its own fighters' phases, moves and defeats, the hits they land and take, and
+    /// every beat; the fight's hears everything.
+    #[test]
+    fn a_kinds_script_hears_its_own_fighters_and_every_beat() {
+        let mut frame = HookFrame::new(4);
+        let on = |raw, set: Option<u32>| ActorFacts { moves: set.map(MoveSetId), ..facts(raw) };
+        frame.set_actors([on(1, Some(1)), on(2, Some(2)), on(3, None)]);
+        let kind = ScriptScope::Kind(MoveSetId(1));
+        let phase = |raw| HookEvent::Phase { actor: id(raw), phase: 1, health: 5 };
+        let hit = |attacker, target| HookEvent::Hit { attacker: id(attacker), target: id(target), damage: 1 };
+        assert!(kind.hears(phase(1), &frame));
+        assert!(kind.hears(HookEvent::MoveStarted { actor: id(1), name: Name::new("roar") }, &frame));
+        assert!(kind.hears(HookEvent::Defeated { actor: id(1) }, &frame));
+        for raw in [2, 3, 9] {
+            assert!(!kind.hears(phase(raw), &frame), "{raw}: another kind's, none, or nobody here");
+            assert!(ScriptScope::Fight.hears(phase(raw), &frame), "{raw}");
+        }
+        assert!(kind.hears(hit(2, 1), &frame), "a hit it took");
+        assert!(kind.hears(hit(1, 3), &frame), "a hit it landed");
+        assert!(!kind.hears(hit(2, 3), &frame), "a hit between others");
+        assert!(kind.hears(HookEvent::Beat { tick: 60 }, &frame));
+    }
+
+    /// A fight whose one script is the fight's hashes its tables as every fight did before kinds had
+    /// scripts, so no replay of one moved; a kind's says whose it is.
+    #[test]
+    fn a_fight_with_no_kinds_script_hashes_its_tables_as_before() {
+        let tables = |chunks: &[(ScriptScope, u64)]| {
+            let mut scripts = ScriptWorld::new(0);
+            scripts.bind(HookWants::default(), chunks);
+            scripts.set_beat_every(30);
+            let mut hash = StateHasher::new();
+            scripts.write_tables(&mut hash);
+            hash.finish()
+        };
+        let before = {
+            let mut hash = StateHasher::new();
+            hash.u64(7);
+            hash.u64(30);
+            hash.finish()
+        };
+        assert_eq!(tables(&[(ScriptScope::Fight, 7)]), before);
+        assert_ne!(tables(&[(ScriptScope::Kind(MoveSetId(2)), 7)]), before, "whose events it hears");
+        let two = |set| tables(&[(ScriptScope::Fight, 7), (ScriptScope::Kind(MoveSetId(set)), 8)]);
+        assert_ne!(two(2), two(3), "which kind's");
     }
 
     /// A digest that doesn't see a piece of what lasts is how the first attack's digest failed.

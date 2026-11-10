@@ -4,8 +4,10 @@
 //! Every `content/scenarios/*.scenario.ron` goes in, and so does each `.ron` a scenario names by a path from
 //! the repository's root, with its sidecar, if it has one, for the asset ID in it. A move set with a cooked
 //! copy in `baked/` takes that rather than its document, since cooking its tables takes the pipeline. So does
-//! the `.luau` a kind of enemy names by ID as its `script` (M3 C2), found by its sidecar anywhere under
-//! `content/`, so a script reaches a fight from documents alone. `replay::document` reads them.
+//! every kind of enemy under `content/combat/` (M3 C2), since a zone's spawners name the kinds it spawns and a
+//! scenario on it needn't, with the moves each names by ID and the `.luau` it names as its `script`, each
+//! found by its sidecar, so a kind and its script reach a fight from documents alone. `replay::document`
+//! reads them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -20,11 +22,11 @@ fn named_documents(text: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
-/// The ID an enemy document names as its `script`, if it names one.
-fn script_of(text: &str) -> Option<String> {
+/// The ID an enemy document names in its first `field:` line, such as its `moves` or its `script`.
+fn id_field(text: &str, field: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let code = line.split("//").next().unwrap_or_default().trim_start();
-        let rest = code.strip_prefix("script:")?;
+        let rest = code.strip_prefix(field)?.strip_prefix(':')?;
         Some(rest.split('"').nth(1)?.to_owned())
     })
 }
@@ -34,20 +36,25 @@ fn id_in_sidecar(text: &str) -> Option<String> {
     text.lines().find_map(|line| Some(line.trim_start().strip_prefix("id:")?.split('"').nth(1)?.to_owned()))
 }
 
-/// Every `.luau` under `directory` that has a sidecar, by the ID in it, as paths from `root`.
-fn scripts_by_id(root: &Path, directory: &Path, found: &mut Vec<(String, String)>) {
+/// What a kind of enemy can need, under `content/combat/`: each document with a sidecar whose name ends with one
+/// of `kinds` (`.luau`, `.moves.ron`, `.enemy.ron`), by the ID in it, as paths from `root`, sorted.
+fn sidecars_by_id(root: &Path, directory: &Path, kinds: &[&str], found: &mut Vec<(String, String)>) {
     let Ok(entries) = fs::read_dir(directory) else { return };
-    for entry in entries {
-        let path = entry.expect("a directory entry").path();
+    let mut paths: Vec<PathBuf> = entries.map(|entry| entry.expect("a directory entry").path()).collect();
+    paths.sort();
+    for path in paths {
         if path.is_dir() {
-            scripts_by_id(root, &path, found);
-        } else if let Some(source) = path.to_str().and_then(|path| path.strip_suffix(".luau.meta")) {
-            let text = fs::read_to_string(&path).expect("a sidecar");
-            let id = id_in_sidecar(&text).unwrap_or_else(|| panic!("{} has no ID", path.display()));
-            let relative =
-                Path::new(&format!("{source}.luau")).strip_prefix(root).expect("under the root").to_owned();
-            found.push((id, relative.to_str().expect("a UTF-8 path").to_owned()));
+            sidecars_by_id(root, &path, kinds, found);
+            continue;
         }
+        let Some(document) = path.to_str().and_then(|path| path.strip_suffix(".meta")) else { continue };
+        if !kinds.iter().any(|kind| document.ends_with(kind)) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("a sidecar");
+        let id = id_in_sidecar(&text).unwrap_or_else(|| panic!("{} has no ID", path.display()));
+        let relative = Path::new(document).strip_prefix(root).expect("under the root").to_owned();
+        found.push((id, relative.to_str().expect("a UTF-8 path").replace('\\', "/")));
     }
 }
 
@@ -84,19 +91,26 @@ fn main() {
             .expect("a string");
         println!("cargo:rerun-if-changed={}", path.display());
     };
-    // The scripts kinds of enemy name, by ID: what they are is only found by looking.
-    let wanted: BTreeSet<String> = named
-        .iter()
-        .filter(|relative| relative.ends_with(".enemy.ron"))
-        .filter_map(|relative| script_of(&fs::read_to_string(root.join(relative)).ok()?))
-        .collect();
-    if !wanted.is_empty() {
-        let mut found = Vec::new();
-        scripts_by_id(&root, &root.join("content"), &mut found);
-        for id in &wanted {
-            let (_, relative) = found.iter().find(|(found, _)| found == id).unwrap_or_else(|| {
-                panic!("a kind of enemy names the script {id}, which no `.luau` under content/ is")
-            });
+    // Every kind of enemy, and the moves and script each names by ID: what they are is only found by
+    // looking. A kind's name is its file's, so two of one name would be one name for two kinds.
+    let content = root.join("content/combat");
+    println!("cargo:rerun-if-changed={}", content.display());
+    let mut found = Vec::new();
+    sidecars_by_id(&root, &content, &[".luau", ".moves.ron", ".enemy.ron"], &mut found);
+    let mut kinds = BTreeSet::new();
+    for (_, kind) in found.iter().filter(|(_, relative)| relative.ends_with(".enemy.ron")) {
+        let file = kind.rsplit('/').next().expect("a file");
+        assert!(kinds.insert(file.to_owned()), "two kinds of enemy are {file}: a kind's name is its file's");
+        let text = fs::read_to_string(root.join(kind)).expect("a kind of enemy");
+        named.insert(kind.clone());
+        for (field, what) in [("moves", ".moves.ron"), ("script", ".luau")] {
+            let Some(id) = id_field(&text, field) else { continue };
+            let (_, relative) = found
+                .iter()
+                .find(|(found, relative)| *found == id && relative.ends_with(what))
+                .unwrap_or_else(|| {
+                    panic!("{kind} names the {field} {id}, which no `{what}` under content/combat/ is")
+                });
             named.insert(relative.clone());
         }
     }

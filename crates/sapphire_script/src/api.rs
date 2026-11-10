@@ -175,6 +175,7 @@ mod tests {
             position: Vec3::new(1.0, 2.0, 3.0),
             soft_lock: ActorId::from_raw(7),
             brain_target: None,
+            moves: None,
         }]);
         frame
     }

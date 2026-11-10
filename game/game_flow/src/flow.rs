@@ -156,6 +156,9 @@ pub struct Flow {
     /// observation, which only learns it.
     checkpoint: Option<Option<u64>>,
     banner: Option<(Banner, f32)>,
+    /// A new game or a continue chosen on the title while the wipe that brought it is still up, where the
+    /// title's already shown: acted on once the wipe has cleared, rather than lost.
+    chosen: Option<FlowCommand>,
     stats: FlowStats,
 }
 
@@ -173,6 +176,7 @@ impl Flow {
             fired: 0,
             checkpoint: None,
             banner: None,
+            chosen: None,
             stats: FlowStats::default(),
         }
     }
@@ -353,6 +357,14 @@ impl Flow {
                 self.state = FlowState::Restarting { run: Run::Saved, then: After::Title, covered: false };
                 None
             }
+            // The title's up under the wipe on its way to it: the last choice made there waits for it.
+            (
+                FlowState::Restarting { then: After::Title, .. },
+                FlowCommand::NewGame | FlowCommand::Continue,
+            ) => {
+                self.chosen = Some(command);
+                None
+            }
             (FlowState::Cutscene { .. }, FlowCommand::Skip) => Some(FlowAction::SkipTimeline),
             (FlowState::Dialogue { .. }, FlowCommand::DialogueEnded) => {
                 self.state = FlowState::Playing;
@@ -401,7 +413,8 @@ impl Flow {
     }
 
     /// Where the wipe stands: `covered` when it hides the whole screen, `clear` when it's gone. Once it
-    /// covers, the run to stand is returned, and the caller stands it before letting the wipe clear.
+    /// covers, the run to stand is returned, and the caller stands it before letting the wipe clear. Once a
+    /// wipe to the title clears, a choice made on the title under it is acted on, as [`Self::command`].
     pub fn wipe(&mut self, covered: bool, clear: bool) -> Option<FlowAction<'static>> {
         let FlowState::Restarting { run, then, covered: was_covered } = self.state else { return None };
         if !was_covered && covered {
@@ -415,6 +428,9 @@ impl Flow {
                 After::Title => FlowState::Title { stood: run },
                 After::Playing => FlowState::Playing,
             };
+            if let Some(chosen) = self.chosen.take() {
+                return self.command(chosen);
+            }
         }
         None
     }
@@ -717,6 +733,39 @@ mod tests {
         won.command(FlowCommand::Resume);
         assert_eq!(won.state(), FlowState::Victory { since: 0.0 });
         assert_eq!(won.stats().commands_ignored, 0);
+    }
+
+    /// The title comes up under the wipe on its way back to it, before the flow's there: a choice made on
+    /// it then is acted on once the wipe has cleared, the last one made, rather than lost.
+    #[test]
+    fn a_choice_on_the_title_under_its_wipe_is_acted_on_once_it_clears() {
+        for (chosen, then) in [
+            (FlowCommand::Continue, FlowState::Playing),
+            (
+                FlowCommand::NewGame,
+                FlowState::Restarting { run: Run::New, then: After::Playing, covered: false },
+            ),
+        ] {
+            let mut flow = playing();
+            flow.command(FlowCommand::Pause);
+            flow.command(FlowCommand::ToTitle);
+            assert_eq!(flow.wipe(false, false), None);
+            assert_eq!(flow.wipe(true, false), Some(FlowAction::StandRun(Run::Saved)));
+            let other =
+                if chosen == FlowCommand::Continue { FlowCommand::NewGame } else { FlowCommand::Continue };
+            assert_eq!(flow.command(other), None, "kept");
+            assert_eq!(flow.command(chosen), None, "kept, in its place");
+            assert!(matches!(flow.state(), FlowState::Restarting { .. }), "not yet: the wipe's up");
+            let acted = flow.wipe(true, true);
+            assert_eq!(acted, (chosen == FlowCommand::NewGame).then_some(FlowAction::NewProgress));
+            assert_eq!(flow.state(), then);
+            assert_eq!(flow.stats().commands_ignored, 0);
+        }
+        let mut flow = playing();
+        flow.command(FlowCommand::Pause);
+        flow.command(FlowCommand::ToTitle);
+        wipe_through(&mut flow);
+        assert_eq!(flow.state(), FlowState::Title { stood: Run::Saved }, "nothing chosen, the title waits");
     }
 
     /// The title offers what there is to continue, and the HUD shows a checkpoint's banner while it holds and

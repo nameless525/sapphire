@@ -289,7 +289,13 @@ impl Game {
     /// What the player chose. A new game writes a fresh save at once. What's left for the caller: a skip,
     /// and a quit.
     pub fn command(&mut self, command: FlowCommand) -> Option<FlowAction<'static>> {
-        match self.flow.command(command)? {
+        let action = self.flow.command(command)?;
+        self.act(action)
+    }
+
+    /// What the flow asked of the game, done: a new game's fresh save. The rest is the caller's.
+    fn act(&mut self, action: FlowAction<'static>) -> Option<FlowAction<'static>> {
+        match action {
             FlowAction::NewProgress => {
                 let fresh = Progress::new_game(self.flow.document().zone);
                 self.keep(&fresh);
@@ -393,7 +399,11 @@ impl Game {
     pub fn wipe(&mut self, covered: bool, clear: bool) -> Option<CombatOption> {
         match self.flow.wipe(covered, clear)? {
             FlowAction::StandRun(run) => Some(self.next_run(run)),
-            _ => None,
+            // A new game chosen on the title under the wipe, now it's cleared.
+            action => {
+                self.act(action);
+                None
+            }
         }
     }
 
@@ -578,5 +588,30 @@ mod tests {
             "the ward's {shared}, at the same place, isn't marked"
         );
         assert_eq!(game.flow().state(), FlowState::Playing, "nothing of the ward's was reached");
+    }
+
+    /// A new game chosen on the title while the wipe that brought it clears writes its fresh save once it
+    /// has, as one chosen after would.
+    #[test]
+    fn a_new_game_chosen_under_the_titles_wipe_writes_a_fresh_save() {
+        let document = FlowDocument::from_ron(TRIP_FLOW).expect("reads");
+        let zone = document.zone;
+        let content = FlowContent { document, registered: Vec::new() };
+        let mut game = Game::new(content, GameSetup::default()).expect("stands");
+        let mut combat = Combat::new(&game.first_run()).expect("the run stands");
+        game.command(FlowCommand::NewGame);
+        step(&mut game, &mut combat);
+        let fresh = Progress::new_game(zone);
+        assert_ne!(game.progress(), Some(&fresh), "the ward's fights, fought, are saved");
+        game.command(FlowCommand::Pause);
+        game.command(FlowCommand::ToTitle);
+        assert!(game.wipe(true, false).is_some(), "covered: the saved run stands");
+        assert_eq!(game.command(FlowCommand::NewGame), None);
+        assert_ne!(game.progress(), Some(&fresh), "not yet");
+        assert_eq!(game.wipe(true, true), None);
+        assert_eq!(game.progress(), Some(&fresh), "a new game's save");
+        let restarting =
+            FlowState::Restarting { run: Run::New, then: crate::flow::After::Playing, covered: false };
+        assert_eq!(game.flow().state(), restarting);
     }
 }

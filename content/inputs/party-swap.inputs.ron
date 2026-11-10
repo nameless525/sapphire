@@ -1,0 +1,24 @@
+// The `party` scenario's fight, whose input names the party's first member throughout. After these presses
+// everyone just stands there, and the warrior gets through all three, a fall forcing each next one in.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the party against the warrior: a swap through a freeze, some refused by the cooldown or by nobody being ready, assists landing, and then nothing, while the warrior fells each in turn, each defeat forcing the next in, until nobody's left",
+        ticks: 5300,
+        tracks: [
+            (
+                presses: [
+                    (at: [
+                        (72, [Light]), // `light_1`, which reaches the warrior on tick 82 and freezes the first member for 3.
+                        (83, [Swap]), // Pressed through that freeze: it waits, and the second comes in on tick 86.
+                        (116, [Swap]), // Far too soon after that: it runs out unused.
+                        (200, [Swap]), // Out of the knockdown the warrior's overhead gave the second: the third comes in.
+                        (290, [Swap]), // The third has stayed long enough, and the first has rested: back to it.
+                        (330, [Light]),
+                    ]),
+                ],
+            ),
+        ],
+    ),
+)

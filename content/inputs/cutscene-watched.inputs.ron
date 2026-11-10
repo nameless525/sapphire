@@ -1,0 +1,13 @@
+// The `timelines` scenario's second timeline, the cutscene.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`melee-sweep`'s presses, with a cutscene between ticks 120 and 121, watched to its end",
+        ticks: 300,
+        like: "melee-sweep",
+        commands: [
+            (120, PlayTimeline(1)),
+        ],
+    ),
+)

@@ -1,0 +1,32 @@
+// One actor walks a leg, easing the stick round over its first ticks and letting go near its end, and presses
+// in bursts that last a few ticks, as a thumb does. The stick moves on about a quarter of the ticks, and the
+// other actors stand: most ticks repeat.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the first actor walks in legs and attacks in bursts, as a person would, the rest stand",
+        ticks: 3600,
+        tracks: [
+            (
+                who: Cast(0),
+                presses: [
+                    (every: 47, hold: 5, at: [(36, [Light])]),
+                    (every: 211, hold: 8, at: [(121, [Heavy])]),
+                    (every: 137, hold: 4, at: [(97, [Dodge])]),
+                    (every: 401, hold: 6, at: [(201, [Skill])]),
+                ],
+                stick: Loop([
+                    (stick: (127, 0), ticks: 71, ease: 25),
+                    (stick: (0, 0), ticks: 19),
+                    (stick: (40, 120), ticks: 71, ease: 25),
+                    (stick: (0, 0), ticks: 19),
+                    (stick: (-127, 10), ticks: 71, ease: 25),
+                    (stick: (0, 0), ticks: 19),
+                    (stick: (-30, -120), ticks: 71, ease: 25),
+                    (stick: (0, 0), ticks: 19),
+                ]),
+            ),
+        ],
+    ),
+)

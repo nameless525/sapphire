@@ -1,0 +1,57 @@
+// The Lantern Ward end to end from `player_start` (0, 14), along its `tour` spline: a leg a point of it, each
+// aimed from where the last one ended, so none presses into a wall. Then the return to `court`, checkpoint 0,
+// the first of its checkpoints by their names' hashes.
+// Legs fitted to the ground by running them, so a change to the controller or a collider can leave a leg
+// pressing into something it used to clear: the replays' checksums say so, and `tests/walks.rs` says where
+// each walk has to get to.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the Lantern Ward's player along its tour by the stick: the Market Court, the Blossom Garden, the temple's lane, the court and up the terrace's steps, then a return to the court's checkpoint and a run up the court",
+        ticks: 4298,
+        tracks: [
+            (
+                stick: Legs([
+                    // Standing, then toward −Z and east to the Market Court, through its `market` checkpoint, to
+                    // the court's far end and back.
+                    (stick: (0, 0), ticks: 30),
+                    (stick: (0, -127), ticks: 81),
+                    (stick: (118, -48), ticks: 91),
+                    (stick: (124, -27), ticks: 119),
+                    (stick: (127, 0), ticks: 260),
+                    (stick: (127, 0), ticks: 180),
+                    (stick: (5, 127), ticks: 87),
+                    // West to the Blossom Garden, through `garden`, to its far end and back.
+                    (stick: (86, -94), ticks: 125),
+                    (stick: (-127, 0), ticks: 278),
+                    (stick: (-127, 2), ticks: 255),
+                    (stick: (-123, 30), ticks: 124),
+                    (stick: (-127, 0), ticks: 160),
+                    (stick: (-123, -30), ticks: 123),
+                    (stick: (-127, 0), ticks: 260),
+                    (stick: (-127, 0), ticks: 180),
+                    (stick: (-4, 127), ticks: 87),
+                    // South down the temple's lane, through the court's gate and its `court` checkpoint, the
+                    // length of the court and up the terrace's steps to where a boss would stand.
+                    (stick: (116, -52), ticks: 213),
+                    (stick: (127, -2), ticks: 253),
+                    (stick: (114, -55), ticks: 134),
+                    (stick: (71, -105), ticks: 145),
+                    (stick: (0, -127), ticks: 420),
+                    (stick: (0, -127), ticks: 365),
+                    (stick: (-3, -127), ticks: 43),
+                    (stick: (-1, -127), ticks: 45),
+                    (stick: (0, 0), ticks: 60),
+                    // From the court's checkpoint, after the return on tick 4118, facing up the court: a run of two
+                    // seconds toward −Z, and standing.
+                    (stick: (0, -127), ticks: 120),
+                    (stick: (0, 0), ticks: 60),
+                ]),
+            ),
+        ],
+        commands: [
+            (4118, ReturnTo(0)),
+        ],
+    ),
+)

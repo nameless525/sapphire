@@ -1,0 +1,13 @@
+// The court's gate cutscene, the first of `ward-court`'s timelines, half a second in, with the player
+// standing at the checkpoint and the warrior not yet near, and the fight after it to the warrior's defeat or
+// near it. Only the scripts go by this tick: a game plays the gate from its flow's beat (M3 G1), when the
+// court's encounter starts.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`fight-back` in the Lantern Ward's court with no cutscene: what the watched and skipped gate scripts must match up to the cutscene",
+        ticks: 1200,
+        like: "fight-back",
+    ),
+)

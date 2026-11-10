@@ -1,0 +1,14 @@
+// The first effect of the first dialogue a scenario loads, which for `dialogue-flag` is choosing to light the
+// ward.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`melee-sweep`'s presses, with a dialogue's choice made before tick 120 that sets a flag a script reads",
+        ticks: 600,
+        like: "melee-sweep",
+        commands: [
+            (120, Dialogue(dialogue: 0, effect: 0)),
+        ],
+    ),
+)

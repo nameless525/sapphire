@@ -1,0 +1,8 @@
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "nobody touches anything: the smallest a replay can be",
+        ticks: 3600,
+    ),
+)

@@ -1,0 +1,21 @@
+// A script reads a tick and nothing else, so it can't aim its stick at anyone. This one doesn't need to: the
+// warrior comes to it, and the cuts warp. On the arena's seed this gets through the warrior's health with
+// about half the player's left. A dodge on its own schedule, with no eyes for the telegraphs, takes the
+// overheads it would have dodged, which is what makes it a fight. Each round of 150 ticks: the string, then a
+// dodge from nothing, and a light press into its window, which plays the dash attack, whose warp finds the
+// warrior.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player against the warrior, with no eyes for it: the string, a dodge and a dash attack, over and over, which the warps aim at whatever's in reach",
+        ticks: 1700,
+        tracks: [
+            (
+                presses: [
+                    (every: 150, at: [(0, [Light]), (16, [Light]), (32, [Light]), (84, [Dodge]), (96, [Light])]),
+                ],
+            ),
+        ],
+    ),
+)

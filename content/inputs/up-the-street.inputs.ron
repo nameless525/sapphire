@@ -1,0 +1,20 @@
+// From the street's start at (3.2, 17) along −Z: about 13 m, past the trigger's edge at z 6.3 and on to the
+// square's middle. Then `fight-back`'s rounds.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player runs down the street into the square, whose trigger starts its encounter, then does as `fight-back` does: what the stage warms on the way in (M3 W5)",
+        ticks: 2000,
+        tracks: [
+            (
+                presses: [
+                    (from: 130, every: 150, at: [(0, [Light]), (16, [Light]), (32, [Light]), (84, [Dodge]), (96, [Light])]),
+                ],
+                stick: Legs([
+                    (stick: (0, -127), ticks: 130),
+                ]),
+            ),
+        ],
+    ),
+)

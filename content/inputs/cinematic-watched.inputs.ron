@@ -1,0 +1,13 @@
+// The `timelines` scenario's first timeline, the cinematic.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`melee-sweep`'s presses, with a cinematic run under them from tick 120 and pressed all the way through",
+        ticks: 600,
+        like: "melee-sweep",
+        commands: [
+            (120, PlayTimeline(0)),
+        ],
+    ),
+)

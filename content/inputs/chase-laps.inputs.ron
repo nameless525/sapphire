@@ -1,0 +1,22 @@
+// From the player's spawn point at a run of 6 m/s: out to the square's north side, along it, down its east
+// side, back along its south and up its west. Then ten seconds for everyone to arrive.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player runs a lap of the square's clear floor by the stick, and stands, for whoever's following a path to it",
+        ticks: 1698,
+        tracks: [
+            (
+                stick: Legs([
+                    (stick: (0, 127), ticks: 70),
+                    (stick: (127, 0), ticks: 108),
+                    (stick: (0, -127), ticks: 250),
+                    (stick: (-127, 0), ticks: 240),
+                    (stick: (0, 127), ticks: 260),
+                    (stick: (127, 0), ticks: 170),
+                ]),
+            ),
+        ],
+    ),
+)

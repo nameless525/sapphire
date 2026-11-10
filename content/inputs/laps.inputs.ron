@@ -1,0 +1,18 @@
+// The player at full tilt, 12 m each way at 6 m/s, turning back on a fixed beat, which is how a measurement
+// finds someone running when a saved `movement` arrives.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the player runs up and down the square and does nothing else: the next steps of someone tuning how it moves",
+        ticks: 600,
+        tracks: [
+            (
+                stick: Loop([
+                    (stick: (0, -127), ticks: 120),
+                    (stick: (0, 127), ticks: 120),
+                ]),
+            ),
+        ],
+    ),
+)

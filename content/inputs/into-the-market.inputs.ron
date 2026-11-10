@@ -1,0 +1,20 @@
+// From the Lantern Ward's `market_gate` at (40, 0): a run along +X through the Market Court's gate, whose
+// trigger spans x = 42 to 44, to its arrival at about x = 46. Then `fight-back`'s rounds (M3 C2).
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the Lantern Ward's player runs east through the Market Court's gate, whose trigger starts its encounter, then does as `fight-back` does",
+        ticks: 2400,
+        tracks: [
+            (
+                presses: [
+                    (from: 60, every: 150, at: [(0, [Light]), (16, [Light]), (32, [Light]), (84, [Dodge]), (96, [Light])]),
+                ],
+                stick: Legs([
+                    (stick: (127, 0), ticks: 60),
+                ]),
+            ),
+        ],
+    ),
+)

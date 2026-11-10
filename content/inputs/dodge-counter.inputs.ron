@@ -1,0 +1,44 @@
+// Pillar 4's rhythm, on the two standing against each other. Both walk at each other at the start of each
+// round of 200 ticks, until their capsules meet, whatever the last round did to where they stand. The
+// opponent swings one `light_1` a round, whose blade is live on the 5th to 7th ticks after each press, and
+// reaches the player from the 6th.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "perfect dodges of an opponent's swings, answered, out of a dodge cancel and left unanswered, with a dodge too late and one through its i-frames alone",
+        ticks: 1000,
+        tracks: [
+            (
+                who: Cast(0),
+                presses: [
+                    (at: [
+                        (53, [Dodge]), // The blade reaches it on tick 56, the dodge's tick 3: perfect.
+                        (58, [Light]), // Inside the counter window: the counter at once.
+                        (256, [Dodge]), // Too late: tick 0 has no i-frames, and it lands.
+                        (453, [Dodge]), // Perfect again,
+                        (501, [Light]), // with the answer a tick after its window closes: a plain attack.
+                        (651, [Light]), // A swing of the player's own,
+                        (653, [Dodge]), // dodge-cancelled as its window opens, perfect on its tick 2,
+                        (658, [Light]), // and answered.
+                        (848, [Dodge]), // Too early: the blade goes through its tick 7 and on, i-frames and nothing more.
+                    ]),
+                ],
+                stick: Loop([
+                    (stick: (0, 127), ticks: 46),
+                    (stick: (0, 0), ticks: 154),
+                ]),
+            ),
+            (
+                who: Cast(1),
+                presses: [
+                    (at: [(50, [Light]), (250, [Light]), (450, [Light]), (650, [Light]), (850, [Light])]),
+                ],
+                stick: Loop([
+                    (stick: (0, -127), ticks: 46),
+                    (stick: (0, 0), ticks: 154),
+                ]),
+            ),
+        ],
+    ),
+)

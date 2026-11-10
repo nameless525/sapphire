@@ -36,6 +36,8 @@ mod checksums;
 pub mod cinematics;
 pub mod document;
 mod file;
+#[cfg_attr(not(test), allow(dead_code, reason = "held to the scripts it replaces, until it replaces them"))]
+mod inputs;
 mod play;
 mod scenario;
 mod script;

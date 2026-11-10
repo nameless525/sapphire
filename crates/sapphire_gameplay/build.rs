@@ -8,7 +8,8 @@
 //! scenario on it needn't, with the moves each names by ID and the `.luau` it names as its `script`, each
 //! found by its sidecar, so a kind and its script reach a fight from documents alone. Every `.timeline.ron`
 //! beside a set of moves' document goes in too (M3 Z5a), since a move names its cinematic by that file's
-//! name. `replay::document` and `replay::cinematics` read them.
+//! name. `replay::document` and `replay::cinematics` read them. Every `content/inputs/*.inputs.ron` goes in too
+//! (M4 R2), the scripted input a recording plays, which `replay::inputs` reads.
 //!
 //! The zones scenarios name in `shelf` go in as `BAKED_ZONES` (M4 R3), each with the copies of its cook in
 //! `baked/zones/` (its `.szone`, `.scol` and `.snav`), since its navmesh takes a bake, which takes the
@@ -107,6 +108,22 @@ fn main() {
         shelved.extend(list_field(&text, "shelf"));
         let file = path.file_name().and_then(|name| name.to_str()).expect("a UTF-8 name");
         let stem = file.strip_suffix(".scenario.ron").expect("filtered");
+        writeln!(code, "    ({stem:?}, include_str!({:?})),", path.display().to_string()).expect("a string");
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    // Every scripted input (M4 R2), by name, as the scenarios are.
+    let inputs = root.join("content/inputs");
+    println!("cargo:rerun-if-changed={}", inputs.display());
+    let mut documents: Vec<PathBuf> = fs::read_dir(&inputs)
+        .expect("content/inputs")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.to_string_lossy().ends_with(".inputs.ron"))
+        .collect();
+    documents.sort();
+    code.push_str("];\n\npub(super) const INPUTS_DOCUMENTS: &[(&str, &str)] = &[\n");
+    for path in &documents {
+        let file = path.file_name().and_then(|name| name.to_str()).expect("a UTF-8 name");
+        let stem = file.strip_suffix(".inputs.ron").expect("filtered");
         writeln!(code, "    ({stem:?}, include_str!({:?})),", path.display().to_string()).expect("a string");
         println!("cargo:rerun-if-changed={}", path.display());
     }

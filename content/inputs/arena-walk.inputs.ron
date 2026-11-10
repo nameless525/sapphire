@@ -1,0 +1,28 @@
+// The arena's player by the stick alone from its spawn point (3.2, 5), and its opponent standing, for the
+// golden frame of a character the controller moved and for what its collision does on the way. Then a second
+// to stop.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player walks and runs its clear floor, into a lantern post, jumps there, and comes back, by the stick alone",
+        ticks: 398,
+        tracks: [
+            (
+                stick: Legs([
+                    // A walk 2 m toward +X, past the line the enemy stands on.
+                    (stick: (64, 0), ticks: 60),
+                    // A run 7.3 m toward −Z, to level with the post of the lantern at (8, −2.5).
+                    (stick: (0, -127), ticks: 73),
+                    // A run toward +X, into that post, held after it stops the capsule, and a jump there late in
+                    // the leg, still pushing, in time to land.
+                    (stick: (127, 0), ticks: 90, jump: 32),
+                    // A run back 7.3 m toward +Z, with the post behind it.
+                    (stick: (0, 127), ticks: 73),
+                    // A run toward −X, to about where it started.
+                    (stick: (-127, 0), ticks: 42),
+                ]),
+            ),
+        ],
+    ),
+)

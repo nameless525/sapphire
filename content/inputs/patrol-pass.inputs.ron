@@ -1,0 +1,18 @@
+// Standing until the guard coming along the square's north side notices the player, then off to the south-east
+// at a run, faster than it can follow. Then 20 s for the guards to go back to walking.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player stands while the guards walk, runs out where one notices, and runs off from it past where it gives up, by the stick alone",
+        ticks: 2090,
+        tracks: [
+            (
+                stick: Legs([
+                    (stick: (0, 0), ticks: 700),
+                    (stick: (90, -114), ticks: 190),
+                ]),
+            ),
+        ],
+    ),
+)

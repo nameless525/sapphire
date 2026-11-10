@@ -1,0 +1,17 @@
+// The player's light attack on a fixed beat, with nothing else going on, which is how live tuning's tests and
+// its measurement find the next attempt.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the player presses light twice a second and does nothing else: the next attempts of someone tuning the move it starts",
+        ticks: 600,
+        tracks: [
+            (
+                presses: [
+                    (every: 30, at: [(0, [Light])]),
+                ],
+            ),
+        ],
+    ),
+)

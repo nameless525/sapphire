@@ -1,0 +1,19 @@
+// M3 Q3c. `arena-ultimate`, whose ultimate empties the player's energy, and then a press of the ultimate every
+// 20 ticks on top of its rounds. Each press before the hits have filled the meter again fires nothing; the
+// first one after that finds the player between moves does, about a second after it filled.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`arena-ultimate`, then the ultimate pressed again every third of a second while the fight fills its energy back up: it fires once the meter is full, and not before",
+        ticks: 900,
+        like: "arena-ultimate",
+        tracks: [
+            (
+                presses: [
+                    (from: 210, every: 20, at: [(0, [Ultimate])]),
+                ],
+            ),
+        ],
+    ),
+)

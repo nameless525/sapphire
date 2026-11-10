@@ -1,0 +1,14 @@
+// The `timelines` scenario's second timeline, the cutscene.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`cutscene-watched`, skipped 2.5 s in: it must reach all the same checksums",
+        ticks: 300,
+        like: "melee-sweep",
+        commands: [
+            (120, PlayTimeline(1)),
+            (120, SkipTimeline(at_ms: 2500)),
+        ],
+    ),
+)

@@ -1,0 +1,14 @@
+// The `timelines` scenario's first timeline, the cinematic.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`cinematic-watched`, with the cinematic skipped 50 steps in: it must reach all the same checksums",
+        ticks: 600,
+        like: "melee-sweep",
+        commands: [
+            (120, PlayTimeline(0)),
+            (170, SkipTimeline(at_ms: 833)),
+        ],
+    ),
+)

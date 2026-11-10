@@ -1,0 +1,47 @@
+// The proving ground from its start (1, 1) to the far end of its walking course and back to the platform,
+// checkpoint 0, the first of its checkpoints by their names' hashes, and on as `from-the-platform` does.
+// Legs fitted to the ground by running them, so a change to the controller or a collider can leave a leg
+// pressing into something it used to clear: the replays' checksums say so, and `tests/walks.rs` says where
+// each walk has to get to.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the proving ground's player runs its walking course by the stick and a jump: a ramp, steps, a curb, a low wall and a face too steep to stand on, then returns to its platform checkpoint and walks back to the start",
+        ticks: 1226,
+        tracks: [
+            (
+                stick: Legs([
+                    // A run toward −Z, out to the course's lane at z −20.
+                    (stick: (0, -127), ticks: 208),
+                    // A run toward −X along it: up the 20° ramp, over the platform, down its four steps, and a jump from
+                    // their foot that comes down at the 15 cm curb.
+                    (stick: (-127, 0), ticks: 230, jump: 199),
+                    // On, and a jump over the 60 cm wall.
+                    (stick: (-127, 0), ticks: 70, jump: 33),
+                    // A jump into the 60° face, too steep to stand on, which it slides back down.
+                    (stick: (-127, 0), ticks: 60, jump: 5),
+                    // A run toward +Z along the face's foot, and past its end.
+                    (stick: (-127, 60), ticks: 60),
+                    // Standing. Then the return to the platform, on tick 658.
+                    (stick: (0, 0), ticks: 30),
+                    // A run down the steps, toward −X.
+                    (stick: (-127, 0), ticks: 50),
+                    // A run back up them, toward +X, which takes each as a step up.
+                    (stick: (127, 0), ticks: 60),
+                    // A walk toward +Z, off the platform's side, a drop of a metre.
+                    (stick: (0, 64), ticks: 90),
+                    // A run toward +X, back level with the start.
+                    (stick: (127, 0), ticks: 133),
+                    // A run toward +Z, back to the start.
+                    (stick: (0, 127), ticks: 175),
+                    // Standing.
+                    (stick: (0, 0), ticks: 60),
+                ]),
+            ),
+        ],
+        commands: [
+            (658, ReturnTo(0)),
+        ],
+    ),
+)

@@ -1,0 +1,21 @@
+// From the proving ground's start at (1, 1): a run along +Z, past the pillar at (2, 2), then along +X until
+// it's well inside the cart yard, whose box starts at x = 5. Then `fight-back`'s rounds from where the run ends.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the proving ground's player runs round the pillar and into the cart yard, whose trigger starts its encounter, then does as `fight-back` does",
+        ticks: 2400,
+        tracks: [
+            (
+                presses: [
+                    (from: 160, every: 150, at: [(0, [Light]), (16, [Light]), (32, [Light]), (84, [Dodge]), (96, [Light])]),
+                ],
+                stick: Legs([
+                    (stick: (0, 127), ticks: 90),
+                    (stick: (127, 0), ticks: 70),
+                ]),
+            ),
+        ],
+    ),
+)

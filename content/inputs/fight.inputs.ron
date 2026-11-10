@@ -1,0 +1,40 @@
+// Both walk at each other at the start of a round of 360 ticks and again before its trade, since pushes part
+// them, and fight until one of them falls. The other then keeps swinging at what's left, which takes nothing.
+// The player's half: the string, pressed often enough that a press waits in the buffer through whatever
+// hitstop does to the windows, then a heavy that knocks down, a trade, and a heavy whose armour takes the
+// opponent's light. The opponent's: the trade's press, on the player's tick, and a light into that heavy's
+// armour.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "two fighters close and trade: strings, heavies through armour, a knockdown, a poise break and a defeat with its finish freeze",
+        ticks: 1500,
+        tracks: [
+            (
+                who: Cast(0),
+                presses: [
+                    (every: 360, at: [(30, [Light]), (36, [Light]), (42, [Light]), (48, [Light]), (54, [Light]), (60, [Light]), (115, [Heavy]), (230, [Light]), (258, [Heavy])]),
+                ],
+                stick: Loop([
+                    (stick: (0, 127), ticks: 26),
+                    (stick: (0, 0), ticks: 179),
+                    (stick: (0, 127), ticks: 21),
+                    (stick: (0, 0), ticks: 134),
+                ]),
+            ),
+            (
+                who: Cast(1),
+                presses: [
+                    (every: 360, at: [(230, [Light]), (262, [Light])]),
+                ],
+                stick: Loop([
+                    (stick: (0, -127), ticks: 26),
+                    (stick: (0, 0), ticks: 179),
+                    (stick: (0, -127), ticks: 21),
+                    (stick: (0, 0), ticks: 134),
+                ]),
+            ),
+        ],
+    ),
+)

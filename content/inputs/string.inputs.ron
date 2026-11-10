@@ -1,0 +1,17 @@
+// `light_1` from nothing at 0, then each hit pressed ahead of the next one's window, so `light_2` fires at 10
+// as its window opens, and `light_3` at 22 the same way.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the three-hit string, each hit buffered ahead of its cancel window, over and over",
+        ticks: 600,
+        tracks: [
+            (
+                presses: [
+                    (every: 96, at: [(0, [Light]), (6, [Light]), (16, [Light])]),
+                ],
+            ),
+        ],
+    ),
+)

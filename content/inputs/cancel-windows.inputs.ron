@@ -1,0 +1,43 @@
+// The rest of pillar 4's cancel windows, held by `tests/dodges.rs`. The two walk into reach for the knockdown
+// the opponent's heavy gives, and where the rest happen doesn't matter. A press ahead of a window a hit's
+// hitstop has pushed back buffers until it opens, so each stays inside its window with the opponent in reach
+// or not.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the test content's cancel windows no other script reaches: a skill out of the second hit, a string started over from the third, a dodge out of a spin and out of a knockdown",
+        ticks: 900,
+        tracks: [
+            (
+                who: Cast(0),
+                presses: [
+                    (at: [
+                        (137, [Dodge]), // `knockdown`, from the heavy's hit on tick 64, at its tick 62 after 10 of hitstop.
+                        (300, [Light]),
+                        (310, [Light]),
+                        (323, [Skill]), // `light_2` from tick 310, by its tick 13.
+                        (500, [Light]),
+                        (510, [Light]),
+                        (522, [Light]),
+                        (558, [Light]), // `light_3` from about tick 522, by its tick 36.
+                        (700, [Ultimate]),
+                        (724, [Dodge]), // `spin` from tick 700, at its tick 24.
+                    ]),
+                ],
+                stick: Legs([
+                    (stick: (0, 127), ticks: 46),
+                ]),
+            ),
+            (
+                who: Cast(1),
+                presses: [
+                    (at: [(50, [Heavy])]),
+                ],
+                stick: Legs([
+                    (stick: (0, -127), ticks: 46),
+                ]),
+            ),
+        ],
+    ),
+)

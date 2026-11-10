@@ -1,0 +1,30 @@
+// From the proving ground's platform, facing −X.
+// Legs fitted to the ground by running them, so a change to the controller or a collider can leave a leg
+// pressing into something it used to clear: the replays' checksums say so, and `tests/walks.rs` says where
+// each walk has to get to.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`walk-the-ground` from its return on, as a game loaded at the platform checkpoint plays it",
+        ticks: 568,
+        tracks: [
+            (
+                stick: Legs([
+                    // A run down the steps, toward −X.
+                    (stick: (-127, 0), ticks: 50),
+                    // A run back up them, toward +X, which takes each as a step up.
+                    (stick: (127, 0), ticks: 60),
+                    // A walk toward +Z, off the platform's side, a drop of a metre.
+                    (stick: (0, 64), ticks: 90),
+                    // A run toward +X, back level with the start.
+                    (stick: (127, 0), ticks: 133),
+                    // A run toward +Z, back to the start.
+                    (stick: (0, 127), ticks: 175),
+                    // Standing.
+                    (stick: (0, 0), ticks: 60),
+                ]),
+            ),
+        ],
+    ),
+)

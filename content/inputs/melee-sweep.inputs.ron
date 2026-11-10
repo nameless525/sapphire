@@ -1,0 +1,30 @@
+// Everything the melee scenario can do on a fixed schedule: every button on its own period, and sticks that
+// sweep their whole range. The largest a replay gets per actor, since no tick repeats.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "every actor presses every button on its own rhythm while its stick sweeps: no tick repeats",
+        ticks: 1200,
+        tracks: [
+            (
+                who: Everyone(stagger: 13),
+                presses: [
+                    (every: 19, at: [(3, [Light])]),
+                    (every: 71, at: [(9, [Heavy])]),
+                    (every: 47, at: [(21, [Dodge])]),
+                    (every: 131, at: [(33, [Skill])]),
+                    (every: 97, at: [(12, [Swap])]),
+                    (every: 173, at: [(40, [Jump])]),
+                ],
+                stick: Sweep(x: 255, y: 101),
+            ),
+            (
+                who: Cast(0),
+                presses: [
+                    (every: 211, at: [(77, [Ultimate])]),
+                ],
+            ),
+        ],
+    ),
+)

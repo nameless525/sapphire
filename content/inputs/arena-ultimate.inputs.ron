@@ -1,0 +1,20 @@
+// M3 Q3b. The player stands until the warrior is in reach, at 2.35 m on tick 60, inside the chop's bound and
+// warp, and not yet into its overhead, and presses the ultimate. Its presses under the cinematic would be
+// held, so it makes none until the ultimate's 144 ticks are over, and then fights back on `fight-back`'s
+// rounds: a round and a half of them.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the arena's player waits for the warrior to come into reach and presses the ultimate, whose cinematic holds the warrior while the chop lands, then fights back as `fight-back` does",
+        ticks: 450,
+        tracks: [
+            (
+                presses: [
+                    (at: [(60, [Ultimate])]),
+                    (from: 210, every: 150, at: [(0, [Light]), (16, [Light]), (32, [Light]), (84, [Dodge]), (96, [Light])]),
+                ],
+            ),
+        ],
+    ),
+)

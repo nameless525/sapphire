@@ -1,0 +1,35 @@
+// Dodge cancels and dash attacks with their warps, by what the test content's moves allow, at an opponent
+// that moves, so warps have something to track.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "a string cut by a dodge, dash attacks out of dodges, an instant dodge and a skill, at an opponent that moves",
+        ticks: 720,
+        tracks: [
+            (
+                who: Cast(0),
+                presses: [
+                    (every: 240, at: [
+                        (0, [Light]),
+                        (6, [Light]), // Buffered: light_2 at 10.
+                        (22, [Light]), // Inside its window: light_3 at once.
+                        (30, [Dodge]), // A dodge cancel out of light_3, at once.
+                        (38, [Light]), // Buffered a tick ahead of the dodge's window: dash attack at 39.
+                        (44, [Dodge]), // A dodge cancel out of the dash attack, at once.
+                        (50, [Light]), // Buffered ahead of that dodge's window: dash attack at 53.
+                        (120, [Dodge]), // The second half: a dodge from nothing,
+                        (138, [Dodge]), // an instant dodge inside its own last ticks,
+                        (170, [Skill]), // and a skill from nothing.
+                    ]),
+                ],
+            ),
+            (
+                who: Cast(1),
+                presses: [
+                    (every: 120, at: [(30, [Skill]), (90, [Dodge])]),
+                ],
+            ),
+        ],
+    ),
+)

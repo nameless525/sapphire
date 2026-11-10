@@ -1,0 +1,33 @@
+// A swing under way as the first entry comes, so a traveller's seen to arrive with nothing running, and then
+// a walk, turning a quarter each leg. The `zone-trip` scenario's shelf holds the proving hub, then the proving
+// ground (zones 0 and 1), and a zone's spawners count in the order of their IDs, which `tests/zone_trip.rs`
+// holds to their names: the hub's `player_start` (0) and `from_ground` (1), and the ground's `player_start`
+// (3).
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the player swings and walks in the arena, and goes on walking through a hub and a zone and back, twice over, entering each two seconds after the last",
+        ticks: 720,
+        tracks: [
+            (
+                presses: [
+                    (at: [(110, [Light])]),
+                ],
+                stick: Loop([
+                    (stick: (0, 127), ticks: 120),
+                    (stick: (127, 0), ticks: 120),
+                    (stick: (0, -127), ticks: 120),
+                    (stick: (-127, 0), ticks: 120),
+                ]),
+            ),
+        ],
+        commands: [
+            (120, EnterZone(zone: 0, spawner: 0)),
+            (240, EnterZone(zone: 1, spawner: 3)),
+            (360, EnterZone(zone: 0, spawner: 1)),
+            (480, EnterZone(zone: 1, spawner: 3)),
+            (600, EnterZone(zone: 0, spawner: 1)),
+        ],
+    ),
+)

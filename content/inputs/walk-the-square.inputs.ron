@@ -1,0 +1,33 @@
+// The arena's square from its `south_paving` checkpoint (0, 12), its encounter cleared, as a save of someone
+// who has fought it starts.
+// Legs fitted to the ground by running them, so a change to the controller or a collider can leave a leg
+// pressing into something it used to clear: the replays' checksums say so, and `tests/walks.rs` says where
+// each walk has to get to.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the square's player, its encounter cleared, from a checkpoint round the square: over a bench and a planter, along the gate wall, into a lantern post",
+        ticks: 990,
+        tracks: [
+            (
+                stick: Legs([
+                    // A run toward −Z, a jump over the bench at (0.4, −9.5), and on into the gate wall.
+                    (stick: (0, -127), ticks: 300, jump: 200),
+                    // A run toward +X along the wall, into the corner the shop's front makes with it.
+                    (stick: (127, 0), ticks: 90),
+                    // A run toward +Z, a jump over the planter at (10.2, −14.6), and on into the lantern post at
+                    // (8, −2.5).
+                    (stick: (0, 127), ticks: 150, jump: 6),
+                    // A run toward −X, past the pavilion.
+                    (stick: (-127, 0), ticks: 140),
+                    // A run toward +Z, past the fruit stall and the front planter.
+                    (stick: (0, 127), ticks: 150),
+                    // A run toward +X, back to the checkpoint, and standing.
+                    (stick: (127, 0), ticks: 100),
+                    (stick: (0, 0), ticks: 60),
+                ]),
+            ),
+        ],
+    ),
+)

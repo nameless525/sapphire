@@ -951,6 +951,31 @@ mod tests {
         assert!(find_script("no-such-script").is_none());
     }
 
+    /// Each document in `content/inputs/` gives exactly what its script here gave (M4 R2): its line, its length,
+    /// its commands, and its actions on every tick, past its length too, for a cast of every size a tick holds.
+    #[test]
+    fn every_document_gives_what_its_script_did() {
+        let cast: Vec<ActorId> = (1..=TickActions::CAPACITY as u32)
+            .map(|raw| ActorId::from_raw(raw).expect("a real ID"))
+            .collect();
+        assert_eq!(super::super::inputs::SCRIPTS.len(), SCRIPTS.len(), "a document for each script");
+        for script in SCRIPTS {
+            let name = script.name;
+            let document =
+                super::super::inputs::find_script(name).unwrap_or_else(|| panic!("{name}'s document"));
+            assert_eq!(document.about, script.about, "{name}");
+            assert_eq!(document.ticks, script.ticks, "{name}");
+            assert_eq!(document.commands, script.commands, "{name}");
+            for size in 0..=cast.len() {
+                for tick in 0..2 * u64::from(script.ticks) + 500 {
+                    let (old, new) =
+                        ((script.actions)(tick, &cast[..size]), document.actions(tick, &cast[..size]));
+                    assert_eq!(new, old, "{name}, a cast of {size}, tick {tick}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn closures_are_sources() {
         fn take(source: &mut dyn ActionSource) -> TickActions {

@@ -31,7 +31,7 @@ use std::{env, thread};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
-use super::{App, Bundle, BundleClaim, Options, Platform};
+use super::{App, Bundle, BundleClaim, Options, Platform, aab};
 use crate::content::{self, Cook};
 use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
@@ -41,6 +41,8 @@ const ABI: &str = "arm64-v8a";
 /// `minSdk` in `platform/android/app/build.gradle.kts` (Android 10, spec §2). The NDK's
 /// compiler drivers carry it in their names, and SDL's CMake build targets it too.
 const MIN_SDK: u32 = 29;
+/// `targetSdk` there: Android 16, which Play requires of new apps and updates from 2026-08-31.
+const TARGET_SDK: u32 = 36;
 /// The first NDK release that links 16 KB-aligned libraries by default (spec §6.7).
 const MIN_NDK: u32 = 28;
 /// The emulator `run` boots when no device is connected.
@@ -65,7 +67,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     let claim = BundleClaim::take(Platform::Android)?;
     let library = build_library(app, &ndk, BuildProfile::app(options.release), &options.features, &[])?;
     let content = content::cook(Cook::Mobile)?;
-    let task = if options.release { GradleTask::AssembleRelease } else { GradleTask::AssembleDebug };
+    let task = if options.release { GradleTask::AssembleProfile } else { GradleTask::AssembleDebug };
     let build_dir = super::bundle_dir(Platform::Android).join("build").join(&app.bundle_name);
     let gradle = Gradle { sdk: &sdk, ndk: &ndk, build_dir: &build_dir };
     let built = gradle.build(app, version::development_number(), &library, &content.dir, task)?;
@@ -76,15 +78,19 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
 }
 
 /// What a store package of the app holds for Android: the AAB Gradle's `bundleRelease` makes from a
-/// `shipping` build of the library, and that library before Gradle strips it, for its symbols.
+/// `shipping` build of the library, that library before Gradle strips it, for its symbols, release lint's
+/// report, and what the bundle's checks found ([`aab`]).
 pub struct Packaged {
     pub aab: PathBuf,
     pub library: PathBuf,
+    pub lint: PathBuf,
+    pub checked: aab::Checked,
 }
 
 /// Builds the app's library in the `shipping` profile with `env` (the build's number and ID), and an AAB
-/// around it and `content`, with Gradle working in `work_dir`. A store's bundle, signed with the debug key
-/// until S3 signs it with the upload key from the environment.
+/// around it and `content`, with Gradle working in `work_dir`, then checks it ([`aab::check`]). Release
+/// lint fails it on any error. It's signed with the upload key if the environment names one
+/// ([`aab::UPLOAD_KEYSTORE`]), and with the debug key otherwise.
 pub fn package(
     app: &App,
     build: u32,
@@ -95,33 +101,62 @@ pub fn package(
     let sdk = sdk_dir()?;
     let ndk = Ndk::locate(&sdk)?;
     require_java()?;
+    let key = aab::Key::from_env();
     let library = build_library(app, &ndk, BuildProfile::Shipping, &[], env)?;
     let gradle = Gradle { sdk: &sdk, ndk: &ndk, build_dir: work_dir };
     let aab = gradle.build(app, build, &library, content, GradleTask::BundleRelease)?;
-    Ok(Packaged { aab, library })
+    let tools = aab::Tools::locate(&sdk, &gradle.dir().join(BUNDLETOOL_CLASSPATH))?;
+    let expected = aab::Expected {
+        package: &app.bundle_id,
+        version_code: build,
+        version_name: &app.version,
+        min_sdk: MIN_SDK,
+        target_sdk: TARGET_SDK,
+        activity: activity(app).name(),
+        abi: ABI,
+        library: library_file(app),
+        key,
+    };
+    let checked = aab::check(&aab, &expected, &tools, &work_dir.join("checks"))?;
+    Ok(Packaged { aab, library, lint: gradle.dir().join(LINT_REPORT), checked })
 }
 
-/// The Gradle tasks xtask runs, and what each leaves.
+/// What Gradle's `bundletoolClasspath` task writes, under its build directory.
+const BUNDLETOOL_CLASSPATH: &str = "bundletool.classpath";
+/// Release lint's text report, under Gradle's build directory.
+const LINT_REPORT: &str = "reports/lint-results-release.txt";
+
+/// The Gradle builds xtask runs, and what each leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GradleTask {
+    /// `bundle` and `run`'s development APK.
     AssembleDebug,
-    AssembleRelease,
+    /// `bundle` and `run`'s `--release` APK, for profiling: optimized, but debuggable, so it takes launch
+    /// arguments.
+    AssembleProfile,
+    /// `package`'s store bundle: not debuggable, with the library's symbols, held to release lint, and
+    /// with bundletool's classpath listed for its checks.
     BundleRelease,
 }
 
 impl GradleTask {
-    fn name(self) -> &'static str {
+    /// Gradle's arguments: the tasks, and for the store build, the configuration cache off, so the upload
+    /// key's passwords never reach it.
+    fn args(self) -> &'static [&'static str] {
         match self {
-            Self::AssembleDebug => "assembleDebug",
-            Self::AssembleRelease => "assembleRelease",
-            Self::BundleRelease => "bundleRelease",
+            Self::AssembleDebug => &["assembleDebug"],
+            Self::AssembleProfile => &["assembleProfile"],
+            Self::BundleRelease => {
+                &["--no-configuration-cache", "bundleRelease", "lintRelease", "bundletoolClasspath"]
+            }
         }
     }
 
     fn variant(self) -> &'static str {
         match self {
             Self::AssembleDebug => "debug",
-            Self::AssembleRelease | Self::BundleRelease => "release",
+            Self::AssembleProfile => "profile",
+            Self::BundleRelease => "release",
         }
     }
 
@@ -129,7 +164,7 @@ impl GradleTask {
     fn output(self) -> PathBuf {
         let variant = self.variant();
         match self {
-            Self::AssembleDebug | Self::AssembleRelease => format!("outputs/apk/{variant}/app-{variant}.apk"),
+            Self::AssembleDebug | Self::AssembleProfile => format!("outputs/apk/{variant}/app-{variant}.apk"),
             Self::BundleRelease => format!("outputs/bundle/{variant}/app-{variant}.aab"),
         }
         .into()
@@ -145,6 +180,11 @@ struct Gradle<'a> {
 }
 
 impl Gradle<'_> {
+    /// Gradle's own build directory.
+    fn dir(&self) -> PathBuf {
+        self.build_dir.join("gradle")
+    }
+
     /// Generates the project's inputs for `app` (the activity, SDL's Java, `library`, `content`, the icon
     /// and the names) and runs `task` offline, returning what it built.
     fn build(
@@ -156,7 +196,7 @@ impl Gradle<'_> {
         task: GradleTask,
     ) -> anyhow::Result<PathBuf> {
         let gen_dir = self.build_dir.join("gen").join(task.variant());
-        let gradle_dir = self.build_dir.join("gradle");
+        let gradle_dir = self.dir();
         workspace::remove_dir_if_exists(&gen_dir)?;
         let project = workspace::root().join("platform/android");
         write_activity(&project.join(ACTIVITY_TEMPLATE), app, &gen_dir.join("java"))?;
@@ -173,7 +213,8 @@ impl Gradle<'_> {
         let mut gradle = Command::new(project.join("gradlew"));
         gradle
             .current_dir(&project)
-            .args(["--offline", task.name()])
+            .arg("--offline")
+            .args(task.args())
             .args(gradle_properties(app, build, self.ndk, &gen_dir, &gradle_dir))
             .env("ANDROID_HOME", self.sdk);
         workspace::run(&mut gradle)?;
@@ -635,7 +676,7 @@ fn host_tag() -> anyhow::Result<&'static str> {
 }
 
 /// The highest dotted version among `names`, compared numerically; other names are ignored.
-fn newest_version<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+pub(super) fn newest_version<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let parse = |name: &str| name.split('.').map(|part| part.parse::<u32>().ok()).collect::<Option<Vec<_>>>();
     names.into_iter().filter_map(|name| Some((parse(name)?, name))).max().map(|(_, name)| name)
 }
@@ -1262,6 +1303,7 @@ esac
         let gradle = include_str!("../../../platform/android/app/build.gradle.kts");
         let manifest = include_str!("../../../platform/android/app/src/main/AndroidManifest.xml");
         assert!(gradle.contains(&format!("minSdk = {MIN_SDK} ")));
+        assert!(gradle.contains(&format!("targetSdk = {TARGET_SDK}\n")));
         assert!(gradle.contains(&format!("abiFilters += \"{ABI}\"")));
 
         let ndk = Ndk { root: "ndk".into(), revision: "29.0.1".into() };
@@ -1399,7 +1441,32 @@ esac
     fn each_gradle_task_says_what_it_builds() {
         assert_eq!(GradleTask::BundleRelease.output(), Path::new("outputs/bundle/release/app-release.aab"));
         assert_eq!(GradleTask::AssembleDebug.output(), Path::new("outputs/apk/debug/app-debug.apk"));
-        assert_eq!(GradleTask::AssembleRelease.name(), "assembleRelease");
+        assert_eq!(GradleTask::AssembleProfile.output(), Path::new("outputs/apk/profile/app-profile.apk"));
+        assert_eq!(GradleTask::AssembleProfile.args(), ["assembleProfile"]);
+        // The store build runs lint and lists bundletool's classpath, and never writes the upload key's
+        // passwords into the configuration cache.
+        let store = GradleTask::BundleRelease.args();
+        assert!(store.contains(&"--no-configuration-cache") && store.contains(&"lintRelease"));
+    }
+
+    /// The store build type is the one `package` checks, the profiling one what `bundle --release` takes
+    /// launch arguments in, and lint reads its configuration.
+    #[test]
+    fn the_store_build_is_release_and_profiling_builds_are_profile() {
+        let gradle = include_str!("../../../platform/android/app/build.gradle.kts");
+        let release = gradle.split("release {").nth(1).unwrap().split("create(\"profile\")").next().unwrap();
+        assert!(release.contains("isDebuggable = false"));
+        assert!(release.contains("debugSymbolLevel = \"FULL\""));
+        assert!(
+            release.contains("signingConfigs.findByName(\"upload\") ?: signingConfigs.getByName(\"debug\")")
+        );
+        let profile = gradle.split("create(\"profile\")").nth(1).unwrap();
+        assert!(profile.contains("isDebuggable = true"));
+        assert!(profile.contains("signingConfig = signingConfigs.getByName(\"debug\")"));
+        assert!(gradle.contains(&format!("providers.environmentVariable(\"{}\")", aab::UPLOAD_KEYSTORE)));
+        assert!(gradle.contains("lintConfig = file(\"lint.xml\")") && gradle.contains("abortOnError = true"));
+        assert!(gradle.contains("tasks.register(\"bundletoolClasspath\")"));
+        assert!(gradle.contains(&format!("file(\"{BUNDLETOOL_CLASSPATH}\")")));
     }
 
     /// Every value of `android:configChanges`, as the compile SDK lists them, but

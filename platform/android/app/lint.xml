@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release lint for the store build, which fails on any error (`abortOnError` in build.gradle.kts).
+
+  SDL's Java glue (org/libsdl/app) is copied from the sdl3-src crate on every build and never edited here,
+  so its findings are scoped out by path, rule by rule, each with its reason. Nothing else is ignored by
+  path: the game's activity, manifest and resources are held to every rule, and what's ignored of ours
+  below is ignored for the reason it gives.
+-->
+<lint>
+    <!--
+      SDL's HIDAPI Bluetooth LE driver (HIDDeviceBLESteamController, HIDDeviceManager) checks for the
+      Bluetooth permissions at run time before it scans or connects, which lint can't follow. The game
+      asks for none, so on a device those paths stay off.
+    -->
+    <issue id="MissingPermission">
+        <ignore path="**/org/libsdl/app/**" />
+    </issue>
+    <!--
+      HIDDeviceManager registers its USB receiver with RECEIVER_EXPORTED on API 33 and later, and without
+      the flag before 33, where it doesn't exist; lint flags the older branch.
+    -->
+    <issue id="UnspecifiedRegisterReceiverFlag">
+        <ignore path="**/org/libsdl/app/**" />
+    </issue>
+    <!--
+      SDL supports older Android versions than the game's minSdk 29, so it checks for them. And the
+      adaptive icon's folder keeps its -v26: aapt2 doesn't find the icon in a plain mipmap-anydpi.
+    -->
+    <issue id="ObsoleteSdkInt">
+        <ignore path="**/org/libsdl/app/**" />
+        <ignore path="**/mipmap-anydpi-v26" />
+    </issue>
+    <!-- SDL's activity, its views and its threads are process-wide by design: one activity, one SDL. -->
+    <issue id="StaticFieldLeak">
+        <ignore path="**/org/libsdl/app/**" />
+    </issue>
+
+    <!--
+      Ours. targetSdk 36 is what Play requires from 2026-08-31 (m4-plan §3); the bump to 37 is a decision
+      of its own, before Play requires it, and so is compileSdk 37, whose platform isn't in the SDK here.
+    -->
+    <issue id="OldTargetApi" severity="ignore" />
+    <issue id="GradleDependency" severity="ignore" />
+    <!--
+      enableOnBackInvokedCallback (API 33) and preferMinimalPostProcessing (API 30) do nothing below their
+      levels, which is what the game wants there.
+    -->
+    <issue id="UnusedAttribute">
+        <ignore regexp="enableOnBackInvokedCallback|preferMinimalPostProcessing" />
+    </issue>
+    <!--
+      Android 16 ignores a fixed orientation on large screens, but not for games (appCategory="game"),
+      and the game is laid out for landscape.
+    -->
+    <issue id="DiscouragedApi">
+        <ignore regexp="screen orientations" />
+    </issue>
+    <!-- 64-bit ARM only (spec §6.7): no x86_64 library, for ChromeOS or anything else. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+    <!--
+      A themed icon needs a one-colour silhouette of the icon. The icon is a placeholder until the
+      maintainer chooses the game's (m4-plan §7), and its silhouette comes with that.
+    -->
+    <issue id="MonochromeLauncherIcon" severity="ignore" />
+</lint>

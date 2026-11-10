@@ -72,13 +72,17 @@ Commands:
         ios       <Name>.app for devices, with actool's Assets.car, signed ad hoc
         ios-sim   the same for the Simulator
         macos     <Name>.app with Assets.car and AppIcon.icns, signed ad hoc
-        android   <Name>.aab (Gradle's bundleRelease, offline), debug-signed
+        android   <Name>.aab (Gradle's bundleRelease, offline), held to release lint and checked
+                  with bundletool, aapt2 and zipalign; checks/ has the local-testing APKs.
+                  Signed with the upload key if SAPPHIRE_UPLOAD_KEYSTORE names it (with
+                  SAPPHIRE_UPLOAD_KEYSTORE_PASSWORD, SAPPHIRE_UPLOAD_KEY_ALIAS and
+                  SAPPHIRE_UPLOAD_KEY_PASSWORD), else with the debug key, which Play refuses
         windows   <Name>/ with the executable and content (a Windows host)
         linux     <Name>/ with the executable, content and icon (a Linux host)
       The build number is the count of commits on main at HEAD. Off main, with changes not
       committed or untracked files, it fails, unless --dev packages it anyway, marked dev in its
-      build ID and package.json. A shallow clone always fails. Nothing is signed for a store,
-      uploaded or notarized.
+      build ID and package.json. A shallow clone always fails. Nothing is uploaded or notarized,
+      and nothing but Android's upload key signs for a store.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).

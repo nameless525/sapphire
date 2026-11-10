@@ -10,14 +10,15 @@
 //! |---|---|
 //! | `ios`, `ios-sim` | `<Name>.app`: the executable, the mobile cook, Info.plist, `en.lproj` and `ja.lproj`, and actool's `Assets.car` with the icon's keys merged into Info.plist; signed ad hoc |
 //! | `macos` | `<Name>.app`: as iOS's, nested under `Contents/`, with the desktop cook, and actool's `AppIcon.icns` too; signed ad hoc |
-//! | `android` | `<Name>.aab` from Gradle's `bundleRelease`, offline, and `icons/play_store_512.png` |
+//! | `android` | `<Name>.aab` from Gradle's `bundleRelease`, offline, checked ([`super::aab`]), and `icons/play_store_512.png`; in `checks/`, the APKs Play would make of it for local testing, their badging and release lint's report |
 //! | `windows`, `linux` | `<Name>/`: the executable and the desktop cook; Linux's icon beside them, and Windows' `.ico` in `icons/` |
 //! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; and `symbols/`, what the link split out: the dSYM, the unstripped Android library, the PDB or the `.dwp` |
 //!
 //! It makes what every store's package shares. What a store checks is its own package's: S2 wraps the
-//! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs and validates the AAB, S4
-//! makes Steam's depots, signs macOS with the hardened runtime and links Windows' resources, and C1 strips
-//! the binaries and writes the symbol store. Nothing here signs for a store, uploads or notarizes.
+//! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs the AAB (with the upload
+//! key only when the environment names it) and checks it, S4 makes Steam's depots, signs macOS with the
+//! hardened runtime and links Windows' resources, and C1 strips the binaries and writes the symbol store.
+//! Nothing here uploads or notarizes.
 //!
 //! Shipping builds link with fat LTO, so a package takes minutes and gigabytes: run it through the gate
 //! slots (`slot --all --load 8`), never on a PR's CI (m4-plan §3, "CI").
@@ -33,7 +34,7 @@ use anyhow::{Context as _, anyhow, ensure};
 use serde_json::json;
 
 use super::apple::{self, BundleLayout};
-use super::{App, BundleClaim, GAME, android, desktop};
+use super::{App, BundleClaim, GAME, aab, android, desktop};
 use crate::content::{self, Cook};
 use crate::version::{Build, Kind};
 use crate::workspace::{self, BuildProfile, CargoBuild};
@@ -151,8 +152,22 @@ pub fn package(target: Target, out: &Path, dev: bool) -> anyhow::Result<PathBuf>
             let library = packaged.library.file_name().context("the library has a name")?;
             copy(&packaged.library, &stage.join("symbols").join(library))?;
             copy(&icons.join("android/play_store_512.png"), &stage.join("icons/play_store_512.png"))?;
+            let checked = &packaged.checked;
+            let (apks, badging, lint) =
+                ("checks/local-testing.apks", "checks/badging.txt", "checks/lint-results-release.txt");
+            copy(&checked.apks, &stage.join(apks))?;
+            fs::write(stage.join(badging), &checked.badging).context("failed to write the badging")?;
+            copy(&packaged.lint, &stage.join(lint))?;
+            if checked.key == aab::Key::Debug {
+                eprintln!(
+                    "warning: {aab} is signed with the debug key, which Play refuses: set {} and its passwords \
+                     to sign with the upload key",
+                    aab::UPLOAD_KEYSTORE
+                );
+            }
+            let checks = checked.summary(apks, badging, lint);
             workspace::remove_dir_if_exists(&work)?;
-            Made { app: aab, symbols: vec![format!("symbols/{}", library.to_string_lossy())] }
+            Made { app: aab, symbols: vec![format!("symbols/{}", library.to_string_lossy())], checks }
         }
         Target::Windows | Target::Linux => desktop_app(target, &app, &env, &content.dir, &icons, &stage)?,
     };
@@ -167,11 +182,13 @@ pub fn package(target: Target, out: &Path, dev: bool) -> anyhow::Result<PathBuf>
     Ok(packaged.path.clone())
 }
 
-/// What a package made, by path inside it: the app, and what the link split out.
+/// What a package made, by path inside it: the app, what the link split out, and what its store's checks
+/// found, where it has them.
 #[derive(Debug, PartialEq, Eq)]
 struct Made {
     app: String,
     symbols: Vec<String>,
+    checks: serde_json::Value,
 }
 
 /// `package.json`: what a package is, for what reads it next (S2–S4, C1, and the patch manifest, which
@@ -202,6 +219,7 @@ fn manifest(target: Target, app: &App, build: &Build, made: &Made) -> serde_json
         "cook": target.cook().name(),
         "app_path": made.app,
         "symbols": made.symbols,
+        "checks": made.checks,
     })
 }
 
@@ -277,7 +295,7 @@ fn apple_app(
         symbols.push(format!("symbols/{}", file_name.to_string_lossy()));
     }
     ensure!(!symbols.is_empty(), "the shipping build left no dSYM beside {}", executable.display());
-    Ok(Made { app: name, symbols })
+    Ok(Made { app: name, symbols, checks: serde_json::Value::Null })
 }
 
 /// Compiles the icon's asset catalog into the bundle's resources with `actool` (no Xcode project), and
@@ -342,7 +360,7 @@ fn desktop_app(
         }
         symbols.push(format!("symbols/{}", name.to_string_lossy()));
     }
-    Ok(Made { app: app.bundle_name.clone(), symbols })
+    Ok(Made { app: app.bundle_name.clone(), symbols, checks: serde_json::Value::Null })
 }
 
 /// Copies a file, creating the directory it goes in.
@@ -380,7 +398,11 @@ mod tests {
     #[test]
     fn the_manifest_says_what_the_package_is() {
         let app = test_game();
-        let made = Made { app: "SapphireGame.app".into(), symbols: vec!["symbols/game_app.dSYM".into()] };
+        let made = Made {
+            app: "SapphireGame.app".into(),
+            symbols: vec!["symbols/game_app.dSYM".into()],
+            checks: json!({ "signed_with": "debug" }),
+        };
         let release = Build { number: 4123, kind: Kind::Release, commit: "1a2b3c4d".into() };
         let written = manifest(Target::Ios, &app, &release, &made);
         assert_eq!(written["version"], "0.1.0");
@@ -393,6 +415,7 @@ mod tests {
         assert_eq!(written["identity"]["placeholder"], true);
         assert_eq!(written["cook"], "mobile");
         assert_eq!(written["symbols"][0], "symbols/game_app.dSYM");
+        assert_eq!(written["checks"]["signed_with"], "debug");
 
         let dev = Build { kind: Kind::Dev("off main".into()), ..release };
         let written = manifest(Target::MacOs, &app, &dev, &made);

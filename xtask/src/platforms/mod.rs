@@ -15,6 +15,7 @@
 //! icon, staged for what each store's package adds. Development bundles here keep what the cargo profile
 //! produces; only AGP strips the Android library.
 
+mod aab;
 mod android;
 mod apple;
 mod desktop;

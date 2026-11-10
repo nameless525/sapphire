@@ -13,11 +13,21 @@ fun sapphire(name: String): String =
 // other's outputs and nothing lands in the source tree.
 layout.buildDirectory.set(file(sapphire("buildDir")))
 
+// Play's upload key is the maintainer's (m4-plan §3, "Android packaging"). It reaches the store build only
+// through these variables, never the repo or Gradle's properties, and xtask builds with the configuration
+// cache off so its passwords aren't stored there. Without it the store build signs with the debug key,
+// which every local check takes and Play refuses.
+val uploadKeystore = providers.environmentVariable("SAPPHIRE_UPLOAD_KEYSTORE").orNull
+fun uploadSecret(name: String): String =
+    providers.environmentVariable(name).orNull
+        ?: error("SAPPHIRE_UPLOAD_KEYSTORE is set, so $name must be too")
+
 android {
     // The app's identity, from platform/identity.toml. xtask writes the activity into this Java package.
     namespace = sapphire("applicationId")
     compileSdk = 36
-    // The NDK xtask linked the app library with; AGP uses it only to strip the `.so`.
+    // The NDK xtask linked the app library with; AGP uses it to strip the `.so` and to split out its
+    // symbols.
     ndkPath = sapphire("ndkPath")
     ndkVersion = sapphire("ndkVersion")
 
@@ -51,18 +61,66 @@ android {
         noCompress += "spack"
     }
 
+    signingConfigs {
+        if (uploadKeystore != null) {
+            create("upload") {
+                storeFile = file(uploadKeystore)
+                storePassword = uploadSecret("SAPPHIRE_UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias = uploadSecret("SAPPHIRE_UPLOAD_KEY_ALIAS")
+                keyPassword = uploadSecret("SAPPHIRE_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
+        // The store build, which `xtask package` makes with bundleRelease: not debuggable, so the activity
+        // takes no launch arguments, signed with the upload key when the environment has it, and carrying
+        // the library's symbols for Play's crash reports (`BUNDLE-METADATA/…/debugsymbols/`).
         release {
-            // M0 release builds are for profiling on test devices: signed with the debug key,
-            // and debuggable so the activity accepts launch arguments. `xtask package` builds its
-            // AAB from this type too, until M4 S3 makes store builds neither.
+            isDebuggable = false
+            signingConfig = signingConfigs.findByName("upload") ?: signingConfigs.getByName("debug")
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
+        }
+        // Profiling builds for test devices (`xtask bundle|run --release`): the store build, but debuggable
+        // so the activity takes launch arguments, always signed with the debug key, and with no symbols
+        // to split out.
+        create("profile") {
+            initWith(getByName("release"))
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
+            ndk {
+                debugSymbolLevel = "NONE"
+            }
         }
+    }
+
+    // Release lint fails the store build on any error. lint.xml scopes out SDL's synced Java glue's
+    // findings, rule by rule with each reason, and says why each of ours that's left is.
+    lint {
+        lintConfig = file("lint.xml")
+        abortOnError = true
+        checkReleaseBuilds = true
+        textReport = true
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// bundletool, as AGP itself runs it: the plugin's own classpath, which Gradle resolved (offline, from its
+// cache) to load AGP, holds bundletool and everything it needs. xtask runs it from the list this writes to
+// check the store bundle and make its local-testing APKs, with no download.
+val agpClasspath: FileCollection = rootProject.buildscript.configurations.getByName("classpath")
+val bundletoolClasspath = tasks.register("bundletoolClasspath") {
+    val classpath = agpClasspath
+    val list = layout.buildDirectory.file("bundletool.classpath")
+    inputs.files(classpath)
+    outputs.file(list)
+    doLast {
+        list.get().asFile.writeText(classpath.files.joinToString("\n", postfix = "\n") { it.absolutePath })
     }
 }

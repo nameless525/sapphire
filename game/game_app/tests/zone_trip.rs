@@ -1,6 +1,8 @@
 //! The game's show over `zone-trip`'s replay, frame by frame, from outside the crates (M3 W4): the wipe covers
 //! the screen from before the zone changes until the new zone's first cells are in, every frame it covers is the
-//! same picture, and nothing's built on a frame that the load didn't.
+//! same picture, and nothing's built on a frame that the load didn't. Then a game's flow on `ground-trip`
+//! goes back to the title while its trip's wipe covers, and the title's run stands only once the trip's over,
+//! where its scenario starts, rather than being carried through the rest of the trip (M3 Z3f).
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -17,6 +19,9 @@ use game_combat::combat::CombatOption;
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use game_combat::fight::trip::TripPhase;
+use game_flow::document::FlowDocument;
+use game_flow::flow::{FlowCommand, FlowState, Run};
+use game_flow::game::{FlowContent, Game, GameSetup};
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
 use sapphire_render::quality::QualitySettings;
@@ -28,6 +33,16 @@ const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
 /// Past the replay's second entry, at tick 240, and the trip after it.
 const TICKS: u64 = 260;
+/// `ground-trip` in the proving ground, which its cart yard's clearing wins.
+const FLOW: &str = r#"(type: "sapphire::game::FlowDocument", version: 1, data: (
+    scenario: "ground-trip",
+    zone: "e8c21831-7d98-4a79-b592-912b806cf3e2",
+    beats: [(when: Cleared("5d3a9e21-7c44-4b0e-9f16-0a8ce3b7d214"), then: Victory)],
+    music: (title: "waiting", victory: "cleared", defeat: "waiting"),
+    holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
+))"#;
+/// More frames than a trip and a restart's wipe take.
+const MOST_FRAMES: u32 = 2_000;
 
 /// Draws the stage's next frame into a new texture and reads it back.
 fn frame(stage: &mut Stage<GameShow>) -> Result<Vec<u8>, AppInitError> {
@@ -141,6 +156,7 @@ impl App for OutsideCaller {
             trips.iter().map(|seen| seen.held).collect::<Vec<_>>(),
             trips.iter().map(|seen| seen.covered.len()).collect::<Vec<_>>(),
         );
+        to_the_title_mid_trip(platform)?;
         Ok(Self)
     }
 
@@ -151,6 +167,79 @@ impl App for OutsideCaller {
     fn iterate(&mut self, _: &mut Platform) -> AppControl {
         AppControl::Exit
     }
+}
+
+fn flow_state(stage: &Stage<GameShow>) -> FlowState {
+    stage.show.game().expect("a game's show").flow().state()
+}
+
+/// A frame of a game's show with no window: a step, the view and a picture.
+fn play(stage: &mut Stage<GameShow>) -> Result<(), AppInitError> {
+    stage.step();
+    stage.show.drive_view(Duration::from_millis(16));
+    frame(stage)?;
+    Ok(())
+}
+
+/// A game's run that goes through the proving ground's exit, and the pause's way back to the title while the
+/// trip's wipe covers the screen, before the hub's swapped in: the title's run waits for the trip to end, so
+/// it stands at its scenario's start, in no zone it travelled to, and steps from its first tick.
+fn to_the_title_mid_trip(platform: &mut Platform) -> Result<(), AppInitError> {
+    let gpu = headless_gpu()?;
+    let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
+    let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
+    let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
+    let flow = FlowContent {
+        document: FlowDocument::from_ron(FLOW).map_err(AppInitError::msg)?,
+        registered: Vec::new(),
+    };
+    let game = Game::new(flow, GameSetup::default()).map_err(AppInitError::msg)?;
+    let mut show = GameShow::new(documents, PlayerSettings::default())?.with_game(game);
+    let first = show.opening_run().expect("a game's run");
+    let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
+    let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
+    let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
+    show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+    let ground = stage.scene.zone_on_stage();
+    assert!(ground.is_some(), "the run stands in its zone");
+    stage.show.choose(FlowCommand::NewGame);
+    assert_eq!(flow_state(&stage), FlowState::Playing);
+    for _ in 0..10 {
+        play(&mut stage)?;
+    }
+
+    // Out through the ground's exit, to the hub, which nothing's fetched ahead: back to the title as soon
+    // as the trip's wipe covers, while the hub's still to come.
+    let Stage { show, scene, content, .. } = &mut stage;
+    show.shown.fight.take_exit(scene, content, "to_proving_hub").map_err(AppInitError::msg)?;
+    let mut frames = 0;
+    while !(wipe_state(&stage) == "covered"
+        && stage.show.shown.fight.show.trip_phase().is_some_and(TripPhase::holds_simulation)
+        && stage.scene.zone_on_stage() == ground)
+    {
+        assert!(frames < MOST_FRAMES, "the trip's wipe never covered before the swap");
+        play(&mut stage)?;
+        frames += 1;
+    }
+    stage.show.choose(FlowCommand::Pause);
+    stage.show.choose(FlowCommand::ToTitle);
+    let mut frames = 0;
+    while !matches!(flow_state(&stage), FlowState::Title { .. }) {
+        assert!(frames < MOST_FRAMES, "never back at the title: {:?}", flow_state(&stage));
+        play(&mut stage)?;
+        frames += 1;
+    }
+    assert_eq!(flow_state(&stage), FlowState::Title { stood: Run::Saved });
+    assert!(stage.show.shown.fight.show.trip_phase().is_none(), "the trip's over");
+    let combat = stage.show.shown.fight.combat.as_ref().expect("the title's run stands");
+    let sim = combat.simulation();
+    assert_eq!(sim.current_zone(), None, "the title's run is where its scenario starts, not on a trip");
+    assert_eq!(sim.tick(), 0, "and hasn't stepped");
+    println!(
+        "zone_trip: back to the title mid-trip in {frames} frames, the stage {} the ground",
+        if stage.scene.zone_on_stage() == ground { "in" } else { "out of" }
+    );
+    Ok(())
 }
 
 fn main() -> ExitCode {

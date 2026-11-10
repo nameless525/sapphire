@@ -289,11 +289,16 @@ impl GameShow {
     }
 
     /// Where the wipe stands, for the flow: once it covers a restart, the run the flow asks for stands, in
-    /// place of the one there, and the screens follow.
+    /// place of the one there, and the screens follow. While a zone trip's under way the wipe is the trip's,
+    /// and the flow waits for it to end: a run stood under a trip's wipe would be carried through the rest of
+    /// the trip.
     fn stand_asked_run(&mut self, scene: &mut Scene, content: &mut Content) {
         let Some(game) = &mut self.game else { return };
-        let (covered, clear) =
-            self.shown.wipe.as_ref().map_or((true, true), |wipe| (wipe.covered(), wipe.clear()));
+        let (covered, clear) = match &self.shown.wipe {
+            _ if self.shown.fight.show.trip_phase().is_some() => (false, false),
+            Some(wipe) => (wipe.covered(), wipe.clear()),
+            None => (true, true),
+        };
         let Some(option) = game.wipe(covered, clear) else {
             self.follow_flow();
             return;

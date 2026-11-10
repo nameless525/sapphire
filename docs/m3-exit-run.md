@@ -161,12 +161,12 @@ cargo xtask bundle --platform ios-sim --app game_app --release          # target
 UDID=$(xcrun simctl create z2-exit "iPhone 17 Pro")
 xcrun simctl boot "$UDID" && xcrun simctl bootstatus "$UDID" -b
 xcrun simctl install "$UDID" target/ios-sim/<Name>.app
-xcrun simctl launch --console-pty "$UDID" dev.sapphire.game --capture <png> --size 1280x720 --ticks 120
+xcrun simctl launch --console-pty "$UDID" com.example.sapphire.game --capture <png> --size 1280x720 --ticks 120
 xcrun simctl io "$UDID" screenshot target/sim.png
 xcrun simctl shutdown "$UDID" && xcrun simctl delete "$UDID"
 ```
 
-Mobile bundles take `--release`: `--incremental` is for `--platform desktop` and `macos` only. The app can write only inside its own data container, so give `--capture` a path there: `xcrun simctl get_app_container "$UDID" dev.sapphire.game data` names it, and its `tmp/` will do. A container's path changes with each install.
+Mobile bundles take `--release`: `--incremental` is for `--platform desktop` and `macos` only. The app can write only inside its own data container, so give `--capture` a path there: `xcrun simctl get_app_container "$UDID" com.example.sapphire.game data` names it, and its `tmp/` will do. A container's path changes with each install.
 
 The sandbox plays a recorded zone replay to its checksum the same way. Bundle it with `cargo xtask bundle --platform ios-sim --release --features dev`, copy the replay and `tests/replays/checksums.aarch64.txt` into the sandbox's container, and launch `dev.sapphire.sandbox` with `--capture <png> --arena --replay <file>`, both paths in that container. The app logs `replay reached its recorded checksums` with the checksum. "Final run at 4fe253e6" has what ran.
 
@@ -178,7 +178,7 @@ adb wait-for-device
 JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
   cargo xtask bundle --platform android --app game_app --release
 adb install -r <apk>
-adb shell am start -n dev.sapphire.game/.GameActivity --es sapphire.args <base64 JSON of the arguments>
+adb shell am start -n com.example.sapphire.game/.GameActivity --es sapphire.args <base64 JSON of the arguments>
 adb exec-out screencap -p > target/emulator.png
 adb logcat -d | grep -i sapphire
 adb emu kill

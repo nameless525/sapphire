@@ -45,14 +45,16 @@ impl BundleLayout {
 ///
 /// The values go into `<string>` elements, escaped for XML, and in one pass over the
 /// template: a value is never scanned for placeholders, so a display name may hold `&`, `<`
-/// or `$(` and comes out as written.
-pub fn render_info_plist(template: &str, app: &App) -> anyhow::Result<String> {
-    let build = app.build.to_string();
+/// or `$(` and comes out as written. The display name is English's, the development region's;
+/// each language's is in its `InfoPlist.strings` ([`info_plist_strings`]). `build` is the build
+/// number ([`crate::version`]).
+pub fn render_info_plist(template: &str, app: &App, build: u32) -> anyhow::Result<String> {
+    let build = build.to_string();
     let variables = [
         ("EXECUTABLE_NAME", app.package.as_str()),
         ("PRODUCT_BUNDLE_IDENTIFIER", &app.bundle_id),
         ("PRODUCT_NAME", &app.bundle_name),
-        ("BUNDLE_DISPLAY_NAME", &app.display_name),
+        ("BUNDLE_DISPLAY_NAME", &app.display_name.en),
         ("MARKETING_VERSION", &app.version),
         ("CURRENT_PROJECT_VERSION", &build),
     ];
@@ -69,6 +71,20 @@ fn push_xml_escaped(out: &mut String, text: &str) {
             c => out.push(c),
         }
     }
+}
+
+/// A language's `InfoPlist.strings`, which names the app under its icon in that language: a strings
+/// file, UTF-8, with the name quoted and escaped as C strings are.
+pub fn info_plist_strings(display_name: &str) -> String {
+    let mut quoted = String::with_capacity(display_name.len());
+    for c in display_name.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            c => quoted.push(c),
+        }
+    }
+    format!("/* Made by xtask from platform/identity.toml. */\n\"CFBundleDisplayName\" = \"{quoted}\";\n")
 }
 
 /// The `<string>` value of `key` in a plist's top-level dictionary.
@@ -98,7 +114,8 @@ pub fn verify_minimum_os(executable: &Path, plist: &str, minimum_key: &str) -> a
     Ok(())
 }
 
-/// Assembles a fresh `.app`: Info.plist, the executable and the cooked content.
+/// Assembles a fresh `.app`: Info.plist, each language's `InfoPlist.strings`, the executable and the
+/// cooked content.
 pub fn assemble(
     layout: &BundleLayout,
     app: &App,
@@ -112,6 +129,13 @@ pub fn assemble(
     }
     std::fs::write(&layout.info_plist, info_plist)
         .with_context(|| format!("failed to write {}", layout.info_plist.display()))?;
+    for (language, name) in app.display_name.by_language() {
+        let dir = layout.resources_dir.join(format!("{language}.lproj"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        let path = dir.join("InfoPlist.strings");
+        std::fs::write(&path, info_plist_strings(name))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
     let bundled_exe = layout.executable_dir.join(&app.package);
     std::fs::copy(executable, &bundled_exe)
         .with_context(|| format!("failed to copy {} into the bundle", executable.display()))?;
@@ -127,7 +151,7 @@ pub fn codesign_ad_hoc(bundle: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platforms::test_app;
+    use crate::platforms::{test_app, test_game};
 
     /// A template as checked in, with line endings normalized: a Windows checkout without
     /// .gitattributes has CRLF.
@@ -150,14 +174,17 @@ mod tests {
     #[test]
     fn renders_the_ios_template() {
         let app = test_app();
-        let plist = render_info_plist(&ios_template(), &app).unwrap();
+        let plist = render_info_plist(&ios_template(), &app, 4123).unwrap();
         assert_eq!(value_of(&plist, "CFBundleExecutable"), "sapphire_sandbox");
         assert_eq!(value_of(&plist, "CFBundleIdentifier"), "dev.sapphire.sandbox");
         assert_eq!(value_of(&plist, "CFBundleDisplayName"), "Sapphire Sandbox");
         assert_eq!(value_of(&plist, "CFBundleName"), "SapphireSandbox");
         assert_eq!(value_of(&plist, "MinimumOSVersion"), "17.0");
         assert_eq!(value_of(&plist, "CFBundleShortVersionString"), app.version);
-        assert_eq!(value_of(&plist, "CFBundleVersion"), app.build.to_string());
+        assert_eq!(value_of(&plist, "CFBundleVersion"), "4123");
+        assert!(plist.contains(
+            "<key>CFBundleLocalizations</key>\n\t<array>\n\t\t<string>en</string>\n\t\t<string>ja</string>"
+        ));
         assert!(plist.contains("<key>UILaunchScreen</key>"));
         assert!(plist.contains("<key>UIRequiresFullScreen</key>\n\t<true/>"));
         // SDL needs it to receive mouse and trackpad events as such on iPad.
@@ -167,9 +194,11 @@ mod tests {
 
     #[test]
     fn renders_the_macos_template() {
-        let plist = render_info_plist(&macos_template(), &test_app()).unwrap();
-        assert_eq!(value_of(&plist, "CFBundleExecutable"), "sapphire_sandbox");
-        assert_eq!(value_of(&plist, "CFBundleIdentifier"), "dev.sapphire.sandbox");
+        let plist = render_info_plist(&macos_template(), &test_game(), 7).unwrap();
+        assert_eq!(value_of(&plist, "CFBundleExecutable"), "game_app");
+        assert_eq!(value_of(&plist, "CFBundleIdentifier"), "com.example.sapphire.game");
+        assert_eq!(value_of(&plist, "CFBundleDisplayName"), "Sapphire");
+        assert_eq!(value_of(&plist, "CFBundleVersion"), "7");
         assert_eq!(value_of(&plist, "LSMinimumSystemVersion"), "14.0");
     }
 
@@ -197,8 +226,8 @@ mod tests {
             "&amp;",
             "$(",
         ] {
-            let app = App { display_name: name.into(), ..test_app() };
-            let plist = render_info_plist(&ios_template(), &app).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let app = named(name);
+            let plist = render_info_plist(&ios_template(), &app, 1).unwrap_or_else(|e| panic!("{name}: {e}"));
             let written = value_of(&plist, "CFBundleDisplayName");
             let bare = written.replace("&amp;", "").replace("&lt;", "").replace("&gt;", "");
             assert!(!bare.contains(['&', '<', '>']), "{name} written unescaped: {written}");
@@ -219,17 +248,39 @@ mod tests {
         for (index, name) in
             ["Sword & Shield", "A < B > C", "Tom's \"Game\"", "$(NAME)"].into_iter().enumerate()
         {
-            let app = App { display_name: name.into(), ..test_app() };
+            let app = named(name);
             let path = scratch.join(format!("{index}.plist"));
-            std::fs::write(&path, render_info_plist(&macos_template(), &app).unwrap()).unwrap();
+            std::fs::write(&path, render_info_plist(&macos_template(), &app, 1).unwrap()).unwrap();
             workspace::run(Command::new("plutil").arg("-lint").arg(&path)).unwrap();
             let read = workspace::output(
                 Command::new("plutil").args(["-extract", "CFBundleDisplayName", "raw", "-o", "-"]).arg(&path),
             )
             .unwrap();
             assert_eq!(read.strip_suffix('\n').unwrap_or(&read), name);
+
+            // Each language's strings file reads back as the same name too, Japanese as well.
+            for name in [name, "サファイア"] {
+                let strings = scratch.join(format!("{index}.strings"));
+                std::fs::write(&strings, info_plist_strings(name)).unwrap();
+                workspace::run(Command::new("plutil").arg("-lint").arg(&strings)).unwrap();
+                let json = workspace::output(
+                    Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(&strings),
+                )
+                .unwrap();
+                let read: serde_json::Value = serde_json::from_str(&json).unwrap();
+                assert_eq!(read["CFBundleDisplayName"], name);
+            }
         }
         workspace::remove_dir_if_exists(&scratch).unwrap();
+    }
+
+    /// The sandbox, with another English display name.
+    fn named(name: &str) -> App {
+        let base = test_app();
+        App {
+            display_name: crate::platforms::DisplayName { en: name.into(), ..base.display_name.clone() },
+            ..base
+        }
     }
 
     /// Text-node unescaping, enough for what `render_info_plist` writes.
@@ -239,16 +290,16 @@ mod tests {
 
     #[test]
     fn rejects_unknown_placeholders() {
-        let err = render_info_plist("<string>$(DEVELOPMENT_TEAM)</string>", &test_app()).unwrap_err();
+        let err = render_info_plist("<string>$(DEVELOPMENT_TEAM)</string>", &test_app(), 1).unwrap_err();
         assert_eq!(err.to_string(), "unknown placeholder $(DEVELOPMENT_TEAM) in Info.plist template");
         // After a known one too: the scan goes on past each value.
-        let err =
-            render_info_plist("$(PRODUCT_NAME)$(PRODUCT_NAME:rfc1034identifier)", &test_app()).unwrap_err();
+        let err = render_info_plist("$(PRODUCT_NAME)$(PRODUCT_NAME:rfc1034identifier)", &test_app(), 1)
+            .unwrap_err();
         assert_eq!(
             err.to_string(),
             "unknown placeholder $(PRODUCT_NAME:rfc1034identifier) in Info.plist template"
         );
-        let err = render_info_plist("<string>$(PRODUCT_NAME</string>", &test_app()).unwrap_err();
+        let err = render_info_plist("<string>$(PRODUCT_NAME</string>", &test_app(), 1).unwrap_err();
         assert_eq!(err.to_string(), "unterminated placeholder in Info.plist template");
     }
 
@@ -272,7 +323,14 @@ mod tests {
             assert!(!layout.root.join("stale").exists());
         }
         let app = scratch.join("ios/SapphireSandbox.app");
-        for file in ["Info.plist", "sapphire_sandbox", "content/shared.spack", "content/NOTICES.txt"] {
+        for file in [
+            "Info.plist",
+            "sapphire_sandbox",
+            "content/shared.spack",
+            "content/NOTICES.txt",
+            "en.lproj/InfoPlist.strings",
+            "ja.lproj/InfoPlist.strings",
+        ] {
             assert!(app.join(file).is_file(), "iOS bundle is missing {file}");
         }
         let contents = scratch.join("macos/SapphireSandbox.app/Contents");
@@ -281,6 +339,7 @@ mod tests {
             "MacOS/sapphire_sandbox",
             "Resources/content/shared.spack",
             "Resources/content/NOTICES.txt",
+            "Resources/ja.lproj/InfoPlist.strings",
         ] {
             assert!(contents.join(file).is_file(), "macOS bundle is missing {file}");
         }

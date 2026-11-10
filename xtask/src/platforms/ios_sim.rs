@@ -14,7 +14,7 @@ use serde::Deserialize;
 use super::apple::{self, BundleLayout};
 use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
-use crate::workspace;
+use crate::{version, workspace};
 
 const TARGET: &str = "aarch64-apple-ios-sim";
 const IOS_RUNTIME_PREFIX: &str = "com.apple.CoreSimulator.SimRuntime.iOS-";
@@ -31,7 +31,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     let executable = super::executable(app, Some(TARGET), &[], options)?;
     let (template_path, template) = super::info_plist_template("ios")?;
     apple::verify_minimum_os(&executable, &template, "MinimumOSVersion")?;
-    let info_plist = apple::render_info_plist(&template, app)
+    let info_plist = apple::render_info_plist(&template, app, version::development_number())
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout = BundleLayout::ios(claim.staging(&format!("{}.app", app.bundle_name))?);

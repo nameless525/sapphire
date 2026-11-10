@@ -1350,6 +1350,7 @@ dependencies = [
  "sapphire_serialize",
  "sapphire_stage",
  "sapphire_time",
+ "toml",
  "tracing",
 ]
 

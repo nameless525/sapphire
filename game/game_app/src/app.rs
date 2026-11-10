@@ -27,9 +27,9 @@ use sapphire_stage::Stage;
 use sapphire_stage::audio::DeviceAudio;
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
-use crate::LOG_TARGET;
 use crate::options::Options;
 use crate::settings::KeptSettings;
+use crate::{LOG_TARGET, build_info};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -78,14 +78,14 @@ impl App for GameApp {
     const METADATA: AppMetadata = AppMetadata {
         name: "Sapphire",
         organization: "Sapphire",
-        identifier: "dev.sapphire.game",
+        identifier: build_info::BUNDLE_ID,
         version: env!("CARGO_PKG_VERSION"),
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let mut options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         let info = *platform.system_info();
-        tracing::info!(target: LOG_TARGET, version = Self::METADATA.version, ?info, ?options, "starting");
+        tracing::info!(target: LOG_TARGET, build = build_info::BUILD_ID, ?info, ?options, "starting");
         let window = platform
             .create_window(&WindowDesc { title: Self::METADATA.name.to_owned(), ..WindowDesc::default() })?;
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
@@ -548,7 +548,8 @@ fn stand_on_device(
         unsafe { RenderSurface::new(&instance, target, handle) }.map_err(|error| failed(error.into()))?;
     let pipeline_cache = PipelineCacheDesc {
         dir: platform.cache_dir().join("pipeline_cache"),
-        build_id: GameApp::METADATA.version.to_owned(),
+        // A new build may compile its pipelines differently, so it starts the driver's cache afresh.
+        build_id: build_info::BUILD_ID.to_owned(),
     };
     let desc = GpuContextDesc { pipeline_cache: Some(pipeline_cache), ..GpuContextDesc::default() };
     let gpu = GpuContext::new(&instance, &desc, Some(&surface)).map_err(|error| failed(error.into()))?;
@@ -627,21 +628,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_matches_the_package_manifest() {
-        // xtask packages the app from `[package.metadata.sapphire]`; the identity SDL sees at runtime (user
-        // directories, iOS bundle checks) must be the same one.
-        let manifest = include_str!("../Cargo.toml");
+    fn metadata_matches_the_identity_file() {
+        // xtask bundles and packages the app from platform/identity.toml; the identity SDL sees at runtime
+        // (user directories, iOS bundle checks, Linux's window class) must be the same one.
+        let identities = include_str!("../../../platform/identity.toml");
+        let table = identities.split("\n[").find(|table| table.starts_with("game_app]")).expect("[game_app]");
         let field = |key: &str| {
-            manifest
+            table
                 .lines()
                 .find_map(|line| {
-                    let value = line.strip_prefix(key)?.trim_start().strip_prefix('=')?.trim();
-                    value.strip_prefix('"')?.strip_suffix('"')
+                    let value = line.split_once(key)?.1.trim_start().strip_prefix('=')?.trim_start();
+                    value.strip_prefix('"')?.split('"').next()
                 })
-                .unwrap_or_else(|| panic!("`{key}` missing from [package.metadata.sapphire]"))
+                .unwrap_or_else(|| panic!("`{key}` missing from [game_app]"))
         };
         assert_eq!(GameApp::METADATA.identifier, field("bundle-id"));
-        assert_eq!(GameApp::METADATA.name, field("display-name"));
+        assert_eq!(GameApp::METADATA.name, field("{ en"), "the English display name");
     }
 
     fn at(duties: &[Duty], duty: Duty) -> usize {

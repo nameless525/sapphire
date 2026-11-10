@@ -29,7 +29,7 @@ use anyhow::{Context as _, bail, ensure};
 use super::apple::{self, BundleLayout};
 use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
-use crate::workspace;
+use crate::{version, workspace};
 
 const TARGET: &str = "aarch64-apple-ios";
 
@@ -44,7 +44,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     let executable = super::executable(app, Some(TARGET), &[], options)?;
     let (template_path, template) = super::info_plist_template("ios")?;
     apple::verify_minimum_os(&executable, &template, "MinimumOSVersion")?;
-    let info_plist = apple::render_info_plist(&template, app)
+    let info_plist = apple::render_info_plist(&template, app, version::development_number())
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout = BundleLayout::ios(claim.staging(&format!("{}.app", app.bundle_name))?);
@@ -143,7 +143,7 @@ fn write_entitlements(decoded: &Path, out: &Path, bundle_id: &str) -> anyhow::Re
     let concrete = concrete_app_id(app_id, bundle_id).with_context(|| {
         format!(
             "the profile is for App ID {app_id}, not {bundle_id}: make a profile for this bundle identifier (or \
-             change bundle-id in the app's [package.metadata.sapphire] if Apple gave it to another team)"
+             change the app's bundle-id in platform/identity.toml if Apple gave it to another team)"
         )
     })?;
     // An exact App ID: nothing to expand, so the profile's entitlements are signed unchanged.

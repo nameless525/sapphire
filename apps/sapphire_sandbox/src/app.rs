@@ -1679,21 +1679,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_matches_the_package_manifest() {
-        // xtask packages the app from `[package.metadata.sapphire]`; the identity SDL sees at
-        // runtime (user directories, iOS bundle checks) must be the same one.
-        let manifest = include_str!("../Cargo.toml");
+    fn metadata_matches_the_identity_file() {
+        // xtask bundles and packages the app from platform/identity.toml; the identity SDL sees at runtime
+        // (user directories, iOS bundle checks, Linux's window class) must be the same one.
+        let identities = include_str!("../../../platform/identity.toml");
+        let table = identities
+            .split("\n[")
+            .find(|table| table.starts_with("sapphire_sandbox]"))
+            .expect("[sapphire_sandbox]");
         let field = |key: &str| {
-            manifest
+            table
                 .lines()
                 .find_map(|line| {
-                    let value = line.strip_prefix(key)?.trim_start().strip_prefix('=')?.trim();
-                    value.strip_prefix('"')?.strip_suffix('"')
+                    let value = line.split_once(key)?.1.trim_start().strip_prefix('=')?.trim_start();
+                    value.strip_prefix('"')?.split('"').next()
                 })
-                .unwrap_or_else(|| panic!("`{key}` missing from [package.metadata.sapphire]"))
+                .unwrap_or_else(|| panic!("`{key}` missing from [sapphire_sandbox]"))
         };
         assert_eq!(SandboxApp::METADATA.identifier, field("bundle-id"));
-        assert_eq!(SandboxApp::METADATA.name, field("display-name"));
+        assert_eq!(SandboxApp::METADATA.name, field("{ en"), "the English display name");
     }
 
     /// A desktop's fight, played, unpaused and focused, with no overlay up: take any of those away and

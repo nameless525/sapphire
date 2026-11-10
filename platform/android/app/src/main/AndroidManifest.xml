@@ -43,7 +43,9 @@
       the rules spell out what moves: the user directory only, never caches or crash dumps.
     -->
     <application
-        android:label="${appLabel}"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:appCategory="game"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"

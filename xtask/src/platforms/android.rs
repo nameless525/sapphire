@@ -33,6 +33,7 @@ use serde::Deserialize;
 
 use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
+use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
 const TARGET: &str = "aarch64-linux-android";
@@ -62,36 +63,162 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     // Fail now rather than after the native build.
     require_java()?;
     let claim = BundleClaim::take(Platform::Android)?;
-    let library = build_library(app, &ndk, options)?;
+    let library = build_library(app, &ndk, BuildProfile::app(options.release), &options.features, &[])?;
     let content = content::cook(Cook::Mobile)?;
-
-    let variant = if options.release { "release" } else { "debug" };
+    let task = if options.release { GradleTask::AssembleRelease } else { GradleTask::AssembleDebug };
     let build_dir = super::bundle_dir(Platform::Android).join("build").join(&app.bundle_name);
-    let gen_dir = build_dir.join("gen").join(variant);
-    let gradle_dir = build_dir.join("gradle");
-    workspace::remove_dir_if_exists(&gen_dir)?;
-    let project = workspace::root().join("platform/android");
-    write_activity(&project.join(ACTIVITY_TEMPLATE), app, &gen_dir.join("java"))?;
-    sync_sdl_java(&gen_dir.join("java/org/libsdl/app"))?;
-    let abi_dir = gen_dir.join("jniLibs").join(ABI);
-    fs::create_dir_all(&abi_dir).with_context(|| format!("failed to create {}", abi_dir.display()))?;
-    fs::copy(&library, abi_dir.join(library_file(app)))
-        .with_context(|| format!("failed to copy {}", library.display()))?;
-    workspace::copy_dir(&content.dir, &gen_dir.join("assets/content"))?;
+    let gradle = Gradle { sdk: &sdk, ndk: &ndk, build_dir: &build_dir };
+    let built = gradle.build(app, version::development_number(), &library, &content.dir, task)?;
     drop(content);
-
-    let mut gradle = Command::new(project.join("gradlew"));
-    gradle
-        .current_dir(&project)
-        .arg(if options.release { "assembleRelease" } else { "assembleDebug" })
-        .args(gradle_properties(app, &ndk, &gen_dir, &gradle_dir))
-        .env("ANDROID_HOME", &sdk);
-    workspace::run(&mut gradle)?;
-
-    let built = gradle_dir.join(format!("outputs/apk/{variant}/app-{variant}.apk"));
     let apk = claim.staging(&format!("{}.apk", app.bundle_name))?;
     fs::copy(&built, &apk).with_context(|| format!("failed to copy {}", built.display()))?;
     claim.publish(&apk)
+}
+
+/// What a store package of the app holds for Android: the AAB Gradle's `bundleRelease` makes from a
+/// `shipping` build of the library, and that library before Gradle strips it, for its symbols.
+pub struct Packaged {
+    pub aab: PathBuf,
+    pub library: PathBuf,
+}
+
+/// Builds the app's library in the `shipping` profile with `env` (the build's number and ID), and an AAB
+/// around it and `content`, with Gradle working in `work_dir`. A store's bundle, signed with the debug key
+/// until S3 signs it with the upload key from the environment.
+pub fn package(
+    app: &App,
+    build: u32,
+    env: &[(&str, OsString)],
+    content: &Path,
+    work_dir: &Path,
+) -> anyhow::Result<Packaged> {
+    let sdk = sdk_dir()?;
+    let ndk = Ndk::locate(&sdk)?;
+    require_java()?;
+    let library = build_library(app, &ndk, BuildProfile::Shipping, &[], env)?;
+    let gradle = Gradle { sdk: &sdk, ndk: &ndk, build_dir: work_dir };
+    let aab = gradle.build(app, build, &library, content, GradleTask::BundleRelease)?;
+    Ok(Packaged { aab, library })
+}
+
+/// The Gradle tasks xtask runs, and what each leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GradleTask {
+    AssembleDebug,
+    AssembleRelease,
+    BundleRelease,
+}
+
+impl GradleTask {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AssembleDebug => "assembleDebug",
+            Self::AssembleRelease => "assembleRelease",
+            Self::BundleRelease => "bundleRelease",
+        }
+    }
+
+    fn variant(self) -> &'static str {
+        match self {
+            Self::AssembleDebug => "debug",
+            Self::AssembleRelease | Self::BundleRelease => "release",
+        }
+    }
+
+    /// What it builds, under Gradle's build directory.
+    fn output(self) -> PathBuf {
+        let variant = self.variant();
+        match self {
+            Self::AssembleDebug | Self::AssembleRelease => format!("outputs/apk/{variant}/app-{variant}.apk"),
+            Self::BundleRelease => format!("outputs/bundle/{variant}/app-{variant}.aab"),
+        }
+        .into()
+    }
+}
+
+/// The Gradle project in `platform/android/`, building one app in `build_dir`: its generated inputs in
+/// `gen/<variant>/`, and Gradle's own outputs in `gradle/`.
+struct Gradle<'a> {
+    sdk: &'a Path,
+    ndk: &'a Ndk,
+    build_dir: &'a Path,
+}
+
+impl Gradle<'_> {
+    /// Generates the project's inputs for `app` (the activity, SDL's Java, `library`, `content`, the icon
+    /// and the names) and runs `task` offline, returning what it built.
+    fn build(
+        &self,
+        app: &App,
+        build: u32,
+        library: &Path,
+        content: &Path,
+        task: GradleTask,
+    ) -> anyhow::Result<PathBuf> {
+        let gen_dir = self.build_dir.join("gen").join(task.variant());
+        let gradle_dir = self.build_dir.join("gradle");
+        workspace::remove_dir_if_exists(&gen_dir)?;
+        let project = workspace::root().join("platform/android");
+        write_activity(&project.join(ACTIVITY_TEMPLATE), app, &gen_dir.join("java"))?;
+        sync_sdl_java(&gen_dir.join("java/org/libsdl/app"))?;
+        let abi_dir = gen_dir.join("jniLibs").join(ABI);
+        fs::create_dir_all(&abi_dir).with_context(|| format!("failed to create {}", abi_dir.display()))?;
+        fs::copy(library, abi_dir.join(library_file(app)))
+            .with_context(|| format!("failed to copy {}", library.display()))?;
+        workspace::copy_dir(content, &gen_dir.join("assets/content"))?;
+        write_resources(app, &self.build_dir.join("icons"), &gen_dir.join("res"))?;
+
+        // Offline: Gradle's Maven artifacts are downloads, which a build here never makes. One missing from
+        // Gradle's cache fails the build, naming it (m4-plan §3, "Android packaging").
+        let mut gradle = Command::new(project.join("gradlew"));
+        gradle
+            .current_dir(&project)
+            .args(["--offline", task.name()])
+            .args(gradle_properties(app, build, self.ndk, &gen_dir, &gradle_dir))
+            .env("ANDROID_HOME", self.sdk);
+        workspace::run(&mut gradle)?;
+        Ok(gradle_dir.join(task.output()))
+    }
+}
+
+/// Writes the app's Android resources under `res`: its name in each language (`values/strings.xml`,
+/// `values-ja/strings.xml`), and the launcher icon's mipmaps, made from the project's icon in `icons`.
+fn write_resources(app: &App, icons: &Path, res: &Path) -> anyhow::Result<()> {
+    super::make_icons(icons)?;
+    workspace::copy_dir(&icons.join("android/res"), res)?;
+    for (language, name) in app.display_name.by_language() {
+        let dir = res.join(if language == "en" { "values".to_owned() } else { format!("values-{language}") });
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        let path = dir.join("strings.xml");
+        fs::write(&path, strings_xml(name)).with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// A strings resource naming the app `app_name`, escaped as Android's resource compiler reads a string:
+/// XML's metacharacters, quotes and backslashes, and a leading `@` or `?`, which would make it a reference.
+fn strings_xml(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for (i, c) in name.chars().enumerate() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '\'' | '"' | '\\' => {
+                escaped.push('\\');
+                escaped.push(c);
+            }
+            '@' | '?' if i == 0 => {
+                escaped.push('\\');
+                escaped.push(c);
+            }
+            c => escaped.push(c),
+        }
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Made by xtask from platform/identity.toml. -->\n<resources>\n    \
+         <string name=\"app_name\">{escaped}</string>\n</resources>\n"
+    )
 }
 
 /// Bundles, picks the connected device (booting the emulator if there is none), installs
@@ -361,8 +488,9 @@ fn write_activity(template: &Path, app: &App, java_dir: &Path) -> anyhow::Result
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Everything the Gradle project takes from xtask (see `app/build.gradle.kts`).
-fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path, gradle_dir: &Path) -> Vec<OsString> {
+/// Everything the Gradle project takes from xtask (see `app/build.gradle.kts`): `build` is the build
+/// number, Android's `versionCode`.
+fn gradle_properties(app: &App, build: u32, ndk: &Ndk, gen_dir: &Path, gradle_dir: &Path) -> Vec<OsString> {
     let path = |name: &str, path: &Path| {
         let mut property = OsString::from(format!("-Psapphire.{name}="));
         property.push(path);
@@ -375,9 +503,8 @@ fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path, gradle_dir: &Path) ->
         format!("-Psapphire.ndkVersion={}", ndk.revision).into(),
         format!("-Psapphire.applicationId={}", app.bundle_id).into(),
         format!("-Psapphire.activity={}", activity(app).name()).into(),
-        format!("-Psapphire.displayName={}", app.display_name).into(),
         format!("-Psapphire.versionName={}", app.version).into(),
-        format!("-Psapphire.versionCode={}", app.build).into(),
+        format!("-Psapphire.versionCode={build}").into(),
     ]
 }
 
@@ -525,20 +652,22 @@ fn library_file(app: &App) -> String {
     format!("lib{}.so", app.package)
 }
 
-/// Builds the app crate's library as a `cdylib` and returns its path.
-fn build_library(app: &App, ndk: &Ndk, options: &Options) -> anyhow::Result<PathBuf> {
+/// Builds the app crate's library as a `cdylib` in `profile`, with `features` and the extra environment
+/// `extra`, and returns its path.
+fn build_library(
+    app: &App,
+    ndk: &Ndk,
+    profile: BuildProfile,
+    features: &[String],
+    extra: &[(&str, OsString)],
+) -> anyhow::Result<PathBuf> {
     eprintln!("using NDK {} at {}", ndk.revision, ndk.root.display());
-    let env = ndk.cargo_env()?;
+    let mut env = ndk.cargo_env()?;
+    env.extend(extra.iter().map(|(name, value)| (*name, value.clone())));
     let file = library_file(app);
     // `cargo rustc` adds the cdylib crate type for this build only, so desktop and iOS keep
     // linking the crate as an rlib. The soname names the library for Android's loader.
-    let build = CargoBuild {
-        package: &app.package,
-        target: Some(TARGET),
-        profile: BuildProfile::app(options.release),
-        features: &options.features,
-        env: &env,
-    };
+    let build = CargoBuild { package: &app.package, target: Some(TARGET), profile, features, env: &env };
     let mut command = build.command("rustc");
     command.args(["--lib", "--crate-type", "cdylib", "--", "-C"]);
     command.arg(format!("link-arg=-Wl,-soname,{file}"));
@@ -1136,7 +1265,7 @@ esac
         assert!(gradle.contains(&format!("abiFilters += \"{ABI}\"")));
 
         let ndk = Ndk { root: "ndk".into(), revision: "29.0.1".into() };
-        let passed = gradle_properties(&test_app(), &ndk, Path::new("gen"), Path::new("gradle"));
+        let passed = gradle_properties(&test_app(), 1, &ndk, Path::new("gen"), Path::new("gradle"));
         let mut passed: Vec<String> = passed
             .iter()
             .map(|property| {
@@ -1160,7 +1289,10 @@ esac
         assert!(gradle.contains("manifestPlaceholders[\"activity\"] = sapphire(\"activity\")"));
         assert!(gradle.contains("layout.buildDirectory.set(file(sapphire(\"buildDir\")))"));
         assert!(manifest.contains("android:name=\"${activity}\""));
-        assert!(manifest.contains("android:label=\"${appLabel}\""));
+        // The name and icon are resources xtask writes ([`write_resources`]).
+        assert!(manifest.contains("android:label=\"@string/app_name\""));
+        assert!(manifest.contains("android:icon=\"@mipmap/ic_launcher\""));
+        assert!(gradle.contains("res.directories += \"$gen/res\""));
         for file in [gradle, manifest] {
             assert!(!file.to_lowercase().contains("sandbox"), "{file}");
         }
@@ -1180,9 +1312,9 @@ esac
             (
                 test_game(),
                 "GameActivity",
-                "dev.sapphire.game/.GameActivity",
-                "dev.sapphire.game.GameActivity",
-                "dev/sapphire/game/GameActivity.java",
+                "com.example.sapphire.game/.GameActivity",
+                "com.example.sapphire.game.GameActivity",
+                "com/example/sapphire/game/GameActivity.java",
             ),
         ] {
             let activity = activity(&app);
@@ -1197,7 +1329,7 @@ esac
     fn the_template_fills_for_each_app() {
         for (app, package, class, library) in [
             (test_app(), "dev.sapphire.sandbox", "SandboxActivity", "sapphire_sandbox"),
-            (test_game(), "dev.sapphire.game", "GameActivity", "game_app"),
+            (test_game(), "com.example.sapphire.game", "GameActivity", "game_app"),
         ] {
             let java = render_activity(ACTIVITY_SOURCE, &app).unwrap();
             assert!(java.starts_with(&format!("package {package};\n")), "{java}");
@@ -1229,7 +1361,7 @@ esac
         }
         let read = |path: &str| fs::read_to_string(dir.join("java").join(path)).unwrap();
         let sandbox = read("dev/sapphire/sandbox/SandboxActivity.java");
-        let game = read("dev/sapphire/game/GameActivity.java");
+        let game = read("com/example/sapphire/game/GameActivity.java");
         workspace::remove_dir_if_exists(&dir).unwrap();
         assert!(sandbox.contains("class SandboxActivity"));
         assert!(game.contains("class GameActivity"));
@@ -1238,13 +1370,36 @@ esac
     #[test]
     fn gradle_gets_the_apps_identity() {
         let ndk = Ndk { root: "ndk".into(), revision: "29.0.1".into() };
-        let properties = gradle_properties(&test_game(), &ndk, Path::new("gen"), Path::new("gradle"));
+        let properties = gradle_properties(&test_game(), 4123, &ndk, Path::new("gen"), Path::new("gradle"));
         let has = |expected: &str| properties.iter().any(|property| property == expected);
-        assert!(has("-Psapphire.applicationId=dev.sapphire.game"));
-        assert!(has("-Psapphire.activity=dev.sapphire.game.GameActivity"));
-        assert!(has("-Psapphire.displayName=Sapphire"));
+        assert!(has("-Psapphire.applicationId=com.example.sapphire.game"));
+        assert!(has("-Psapphire.activity=com.example.sapphire.game.GameActivity"));
+        assert!(has("-Psapphire.versionName=0.1.0"));
+        assert!(has("-Psapphire.versionCode=4123"));
         assert!(has("-Psapphire.genDir=gen"));
         assert!(has("-Psapphire.buildDir=gradle"));
+    }
+
+    /// Names go into resources as written, whatever they hold.
+    #[test]
+    fn escapes_names_for_android_resources() {
+        let string = |name: &str| {
+            let xml = strings_xml(name);
+            let start = xml.find("\"app_name\">").unwrap() + "\"app_name\">".len();
+            xml[start..xml.find("</string>").unwrap()].to_owned()
+        };
+        assert_eq!(string("サファイア"), "サファイア");
+        assert_eq!(string("Sword & Shield <1>"), "Sword &amp; Shield &lt;1&gt;");
+        assert_eq!(string("Tom's \"Game\" \\o/"), "Tom\\'s \\\"Game\\\" \\\\o/");
+        assert_eq!(string("@home?"), "\\@home?");
+        assert_eq!(string("?quiz"), "\\?quiz");
+    }
+
+    #[test]
+    fn each_gradle_task_says_what_it_builds() {
+        assert_eq!(GradleTask::BundleRelease.output(), Path::new("outputs/bundle/release/app-release.aab"));
+        assert_eq!(GradleTask::AssembleDebug.output(), Path::new("outputs/apk/debug/app-debug.apk"));
+        assert_eq!(GradleTask::AssembleRelease.name(), "assembleRelease");
     }
 
     /// Every value of `android:configChanges`, as the compile SDK lists them, but

@@ -4,7 +4,8 @@
 //! (`--app`, the sandbox by default) per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
 //! as a process, and golden-image tests (`golden`), which compare sandbox captures with
 //! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
-//! as processes too. `package` (store artifacts) comes later.
+//! as processes too. `package` builds the game for a store: the shipping profile, one version and build
+//! number, one identity and the project's icon, staged for each store's own package.
 
 mod cli;
 mod content;
@@ -15,6 +16,7 @@ mod link;
 mod platforms;
 mod replay;
 mod script_api;
+mod version;
 mod workspace;
 
 use std::path::PathBuf;
@@ -23,7 +25,7 @@ use std::process::ExitCode;
 use anyhow::bail;
 
 use crate::content::Cook;
-use crate::platforms::{App, Options, Platform, SANDBOX};
+use crate::platforms::{App, Options, PackageTarget, Platform, SANDBOX};
 
 const USAGE: &str = "\
 Usage: cargo xtask [--locked] <command> [options]
@@ -61,6 +63,22 @@ Commands:
         android   bundles, uses the connected device or boots the sapphire_api36
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
+  package --platform <platform> [--out <dir>] [--dev]
+      Build the game for a store under <dir>/<platform>/ (default target/package/): game_app in the
+      shipping profile (fat LTO: minutes, and gigabytes), the platform's cook, the workspace's
+      version and a build number counted from git, the identity in platform/identity.toml and
+      the icon from platform/icon/icon.png, with package.json saying what it is and symbols/
+      holding what the link split out:
+        ios       <Name>.app for devices, with actool's Assets.car, signed ad hoc
+        ios-sim   the same for the Simulator
+        macos     <Name>.app with Assets.car and AppIcon.icns, signed ad hoc
+        android   <Name>.aab (Gradle's bundleRelease, offline), debug-signed
+        windows   <Name>/ with the executable and content (a Windows host)
+        linux     <Name>/ with the executable, content and icon (a Linux host)
+      The build number is the count of commits on main at HEAD. Off main, with changes not
+      committed or untracked files, it fails, unless --dev packages it anyway, marked dev in its
+      build ID and package.json. A shallow clone always fails. Nothing is signed for a store,
+      uploaded or notarized.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
@@ -110,8 +128,9 @@ Commands:
 
 Options:
   --app <package>
-                 run, bundle: the app, a workspace package with a [package.metadata.sapphire]
-                 table (default: sapphire_sandbox, the only app `golden` runs).
+                 run, bundle: the app, a workspace package with a table in
+                 platform/identity.toml (default: sapphire_sandbox, the only app `golden` runs).
+                 `package` packages game_app, and takes none.
   --locked       Pass --locked to every cargo command xtask runs, and fail the content
                  cook on a source without a committed .meta sidecar (CI).
   --incremental  desktop, macos: build the app optimized, with no LTO and incrementally (the
@@ -176,6 +195,15 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             options.dry_run = args.flag("--dry-run");
             let app_args = args.finish(true)?;
             platforms::run(platform, &App::load(&package)?, &options, &app_args)
+        }
+        "package" => {
+            let target = args.required::<PackageTarget>("--platform")?;
+            let out = args.value::<PathBuf>("--out")?.unwrap_or_else(platforms::default_package_dir);
+            let dev = args.flag("--dev");
+            args.finish(false)?;
+            let packaged = platforms::package(target, &out, dev)?;
+            eprintln!("packaged into {}", packaged.display());
+            Ok(())
         }
         "link" => link::run(args.rest()),
         "editor" => editor::run(args.rest()),

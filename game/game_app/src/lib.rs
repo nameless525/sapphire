@@ -46,6 +46,13 @@ mod offscreen;
 mod options;
 mod settings;
 
+/// What this build of the game is, compiled in by the build script: the bundle ID from
+/// `platform/identity.toml`, and the build number and ID `cargo xtask package` gave it. The patch manifest
+/// reads [`BUILD_NUMBER`](build_info::BUILD_NUMBER) as the build this binary is.
+pub mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 use std::sync::{Mutex, Once};
 
 use game_combat::combat::CombatOption;
@@ -144,7 +151,7 @@ fn install_crash_capture() -> Option<CrashGuard> {
             return None;
         }
     };
-    match sapphire_crash::install(CrashConfig::new(metadata.name, metadata.version, dir)) {
+    match sapphire_crash::install(CrashConfig::new(metadata.name, build_info::BUILD_ID, dir)) {
         Ok(guard) => Some(guard),
         Err(error) => {
             tracing::warn!(target: LOG_TARGET, %error, "crash capture unavailable");

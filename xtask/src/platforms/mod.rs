@@ -11,11 +11,9 @@
 //! The host's platforms and `golden` share one executable path across their builds, so each run launches
 //! or bundles a copy of its own ([`HostExecutable`]).
 //!
-//! Store packaging (`xtask package`, M4) is not here yet. It must decide how debug info
-//! reaches Sentry and leaves the shipped binaries: split DWARF (`split-debuginfo`, `.dwp`)
-//! or `objcopy --only-keep-debug` on Linux and Android, dSYMs on Apple, PDBs on Windows,
-//! then stripping. Bundles here keep what the cargo profile produces; only AGP strips the
-//! Android library.
+//! Store packages are `package`'s: the game in the `shipping` profile, with its build number, identity and
+//! icon, staged for what each store's package adds. Development bundles here keep what the cargo profile
+//! produces; only AGP strips the Android library.
 
 mod android;
 mod apple;
@@ -24,6 +22,7 @@ mod host;
 mod ios;
 mod ios_sim;
 mod macos;
+mod package;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -39,6 +38,7 @@ use crate::content;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
 pub use host::HostExecutable;
+pub use package::{Target as PackageTarget, default_out as default_package_dir, package};
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,13 +86,15 @@ impl FromStr for Platform {
 /// The app `run` and `bundle` build unless `--app` names another, and the only one `golden` runs.
 pub const SANDBOX: &str = "sapphire_sandbox";
 
-/// The highest build number: the greatest `versionCode` Google Play takes, which also fits the `Int`
-/// that `platform/android/app/build.gradle.kts` reads it as.
-const MAX_BUILD: u32 = 2_100_000_000;
+/// The game: the app `package` packages for the stores.
+pub const GAME: &str = "game_app";
 
-/// A shipping app and its platform identity. Everything but the package name comes from
-/// the package's Cargo.toml (`version` and `[package.metadata.sapphire]`), so every
-/// platform reports the same identity and version.
+/// Where every app's identity is written: bundle IDs, names and the game's placeholders.
+pub const IDENTITY_FILE: &str = "platform/identity.toml";
+
+/// An app and its platform identity. The version is its Cargo package's (the workspace's), and the rest
+/// comes from [`IDENTITY_FILE`], so every platform reports the same identity and version. The build number
+/// is the build's ([`crate::version`]), not the app's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct App {
     /// Cargo package and binary name; also the executable name inside bundles, and the
@@ -104,33 +106,58 @@ pub struct App {
     pub bundle_id: String,
     /// Bundle, APK and directory name, and `CFBundleName` (Apple allows 15 characters).
     pub bundle_name: String,
-    /// The name under the icon.
-    pub display_name: String,
-    /// `CFBundleVersion` and Android `versionCode`: rises with every store upload.
-    pub build: u32,
+    /// The name under the icon, in each language.
+    pub display_name: DisplayName,
+    /// Whether the identity is a placeholder nobody has chosen yet, under a reserved namespace
+    /// ([`PLACEHOLDER_NAMESPACES`]).
+    pub placeholder: bool,
 }
 
-/// `[package.metadata.sapphire]` as written.
+/// The name under the icon, in the languages the game ships: English, the development region, and
+/// Japanese.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayName {
+    pub en: String,
+    pub ja: String,
+}
+
+impl DisplayName {
+    /// Each language's code, as Apple's `.lproj` folders and Android's `values-<code>` name it, and its name.
+    pub fn by_language(&self) -> [(&'static str, &str); 2] {
+        [("en", &self.en), ("ja", &self.ja)]
+    }
+}
+
+/// The reverse-DNS namespaces RFC 2606 reserves (example.com, .net and .org): a placeholder bundle ID lies
+/// under one, and a chosen one never does, so neither passes for the other.
+pub const PLACEHOLDER_NAMESPACES: [&str; 3] = ["com.example", "net.example", "org.example"];
+
+/// An app's table in [`IDENTITY_FILE`], as written.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct Identity {
+    #[serde(default)]
+    placeholder: bool,
     bundle_id: String,
     bundle_name: String,
-    display_name: String,
-    build: u32,
+    display_name: DisplayName,
 }
 
 impl App {
-    /// Reads `package`'s identity from its manifest through `cargo metadata`.
+    /// Reads `package`'s identity from [`IDENTITY_FILE`], and its version through `cargo metadata`.
     pub fn load(package: &str) -> anyhow::Result<Self> {
+        let path = workspace::root().join(IDENTITY_FILE);
+        let identities =
+            fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
         let json =
             workspace::output(workspace::cargo("metadata").args(["--format-version", "1", "--no-deps"]))?;
-        Self::from_metadata(&json, package)
+        Self::from_sources(&identities, &json, package)
     }
 
-    /// The app `package` in `cargo metadata`'s output: a workspace package with a
-    /// `[package.metadata.sapphire]` table. Any other name fails, naming the apps there are.
-    fn from_metadata(json: &str, package: &str) -> anyhow::Result<Self> {
+    /// The app `package`: a table in `identities` ([`IDENTITY_FILE`]'s text) and a workspace package in
+    /// `cargo metadata`'s output. Any other name fails, naming the apps there are.
+    fn from_sources(identities: &str, metadata: &str, package: &str) -> anyhow::Result<Self> {
         #[derive(Deserialize)]
         struct Metadata {
             packages: Vec<Package>,
@@ -139,31 +166,27 @@ impl App {
         struct Package {
             name: String,
             version: String,
-            metadata: Option<serde_json::Value>,
-        }
-        impl Package {
-            fn identity(&self) -> Option<&serde_json::Value> {
-                self.metadata.as_ref()?.get("sapphire")
-            }
         }
 
-        let metadata: Metadata = serde_json::from_str(json).context("unexpected `cargo metadata` output")?;
-        let apps = || metadata.packages.iter().filter_map(|p| Some((p, p.identity()?)));
-        let Some((found, identity)) = apps().find(|(p, _)| p.name == package) else {
-            let mut known: Vec<&str> = apps().map(|(p, _)| p.name.as_str()).collect();
-            known.sort_unstable();
-            bail!(
-                "no app `{package}`; the packages with a [package.metadata.sapphire] table are: {}",
-                known.join(", ")
-            );
+        let mut identities: toml::Table =
+            toml::from_str(identities).with_context(|| format!("invalid {IDENTITY_FILE}"))?;
+        let Some(identity) = identities.remove(package) else {
+            let known: Vec<&str> = identities.keys().map(String::as_str).collect();
+            bail!("no app `{package}`; the apps {IDENTITY_FILE} names are: {}", known.join(", "));
         };
-        let identity = serde_json::from_value(identity.clone())
-            .with_context(|| format!("invalid [package.metadata.sapphire] in `{package}`"))?;
-        Self::new(package, found.version.clone(), identity)
+        let identity: Identity =
+            identity.try_into().with_context(|| format!("invalid [{package}] in {IDENTITY_FILE}"))?;
+        let metadata: Metadata =
+            serde_json::from_str(metadata).context("unexpected `cargo metadata` output")?;
+        let found = metadata.packages.into_iter().find(|p| p.name == package).with_context(|| {
+            format!("{IDENTITY_FILE} names `{package}`, which isn't a package in this workspace")
+        })?;
+        Self::new(package, found.version, identity)
+            .with_context(|| format!("invalid [{package}] in {IDENTITY_FILE}"))
     }
 
     fn new(package: &str, version: String, identity: Identity) -> anyhow::Result<Self> {
-        let Identity { bundle_id, bundle_name, display_name, build } = identity;
+        let Identity { placeholder, bundle_id, bundle_name, display_name } = identity;
         // Valid as both an Apple bundle identifier (no `_`) and an Android application id (no `-`).
         let segment_ok = |s: &str| {
             s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric())
@@ -174,26 +197,47 @@ impl App {
              starting with a letter, which is all that Apple and Android both take"
         );
         ensure!(
+            placeholder == is_placeholder_id(&bundle_id),
+            "{}",
+            if placeholder {
+                format!(
+                    "bundle-id `{bundle_id}` is marked a placeholder, but a placeholder lies under {}, so nobody \
+                     can take it for one somebody chose",
+                    PLACEHOLDER_NAMESPACES.join(", ")
+                )
+            } else {
+                format!(
+                    "bundle-id `{bundle_id}` is a placeholder's, but the identity isn't marked \
+                     `placeholder = true`: choose the app's own, or mark it"
+                )
+            }
+        );
+        ensure!(
             (1..=15).contains(&bundle_name.len()) && bundle_name.chars().all(|c| c.is_ascii_alphanumeric()),
             "bundle-name `{bundle_name}`: use 1 to 15 ASCII letters and digits"
         );
-        ensure!(!display_name.trim().is_empty(), "display-name is empty");
-        // XML (Info.plist, the Android manifest) can't hold most control characters at all.
-        ensure!(
-            !display_name.chars().any(char::is_control),
-            "display-name {display_name:?} holds a control character"
-        );
-        ensure!(
-            (1..=MAX_BUILD).contains(&build),
-            "build {build} must be from 1 to {MAX_BUILD}, the greatest versionCode Google Play takes"
-        );
+        for (language, name) in display_name.by_language() {
+            ensure!(!name.trim().is_empty(), "display-name.{language} is empty");
+            // XML (Info.plist, Android's resources) can't hold most control characters at all.
+            ensure!(
+                !name.chars().any(char::is_control),
+                "display-name.{language} {name:?} holds a control character"
+            );
+        }
         // Apple accepts up to three dot-separated integers; no pre-release suffixes.
         ensure!(
             version.split('.').count() <= 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()),
             "version `{version}` must be MAJOR.MINOR.PATCH numbers for Apple's CFBundleShortVersionString"
         );
-        Ok(Self { package: package.to_owned(), version, bundle_id, bundle_name, display_name, build })
+        Ok(Self { package: package.to_owned(), version, bundle_id, bundle_name, display_name, placeholder })
     }
+}
+
+/// Whether `bundle_id` lies under a [`PLACEHOLDER_NAMESPACES`] namespace.
+fn is_placeholder_id(bundle_id: &str) -> bool {
+    PLACEHOLDER_NAMESPACES.iter().any(|namespace| {
+        bundle_id.strip_prefix(namespace).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
 }
 
 /// Environment variable the platform layer reads to find content outside a bundle.
@@ -427,6 +471,25 @@ fn fill_template(
     Ok(filled)
 }
 
+/// The project's icon: a square, opaque PNG of at least 1024 px, drawn by `sapphire_pipeline gen-icon`
+/// until the maintainer replaces it with the game's own.
+pub const ICON_FILE: &str = "platform/icon/icon.png";
+
+/// Makes every platform's icon set from [`ICON_FILE`] under `out`, replacing what was there
+/// (`sapphire_pipeline icons`).
+fn make_icons(out: &Path) -> anyhow::Result<()> {
+    let pipeline = content::pipeline()?;
+    workspace::remove_dir_if_exists(out)?;
+    workspace::run(
+        Command::new(pipeline)
+            .arg("icons")
+            .arg("--source")
+            .arg(workspace::root().join(ICON_FILE))
+            .arg("--out")
+            .arg(out),
+    )
+}
+
 /// The Info.plist template for a platform, from `platform/<dir>/Info.plist`.
 fn info_plist_template(dir: &str) -> anyhow::Result<(PathBuf, String)> {
     let path = workspace::root().join("platform").join(dir).join("Info.plist");
@@ -440,36 +503,24 @@ fn display(path: &Path) -> String {
     path.strip_prefix(workspace::root()).unwrap_or(path).display().to_string()
 }
 
-/// The app `manifest` describes, read without running cargo.
+/// The app `package` as [`IDENTITY_FILE`] has it, at version 0.1.0, read without running cargo.
 #[cfg(test)]
-fn app_from_manifest(package: &str, manifest: &str) -> App {
-    let manifest: toml::Table = toml::from_str(manifest).unwrap();
-    let identity = manifest["package"]["metadata"]["sapphire"].clone();
-    App::new(package, "0.1.0".into(), identity.try_into().unwrap()).unwrap()
+fn app_from_identity_file(package: &str) -> App {
+    let mut identities: toml::Table =
+        toml::from_str(include_str!("../../../platform/identity.toml")).unwrap();
+    App::new(package, "0.1.0".into(), identities.remove(package).unwrap().try_into().unwrap()).unwrap()
 }
 
 /// The sandbox's real identity.
 #[cfg(test)]
 pub fn test_app() -> App {
-    app_from_manifest(SANDBOX, include_str!("../../../apps/sapphire_sandbox/Cargo.toml"))
+    app_from_identity_file(SANDBOX)
 }
 
-/// A second app: the game's identity, as its manifest gives it.
+/// The game's real identity: the one `package` packages.
 #[cfg(test)]
 pub fn test_game() -> App {
-    app_from_manifest(
-        "game_app",
-        r#"
-            [package]
-            name = "game_app"
-
-            [package.metadata.sapphire]
-            bundle-id = "dev.sapphire.game"
-            bundle-name = "SapphireGame"
-            display-name = "Sapphire"
-            build = 1
-        "#,
-    )
+    app_from_identity_file(GAME)
 }
 
 #[cfg(test)]
@@ -521,70 +572,92 @@ mod tests {
         assert_eq!(app.package, "sapphire_sandbox");
         assert_eq!(app.bundle_id, "dev.sapphire.sandbox");
         assert_eq!(app.bundle_name, "SapphireSandbox");
-        assert_eq!(app.display_name, "Sapphire Sandbox");
-        assert!(app.build >= 1);
+        assert_eq!(app.display_name.en, "Sapphire Sandbox");
+        assert!(!app.placeholder, "a development app's identity is its own");
     }
 
+    /// The game's identity is a placeholder until the maintainer chooses one (m4-plan §7), and it says so.
     #[test]
-    fn reads_a_second_apps_identity() {
+    fn reads_the_games_placeholder_identity() {
         let app = test_game();
         assert_eq!(app.package, "game_app");
-        assert_eq!(app.bundle_id, "dev.sapphire.game");
+        assert_eq!(app.bundle_id, "com.example.sapphire.game");
         assert_eq!(app.bundle_name, "SapphireGame");
-        assert_eq!(app.display_name, "Sapphire");
-        assert_eq!(app.build, 1);
+        assert_eq!(app.display_name, DisplayName { en: "Sapphire".into(), ja: "サファイア".into() });
+        assert!(app.placeholder);
     }
 
-    /// `cargo metadata` as `App::load` reads it: two apps, and libraries with other metadata or none.
+    const IDENTITIES: &str = r#"
+        [sapphire_sandbox]
+        bundle-id = "dev.sapphire.sandbox"
+        bundle-name = "SapphireSandbox"
+        display-name = { en = "Sapphire Sandbox", ja = "サンドボックス" }
+
+        [game_app]
+        placeholder = true
+        bundle-id = "com.example.sapphire.game"
+        bundle-name = "SapphireGame"
+        display-name = { en = "Sapphire", ja = "サファイア" }
+
+        [lost_app]
+        bundle-id = "dev.sapphire.lost"
+        bundle-name = "Lost"
+        display-name = { en = "Lost", ja = "Lost" }
+    "#;
+
+    /// `cargo metadata` as `App::load` reads it: the apps, and a library.
     const METADATA: &str = r#"{"packages": [
-        {"name": "sapphire_sandbox", "version": "0.1.0", "metadata": {"sapphire": {
-            "bundle-id": "dev.sapphire.sandbox", "bundle-name": "SapphireSandbox",
-            "display-name": "Sapphire Sandbox", "build": 1}}},
-        {"name": "sapphire_render", "version": "0.1.0", "metadata": {"docs": {}}},
-        {"name": "sapphire_core", "version": "0.1.0", "metadata": null},
-        {"name": "game_app", "version": "0.2.0", "metadata": {"sapphire": {
-            "bundle-id": "dev.sapphire.game", "bundle-name": "SapphireGame",
-            "display-name": "Sapphire", "build": 1}}}
+        {"name": "sapphire_sandbox", "version": "0.1.0"},
+        {"name": "sapphire_render", "version": "0.1.0"},
+        {"name": "game_app", "version": "0.2.0"}
     ]}"#;
 
     #[test]
-    fn finds_each_app_in_the_workspace() {
-        let game = App::from_metadata(METADATA, "game_app").unwrap();
-        assert_eq!((game.bundle_id.as_str(), game.version.as_str()), ("dev.sapphire.game", "0.2.0"));
-        let sandbox = App::from_metadata(METADATA, SANDBOX).unwrap();
+    fn finds_each_app_in_the_identity_file_and_the_workspace() {
+        let game = App::from_sources(IDENTITIES, METADATA, "game_app").unwrap();
+        assert_eq!((game.bundle_id.as_str(), game.version.as_str()), ("com.example.sapphire.game", "0.2.0"));
+        assert_eq!(game.display_name.ja, "サファイア");
+        let sandbox = App::from_sources(IDENTITIES, METADATA, SANDBOX).unwrap();
         assert_eq!(sandbox.bundle_id, "dev.sapphire.sandbox");
     }
 
-    /// A typo and a package that's no app fail alike, saying what would have worked.
+    /// A typo and a package with no identity fail alike, saying what would have worked; an identity for no
+    /// package says so.
     #[test]
     fn an_unknown_app_names_the_known_ones() {
-        for name in ["game", "sapphire_render", "sapphire_core"] {
+        for name in ["game", "sapphire_render"] {
             assert_eq!(
-                App::from_metadata(METADATA, name).unwrap_err().to_string(),
+                App::from_sources(IDENTITIES, METADATA, name).unwrap_err().to_string(),
                 format!(
-                    "no app `{name}`; the packages with a [package.metadata.sapphire] table are: \
-                     game_app, sapphire_sandbox"
+                    "no app `{name}`; the apps platform/identity.toml names are: game_app, lost_app, sapphire_sandbox"
                 )
             );
         }
+        let error = App::from_sources(IDENTITIES, METADATA, "lost_app").unwrap_err().to_string();
+        assert_eq!(error, "platform/identity.toml names `lost_app`, which isn't a package in this workspace");
     }
 
     #[test]
     fn a_broken_identity_is_reported_as_one() {
-        let json = r#"{"packages": [{"name": "game_app", "version": "0.1.0",
-            "metadata": {"sapphire": {"bundle-id": "dev.sapphire.game"}}}]}"#;
-        let error = App::from_metadata(json, "game_app").unwrap_err().to_string();
-        assert_eq!(error, "invalid [package.metadata.sapphire] in `game_app`");
+        let identities = "[game_app]\nbundle-id = \"com.example.game\"\n";
+        let error = App::from_sources(identities, METADATA, "game_app").unwrap_err().to_string();
+        assert_eq!(error, "invalid [game_app] in platform/identity.toml");
+        // Fields nobody reads are mistakes, as a hand-raised build number would be now.
+        let identities = IDENTITIES.replace("placeholder = true", "placeholder = true\nbuild = 7");
+        assert!(App::from_sources(&identities, METADATA, "game_app").is_err());
+    }
+
+    fn identity(bundle_id: &str, bundle_name: &str) -> Identity {
+        Identity {
+            placeholder: false,
+            bundle_id: bundle_id.into(),
+            bundle_name: bundle_name.into(),
+            display_name: DisplayName { en: "Game".into(), ja: "ゲーム".into() },
+        }
     }
 
     #[test]
     fn rejects_identities_some_platform_refuses() {
-        let identity = |bundle_id: &str, bundle_name: &str| Identity {
-            bundle_id: bundle_id.into(),
-            bundle_name: bundle_name.into(),
-            display_name: "Game".into(),
-            build: 1,
-        };
         assert!(App::new("game", "1.2.3".into(), identity("dev.studio.game", "Game")).is_ok());
         // Android forbids hyphens and leading digits; Apple caps CFBundleName at 15.
         assert!(App::new("game", "1.2.3".into(), identity("dev.studio.my-game", "Game")).is_err());
@@ -592,16 +665,40 @@ mod tests {
         assert!(App::new("game", "1.2.3".into(), identity("game", "Game")).is_err());
         assert!(App::new("game", "1.2.3".into(), identity("dev.studio.game", "SixteenCharsLong")).is_err());
         assert!(App::new("game", "1.2.3-beta".into(), identity("dev.studio.game", "Game")).is_err());
-        let zero = Identity { build: 0, ..identity("dev.studio.game", "Game") };
-        assert!(App::new("game", "1.2.3".into(), zero).is_err());
-        // Bundling escapes display names, so any text goes but control characters.
-        let named = |display_name: &str| Identity {
-            display_name: display_name.into(),
+        // Bundling escapes display names, so any text goes but control characters, in either language.
+        let named = |en: &str, ja: &str| Identity {
+            display_name: DisplayName { en: en.into(), ja: ja.into() },
             ..identity("dev.studio.game", "Game")
         };
-        assert!(App::new("game", "1.2.3".into(), named("Sword & Shield <$(NAME)>")).is_ok());
-        assert!(App::new("game", "1.2.3".into(), named("Two\nLines")).is_err());
-        assert!(App::new("game", "1.2.3".into(), named("Bell\u{7}")).is_err());
+        assert!(App::new("game", "1.2.3".into(), named("Sword & Shield <$(NAME)>", "剣と盾")).is_ok());
+        assert!(App::new("game", "1.2.3".into(), named("Two\nLines", "ゲーム")).is_err());
+        assert!(App::new("game", "1.2.3".into(), named("Game", "ベル\u{7}")).is_err());
+        assert!(App::new("game", "1.2.3".into(), named("Game", " ")).is_err());
+    }
+
+    /// A placeholder can't look like an identity somebody chose, and a chosen one can't still be a
+    /// placeholder: what reaches a store is either marked or the maintainer's.
+    #[test]
+    fn a_placeholder_never_passes_for_a_chosen_identity() {
+        let placeholder = |bundle_id: &str| Identity { placeholder: true, ..identity(bundle_id, "Game") };
+        for reserved in ["com.example.sapphire.game", "com.example", "org.example.game", "net.example.a"] {
+            assert!(
+                App::new("game", "1.2.3".into(), placeholder(reserved)).unwrap().placeholder,
+                "{reserved}"
+            );
+            let error = App::new("game", "1.2.3".into(), identity(reserved, "Game")).unwrap_err().to_string();
+            assert!(error.contains("isn't marked `placeholder = true`"), "{reserved}: {error}");
+        }
+        // Real-looking, so never a placeholder: the namespace this project used before, a studio's, and
+        // names that only start like the reserved ones.
+        for real in ["dev.sapphire.game", "com.studio.game", "com.examples.game", "com.exampleco.game"] {
+            assert!(!App::new("game", "1.2.3".into(), identity(real, "Game")).unwrap().placeholder, "{real}");
+            let error = App::new("game", "1.2.3".into(), placeholder(real)).unwrap_err().to_string();
+            assert!(
+                error.contains("is marked a placeholder, but a placeholder lies under"),
+                "{real}: {error}"
+            );
+        }
     }
 
     /// A scratch directory of a test's own, removed afterwards.
@@ -743,7 +840,8 @@ mod tests {
         let claim = BundleClaim::take_in(scratch.0.join("bundles")).unwrap();
         let layout = apple::BundleLayout::macos(claim.staging("Game.app").unwrap());
         apple::assemble(&layout, &test_app(), "", &script, &scratch.0.join("content")).unwrap();
-        let plist = apple::render_info_plist(include_str!("../../../platform/macos/Info.plist"), &test_app());
+        let plist =
+            apple::render_info_plist(include_str!("../../../platform/macos/Info.plist"), &test_app(), 1);
         fs::write(&layout.info_plist, plist.unwrap()).unwrap();
         apple::codesign_ad_hoc(&layout.root).unwrap();
         let bundle = claim.publish(&layout.root).unwrap();
@@ -755,14 +853,8 @@ mod tests {
     /// hyphens and Apple no underscores, which leaves letters and digits.
     #[test]
     fn a_bundle_id_is_what_apple_and_android_both_take() {
-        let identity = |bundle_id: &str| Identity {
-            bundle_id: bundle_id.into(),
-            bundle_name: "Game".into(),
-            display_name: "Game".into(),
-            build: 1,
-        };
         for good in ["dev.sapphire.sandbox", "com.Studio2.Game3", "a.b"] {
-            assert!(App::new("game", "1.2.3".into(), identity(good)).is_ok(), "{good}");
+            assert!(App::new("game", "1.2.3".into(), identity(good, "Game")).is_ok(), "{good}");
         }
         for bad in [
             "dev.sapphire_bad.sandbox",
@@ -778,28 +870,8 @@ mod tests {
             "game",
             "",
         ] {
-            let error = App::new("game", "1.2.3".into(), identity(bad)).unwrap_err().to_string();
+            let error = App::new("game", "1.2.3".into(), identity(bad, "Game")).unwrap_err().to_string();
             assert!(error.contains("bundle-id") && error.contains("letters and digits"), "{bad}: {error}");
         }
-    }
-
-    /// A build number becomes a `versionCode`, which Gradle reads as an `Int` and Google Play holds to
-    /// less than that.
-    #[test]
-    fn a_build_number_is_what_android_takes() {
-        let identity = |build: u32| Identity {
-            bundle_id: "dev.studio.game".into(),
-            bundle_name: "Game".into(),
-            display_name: "Game".into(),
-            build,
-        };
-        for good in [1, 2, MAX_BUILD] {
-            assert_eq!(App::new("game", "1.2.3".into(), identity(good)).unwrap().build, good);
-        }
-        for bad in [0, MAX_BUILD + 1, i32::MAX as u32, i32::MAX as u32 + 1, u32::MAX] {
-            let error = App::new("game", "1.2.3".into(), identity(bad)).unwrap_err().to_string();
-            assert!(error.contains("build"), "{bad}: {error}");
-        }
-        assert!(i32::try_from(MAX_BUILD).is_ok(), "Gradle's `toInt` reads it");
     }
 }

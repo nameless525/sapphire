@@ -7,16 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# App identity for `cargo xtask bundle` and `run` on every platform; the version is the
-# package version above.
-[package.metadata.sapphire]
-# Apple bundle identifier and Android application id.
-bundle-id = "dev.sapphire.sandbox"
-# Bundle, APK and directory name, and CFBundleName (at most 15 characters).
-bundle-name = "SapphireSandbox"
-display-name = "Sapphire Sandbox"
-# CFBundleVersion and Android versionCode: raise it with every store or TestFlight upload.
-build = 1
+# The app's identity on every platform is in platform/identity.toml; its version is the package's.
 
 # The library holds the app. Desktop and iOS link it into the `sapphire_sandbox` binary;
 # Android builds it as a cdylib (`cargo rustc --crate-type cdylib`, driven by xtask) whose

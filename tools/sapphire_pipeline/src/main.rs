@@ -17,6 +17,7 @@ use sapphire_pipeline::documents;
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::figure;
 use sapphire_pipeline::generators::{GENERATORS, generate_missing};
+use sapphire_pipeline::icon;
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
@@ -43,6 +44,13 @@ Usage:
       Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
       tools/figures) under the content directory --out, in the folder each spec names. Missing
       files only, as gen-samples, unless --force.
+  sapphire_pipeline gen-icon --out <DIR> [--force]
+      Write the app's icon, drawn in code, as DIR/icon.png (platform/icon/ is the committed one): a
+      1024 px opaque square. Missing files only, as gen-samples, unless --force.
+  sapphire_pipeline icons --source <PNG> --out <DIR>
+      Make every platform's icon set from a square, opaque master of at least 1024 px under DIR:
+      Apple's asset catalogs (ios/, macos/), Android's adaptive icon and Play's listing icon
+      (android/), a Windows .ico (windows/) and a Linux PNG (linux/).
   sapphire_pipeline generate --source <DIR> --lock <FILE> [--locked]
       Run each generator with a declared file missing under the content directory DIR, holding
       FILE's lock while it does. With --locked, a missing file is an error naming it, and nothing
@@ -73,7 +81,7 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
-  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
+  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures, gen-icon: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
@@ -111,6 +119,14 @@ enum Command {
         specs: PathBuf,
         out: PathBuf,
         force: bool,
+    },
+    GenIcon {
+        out: PathBuf,
+        force: bool,
+    },
+    Icons {
+        source: PathBuf,
+        out: PathBuf,
     },
     CookMesh {
         input: PathBuf,
@@ -186,6 +202,15 @@ fn run(command: Command) -> anyhow::Result<()> {
                 format!("failed to write the figures from {} to {}", specs.display(), out.display())
             })?;
             print_generated(&generated, "gen-figures");
+        }
+        Command::GenIcon { out, force } => {
+            let generated = icon::write_all(&out, existing(force))
+                .with_context(|| format!("failed to write the icon to {}", out.display()))?;
+            print_generated(&generated, "gen-icon");
+        }
+        Command::Icons { source, out } => {
+            let written = icon::write_sets(&source, &out)?;
+            eprintln!("made {written} icon files from {} under {}", source.display(), out.display());
         }
         Command::CookMesh { input, output, cook, outline } => {
             let sidecar = meta::sidecar_path(&input);
@@ -415,6 +440,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             out: options.required("--out")?,
             force: options.flag("--force"),
         },
+        "gen-icon" => Command::GenIcon { out: options.required("--out")?, force: options.flag("--force") },
+        "icons" => Command::Icons { source: options.required("--source")?, out: options.required("--out")? },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
             let outline = match options.value("--weld-tolerance")? {
@@ -530,6 +557,14 @@ mod tests {
         assert_eq!(
             parse(&["gen-combat", "--out", "dir"]).unwrap(),
             Command::GenCombat { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["gen-icon", "--out", "dir"]).unwrap(),
+            Command::GenIcon { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["icons", "--source", "icon.png", "--out", "dir"]).unwrap(),
+            Command::Icons { source: "icon.png".into(), out: "dir".into() }
         );
         assert_eq!(
             parse(&["gen-figures", "--specs", "figures", "--out", "content", "--force"]).unwrap(),

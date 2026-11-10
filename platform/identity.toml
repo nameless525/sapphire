@@ -1,0 +1,27 @@
+# Each app's identity on every platform, by its Cargo package (M4 S1): what `cargo xtask bundle`, `run` and
+# `package` write into Info.plist, InfoPlist.strings, the Android manifest's resources and Gradle, and what
+# game_app's build script compiles in. The version is the workspace's (Cargo.toml's [workspace.package]),
+# and the build number is counted from git when a package is made (docs/engine-spec.md §7.3), never written
+# here.
+#
+# The game's values are placeholders until the maintainer chooses its identity (docs/m4-plan.md §7, "The
+# identity"). A placeholder bundle ID stays under `com.example`, which RFC 2606 reserves, so nobody can take
+# it for a chosen one: xtask refuses a placeholder outside it, and an identity not marked as a placeholder
+# inside it. To choose, replace bundle-id and the display names, and delete `placeholder = true`. A bundle
+# ID is permanent once a store has seen it. The icon is platform/icon/icon.png.
+
+[game_app]
+placeholder = true
+# Apple's bundle identifier and Android's application id, and the launcher activity's Java package: two or
+# more dot-separated segments of ASCII letters and digits, each starting with a letter, all both take.
+bundle-id = "com.example.sapphire.game"
+# The bundle's, APK's and directory's name, and CFBundleName: 1 to 15 ASCII letters and digits.
+bundle-name = "SapphireGame"
+# The name under the icon, in each language the game ships.
+display-name = { en = "Sapphire", ja = "サファイア" }
+
+# The sandbox is a development app, never packaged.
+[sapphire_sandbox]
+bundle-id = "dev.sapphire.sandbox"
+bundle-name = "SapphireSandbox"
+display-name = { en = "Sapphire Sandbox", ja = "サファイア サンドボックス" }

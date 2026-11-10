@@ -8,7 +8,7 @@ use std::process::Command;
 use super::apple::{self, BundleLayout};
 use super::{App, Bundle, BundleClaim, CONTENT_DIR_ENV, HostExecutable, Options, Platform};
 use crate::content::{self, Cook};
-use crate::workspace;
+use crate::{version, workspace};
 
 /// Builds `target/macos/<Name>.app` with the desktop cook in `Contents/Resources/content`.
 pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
@@ -19,7 +19,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     let executable = executable.path();
     let (template_path, template) = super::info_plist_template("macos")?;
     apple::verify_minimum_os(executable, &template, "LSMinimumSystemVersion")?;
-    let info_plist = apple::render_info_plist(&template, app)
+    let info_plist = apple::render_info_plist(&template, app, version::development_number())
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout = BundleLayout::macos(claim.staging(&format!("{}.app", app.bundle_name))?);

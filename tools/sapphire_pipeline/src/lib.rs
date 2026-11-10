@@ -128,6 +128,7 @@ pub mod font_field;
 pub mod font_subset;
 pub mod generators;
 mod gltf_writer;
+pub mod icon;
 pub mod import;
 pub mod keypose;
 pub mod loc;

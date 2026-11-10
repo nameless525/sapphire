@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   macOS app bundle Info.plist template (spec §2, §7.1).
-  `cargo xtask bundle` fills the Xcode-style build-setting placeholders; BUNDLE_DISPLAY_NAME is
-  a user-defined build setting. Apple Silicon on macOS 14+ only. A games category turns
-  on Game Mode automatically.
+  `cargo xtask bundle` and `package` fill the Xcode-style build-setting placeholders; BUNDLE_DISPLAY_NAME
+  is a user-defined build setting, English's: each language's is in its lproj's InfoPlist.strings. Apple
+  Silicon on macOS 14+ only. A games category turns on Game Mode automatically.
 -->
 <plist version="1.0">
 <dict>
@@ -16,6 +16,11 @@
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>ja</string>
+	</array>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

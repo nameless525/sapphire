@@ -114,18 +114,7 @@ pub struct Cooked {
 /// Generates whatever sources are missing, then cooks all of `content/` for `cook`. Keep the
 /// result alive while copying from or running against its directory.
 pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
-    // Keep cooking optimized without paying for cross-crate LTO after each cooker edit.
-    // Cargo reports the executable path, including custom target directories and suffixes.
-    let pipeline = workspace::build_binary(
-        &CargoBuild {
-            package: "sapphire_pipeline",
-            target: None,
-            profile: BuildProfile::Tools,
-            features: &[],
-            env: &[],
-        },
-        "sapphire_pipeline",
-    )?;
+    let pipeline = pipeline()?;
 
     let source = workspace::root().join(SOURCE_DIR);
     fs::create_dir_all(workspace::output_dir().join("content"))?;
@@ -177,6 +166,21 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         &format!("to finish with the {cook} content"),
     )?;
     Ok(Cooked { dir: out, _lock: lock })
+}
+
+/// Builds the pipeline and returns its executable: optimized, without paying for cross-crate LTO after
+/// each cooker edit. Cargo reports the path, including custom target directories and suffixes.
+pub fn pipeline() -> anyhow::Result<PathBuf> {
+    workspace::build_binary(
+        &CargoBuild {
+            package: "sapphire_pipeline",
+            target: None,
+            profile: BuildProfile::Tools,
+            features: &[],
+            env: &[],
+        },
+        "sapphire_pipeline",
+    )
 }
 
 /// The lock generation runs under: `target/content/generate.lock`.

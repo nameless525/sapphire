@@ -72,6 +72,9 @@ pub enum BuildProfile {
     Release,
     /// Optimized offline tools without cross-crate LTO, in Cargo's separate `tools` directory.
     Tools,
+    /// Store builds (`xtask package`): fat LTO, one codegen unit, `panic = "abort"`, and full debug info
+    /// split from the binary (a dSYM, a PDB or a `.dwp`).
+    Shipping,
 }
 
 impl BuildProfile {
@@ -85,6 +88,7 @@ impl BuildProfile {
             Self::Dev => "dev",
             Self::Release => "release",
             Self::Tools => "tools",
+            Self::Shipping => "shipping",
         }
     }
 }

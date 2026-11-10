@@ -14,7 +14,7 @@ fun sapphire(name: String): String =
 layout.buildDirectory.set(file(sapphire("buildDir")))
 
 android {
-    // The app's identity, from its Cargo.toml. xtask writes the activity into this Java package.
+    // The app's identity, from platform/identity.toml. xtask writes the activity into this Java package.
     namespace = sapphire("applicationId")
     compileSdk = 36
     // The NDK xtask linked the app library with; AGP uses it only to strip the `.so`.
@@ -25,22 +25,24 @@ android {
         applicationId = sapphire("applicationId")
         minSdk = 29 // Android 10 (spec §2).
         targetSdk = 36
+        // The workspace's version, and the build number xtask counts from git (spec §7.3).
         versionCode = sapphire("versionCode").toInt()
         versionName = sapphire("versionName")
-        manifestPlaceholders["appLabel"] = sapphire("displayName")
         manifestPlaceholders["activity"] = sapphire("activity")
         ndk {
             abiFilters += "arm64-v8a" // 64-bit only (spec §6.7).
         }
     }
 
-    // xtask's generated inputs (under target/android/), kept out of the source tree: the app's
-    // activity, SDL's Java glue, the app library and the mobile cook.
+    // xtask's generated inputs (under target/), kept out of the source tree: the app's activity, SDL's
+    // Java glue, the app library, the mobile cook, and the resources naming the app in each language
+    // and holding its icon.
     sourceSets.getByName("main") {
         val gen = sapphire("genDir")
         java.directories += "$gen/java"
         jniLibs.directories += "$gen/jniLibs"
         assets.directories += "$gen/assets"
+        res.directories += "$gen/res"
     }
 
     // Packs compress their own blocks. Stored as they are, the IO thread's reads of a block range
@@ -52,8 +54,8 @@ android {
     buildTypes {
         release {
             // M0 release builds are for profiling on test devices: signed with the debug key,
-            // and debuggable so the activity accepts launch arguments. Store builds, from
-            // `xtask package` (M4), are neither.
+            // and debuggable so the activity accepts launch arguments. `xtask package` builds its
+            // AAB from this type too, until M4 S3 makes store builds neither.
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
         }

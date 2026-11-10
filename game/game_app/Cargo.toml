@@ -7,16 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# App identity for `cargo xtask bundle` and `run --app game_app` on every platform; the version is the
-# package version above.
-[package.metadata.sapphire]
-# Apple bundle identifier and Android application id.
-bundle-id = "dev.sapphire.game"
-# Bundle, APK and directory name, and CFBundleName (at most 15 characters).
-bundle-name = "SapphireGame"
-display-name = "Sapphire"
-# CFBundleVersion and Android versionCode: raise it with every store or TestFlight upload.
-build = 1
+# The game's identity on every platform is in platform/identity.toml, which the build script compiles in
+# (`game_app::build_info`), with the build number `cargo xtask package` counts; its version is the package's.
 
 # The library holds the app. Desktop and iOS link it into the `game_app` binary; Android builds it as a
 # cdylib (`cargo rustc --crate-type cdylib`, driven by xtask) whose exported `SDL_main` SDLActivity calls.
@@ -44,6 +36,10 @@ sapphire_time.workspace = true
 png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
+
+# The build script reads platform/identity.toml.
+[build-dependencies]
+toml.workspace = true
 
 [dev-dependencies]
 # The conversation's IDs, for `opens_the_guide`, and a save's place for `plays_the_ward`.

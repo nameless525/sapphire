@@ -2,9 +2,9 @@
 
 use sapphire_core::Name;
 use sapphire_gameplay::replay::{
-    BAKED_ZONES, FightWorld, GROUND_START, HUB_FROM_GROUND, HUB_START, LiveMoves, PROVING_GROUND,
-    PROVING_HUB, Player, PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario,
-    ZONE_TRIP_ENTRIES, find_scenario, find_script,
+    FightWorld, GROUND_START, HUB_FROM_GROUND, HUB_START, LiveMoves, PROVING_GROUND, PROVING_HUB, Player,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario, ZONE_TRIP_ENTRIES,
+    ZONE_TRIP_SHELF, baked_zone, find_scenario, find_script,
 };
 use sapphire_gameplay::{
     ActorId, EncounterPhase, Place, Simulation, TickActions, ZoneEntry, ZoneEntryError, ZoneGround, ZoneId,
@@ -36,7 +36,8 @@ fn the_scripts_entries_are_the_spawners_it_means() {
     assert_eq!(index(PROVING_HUB, "from_ground"), Some(HUB_FROM_GROUND.spawner));
     assert_eq!(index(PROVING_GROUND, "player_start"), Some(GROUND_START.spawner));
     assert_eq!(index(PROVING_GROUND, "nobody"), None);
-    for (row, baked) in BAKED_ZONES.iter().enumerate() {
+    for (row, stem) in ZONE_TRIP_SHELF.into_iter().enumerate() {
+        let baked = baked_zone(stem).expect("kept");
         let id = ZoneId::from_raw(row as u16);
         assert_eq!(sim.find_zone(baked.asset), Some(id));
     }
@@ -132,11 +133,13 @@ fn the_shelf_gives_back_what_it_cant_reach_and_keeps_its_rows() {
     assert!(sim.remove_zone(PROVING_GROUND));
     assert!(!sim.remove_zone(PROVING_GROUND), "gone");
     assert!(matches!(sim.enter_zone(GROUND_START, cast[0]), Err(ZoneEntryError::UnknownZone(_))));
-    let row = sim.add_zone(BAKED_ZONES[1].load().expect("it reads")).expect("it shelves");
+    let row = sim
+        .add_zone(baked_zone("proving_ground").expect("kept").load().expect("it reads"))
+        .expect("it shelves");
     assert_eq!(row, PROVING_GROUND, "the first free row");
     sim.enter_zone(GROUND_START, cast[0]).expect("it can");
     assert!(sim.remove_zone(PROVING_HUB), "it left");
-    assert!(sim.find_zone(BAKED_ZONES[0].asset).is_none());
+    assert!(sim.find_zone(baked_zone("proving_hub").expect("kept").asset).is_none());
 }
 
 /// A row's digest is in the tables, so a replay won't start on a zone it didn't record.
@@ -227,7 +230,7 @@ fn a_resettable_fight_starts_over_at_the_door_it_came_in_by() {
         .expect("prepares")
         .start_resettable(arena.config, &LiveMoves::default())
         .expect("starts");
-    for baked in &BAKED_ZONES {
+    for baked in ZONE_TRIP_SHELF.map(|stem| baked_zone(stem).expect("kept")) {
         fight.add_zone(baked.load().expect("loads")).expect("it shelves");
     }
     let (player, enemy) = (fight.cast()[0], fight.cast()[1]);

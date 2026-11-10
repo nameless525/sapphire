@@ -45,10 +45,11 @@
 //! loaded game takes.
 //!
 //! **A trip's zones** (M3 G1): `shelf` lists the zones a run can go to, each put on the simulation's shelf in
-//! that order ([`Simulation::add_zone`]), so a run can go into one and back. Each has to be one the simulation
-//! keeps a copy of ([`super::BAKED_ZONES`]): a zone on the shelf takes its navmesh, and a bake takes the
-//! pipeline. Going back into the zone a run started in goes into its copy on the shelf, which starts that
-//! zone over.
+//! that order ([`Simulation::add_zone`]), so a run can go into one and back. The simulation keeps a copy of
+//! each one's cook ([`super::BAKED_ZONES`]), since a zone on the shelf takes its navmesh, and a bake takes the
+//! pipeline. `build.rs` finds every zone a scenario shelves, and the encounters beside it (M4 R3): its copies
+//! are taken once, by `tools/sapphire_pipeline/tests/zone_baked.rs`, and no Rust changes. Going back into the
+//! zone a run started in goes into its copy on the shelf, which starts that zone over.
 //!
 //! **What a run can play and open** (M3 G1): `timelines` and `dialogues` list the cutscenes and conversations
 //! a game's flow or a replay's commands can start, each loaded in its list's order, so the first is timeline 0
@@ -833,9 +834,11 @@ impl ScenarioDocument {
 fn baked_zone(path: &str) -> Result<&'static super::BakedZone, String> {
     let file = super::scenario::document_file_name(path);
     let stem = file.strip_suffix(".zone.ron").ok_or("a zone's document ends `.zone.ron`")?;
-    super::BAKED_ZONES.iter().find(|baked| baked.stem == stem).ok_or_else(|| {
-        let baked: Vec<&str> = super::BAKED_ZONES.iter().map(|baked| baked.stem).collect();
-        format!("the simulation keeps a copy of {baked:?}, and not of `{stem}`")
+    super::baked_zone(stem).ok_or_else(|| {
+        format!(
+            "this build keeps no copy of `{stem}`'s cook: `cargo xtask content`, then `SAPPHIRE_BAKE_ZONES=1 cargo \
+             test -p sapphire_pipeline --test zone_baked` takes one into crates/sapphire_gameplay/baked/zones/"
+        )
     })
 }
 

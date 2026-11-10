@@ -134,7 +134,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs`, a replay's new scripted input in `script.rs`, a zone a scenario shelves in `BAKED_ZONES`, a placeholder sound, and a screen showing a value no model holds. The first three are test lists and a build-time table, which a commit of documents alone can do without: a golden or a standalone replay is a check someone chooses to add, and the shelf is for replays of a trip, which the game's own trips don't need. No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
+**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs`, a replay's new scripted input in `script.rs`, a placeholder sound, and a screen showing a value no model holds. The first two are test lists, which a commit of documents alone can do without: a golden or a standalone replay is a check someone chooses to add. A zone a scenario shelves needs no row since M4 R3: the build finds it. No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -217,7 +217,12 @@ The worked examples are [content/zones/lantern_ward/](../content/zones/lantern_w
 3. **Checkpoints:** `(name, position, yaw_degrees, volume)`, reached outside a fight. A save names the latest. The cook refuses one off the navmesh.
 4. **Exits:** `(name, to: "<zone id>", arrive: "<spawner there>", prefetch)`, with a trigger whose `event` is the exit's name. The cook reads the other zone to check `arrive`. A hub's `prefetch` brings the next zone in ahead of time.
 5. **Look at it:** `--zone <name>[:<spawner>]` on the sandbox, with `--capture`. In the editor, `cargo xtask content --cook editor` first, then the zone pane moves placements.
-6. **A scenario and a walk:** a scenario document on the zone, as above, with the zones a trip reaches in its `shelf`. **Rust step,** for a replay of a trip only: a shelved zone must be a row of `BAKED_ZONES` in `crates/sapphire_gameplay/src/replay/scenario.rs`, a build-time table, since its navmesh takes a bake, and a replay test that names a zone's entry uses that file's constants. A trip in the game itself is data. A new zone is otherwise documents, held by the cook's checks. On the Lantern Ward, `zone_ward.rs` reads its checkpoints from the document (Z5e): each is a walk from the start, and no two share a name.
+6. **A scenario and a walk:** a scenario document on the zone, as above, with the zones a trip reaches in its `shelf`. The gameplay build finds every zone a scenario shelves, and the encounters beside it (M4 R3). A replay of a trip runs on the simulation's copy of each one's cook, since its navmesh takes a bake: take a new zone's copies once, into `crates/sapphire_gameplay/baked/zones/`, and again whenever the zone moves:
+   ```bash
+   cargo xtask content
+   SAPPHIRE_BAKE_ZONES=1 cargo test -p sapphire_pipeline --test zone_baked
+   ```
+   Until then the build warns, and a scenario that shelves the zone fails its setup, saying how. `zone_baked` holds every copy to its documents. A trip in the game itself is data. A new zone is otherwise documents, held by the cook's checks. On the Lantern Ward, `zone_ward.rs` reads its checkpoints from the document (Z5e): each is a walk from the start, and no two share a name.
 
 ### A dialogue, with story flags
 
@@ -288,11 +293,10 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 
 ### Rust steps left in the "How to add" recipes
 
-M3's first pillar counts each of these as a bug. The first three are test lists and a build-time table: a commit of documents alone lands without them, and they're the Rust a check someone chooses to add takes.
+M3's first pillar counts each of these as a bug. The first two are test lists: a commit of documents alone lands without them, and they're the Rust a check someone chooses to add takes.
 
 - **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
 - **A replay's scripted input** is a row in `crates/sapphire_gameplay/src/replay/script.rs`, timed buttons or a `PlayTimeline` at a tick. Recording on an existing script needs none, and a run through the flow records its beats' commands into its own file. Making scripts documents would be a format of their own: not done in Z5e.
-- **A shelved zone** is a row of `BAKED_ZONES` in `replay/scenario.rs`, since the simulation keeps a baked copy of its navmesh for replays of a trip.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 

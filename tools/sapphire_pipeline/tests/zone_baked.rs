@@ -1,16 +1,17 @@
-//! The simulation's copies of the zones a replay goes through (`crates/sapphire_gameplay/baked/zones/`): what
-//! their documents say and what a cook makes of them, on every platform CI has. A replay's tables hash takes
-//! those bytes. The cells' half of the copies isn't looked at, since the simulation reads none of it.
+//! The simulation's copies of the zones a replay goes through (`crates/sapphire_gameplay/baked/zones/`), one for
+//! each zone a scenario shelves (M4 R3): what their documents say and what a cook makes of them, on every
+//! platform CI has. A replay's tables hash takes those bytes. The cells' half of the copies isn't looked at,
+//! since the simulation reads none of it.
 //!
 //! `SAPPHIRE_BAKE_ZONES=1 cargo test -p sapphire_pipeline --test zone_baked`, after `cargo xtask content`, takes
-//! new copies from what that cooked. Then `cargo xtask replay --update`.
+//! new copies from what that cooked, a newly shelved zone's first among them. Then `cargo xtask replay --update`.
 
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use sapphire_colliders::ColliderDocument;
-use sapphire_gameplay::replay::{BAKED_ZONES, BakedZone};
+use sapphire_gameplay::replay::{BAKED_ZONES, SHELVED_ZONES, baked_zone};
 use sapphire_pipeline::nav::{BakeSettings, Seed, bake_colliders};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_zone::{Zone, ZoneDocument, pack_name};
@@ -19,8 +20,7 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn take_new_copies(baked: &BakedZone) {
-    let stem = baked.stem;
+fn take_new_copies(stem: &str) {
     for extension in ["szone", "scol", "snav"] {
         let cooked = root().join(format!("target/content/loose/desktop/zones/{stem}/{stem}.{extension}"));
         let copy = root().join(format!("crates/sapphire_gameplay/baked/zones/{stem}.{extension}"));
@@ -37,13 +37,14 @@ fn aligned(bytes: &[u8]) -> AlignedVec {
 #[test]
 fn the_simulations_copies_of_the_zones_are_what_their_documents_cook_to() {
     let advice = "a zone's document, its colliders or the bake moved: see this test's module docs";
-    for baked in &BAKED_ZONES {
-        let stem = baked.stem;
+    for &stem in SHELVED_ZONES {
         if std::env::var_os("SAPPHIRE_BAKE_ZONES").is_some() {
             // The run after this one is what reads them: this one's `include_bytes!` were built already.
-            take_new_copies(baked);
+            take_new_copies(stem);
             continue;
         }
+        let baked =
+            baked_zone(stem).unwrap_or_else(|| panic!("a scenario shelves {stem}, with no copy: {advice}"));
         let dir = root().join("content/zones").join(stem);
         let read = |name: String| fs::read_to_string(dir.join(name)).expect("the zone's file");
         let document = ZoneDocument::from_ron(&read(format!("{stem}.zone.ron"))).expect("it reads");

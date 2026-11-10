@@ -1911,7 +1911,7 @@ mod tests {
     /// storage the last one left: from the first restart on, one allocates nothing, and each is the same.
     #[test]
     fn a_fight_in_a_zone_starts_over_at_its_door_without_allocating() {
-        let hub = &sapphire_gameplay::replay::BAKED_ZONES[0];
+        let hub = sapphire_gameplay::replay::baked_zone("proving_hub").expect("kept");
         let mut zone = AlignedVec::<16>::with_capacity(hub.zone.len());
         zone.extend_from_slice(hub.zone);
         let simulation = &sapphire_zone::Zone::read(&zone).expect("a cooked zone").simulation;

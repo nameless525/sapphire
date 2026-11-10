@@ -109,23 +109,20 @@ impl BakedZone {
     }
 }
 
-/// What the `zone-trip` scenario's shelf holds, in the script's order.
-pub const BAKED_ZONES: [BakedZone; 2] = [
-    BakedZone {
-        asset: AssetId::from_text("5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805"),
-        stem: "proving_hub",
-        zone: include_bytes!("../../baked/zones/proving_hub.szone"),
-        colliders: include_bytes!("../../baked/zones/proving_hub.scol"),
-        navmesh: include_bytes!("../../baked/zones/proving_hub.snav"),
-    },
-    BakedZone {
-        asset: AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2"),
-        stem: "proving_ground",
-        zone: include_bytes!("../../baked/zones/proving_ground.szone"),
-        colliders: include_bytes!("../../baked/zones/proving_ground.scol"),
-        navmesh: include_bytes!("../../baked/zones/proving_ground.snav"),
-    },
-];
+// `BAKED_ZONES`, every zone a scenario document shelves that `baked/zones/` holds a cook's copies of, by stem;
+// and `SHELVED_ZONES`, the stem of every zone a scenario document shelves, copied or not. `build.rs` finds them
+// (M4 R3), so a scenario that shelves a new zone needs only that zone's copies.
+include!(concat!(env!("OUT_DIR"), "/baked_zones.rs"));
+
+/// The simulation's copy of the zone whose document's stem is `stem`, if a scenario shelves it and this build
+/// holds its copies.
+#[must_use]
+pub fn baked_zone(stem: &str) -> Option<&'static BakedZone> {
+    BAKED_ZONES.iter().find(|baked| baked.stem == stem)
+}
+
+/// What the `zone-trip` scenario's shelf holds, by stem, in the order its script's entries name them.
+pub const ZONE_TRIP_SHELF: [&str; 2] = ["proving_hub", "proving_ground"];
 
 /// What `nav-chase`'s chasers run: an attack they never get near enough to press.
 pub(super) const CHASER_MOVES: &str = include_str!("../../../sapphire_moves/test_content/chaser.moves.ron");
@@ -845,14 +842,18 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
     find_scenario(&SCENARIOS, "arena-fight").expect("this build holds its document").set_up(sim)
 }
 
-/// [`arena_fight`], with the zones it can go to on the shelf, in the order the `zone-trip` script names them.
+/// [`arena_fight`], with [`ZONE_TRIP_SHELF`]'s zones on the shelf, in that order.
 ///
 /// **Copies, as the arena's navmesh and the player's moves are:** a replay needs no assets, so the simulation
 /// keeps what a cook made of each, and `tools/sapphire_pipeline/tests/zone_baked.rs` holds those to the
 /// documents. A row's digest is what a show beside a run holds the pack's own zone to.
 pub fn zone_trip(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cast = arena_fight(sim)?;
-    for baked in &BAKED_ZONES {
+    for stem in ZONE_TRIP_SHELF {
+        let baked = baked_zone(stem).ok_or_else(|| ScenarioError::Document {
+            field: "zone-trip".to_owned(),
+            problem: format!("no scenario document shelves `{stem}`, so this build keeps no copy of it"),
+        })?;
         sim.add_zone(baked.load()?)?;
     }
     Ok(cast)

@@ -9,6 +9,12 @@
 //! found by its sidecar, so a kind and its script reach a fight from documents alone. Every `.timeline.ron`
 //! beside a set of moves' document goes in too (M3 Z5a), since a move names its cinematic by that file's
 //! name. `replay::document` and `replay::cinematics` read them.
+//!
+//! The zones scenarios name in `shelf` go in as `BAKED_ZONES` (M4 R3), each with the copies of its cook in
+//! `baked/zones/` (its `.szone`, `.scol` and `.snav`), since its navmesh takes a bake, which takes the
+//! pipeline; and so does every `.encounter.ron` beside its document, since a shelved zone cooks the
+//! encounters it lists. A shelved zone with no copies yet is left out with a warning, so the pipeline's
+//! `zone_baked` test, which takes them, still builds. `replay::scenario` reads `BAKED_ZONES`.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -30,6 +36,25 @@ fn id_field(text: &str, field: &str) -> Option<String> {
         let rest = code.strip_prefix(field)?.strip_prefix(':')?;
         Some(rest.split('"').nth(1)?.to_owned())
     })
+}
+
+/// The strings in a RON document's first `field: [...]` list, such as a scenario's `shelf`, which may run over
+/// several lines. Comments are skipped.
+fn list_field(text: &str, field: &str) -> Vec<String> {
+    let mut code = text.lines().map(|line| line.split("//").next().unwrap_or_default());
+    let Some(first) = code.by_ref().find_map(|line| line.trim_start().strip_prefix(field)?.strip_prefix(':'))
+    else {
+        return Vec::new();
+    };
+    let mut strings = Vec::new();
+    for line in std::iter::once(first).chain(code) {
+        let list = line.split(']').next().unwrap_or_default();
+        strings.extend(list.split('"').skip(1).step_by(2).map(str::to_owned));
+        if line.contains(']') {
+            break;
+        }
+    }
+    strings
 }
 
 /// The ID in a sidecar's text.
@@ -74,10 +99,12 @@ fn main() {
     scenarios.sort();
 
     let mut named = BTreeSet::new();
+    let mut shelved = BTreeSet::new();
     let mut code = String::from("pub(super) const SCENARIO_DOCUMENTS: &[(&str, &str)] = &[\n");
     for path in &scenarios {
         let text = fs::read_to_string(path).expect("a scenario document");
         named.extend(named_documents(&text));
+        shelved.extend(list_field(&text, "shelf"));
         let file = path.file_name().and_then(|name| name.to_str()).expect("a UTF-8 name");
         let stem = file.strip_suffix(".scenario.ron").expect("filtered");
         writeln!(code, "    ({stem:?}, include_str!({:?})),", path.display().to_string()).expect("a string");
@@ -114,6 +141,20 @@ fn main() {
                 });
             named.insert(relative.clone());
         }
+    }
+    // The encounters a shelved zone lists, which its load cooks from their documents: every one beside it.
+    for zone in &shelved {
+        let folder = root.join(zone).parent().expect("a zone's document is in a folder").to_owned();
+        println!("cargo:rerun-if-changed={}", folder.display());
+        let prefix = zone.rsplit_once('/').map_or(String::new(), |(folder, _)| format!("{folder}/"));
+        let mut encounters: Vec<String> = fs::read_dir(&folder)
+            .unwrap_or_else(|_| panic!("a scenario shelves {zone}, which isn't there"))
+            .map(|entry| entry.expect("a directory entry").file_name().to_string_lossy().into_owned())
+            .filter(|file| file.ends_with(".encounter.ron"))
+            .map(|file| format!("{prefix}{file}"))
+            .collect();
+        encounters.sort();
+        named.extend(encounters);
     }
     // The cinematics a set's moves can name (M3 Z5a): every timeline beside its document.
     let sets: Vec<String> =
@@ -176,4 +217,55 @@ fn main() {
 
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets it"));
     fs::write(out.join("scenario_documents.rs"), code).expect("OUT_DIR is writable");
+    fs::write(out.join("baked_zones.rs"), baked_zones(&root, &manifest, &shelved))
+        .expect("OUT_DIR is writable");
+}
+
+/// `BAKED_ZONES`, by stem, and `SHELVED_ZONES`: the stem of every zone a scenario shelves, copied or not.
+fn baked_zones(root: &Path, manifest: &Path, shelved: &BTreeSet<String>) -> String {
+    let copies = manifest.join("baked/zones");
+    println!("cargo:rerun-if-changed={}", copies.display());
+    let mut stems = BTreeSet::new();
+    for zone in shelved {
+        let file = zone.rsplit('/').next().expect("a file");
+        let stem =
+            file.strip_suffix(".zone.ron").unwrap_or_else(|| panic!("a scenario shelves {zone}, not a zone"));
+        let sidecar = fs::read_to_string(root.join(format!("{zone}.meta")))
+            .unwrap_or_else(|_| panic!("a scenario shelves {zone}, which has no sidecar"));
+        let id = id_in_sidecar(&sidecar).unwrap_or_else(|| panic!("{zone}.meta has no ID"));
+        let fresh = stems.iter().all(|(other, _): &(String, String)| other != stem);
+        assert!(
+            fresh,
+            "scenarios shelve two zones called {stem}: a shelved zone is found by its file's name"
+        );
+        stems.insert((stem.to_owned(), id));
+    }
+    let mut code = String::from("pub const BAKED_ZONES: &[BakedZone] = &[\n");
+    for (stem, id) in &stems {
+        let copy = |extension: &str| copies.join(format!("{stem}.{extension}"));
+        let paths = [copy("szone"), copy("scol"), copy("snav")];
+        if !paths.iter().all(|path| path.is_file()) {
+            println!(
+                "cargo:warning=a scenario shelves {stem}, and baked/zones/ has no copy of its cook: `cargo xtask \
+                 content`, then `SAPPHIRE_BAKE_ZONES=1 cargo test -p sapphire_pipeline --test zone_baked`"
+            );
+            continue;
+        }
+        let [zone, colliders, navmesh] = paths.map(|path| {
+            println!("cargo:rerun-if-changed={}", path.display());
+            format!("include_bytes!({:?})", path.display().to_string())
+        });
+        writeln!(
+            code,
+            "    BakedZone {{ asset: AssetId::from_text({id:?}), stem: {stem:?}, zone: {zone}, colliders: \
+             {colliders}, navmesh: {navmesh} }},"
+        )
+        .expect("a string");
+    }
+    code.push_str("];\n\npub const SHELVED_ZONES: &[&str] = &[\n");
+    for (stem, _) in &stems {
+        writeln!(code, "    {stem:?},").expect("a string");
+    }
+    code.push_str("];\n");
+    code
 }

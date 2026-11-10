@@ -66,7 +66,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # It hit 30 minutes once on a slow runner (#266, 2026-11-10), after 10 to 11 on the run before.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
@@ -216,7 +217,8 @@ jobs:
   golden-build-linux:
     name: Prepare golden inputs (vulkan-lavapipe)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 14 to 19 minutes in M3's last runs; it hit 30 once (#266, 2026-11-10).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
@@ -254,7 +256,8 @@ jobs:
   golden-build-windows:
     name: Prepare golden inputs (dx12-warp)
     runs-on: windows-2025
-    timeout-minutes: 30
+    # 28 m 18 s and 29 m 58 s on M3's last two runs (2026-11-10): the Windows build is the slowest step.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (job targets)

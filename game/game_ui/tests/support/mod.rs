@@ -14,6 +14,7 @@ use sapphire_loc::StringTable;
 use sapphire_moves::EnemyDocument;
 use sapphire_pipeline::loc::{self, FluentFile};
 use sapphire_stage::content::ScreenAssets;
+use sapphire_timeline::TimelineDocument;
 
 pub fn content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content")
@@ -60,6 +61,27 @@ pub fn boss_names() -> BTreeSet<String> {
 /// The game's screens, as `content/ui/menus.ron` has them.
 pub fn menus() -> MenuDocument {
     MenuDocument::from_ron(&std::fs::read_to_string(content().join("ui/menus.ron")).unwrap()).unwrap()
+}
+
+fn add_subtitles(dir: &Path, into: &mut Vec<(String, Option<String>)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            add_subtitles(&path, into);
+        } else if path.to_str().is_some_and(|name| name.ends_with(".timeline.ron")) {
+            let timeline = TimelineDocument::from_ron(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            into.extend(timeline.subtitles.into_iter().map(|line| (line.key, line.speaker)));
+        }
+    }
+}
+
+/// Every timeline's subtitles under `content/` (M3 Q3): each line's key and its speaker's, as the HUD shows
+/// them.
+pub fn subtitles() -> Vec<(String, Option<String>)> {
+    let mut lines = Vec::new();
+    add_subtitles(&content(), &mut lines);
+    lines
 }
 
 /// The document of the screen named `name`: `<name>.ui.ron` in the first of `dirs` that has one.

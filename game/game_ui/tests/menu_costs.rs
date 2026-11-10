@@ -11,14 +11,14 @@ mod support;
 use std::alloc::System;
 use std::time::Instant;
 
-use game_ui::menus::{GameMenus, MenuScreen, MenuSetup, PlayerSettings};
+use game_ui::menus::{GameMenus, HudModel, MenuScreen, MenuSetup, PlayerSettings};
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_input::RawInput;
 use sapphire_look::UiDrawList;
 use sapphire_platform::{Scancode, Timestamp};
 use sapphire_ui::Atlas;
 use support::walk::{CHARACTER, SETTINGS};
-use support::{Screens, assets};
+use support::{Screens, assets, subtitles};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -49,6 +49,19 @@ fn menus(over: Option<MenuScreen>) -> (GameMenus, UiDrawList) {
         frame_at(&mut menus, frame, &mut list);
     }
     (menus, list)
+}
+
+/// How long each of a cutscene's lines shows, in frames, and then as long with none, over and over.
+const LINE_EVERY: u64 = 90;
+
+/// A cutscene over the HUD (M3 Q4): the fight's words gone and the subtitles coming and going, each line
+/// and its speaker in turn and then nothing.
+fn follow_cutscene(menus: &mut GameMenus, frame: u64, lines: &[(String, Option<String>)]) {
+    let model = menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+    model.fight_words = 0.0;
+    let line = lines.get((frame / LINE_EVERY) as usize % (lines.len() + 1));
+    model
+        .follow_subtitle(line.map(|(key, _)| key.as_str()), line.and_then(|(_, speaker)| speaker.as_deref()));
 }
 
 /// A frame of it: focus going up and down a list, and what's shown drawn.
@@ -85,6 +98,30 @@ fn a_menu_frame_allocates_nothing_once_warm() {
     }
 }
 
+/// A cutscene's subtitle allocates nothing while its line holds. A new line costs its shaping, as any text
+/// that changes does, on the frame it comes up.
+#[test]
+fn a_subtitle_allocates_nothing_while_its_line_holds() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let lines = subtitles();
+    let (mut menus, mut list) = menus(None);
+    let warm = 200 + LINE_EVERY * (lines.len() as u64 + 1);
+    for frame in 200..warm {
+        follow_cutscene(&mut menus, frame, &lines);
+        frame_at(&mut menus, frame, &mut list);
+    }
+    for frame in warm..warm + 1000 {
+        let ((), counts) = alloc::count_in_scope(|| {
+            follow_cutscene(&mut menus, frame, &lines);
+            frame_at(&mut menus, frame, &mut list);
+        });
+        let into = frame % LINE_EVERY;
+        assert!(into == 0 || counts.allocations == 0, "frame {frame}, {into} into its line: {counts:?}");
+    }
+}
+
 #[test]
 #[ignore = "prints costs"]
 fn costs() {
@@ -94,11 +131,16 @@ fn costs() {
         ("the settings", Some(SETTINGS)),
         ("the character screen", Some(CHARACTER)),
         ("the dialogue panel", Some(MenuScreen::DIALOGUE)),
+        ("a cutscene's subtitles", None),
     ] {
+        let lines = if label.starts_with("a cutscene") { subtitles() } else { Vec::new() };
         let (mut menus, mut list) = menus(over);
         let mut samples: Vec<f64> = (200..200 + FRAMES)
             .map(|frame| {
                 let start = Instant::now();
+                if !lines.is_empty() {
+                    follow_cutscene(&mut menus, frame, &lines);
+                }
                 frame_at(&mut menus, frame, &mut list);
                 start.elapsed().as_secs_f64() * 1e3
             })

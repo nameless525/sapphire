@@ -1,5 +1,6 @@
-// What the HUD says in words (M3 U7): names, the objective and a pause for what has no key to press. Its bars, buttons
-// and numbers animate every frame, and `sapphire_ui::CombatHud` draws those.
+// What the HUD says in words (M3 U7): names, the objective, a pause for what has no key to press, and a
+// cutscene's subtitles (M3 Q4). Its bars, buttons and numbers animate every frame, and `sapphire_ui::CombatHud`
+// draws those.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -9,6 +10,7 @@
             (name: "name", role: "body", size: 16, weight: 700),
             (name: "small", role: "body", size: 14, weight: 700),
             (name: "banner", role: "display", size: 32, weight: 700),
+            (name: "subtitle", role: "body", size: 20, weight: 500, line_height: 1.4),
         ],
         nodes: [
             (
@@ -19,6 +21,7 @@
                 name: "player",
                 parent: "root",
                 layout: (anchored: (left: Points(16), top: Points(76)), direction: Row, align: Center, gap: 8),
+                binds: [(to: Opacity, path: "fight_words")],
             ),
             (
                 name: "player-name",
@@ -46,7 +49,7 @@
                 name: "enemy",
                 parent: "root",
                 layout: (anchored: (left: Points(0), right: Points(0), top: Points(58)), direction: Column, align: Center),
-                binds: [(to: Shown, path: "has_enemy")],
+                binds: [(to: Shown, path: "has_enemy"), (to: Opacity, path: "fight_words")],
             ),
             (
                 name: "enemy-name",
@@ -77,6 +80,7 @@
                 name: "objective",
                 parent: "root",
                 layout: (anchored: (right: Points(16), top: Points(64)), direction: Column, align: End, gap: 2, max_width: Percent(38)),
+                binds: [(to: Opacity, path: "fight_words")],
             ),
             (
                 name: "objective-label",
@@ -161,6 +165,45 @@
                     color: (255, 224, 150, 255),
                     key_from: (path: "banner", prefix: "hud-banner-"),
                     shadow: (color: (0, 0, 0, 235), offset: (2, 2)),
+                ),
+            ),
+            // What a cutscene says (M3 Q4): who speaks and the line, low and centered, on a band that keeps it
+            // readable over the ward's white plaster. Its timeline's subtitles choose both keys.
+            (
+                name: "subtitle",
+                parent: "root",
+                layout: (anchored: (left: Points(0), right: Points(0), bottom: Points(40)), direction: Column, align: Center, padding: (left: 24, right: 24)),
+                binds: [(to: Shown, path: "has_subtitle")],
+            ),
+            (
+                name: "subtitle-band",
+                parent: "subtitle",
+                layout: (direction: Column, align: Center, gap: 2, max_width: Points(880), padding: (left: 24, right: 24, top: 8, bottom: 10)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 150))),
+            ),
+            (
+                name: "subtitle-speaker",
+                parent: "subtitle-band",
+                binds: [(to: Shown, path: "has_speaker")],
+                text: (
+                    key: "speaker-wanderer",
+                    style: "name",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "speaker", prefix: "speaker-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
+            (
+                name: "subtitle-line",
+                parent: "subtitle-band",
+                layout: (shrink: 0),
+                text: (
+                    key: "subtitle-court-gate-quiet",
+                    style: "subtitle",
+                    color: (240, 246, 255, 255),
+                    wrap: true,
+                    key_from: (path: "subtitle", prefix: "subtitle-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
         ],

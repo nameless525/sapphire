@@ -200,6 +200,15 @@ pub struct HudModel {
     pub has_banner: bool,
     /// Whether what's playing can be skipped: a cutscene.
     pub can_skip: bool,
+    /// The key of the line a cutscene says now, under `subtitle-`, as its timeline names it. Empty reads the
+    /// document's own.
+    pub subtitle: String,
+    pub has_subtitle: bool,
+    /// The key of who says it, under `speaker-`.
+    pub speaker: String,
+    pub has_speaker: bool,
+    /// How much of the fight's words show, 0 to 1: its names and objective, which a cutscene hides.
+    pub fight_words: f32,
 }
 
 impl Default for HudModel {
@@ -217,6 +226,11 @@ impl Default for HudModel {
             banner: "hud-banner-checkpoint".to_owned(),
             has_banner: false,
             can_skip: false,
+            subtitle: String::new(),
+            has_subtitle: false,
+            speaker: String::new(),
+            has_speaker: false,
+            fight_words: 1.0,
         }
     }
 }
@@ -234,6 +248,22 @@ impl HudModel {
             && self.boss != boss
         {
             boss.clone_into(&mut self.boss);
+        }
+    }
+
+    /// Follows what a cutscene says at its playhead: `line`'s key and, if it names one, its speaker's (the
+    /// keys `sapphire_sequencer`'s `Subtitle` holds), or nothing. Allocates only for a key longer than any
+    /// before.
+    pub fn follow_subtitle(&mut self, line: Option<&str>, speaker: Option<&str>) {
+        let speaker = speaker.filter(|_| line.is_some());
+        self.has_subtitle = line.is_some();
+        self.has_speaker = speaker.is_some();
+        for (held, key) in [(&mut self.subtitle, line), (&mut self.speaker, speaker)] {
+            if let Some(key) = key
+                && held.as_str() != key
+            {
+                key.clone_into(held);
+            }
         }
     }
 }

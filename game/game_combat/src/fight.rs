@@ -897,10 +897,17 @@ impl FightShow {
         self.timeline.as_mut().filter(|show| show.skippable()).map(|show| show.player_mut().skip())
     }
 
-    /// The timeline playing, for what it says at the playhead: its subtitle above all, which Q2 and U7 draw.
+    /// The timeline playing, for what it says at the playhead: its subtitle above all, which the HUD draws.
     #[must_use]
     pub fn timeline_player(&self) -> Option<&TimelinePlayer> {
         self.timeline.as_ref().map(TimelineShow::player)
+    }
+
+    /// Whether a cutscene plays: a timeline that holds the fight, as a move's cinematic doesn't. The fight's
+    /// HUD steps aside for it, leaving its subtitles and its way out.
+    #[must_use]
+    pub fn plays_cutscene(&self) -> bool {
+        self.timeline.as_ref().is_some_and(TimelineShow::holds_simulation)
     }
 
     /// Whether a timeline or a zone trip holds the simulation, so that a loop of its own runs the fight no

@@ -19,7 +19,8 @@ use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
 use support::walk::{CHARACTER, Device, SETTINGS, Walk};
 use support::{
-    Screens, assets, boss_names, content, document_in, menus, screens_of, table, testdata, with_help,
+    Screens, assets, boss_names, content, document, document_in, menus, screens_of, subtitles, table,
+    testdata, with_help,
 };
 
 /// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.
@@ -199,6 +200,89 @@ fn a_bosss_bar_is_named_by_its_kind_of_enemy() {
             assert!(!shown("boss-name") && shown("enemy-name"), "{locale}: {key}");
         }
     }
+}
+
+/// A cutscene's every line shows on the HUD with its speaker, as the table says it, in both languages and under
+/// pseudo-localization, at every aspect (M3 Q4): low on the screen, clear of its edges, in at most two lines,
+/// and gone when nothing's said.
+#[test]
+fn a_cutscenes_subtitles_show_in_every_language_at_every_aspect() {
+    /// The subtitle style's line, its size by its line height, in points.
+    const LINE: f32 = 20.0 * 1.4;
+    let lines = subtitles();
+    assert!(!lines.is_empty(), "no cutscene says anything");
+    let mut wrong = Vec::new();
+    for (locale, pseudo) in [("en", false), ("ja", false), ("en", true)] {
+        let table = table(locale);
+        for size in SIZES {
+            let mut walk = Walk::new(assets(), locale, pseudo, size, Device::Keyboard);
+            walk.menus.open(MenuScreen::HUD);
+            for (line, speaker) in &lines {
+                let at = format!("{locale}, pseudo {pseudo}, {size:?}: {line}");
+                let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+                model.follow_subtitle(Some(line), speaker.as_deref());
+                walk.settle();
+                walk.check(MenuScreen::HUD, pseudo);
+                let tree = walk.tree(MenuScreen::HUD);
+                let node = |name| tree.find(name).expect("a node");
+                let said = |name| tree.strings().find(|(node, _)| *node == name).expect("text").1;
+                assert!(tree.is_visible(node("subtitle-line")), "{at}");
+                assert_eq!(tree.is_visible(node("subtitle-speaker")), speaker.is_some(), "{at}");
+                if !pseudo {
+                    for (name, key) in [("subtitle-line", Some(line)), ("subtitle-speaker", speaker.as_ref())]
+                    {
+                        let Some(key) = key else { continue };
+                        let Pattern::Plain(span) = table.entry(key).expect("in the table").pattern else {
+                            panic!("{key} is plain text")
+                        };
+                        assert_eq!(said(name), table.str(span), "{at}");
+                    }
+                }
+                let band = tree.screen_rect(node("subtitle-band"));
+                let text = tree.screen_rect(node("subtitle-line"));
+                let (width, height) = (size.0 as f32, size.1 as f32);
+                if band.min.x < 0.0 || band.max.x > width || band.max.y > height || band.min.y < height * 0.5
+                {
+                    wrong.push(format!("{at}: the band's at {band:?}"));
+                }
+                if text.height() > 2.0 * LINE + 1.0 {
+                    wrong.push(format!("{at}: {} points tall, over two lines", text.height()));
+                }
+            }
+            let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            model.follow_subtitle(None, Some("speaker-wanderer"));
+            walk.settle();
+            let tree = walk.tree(MenuScreen::HUD);
+            assert!(!tree.is_visible(tree.find("subtitle").unwrap()), "{locale}: nothing said shows nothing");
+            wrong.extend(walk.wrong);
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A cutscene has the screen (M3 Q4): the fight's names and objective fade out with `fight_words`, and its
+/// subtitle and its way out stay.
+#[test]
+fn a_cutscene_hides_the_fights_words_and_keeps_its_own() {
+    let mut walk = Walk::new(assets(), "en", false, (1280, 720), Device::Keyboard);
+    walk.menus.open(MenuScreen::HUD);
+    let fight = ["player", "enemy", "objective"];
+    for (words, cutscene) in [(1.0, false), (0.0, true)] {
+        let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+        model.fight_words = words;
+        model.can_skip = cutscene;
+        model.follow_subtitle(cutscene.then_some("subtitle-court-gate-warning"), Some("speaker-warden"));
+        walk.settle();
+        walk.check(MenuScreen::HUD, false);
+        let tree = walk.tree(MenuScreen::HUD);
+        for name in fight {
+            assert_eq!(tree.opacity(tree.find(name).unwrap()), words, "{name}");
+        }
+        for name in ["skip", "subtitle"] {
+            assert_eq!(tree.is_visible(tree.find(name).unwrap()), cutscene, "{name}");
+        }
+    }
+    assert!(walk.wrong.is_empty(), "{}", walk.wrong.join("\n"));
 }
 
 #[test]

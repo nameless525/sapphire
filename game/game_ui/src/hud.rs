@@ -668,7 +668,10 @@ impl SceneShow for ShownFight {
         if let Some(screen) = &mut self.screen {
             screen.draw(size, list);
         }
-        if let Some(hud) = &mut self.hud {
+        // A cutscene has the screen: its subtitles and its way out are the HUD document's.
+        if let Some(hud) = &mut self.hud
+            && !self.fight.show.plays_cutscene()
+        {
             if let Some((values, time)) = self.fight.show.hud_values() {
                 hud.show_fight(values, time);
             }

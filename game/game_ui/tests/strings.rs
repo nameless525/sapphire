@@ -12,13 +12,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use game_ui::menus::{MenuDocument, WINDOW_TITLE};
+use game_ui::menus::{MenuDocument, MenuScreen, WINDOW_TITLE};
 use sapphire_assets::ui::UiDocument;
 use sapphire_dialogue::DialogueDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
-use sapphire_timeline::TimelineDocument;
-use support::{boss_names, content, document_in, menus, table, testdata, with_help};
+use support::{boss_names, content, document, document_in, menus, subtitles, table, testdata, with_help};
 
 const LOCALES: [&str; 2] = ["en", "ja"];
 
@@ -64,28 +63,15 @@ fn named_by(documents: impl Iterator<Item = (String, UiDocument)>) -> (BTreeSet<
     (keys, prefixes)
 }
 
-fn add_spoken(dir: &Path, into: &mut BTreeSet<String>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            add_spoken(&path, into);
-        } else if path.to_str().is_some_and(|name| name.ends_with(".timeline.ron")) {
-            let timeline = TimelineDocument::from_ron(&fs::read_to_string(&path).unwrap())
-                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            for line in timeline.subtitles {
-                into.extend(line.speaker);
-                into.insert(line.key);
-            }
-        }
-    }
-}
-
 /// What every timeline's subtitles say, and who says it: keys a cutscene shows. Then what every dialogue's
 /// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2). Then every boss's name:
 /// keys its boss bar shows.
 fn spoken() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
-    add_spoken(&content(), &mut keys);
+    for (line, speaker) in subtitles() {
+        keys.insert(line);
+        keys.extend(speaker);
+    }
     add_said(&content(), &mut keys);
     keys.extend(boss_names());
     keys
@@ -221,6 +207,33 @@ fn every_boss_s_name_is_in_every_language() {
         let table = table(locale);
         let missing: Vec<_> = bosses.iter().filter(|key| table.entry(key).is_none()).collect();
         assert!(missing.is_empty(), "{locale} lacks the bosses' names {missing:?}");
+    }
+}
+
+/// Every cutscene's lines and speakers are keys the HUD's subtitle reads (M3 Q4): under the prefixes of its
+/// `key_from`s, which a cook holds to its fonts, and plain text, since a subtitle passes no variable.
+#[test]
+fn every_subtitle_is_one_the_hud_can_show() {
+    let hud = document(MenuScreen::HUD);
+    let prefix_of = |name: &str| {
+        let (_, text, _) = hud.texts().find(|(node, _, _)| node.name == name).expect("the HUD's subtitle");
+        text.key_from.as_ref().expect("chosen as it plays").prefix.clone()
+    };
+    let (line_prefix, speaker_prefix) = (prefix_of("subtitle-line"), prefix_of("subtitle-speaker"));
+    let lines = subtitles();
+    assert!(!lines.is_empty(), "no cutscene says anything");
+    for (line, speaker) in &lines {
+        assert!(line.starts_with(&line_prefix), "{line} isn't under {line_prefix}");
+        if let Some(speaker) = speaker {
+            assert!(speaker.starts_with(&speaker_prefix), "{speaker} isn't under {speaker_prefix}");
+        }
+        for locale in LOCALES {
+            let table = table(locale);
+            for key in std::iter::once(line).chain(speaker) {
+                let entry = table.entry(key).unwrap_or_else(|| panic!("{locale} lacks {key}"));
+                assert!(matches!(entry.pattern, Pattern::Plain(_)), "{locale}: {key} takes a variable");
+            }
+        }
     }
 }
 

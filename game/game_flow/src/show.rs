@@ -717,6 +717,16 @@ impl SceneShow for GameShow {
         self.shown.draw_interface(size, list);
         if let Some(menus) = &mut self.menus {
             self.panel.follow(menus, &self.shown.fight.dialogue);
+            // What a cutscene says at the playhead this frame shows, so a line comes up with its frame and
+            // its cue. A conversation's panel says its own lines, so none shows over it. The fight's words
+            // step aside for a cutscene, as its bars and buttons do.
+            let show = &self.shown.fight.show;
+            let said = show.timeline_player().and_then(|player| player.subtitle());
+            let said = said.filter(|_| !self.panel.is_up());
+            if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
+                model.follow_subtitle(said.map(|line| line.key), said.and_then(|line| line.speaker));
+                model.fight_words = if show.plays_cutscene() { 0.0 } else { 1.0 };
+            }
             menus.draw(size, list);
         }
     }

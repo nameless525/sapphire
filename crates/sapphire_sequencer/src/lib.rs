@@ -20,8 +20,8 @@
 //!   `[simulation]` and off `sapphire_replay`'s tree.
 //! - Drawing and playing any of it. The stage hands the shot to the camera director's takeover slot, the
 //!   post to the frame's packet (rule R4), a cue to `sapphire_cues` and a character's row to its animation
-//!   graph; `sapphire_ui`'s subtitles resolve the keys through `sapphire_loc`. This crate has no edge to any
-//!   of them but plain data.
+//!   graph; the game's HUD document resolves a subtitle's keys through `sapphire_loc`. This crate has no
+//!   edge to any of them but plain data.
 //!
 //! # A frame with a timeline
 //!

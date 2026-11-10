@@ -3,7 +3,8 @@
 # checks together, so it isn't a PR check: this catches what only D3D12 shows soon after landing,
 # and a PR changing this file runs it, so the file is tested before it lands.
 #
-# As in ci.yml, actions are pinned to commit SHAs and the runner image is pinned.
+# As in ci.yml, actions are pinned to commit SHAs and the runner image is pinned, and only runs on `main`
+# write the Rust cache, never a failed or cancelled one (ci.yml's header says why).
 
 name: GPU tests (WARP)
 
@@ -30,6 +31,7 @@ env:
   CARGO_PROFILE_TOOLS_DEBUG: "0"
   RUST_BACKTRACE: short
   RUST_CACHE_ENV_VARS: CARGO CC CFLAGS CXX CMAKE RUST ImageOS SDKROOT
+  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   gpu-tests:
@@ -45,8 +47,9 @@ jobs:
         uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          prefix-key: v1-rust
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
-          cache-on-failure: true
+          save-if: ${{ env.SAVE_RUST_CACHE }}
       # Built apart from the run, so the run's time is the tests' own. Bash, so the first build's
       # failure fails the step (PowerShell checks the last).
       - name: Build the GPU tests

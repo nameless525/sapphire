@@ -202,8 +202,18 @@ helper removes unused toolchains only after installing and verifying the pinned 
 on disposable GitHub-hosted runners. It refuses local and self-hosted environments before mutation.
 Do not invoke it as a local setup script. Unit tests mock every rustup command.
 
+Only runs on `main` write rust-cache's caches (`save-if`, from `SAVE_RUST_CACHE`), and never a failed
+or cancelled job; pull requests and other branches only read them, and CI runs nightly on `main` so
+they exist (M4 I1). A cache that a pull request writes serves only that pull request, and a run's
+caches nearly fill the repository's 10 GB, so pull requests' caches evicted `main`'s; and a cancelled
+job's cache holds little but the registry under the exact key, which later runs take as up to date.
+Name no new workflow-level variable `CARGO*`, `CC*`, `CXX*`, `CMAKE*` or `RUST*` unless it should
+split the caches: rust-cache hashes those into every key. To start every cache afresh, raise
+`prefix-key` (`v1-rust`) in both workflows. Read a job's restore line ("Restored from cache key …
+full match") and `gh api repos/<owner>/<repo>/actions/cache/usage` before blaming a slow build on code.
+
 All existing platform, golden, GPU, lint and security gates remain. Windows golden images expand
-from four to six shards, taking the workflow from 14 to 16 jobs; Linux keeps two shards. Requested
+from four to six shards, taking the workflow from 14 to 16 jobs; Linux kept two shards (three since M4 I1). Requested
 target combinations fall from the original 98 to 19, including the extra Windows jobs. This count is not an installation-time
 benchmark. The new profile/environment initially creates cold caches; evaluate subsequent complete
 runs as well as the first run. Compare cache restore logs, compilation steps, total critical-path

@@ -17,7 +17,8 @@ use sapphire_input::RawInput;
 use sapphire_look::UiDrawList;
 use sapphire_platform::{Scancode, Timestamp};
 use sapphire_ui::Atlas;
-use support::assets;
+use support::walk::{CHARACTER, SETTINGS};
+use support::{Screens, assets};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -35,9 +36,10 @@ fn at(frame: u64) -> Timestamp {
 /// Japanese, the costlier language, with the fight's words and `over` on top.
 fn menus(over: Option<MenuScreen>) -> (GameMenus, UiDrawList) {
     let settings = PlayerSettings { language: "ja".to_owned(), ..PlayerSettings::default() };
-    let setup = MenuSetup { settings, can_leave: true, pseudo: false };
-    let mut menus = GameMenus::new(assets(), Atlas::paint(), setup).unwrap();
-    menus.open(MenuScreen::Hud);
+    let Screens { assets, menus: screens } = assets();
+    let setup = MenuSetup { screens, settings, can_leave: true, pseudo: false };
+    let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
+    menus.open(MenuScreen::HUD);
     if let Some(screen) = over {
         menus.open(screen);
     }
@@ -72,7 +74,7 @@ fn a_menu_frame_allocates_nothing_once_warm() {
         // Process-wide totals can't tell this thread's allocations from the test harness's.
         return;
     }
-    for over in [None, Some(MenuScreen::Pause), Some(MenuScreen::Settings)] {
+    for over in [None, Some(MenuScreen::PAUSE), Some(SETTINGS)] {
         let (mut menus, mut list) = menus(over);
         let ((), counts) = alloc::count_in_scope(|| {
             for frame in 200..1200 {
@@ -88,10 +90,10 @@ fn a_menu_frame_allocates_nothing_once_warm() {
 fn costs() {
     for (label, over) in [
         ("the HUD's words", None),
-        ("the pause over them", Some(MenuScreen::Pause)),
-        ("the settings", Some(MenuScreen::Settings)),
-        ("the character screen", Some(MenuScreen::Character)),
-        ("the dialogue panel", Some(MenuScreen::Dialogue)),
+        ("the pause over them", Some(MenuScreen::PAUSE)),
+        ("the settings", Some(SETTINGS)),
+        ("the character screen", Some(CHARACTER)),
+        ("the dialogue panel", Some(MenuScreen::DIALOGUE)),
     ] {
         let (mut menus, mut list) = menus(over);
         let mut samples: Vec<f64> = (200..200 + FRAMES)

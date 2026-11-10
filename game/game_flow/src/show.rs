@@ -20,7 +20,8 @@ use game_combat::documents::{FightDocuments, error_chain};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::menus::{
-    CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings, TitleModel,
+    CharacterModel, GameMenus, HudModel, MenuCommand, MenuDocument, MenuScreen, MenuSetup, PlayerSettings,
+    ScreenModel,
 };
 use game_ui::wipe::ZoneWipe;
 use sapphire_controls::{CombatControls, ControlsError};
@@ -88,9 +89,13 @@ pub struct GameShow {
 }
 
 impl GameShow {
-    /// A show with nothing on the scene yet, at the title, on `documents` (the game's own, or Sapphire's) and as
-    /// `settings` have it.
-    pub fn new(documents: FightDocuments, settings: PlayerSettings) -> Result<Self, ControlsError> {
+    /// A show with nothing on the scene yet, at the title, on `documents` (the game's own, or Sapphire's), with
+    /// the game's `screens` (M3 U9) and as `settings` have it.
+    pub fn new(
+        documents: FightDocuments,
+        screens: MenuDocument,
+        settings: PlayerSettings,
+    ) -> Result<Self, ControlsError> {
         let controls = match &documents.bindings {
             Some(bindings) => CombatControls::new(InputMap::new(bindings.clone())?)?,
             None => CombatControls::with_default_bindings()?,
@@ -98,7 +103,7 @@ impl GameShow {
         let mut shown = ShownFight::default();
         shown.fight.documents = documents;
         // iOS's guidelines leave leaving to the home gesture.
-        let setup = MenuSetup { settings, can_leave: Os::CURRENT != Os::Ios, pseudo: false };
+        let setup = MenuSetup { screens, settings, can_leave: Os::CURRENT != Os::Ios, pseudo: false };
         Ok(Self {
             shown,
             menus: None,
@@ -136,7 +141,8 @@ impl GameShow {
         setup: GameSetup,
     ) -> Result<(Self, CombatOption), AppInitError> {
         let documents = FightDocuments::read(content).map_err(AppInitError::msg)?;
-        let show = Self::new(documents, settings)?;
+        let screens = MenuDocument::read(content).map_err(AppInitError::msg)?;
+        let show = Self::new(documents, screens, settings)?;
         let read = |path: &str| content.read(path).map_err(|error| error_chain(&error));
         let Some(flow) = FlowContent::read(&read).map_err(AppInitError::msg)? else {
             return Ok((show, CombatOption::Fight { script: setup.script, party: false }));
@@ -231,10 +237,8 @@ impl GameShow {
             _ => {}
         }
         if let (Some(game), Some(menus)) = (&self.game, &mut self.menus) {
-            if let Some(model) = menus.model_mut::<TitleModel>(MenuScreen::Title) {
-                show_title(game.flow(), model);
-            }
-            if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::Hud) {
+            show_title(game.flow(), menus);
+            if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
                 show_hud(game.flow(), model);
             }
         }
@@ -331,10 +335,10 @@ impl GameShow {
     ) -> Result<(), AppInitError> {
         let followed = self.shown.fight.stand_prepared(combat, scene, content, renderer, gpu, tier)?;
         self.shown.hear(followed);
-        let assets = content.load_screens(&MenuScreen::ids(), renderer, gpu)?;
+        let assets = content.load_screens(&self.setup.screens.ids(), renderer, gpu)?;
         let mut menus = GameMenus::new(assets, self.atlas.clone(), self.setup.clone())
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
-        menus.open(MenuScreen::Title);
+        menus.open(MenuScreen::TITLE);
         self.menus = Some(menus);
         // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
         let trips =
@@ -392,11 +396,9 @@ impl GameShow {
         self.shown.hud = None;
         if let Some(menus) = &mut self.menus {
             menus.close_all();
-            menus.close(MenuScreen::Hud);
-            menus.open(MenuScreen::Title);
-            if let Some(model) = menus.model_mut::<TitleModel>(MenuScreen::Title) {
-                model.can_continue = true;
-            }
+            menus.close(MenuScreen::HUD);
+            menus.set_can_continue(true);
+            menus.open(MenuScreen::TITLE);
         }
         tracing::info!(target: LOG_TARGET, "back to the title");
     }
@@ -414,8 +416,8 @@ impl GameShow {
         hud.set_design(self.shown.fight.documents.hud);
         self.shown.hud = Some(hud);
         if let Some(menus) = &mut self.menus {
-            menus.close(MenuScreen::Title);
-            menus.open_under(MenuScreen::Hud);
+            menus.close(MenuScreen::TITLE);
+            menus.open_under(MenuScreen::HUD);
         }
         tracing::info!(target: LOG_TARGET, "the fight opens");
     }
@@ -527,7 +529,7 @@ impl GameShow {
         }
         let paused = self.controls.is_paused() && !self.controls.is_resuming();
         if paused && !menus.is_modal() {
-            menus.open(MenuScreen::Pause);
+            menus.open(MenuScreen::PAUSE);
         } else if !paused && menus.is_modal() {
             menus.close_all();
         }
@@ -540,14 +542,14 @@ impl GameShow {
         let values = fight.show.hud_values().map(|(values, _)| values);
         let boss_name = fight.combat.as_ref().and_then(|combat| fight.show.boss_name(combat.simulation()));
         let touch = self.shown.hud.as_ref().is_some_and(FightHud::shows_controls);
-        if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::Hud) {
+        if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
             model.touch = touch;
             model.follow_fight(values.as_ref(), boss_name);
         }
-        if let (Some(values), Some(model)) =
-            (values, menus.model_mut::<CharacterModel>(MenuScreen::Character))
-        {
-            model.hp = (values.player.hp * model.max_hp as f32).round() as i32;
+        if let Some(values) = values {
+            menus.visit_models(|model: &mut CharacterModel| {
+                model.hp = (values.player.hp * model.max_hp as f32).round() as i32;
+            });
         }
     }
 
@@ -692,7 +694,7 @@ impl SceneShow for GameShow {
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
         self.shown.present(scene, alpha, aspect);
         // The character screen's inset shows a showcase of the character while it's open, and none after.
-        let wanted = self.menus.as_ref().is_some_and(|menus| menus.is_open(MenuScreen::Character));
+        let wanted = self.menus.as_ref().is_some_and(|menus| menus.shows(ScreenModel::Character));
         match (wanted, self.showcase) {
             (true, None) => self.showcase = Some(scene.spawn_showcase(scene.character(), CHARACTER_INSET)),
             (false, Some(showcase)) => {
@@ -746,25 +748,27 @@ mod tests {
     /// Longer than anything a screen does.
     const SETTLE: u64 = 2_000_000_000;
 
+    /// The game's screens.
+    fn screens() -> MenuDocument {
+        MenuDocument::from_ron(include_str!("../../../content/ui/menus.ron")).expect("reads")
+    }
+
     /// A show with the game's documents up and no words in them, not yet drawn.
     fn undrawn() -> GameShow {
-        let documents = [
-            include_str!("../../../content/ui/title.ui.ron"),
-            include_str!("../../../content/ui/pause.ui.ron"),
-            include_str!("../../../content/ui/settings.ui.ron"),
-            include_str!("../../../content/ui/character.ui.ron"),
-            include_str!("../../../content/ui/dialogue.ui.ron"),
-            include_str!("../../../content/ui/hud.ui.ron"),
-        ];
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/ui");
+        let documents = screens().screens.into_iter().map(|screen| {
+            let text = std::fs::read_to_string(ui.join(format!("{}.ui.ron", screen.name))).unwrap();
+            UiDocument::from_document(&text).unwrap()
+        });
         let assets = ScreenAssets {
-            documents: documents.map(|text| UiDocument::from_document(text).unwrap()).to_vec(),
+            documents: documents.collect(),
             tables: vec![StringTable { locale: "en".to_owned(), ..StringTable::default() }],
             fonts: Vec::new(),
         };
-        let mut show =
-            GameShow::new(FightDocuments::shipped(), PlayerSettings::default()).expect("the bindings parse");
+        let mut show = GameShow::new(FightDocuments::shipped(), screens(), PlayerSettings::default())
+            .expect("the bindings parse");
         let mut menus = GameMenus::new(assets, show.atlas.clone(), show.setup.clone()).unwrap();
-        menus.open(MenuScreen::Title);
+        menus.open(MenuScreen::TITLE);
         show.menus = Some(menus);
         show
     }
@@ -827,7 +831,7 @@ mod tests {
     #[test]
     fn the_character_screen_s_inset_is_declared_before_it_opens() {
         let show = undrawn();
-        assert!(!is_open(&show, MenuScreen::Character));
+        assert!(!is_open(&show, MenuScreen::named("character")));
         let mut inventory = PipelineInventory::default();
         show.declare_pipelines(&mut inventory);
         assert!(inventory.insets && inventory.ui);
@@ -856,7 +860,7 @@ mod tests {
     #[test]
     fn starting_from_the_title_opens_the_fight_and_the_press_doesnt_also_swing() {
         let (mut show, mut clock) = show();
-        assert!(show.on_title() && is_open(&show, MenuScreen::Title));
+        assert!(show.on_title() && is_open(&show, MenuScreen::TITLE));
         // Combat's light attack is nothing on a title, then or later.
         show.handle_event(&key(clock + 1, Scancode::J, true));
         frame(&mut show, &mut clock);
@@ -867,7 +871,7 @@ mod tests {
         assert!(show.shown.hud.is_some(), "the fight's HUD comes with it");
         assert_eq!(show.controls.next_actions(0.0).buttons, Buttons::default());
         frame(&mut show, &mut clock);
-        assert!(!is_open(&show, MenuScreen::Title) && is_open(&show, MenuScreen::Hud));
+        assert!(!is_open(&show, MenuScreen::TITLE) && is_open(&show, MenuScreen::HUD));
         // Once it's gone, the key's combat's.
         show.handle_event(&key(clock + 1, Scancode::J, false));
         frame(&mut show, &mut clock);
@@ -888,8 +892,8 @@ mod tests {
         let mut show = undrawn();
         show.open_fight();
         frame(&mut show, &mut 0);
-        assert!(!is_open(&show, MenuScreen::Title));
-        assert!(is_open(&show, MenuScreen::Hud));
+        assert!(!is_open(&show, MenuScreen::TITLE));
+        assert!(is_open(&show, MenuScreen::HUD));
     }
 
     #[test]
@@ -897,25 +901,25 @@ mod tests {
         let (mut show, mut clock) = fight();
         press(&mut show, &mut clock, Scancode::ESCAPE);
         assert!(show.controls.is_paused(), "the key is combat's while no menu's up");
-        assert!(is_open(&show, MenuScreen::Pause));
+        assert!(is_open(&show, MenuScreen::PAUSE));
 
         // Settings over the pause: back leaves it, and the fight stays paused.
-        show.menus.as_mut().unwrap().open(MenuScreen::Settings);
+        show.menus.as_mut().unwrap().open(MenuScreen::named("settings"));
         frame(&mut show, &mut clock);
         press(&mut show, &mut clock, Scancode::ESCAPE);
         frame(&mut show, &mut clock);
-        assert!(!is_open(&show, MenuScreen::Settings) && is_open(&show, MenuScreen::Pause));
+        assert!(!is_open(&show, MenuScreen::named("settings")) && is_open(&show, MenuScreen::PAUSE));
         assert!(show.controls.is_paused());
 
         // Back from the pause resumes.
         press(&mut show, &mut clock, Scancode::ESCAPE);
         frame(&mut show, &mut clock);
-        assert!(!show.controls.is_paused() && !is_open(&show, MenuScreen::Pause));
+        assert!(!show.controls.is_paused() && !is_open(&show, MenuScreen::PAUSE));
 
         // What pauses from outside: focus going, say.
         show.controls.set_paused(true);
         frame(&mut show, &mut clock);
-        assert!(is_open(&show, MenuScreen::Pause));
+        assert!(is_open(&show, MenuScreen::PAUSE));
         assert!(!press(&mut show, &mut clock, Scancode::J), "no menu row is J, and combat's isn't heard");
         assert!(show.controls.is_paused());
     }
@@ -925,23 +929,23 @@ mod tests {
     fn the_pause_goes_back_to_the_title_and_its_continue_goes_on_with_the_fight() {
         let (mut show, mut clock) = fight();
         press(&mut show, &mut clock, Scancode::ESCAPE);
-        assert!(is_open(&show, MenuScreen::Pause));
+        assert!(is_open(&show, MenuScreen::PAUSE));
         show.commands.push(MenuCommand::ToTitle);
         frame(&mut show, &mut clock);
         frame(&mut show, &mut clock);
-        assert!(show.on_title() && is_open(&show, MenuScreen::Title));
-        assert!(!is_open(&show, MenuScreen::Pause) && !is_open(&show, MenuScreen::Hud));
+        assert!(show.on_title() && is_open(&show, MenuScreen::TITLE));
+        assert!(!is_open(&show, MenuScreen::PAUSE) && !is_open(&show, MenuScreen::HUD));
         assert!(show.shown.hud.is_none() && !show.controls.is_paused());
         let menus = show.menus.as_mut().unwrap();
-        assert!(menus.model_mut::<TitleModel>(MenuScreen::Title).unwrap().can_continue);
+        assert!(menus.model_mut::<game_ui::menus::MenuModel>(MenuScreen::TITLE).unwrap().can_continue);
         frame(&mut show, &mut clock);
-        let focus = show.menus.as_ref().unwrap().tree(MenuScreen::Title).unwrap().focus_name();
+        let focus = show.menus.as_ref().unwrap().tree(MenuScreen::TITLE).unwrap().focus_name();
         assert_eq!(focus, Some("continue"), "focus starts on the run to go on with");
 
         press(&mut show, &mut clock, Scancode::RETURN);
         assert!(!show.on_title() && show.shown.hud.is_some());
         frame(&mut show, &mut clock);
-        assert!(is_open(&show, MenuScreen::Hud) && !is_open(&show, MenuScreen::Title));
+        assert!(is_open(&show, MenuScreen::HUD) && !is_open(&show, MenuScreen::TITLE));
     }
 
     #[test]
@@ -951,7 +955,7 @@ mod tests {
         show.controls.set_paused(true);
         frame(&mut show, &mut clock);
         let menus = show.menus.as_mut().unwrap();
-        menus.open(MenuScreen::Settings);
+        menus.open(MenuScreen::named("settings"));
         frame(&mut show, &mut clock);
         // The first row's the language, the next the size.
         press(&mut show, &mut clock, Scancode::DOWN);
@@ -970,12 +974,12 @@ mod tests {
         hud.follow_devices(false, false);
         frame(&mut show, &mut clock);
         let menus = show.menus.as_mut().unwrap();
-        assert!(menus.model_mut::<HudModel>(MenuScreen::Hud).unwrap().touch, "a phone has a pause button");
+        assert!(menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().touch, "a phone has a pause button");
         let hud = show.shown.hud.as_mut().unwrap();
         hud.follow_devices(false, true);
         frame(&mut show, &mut clock);
         let menus = show.menus.as_mut().unwrap();
-        assert!(!menus.model_mut::<HudModel>(MenuScreen::Hud).unwrap().touch, "a pad has its own");
+        assert!(!menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().touch, "a pad has its own");
     }
 
     /// A game's own bindings are what its show reads, and a document that lacks what combat reads stops it,
@@ -987,8 +991,8 @@ mod tests {
             bindings: Some(sapphire_serialize::from_ron(&own).expect("reads")),
             ..FightDocuments::shipped()
         };
-        let mut show =
-            GameShow::new(documents, PlayerSettings::default()).expect("they hold what combat reads");
+        let mut show = GameShow::new(documents, screens(), PlayerSettings::default())
+            .expect("they hold what combat reads");
         let light = |show: &mut GameShow, scancode, at| {
             show.controls.handle_event(&key(at, scancode, true));
             show.controls.update(Timestamp::from_nanos(at));
@@ -1001,7 +1005,8 @@ mod tests {
             sapphire_serialize::from_ron(sapphire_controls::DEFAULT_BINDINGS).expect("reads");
         lacking.contexts.retain(|context| context.name != sapphire_controls::PAUSE_CONTEXT);
         let documents = FightDocuments { bindings: Some(lacking), ..FightDocuments::shipped() };
-        let refused = GameShow::new(documents, PlayerSettings::default()).err().expect("it can't pause");
+        let refused =
+            GameShow::new(documents, screens(), PlayerSettings::default()).err().expect("it can't pause");
         assert!(refused.to_string().contains(sapphire_controls::PAUSE_CONTEXT), "{refused}");
     }
 
@@ -1010,7 +1015,8 @@ mod tests {
     fn a_games_design_lays_its_hud_out() {
         let mut documents = FightDocuments::shipped();
         documents.hud.dodge.offset = [-30.0, -150.0];
-        let mut show = GameShow::new(documents, PlayerSettings::default()).expect("the bindings parse");
+        let mut show =
+            GameShow::new(documents, screens(), PlayerSettings::default()).expect("the bindings parse");
         show.open_fight();
         let hud = show.shown.hud.as_mut().expect("it's open");
         let metrics = sapphire_ui::UiMetrics::new(Vec2::new(874.0, 402.0), sapphire_ui::Insets::default());

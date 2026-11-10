@@ -49,15 +49,15 @@ impl DialoguePanel {
                 if self.shown == Some(lines) {
                     return;
                 }
-                if !menus.is_open(MenuScreen::Dialogue) {
-                    menus.open(MenuScreen::Dialogue);
+                if !menus.is_open(MenuScreen::DIALOGUE) {
+                    menus.open(MenuScreen::DIALOGUE);
                 }
-                if let Some(model) = menus.model_mut::<DialogueModel>(MenuScreen::Dialogue) {
+                if let Some(model) = menus.model_mut::<DialogueModel>(MenuScreen::DIALOGUE) {
                     model.show(&view);
                 }
                 self.shown = Some(lines);
             }
-            None if self.shown.take().is_some() => menus.close(MenuScreen::Dialogue),
+            None if self.shown.take().is_some() => menus.close(MenuScreen::DIALOGUE),
             None => {}
         }
     }

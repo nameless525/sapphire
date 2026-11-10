@@ -14,6 +14,8 @@ game_combat.workspace = true
 profiling.workspace = true
 sapphire_assets.workspace = true
 sapphire_controls.workspace = true
+# A screen's name, hashed (M3 U9).
+sapphire_core.workspace = true
 sapphire_dialogue.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_loc.workspace = true
@@ -24,6 +26,8 @@ sapphire_platform.workspace = true
 sapphire_reflect.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
+# The game's screens, as a document (M3 U9).
+sapphire_serialize.workspace = true
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
 sapphire_ui.workspace = true

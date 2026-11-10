@@ -1,17 +1,19 @@
-//! The game's screens in the sandbox (`--ui-game <stem>`, M3 U7): one of `content/ui/<stem>.ui.ron` on its
-//! sample model, in the language asked for, which is what the `game-*` goldens show and what hot reload and
+//! The game's screens in the sandbox (`--ui-game <name>`, M3 U7): one of the game's screens, as its menus
+//! document names them (M3 U9), `content/ui/<name>.ui.ron` on its kind's sample model, in the language asked for, which is what the `game-*` goldens show and what hot reload and
 //! live link reach. It opens at the clock's start, is read at `--ui-time`, after the steps of `--ui-walk`, and
 //! `--ui-plain` stands a flat color behind it. `game_ui::screen` shows it, and no window's input reaches it: a
 //! game's own menus run in `game_app`. `--ui-dialogue <nexts>` puts the dialogue panel on a real conversation
 //! in place of its sample: the Lantern Ward guide's, cooked, that many lines in (M3 Q2b).
 
 use bevy_reflect::PartialReflect;
-use game_ui::menus::{DialogueModel, MenuScreen};
+use game_ui::menus::{DialogueModel, MenuDocument, ScreenModel};
 use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
 use sapphire_dialogue::{ConditionId, Dialogue, DialogueWalk, DialogueWorld, EffectId};
-use sapphire_platform::Timestamp;
-use sapphire_stage::content::ScreenAssets;
+use sapphire_platform::{AppInitError, Timestamp};
+use sapphire_render::Renderer;
+use sapphire_rhi::GpuContext;
+use sapphire_stage::content::{Content, ScreenAssets};
 use sapphire_ui::{Atlas, UiStep};
 
 /// The Lantern Ward guide's dialogue, `content/dialogue/ward_guide.dialogue.ron`, which `--ui-dialogue`
@@ -21,8 +23,10 @@ pub const WARD_GUIDE: AssetId = AssetId::from_text("7b3a0339-b2a1-4ac8-9cfa-458d
 /// How `--ui-game` shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenOptions {
-    /// The screen.
-    pub screen: MenuScreen,
+    /// The screen, by its name in the game's menus document: its document's file name without `.ui.ron`.
+    pub screen: String,
+    /// Its document's source, from the repository's root: what live tuning watches.
+    pub source: String,
     /// `--ui-locale`.
     pub locale: String,
     /// `--ui-pseudo`.
@@ -48,11 +52,12 @@ pub struct ScreenOptions {
 const SETTLED: f32 = 60.0;
 
 impl ScreenOptions {
-    /// `screen` as it settles, in English.
+    /// The screen named `screen` as it settles, in English.
     #[must_use]
-    pub fn of(screen: MenuScreen) -> Self {
+    pub fn of(screen: &str) -> Self {
         Self {
-            screen,
+            screen: screen.to_owned(),
+            source: format!("content/ui/{screen}.ui.ron"),
             locale: "en".to_owned(),
             pseudo: false,
             scale: 1.0,
@@ -65,11 +70,35 @@ impl ScreenOptions {
         }
     }
 
-    /// Whether it shows an inset, which needs a showcase of the character standing for inset 0: the character
-    /// screen's (M3 U6).
-    #[must_use]
-    pub const fn shows_inset(&self) -> bool {
-        matches!(self.screen, MenuScreen::Character)
+    /// Its document and the model it reads, from the game's `screens`, which have to have it. `--ui-dialogue`
+    /// fills a dialogue panel, so it needs a screen that reads one.
+    pub fn find(&self, screens: &MenuDocument) -> Result<(AssetId, ScreenModel), String> {
+        let screen = screens.screens.iter().find(|screen| screen.name == self.screen).ok_or_else(|| {
+            format!("--ui-game: `{}` isn't one of the game's screens: {}", self.screen, screens.names())
+        })?;
+        if self.dialogue.is_some() && screen.model != ScreenModel::Dialogue {
+            return Err(format!("--ui-dialogue fills a dialogue panel, and `{}` isn't one", self.screen));
+        }
+        Ok((screen.document, screen.model))
+    }
+
+    /// Loads it from `content` over `atlas`, as the game's `screens` name it, and says whether it shows an
+    /// inset (M3 U6), which needs a showcase of the character standing for inset 0.
+    pub fn load(
+        &self,
+        screens: &MenuDocument,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        atlas: Atlas,
+    ) -> Result<(ScreenStack, bool), AppInitError> {
+        let (id, model) = self.find(screens).map_err(AppInitError::msg)?;
+        let assets = content.load_screens(&[id], renderer, gpu)?;
+        let inset =
+            assets.documents.iter().any(|document| document.nodes.iter().any(|node| node.inset.is_some()));
+        let dialogue = self.walks().map(|id| content.load_dialogue(id, renderer, gpu)).transpose()?;
+        let stack = self.stack(assets, atlas, dialogue.as_deref(), model).map_err(AppInitError::msg)?;
+        Ok((stack, inset))
     }
 
     /// The cooked dialogue it walks, if any, which `Content::load_dialogue` gives.
@@ -78,14 +107,15 @@ impl ScreenOptions {
         self.dialogue.map(|_| WARD_GUIDE)
     }
 
-    /// `assets` over `atlas` as these flags ask, on the screen's sample model, or `dialogue`'s line, opened
-    /// at the clock's start. `assets` holds the screen's document, which `Content::load_screens` gives for
-    /// `screen.id()`; `dialogue` is what [`Self::walks`] names.
+    /// `assets` over `atlas` as these flags ask, on `model`'s sample, or `dialogue`'s line, opened at the
+    /// clock's start. `assets` holds the screen's document, which `Content::load_screens` gives for its ID
+    /// ([`Self::find`]); `dialogue` is what [`Self::walks`] names.
     pub fn stack(
         &self,
         assets: ScreenAssets,
         atlas: Atlas,
         dialogue: Option<&Dialogue>,
+        model: ScreenModel,
     ) -> Result<ScreenStack, String> {
         if let Some(step) =
             self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
@@ -99,7 +129,7 @@ impl ScreenOptions {
         let model = match (self.dialogue, dialogue) {
             (Some(lines), Some(dialogue)) => conversation(dialogue, lines)?,
             (Some(_), None) => return Err("--ui-dialogue: the guide's dialogue wasn't loaded".to_owned()),
-            (None, _) => self.screen.sample_model(),
+            (None, _) => model.sample(),
         };
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
         if self.plain {
@@ -146,6 +176,7 @@ mod tests {
     use super::*;
 
     const SETTINGS: &str = include_str!("../../../content/ui/settings.ui.ron");
+    const MENU: ScreenModel = ScreenModel::Menu;
     const PAUSE: &str = include_str!("../../../content/ui/pause.ui.ron");
 
     #[test]
@@ -201,9 +232,9 @@ mod tests {
             let options = ScreenOptions {
                 time: 1.0,
                 walk: ["down"; 3].map(str::to_owned).to_vec(),
-                ..ScreenOptions::of(MenuScreen::Settings)
+                ..ScreenOptions::of("settings")
             };
-            let mut stack = options.stack(assets(SETTINGS), Atlas::paint(), None).unwrap();
+            let mut stack = options.stack(assets(SETTINGS), Atlas::paint(), None, MENU).unwrap();
             stack.draw(size, &mut UiDrawList::default());
             let top = stack.top().unwrap();
             assert!(top.problems().is_empty(), "{:#?}", top.problems());
@@ -216,8 +247,8 @@ mod tests {
     /// The backdrop is a screen under the one asked for, which still has the input and the walk.
     #[test]
     fn a_plain_backdrop_goes_under_the_screen() {
-        let options = ScreenOptions { plain: true, ..ScreenOptions::of(MenuScreen::Pause) };
-        let mut stack = options.stack(assets(PAUSE), Atlas::paint(), None).unwrap();
+        let options = ScreenOptions { plain: true, ..ScreenOptions::of("pause") };
+        let mut stack = options.stack(assets(PAUSE), Atlas::paint(), None, MENU).unwrap();
         stack.draw((640, 360), &mut UiDrawList::default());
         assert_eq!(stack.len(), 2);
         assert!(stack.tree(0).problems().is_empty(), "{:#?}", stack.tree(0).problems());
@@ -226,9 +257,8 @@ mod tests {
 
     #[test]
     fn a_walk_is_checked_when_it_is_asked_for() {
-        let options =
-            ScreenOptions { walk: vec!["sideways".to_owned()], ..ScreenOptions::of(MenuScreen::Pause) };
-        let refused = options.stack(assets(PAUSE), Atlas::paint(), None).map(drop).unwrap_err();
+        let options = ScreenOptions { walk: vec!["sideways".to_owned()], ..ScreenOptions::of("pause") };
+        let refused = options.stack(assets(PAUSE), Atlas::paint(), None, MENU).map(drop).unwrap_err();
         assert!(refused.contains("sideways"), "{refused}");
     }
 
@@ -258,9 +288,10 @@ mod tests {
         assert_eq!(answers, [true, true, false, false], "asking again needs the ward lit");
         assert!(shown(2).unwrap_err().contains("wants an answer"));
 
-        let options = ScreenOptions { dialogue: Some(1), ..ScreenOptions::of(MenuScreen::Dialogue) };
+        let options = ScreenOptions { dialogue: Some(1), ..ScreenOptions::of("dialogue") };
         assert_eq!(options.walks(), Some(WARD_GUIDE));
-        assert!(options.stack(assets(PAUSE), Atlas::paint(), None).map(drop).unwrap_err().contains("loaded"));
+        let refused = options.stack(assets(PAUSE), Atlas::paint(), None, ScreenModel::Dialogue).map(drop);
+        assert!(refused.unwrap_err().contains("loaded"));
     }
 
     fn nodes(stack: &ScreenStack) -> Vec<String> {
@@ -269,8 +300,7 @@ mod tests {
 
     #[test]
     fn a_document_replaces_the_tree_and_a_bad_one_keeps_it() {
-        let mut stack =
-            ScreenOptions::of(MenuScreen::Pause).stack(assets(PAUSE), Atlas::paint(), None).unwrap();
+        let mut stack = ScreenOptions::of("pause").stack(assets(PAUSE), Atlas::paint(), None, MENU).unwrap();
         let mut list = UiDrawList::default();
         stack.draw((640, 360), &mut list);
         let before = nodes(&stack);
@@ -303,8 +333,24 @@ mod tests {
 
     #[test]
     fn an_unknown_language_says_which() {
-        let options = ScreenOptions { locale: "xx".to_owned(), ..ScreenOptions::of(MenuScreen::Pause) };
-        let refused = options.stack(assets(PAUSE), Atlas::paint(), None).map(drop).unwrap_err();
+        let options = ScreenOptions { locale: "xx".to_owned(), ..ScreenOptions::of("pause") };
+        let refused = options.stack(assets(PAUSE), Atlas::paint(), None, MENU).map(drop).unwrap_err();
         assert!(refused.contains("--ui-game") && refused.contains("xx"), "{refused}");
+    }
+
+    /// A screen is found by its name in the game's menus document (M3 U9), and one it doesn't have is
+    /// refused with those it has; `--ui-dialogue` needs a screen reading a dialogue.
+    #[test]
+    fn a_screen_is_one_of_the_games_by_name() {
+        let screens = MenuDocument::from_ron(include_str!("../../../content/ui/menus.ron")).unwrap();
+        let (id, model) = ScreenOptions::of("character").find(&screens).unwrap();
+        assert!(include_str!("../../../content/ui/character.ui.ron.meta").contains(&id.to_string()));
+        assert_eq!(model, ScreenModel::Character);
+        let refused = ScreenOptions::of("shop").find(&screens).unwrap_err();
+        assert!(refused.contains("shop") && refused.contains("settings"), "{refused}");
+        let options = ScreenOptions { dialogue: Some(0), ..ScreenOptions::of("pause") };
+        assert!(options.find(&screens).unwrap_err().contains("--ui-dialogue"));
+        let options = ScreenOptions { dialogue: Some(0), ..ScreenOptions::of("dialogue") };
+        assert_eq!(options.find(&screens).unwrap().1, ScreenModel::Dialogue);
     }
 }

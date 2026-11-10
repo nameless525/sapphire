@@ -14,7 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use egui::{RichText, Ui};
-use game_ui::menus::MenuScreen;
+use game_ui::menus::ScreenModel;
 use sapphire_assets::AssetId;
 use sapphire_assets::ui::{UiDocument, UiModel};
 use sapphire_document::DocumentSet;
@@ -71,7 +71,7 @@ impl ScreenPanel {
         };
         let held = held.map(|held| held.values.as_slice());
         let values = match &model {
-            Ok(model) => values_for(id, model, held),
+            Ok(model) => values_for(named, model, held),
             // A model that doesn't read lists no paths: what was typed waits for one that does.
             Err(_) => held.map(<[_]>::to_vec).unwrap_or_default(),
         };
@@ -93,7 +93,7 @@ impl ScreenPanel {
             }
             let model = parse(file, &bytes);
             if let Ok(new) = &model {
-                held.values = values_for(id, new, Some(&held.values));
+                held.values = values_for(Some(file), new, Some(&held.values));
             }
             (held.read, held.model) = (read, model);
         }
@@ -121,10 +121,14 @@ fn hash(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-/// The values screen `id`'s paths read under `model`. What was `typed` in stays, for each path the new model
-/// still reads the same kind of value at. With nothing held yet (a first model), one of the game's own screens
-/// starts where its goldens do.
-fn values_for(id: AssetId, model: &UiModel, typed: Option<&[(String, StandIn)]>) -> Vec<(String, StandIn)> {
+/// The values a screen's paths read under `model`, the file `named`. What was `typed` in stays, for each path
+/// the new model still reads the same kind of value at. With nothing held yet (a first model), a screen reading
+/// one of the game's own model files starts where the game's goldens do (M3 U9).
+fn values_for(
+    named: Option<&str>,
+    model: &UiModel,
+    typed: Option<&[(String, StandIn)]>,
+) -> Vec<(String, StandIn)> {
     let mut values = stand_ins(model);
     match typed.filter(|typed| !typed.is_empty()) {
         Some(typed) => {
@@ -136,8 +140,8 @@ fn values_for(id: AssetId, model: &UiModel, typed: Option<&[(String, StandIn)]>)
             }
         }
         None => {
-            if let Some(screen) = MenuScreen::ALL.into_iter().find(|screen| screen.id() == id) {
-                read_from(&mut values, &*screen.sample_model());
+            if let Some(kind) = named.and_then(ScreenModel::of_file) {
+                read_from(&mut values, &*kind.sample());
             }
         }
     }

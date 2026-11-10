@@ -76,7 +76,7 @@ impl Visit {
         .expect("starts");
         let runner = DialogueRunner::new(vec![guide_on_the_gate()]);
         let mut walk = Walk::new(assets(), locale, false, SIZE, device);
-        walk.menus.open_under(MenuScreen::Hud);
+        walk.menus.open_under(MenuScreen::HUD);
         walk.settle();
         let actions = find_script("walk-the-ward").expect("listed").actions;
         Self { recording, runner, panel: DialoguePanel::default(), walk, actions }
@@ -113,18 +113,18 @@ impl Visit {
         self.panel.follow(&mut self.walk.menus, &self.runner);
         self.walk.settle();
         if self.panel.is_up() {
-            self.walk.check(MenuScreen::Dialogue, false);
+            self.walk.check(MenuScreen::DIALOGUE, false);
             assert!(self.walk.wrong.is_empty(), "{:?}", self.walk.wrong);
         }
     }
 
     fn choose(&mut self, node: &str) {
-        self.walk.choose(MenuScreen::Dialogue, node);
+        self.walk.choose(MenuScreen::DIALOGUE, node);
         self.show();
     }
 
     fn model(&mut self) -> &DialogueModel {
-        self.walk.menus.model_mut::<DialogueModel>(MenuScreen::Dialogue).expect("the panel's up")
+        self.walk.menus.model_mut::<DialogueModel>(MenuScreen::DIALOGUE).expect("the panel's up")
     }
 
     /// The line the panel shows, and the answers, in their slots.
@@ -171,7 +171,7 @@ fn the_keyboard_lights_the_ward_and_its_choice_replays() {
     visit.choose("next");
     assert_eq!(visit.shown().0, "dialogue-guide-farewell", "the thanks set met_guide, so the branch goes on");
     visit.choose("next");
-    assert!(!visit.walk.menus.is_open(MenuScreen::Dialogue), "the panel goes with the conversation");
+    assert!(!visit.walk.menus.is_open(MenuScreen::DIALOGUE), "the panel goes with the conversation");
     assert!(!visit.walk.menus.is_modal());
     assert_eq!(visit.runner.take_ended(), Some(DialogueEnded { dialogue: GUIDE, tick: u64::from(opened) }));
     assert_eq!(visit.runner.take_ended(), None, "once");
@@ -228,7 +228,7 @@ fn a_pad_finds_the_hidden_answer_and_the_branch_back() {
     );
     visit.choose("next");
     visit.choose("third");
-    assert!(!visit.runner.is_open() && !visit.walk.menus.is_open(MenuScreen::Dialogue));
+    assert!(!visit.runner.is_open() && !visit.walk.menus.is_open(MenuScreen::DIALOGUE));
     visit.walk_on(AFTER);
     let (replay, _) = visit.finish();
     assert!(replay.commands().is_empty());

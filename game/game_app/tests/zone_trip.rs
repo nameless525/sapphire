@@ -22,7 +22,7 @@ use game_combat::fight::trip::TripPhase;
 use game_flow::document::FlowDocument;
 use game_flow::flow::{FlowCommand, FlowState, Run};
 use game_flow::game::{FlowContent, Game, GameSetup};
-use game_ui::menus::PlayerSettings;
+use game_ui::menus::{MenuDocument, PlayerSettings};
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
@@ -89,9 +89,10 @@ impl App for OutsideCaller {
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let gpu = headless_gpu()?;
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
+        let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents, PlayerSettings::default())?;
+        let mut show = GameShow::new(documents, screens, PlayerSettings::default())?;
         let replay = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/zone-trip.sreplay");
         let option = CombatOption::Replay { path: replay, to_end: false };
         let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
@@ -187,6 +188,7 @@ fn play(stage: &mut Stage<GameShow>) -> Result<(), AppInitError> {
 fn to_the_title_mid_trip(platform: &mut Platform) -> Result<(), AppInitError> {
     let gpu = headless_gpu()?;
     let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
+    let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
     let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
     let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
     let flow = FlowContent {
@@ -194,7 +196,7 @@ fn to_the_title_mid_trip(platform: &mut Platform) -> Result<(), AppInitError> {
         registered: Vec::new(),
     };
     let game = Game::new(flow, GameSetup::default()).map_err(AppInitError::msg)?;
-    let mut show = GameShow::new(documents, PlayerSettings::default())?.with_game(game);
+    let mut show = GameShow::new(documents, screens, PlayerSettings::default())?.with_game(game);
     let first = show.opening_run().expect("a game's run");
     let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
     let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);

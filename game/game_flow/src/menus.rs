@@ -2,7 +2,7 @@
 //! it. The screens know nothing of the flow: [`flow_command`] reads their [`MenuCommand`]s as its own
 //! [`FlowCommand`]s, and [`show_title`] and [`show_hud`] fill their models from it.
 
-use game_ui::menus::{HudModel, MenuCommand, TitleModel};
+use game_ui::menus::{GameMenus, HudModel, MenuCommand};
 
 use crate::flow::{Banner, Flow, FlowCommand};
 
@@ -34,9 +34,10 @@ pub const fn banner_key(banner: Banner) -> &'static str {
     }
 }
 
-/// The title as the flow has it: whether there's a run to continue.
-pub fn show_title(flow: &Flow, model: &mut TitleModel) {
-    model.can_continue = flow.can_continue();
+/// The menus as the flow has them: whether there's a run to continue, which the title shows. It allocates
+/// nothing.
+pub fn show_title(flow: &Flow, menus: &mut GameMenus) {
+    menus.set_can_continue(flow.can_continue());
 }
 
 /// The HUD as the flow has it: its banner, and whether what's playing can be skipped. A frame's call allocates
@@ -55,27 +56,29 @@ pub fn show_hud(flow: &Flow, model: &mut HudModel) {
 
 #[cfg(test)]
 mod tests {
-    use game_ui::menus::{MenuAction, MenuScreen, action_of};
+    use game_ui::menus::{MenuDocument, MenuScreen, RowAction};
 
     use super::*;
 
     #[test]
     fn every_row_that_asks_the_flow_reaches_it() {
+        let screens = MenuDocument::from_ron(include_str!("../../../content/ui/menus.ron")).expect("reads");
         let rows = [
-            (MenuScreen::Title, "continue", FlowCommand::Continue),
-            (MenuScreen::Title, "new", FlowCommand::NewGame),
-            (MenuScreen::Title, "leave", FlowCommand::Leave),
-            (MenuScreen::Pause, "resume", FlowCommand::Resume),
-            (MenuScreen::Pause, "to-title", FlowCommand::ToTitle),
-            (MenuScreen::Pause, "leave", FlowCommand::Leave),
-            (MenuScreen::Hud, "pause", FlowCommand::Pause),
-            (MenuScreen::Hud, "skip", FlowCommand::Skip),
+            (MenuScreen::TITLE, "continue", FlowCommand::Continue),
+            (MenuScreen::TITLE, "new", FlowCommand::NewGame),
+            (MenuScreen::TITLE, "leave", FlowCommand::Leave),
+            (MenuScreen::PAUSE, "resume", FlowCommand::Resume),
+            (MenuScreen::PAUSE, "to-title", FlowCommand::ToTitle),
+            (MenuScreen::PAUSE, "leave", FlowCommand::Leave),
+            (MenuScreen::HUD, "pause", FlowCommand::Pause),
+            (MenuScreen::HUD, "skip", FlowCommand::Skip),
         ];
         for (screen, row, wanted) in rows {
-            let Some(MenuAction::Command(command)) = action_of(screen, row) else {
+            let Some(RowAction::Command(command)) = screens.entry(screen).and_then(|entry| entry.action(row))
+            else {
                 panic!("{screen:?}'s {row} asks nothing");
             };
-            assert_eq!(flow_command(command), Some(wanted), "{screen:?}'s {row}");
+            assert_eq!(flow_command(*command), Some(wanted), "{screen:?}'s {row}");
         }
     }
 

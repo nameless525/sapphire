@@ -50,10 +50,13 @@ pub struct GameDocuments {
     /// A `FlagRegistry`: every flag the game's dialogues and flow may read or set (M3 Q2, G1).
     #[serde(default)]
     pub flags: Option<String>,
+    /// A `MenuDocument`: the game's screens, and what each of their rows does (M3 U9).
+    #[serde(default)]
+    pub menus: Option<String>,
 }
 
 impl Versioned for GameDocuments {
-    /// 1: M3 S3. G1's `flow` and `flags` are fields a version 1 manifest leaves out.
+    /// 1: M3 S3. G1's `flow` and `flags` and U9's `menus` are fields a version 1 manifest leaves out.
     const VERSION: u32 = 1;
 }
 
@@ -85,6 +88,7 @@ impl GameDocuments {
             ("effects", "sapphire::vfx::EffectLibrary", &self.effects),
             ("flow", "sapphire::game::FlowDocument", &self.flow),
             ("flags", "sapphire::dialogue::FlagRegistry", &self.flags),
+            ("menus", "sapphire::game::MenuDocument", &self.menus),
         ]
         .into_iter()
         .filter_map(|(field, type_name, path)| {

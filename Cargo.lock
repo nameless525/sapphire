@@ -1449,6 +1449,7 @@ dependencies = [
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_script",
+ "sapphire_serialize",
  "sapphire_stage",
  "sapphire_strings",
  "sapphire_time",

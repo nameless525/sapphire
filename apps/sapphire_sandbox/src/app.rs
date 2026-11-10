@@ -35,6 +35,7 @@ use game_combat::enemy::EnemyMeshes;
 use game_combat::fight::{Arena, FightShow};
 use game_combat::party_looks::PartyLooks;
 use game_ui::hud::{FightHud, ShownFight};
+use game_ui::menus::MenuDocument;
 use sapphire_stage::audio::DeviceAudio;
 use sapphire_stage::content::Content;
 use sapphire_stage::environment::FOG_CARDS;
@@ -408,14 +409,12 @@ impl App for SandboxApp {
             });
         }
         if let Some(shown) = &options.ui_screen {
-            let assets = content.load_screens(&[shown.screen.id()], &mut renderer.renderer, &device.gpu)?;
+            let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
             let atlas = show.hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
-            let dialogue = shown
-                .walks()
-                .map(|id| content.load_dialogue(id, &mut renderer.renderer, &device.gpu))
-                .transpose()?;
-            show.screen = Some(shown.stack(assets, atlas, dialogue.as_deref()).map_err(AppInitError::msg)?);
-            if shown.shows_inset() {
+            let (stack, inset) =
+                shown.load(&screens, &mut content, &mut renderer.renderer, &device.gpu, atlas)?;
+            show.screen = Some(stack);
+            if inset {
                 scene.spawn_showcase(scene.character(), 0);
             }
         }

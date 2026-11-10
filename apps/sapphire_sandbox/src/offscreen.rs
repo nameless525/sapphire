@@ -27,6 +27,7 @@ use game_combat::combat::{Combat, CombatOption};
 use game_combat::fight::{Arena, Fight, FightShow};
 use game_combat::party_looks::PartyLooks;
 use game_ui::hud::ShownFight;
+use game_ui::menus::MenuDocument;
 use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
@@ -417,11 +418,11 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         *shown_hud = Some(game_ui::hud::FightHud::new(hud));
     }
     if let Some(shown) = &options.ui_screen {
-        let assets = content.load_screens(&[shown.screen.id()], renderer, gpu)?;
+        let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
         let atlas = shown_hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
-        let dialogue = shown.walks().map(|id| content.load_dialogue(id, renderer, gpu)).transpose()?;
-        *shown_screen = Some(shown.stack(assets, atlas, dialogue.as_deref()).map_err(AppInitError::msg)?);
-        if shown.shows_inset() {
+        let (stack, inset) = shown.load(&screens, content, renderer, gpu, atlas)?;
+        *shown_screen = Some(stack);
+        if inset {
             scene.spawn_showcase(scene.character(), 0);
         }
     }

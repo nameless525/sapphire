@@ -16,7 +16,6 @@ use game_combat::combat::{CaptureFrames, CombatOption};
 use game_combat::combat_views::CombatViews;
 use game_flow::flow::FlowCommand;
 use game_ui::hud::{HudMode, HudOptions};
-use game_ui::menus::MenuScreen;
 use sapphire_stage::anim_graph::GraphScript;
 use sapphire_stage::audio::CueOption;
 use sapphire_stage::debug_shapes::DebugDrawDemo;
@@ -533,7 +532,7 @@ impl Options {
             cues: self.cues,
             graph_show: self.graph.is_some(),
             arena_fight: self.arena.is_some() && self.combat.is_some(),
-            screen: self.ui_screen.as_ref().map(|shown| shown.screen.source()),
+            screen: self.ui_screen.as_ref().map(|shown| shown.source.as_str()),
             hud: self.hud.is_some(),
             reads_files: !self.no_hot_reload,
             extra_documents: &self.watch_documents,
@@ -821,13 +820,8 @@ impl Options {
                     }
                     hud_energy = Some(energy);
                 }
-                "--ui-game" => {
-                    let stem = value("--ui-game")?;
-                    let names = || MenuScreen::ALL.map(MenuScreen::stem).join(", ");
-                    ui_game = Some(MenuScreen::from_stem(&stem).ok_or_else(|| {
-                        format!("--ui-game: `{stem}` isn't one of the game's screens: {}", names())
-                    })?);
-                }
+                // Which screens there are is the content's menus document's, read when the screen loads.
+                "--ui-game" => ui_game = Some(value("--ui-game")?),
                 "--ui-turn" => {
                     let across: f32 = number(&value("--ui-turn")?, "--ui-turn")?;
                     if !across.is_finite() {
@@ -1138,13 +1132,9 @@ impl Options {
                         and --ui-dialogue need --ui-game"
                 .to_owned());
         }
-        if ui_dialogue.is_some() && ui_game != Some(MenuScreen::Dialogue) {
-            return Err("--ui-dialogue is the dialogue panel's: it needs --ui-game dialogue".to_owned());
-        }
         options.ui_screen = ui_game.map(|screen| {
-            let shown = ScreenOptions::of(screen);
+            let shown = ScreenOptions::of(&screen);
             ScreenOptions {
-                screen,
                 locale: ui_locale.unwrap_or(shown.locale),
                 pseudo: ui_pseudo,
                 scale: ui_scale.unwrap_or(shown.scale),
@@ -1154,6 +1144,7 @@ impl Options {
                 turn: ui_turn.unwrap_or(shown.turn),
                 spin: ui_spin.unwrap_or(shown.spin),
                 dialogue: ui_dialogue,
+                ..shown
             }
         });
         options.faces = match (faces, face_layout) {
@@ -1327,7 +1318,7 @@ impl Options {
                 (options.draw_every.is_some(), "--draw-every"),
                 (options.in_town(), "--look-dev or --arena"),
                 (options.zone.is_some(), "--zone"),
-                (ui_game.is_some(), "--ui-game"),
+                (options.ui_screen.is_some(), "--ui-game"),
             ] {
                 if given {
                     return Err(format!(
@@ -2097,7 +2088,7 @@ mod tests {
     fn the_screen_s_companions_need_it() {
         assert_eq!(Options::default().ui_screen, None);
         let (options, _) = parse(&["--ui-game", "title"]).unwrap();
-        assert_eq!(options.ui_screen, Some(ScreenOptions::of(MenuScreen::Title)));
+        assert_eq!(options.ui_screen, Some(ScreenOptions::of("title")));
         let (options, _) = parse(&[
             "--ui-game",
             "pause",
@@ -2114,7 +2105,7 @@ mod tests {
             pseudo: true,
             scale: 2.0,
             plain: true,
-            ..ScreenOptions::of(MenuScreen::Pause)
+            ..ScreenOptions::of("pause")
         };
         assert_eq!(options.ui_screen, Some(shown));
         let (options, _) =
@@ -2122,13 +2113,12 @@ mod tests {
         let shown = ScreenOptions {
             time: 0.25,
             walk: vec!["down".to_owned(), "confirm".to_owned()],
-            ..ScreenOptions::of(MenuScreen::Settings)
+            ..ScreenOptions::of("settings")
         };
         assert_eq!(options.ui_screen, Some(shown));
-        let refused = parse(&["--ui-game", "shop"]).map(drop).unwrap_err();
-        assert!(refused.contains("shop") && refused.contains("settings"), "{refused}");
+        // Which screens there are is the content's: `screen.rs` holds a name it doesn't have to be refused.
         let (options, _) = parse(&["--ui-game", "character", "--ui-turn", "0.25"]).unwrap();
-        let shown = ScreenOptions { turn: 0.25, ..ScreenOptions::of(MenuScreen::Character) };
+        let shown = ScreenOptions { turn: 0.25, ..ScreenOptions::of("character") };
         assert_eq!(options.ui_screen, Some(shown));
         for args in [
             &["--ui-locale", "ja"][..],

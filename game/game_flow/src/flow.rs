@@ -772,15 +772,12 @@ mod tests {
     /// a skip while a cutscene plays.
     #[test]
     fn the_title_and_the_hud_show_what_the_flow_has() {
-        use game_ui::menus::{HudModel, TitleModel};
+        use game_ui::menus::HudModel;
 
-        use crate::menus::{show_hud, show_title};
+        use crate::menus::show_hud;
 
-        let mut title = TitleModel::default();
-        show_title(&flow(true), &mut title);
-        assert!(title.can_continue);
-        show_title(&flow(false), &mut title);
-        assert!(!title.can_continue);
+        // The title's continue is `show.rs`'s to test, with the menus up.
+        assert!(flow(true).can_continue() && !flow(false).can_continue());
 
         let mut flow = playing();
         let mut hud = HudModel { banner: "hud-banner-defeat".to_owned(), ..HudModel::default() };

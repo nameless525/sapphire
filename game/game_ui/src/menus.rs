@@ -1,19 +1,26 @@
 //! The game's menus (M3 U7): the title, the pause, the settings, the character screen, the dialogue panel
-//! and the HUD's words, each a document in `content/ui/` reading a model here, on one [`ScreenStack`].
+//! and the HUD's words, each a document in `content/ui/`, on one [`ScreenStack`].
+//!
+//! Which screens there are is content's (M3 U9): the game's [`MenuDocument`] (`content/ui/menus.ron`) lists
+//! each screen's document, the model it reads, whether it's modal, what back does on it, and what each of its
+//! rows does: a [`MenuCommand`] for whoever holds the menus, another screen, a setting stepped, or nothing
+//! beyond what its machine does. A test holds every document's focusable nodes to its rows. A screen that
+//! shows only the menus' own values ([`MenuModel`]) is documents alone. Rust models stay only for live game
+//! values: a fighter's stats ([`CharacterModel`]), a conversation ([`DialogueModel`]) and the fight's HUD
+//! ([`HudModel`]).
 //!
 //! [`GameMenus`] reads a menu's controls ([`MenuControls`]), hands them to the top screen and turns what
-//! happened there into what the screen means: another screen, a setting moved, or a [`MenuCommand`] for
-//! whoever holds it. What a node does goes by its name, in [`action_of`], and a test holds every document's
-//! focusable nodes to it. Screens stay on the stack until their machine has taken them out.
+//! happened there into what its row says. Screens stay on the stack until their machine has taken them out.
 //!
 //! Every press a menu takes is one a fight mustn't: [`GameMenus::is_modal`] says when that's so, and its
 //! holder keeps those presses from the fight's bindings. The HUD's document isn't modal, and takes only what
 //! lands on its pause.
 
+mod document;
+
 use std::fmt::Write as _;
 
-use bevy_reflect::{PartialReflect, Reflect};
-use sapphire_assets::AssetId;
+use bevy_reflect::{PartialReflect, Reflect, TypeInfo, Typed};
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::{MenuControls, MenuError};
 use sapphire_loc::LocaleSettings;
@@ -25,6 +32,7 @@ use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, HudValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
 use serde::{Deserialize, Serialize};
 
+pub use self::document::{MenuDocument, MenuScreen, RowAction, ScreenEntry, ScreenModel, ScreenRow};
 use crate::screen::{ScreenStack, StackSetup};
 
 /// The languages the game ships, in the order the setting steps through them.
@@ -37,80 +45,15 @@ const SOUND_STEP: u8 = 10;
 /// its window by it, in the menus' language ([`GameMenus::window_title`]).
 pub const WINDOW_TITLE: &str = "window-title";
 
-/// One of the game's screens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuScreen {
-    Title,
-    Pause,
-    Settings,
-    Character,
-    Dialogue,
-    Hud,
-}
+/// The screens [`GameMenus`]' holders open themselves, by name: a game's [`MenuDocument`] has to have them.
+pub const OPENED_BY_CODE: [&str; 4] = ["title", "pause", "hud", "dialogue"];
 
-impl MenuScreen {
-    /// Every screen, in the order [`Self::ids`] has them.
-    pub const ALL: [Self; 6] =
-        [Self::Title, Self::Pause, Self::Settings, Self::Character, Self::Dialogue, Self::Hud];
-
-    /// The documents, for `Content::load_screens`.
-    #[must_use]
-    pub const fn ids() -> [AssetId; 6] {
-        [
-            AssetId::from_text("a733bc8e-d4f9-4e85-a8d5-7c7d30b5e30d"),
-            AssetId::from_text("2be53fec-1a42-4f0b-a6b4-f2781357c0fb"),
-            AssetId::from_text("cf52ef55-199e-426f-adea-52940c953a9f"),
-            AssetId::from_text("014b8262-3dda-4d77-a391-9ee209740962"),
-            AssetId::from_text("1c4f98ba-d58a-46d3-b8df-8be091d9e5dc"),
-            AssetId::from_text("a86b3aa5-faf3-4fb2-ab2c-27e9b0dae713"),
-        ]
-    }
-
-    /// Its document.
-    #[must_use]
-    pub const fn id(self) -> AssetId {
-        Self::ids()[self.index()]
-    }
-
-    /// Its document's source, from the repository's root: what live tuning watches.
-    #[must_use]
-    pub const fn source(self) -> &'static str {
-        match self {
-            Self::Title => "content/ui/title.ui.ron",
-            Self::Pause => "content/ui/pause.ui.ron",
-            Self::Settings => "content/ui/settings.ui.ron",
-            Self::Character => "content/ui/character.ui.ron",
-            Self::Dialogue => "content/ui/dialogue.ui.ron",
-            Self::Hud => "content/ui/hud.ui.ron",
-        }
-    }
-
-    /// Its document's file name, without what follows.
-    #[must_use]
-    pub const fn stem(self) -> &'static str {
-        match self {
-            Self::Title => "title",
-            Self::Pause => "pause",
-            Self::Settings => "settings",
-            Self::Character => "character",
-            Self::Dialogue => "dialogue",
-            Self::Hud => "hud",
-        }
-    }
-
-    /// The screen a name means, as `--ui-game` says it.
-    #[must_use]
-    pub fn from_stem(stem: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|screen| screen.stem() == stem)
-    }
-
+impl ScreenModel {
     /// Its model as it stands with nothing yet said, which is also what a golden shows.
     #[must_use]
-    pub fn sample_model(self) -> Box<dyn PartialReflect> {
+    pub fn sample(self) -> Box<dyn PartialReflect> {
         match self {
-            Self::Title => Box::new(TitleModel { can_leave: true, can_continue: true }),
-            Self::Pause => Box::new(PauseModel { can_leave: true }),
-            Self::Settings => Box::new(SettingsModel::of(&PlayerSettings::default())),
+            Self::Menu => Box::new(MenuModel::of(&PlayerSettings::default(), true, true)),
             Self::Character => Box::new(CharacterModel::default()),
             Self::Dialogue => Box::new(DialogueModel::default()),
             Self::Hud => {
@@ -119,29 +62,27 @@ impl MenuScreen {
         }
     }
 
-    const fn index(self) -> usize {
-        self as usize
+    /// Its type, which its model document (`content/ui/<`[`Self::file`]`>`) is made from.
+    #[must_use]
+    pub fn type_info(self) -> &'static TypeInfo {
+        match self {
+            Self::Menu => MenuModel::type_info(),
+            Self::Character => CharacterModel::type_info(),
+            Self::Dialogue => DialogueModel::type_info(),
+            Self::Hud => HudModel::type_info(),
+        }
     }
 }
 
-/// What the title's paths read.
+/// What any menu's paths can read (M3 U9): whether there's a way out and a run to go on with, and the
+/// player's settings. The title, the pause and the settings read it, and so can any screen content adds.
 #[derive(Clone, Debug, Default, Reflect)]
-pub struct TitleModel {
+pub struct MenuModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
     pub can_leave: bool,
-    /// Whether there's a run to go on with: its row comes first, and with none, focus starts on a new game.
+    /// Whether there's a run to go on with: the title's row comes first, and with none, focus starts on a new
+    /// game.
     pub can_continue: bool,
-}
-
-/// What the pause's paths read.
-#[derive(Clone, Debug, Default, Reflect)]
-pub struct PauseModel {
-    pub can_leave: bool,
-}
-
-/// What the settings' paths read.
-#[derive(Clone, Debug, Default, Reflect)]
-pub struct SettingsModel {
     /// The key of the language's name.
     pub language: String,
     /// The key of the size's name.
@@ -152,14 +93,18 @@ pub struct SettingsModel {
     pub rumble: String,
 }
 
-impl SettingsModel {
-    fn of(settings: &PlayerSettings) -> Self {
-        Self {
-            language: format!("settings-language-{}", settings.known_language()),
-            size: format!("settings-size-{}", settings.size),
-            sound: i32::from(settings.sound),
-            rumble: format!("settings-rumble-{}", if settings.rumble { "on" } else { "off" }),
-        }
+impl MenuModel {
+    fn of(settings: &PlayerSettings, can_leave: bool, can_continue: bool) -> Self {
+        let mut model = Self { can_leave, can_continue, ..Self::default() };
+        model.show_settings(settings);
+        model
+    }
+
+    fn show_settings(&mut self, settings: &PlayerSettings) {
+        self.language = format!("settings-language-{}", settings.known_language());
+        self.size = format!("settings-size-{}", settings.size);
+        self.sound = i32::from(settings.sound);
+        self.rumble = format!("settings-rumble-{}", if settings.rumble { "on" } else { "off" });
     }
 }
 
@@ -349,6 +294,8 @@ impl PlayerSettings {
 /// How a [`GameMenus`] starts.
 #[derive(Clone, Debug)]
 pub struct MenuSetup {
+    /// The game's screens.
+    pub screens: MenuDocument,
     pub settings: PlayerSettings,
     /// Whether this platform has a way out to offer.
     pub can_leave: bool,
@@ -358,7 +305,7 @@ pub struct MenuSetup {
 
 /// What the menus ask of whoever holds them. A game's flow takes most of them as its own commands
 /// (`game_flow::flow_command`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MenuCommand {
     /// The title's new game.
     NewGame,
@@ -382,20 +329,8 @@ pub enum MenuCommand {
     DialogueChose(u8),
 }
 
-/// What a node with focus does when chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuAction {
-    Command(MenuCommand),
-    /// Another screen on top.
-    Open(MenuScreen),
-    /// Steps a setting.
-    Step(Setting),
-    /// The document's machine does all there is, by what the node fires.
-    Nothing,
-}
-
 /// A setting a press steps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Setting {
     Language,
     Size,
@@ -403,47 +338,30 @@ pub enum Setting {
     Rumble,
 }
 
-/// What choosing the node `name` on `screen` does: `None` for a node nothing's been written for, which a test
-/// keeps any document from having.
-#[must_use]
-pub fn action_of(screen: MenuScreen, name: &str) -> Option<MenuAction> {
-    use MenuAction::{Command, Nothing, Open, Step};
-    Some(match (screen, name) {
-        (MenuScreen::Title, "continue") => Command(MenuCommand::Continue),
-        (MenuScreen::Title, "new") => Command(MenuCommand::NewGame),
-        (MenuScreen::Pause, "to-title") => Command(MenuCommand::ToTitle),
-        (MenuScreen::Title | MenuScreen::Pause, "settings") => Open(MenuScreen::Settings),
-        (MenuScreen::Title | MenuScreen::Pause, "leave") => Command(MenuCommand::Leave),
-        (MenuScreen::Pause, "resume") => Command(MenuCommand::Resume),
-        (MenuScreen::Pause, "character") => Open(MenuScreen::Character),
-        (MenuScreen::Settings, "language") => Step(Setting::Language),
-        (MenuScreen::Settings, "size") => Step(Setting::Size),
-        (MenuScreen::Settings, "sound") => Step(Setting::Sound),
-        (MenuScreen::Settings, "rumble") => Step(Setting::Rumble),
-        (MenuScreen::Settings | MenuScreen::Character, "back") => Nothing,
-        (MenuScreen::Character, "skill-attack" | "skill-dodge" | "skill-art") => Nothing,
-        (MenuScreen::Dialogue, "next") => Command(MenuCommand::DialogueNext),
-        (MenuScreen::Dialogue, "first") => Command(MenuCommand::DialogueChose(0)),
-        (MenuScreen::Dialogue, "second") => Command(MenuCommand::DialogueChose(1)),
-        (MenuScreen::Dialogue, "third") => Command(MenuCommand::DialogueChose(2)),
-        (MenuScreen::Dialogue, "fourth") => Command(MenuCommand::DialogueChose(3)),
-        (MenuScreen::Hud, "pause") => Command(MenuCommand::Pause),
-        (MenuScreen::Hud, "skip") => Command(MenuCommand::Skip),
-        _ => return None,
-    })
+/// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate.
+#[derive(Clone, Copy, Debug)]
+enum Chosen {
+    Command(MenuCommand),
+    /// The screen at this place in the document.
+    Open(usize),
+    Step(Setting),
+    Nothing,
 }
 
 /// See this module.
 #[derive(Debug)]
 pub struct GameMenus {
     stack: ScreenStack,
-    /// Which screen each of the stack's is.
-    shown: Vec<MenuScreen>,
-    /// In [`MenuScreen::ALL`]'s order.
+    /// Where in the document each of the stack's screens is.
+    shown: Vec<usize>,
+    /// The game's screens.
+    screens: MenuDocument,
+    /// In the document's order.
     documents: Vec<UiDocument>,
     controls: MenuControls,
     settings: PlayerSettings,
     can_leave: bool,
+    can_continue: bool,
     commands: Vec<MenuCommand>,
     events: Vec<UiEvent>,
     /// The name of a focus timeline, kept to be written into.
@@ -452,10 +370,19 @@ pub struct GameMenus {
 }
 
 impl GameMenus {
-    /// Menus over `assets`, which [`MenuScreen::ids`] asked for, sharing `atlas` with the HUD. Nothing shows
-    /// until something [`Self::open`]s.
+    /// Menus over `assets`, which `setup`'s screens' [`MenuDocument::ids`] asked for, sharing `atlas` with the
+    /// HUD. Nothing shows until something [`Self::open`]s. The screens have to have those that are
+    /// [`OPENED_BY_CODE`].
     pub fn new(assets: ScreenAssets, atlas: Atlas, setup: MenuSetup) -> Result<Self, String> {
-        let MenuSetup { settings, can_leave, pseudo } = setup;
+        let MenuSetup { screens, settings, can_leave, pseudo } = setup;
+        screens.require(&OPENED_BY_CODE)?;
+        if assets.documents.len() != screens.screens.len() {
+            return Err(format!(
+                "{} screens and {} documents: the documents are the screens' `ids()`",
+                screens.screens.len(),
+                assets.documents.len()
+            ));
+        }
         let stack = ScreenStack::new(
             assets.tables,
             assets.fonts,
@@ -466,11 +393,13 @@ impl GameMenus {
         controls.set_player_scale(settings.scale());
         Ok(Self {
             stack,
-            shown: Vec::with_capacity(MenuScreen::ALL.len()),
+            shown: Vec::with_capacity(screens.screens.len()),
+            screens,
             documents: assets.documents,
             controls,
             settings,
             can_leave,
+            can_continue: false,
             commands: Vec::with_capacity(8),
             events: Vec::with_capacity(8),
             timeline: String::with_capacity(32),
@@ -478,30 +407,39 @@ impl GameMenus {
         })
     }
 
+    /// The game's screens.
+    #[must_use]
+    pub fn screens(&self) -> &MenuDocument {
+        &self.screens
+    }
+
     /// Puts `screen` on top, opening from the frame's time.
     pub fn open(&mut self, screen: MenuScreen) {
-        let model = self.model_of(screen);
-        self.place(screen, model, self.shown.len());
+        match self.screens.place(screen) {
+            Some(place) => self.place(place, self.shown.len()),
+            None => tracing::error!(target: crate::LOG_TARGET, ?screen, "no such screen to open"),
+        }
     }
 
     /// Puts `screen` under whatever's showing, for what's behind them when they go: the HUD under a title.
     pub fn open_under(&mut self, screen: MenuScreen) {
-        let model = self.model_of(screen);
-        self.place(screen, model, 0);
-    }
-
-    fn model_of(&self, screen: MenuScreen) -> Box<dyn PartialReflect> {
-        match screen {
-            MenuScreen::Title => Box::new(TitleModel { can_leave: self.can_leave, can_continue: false }),
-            MenuScreen::Pause => Box::new(PauseModel { can_leave: self.can_leave }),
-            MenuScreen::Settings => Box::new(SettingsModel::of(&self.settings)),
-            MenuScreen::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
-            other => other.sample_model(),
+        match self.screens.place(screen) {
+            Some(place) => self.place(place, 0),
+            None => tracing::error!(target: crate::LOG_TARGET, ?screen, "no such screen to open"),
         }
     }
 
-    fn place(&mut self, screen: MenuScreen, model: Box<dyn PartialReflect>, index: usize) {
-        let document = &self.documents[screen.index()];
+    fn model_of(&self, kind: ScreenModel) -> Box<dyn PartialReflect> {
+        match kind {
+            ScreenModel::Menu => Box::new(MenuModel::of(&self.settings, self.can_leave, self.can_continue)),
+            ScreenModel::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
+            other => other.sample(),
+        }
+    }
+
+    fn place(&mut self, place: usize, index: usize) {
+        let model = self.model_of(self.screens.screens[place].model);
+        let document = &self.documents[place];
         // A document that's been cooked has passed everything a tree refuses.
         let placed = if index == self.shown.len() {
             self.stack.push(document, model, self.now, Vec::new())
@@ -509,14 +447,27 @@ impl GameMenus {
             self.stack.push_under(document, model, self.now)
         };
         match placed {
-            Ok(()) => self.shown.insert(index, screen),
-            Err(error) => tracing::error!(target: crate::LOG_TARGET, %error, ?screen, "a menu can't open"),
+            Ok(()) => self.shown.insert(index, place),
+            Err(error) => {
+                let screen = &self.screens.screens[place].name;
+                tracing::error!(target: crate::LOG_TARGET, %error, %screen, "a menu can't open");
+            }
         }
+    }
+
+    /// Where on the stack `screen` is, if it's showing.
+    fn index_of(&self, screen: MenuScreen) -> Option<usize> {
+        let place = self.screens.place(screen)?;
+        self.shown.iter().position(|shown| *shown == place)
+    }
+
+    fn entry_at(&self, index: usize) -> &ScreenEntry {
+        &self.screens.screens[self.shown[index]]
     }
 
     /// Takes `screen` out through its machine, if it's showing.
     pub fn close(&mut self, screen: MenuScreen) {
-        let Some(index) = self.shown.iter().position(|shown| *shown == screen) else { return };
+        let Some(index) = self.index_of(screen) else { return };
         // One that's never been drawn has nothing to leave through, and would open at its first draw; one
         // with no machine, the HUD's, has none at all.
         if self.stack.has_opened(index) && self.stack.tree(index).state().is_some() {
@@ -527,10 +478,10 @@ impl GameMenus {
         }
     }
 
-    /// Takes every screen but the HUD out.
+    /// Takes every modal screen out: all but the HUD's words.
     pub fn close_all(&mut self) {
         for index in 0..self.shown.len() {
-            if self.shown[index] != MenuScreen::Hud {
+            if self.entry_at(index).modal {
                 self.stack.tree_mut(index).fire("close", self.now);
             }
         }
@@ -556,7 +507,14 @@ impl GameMenus {
     /// Whether `screen` is showing and isn't on its way out.
     #[must_use]
     pub fn is_open(&self, screen: MenuScreen) -> bool {
-        self.shown.iter().position(|shown| *shown == screen).is_some_and(|index| self.stays(index))
+        self.index_of(screen).is_some_and(|index| self.stays(index))
+    }
+
+    /// Whether a screen reading `kind` of model is showing and isn't on its way out: the character screen,
+    /// or any other a fighter shows on.
+    #[must_use]
+    pub fn shows(&self, kind: ScreenModel) -> bool {
+        (0..self.shown.len()).any(|index| self.entry_at(index).model == kind && self.stays(index))
     }
 
     /// Whether the screen at `index` isn't on its way out, or out already and waiting to be taken away.
@@ -567,7 +525,7 @@ impl GameMenus {
     /// Whether a screen that takes presses is up: while one is, a fight's bindings mustn't see them.
     #[must_use]
     pub fn is_modal(&self) -> bool {
-        self.shown.iter().enumerate().any(|(index, screen)| *screen != MenuScreen::Hud && self.stays(index))
+        (0..self.shown.len()).any(|index| self.entry_at(index).modal && self.stays(index))
     }
 
     /// The controls, for a test's raw input and for rebinding.
@@ -587,16 +545,33 @@ impl GameMenus {
         self.stack.text(WINDOW_TITLE)
     }
 
+    /// Whether there's a run to go on with, which every menu's [`MenuModel::can_continue`] shows from now
+    /// on. It allocates nothing, so a frame can say it.
+    pub fn set_can_continue(&mut self, can_continue: bool) {
+        self.can_continue = can_continue;
+        self.visit_models(|model: &mut MenuModel| model.can_continue = can_continue);
+    }
+
     /// The tree of `screen`, if it's showing.
     #[must_use]
     pub fn tree(&self, screen: MenuScreen) -> Option<&UiTree> {
-        self.shown.iter().position(|shown| *shown == screen).map(|index| self.stack.tree(index))
+        self.index_of(screen).map(|index| self.stack.tree(index))
     }
 
     /// The model of `screen`, if it's showing and it's a `T`.
     pub fn model_mut<T: PartialReflect>(&mut self, screen: MenuScreen) -> Option<&mut T> {
-        let index = self.shown.iter().position(|shown| *shown == screen)?;
+        let index = self.index_of(screen)?;
         self.stack.model_mut::<T>(index)
+    }
+
+    /// Hands `visit` the model of every screen showing that's a `T`: what fills a kind of model on whichever
+    /// screens read it.
+    pub fn visit_models<T: PartialReflect>(&mut self, mut visit: impl FnMut(&mut T)) {
+        for index in 0..self.shown.len() {
+            if let Some(model) = self.stack.model_mut::<T>(index) {
+                visit(model);
+            }
+        }
     }
 
     /// A platform event, for the next [`Self::update`].
@@ -604,12 +579,14 @@ impl GameMenus {
         self.controls.handle_event(event);
     }
 
-    /// Whether a landing at `share` of the window is on something of the HUD's document that takes it: a touch
-    /// the fight's zones must then leave alone.
+    /// Whether a landing at `share` of the window is on something of a screen that isn't modal (the HUD's
+    /// words) that takes it: a touch the fight's zones must then leave alone.
     #[must_use]
     pub fn hud_takes(&self, share: Vec2) -> bool {
-        self.tree(MenuScreen::Hud)
-            .is_some_and(|tree| matches!(tree.hit(share * tree.size()), UiHit::Focusable(_)))
+        (0..self.shown.len()).filter(|&index| !self.entry_at(index).modal).any(|index| {
+            let tree = self.stack.tree(index);
+            matches!(tree.hit(share * tree.size()), UiHit::Focusable(_))
+        })
     }
 
     /// Follows `window`: what a finger's place means, and how large a point is.
@@ -642,47 +619,61 @@ impl GameMenus {
         self.read_events();
     }
 
+    /// What `action` does, with the screen it opens found.
+    fn chosen(&self, action: Option<&RowAction>) -> Chosen {
+        match action {
+            Some(RowAction::Command(command)) => Chosen::Command(*command),
+            // The document's check has held every screen a row opens to one of its own.
+            Some(RowAction::Open(name)) => self
+                .screens
+                .screens
+                .iter()
+                .position(|screen| screen.name == *name)
+                .map_or(Chosen::Nothing, Chosen::Open),
+            Some(RowAction::Step(setting)) => Chosen::Step(*setting),
+            Some(RowAction::Nothing) | None => Chosen::Nothing,
+        }
+    }
+
     fn read_events(&mut self) {
         let Some(top) = self.shown.len().checked_sub(1) else { return };
-        let screen = self.shown[top];
         let mut events = std::mem::take(&mut self.events);
         self.stack.drain_events(&mut events);
         for event in events.drain(..) {
+            let entry = self.entry_at(top);
             match event {
                 UiEvent::Activated(node) => {
-                    let action = action_of(screen, self.stack.tree(top).name(node));
-                    self.act(action);
+                    let chosen = self.chosen(entry.action(self.stack.tree(top).name(node)));
+                    self.act(chosen);
                 }
-                UiEvent::Back => match screen {
-                    MenuScreen::Title => self.commands.push(MenuCommand::Leave),
-                    MenuScreen::Pause => self.commands.push(MenuCommand::Resume),
-                    _ => {}
-                },
-                UiEvent::FocusMoved { to: Some(node), .. } => self.focus_moved(top, screen, node),
+                UiEvent::Back => {
+                    let chosen = self.chosen(entry.back.as_ref());
+                    self.act(chosen);
+                }
+                UiEvent::FocusMoved { to: Some(node), .. } => self.focus_moved(top, node),
                 UiEvent::FocusMoved { to: None, .. } => {}
             }
         }
         self.events = events;
     }
 
-    fn act(&mut self, action: Option<MenuAction>) {
-        match action {
-            Some(MenuAction::Command(command)) => self.commands.push(command),
-            Some(MenuAction::Open(screen)) => self.open(screen),
-            Some(MenuAction::Step(setting)) => self.step(setting),
-            Some(MenuAction::Nothing) | None => {}
+    fn act(&mut self, chosen: Chosen) {
+        match chosen {
+            Chosen::Command(command) => self.commands.push(command),
+            Chosen::Open(place) => self.place(place, self.shown.len()),
+            Chosen::Step(setting) => self.step(setting),
+            Chosen::Nothing => {}
         }
     }
 
-    /// What focus landing on a node does: its kick, and on the character screen what the line under says.
-    fn focus_moved(&mut self, top: usize, screen: MenuScreen, node: sapphire_ui::UiNodeId) {
+    /// What focus landing on a node does: its kick, and on a character's screen what the line under says.
+    fn focus_moved(&mut self, top: usize, node: sapphire_ui::UiNodeId) {
+        let character = self.entry_at(top).model == ScreenModel::Character;
         let tree = self.stack.tree(top);
         self.timeline.clear();
         let name = tree.name(node);
         let _ = write!(self.timeline, "focus-{name}");
-        if screen == MenuScreen::Character
-            && let Some(skill) = name.strip_prefix("skill-")
-        {
+        if character && let Some(skill) = name.strip_prefix("skill-") {
             let detail = format!("character-detail-{skill}");
             if let Some(model) = self.stack.model_mut::<CharacterModel>(top) {
                 model.detail = detail;
@@ -691,7 +682,7 @@ impl GameMenus {
         self.stack.tree_mut(top).play(&self.timeline, self.now);
     }
 
-    /// Steps a setting on, shows it, and says it's time to keep them.
+    /// Steps a setting on, shows it on every menu, and says it's time to keep them.
     fn step(&mut self, setting: Setting) {
         let settings = &mut self.settings;
         match setting {
@@ -716,10 +707,8 @@ impl GameMenus {
         }
         self.stack.set_scale(scale);
         self.controls.set_player_scale(scale);
-        let shown = SettingsModel::of(&self.settings);
-        if let Some(model) = self.model_mut::<SettingsModel>(MenuScreen::Settings) {
-            *model = shown;
-        }
+        let settings = self.settings.clone();
+        self.visit_models(|model: &mut MenuModel| model.show_settings(&settings));
         self.commands.push(MenuCommand::SettingsChanged);
     }
 

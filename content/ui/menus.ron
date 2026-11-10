@@ -1,0 +1,82 @@
+// The game's screens (M3 U9): each its document (`<name>.ui.ron`, by its sidecar's ID), the model it reads,
+// whether it takes the presses a fight would, what back does on it beyond its machine, and what each of its
+// focusable nodes does. A screen showing only what `Menu` holds (a way out, a run to continue, the player's
+// settings) is documents alone: its `.ui.ron` and sidecar, its strings in `content/loc/`, and a row here.
+// `game_ui`'s tests hold every focusable node to a row and every key to both languages. The code opens the
+// title, the pause, the HUD and the dialogue itself, so a game has to have those. How to add one is in
+// `docs/m4-handoff.md`.
+(
+    type: "sapphire::game::MenuDocument",
+    version: 1,
+    data: (
+        screens: [
+            (
+                name: "title",
+                document: "a733bc8e-d4f9-4e85-a8d5-7c7d30b5e30d",
+                back: Some(Command(Leave)),
+                rows: [
+                    (node: "continue", does: Command(Continue)),
+                    (node: "new", does: Command(NewGame)),
+                    (node: "settings", does: Open("settings")),
+                    (node: "leave", does: Command(Leave)),
+                ],
+            ),
+            (
+                name: "pause",
+                document: "2be53fec-1a42-4f0b-a6b4-f2781357c0fb",
+                back: Some(Command(Resume)),
+                rows: [
+                    (node: "resume", does: Command(Resume)),
+                    (node: "character", does: Open("character")),
+                    (node: "settings", does: Open("settings")),
+                    (node: "to-title", does: Command(ToTitle)),
+                    (node: "leave", does: Command(Leave)),
+                ],
+            ),
+            (
+                name: "settings",
+                document: "cf52ef55-199e-426f-adea-52940c953a9f",
+                rows: [
+                    (node: "language", does: Step(Language)),
+                    (node: "size", does: Step(Size)),
+                    (node: "sound", does: Step(Sound)),
+                    (node: "rumble", does: Step(Rumble)),
+                    (node: "back", does: Nothing),
+                ],
+            ),
+            (
+                name: "character",
+                document: "014b8262-3dda-4d77-a391-9ee209740962",
+                model: Character,
+                rows: [
+                    (node: "skill-attack", does: Nothing),
+                    (node: "skill-dodge", does: Nothing),
+                    (node: "skill-art", does: Nothing),
+                    (node: "back", does: Nothing),
+                ],
+            ),
+            (
+                name: "dialogue",
+                document: "1c4f98ba-d58a-46d3-b8df-8be091d9e5dc",
+                model: Dialogue,
+                rows: [
+                    (node: "next", does: Command(DialogueNext)),
+                    (node: "first", does: Command(DialogueChose(0))),
+                    (node: "second", does: Command(DialogueChose(1))),
+                    (node: "third", does: Command(DialogueChose(2))),
+                    (node: "fourth", does: Command(DialogueChose(3))),
+                ],
+            ),
+            (
+                name: "hud",
+                document: "a86b3aa5-faf3-4fb2-ab2c-27e9b0dae713",
+                model: Hud,
+                modal: false,
+                rows: [
+                    (node: "pause", does: Command(Pause)),
+                    (node: "skip", does: Command(Skip)),
+                ],
+            ),
+        ],
+    ),
+)

@@ -6,8 +6,14 @@ use sapphire_input::{PadButton, RawInput};
 use sapphire_look::UiDrawList;
 use sapphire_math::Vec2;
 use sapphire_platform::{GamepadType, Scancode, Timestamp, TouchPhase};
-use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, UiTree};
+
+use super::Screens;
+
+/// The settings, which no code opens: the game's documents do.
+pub const SETTINGS: MenuScreen = MenuScreen::named("settings");
+/// The character screen, likewise.
+pub const CHARACTER: MenuScreen = MenuScreen::named("character");
 
 /// How a walk presses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,9 +36,10 @@ pub struct Walk {
 }
 
 impl Walk {
-    pub fn new(assets: ScreenAssets, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
+    pub fn new(screens: Screens, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
         let settings = PlayerSettings { language: locale.to_owned(), ..PlayerSettings::default() };
-        let setup = MenuSetup { settings, can_leave: true, pseudo };
+        let Screens { assets, menus: screens } = screens;
+        let setup = MenuSetup { screens, settings, can_leave: true, pseudo };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
         let at = Timestamp::from_nanos(1);
         menus.controls_mut().push(at, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
@@ -176,9 +183,9 @@ impl Walk {
 
     /// A finger on a short list drags what it wants to where it can land on it.
     pub fn drag_to(&mut self, screen: MenuScreen, node: &str) {
-        let list = match (screen, node) {
-            (MenuScreen::Settings, "language" | "size" | "sound" | "rumble") => "list",
-            (MenuScreen::Character, "skill-attack" | "skill-dodge" | "skill-art") => "skills",
+        let list = match node {
+            "language" | "size" | "sound" | "rumble" if screen == SETTINGS => "list",
+            "skill-attack" | "skill-dodge" | "skill-art" if screen == CHARACTER => "skills",
             _ => return,
         };
         let scale = self.menus.settings().scale();
@@ -221,7 +228,7 @@ impl Walk {
             wrong.push(format!("{at}: {:?}", tree.problems()));
         }
         let unreachable = tree.unreachable();
-        if !unreachable.is_empty() && !matches!(screen, MenuScreen::Hud) {
+        if !unreachable.is_empty() && screen != MenuScreen::HUD {
             wrong.push(format!("{at}: can't reach {unreachable:?}"));
         }
         let overflowing = tree.overflowing();

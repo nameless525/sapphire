@@ -239,9 +239,9 @@ The worked example is [court_gate.timeline.ron](../content/zones/lantern_ward/co
 
 The worked examples are the six documents in [content/ui/](../content/ui/). Spec §5.17 is the reference.
 
-1. **The screen:** `content/ui/<name>.ui.ron` with its sidecar, naming its model `<name>.model.ron`, a list of `(path, kind)` that a cook holds every binding to. Its nodes are laid out by `taffy`, with `key_from` for a key chosen at run time under a prefix, and it has `timelines`, `states` and `transitions`.
+1. **The screen:** `content/ui/<name>.ui.ron` with its sidecar, naming the model it reads, a list of `(path, kind)` that a cook holds every binding to: `menu.model.ron` (a way out, a run to continue, the player's settings), or `character`, `dialogue` or `hud.model.ron` for a screen showing those live values. Its nodes are laid out by `taffy`, with `key_from` for a key chosen at run time under a prefix, and it has `timelines`, `states` and `transitions`.
 2. **Strings:** keys in `content/loc/{en,ja}/game_ui.ftl`, the Japanese under the file's machine-quality mark, and new Han in `content/fonts/ui.charset.ron`. Then run `cargo test -p game_ui --test strings --test menus`.
-3. **Rust step, today: a new screen is code.** `game_ui::menus::MenuScreen` lists the screens, with a model struct for each, `ALL`, `ids()`, `stem()` and the table of what each row does, and `game_ui`'s strings test holds the documents to that list.
+3. **Its row** in `content/ui/menus.ron` (M3 U9): its `name`, its `document` by the sidecar's ID, its `model` (`Menu` unless it reads another), `modal: false` only for words under the fight, what `back` does beyond its machine, and a row for each focusable node: `Command(..)` for the flow, `Open("<screen>")`, `Step(..)` for a setting, or `Nothing`. A row on another screen that opens it is how it's reached; that screen's document needs the node. `game_ui`'s menus and strings tests read the list, so they hold its nodes and keys with no change to them, and `a_new_screen_is_documents` is the worked example.
 
    Changing an existing screen's look, layout, words or motion is documents alone: the editor's screen pane shows an edit on the next frame, and live link reaches a running game. A `.model.ron` is in field order by path, so on a merge, rebuild it from its model struct.
 4. **Look at it:** run
@@ -290,7 +290,7 @@ M3's first pillar counts each of these as a bug:
 - **A replay's scripted input** is a row in `crates/sapphire_gameplay/src/replay/script.rs`. Recording on an existing script needs none.
 - **A new player move** joins `MOVES` (and `ATTACKS`) in `tools/sapphire_pipeline/tests/player_moves.rs`.
 - **The sandbox's dialogue preview** always shows the guide.
-- **A new screen** is a `MenuScreen` variant with a model struct.
+- **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
 - **A shelved zone** is a row of `BAKED_ZONES` in `replay/scenario.rs`.
 - **A placeholder sound** is a row in `tools/sapphire_soundgen`.
 

@@ -7,7 +7,7 @@ pub mod walk;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use game_ui::menus::MenuScreen;
+use game_ui::menus::{MenuDocument, MenuScreen};
 use sapphire_assets::font::Font;
 use sapphire_assets::ui::UiDocument;
 use sapphire_loc::StringTable;
@@ -57,14 +57,43 @@ pub fn boss_names() -> BTreeSet<String> {
     keys
 }
 
-pub fn document(screen: MenuScreen) -> UiDocument {
-    let path = content().join(format!("ui/{}.ui.ron", screen.stem()));
-    UiDocument::from_document(&std::fs::read_to_string(path).unwrap()).unwrap()
+/// The game's screens, as `content/ui/menus.ron` has them.
+pub fn menus() -> MenuDocument {
+    MenuDocument::from_ron(&std::fs::read_to_string(content().join("ui/menus.ron")).unwrap()).unwrap()
 }
 
-/// The screens' assets, each font whole and uncut, with no display face's field: every glyph draws from
-/// the pages.
-pub fn assets() -> ScreenAssets {
+/// The document of the screen named `name`: `<name>.ui.ron` in the first of `dirs` that has one.
+pub fn document_in(name: &str, dirs: &[PathBuf]) -> UiDocument {
+    let path = dirs
+        .iter()
+        .map(|dir| dir.join(format!("{name}.ui.ron")))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| panic!("no {name}.ui.ron in {dirs:?}"));
+    UiDocument::from_document(&std::fs::read_to_string(&path).unwrap())
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// The game's document of `screen`.
+pub fn document(screen: MenuScreen) -> UiDocument {
+    let menus = menus();
+    document_in(&menus.entry(screen).expect("one of the game's screens").name, &[content().join("ui")])
+}
+
+/// What menus are made of: the screens, and their assets in the screens' order.
+pub struct Screens {
+    pub assets: ScreenAssets,
+    pub menus: MenuDocument,
+}
+
+/// The game's screens and their assets, each font whole and uncut, with no display face's field: every glyph
+/// draws from the pages.
+pub fn assets() -> Screens {
+    screens_of(menus(), &[content().join("ui")])
+}
+
+/// `menus` and their assets, each screen's document from the first of `dirs` that has it, as [`assets`]
+/// has them.
+pub fn screens_of(menus: MenuDocument, dirs: &[PathBuf]) -> Screens {
     let dir = content().join("third_party");
     let fonts = [
         ("M PLUS 1", "mplus1/MPLUS1[wght].ttf"),
@@ -80,9 +109,34 @@ pub fn assets() -> ScreenAssets {
         field: None,
     })
     .to_vec();
-    ScreenAssets {
-        documents: MenuScreen::ALL.map(document).to_vec(),
-        tables: vec![table("en"), table("ja")],
-        fonts,
-    }
+    let documents = menus.screens.iter().map(|screen| document_in(&screen.name, dirs)).collect();
+    Screens { assets: ScreenAssets { documents, tables: vec![table("en"), table("ja")], fonts }, menus }
+}
+
+/// Where the tests' fixtures are: documents no game has.
+pub fn testdata() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")
+}
+
+/// The ID `tests/testdata/help.ui.ron` would have: it's never cooked, so it has no sidecar.
+pub const HELP: &str = "5f0c7f4e-9d3b-4a51-8e2a-6b1d0c9e7a43";
+
+/// The game's screens with one more, `tests/testdata/help.ui.ron`, which the pause's settings row now opens:
+/// what a game adding a screen writes, all of it documents.
+pub fn with_help() -> MenuDocument {
+    let text = std::fs::read_to_string(content().join("ui/menus.ron")).unwrap();
+    let pause_rows = "(node: \"character\", does: Open(\"character\")),\n                    \
+                      (node: \"settings\", does: Open(\"settings\")),";
+    assert!(text.contains(pause_rows), "the pause's rows as the test knows them");
+    let text = text.replacen(
+        pause_rows,
+        "(node: \"character\", does: Open(\"character\")),\n(node: \"settings\", does: Open(\"help\")),",
+        1,
+    );
+    let end = text.rfind("        ],\n    ),\n)").expect("the end of the screens");
+    let help = format!(
+        "(name: \"help\", document: \"{HELP}\", back: Some(Command(Resume)), rows: [\
+         (node: \"settings\", does: Open(\"settings\")), (node: \"back\", does: Nothing)]),\n"
+    );
+    MenuDocument::from_ron(&format!("{}{help}{}", &text[..end], &text[end..])).expect("reads")
 }

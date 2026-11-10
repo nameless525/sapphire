@@ -91,7 +91,7 @@ pub fn stand_ins(model: &UiModel) -> Vec<(String, StandIn)> {
 }
 
 /// Sets each of `values` to what `sample` reads at its path, where it reads a number, a flag or a text there: a
-/// game's model as it stands, such as `game_ui::menus::MenuScreen::sample_model`.
+/// game's model as it stands, such as `game_ui::menus::ScreenModel::sample`.
 pub fn read_from(values: &mut [(String, StandIn)], sample: &dyn PartialReflect) {
     for (path, value) in values {
         if let Some(read) = stand_in_at(sample, path) {

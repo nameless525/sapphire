@@ -399,11 +399,11 @@ fn the_game_s_screens_cook_in_both_languages_and_bring_their_characters() {
     ] {
         copy(file.to_owned());
     }
-    for stem in ["title", "pause", "settings", "character", "dialogue", "hud"] {
-        for file in
-            [format!("ui/{stem}.model.ron"), format!("ui/{stem}.ui.ron"), format!("ui/{stem}.ui.ron.meta")]
-        {
-            copy(file);
+    // Every screen and model the game has, with no list of them (M3 U9).
+    for entry in fs::read_dir(repo_content().join("ui")).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        if [".ui.ron", ".ui.ron.meta", ".model.ron"].iter().any(|end| name.ends_with(end)) {
+            copy(format!("ui/{name}"));
         }
     }
     for file in ["loc/en.locale.ron", "loc/en.locale.ron.meta", "loc/ja.locale.ron", "loc/ja.locale.ron.meta"]

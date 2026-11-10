@@ -3,7 +3,7 @@
     type: "sapphire::assets::UiDocument",
     version: 2,
     data: (
-        model: "title.model.ron",
+        model: "menu.model.ron",
         styles: [
             (name: "name", role: "display", size: 48, weight: 700),
             (name: "tagline", role: "body", size: 18, weight: 500),

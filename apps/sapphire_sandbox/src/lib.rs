@@ -164,8 +164,9 @@
 //!   behind it, so a capture doesn't move with the scene. `character` holds the 3D inset (M3 U6), which the
 //!   sandbox stands a showcase of the character for: `--ui-turn <across>` turns it as a drag across that
 //!   share of its width would, and `--ui-spin <across>` turns it that much more each frame of a bench, so it
-//!   draws every frame. `--ui-dialogue <lines>`, with `--ui-game dialogue`, puts the panel on the Lantern
-//!   Ward guide's cooked conversation that many lines in, in place of its sample (M3 Q2b).
+//!   draws every frame. `--ui-dialogue [<name>:]<lines>`, with `--ui-game dialogue`, puts the panel on
+//!   `content/dialogue/<name>.dialogue.ron`'s cooked conversation that many lines in, in place of its
+//!   sample (M3 Q2b, Z5e); with no name, the Lantern Ward guide's.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

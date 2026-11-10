@@ -10,7 +10,7 @@ use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
 
-use crate::screen::ScreenOptions;
+use crate::screen::{DialoguePreview, ScreenOptions};
 use game_combat::arena::ArenaShot;
 use game_combat::combat::{CaptureFrames, CombatOption};
 use game_combat::combat_views::CombatViews;
@@ -857,7 +857,7 @@ impl Options {
                     }
                     ui_spin = Some(across);
                 }
-                "--ui-dialogue" => ui_dialogue = Some(number(&value("--ui-dialogue")?, "--ui-dialogue")?),
+                "--ui-dialogue" => ui_dialogue = Some(DialoguePreview::parse(&value("--ui-dialogue")?)?),
                 "--ui-time" => {
                     let seconds: f32 = number(&value("--ui-time")?, "--ui-time")?;
                     if !(seconds >= 0.0 && seconds.is_finite()) {

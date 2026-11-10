@@ -2,8 +2,9 @@
 //! document names them (M3 U9), `content/ui/<name>.ui.ron` on its kind's sample model, in the language asked for, which is what the `game-*` goldens show and what hot reload and
 //! live link reach. It opens at the clock's start, is read at `--ui-time`, after the steps of `--ui-walk`, and
 //! `--ui-plain` stands a flat color behind it. `game_ui::screen` shows it, and no window's input reaches it: a
-//! game's own menus run in `game_app`. `--ui-dialogue <nexts>` puts the dialogue panel on a real conversation
-//! in place of its sample: the Lantern Ward guide's, cooked, that many lines in (M3 Q2b).
+//! game's own menus run in `game_app`. `--ui-dialogue [<name>:]<nexts>` puts the dialogue panel on a real
+//! conversation in place of its sample: `content/dialogue/<name>.dialogue.ron`, cooked, that many lines in
+//! (M3 Q2b), found by its name with no list in code (M3 Z5e), and the Lantern Ward guide's with no name.
 
 use bevy_reflect::PartialReflect;
 use game_ui::menus::{DialogueModel, MenuDocument, ScreenModel};
@@ -16,9 +17,44 @@ use sapphire_rhi::GpuContext;
 use sapphire_stage::content::{Content, ScreenAssets};
 use sapphire_ui::{Atlas, UiStep};
 
-/// The Lantern Ward guide's dialogue, `content/dialogue/ward_guide.dialogue.ron`, which `--ui-dialogue`
-/// walks.
-pub const WARD_GUIDE: AssetId = AssetId::from_text("7b3a0339-b2a1-4ac8-9cfa-458d4b0134a7");
+include!(concat!(env!("OUT_DIR"), "/dialogues.rs"));
+
+/// The dialogue `--ui-dialogue` walks with no name: the Lantern Ward guide's,
+/// `content/dialogue/ward_guide.dialogue.ron`, which the `game-guide-*` goldens show.
+pub const GUIDE: &str = "ward_guide";
+
+/// `--ui-dialogue`: a conversation the dialogue panel shows in place of its sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DialoguePreview {
+    /// The dialogue, by its file's name in `content/dialogue/` before `.dialogue.ron`.
+    pub name: String,
+    /// Lines past its first.
+    pub lines: u32,
+}
+
+impl DialoguePreview {
+    /// `[<name>:]<lines>`, the guide's with no name.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let (name, lines) = raw.split_once(':').unwrap_or((GUIDE, raw));
+        let lines =
+            lines.parse().map_err(|_| format!("--ui-dialogue expects [<name>:]<lines>, got {raw:?}"))?;
+        Ok(Self { name: name.to_owned(), lines })
+    }
+
+    /// Its cooked dialogue's ID, from its sidecar, which the build read.
+    pub fn id(&self) -> Result<AssetId, String> {
+        let found = DIALOGUES.iter().find(|(name, _)| *name == self.name);
+        let (_, id) = found.ok_or_else(|| {
+            let names: Vec<&str> = DIALOGUES.iter().map(|(name, _)| *name).collect();
+            format!(
+                "--ui-dialogue: `{}` isn't one of the content's dialogues: {}",
+                self.name,
+                names.join(", ")
+            )
+        })?;
+        id.parse().map_err(|_| format!("--ui-dialogue: `{}`'s sidecar has `{id}` for an ID", self.name))
+    }
+}
 
 /// How `--ui-game` shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,9 +79,9 @@ pub struct ScreenOptions {
     pub turn: f32,
     /// `--ui-spin`: as `turn`, again each frame a bench runs, so its insets draw every frame.
     pub spin: f32,
-    /// `--ui-dialogue`: the panel on [`WARD_GUIDE`]'s conversation, this many lines past its first, in a
-    /// world where none of its conditions holds and nothing it sets lands.
-    pub dialogue: Option<u32>,
+    /// `--ui-dialogue`: the panel on that conversation, its lines past its first, in a world where none of
+    /// its conditions holds and nothing it sets lands.
+    pub dialogue: Option<DialoguePreview>,
 }
 
 /// Where the screen's clock stands with no `--ui-time`: well past what any screen does as it opens.
@@ -96,15 +132,16 @@ impl ScreenOptions {
         let assets = content.load_screens(&[id], renderer, gpu)?;
         let inset =
             assets.documents.iter().any(|document| document.nodes.iter().any(|node| node.inset.is_some()));
-        let dialogue = self.walks().map(|id| content.load_dialogue(id, renderer, gpu)).transpose()?;
+        let walks = self.walks().map_err(AppInitError::msg)?;
+        let dialogue = walks.map(|id| content.load_dialogue(id, renderer, gpu)).transpose()?;
         let stack = self.stack(assets, atlas, dialogue.as_deref(), model).map_err(AppInitError::msg)?;
         Ok((stack, inset))
     }
 
-    /// The cooked dialogue it walks, if any, which `Content::load_dialogue` gives.
-    #[must_use]
-    pub fn walks(&self) -> Option<AssetId> {
-        self.dialogue.map(|_| WARD_GUIDE)
+    /// The cooked dialogue it walks, if any, which `Content::load_dialogue` gives. Fails for a name the
+    /// content has no dialogue of, naming those it has.
+    pub fn walks(&self) -> Result<Option<AssetId>, String> {
+        self.dialogue.as_ref().map(DialoguePreview::id).transpose()
     }
 
     /// `assets` over `atlas` as these flags ask, on `model`'s sample, or `dialogue`'s line, opened at the
@@ -126,9 +163,9 @@ impl ScreenOptions {
         let shown = |error| format!("--ui-game: {error}");
         let mut stack = ScreenStack::new(assets.tables, assets.fonts, atlas, setup).map_err(shown)?;
         let start = Timestamp::from_nanos(0);
-        let model = match (self.dialogue, dialogue) {
-            (Some(lines), Some(dialogue)) => conversation(dialogue, lines)?,
-            (Some(_), None) => return Err("--ui-dialogue: the guide's dialogue wasn't loaded".to_owned()),
+        let model = match (&self.dialogue, dialogue) {
+            (Some(preview), Some(dialogue)) => conversation(dialogue, preview.lines)?,
+            (Some(preview), None) => return Err(format!("--ui-dialogue: `{}` wasn't loaded", preview.name)),
             (None, _) => model.sample(),
         };
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
@@ -185,9 +222,39 @@ mod tests {
             (FONT_CHAINS, include_str!("../../../content/fonts/ui.fontchains.ron.meta")),
             (LOCALES[0], include_str!("../../../content/loc/en.locale.ron.meta")),
             (LOCALES[1], include_str!("../../../content/loc/ja.locale.ron.meta")),
-            (WARD_GUIDE, include_str!("../../../content/dialogue/ward_guide.dialogue.ron.meta")),
         ] {
             assert!(sidecar.contains(&id.to_string()), "{id} isn't in {sidecar}");
+        }
+        let guide = DialoguePreview { name: GUIDE.to_owned(), lines: 0 };
+        let sidecar = include_str!("../../../content/dialogue/ward_guide.dialogue.ron.meta");
+        assert!(sidecar.contains(&guide.id().unwrap().to_string()), "the guide's is its sidecar's");
+    }
+
+    /// `--ui-dialogue` takes a dialogue by its file's name, the guide's with none, and every one in
+    /// `content/dialogue/` has a name the build found.
+    #[test]
+    fn a_dialogue_is_one_of_the_contents_by_name() {
+        let guide = DialoguePreview::parse("1").unwrap();
+        assert_eq!(guide, DialoguePreview { name: GUIDE.to_owned(), lines: 1 });
+        let named = DialoguePreview::parse("ward_guide:2").unwrap();
+        assert_eq!(named, DialoguePreview { name: GUIDE.to_owned(), lines: 2 });
+        assert_eq!(named.id(), guide.id());
+        assert!(DialoguePreview::parse("ward_guide:").unwrap_err().contains("[<name>:]<lines>"));
+        let refused = DialoguePreview::parse("nobody:0").unwrap().id().unwrap_err();
+        assert!(refused.contains("nobody") && refused.contains(GUIDE), "{refused}");
+
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dialogue");
+        let mut files: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .filter_map(|entry| {
+                entry.unwrap().file_name().to_str()?.strip_suffix(".dialogue.ron").map(str::to_owned)
+            })
+            .collect();
+        files.sort();
+        let names: Vec<&str> = DIALOGUES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, files);
+        for (name, _) in DIALOGUES {
+            DialoguePreview { name: (*name).to_owned(), lines: 0 }.id().unwrap();
         }
     }
 
@@ -288,8 +355,9 @@ mod tests {
         assert_eq!(answers, [true, true, false, false], "asking again needs the ward lit");
         assert!(shown(2).unwrap_err().contains("wants an answer"));
 
-        let options = ScreenOptions { dialogue: Some(1), ..ScreenOptions::of("dialogue") };
-        assert_eq!(options.walks(), Some(WARD_GUIDE));
+        let preview = DialoguePreview { name: GUIDE.to_owned(), lines: 1 };
+        let options = ScreenOptions { dialogue: Some(preview.clone()), ..ScreenOptions::of("dialogue") };
+        assert_eq!(options.walks(), preview.id().map(Some));
         let refused = options.stack(assets(PAUSE), Atlas::paint(), None, ScreenModel::Dialogue).map(drop);
         assert!(refused.unwrap_err().contains("loaded"));
     }
@@ -348,9 +416,10 @@ mod tests {
         assert_eq!(model, ScreenModel::Character);
         let refused = ScreenOptions::of("shop").find(&screens).unwrap_err();
         assert!(refused.contains("shop") && refused.contains("settings"), "{refused}");
-        let options = ScreenOptions { dialogue: Some(0), ..ScreenOptions::of("pause") };
+        let guide = || Some(DialoguePreview { name: GUIDE.to_owned(), lines: 0 });
+        let options = ScreenOptions { dialogue: guide(), ..ScreenOptions::of("pause") };
         assert!(options.find(&screens).unwrap_err().contains("--ui-dialogue"));
-        let options = ScreenOptions { dialogue: Some(0), ..ScreenOptions::of("dialogue") };
+        let options = ScreenOptions { dialogue: guide(), ..ScreenOptions::of("dialogue") };
         assert_eq!(options.find(&screens).unwrap().1, ScreenModel::Dialogue);
     }
 }

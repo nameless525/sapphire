@@ -53,7 +53,8 @@ const CHARACTER_REACH: f32 = 1.5;
 /// How a tier runs springs.
 pub fn spring_quality(tier: TierId) -> SpringQuality {
     match tier {
-        TierId::DesktopHigh | TierId::DesktopLow => SpringQuality::DESKTOP,
+        TierId::DesktopHigh => SpringQuality::DESKTOP_HIGH,
+        TierId::DesktopLow => SpringQuality::DESKTOP_LOW,
         TierId::MobileHigh | TierId::MobileLow => SpringQuality::MOBILE,
     }
 }
@@ -84,7 +85,8 @@ impl SpringView {
     }
 
     /// Whether `springs` run this frame, for a character standing as `transform` and `figure` say, at the
-    /// tier's substeps. Those that don't go to sleep at once, at no further cost.
+    /// tier's substeps and, by its distance, the tier's clearance interval. Those that don't go to sleep
+    /// at once, at no further cost.
     pub(crate) fn decide(
         &self,
         springs: &mut SpringBones,
@@ -92,18 +94,20 @@ impl SpringView {
         figure: &Figure,
     ) -> bool {
         springs.set_substeps(self.substeps());
-        let runs = self.sees(transform, figure, springs.is_running());
+        let center = transform.0.transform_point3((figure.head + figure.feet) * 0.5);
+        let distance = self.eye.distance(center);
+        springs.set_clearance_interval(self.quality.clearance.interval_at(distance));
+        let runs = self.sees(center, distance, springs.is_running());
         if !runs {
             springs.sleep();
         }
         runs
     }
 
-    /// Whether the springs of a character standing as `transform` and `figure` say should run, given
-    /// whether they ran last frame.
-    fn sees(&self, transform: &RenderTransform, figure: &Figure, running: bool) -> bool {
-        let center = transform.0.transform_point3((figure.head + figure.feet) * 0.5);
-        self.quality.in_range(self.eye.distance(center), running)
+    /// Whether the springs of a character whose middle is at `center`, `distance` from the eye, should
+    /// run, given whether they ran last frame.
+    fn sees(&self, center: Vec3, distance: f32, running: bool) -> bool {
+        self.quality.in_range(distance, running)
             && self.frustum.intersects_sphere(&Sphere::new(center, CHARACTER_REACH))
     }
 

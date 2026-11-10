@@ -616,7 +616,7 @@ impl Scene {
             graph_show: None,
             graph_players,
             anim_stats: AnimStats::default(),
-            spring_quality: SpringQuality::DESKTOP,
+            spring_quality: SpringQuality::DESKTOP_HIGH,
             aspect: 16.0 / 9.0,
             ik_ground: None,
             ik_blocks: Vec::new(),

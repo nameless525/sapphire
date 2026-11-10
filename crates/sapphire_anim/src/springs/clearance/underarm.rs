@@ -37,6 +37,8 @@ pub(super) struct Underarm {
     stock_bounds: Vec<(Vec3, Vec3)>,
     swept_bounds: Vec<(Vec3, Vec3)>,
     skin_bounds: Vec<(Vec3, Vec3)>,
+    /// The weight the last solve gave the relief, which a frame between solves holds.
+    weight: f32,
 }
 
 impl Underarm {
@@ -162,6 +164,7 @@ impl Underarm {
             stock_bounds: Vec::with_capacity(cloth_triangles.len()),
             swept_bounds: Vec::with_capacity(cloth_triangles.len()),
             skin_bounds: Vec::with_capacity(skin_triangles.len()),
+            weight: 0.0,
             cloth_triangles,
             skin_triangles,
             cloth,
@@ -176,6 +179,11 @@ impl Underarm {
 
     pub(super) fn clear(&self, pose: &mut CharacterPose) {
         pose.weights_mut()[self.target] = 0.0;
+    }
+
+    /// Gives the relief the weight the last solve did.
+    pub(super) fn hold(&self, pose: &mut CharacterPose) {
+        pose.weights_mut()[self.target] = self.weight;
     }
 
     fn pose_limit(&self, pose: &CharacterPose) -> f32 {
@@ -205,6 +213,7 @@ impl Underarm {
         shirt: &[Point],
         stock: &mut [Vec3],
     ) {
+        self.weight = 0.0;
         let limit = self.pose_limit(pose);
         if limit <= 0.0 {
             return;
@@ -286,6 +295,7 @@ impl Underarm {
                 stock[morph.shirt_point] += *offset * chosen;
             }
             pose.weights_mut()[self.target] = chosen;
+            self.weight = chosen;
         }
     }
 

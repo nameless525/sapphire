@@ -185,20 +185,63 @@ pub struct SpringQuality {
     /// How far from the camera a character's springs run, in meters. Beyond it hair is too small to
     /// read.
     pub distance: f32,
+    /// How often the clothes' clearance solves, where a character has one.
+    pub clearance: ClearanceQuality,
 }
 
 impl SpringQuality {
-    /// The desktop tiers': 120 Hz, out to 40 m.
-    pub const DESKTOP: Self = Self { substeps: Substeps::Two, distance: 40.0 };
-    /// The phones': one sub-step a tick, the 60 Hz VRM's parameters are tuned at, out to 25 m.
-    pub const MOBILE: Self = Self { substeps: Substeps::One, distance: 25.0 };
+    /// Desktop-High's: 120 Hz out to 40 m, and clearance solved on every frame near the camera.
+    pub const DESKTOP_HIGH: Self =
+        Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::FULL };
+    /// Desktop-Low's: Desktop-High's springs, with clearance solved every third tick.
+    pub const DESKTOP_LOW: Self =
+        Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::DESKTOP_LOW };
+    /// The phones': one sub-step a tick, the 60 Hz VRM's parameters are tuned at, out to 25 m, with
+    /// clearance solved every fourth tick.
+    pub const MOBILE: Self =
+        Self { substeps: Substeps::One, distance: 25.0, clearance: ClearanceQuality::MOBILE };
     /// Every setting that ships, for tests that must hold on each.
-    pub const SHIPPED: [Self; 2] = [Self::DESKTOP, Self::MOBILE];
+    pub const SHIPPED: [Self; 3] = [Self::DESKTOP_HIGH, Self::DESKTOP_LOW, Self::MOBILE];
 
     /// Whether springs at `distance` meters from the camera run, given whether they ran last frame.
     #[must_use]
     pub fn in_range(&self, distance: f32, running: bool) -> bool {
         distance <= if running { self.distance } else { self.distance * WAKE_MARGIN }
+    }
+}
+
+/// How often a tier solves a character's clothes' clearance (the heroine's shirt against the hair and
+/// face), by distance from the camera. Between solves the last one's corrections are held, carried
+/// with the body: a strand turned off the shirt stays turned, relative to the chest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClearanceQuality {
+    /// Ticks from one solve to the next out to [`Self::near`], on tick boundaries, so a replay solves
+    /// on the same frames every time. 1 solves on every frame that draws springs, however short.
+    pub interval: u32,
+    /// Out to here, in meters from the camera, it solves every `interval`; beyond, every twice that.
+    pub near: f32,
+    /// Beyond this it holds what it last solved, at the cost of writing it.
+    pub far: f32,
+}
+
+impl ClearanceQuality {
+    /// Every frame out to 12 m, every other tick out to 24 m.
+    pub const FULL: Self = Self { interval: 1, near: 12.0, far: 24.0 };
+    /// Every third tick: 20 solves a second, near, so two frames in three at 60 frames a second hold.
+    pub const DESKTOP_LOW: Self = Self { interval: 3, ..Self::FULL };
+    /// Every fourth tick: 15 solves a second, every other frame at 30 frames a second.
+    pub const MOBILE: Self = Self { interval: 4, ..Self::FULL };
+
+    /// The ticks between solves for a character `distance` meters from the camera, or `None` to hold.
+    #[must_use]
+    pub fn interval_at(&self, distance: f32) -> Option<u32> {
+        if distance > self.far {
+            None
+        } else if distance > self.near {
+            Some(self.interval.max(1) * 2)
+        } else {
+            Some(self.interval.max(1))
+        }
     }
 }
 
@@ -620,6 +663,9 @@ pub struct SpringBones {
     resting: bool,
     /// Optional contact against the drawn surface of the character's clothes.
     clearance: Option<Box<clearance::Clearance>>,
+    /// Ticks between the clearance's solves, `None` to hold what it last solved
+    /// ([`Self::set_clearance_interval`]).
+    clearance_interval: Option<u32>,
 }
 
 impl SpringBones {
@@ -814,7 +860,7 @@ impl SpringBones {
             steps.push(Step { joint: joint as u16, parent, swing: swinging[joint] });
         }
 
-        let substeps = SpringQuality::DESKTOP.substeps;
+        let substeps = SpringQuality::DESKTOP_HIGH.substeps;
         let (swing_count, anchor_count, collider_count) = (swings.len(), anchors.len(), colliders.len());
         let center_count = centers.len();
         let step_count = steps.len();
@@ -858,6 +904,7 @@ impl SpringBones {
             still_for: 0,
             resting: false,
             clearance: None,
+            clearance_interval: Some(1),
         })
     }
 
@@ -926,6 +973,13 @@ impl SpringBones {
         }
     }
 
+    /// Solves the clothes' clearance every `interval` ticks from now on, on tick boundaries, holding
+    /// what it last solved between; `Some(1)`, as it starts, solves on every update, and `None` holds
+    /// ([`ClearanceQuality::interval_at`]). A character with no clearance ignores it.
+    pub fn set_clearance_interval(&mut self, interval: Option<u32>) {
+        self.clearance_interval = interval;
+    }
+
     /// Runs `substeps` from now on. A tail's speed is kept across the change, and its place.
     pub fn set_substeps(&mut self, substeps: Substeps) {
         if substeps == self.substeps {
@@ -971,6 +1025,7 @@ impl SpringBones {
             return;
         }
         self.substeps = other.substeps;
+        self.clearance_interval = other.clearance_interval;
         for (rate, swing) in self.rates.iter_mut().zip(&self.swings) {
             *rate = Rate::new(swing.drag, self.substeps);
         }
@@ -1095,7 +1150,7 @@ impl SpringBones {
         self.note_stillness(due as u32, fastest, pose_moved || world_moved);
         self.draw(pose, ticks);
         if let Some(clearance) = &mut self.clearance {
-            clearance.apply(pose, Some(span as f32));
+            clearance.update(pose, ticks, span, self.clearance_interval);
         }
         SpringWork { substeps: due as u32, wrote_pose: true }
     }

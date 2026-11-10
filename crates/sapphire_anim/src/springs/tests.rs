@@ -649,14 +649,30 @@ fn asleep_nothing_runs_and_waking_settles_from_the_pose() {
 /// The tier's limit, with a margin so a character standing at it doesn't flip.
 #[test]
 fn a_character_past_the_limit_sleeps_and_wakes_nearer() {
-    let quality = SpringQuality::DESKTOP;
+    let quality = SpringQuality::DESKTOP_HIGH;
     assert!(quality.in_range(quality.distance - 0.1, true));
     assert!(!quality.in_range(quality.distance + 0.1, true));
     assert!(!quality.in_range(quality.distance - 0.1, false), "it wakes a little nearer");
     assert!(quality.in_range(quality.distance * 0.8, false));
     // Phones run fewer sub-steps and stop sooner.
-    assert!(SpringQuality::MOBILE.substeps.count() < SpringQuality::DESKTOP.substeps.count());
-    const { assert!(SpringQuality::MOBILE.distance < SpringQuality::DESKTOP.distance) };
+    assert!(SpringQuality::MOBILE.substeps.count() < SpringQuality::DESKTOP_HIGH.substeps.count());
+    const { assert!(SpringQuality::MOBILE.distance < SpringQuality::DESKTOP_HIGH.distance) };
+}
+
+/// Clearance solves every frame near the camera on Desktop-High, less often on the lighter tiers, half
+/// as often again past `near` on every tier, and holds past `far`.
+#[test]
+fn clearance_solves_less_often_on_lighter_tiers_and_further_away() {
+    let [high, low, mobile] = SpringQuality::SHIPPED.map(|quality| quality.clearance);
+    assert_eq!(high.interval_at(2.0), Some(1));
+    assert_eq!(low.interval_at(2.0), Some(3));
+    assert_eq!(mobile.interval_at(2.0), Some(4));
+    for clearance in [high, low, mobile] {
+        assert_eq!(clearance.interval_at(clearance.near), Some(clearance.interval));
+        assert_eq!(clearance.interval_at(clearance.near + 0.1), Some(clearance.interval * 2));
+        assert_eq!(clearance.interval_at(clearance.far), Some(clearance.interval * 2));
+        assert_eq!(clearance.interval_at(clearance.far + 0.1), None);
+    }
 }
 
 /// A rig with a joint per chain and a collider beside the strand, in the given group.

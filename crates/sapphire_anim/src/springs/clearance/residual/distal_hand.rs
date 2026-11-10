@@ -644,6 +644,21 @@ impl DistalHand {
         eval
     }
 
+    /// Writes the hand's turns as the last solve left them.
+    pub(super) fn hold(&self, pose: &mut CharacterPose, lock: &LockProfile) {
+        let mut changed = false;
+        for (&joint, angle) in lock.joints[2..].iter().zip(self.extra) {
+            if angle.length_squared() > 1.0e-12 {
+                let local = &mut pose.locals_mut()[joint].rotation;
+                *local = (Quat::from_scaled_axis(angle) * *local).normalize();
+                changed = true;
+            }
+        }
+        if changed {
+            pose.finish();
+        }
+    }
+
     pub(super) fn apply(
         &mut self,
         pose: &mut CharacterPose,

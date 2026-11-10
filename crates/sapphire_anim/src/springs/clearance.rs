@@ -262,6 +262,10 @@ pub(super) struct Clearance {
     residual: Option<Residual>,
     short_face: Option<ShortFace>,
     underarm: Option<Underarm>,
+    /// Presented ticks drawn since the last solve, which the next one takes as its elapsed time.
+    pending: f64,
+    /// The tick boundary, in its interval, the last solve was due at: `None` solves at the next update.
+    solved_in: Option<i64>,
 }
 
 impl Clearance {
@@ -455,6 +459,8 @@ impl Clearance {
             residual,
             short_face,
             underarm,
+            pending: 0.0,
+            solved_in: None,
         })
     }
 
@@ -467,6 +473,8 @@ impl Clearance {
         }
         self.has_history = false;
         self.waking = false;
+        self.pending = 0.0;
+        self.solved_in = None;
         for strand in &mut self.strands {
             strand.relief = Relief::default();
         }
@@ -477,6 +485,8 @@ impl Clearance {
         // orientation and discard only the motion estimate, which has a gap now.
         self.has_history = false;
         self.waking = true;
+        self.pending = 0.0;
+        self.solved_in = None;
         if let Some(residual) = &mut self.residual {
             residual.sleep();
         }
@@ -488,7 +498,52 @@ impl Clearance {
     pub(super) fn settle(&mut self, pose: &mut CharacterPose, wake_elapsed: f32) {
         let elapsed = self.waking.then_some(wake_elapsed);
         self.waking = false;
+        self.pending = 0.0;
         self.apply(pose, elapsed);
+    }
+
+    /// Solves if `interval` ticks have come round since the last solve, on tick boundaries, taking
+    /// every tick drawn since as elapsed; otherwise holds what it last solved. An interval of 1 solves
+    /// on every update with `span`, the ticks since the last, and `None` holds.
+    pub(super) fn update(&mut self, pose: &mut CharacterPose, ticks: f64, span: f64, interval: Option<u32>) {
+        self.pending += span;
+        let due = match interval {
+            None => None,
+            Some(0 | 1) => Some(None),
+            Some(interval) => {
+                let boundary = (ticks / f64::from(interval)).floor() as i64;
+                (self.solved_in != Some(boundary)).then_some(Some(boundary))
+            }
+        };
+        let Some(boundary) = due else {
+            self.hold(pose);
+            return;
+        };
+        let elapsed = self.pending as f32;
+        self.pending = 0.0;
+        self.solved_in = boundary;
+        self.apply(pose, Some(elapsed));
+    }
+
+    /// Writes what the last solve wrote, as offsets on the pose as it is now, solving nothing.
+    fn hold(&mut self, pose: &mut CharacterPose) {
+        if let Some(underarm) = &self.underarm {
+            underarm.hold(pose);
+        }
+        let chest = Frame::of(&pose.model()[self.chest]);
+        let mut wrote = false;
+        for strand in &self.strands {
+            wrote |= write_relief(pose, chest, strand.joints[0], strand.relief);
+        }
+        if wrote {
+            pose.finish();
+        }
+        if let Some(residual) = &mut self.residual {
+            residual.hold(pose);
+        }
+        if let Some(face) = &mut self.short_face {
+            face.apply(pose, &self.strands, Some(0.0));
+        }
     }
 
     pub(super) fn continue_from(&mut self, old: &Self) {
@@ -514,6 +569,8 @@ impl Clearance {
         }
         self.has_history = old.has_history;
         self.waking = old.waking;
+        self.pending = old.pending;
+        self.solved_in = old.solved_in;
         self.previous_shirt.copy_from_slice(&old.previous_shirt);
         self.previous_limbs.copy_from_slice(&old.previous_limbs);
         for (new, old) in self.strands.iter_mut().zip(&old.strands) {
@@ -660,15 +717,7 @@ impl Clearance {
                         penetration(rotation, &self.ahead_garment, &self.ahead_limbs, &self.ahead_probes);
                     (current, ahead)
                 });
-            if strand.relief.rotation == Quat::IDENTITY {
-                continue;
-            }
-            let parent = pose.parent(joint).map_or(Quat::IDENTITY, |p| Frame::of(&pose.model()[p]).rotation);
-            let chest_to_parent = parent.inverse() * chest.rotation;
-            let offset = chest_to_parent * strand.relief.rotation * chest_to_parent.inverse();
-            let local = &mut pose.locals_mut()[joint].rotation;
-            *local = (offset * *local).normalize();
-            wrote = true;
+            wrote |= write_relief(pose, chest, joint, strand.relief);
         }
         if wrote {
             pose.finish();
@@ -690,6 +739,19 @@ impl Clearance {
         self.previous_shirt.copy_from_slice(&self.posed_shirt);
         self.previous_limbs.copy_from_slice(&self.posed_limbs);
     }
+}
+
+/// Turns a strand's root `joint` by `relief`, which is in the chest's frame, and says whether it did.
+fn write_relief(pose: &mut CharacterPose, chest: Frame, joint: usize, relief: Relief) -> bool {
+    if relief.rotation == Quat::IDENTITY {
+        return false;
+    }
+    let parent = pose.parent(joint).map_or(Quat::IDENTITY, |p| Frame::of(&pose.model()[p]).rotation);
+    let chest_to_parent = parent.inverse() * chest.rotation;
+    let offset = chest_to_parent * relief.rotation * chest_to_parent.inverse();
+    let local = &mut pose.locals_mut()[joint].rotation;
+    *local = (offset * *local).normalize();
+    true
 }
 
 /// Keep samples along the full strand, including its edges, without carrying thousands of
@@ -945,8 +1007,9 @@ mod tests {
         assert!(degrees_between(Quat::IDENTITY, next.rotation) < 18.0);
     }
 
-    #[test]
-    fn lod_wake_retains_drawn_relief_at_a_frozen_clock() {
+    /// A chest, and a strand hanging from it with a clearance turning it 24° off its pose and no
+    /// garment, so a solve only releases it; and its springs, after their first frame at tick 8.
+    fn turned_strand() -> (CharacterPose, SpringBones, SpringFrame, Clearance) {
         let joints = [
             Joint { name: "chest".into(), parent: None, rest: JointTransform::IDENTITY },
             Joint { name: "strand".into(), parent: Some(0), rest: JointTransform::IDENTITY },
@@ -981,10 +1044,10 @@ mod tests {
         .to_cooked()
         .unwrap();
         let mut springs = SpringBones::new(CharacterRig::read(&rig).unwrap(), &pose).unwrap();
-        let mut frame =
+        let frame =
             SpringFrame { world_from_model: Affine3A::IDENTITY, ticks: 8.0, active: true, pose_moved: false };
         springs.update(&mut pose, &frame);
-        let mut clearance = Clearance {
+        let clearance = Clearance {
             chest: 0,
             shirt: Vec::new(),
             shirt_morphs: Vec::new(),
@@ -1014,7 +1077,15 @@ mod tests {
             residual: None,
             short_face: None,
             underarm: None,
+            pending: 0.0,
+            solved_in: None,
         };
+        (pose, springs, frame, clearance)
+    }
+
+    #[test]
+    fn lod_wake_retains_drawn_relief_at_a_frozen_clock() {
+        let (mut pose, mut springs, mut frame, mut clearance) = turned_strand();
         clearance.apply(&mut pose, Some(0.0));
         springs.clearance = Some(Box::new(clearance));
         let drawn = pose.locals()[1].rotation;
@@ -1033,5 +1104,48 @@ mod tests {
         springs.reset();
         springs.update(&mut pose, &frame);
         assert_eq!(pose.locals()[1].rotation, Quat::IDENTITY);
+    }
+
+    /// Every other tick, a light tier's clearance solves at the first update past each boundary,
+    /// taking every tick since the last solve, and between writes what that solve left, unchanged.
+    /// Held, it writes and solves nothing more however long it waits.
+    #[test]
+    fn a_clearance_at_an_interval_solves_on_its_boundaries_and_holds_between() {
+        let (mut pose, _, _, mut clearance) = turned_strand();
+        let rest = pose.locals()[1].rotation;
+        let mut update = |clearance: &mut Clearance, ticks: f64, interval| {
+            pose.locals_mut()[1].rotation = rest;
+            pose.finish();
+            clearance.update(&mut pose, ticks, 1.0, interval);
+            degrees_between(pose.locals()[1].rotation, rest)
+        };
+        let full = degrees_between(clearance.strands[0].relief.rotation, Quat::IDENTITY);
+        // Tick 8 is the boundary of 4: a solve over one tick, which releases some of the turn.
+        let solved = update(&mut clearance, 8.0, Some(2));
+        assert!(solved < full - 1.0 && solved > 15.0, "{solved} of {full}");
+        assert_eq!(clearance.pending, 0.0);
+        // Tick 9 is still in it: held, to the bit.
+        let relief = clearance.strands[0].relief;
+        assert_eq!(update(&mut clearance, 9.0, Some(2)), solved);
+        assert_eq!(clearance.strands[0].relief, relief);
+        assert_eq!(clearance.pending, 1.0);
+        // Tick 10 starts the next: a solve over both ticks since, releasing more than one would.
+        let next = update(&mut clearance, 10.0, Some(2));
+        assert_eq!(clearance.pending, 0.0);
+        assert!(next < solved - 1.0, "{next} after {solved}");
+        // Out of range, it holds.
+        let relief = clearance.strands[0].relief;
+        for ticks in 11..40 {
+            assert_eq!(update(&mut clearance, f64::from(ticks), None), next);
+        }
+        assert_eq!(clearance.strands[0].relief, relief);
+        // An interval of 1 solves at every update, however short.
+        let mut reference = turned_strand().3;
+        reference.apply(&mut turned_strand().0, Some(1.0));
+        let (mut pose, _, _, mut every) = turned_strand();
+        every.update(&mut pose, 8.25, 1.0, Some(1));
+        assert_eq!(every.strands[0].relief, reference.strands[0].relief);
+        every.update(&mut pose, 8.5, 0.25, Some(1));
+        assert_ne!(every.strands[0].relief, reference.strands[0].relief);
     }
 }

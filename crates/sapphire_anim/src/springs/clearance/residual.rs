@@ -785,6 +785,29 @@ impl Residual {
         self.profile.locks.iter().flat_map(|lock| lock.joints).find(|&joint| conflicts(joint))
     }
 
+    /// Writes the locks' turns, and the hand's, as the last solve left them.
+    pub(super) fn hold(&mut self, pose: &mut CharacterPose) {
+        let mut wrote = false;
+        for (lock, state) in self.profile.locks.iter().zip(&self.locks) {
+            for (&joint, angle) in lock.joints.iter().zip(state.angles) {
+                if angle.length_squared() <= 1.0e-12 {
+                    continue;
+                }
+                let local = &mut pose.locals_mut()[joint].rotation;
+                *local = (Quat::from_scaled_axis(angle) * *local).normalize();
+                wrote = true;
+            }
+        }
+        if wrote {
+            pose.finish();
+        }
+        if let Some(distal) = &mut self.distal
+            && let Some(lock) = self.profile.locks.iter().find(|lock| lock.strand == distal.strand)
+        {
+            distal.hold(pose, lock);
+        }
+    }
+
     pub(super) fn apply(
         &mut self,
         pose: &mut CharacterPose,

@@ -208,18 +208,32 @@ impl Gradle<'_> {
         workspace::copy_dir(content, &gen_dir.join("assets/content"))?;
         write_resources(app, &self.build_dir.join("icons"), &gen_dir.join("res"))?;
 
-        // Offline: Gradle's Maven artifacts are downloads, which a build here never makes. One missing from
-        // Gradle's cache fails the build, naming it (m4-plan §3, "Android packaging").
+        // Offline unless `SAPPHIRE_GRADLE_ONLINE` is set: Gradle's Maven artifacts are downloads, which a build
+        // on a developer's machine never makes, so one missing from Gradle's cache fails the build, naming it
+        // (m4-plan §3, "Android packaging"). CI starts each job with an empty cache, so its Android job sets
+        // the variable and Gradle fetches the Android plugin there, as it did before packaging went offline.
         let mut gradle = Command::new(project.join("gradlew"));
+        gradle.current_dir(&project);
+        if gradle_offline(std::env::var_os(GRADLE_ONLINE).as_deref()) {
+            gradle.arg("--offline");
+        }
         gradle
-            .current_dir(&project)
-            .arg("--offline")
             .args(task.args())
             .args(gradle_properties(app, build, self.ndk, &gen_dir, &gradle_dir))
             .env("ANDROID_HOME", self.sdk);
         workspace::run(&mut gradle)?;
         Ok(gradle_dir.join(task.output()))
     }
+}
+
+/// The variable that lets Gradle fetch what its cache lacks: CI's Android job sets it, since each job starts
+/// with an empty cache. Anywhere else Gradle runs offline.
+const GRADLE_ONLINE: &str = "SAPPHIRE_GRADLE_ONLINE";
+
+/// Whether Gradle runs `--offline`, given `SAPPHIRE_GRADLE_ONLINE`: unless it's set to something other than
+/// empty or `0`.
+fn gradle_offline(online: Option<&std::ffi::OsStr>) -> bool {
+    online.is_none_or(|value| value.is_empty() || value == "0")
 }
 
 /// Writes the app's Android resources under `res`: its name in each language (`values/strings.xml`,
@@ -1018,6 +1032,15 @@ fn base64(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::platforms::{test_app, test_game};
+
+    #[test]
+    fn gradle_runs_offline_unless_the_environment_says_online() {
+        use std::ffi::OsStr;
+        assert!(gradle_offline(None));
+        assert!(gradle_offline(Some(OsStr::new(""))));
+        assert!(gradle_offline(Some(OsStr::new("0"))));
+        assert!(!gradle_offline(Some(OsStr::new("1"))));
+    }
 
     #[test]
     fn picks_the_newest_ndk_numerically() {

@@ -800,6 +800,9 @@ jobs:
     name: Mobile build (Android)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # xtask runs Gradle offline unless this is set; the runner's Gradle cache starts empty.
+      SAPPHIRE_GRADLE_ONLINE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (job targets)

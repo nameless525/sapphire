@@ -19,8 +19,8 @@ use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
 use support::walk::{CHARACTER, Device, SETTINGS, Walk};
 use support::{
-    Screens, assets, boss_names, content, document, document_in, menus, screens_of, subtitles, table,
-    testdata, with_help,
+    Screens, assets, boss_names, content, document_in, menus, screens_of, subtitles, table, testdata,
+    with_help,
 };
 
 /// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.

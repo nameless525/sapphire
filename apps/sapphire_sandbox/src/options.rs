@@ -2342,9 +2342,18 @@ mod tests {
         assert_eq!(game.progress.as_deref(), Some(std::path::Path::new("saved.ron")));
         refused(&["--game-forward", "--capture", "x"], "--game-forward");
         refused(&["--game", "title", "--game-language", "fr", "--capture", "x"], "no \"fr\"");
-        let (game, _) =
-            parse(&["--game", "continue", "--game-forward", "--game-language", "ja", "--capture", "x"])
-                .unwrap();
+        let (game, _) = parse(&[
+            "--game",
+            "continue",
+            "--progress",
+            "saved.ron",
+            "--game-forward",
+            "--game-language",
+            "ja",
+            "--capture",
+            "x",
+        ])
+        .unwrap();
         assert!(game.game_forward);
         assert_eq!(game.game_language.as_deref(), Some("ja"));
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");

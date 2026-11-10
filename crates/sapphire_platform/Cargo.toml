@@ -59,13 +59,18 @@ libc.workspace = true
 jni-sys.workspace = true
 ndk-context.workspace = true
 
-# The process's footprint (M3 Z1, `memory.rs`): `proc_pid_rusage`.
-[target.'cfg(target_os = "macos")'.dependencies]
-libc.workspace = true
+# The process's footprint (M3 Z1 and Z5b, `memory.rs`): `task_info`'s VM info.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+mach2.workspace = true
 
-# A rename that reaches the disk (M3 V1, `durable.rs`): Windows has no directory to flush.
+# A rename that reaches the disk (M3 V1, `durable.rs`): Windows has no directory to flush. The process's
+# working set (M3 Z5b, `memory.rs`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # The lifecycle test injects raw SDL events to exercise re-entrant dispatch.

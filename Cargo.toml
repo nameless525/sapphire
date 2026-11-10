@@ -167,6 +167,8 @@ mlua = { version = "0.12", default-features = false, features = ["luau", "send"]
 bumpalo = "3.20"
 slotmap = "1.1"
 libc = "0.2"
+# Mach's task calls and structs on macOS and iOS, which `libc` lacks: `sapphire_platform`'s process memory.
+mach2 = "0.6"
 mimalloc = { version = "0.1.52", default-features = false }
 
 # --- Logging and profiling ---

@@ -62,6 +62,15 @@ pub struct GpuTimings {
     /// Otherwise the sample may omit invalid pairs or include only passes that begin a
     /// render pass with [`PassContext::timestamp_writes`](super::PassContext).
     pub every_pass: bool,
+    /// Whether every pass that took timestamps has a valid pair, and at least one did: then
+    /// [`Self::span`] runs from the first timed pass to the last, with none of them missing. Where
+    /// timestamps go between passes this is [`Self::every_pass`] less the passes that recorded
+    /// nothing; on Apple GPUs, where only render and compute passes take them, it's what a frame's
+    /// span can be (M3 Z1).
+    pub every_timed_pass: bool,
+    /// The graph passes that took no timestamps, in the order they ran: on Apple GPUs the ones
+    /// that begin no render or compute pass, such as copies, and anywhere one that recorded nothing.
+    pub untimed: Vec<&'static str>,
 }
 
 impl GpuTimings {
@@ -132,6 +141,8 @@ struct Readback {
     expected: usize,
     /// Written pairs only, in graph order, with their original slot indices.
     passes: Vec<ResolvedPass>,
+    /// The passes that wrote no pair, in graph order.
+    untimed: Vec<&'static str>,
 }
 
 /// A written pair's location in the readback; unwritten queries are never resolved or decoded.
@@ -247,6 +258,8 @@ impl PassTimer {
                         &mut self.latest.passes,
                     );
                     self.latest.every_pass = self.encoder_writes && complete;
+                    self.latest.every_timed_pass = every_timed_pass(&readback.passes, &self.latest.passes);
+                    self.latest.untimed.clone_from(&readback.untimed);
                 }
             }
             readback.buffer.unmap();
@@ -290,7 +303,14 @@ impl FrameTimer for PassTimer {
         passes: &mut dyn Iterator<Item = (&'static str, bool)>,
     ) -> Option<wgpu::CommandBuffer> {
         let readback = &mut self.readbacks[self.current?];
-        readback.passes.extend(written_passes(passes));
+        let untimed = &mut readback.untimed;
+        untimed.clear();
+        let noted = passes.inspect(|&(name, written)| {
+            if !written {
+                untimed.push(name);
+            }
+        });
+        readback.passes.extend(written_passes(noted));
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pass timings") });
         for pass in &readback.passes {
@@ -310,6 +330,8 @@ impl FrameTimer for PassTimer {
             self.latest.frame = readback.frame;
             self.latest.passes.clear();
             self.latest.every_pass = self.encoder_writes && readback.expected == 0;
+            self.latest.every_timed_pass = false;
+            self.latest.untimed.clone_from(&readback.untimed);
             return;
         }
         readback.state.store(MAPPING, Ordering::Release);
@@ -320,6 +342,11 @@ impl FrameTimer for PassTimer {
             state.store(if result.is_ok() { MAPPED } else { FREE }, Ordering::Release);
         });
     }
+}
+
+/// Whether every written pair of `written` decoded into `decoded`, and there was one.
+fn every_timed_pass(written: &[ResolvedPass], decoded: &[PassTime]) -> bool {
+    !written.is_empty() && decoded.len() == written.len()
 }
 
 /// Fills `out` with the timed passes' times from resolved `bytes` at `period` nanoseconds
@@ -386,6 +413,7 @@ fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, V
             frame: 0,
             expected: 0,
             passes: Vec::with_capacity(pairs as usize),
+            untimed: Vec::with_capacity(pairs as usize),
         })
         .collect();
     (query_set, resolve, readbacks)
@@ -468,6 +496,11 @@ mod tests {
             assert!(!decode(&resolved(&[(10, 20), invalid]), &passes, 2, 1.0, &mut out));
             assert_eq!(out.len(), 1, "a partial sample remains available");
         }
+        let mut both = Vec::new();
+        assert!(decode(&valid, &passes, 2, 1.0, &mut both));
+        assert!(every_timed_pass(&passes, &both), "every written pair decoded");
+        assert!(!every_timed_pass(&passes, &both[..1]), "one written pair didn't");
+        assert!(!every_timed_pass(&[], &[]), "no pass took timestamps, so there's no span");
         assert!(!decode(&[], &[], 1, 1.0, &mut out), "all expected pairs were unwritten");
         assert!(out.is_empty());
         assert!(decode(&[], &[], 0, 1.0, &mut out), "an empty graph is complete");
@@ -495,7 +528,7 @@ mod tests {
             ],
             "untimed and invalid pairs are dropped"
         );
-        let timings = GpuTimings { frame: 3, passes: out, every_pass: false };
+        let timings = GpuTimings { frame: 3, passes: out, ..GpuTimings::default() };
         assert_eq!(timings.span(), ns(6400));
         assert_eq!(timings.get("post").map(|post| post.exclusive), Some(ns(5400)));
         assert_eq!(timings.get("uploads"), None);

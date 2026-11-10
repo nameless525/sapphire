@@ -110,21 +110,34 @@ struct GpuTimes {
 
 impl GpuTimes {
     fn of(timings: &GpuTimings, bloom_levels: u32, bloom_chain: bool) -> Self {
-        let sum = |names: &[&str]| -> Option<Duration> {
+        let every = |names: &[&str]| -> Option<Duration> {
             names.iter().try_fold(Duration::ZERO, |total, name| Some(total + timings.get(name)?.exclusive))
+        };
+        // On a frame whose every timed pass decoded, a pass that's absent and took no timestamps
+        // didn't run: a shadow cascade not redrawn this frame costs nothing. One that ran untimed
+        // leaves the total unknown, and so does a frame that dropped a pair.
+        let sum = |names: &[&str]| -> Option<Duration> {
+            if !timings.every_timed_pass {
+                return every(names);
+            }
+            if names.iter().any(|name| timings.untimed.contains(name)) {
+                return None;
+            }
+            let ran = names.iter().filter_map(|name| timings.get(name));
+            ran.map(|pass| pass.exclusive).reduce(|total, exclusive| total + exclusive)
         };
         Self {
             timed: true,
-            span: timings.every_pass.then(|| timings.span()),
+            // On Apple GPUs a copy takes no timestamps, so the span is the timed passes' (M3 Z1).
+            span: timings.every_timed_pass.then(|| timings.span()),
             main: sum(&[MAIN_PASS]),
             prepasses: sum(&PREPASSES),
             character_prepass: sum(&[CHARACTER_PREPASS]),
             shadows: sum(&shadows::PASSES),
             skinning: sum(&["skinning"]),
             sky_cube: sum(&["sky cube"]),
-            clustering_ao: sum(&ambient::PASSES)
-                .zip(sum(&["light clusters"]))
-                .map(|(ao, clusters)| ao + clusters),
+            // Either can sit a frame out: the clusters when the lights weren't binned again.
+            clustering_ao: sum(&[ambient::PASSES[0], "light clusters"]),
             taa: sum(&temporal::PASSES),
             post: post::frame_passes(bloom_levels, bloom_chain)
                 .try_fold(Duration::ZERO, |total, name| Some(total + timings.get(name)?.exclusive)),
@@ -932,6 +945,8 @@ mod tests {
         let mut timings = GpuTimings {
             frame: 7,
             every_pass: true,
+            every_timed_pass: false,
+            untimed: Vec::new(),
             passes: names
                 .iter()
                 .enumerate()
@@ -956,6 +971,38 @@ mod tests {
         let missing = Traced { gpu: GpuTimes { timed: true, ..GpuTimes::default() }, ..frame };
         let post_row = ROWS.iter().find(|row| row.name == "gpu post").expect("post row");
         assert!(!counts(post_row, &missing, Phase::Cpu));
+    }
+
+    /// On a frame whose every timed pass decoded, as Metal's are, the span reads, and a group reads the
+    /// passes of it that ran: a cascade not redrawn costs nothing, but one that ran untimed is unknown
+    /// (M3 Z1).
+    #[test]
+    fn a_frame_whose_timed_passes_all_decoded_reads_its_span_and_the_passes_that_ran() {
+        use sapphire_render::graph::PassTime;
+        let pass = |name, start| PassTime {
+            name,
+            start: Duration::from_micros(start),
+            duration: Duration::from_micros(10),
+            exclusive: Duration::from_micros(10),
+        };
+        let mut timings = GpuTimings {
+            frame: 9,
+            every_pass: false,
+            every_timed_pass: true,
+            untimed: vec!["uploads"],
+            passes: vec![pass(shadows::PASSES[0], 0), pass(MAIN_PASS, 10)],
+        };
+        let read = GpuTimes::of(&timings, 0, false);
+        assert_eq!(read.span, Some(Duration::from_micros(20)), "Metal's frames have a span");
+        assert_eq!(read.shadows, Some(Duration::from_micros(10)), "the cascades that ran");
+        assert_eq!(read.main, Some(Duration::from_micros(10)));
+        assert_eq!(read.taa, None, "nothing of it ran");
+        timings.untimed.push(shadows::PASSES[1]);
+        assert_eq!(GpuTimes::of(&timings, 0, false).shadows, None, "a cascade ran untimed");
+        timings.every_timed_pass = false;
+        let dropped = GpuTimes::of(&timings, 0, false);
+        assert_eq!((dropped.span, dropped.shadows), (None, None), "a pair was dropped");
+        assert_eq!(dropped.main, Some(Duration::from_micros(10)));
     }
 
     /// A trace's lines have as many fields as its header, whatever's in them.

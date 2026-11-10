@@ -166,6 +166,12 @@ fn check_timings(timings: &GpuTimings, frames: u64, encoder_writes: bool) {
         assert!(!copy_timed, "the copy needs encoder timestamps: {timings:?}");
     }
     assert_eq!(timings.every_pass, encoder_writes && clear_timed && copy_timed, "{timings:?}");
+    // Every pass that took timestamps decoded: on Apple GPUs that's the clear alone, and the copy is
+    // named as untimed (M3 Z1).
+    let every_timed = if encoder_writes { clear_timed && copy_timed } else { clear_timed };
+    assert_eq!(timings.every_timed_pass, every_timed, "{timings:?}");
+    let untimed: &[&str] = if encoder_writes { &[] } else { &["to target"] };
+    assert_eq!(timings.untimed, untimed, "{timings:?}");
     let exclusive: std::time::Duration = timings.passes.iter().map(|pass| pass.exclusive).sum();
     assert!(timings.passes.iter().all(|pass| pass.exclusive <= pass.duration), "{timings:?}");
     // Up to a nanosecond per pass of rounding from ticks.

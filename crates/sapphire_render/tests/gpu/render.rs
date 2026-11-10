@@ -1923,6 +1923,47 @@ fn the_sky_cubes_timing_spans_all_six_faces() {
     }
 }
 
+/// A frame's timings say which of its passes took no timestamps, and a frame whose every timed pass
+/// decoded has a span, on every device that times passes (M3 Z1): where timestamps go between passes
+/// none goes untimed, and on Apple GPUs only the uploads, which begin no render or compute pass. On
+/// a shared M5 this empty scene's frames came back whole anywhere from 3 in 64 to 12 in 16, a pass
+/// with almost nothing to do reading its end before its start (`graph.rs`'s test says more), where
+/// every frame of the Lantern Ward's walk checked came back whole; so this asks for one in 64.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frames_timings_name_its_untimed_passes_and_a_whole_one_has_a_span() {
+    const FRAMES: u32 = 64;
+    let gpu = gpu();
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    if !frames.graph.set_gpu_timing(&gpu, true) {
+        return;
+    }
+    let encoder_writes = gpu.caps().features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+    let untimed: &[&str] = if encoder_writes { &[] } else { &["uploads"] };
+    let texture = target(&gpu, FORMAT, (320, 180));
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, (320, 180), 0.3);
+    let mut spans = 0;
+    for _ in 0..FRAMES {
+        assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none(), "validates");
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let Some(timings) = frames.graph.gpu_timings() else { continue };
+        assert_eq!(timings.untimed, untimed, "{timings:?}");
+        assert!(!timings.passes.is_empty(), "the frame's passes are timed: {timings:?}");
+        if timings.every_pass {
+            assert!(timings.every_timed_pass, "{timings:?}");
+        }
+        if timings.every_timed_pass {
+            spans += 1;
+            assert!(timings.span() > std::time::Duration::ZERO, "{timings:?}");
+            break;
+        }
+    }
+    let timings = frames.graph.gpu_timings().expect("frames came back after waiting on the GPU");
+    assert_eq!(spans, 1, "no frame in {FRAMES} came back whole; the last: {timings:?}");
+}
+
 /// A step of dynamic resolution down and back, within the second a set stays, makes no textures:
 /// the set it left is all still there, though it weighs more than the frames at the lower scale.
 #[test]

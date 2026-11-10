@@ -4,7 +4,7 @@ import os
 import struct
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VRM = os.path.join(REPO, 'content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm')
+VRM = os.path.join(REPO, 'content/lookdev/character/character.vrm')
 
 
 def _qmul(a, b):

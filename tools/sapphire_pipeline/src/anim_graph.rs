@@ -97,8 +97,8 @@ impl LocomotionBounds {
     pub fn of_the_character() -> Self {
         use sapphire_math::{Affine3A, Mat4, Vec3};
 
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/character/character.vrm");
         let bytes = std::fs::read(path).expect("the character");
         let mesh = crate::import::vrm::import(&bytes, None).expect("the character").mesh;
         let positions: Vec<Vec3> = mesh.vertices.iter().map(|vertex| Vec3::from(vertex.position)).collect();

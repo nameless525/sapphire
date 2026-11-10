@@ -417,10 +417,7 @@ fn triangles_by_slot(mesh: &ImportedMesh, lod: usize) -> BTreeMap<String, usize>
 #[test]
 fn shipped_morph_meshes_keep_every_morph_on_phones() {
     let mut failures = Vec::new();
-    for source in [
-        "third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm",
-        "samples/face/face_head.glb",
-    ] {
+    for source in ["lookdev/character/character.vrm", "samples/face/face_head.glb"] {
         let (mesh, settings) = shipped(source);
         let tolerance = settings.outline.weld_tolerance();
         let [mut desktop, mut mobile] = [mesh.clone(), mesh];

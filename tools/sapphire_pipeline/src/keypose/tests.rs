@@ -545,9 +545,7 @@ fn the_committed_document_poses_the_character() {
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let text = fs::read(content.join("lookdev/character/strike.keypose.ron")).expect("the document");
     let document = read(&text).expect("it reads");
-    let vrm_bytes =
-        fs::read(content.join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"))
-            .expect("the character");
+    let vrm_bytes = fs::read(content.join("lookdev/character/character.vrm")).expect("the character");
     let rig = vrm::import_rig(&vrm_bytes, None).expect("the rig");
     let imported = vrm::import(&vrm_bytes, None).expect("the character");
     let skeleton = Skeleton::new(&imported.mesh.skin.as_ref().expect("skinned").joints);
@@ -611,9 +609,7 @@ fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig)
 fn cook_on_the_character(content: &Path, path: &Path) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig) {
     let text = fs::read(path).expect("the document");
     let document = read(&text).expect("it reads");
-    let vrm_bytes =
-        fs::read(content.join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"))
-            .expect("the character");
+    let vrm_bytes = fs::read(content.join("lookdev/character/character.vrm")).expect("the character");
     let rig = vrm::import_rig(&vrm_bytes, None).expect("the rig");
     let imported = vrm::import(&vrm_bytes, None).expect("the character");
     let skeleton = Skeleton::new(&imported.mesh.skin.as_ref().expect("skinned").joints);

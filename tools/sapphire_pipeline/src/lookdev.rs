@@ -137,9 +137,9 @@ pub const FACE_MASK: &str = "character/face/face_mask.png";
 /// The character's expression map, relative to the look-dev directory: [`face_expression_png`].
 pub const FACE_EXPRESSION: &str = "character/face/face_expression.png";
 
-/// The look-dev character's model (pixiv's VRM, byte for byte), relative to the look-dev
-/// directory: [`neck_shadow_png`]'s input.
-pub const MODEL: &str = "../third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm";
+/// The look-dev character's model (pixiv's VRM with Sapphire's correctives, the model's
+/// `MODIFIED.md` says which), relative to the look-dev directory: [`neck_shadow_png`]'s input.
+pub const MODEL: &str = "character/character.vrm";
 
 /// The shadow under the character's chin, relative to the look-dev directory: the shadow bias
 /// the body's ILM map (`character/body.ilm.ron`) reads.

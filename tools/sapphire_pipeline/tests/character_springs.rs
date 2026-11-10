@@ -39,10 +39,8 @@ struct Character {
 impl Character {
     fn load() -> Self {
         let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let vrm_bytes = std::fs::read(
-            content.join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"),
-        )
-        .expect("the character");
+        let vrm_bytes =
+            std::fs::read(content.join("lookdev/character/character.vrm")).expect("the character");
         let rig = vrm::import_rig(&vrm_bytes, None).expect("its rig");
         let imported = vrm::import(&vrm_bytes, None).expect("the character");
         let skin = imported.mesh.skin.as_ref().expect("skinned");

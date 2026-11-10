@@ -971,8 +971,8 @@ fn a_cycle_of_nodes_in_an_animation_source_is_an_error_not_a_hang() {
 fn kaykits_sidecars_ask_for_what_its_files_have() {
     let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/third_party/kaykit_character_animations/Rig_Medium");
-    let character_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
+    let character_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/character/character.vrm");
     let character = meta::read(&sidecar_path(&character_path)).unwrap().id;
     // The warrior and every generated figure: each combat folder's models.
     let mut targets = vec![character];

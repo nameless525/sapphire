@@ -13,7 +13,7 @@ Third-party bytes live only here. Files extracted byte for byte from a source (a
 
 | Folder | What | Author | License | Used by |
 |---|---|---|---|---|
-| [vrm1_constraint_twist_sample](vrm1_constraint_twist_sample/) | VRM 1.0 anime character (VRoid-style, MToon materials) | pixiv Inc. | VRM Public License 1.0 | M1 X1, the look-dev character |
+| [vrm1_constraint_twist_sample](vrm1_constraint_twist_sample/) | VRM 1.0 anime character (VRoid-style, MToon materials) | pixiv Inc. | VRM Public License 1.0 | M1 X1, the look-dev character, as a corrected copy in `content/lookdev/character/` |
 | [kenney_fantasy_town_kit](kenney_fantasy_town_kit/) | Modular fantasy town: walls, roofs, roads, fountain, trees, stalls | Kenney | CC0 1.0 | M1 X1, the environment slice's base geometry |
 | [vvaytoyek_chinese_pavilion](vvaytoyek_chinese_pavilion/) | A Chinese four-corner garden pavilion: timber frame, tile roof (FBX) | VVayToyek | CC0 1.0 | M1 X1 part 2, a hero piece of the Jinzhou-style town |
 | [kaykit_character_animations](kaykit_character_animations/) | Humanoid clips for `Rig_Medium`: locomotion, reactions, deaths, melee | Kay Lousberg | CC0 1.0 | M2 O2, the base clips |

@@ -605,10 +605,7 @@ mod tests {
     /// leaves it is held.
     #[test]
     fn the_character_keeps_its_cooked_bounds_until_it_leaves_them() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/lookdev/character/character.vrm");
         let bytes = std::fs::read(path).expect("the character");
         let rig = sapphire_pipeline::import::vrm::import_rig(&bytes, None).expect("its rig");
         let mesh = sapphire_pipeline::import::vrm::import(&bytes, None).expect("the character").mesh;

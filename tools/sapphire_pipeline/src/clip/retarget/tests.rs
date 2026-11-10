@@ -741,7 +741,7 @@ pub(crate) fn third_party() -> PathBuf {
 fn imported_character() -> &'static (Skeleton, HumanMap, CharacterRig) {
     static CHARACTER: OnceLock<(Skeleton, HumanMap, CharacterRig)> = OnceLock::new();
     CHARACTER.get_or_init(|| {
-        let path = third_party().join("vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
+        let path = third_party().join("../lookdev/character/character.vrm");
         let import = vrm::import(&std::fs::read(path).unwrap(), None).unwrap();
         let map = HumanMap::from_rig(&import.rig);
         (Skeleton::new(&import.mesh.skin.unwrap().joints), map, import.rig)

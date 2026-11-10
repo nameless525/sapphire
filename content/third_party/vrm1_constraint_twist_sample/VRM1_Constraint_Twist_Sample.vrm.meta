@@ -2,7 +2,7 @@
     type: "sapphire::assets::AssetMeta",
     version: 1,
     data: (
-        id: "6f8a81b6-29c4-485f-b161-847b001d561f",
+        id: "bc8b1a4f-4d97-4996-b8bd-41428d0476d9",
         importer: Vrm((
             mesh: (
                 outline: (
@@ -44,5 +44,6 @@
             ),
             version: Some(V1),
         )),
+        cook: false,
     ),
 )

@@ -88,8 +88,8 @@ pub mod model;
 pub const TOWN_ZONE: AssetId = AssetId::from_text("c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13");
 /// The stem of its source, which names its pack.
 pub const TOWN_STEM: &str = "town";
-/// The character: pixiv's `VRM1_Constraint_Twist_Sample`, by its sidecar's ID
-/// (`content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm.meta`).
+/// The character: pixiv's `VRM1_Constraint_Twist_Sample` with Sapphire's correctives, by its
+/// sidecar's ID (`content/lookdev/character/character.vrm.meta`).
 pub const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).

@@ -136,8 +136,7 @@ fn player() -> &'static Player {
     static PLAYER: OnceLock<Player> = OnceLock::new();
     PLAYER.get_or_init(|| {
         let folder = content().join("combat/player");
-        let vrm_path =
-            content().join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
+        let vrm_path = content().join("lookdev/character/character.vrm");
         let vrm_bytes = std::fs::read(vrm_path).expect("the character");
         let rig = vrm::import_rig(&vrm_bytes, None).expect("the rig");
         let imported = vrm::import(&vrm_bytes, None).expect("the character");

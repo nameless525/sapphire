@@ -630,7 +630,7 @@ impl Clearance {
             self.posed_shirt[morph.shirt_point] += chest_from_model.transform_vector3(offset) * weight;
         }
         if let Some(underarm) = &mut self.underarm {
-            underarm.solve(pose, chest_from_model, &self.shirt, &mut self.posed_shirt);
+            underarm.solve(pose, chest_from_model, &self.shirt, &mut self.posed_shirt, elapsed);
         }
         self.garment.refit(&self.posed_shirt, &self.triangles);
         if forecast > 0.0 {

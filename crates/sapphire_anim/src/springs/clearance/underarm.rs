@@ -8,6 +8,9 @@ const TARGET: &str = "__r10_right_underarm";
 const FOLD: f32 = 0.0003;
 const PATCH_CENTER: Vec3 = Vec3::new(-0.21, 1.19, 0.01);
 const PATCH_REACH: f32 = 0.23;
+/// The half-life, in presented ticks, of the weight a solve gave up: a fold no gain clears, or one
+/// that's gone, lets the relief go over a few frames instead of at once.
+const RELEASE_HALF_LIFE: f32 = 4.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Underarm {
@@ -205,19 +208,58 @@ impl Underarm {
         pose_limit(axis, roll, authored)
     }
 
-    /// The shader and hair pass share the same accepted weight and posed tee.
+    /// The shader and hair pass share the same accepted weight and posed tee. The weight is the least
+    /// gain that clears the fold, or what the last solve gave released over `elapsed` ticks if that's
+    /// more, within the pose's limit: so a fold no gain clears doesn't drop the relief in one frame.
     pub(super) fn solve(
         &mut self,
         pose: &mut CharacterPose,
         chest_from_model: Affine3A,
         shirt: &[Point],
         stock: &mut [Vec3],
+        elapsed: Option<f32>,
     ) {
-        self.weight = 0.0;
-        let limit = self.pose_limit(pose);
-        if limit <= 0.0 {
+        let limit = self.pose_limit(pose).max(0.0);
+        let (chosen, placed) =
+            if limit > 0.0 { self.choose(pose, chest_from_model, shirt, stock, limit) } else { (0.0, false) };
+        let weight = settled_weight(chosen, self.weight, limit, elapsed);
+        self.weight = weight;
+        if weight <= 0.0 {
             return;
         }
+        if !placed {
+            self.place(pose, chest_from_model, shirt);
+        }
+        for (morph, offset) in self.shape.iter().zip(&self.offsets) {
+            stock[morph.shirt_point] += *offset * weight;
+        }
+        pose.weights_mut()[self.target] = weight;
+    }
+
+    /// Where the skin is and what the relief moves each of its garment points by, at full weight.
+    fn place(&mut self, pose: &CharacterPose, chest_from_model: Affine3A, shirt: &[Point]) {
+        for (out, &point) in self.posed_skin.iter_mut().zip(&self.skin) {
+            *out = chest_from_model.transform_point3(point.model(pose.model()));
+        }
+        for (out, morph) in self.offsets.iter_mut().zip(&self.shape) {
+            let mut offset = Vec3::ZERO;
+            for (part, delta) in shirt[morph.shirt_point].parts.iter().zip(morph.joint_offsets) {
+                offset += pose.model()[part.joint].transform_vector3(delta) * part.weight;
+            }
+            *out = chest_from_model.transform_vector3(offset);
+        }
+    }
+
+    /// The least gain up to `limit` that clears the garment's fold without cutting further into the
+    /// arm, or 0 if there's no fold or none does; and whether it [placed](Self::place) the relief.
+    fn choose(
+        &mut self,
+        pose: &CharacterPose,
+        chest_from_model: Affine3A,
+        shirt: &[Point],
+        stock: &[Vec3],
+        limit: f32,
+    ) -> (f32, bool) {
         let triangles = &self.cloth_triangles;
         self.stock_bounds.clear();
         self.stock_bounds.extend(triangles.iter().map(|tri| bounds(tri.map(|i| stock[i]))));
@@ -229,18 +271,9 @@ impl Underarm {
                 && cut(triangles[a].map(|i| stock[i]), triangles[b].map(|i| stock[i])) >= FOLD
         };
         if !self.cloth.iter().any(folds) {
-            return;
+            return (0.0, false);
         }
-        for (out, &point) in self.posed_skin.iter_mut().zip(&self.skin) {
-            *out = chest_from_model.transform_point3(point.model(pose.model()));
-        }
-        for (out, morph) in self.offsets.iter_mut().zip(&self.shape) {
-            let mut offset = Vec3::ZERO;
-            for (part, delta) in shirt[morph.shirt_point].parts.iter().zip(morph.joint_offsets) {
-                offset += pose.model()[part.joint].transform_vector3(delta) * part.weight;
-            }
-            *out = chest_from_model.transform_vector3(offset);
-        }
+        self.place(pose, chest_from_model, shirt);
         self.candidate.copy_from_slice(stock);
         for (morph, offset) in self.shape.iter().zip(&self.offsets) {
             self.candidate[morph.shirt_point] += *offset * limit;
@@ -290,13 +323,7 @@ impl Underarm {
             }
             previous = gain;
         }
-        if chosen > 0.0 {
-            for (morph, offset) in self.shape.iter().zip(&self.offsets) {
-                stock[morph.shirt_point] += *offset * chosen;
-            }
-            pose.weights_mut()[self.target] = chosen;
-            self.weight = chosen;
-        }
+        (chosen, true)
     }
 
     fn clears(&mut self, stock: &[Vec3], gain: f32) -> bool {
@@ -318,6 +345,14 @@ impl Underarm {
             new < FOLD || new <= cut(cloth(a).map(|i| stock[i]), skin)
         })
     }
+}
+
+/// The relief's weight after a solve chose `chosen`, the last gave `held`, and `elapsed` ticks went by
+/// (`None` across a cut): at least `chosen`, at once, and what's let go goes over
+/// [`RELEASE_HALF_LIFE`], within the pose's `limit`.
+fn settled_weight(chosen: f32, held: f32, limit: f32, elapsed: Option<f32>) -> f32 {
+    let released = elapsed.map_or(0.0, |dt| held * (-dt.max(0.0) / RELEASE_HALF_LIFE).exp2());
+    chosen.max(released.min(limit))
 }
 
 fn pose_limit(axis: Vec3, roll: f32, authored: f32) -> f32 {
@@ -382,7 +417,7 @@ fn cut(a: [Vec3; 3], b: [Vec3; 3]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cut, pose_limit};
+    use super::{cut, pose_limit, settled_weight};
     use sapphire_math::Vec3;
 
     #[test]
@@ -401,5 +436,27 @@ mod tests {
         assert!(pose_limit(gathered, 6.46, 0.0) > 0.99);
         assert_eq!(pose_limit(gathered, 6.46, 0.5), 0.0);
         assert_eq!(pose_limit(gathered, 50.0, 0.0), 0.0);
+    }
+
+    /// A solve whose fold no gain clears, or whose fold has gone, chooses 0; the relief then lets go
+    /// of its weight over a few frames, where it used to drop from near its limit to 0 in one.
+    #[test]
+    fn the_relief_lets_go_over_frames_when_nothing_clears() {
+        let limit = 0.9;
+        let mut weight = settled_weight(0.8, 0.0, limit, Some(1.0));
+        assert_eq!(weight, 0.8, "a gain that clears is taken at once");
+        let mut frames = 0;
+        while weight > 0.01 {
+            let next = settled_weight(0.0, weight, limit, Some(1.0));
+            assert!(next < weight && next > weight * 0.8, "{next} after {weight}");
+            weight = next;
+            frames += 1;
+        }
+        assert!((20..40).contains(&frames), "{frames} frames to let go");
+        assert_eq!(settled_weight(0.0, 0.8, limit, Some(0.0)), 0.8, "no time, no change");
+        assert_eq!(settled_weight(0.0, 0.8, 0.3, Some(1.0)), 0.3, "never past the pose's limit");
+        assert_eq!(settled_weight(0.0, 0.8, 0.0, Some(1.0)), 0.0, "nor where the pose allows none");
+        assert_eq!(settled_weight(0.2, 0.8, limit, None), 0.2, "a cut starts over");
+        assert!(settled_weight(0.5, 0.8, limit, Some(1.0)) > 0.5);
     }
 }

@@ -22,7 +22,7 @@ use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
 use sapphire_reflect::Versioned;
 use sapphire_stage::content::ScreenAssets;
-use sapphire_ui::{Atlas, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
+use sapphire_ui::{Atlas, HudValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
 use serde::{Deserialize, Serialize};
 
 use crate::screen::{ScreenStack, StackSetup};
@@ -237,6 +237,12 @@ pub struct HudModel {
     /// The key of the enemy's.
     pub enemy: String,
     pub has_enemy: bool,
+    /// The foe isn't a boss, so its name is `enemy`.
+    pub names_enemy: bool,
+    /// The key of a boss's name, `boss-<kind>`, as its kind of enemy names it: its bar's name in place of
+    /// `enemy`. Empty reads the document's own.
+    pub boss: String,
+    pub has_boss: bool,
     /// The objective's key.
     pub objective: String,
     /// Whether it's played by touch, which has no key to pause with.
@@ -255,11 +261,31 @@ impl Default for HudModel {
             level: 12,
             enemy: "character-name-skeleton".to_owned(),
             has_enemy: true,
+            names_enemy: true,
+            boss: String::new(),
+            has_boss: false,
             objective: "hud-objective-arena".to_owned(),
             touch: false,
             banner: "hud-banner-checkpoint".to_owned(),
             has_banner: false,
             can_skip: false,
+        }
+    }
+}
+
+impl HudModel {
+    /// Follows the fight's bars: whether there's a foe, and its name, a boss's by `boss_name` (the key
+    /// `game_combat`'s `FightShow::boss_name` gives) while its bar is a boss's. Allocates only for a boss's
+    /// name longer than any before.
+    pub fn follow_fight(&mut self, values: Option<&HudValues>, boss_name: Option<&str>) {
+        self.has_enemy = values.is_some_and(|values| values.enemy.is_some());
+        let boss = boss_name.filter(|_| values.is_some_and(|values| values.boss.is_some()));
+        self.has_boss = boss.is_some();
+        self.names_enemy = !self.has_boss;
+        if let Some(boss) = boss
+            && self.boss != boss
+        {
+            boss.clone_into(&mut self.boss);
         }
     }
 }

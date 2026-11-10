@@ -14,9 +14,10 @@ use sapphire_assets::ui::UiModel;
 use sapphire_look::UiDrawList;
 use sapphire_math::Vec2;
 use sapphire_platform::Scancode;
-use sapphire_ui::Atlas;
+use sapphire_strings::Pattern;
+use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
 use support::walk::{Device, Walk};
-use support::{assets, content, document};
+use support::{assets, boss_names, content, document, table};
 
 /// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.
 const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
@@ -149,6 +150,50 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     walk.choose(MenuScreen::Settings, "size");
     assert_eq!(walk.menus.settings().size, "large");
     assert!(walk.menus.settings().scale() > 1.0);
+}
+
+/// A boss's bar is named by the key its kind of enemy holds, in the enemy's name's place, in both languages;
+/// another foe's is named as before.
+#[test]
+fn a_bosss_bar_is_named_by_its_kind_of_enemy() {
+    let mut values = HudValues {
+        enemy: Some(FighterValues::default()),
+        boss: Some(BossBar::default()),
+        ..HudValues::default()
+    };
+    for key in boss_names() {
+        for locale in ["en", "ja"] {
+            let mut walk = Walk::new(assets(), locale, false, (1280, 720), Device::Keyboard);
+            walk.menus.open(MenuScreen::Hud);
+            values.boss = Some(BossBar::default());
+            walk.menus
+                .model_mut::<HudModel>(MenuScreen::Hud)
+                .unwrap()
+                .follow_fight(Some(&values), Some(&key));
+            walk.settle();
+            walk.check(MenuScreen::Hud, false);
+            let table = table(locale);
+            let Pattern::Plain(span) = table.entry(&key).expect("in the table").pattern else {
+                panic!("{key} is a plain name")
+            };
+            let tree = walk.tree(MenuScreen::Hud);
+            let shown = |name| tree.is_visible(tree.find(name).expect("a node"));
+            let said = |name| tree.strings().find(|(node, _)| *node == name).expect("text").1;
+            assert!(shown("boss-name") && !shown("enemy-name"), "{locale}: {key}");
+            assert_eq!(said("boss-name"), table.str(span), "{locale}: {key}");
+
+            // The same foe with a plain bar is named as any other.
+            values.boss = None;
+            walk.menus
+                .model_mut::<HudModel>(MenuScreen::Hud)
+                .unwrap()
+                .follow_fight(Some(&values), Some(&key));
+            walk.settle();
+            let tree = walk.tree(MenuScreen::Hud);
+            let shown = |name| tree.is_visible(tree.find(name).expect("a node"));
+            assert!(!shown("boss-name") && shown("enemy-name"), "{locale}: {key}");
+        }
+    }
 }
 
 #[test]

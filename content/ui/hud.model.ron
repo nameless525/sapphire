@@ -6,11 +6,14 @@
     data: (
         fields: [
             (path: "banner", kind: Text),
+            (path: "boss", kind: Text),
             (path: "can_skip", kind: Bool),
             (path: "enemy", kind: Text),
             (path: "has_banner", kind: Bool),
+            (path: "has_boss", kind: Bool),
             (path: "has_enemy", kind: Bool),
             (path: "level", kind: Number),
+            (path: "names_enemy", kind: Bool),
             (path: "objective", kind: Text),
             (path: "player", kind: Text),
             (path: "touch", kind: Bool),

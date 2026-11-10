@@ -51,11 +51,25 @@
             (
                 name: "enemy-name",
                 parent: "enemy",
+                binds: [(to: Shown, path: "names_enemy")],
                 text: (
                     key: "character-name-skeleton",
                     style: "name",
                     color: (240, 246, 255, 255),
                     key_from: (path: "enemy", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
+            // A boss's bar is named by its kind of enemy (M3 Z3e), in the enemy's name's place.
+            (
+                name: "boss-name",
+                parent: "enemy",
+                binds: [(to: Shown, path: "has_boss")],
+                text: (
+                    key: "boss-captain",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "boss", prefix: "boss-"),
                     shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),

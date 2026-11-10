@@ -478,9 +478,8 @@ fn ultimate_values(view: &ActorView, cost: u32) -> Option<UltimateValues> {
     })
 }
 
-/// One fighter's bars, for the HUD: `points` asks for its health in digits.
 /// A boss's bar for `actor`, if its kind of enemy is a boss: a mark where each of its phases falls (M3 B3).
-/// Its name's key is `EnemyMind::boss`, for the HUD's words (M3 U7) to draw.
+/// Its name's key is `EnemyMind::boss`, which the HUD's words draw over it ([`ArenaActors::boss_name`]).
 fn boss_bar(simulation: &Simulation, actor: ActorId) -> Option<BossBar> {
     let library = simulation.move_library();
     let mind = library.mind(simulation.actor(actor)?.moves.set?)?;
@@ -492,6 +491,7 @@ fn boss_bar(simulation: &Simulation, actor: ActorId) -> Option<BossBar> {
     Some(bar)
 }
 
+/// One fighter's bars, for the HUD: `points` asks for its health in digits.
 fn fighter_values(view: &ActorView, points: bool) -> FighterValues {
     let share = |left: u32, whole: u32| if whole == 0 { 1.0 } else { left as f32 / whole as f32 };
     let fighter = &view.fighter;
@@ -870,6 +870,14 @@ impl ArenaActors {
         if let Some((_, grip)) = &mut self.fighters[fighter].blade {
             grip.at = blade_in_model;
         }
+    }
+
+    /// The key of the boss's name in the game's words (`boss-<kind>`, as its kind of enemy names it), while
+    /// the foe the HUD shows is a boss, read from `simulation`, the one the arena last followed.
+    pub(crate) fn boss_name<'a>(&self, simulation: &'a Simulation) -> Option<&'a str> {
+        self.boss?;
+        let set = simulation.actor(self.shown?)?.moves.set?;
+        simulation.move_library().mind(set)?.boss()
     }
 
     /// What the HUD shows of the fighters, once a fight has stepped: the foe the player has whole, and of
@@ -1515,6 +1523,23 @@ mod tests {
                 assert!(graph.combat.moves.iter().any(|row| row.name == label), "no clip plays {label}");
             }
         }
+    }
+
+    /// A boss's bar names it by the key its kind of enemy holds, and any other foe's names nobody.
+    #[test]
+    fn a_bosss_bar_names_it_by_its_kinds_key() {
+        let (mut actors, _, mut sim, cast) = fight();
+        step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        assert_eq!(actors.hud_values().expect("a fight").boss, None);
+        assert_eq!(actors.boss_name(&sim), None);
+
+        let (mut actors, _, mut sim, cast) = fight_of("arena-boss");
+        step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        assert!(actors.hud_values().expect("a fight").boss.is_some());
+        let set = sim.actor(cast[1]).expect("there").moves.set.expect("a set");
+        let key = sim.move_library().mind(set).and_then(|mind| mind.boss());
+        assert!(key.is_some_and(|key| key.starts_with("boss-")), "{key:?}");
+        assert_eq!(actors.boss_name(&sim), key);
     }
 
     /// The bars are the simulation's, in shares, with only the player's in digits.

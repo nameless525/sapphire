@@ -15,11 +15,10 @@ use std::path::Path;
 use game_ui::menus::MenuScreen;
 use sapphire_assets::ui::UiDocument;
 use sapphire_dialogue::DialogueDocument;
-use sapphire_moves::EnemyDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
 use sapphire_timeline::TimelineDocument;
-use support::{content, document, table};
+use support::{boss_names, content, document, table};
 
 const LOCALES: [&str; 2] = ["en", "ja"];
 
@@ -75,27 +74,7 @@ fn spoken() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     add_spoken(&content(), &mut keys);
     add_said(&content(), &mut keys);
-    keys.extend(bosses());
-    keys
-}
-
-fn add_bosses(dir: &Path, into: &mut BTreeSet<String>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            add_bosses(&path, into);
-        } else if path.to_str().is_some_and(|name| name.ends_with(".enemy.ron")) {
-            let kind = EnemyDocument::parse(&fs::read_to_string(&path).unwrap())
-                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            into.extend(kind.boss.map(|boss| boss.name));
-        }
-    }
-}
-
-/// The key of every kind of enemy's name that is a boss's (M3 B3): what its boss bar names.
-fn bosses() -> BTreeSet<String> {
-    let mut keys = BTreeSet::new();
-    add_bosses(&content(), &mut keys);
+    keys.extend(boss_names());
     keys
 }
 
@@ -189,7 +168,7 @@ fn every_key_a_screen_or_a_cutscene_names_is_in_both_languages() {
 /// A boss's name is in every language, so no boss bar names a key (M3 Z3).
 #[test]
 fn every_boss_s_name_is_in_every_language() {
-    let bosses = bosses();
+    let bosses = boss_names();
     // No boss by name: they're content, which `sapphire_gameplay`'s `bosses_are_content` holds code to.
     assert!(!bosses.is_empty(), "some kind of enemy is a boss");
     for locale in LOCALES {

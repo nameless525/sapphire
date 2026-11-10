@@ -4,12 +4,14 @@
 
 pub mod walk;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use game_ui::menus::MenuScreen;
 use sapphire_assets::font::Font;
 use sapphire_assets::ui::UiDocument;
 use sapphire_loc::StringTable;
+use sapphire_moves::EnemyDocument;
 use sapphire_pipeline::loc::{self, FluentFile};
 use sapphire_stage::content::ScreenAssets;
 
@@ -32,6 +34,27 @@ pub fn table(locale: &str) -> StringTable {
     let document = content().join(format!("loc/{locale}.locale.ron"));
     let bytes = loc::cook(&document, &std::fs::read(&document).unwrap(), &files).unwrap();
     StringTable::read(&bytes).unwrap()
+}
+
+fn add_boss_names(dir: &Path, into: &mut BTreeSet<String>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            add_boss_names(&path, into);
+        } else if path.to_str().is_some_and(|name| name.ends_with(".enemy.ron")) {
+            let kind = EnemyDocument::parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            into.extend(kind.boss.map(|boss| boss.name));
+        }
+    }
+}
+
+/// The key of every boss's name that a kind of enemy under `content/` holds (M3 B3): what its bar shows.
+/// No boss by name: they're content, which `sapphire_gameplay`'s `bosses_are_content` holds code to.
+pub fn boss_names() -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    add_boss_names(&content(), &mut keys);
+    keys
 }
 
 pub fn document(screen: MenuScreen) -> UiDocument {

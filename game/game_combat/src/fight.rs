@@ -1140,11 +1140,17 @@ impl FightShow {
         Some((arena.hud_values()?, arena.fight_time()))
     }
 
-    /// How long the last frame's camera took (rule R9): nothing without the arena.
+    /// The key of the boss's name its bar shows (`boss-<kind>`), while the foe the HUD shows is a boss:
+    /// what `game_ui`'s `HudModel::follow_fight` takes. `simulation` is the one this show follows.
+    pub fn boss_name<'a>(&self, simulation: &'a Simulation) -> Option<&'a str> {
+        self.arena.as_deref()?.boss_name(simulation)
+    }
+
     pub fn arena_mut(&mut self) -> Option<&mut ArenaActors> {
         self.arena.as_deref_mut()
     }
 
+    /// How long the last frame's camera took (rule R9): nothing without the arena.
     pub fn camera_time(&self) -> Duration {
         self.camera_time
     }

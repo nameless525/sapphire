@@ -123,6 +123,7 @@ impl Options {
             ticks: self.ticks,
             quality: QualitySettings::default(),
             forward: false,
+            draw_from: 0,
         }
     }
 }
@@ -157,6 +158,7 @@ mod tests {
                 ticks: 9,
                 quality: QualitySettings::default(),
                 forward: false,
+                draw_from: 0,
             }
         );
         assert!(!options.saves());

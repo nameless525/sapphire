@@ -75,7 +75,13 @@ impl App for OffscreenApp {
             OffscreenMode::Capture { path, ticks, .. } if let Some(start) = options.game => {
                 let progress = options.progress.as_deref();
                 let quality = options.quality_settings();
-                let game = (start, progress, options.game_forward, options.game_language.as_deref());
+                let game = (
+                    start,
+                    progress,
+                    options.game_forward,
+                    options.game_language.as_deref(),
+                    options.game_draw_from,
+                );
                 crate::capture::game(platform, path, game, (*ticks, (width, height)), quality)?;
             }
             OffscreenMode::Capture { path, ticks, frames } => {

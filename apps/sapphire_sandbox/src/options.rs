@@ -249,6 +249,10 @@ pub(crate) struct Options {
     /// `--game-language <code>` (with `--game`): the player's chosen language, of the game's, in place of
     /// English.
     pub game_language: Option<String>,
+    /// `--game-draw-from <frame>` (with `--game`): the first frame drawn at the capture's size; those before
+    /// it are drawn a tenth as wide and high (`GameCapture::draw_from`), so a golden on a software rasterizer
+    /// pays for few pixels until its last camera cut.
+    pub game_draw_from: u32,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -819,6 +823,9 @@ impl Options {
                     }
                     options.game_language = Some(language);
                 }
+                "--game-draw-from" => {
+                    options.game_draw_from = number(&value("--game-draw-from")?, "--game-draw-from")?;
+                }
                 "--display-text" => {
                     options.display_text =
                         Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
@@ -1349,9 +1356,13 @@ impl Options {
         if options.progress.is_some() && options.game.is_none() {
             return Err("--progress is the save the game's own show starts over: it needs --game".to_owned());
         }
-        if (options.game_forward || options.game_language.is_some()) && options.game.is_none() {
+        let game_flags =
+            options.game_forward || options.game_language.is_some() || options.game_draw_from > 0;
+        if game_flags && options.game.is_none() {
             return Err(
-                "--game-forward and --game-language play the game's own show: they need --game".to_owned()
+                "--game-forward, --game-language and --game-draw-from play the game's own show: they \
+                        need --game"
+                    .to_owned(),
             );
         }
         options.combat = match (replay, record, scenario, script) {
@@ -2350,12 +2361,17 @@ mod tests {
             "--game-forward",
             "--game-language",
             "ja",
+            "--game-draw-from",
+            "161",
             "--capture",
             "x",
         ])
         .unwrap();
         assert!(game.game_forward);
         assert_eq!(game.game_language.as_deref(), Some("ja"));
+        assert_eq!(game.game_draw_from, 161);
+        refused(&["--game-draw-from", "161", "--capture", "x"], "--game-draw-from");
+        refused(&["--game", "title", "--game-draw-from", "late", "--capture", "x"], "expects a number");
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

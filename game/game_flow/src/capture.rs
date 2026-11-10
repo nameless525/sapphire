@@ -1,6 +1,7 @@
 //! A game drawn with no window (M3 G1): what the game's `--capture` and the sandbox's `--game` draw. The show
 //! stands on a headless GPU, the title chooses what it's told to, and each tick is a frame: stepped, its view
-//! driven and drawn, as the window's loop would. The last frame is read back.
+//! driven and drawn, as the window's loop would, small until [`GameCapture::draw_from`]. The last frame is read
+//! back.
 
 use std::time::Duration;
 
@@ -21,6 +22,9 @@ use crate::show::GameShow;
 /// The capture's target, sRGB like a window's swapchain.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// How many times smaller each side of the frames before [`GameCapture::draw_from`] is.
+const SMALL: u32 = 10;
+
 /// What a capture draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameCapture {
@@ -36,6 +40,15 @@ pub struct GameCapture {
     /// Whether the keyboard holds the stick forward from the first frame until a timeline plays: a continue
     /// facing a gate walks through it into its cutscene, as a player would (M3 Q4's subtitles).
     pub forward: bool,
+    /// The first frame drawn at [`size`](Self::size); 0 or 1 draws them all so. A frame before it is drawn
+    /// whole, but into a target a tenth as wide and high, so a golden on a software rasterizer, which pays by
+    /// the pixel, pays for few. Skipping those frames (`Stage::skip_frame`) wouldn't keep the picture: what
+    /// the renderer carries from one drawn frame to the next would then have run fewer times, the ambient
+    /// relight's quarters and the sky cube's faces a frame, the shadows, and the jitter's and the proximity
+    /// fade's turns. Drawn small, all of that runs every frame as it would, and the size changing drops only
+    /// TAA's history, as a camera cut does. So a capture draws full size from its last cut or a few frames
+    /// before, and its last frame is byte for byte the one drawing them all would give.
+    pub draw_from: u32,
 }
 
 /// A capture's last frame.
@@ -70,6 +83,12 @@ pub fn capture(
     let (width, height) = capture.size;
     let target = stage.target(width, height, wgpu::TextureUsages::COPY_SRC);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let small = stage.target(
+        width.div_ceil(SMALL).max(1),
+        height.div_ceil(SMALL).max(1),
+        wgpu::TextureUsages::empty(),
+    );
+    let small = small.create_view(&wgpu::TextureViewDescriptor::default());
     let frame = Duration::from_secs(1) / TICK_HZ;
     let mut now = Duration::ZERO;
     // Whether it still walks, until a timeline plays, and whether forward's pressed yet.
@@ -95,7 +114,8 @@ pub fn capture(
         }
         stage.step();
         stage.show.drive_view(frame);
-        stage.render(&view, 1.0, |_, _| {})?;
+        let into = if frame_at < capture.draw_from { &small } else { &view };
+        stage.render(into, 1.0, |_, _| {})?;
         stage.show.say_first_uses(&stage.renderer);
     }
     now += frame;

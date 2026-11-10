@@ -105,7 +105,10 @@ macro_rules! game_scene {
 
 /// The court gate's cutscene in the game as it ships (M3 Q4), at a size in pixels and in a language: a continue
 /// from `ward-gate.progress.ron` walks back through the gate, into the cutscene at frame 17, and the last frame,
-/// 3.9 s on, falls mid-way through the warden's line (2.9 to 4.9 s).
+/// 3.9 s on, falls mid-way through the warden's line (2.9 to 4.9 s). The 160 frames before 161 are drawn a
+/// tenth as wide and high (`--game-draw-from`), so a software rasterizer draws 91 frames at full size, not 251.
+/// The cutscene's cut at 2.5 s, frame 166, drops TAA's history as the size changing does, so the last frame is
+/// byte for byte the one drawing them all would give; drawing full size from 167 on isn't.
 macro_rules! gate_scene {
     ($name:literal, $size:literal, $language:literal) => {
         Scene {
@@ -124,6 +127,8 @@ macro_rules! gate_scene {
                 "--game-forward",
                 "--game-language",
                 $language,
+                "--game-draw-from",
+                "161",
             ],
             thresholds: Thresholds::default(),
         }

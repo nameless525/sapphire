@@ -12,6 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorTable};
+use crate::body::BodyTable;
 use crate::brain::{Brain, BrainState};
 use crate::controller::{
     CharacterController, CharacterWorld, JUMP_REBOUND_WINDOW, MOVING_JUMP_MIN_ALIGNMENT,
@@ -553,6 +554,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
         }
     }
     hasher.u64(targeting.digest());
+    world.resource::<BodyTable>().0.write_canonical(&mut |bytes| hasher.bytes(bytes));
     dialogues.write_digests(&mut hasher);
     if let Some(zone) = zone {
         hasher.u64(zone.tables());

@@ -46,7 +46,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sapphire_anim::CharacterMotion;
+use sapphire_anim::{BodyTuning, CharacterMotion};
 use sapphire_assets::graph::{AnimGraph, clip_id};
 use sapphire_assets::ui::UiDocument;
 use sapphire_assets::{AssetChange, AssetKind, Handle};
@@ -117,8 +117,12 @@ pub enum Document {
     /// Who a soft lock picks (`default_targeting.ron`, M3 S3): the fight's simulation takes them, which ends
     /// a recording's file, and a new fight starts on them. A replay refuses.
     Targeting,
-    /// Hair, cloth and IK (`default_character_motion.ron`, M3 S3): what stands takes them, wherever it's got
-    /// to, and so does what's built later.
+    /// How bodies place their feet and turn their heads (`default_body.ron`, M3 S3b): what stands takes it,
+    /// wherever it's got to, and so does what's built later, and a new fight's simulation starts on it. A
+    /// fight under way keeps the table its bodies were bound on.
+    Body,
+    /// Hair, cloth and how much of the IK shows (`default_character_motion.ron`, M3 S3): what stands takes
+    /// them, wherever it's got to, and so does what's built later.
     CharacterMotion,
     /// Where the HUD's pieces go (`default_hud.ron`, M3 S3): it lays out again, if there's one.
     Hud,
@@ -152,7 +156,7 @@ pub struct DocumentFrame<'a> {
 }
 
 impl Document {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Day,
         Self::LightRigs,
         Self::ScreenEffects,
@@ -164,6 +168,7 @@ impl Document {
         Self::Ui,
         Self::Bindings,
         Self::Targeting,
+        Self::Body,
         Self::CharacterMotion,
         Self::Hud,
     ];
@@ -187,6 +192,7 @@ impl Document {
             Self::Ui => stable_name::<UiDocument>(),
             Self::Bindings => stable_name::<InputBindings>(),
             Self::Targeting => stable_name::<TargetingTuning>(),
+            Self::Body => stable_name::<BodyTuning>(),
             Self::CharacterMotion => stable_name::<CharacterMotion>(),
             Self::Hud => stable_name::<HudDesign>(),
             Self::Script => return None,
@@ -207,6 +213,7 @@ impl Document {
             Self::Ui => "screen",
             Self::Bindings => "bindings",
             Self::Targeting => "targeting's weights",
+            Self::Body => "body's feet and look",
             Self::CharacterMotion => "character's motion",
             Self::Hud => "HUD's design",
             Self::Script => "script",
@@ -284,6 +291,14 @@ impl Document {
                 tuning.count_edit(document_file_name(TARGETING_PATH));
                 Ok(self.name().to_owned())
             }
+            Self::Body => {
+                let body = BodyTuning::from_ron(text).map_err(|error| error_chain(&error))?;
+                content.set_body_tuning(body);
+                scene.set_body_tuning(&body);
+                tuning.moves.set_bodies(body);
+                tuning.count_edit(document_file_name(BODY_PATH));
+                Ok(format!("{}, and the next fight's bodies", self.name()))
+            }
             Self::CharacterMotion => {
                 let motion = CharacterMotion::from_ron(text).map_err(|error| error_chain(&error))?;
                 content.set_character_motion(motion);
@@ -340,6 +355,8 @@ const EFFECTS_PATH: &str = "crates/sapphire_vfx/default_effects.ron";
 const BINDINGS_PATH: &str = "crates/sapphire_controls/combat_bindings.ron";
 /// Targeting's weights' document.
 const TARGETING_PATH: &str = "crates/sapphire_gameplay/default_targeting.ron";
+/// The body document.
+const BODY_PATH: &str = "crates/sapphire_body_pose/default_body.ron";
 /// The character motion document.
 const MOTION_PATH: &str = "crates/sapphire_anim/default_character_motion.ron";
 /// The HUD's design's document.
@@ -467,6 +484,7 @@ impl LiveTuning {
             add(TARGETING_PATH, Document::Targeting);
         }
         add(BINDINGS_PATH, Document::Bindings);
+        add(BODY_PATH, Document::Body);
         add(MOTION_PATH, Document::CharacterMotion);
         if run.hud {
             add(HUD_PATH, Document::Hud);
@@ -508,7 +526,7 @@ impl LiveTuning {
                     path = %path.display(),
                     "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron`, \
                      `default_cues.ron`, `default_effects.ron`, `combat_bindings.ron`, \
-                     `default_targeting.ron`, `default_character_motion.ron`, `default_hud.ron` or a \
+                     `default_targeting.ron`, `default_body.ron`, `default_character_motion.ron`, `default_hud.ron` or a \
                      `.luau` script"
                 );
                 None
@@ -895,6 +913,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Bindings)
     } else if name == document_file_name(TARGETING_PATH) {
         Some(Document::Targeting)
+    } else if name == document_file_name(BODY_PATH) {
+        Some(Document::Body)
     } else if name == document_file_name(MOTION_PATH) {
         Some(Document::CharacterMotion)
     } else if name == document_file_name(HUD_PATH) {
@@ -1423,6 +1443,7 @@ mod tests {
             SHOW_MOVES_PATH,
             BINDINGS_PATH,
             TARGETING_PATH,
+            BODY_PATH,
             MOTION_PATH,
             HUD_PATH,
         ] {

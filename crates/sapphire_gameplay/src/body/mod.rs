@@ -6,7 +6,7 @@ mod package;
 pub use package::{
     BodyAssets, BodyBindError, BodyGraphAssets, BodyProfile, BodyProfileOptions, HeadAuthority,
 };
-pub use sapphire_body_pose::{BodySample, MotionHistory, MotionObservation};
+pub use sapphire_body_pose::{BodySample, BodyTuning, MotionHistory, MotionObservation};
 
 use bevy_ecs::system::SystemState;
 use sapphire_body_pose::{
@@ -55,7 +55,17 @@ pub enum BodyAttachError {
     Bound,
     #[error("the body actor or its look target is not live")]
     Actor,
+    #[error("the body was bound on other feet and look numbers than the simulation's table")]
+    Tuning,
+    #[error("the simulation's table changes only before its first step and its first body")]
+    TableInUse,
 }
+
+/// The table a simulation's bodies solve their feet and look by, [`BodyTuning::shipped`] until told
+/// otherwise. Every simulation holds one, and its `tables_hash` takes it, bodies or none, as it takes
+/// targeting's weights: whatever a game's document says reaches every replay's hash the same way.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BodyTable(pub(crate) BodyTuning);
 
 #[derive(Resource, Default)]
 pub(crate) struct BodyAuthority {

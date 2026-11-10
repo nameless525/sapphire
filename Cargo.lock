@@ -3750,10 +3750,12 @@ dependencies = [
 name = "sapphire_body_pose"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "insta",
  "sapphire_assets",
  "sapphire_core",
  "sapphire_math",
+ "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",
  "serde",

@@ -22,7 +22,7 @@ use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError, Teleports,
 };
-use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample};
+use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample, BodyTable, BodyTuning};
 use crate::brain::{self, Brain, BrainState};
 use crate::checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
 use crate::checksum;
@@ -191,6 +191,7 @@ impl Simulation {
         world.insert_resource(DialogueLibrary::default());
         world.insert_resource(Flags::default());
         world.insert_resource(TargetingTuning::shipped());
+        world.insert_resource(BodyTable(*BodyTuning::shipped()));
         world.insert_resource(ZoneShelf::default());
         world.insert_resource(Patrols::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
@@ -527,8 +528,29 @@ impl Simulation {
         hash.finish()
     }
 
+    /// The table this simulation's bodies solve their feet and look by: [`BodyTuning::shipped`], or a
+    /// game's own through [`Self::tune_bodies`]. A profile binds on it ([`body::BodyProfileOptions::tuning`]).
+    #[must_use]
+    pub fn body_tuning(&self) -> BodyTuning {
+        self.ecs.world().resource::<BodyTable>().0
+    }
+
+    /// Makes `tuning` the table, before the first step and the first body, and says whether that changed
+    /// anything: if it did, so did [`Self::tables_hash`], bodies or none. A running fight's bodies keep what
+    /// they were bound on, so a new table reaches the next fight ([`crate::replay::LiveMoves::set_bodies`]).
+    pub fn tune_bodies(&mut self, tuning: BodyTuning) -> Result<bool, BodyAttachError> {
+        if self.tick() != 0 || self.ecs.world().contains_resource::<BodyAuthority>() {
+            return Err(BodyAttachError::TableInUse);
+        }
+        let mut table = self.ecs.world_mut().resource_mut::<BodyTable>();
+        let changed = table.0 != tuning;
+        table.0 = tuning;
+        Ok(changed)
+    }
+
     /// Binds an immutable profile to one live actor before the first fixed step. The existing hit
-    /// sweep remains active. An explicitly configured profile is included in the replay identity.
+    /// sweep remains active. An explicitly configured profile is included in the replay identity. It must
+    /// have been bound on this simulation's table ([`Self::body_tuning`]).
     pub fn attach_body(
         &mut self,
         actor: ActorId,
@@ -537,6 +559,9 @@ impl Simulation {
     ) -> Result<(), BodyAttachError> {
         if self.tick() != 0 {
             return Err(BodyAttachError::Started);
+        }
+        if *profile.tuning() != self.body_tuning() {
+            return Err(BodyAttachError::Tuning);
         }
         let world = self.ecs.world_mut();
         if world.get_resource::<BodyAuthority>().is_some_and(|body| body.contains(actor)) {

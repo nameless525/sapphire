@@ -15,6 +15,7 @@ mod model;
 mod policy;
 mod pose_math;
 mod sample;
+mod tuning;
 
 pub use blend::{JointMask, add, blend, make_delta};
 pub use blend_space::{BlendPoint, blend_weights};
@@ -52,3 +53,4 @@ pub use sapphire_assets::skeleton::{
     SKELETON_EXTENSION, Skeleton, SkeletonError,
 };
 pub use sapphire_math::Transform;
+pub use tuning::{BodyTuning, BodyTuningError};

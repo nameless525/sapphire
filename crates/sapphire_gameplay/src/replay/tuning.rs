@@ -14,6 +14,7 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use super::play::RunStart;
 use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
+use crate::body::BodyTuning;
 use crate::moves::MoveSetId;
 use crate::script::ScriptEdits;
 use crate::simulation::{SimConfig, Simulation};
@@ -44,8 +45,8 @@ pub fn compile_document(text: &str, running: Option<&MoveSet>) -> Result<LiveSet
     Ok(LiveSet { set, motion_as_cooked: document.names_clips() })
 }
 
-/// What a new fight starts from when it isn't only what the build compiled in: the game's targeting weights,
-/// and the newest edit of each document of moves that has been edited since the app started, so starting
+/// What a new fight starts from when it isn't only what the build compiled in: the game's targeting weights
+/// and body table, and the newest edit of each document of moves that has been edited since the app started, so starting
 /// one doesn't quietly go back.
 #[derive(Clone, Debug, Default)]
 pub struct LiveMoves {
@@ -53,6 +54,8 @@ pub struct LiveMoves {
     latest: Vec<(String, MoveSet)>,
     /// `None` runs on [`TargetingTuning::shipped`].
     targeting: Option<TargetingTuning>,
+    /// `None` runs on [`BodyTuning::shipped`].
+    bodies: Option<BodyTuning>,
     /// Scripts' newest sources, for a setup that binds one (M3 L3).
     scripts: ScriptEdits,
 }
@@ -75,6 +78,12 @@ impl LiveMoves {
     /// Makes `tuning` the weights a new fight starts on: a game's own, or the newest edit of them.
     pub fn set_targeting(&mut self, tuning: TargetingTuning) {
         self.targeting = Some(tuning);
+    }
+
+    /// Makes `tuning` the table a new fight's bodies solve their feet and look by: a game's own, or the newest
+    /// edit of it. A fight under way keeps the table its bodies were bound on.
+    pub fn set_bodies(&mut self, tuning: BodyTuning) {
+        self.bodies = Some(tuning);
     }
 
     /// Keeps `source` as the newest edit of the script with this file name, which a new fight's setup binds
@@ -112,6 +121,9 @@ impl LiveMoves {
         let mut sim = Simulation::new(config);
         if let Some(tuning) = self.targeting {
             sim.tune_targeting(tuning);
+        }
+        if let Some(tuning) = self.bodies {
+            sim.tune_bodies(tuning).expect("a new simulation has taken no step and bound no body");
         }
         for (index, path) in scenario.documents.iter().enumerate() {
             let id = u32::try_from(index).ok().map(MoveSetId);
@@ -661,6 +673,29 @@ mod tests {
         let mut player = Player::tuned(replay, &SCENARIOS, &live).expect("on its own");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
+    }
+
+    /// A game's own body table reaches a fight's simulation and its hash, bodies or none, so its file plays
+    /// back on that table and on nothing else, as one on other weights does.
+    #[test]
+    fn a_fight_on_another_body_table_plays_back_only_on_that_table() {
+        let mut tuning = *BodyTuning::shipped();
+        tuning.look.rate += 0.5;
+        let mut live = LiveMoves::default();
+        live.set_bodies(tuning);
+        let mut recording = Recording::tuned(duel(), duel().config, &live).expect("sets up");
+        assert_eq!(recording.simulation().body_tuning(), tuning);
+        let shipped = Recording::new(duel(), duel().config).expect("sets up");
+        assert_ne!(recording.simulation().tables_hash(), shipped.simulation().tables_hash());
+
+        let mut source = fight;
+        for _ in 0..10 {
+            recording.step(&mut source).expect("short");
+        }
+        let (replay, _) = recording.finish();
+        let refused = Player::new(replay.clone(), &SCENARIOS).err().expect("not on the shipped table");
+        assert!(matches!(refused, PlayError::MovesChanged { .. }), "{refused}");
+        Player::tuned(replay, &SCENARIOS, &live).expect("on its own");
     }
 
     /// An edit of the weights ends a file as an edit of moves does, and saving them again is no edit.

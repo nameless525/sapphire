@@ -167,7 +167,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 
 - **Compile-time iteration:** spec §7.2's `sapphire_dylib` and `subsecond` hot-patching were never built. `cargo xtask run --incremental` makes a code edit's build 1.4–5.5 s, but the app restarts and the fight starts over. Move the numbers below into data, or build hot-patching, before people tune there at length.
 - **Numbers that are code:**
-  - Springs and IK ([default_character_motion.ron](../crates/sapphire_anim/default_character_motion.ron)) and targeting's weights ([default_targeting.ron](../crates/sapphire_gameplay/default_targeting.ron)) are documents since M3 S3.
+  - Springs and IK ([default_character_motion.ron](../crates/sapphire_anim/default_character_motion.ron)) and targeting's weights ([default_targeting.ron](../crates/sapphire_gameplay/default_targeting.ron)) are documents since M3 S3. Since S3b the feet and look are the simulation's, in [default_body.ron](../crates/sapphire_body_pose/default_body.ron), and in `tables_hash`.
   - The HUD's and touch controls' layout ([hud.rs](../crates/sapphire_ui/src/hud.rs), [touch.rs](../game/game_ui/src/touch.rs)).
   - `combat_bindings.ron` and `default_effects.ron` reload through live tuning's route since M3 S3. `VfxWorld` has no `set_budget`.
 - **Sound isn't hot-reloaded:** the mixer holds what it decoded at startup, and a live table naming a sound not loaded then is refused. A stream rebuild keeps its state at Running, so cues queue and play in a small burst. A NaN emitter or listener position would poison a bus: no route to one was found, and it isn't hardened.

@@ -12,13 +12,15 @@ sapphire_assets.workspace = true
 sapphire_core.workspace = true
 sapphire_math.workspace = true
 sapphire_time.workspace = true
-# IK's settings, which a character motion document holds.
+# The body document: the feet's and the look's settings.
+bevy_reflect.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
-sapphire_serialize.workspace = true
 
 [lints]
 workspace = true

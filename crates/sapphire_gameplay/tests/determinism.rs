@@ -127,7 +127,7 @@ fn the_test_contents_hash_is_the_same_on_every_architecture() {
     assert_eq!(hash, TEST_CONTENT_HASH, "the test content's hash is {hash:#x}");
 }
 
-const TEST_CONTENT_HASH: u64 = 0xf305_d5d9_b3ba_4e4f;
+const TEST_CONTENT_HASH: u64 = 0x91bd_052c_cc79_8832;
 
 #[test]
 fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {

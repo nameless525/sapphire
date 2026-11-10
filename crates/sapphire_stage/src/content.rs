@@ -709,6 +709,8 @@ pub struct Content {
     gpu: GpuAssets,
     /// What a character built from here moves by ([`Self::set_character_motion`]).
     character_motion: sapphire_anim::CharacterMotion,
+    /// How its IK places its feet and turns its head ([`Self::set_body_tuning`]).
+    body_tuning: sapphire_anim::BodyTuning,
     /// The character's ID: the mannequin's unless the scene asked for another.
     character_id: AssetId,
     character: Handle<Mesh>,
@@ -853,6 +855,18 @@ impl Content {
         self.character_motion = motion;
     }
 
+    /// How a character built from here places its feet and turns its head: the shipped document, unless a
+    /// game said otherwise. A fight's simulation holds its own copy, which its bodies run on.
+    pub fn body_tuning(&self) -> &sapphire_anim::BodyTuning {
+        &self.body_tuning
+    }
+
+    /// Makes `tuning` how a character built from here places its feet and turns its head. What stands
+    /// already takes it from `Scene::set_body_tuning`.
+    pub fn set_body_tuning(&mut self, tuning: sapphire_anim::BodyTuning) {
+        self.body_tuning = tuning;
+    }
+
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
     /// within the budgets of the device's class. The scene's sky is the sky material `sky`
@@ -900,6 +914,7 @@ impl Content {
         Self {
             gpu: GpuAssets::new(character_id, false),
             character_motion: *sapphire_anim::CharacterMotion::shipped(),
+            body_tuning: *sapphire_anim::BodyTuning::shipped(),
             character_id,
             character,
             swatches: Vec::new(),

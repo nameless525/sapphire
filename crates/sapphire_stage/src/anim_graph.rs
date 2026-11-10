@@ -402,6 +402,13 @@ impl GraphDriver {
         }
     }
 
+    /// Solves its IK by `body` from now on, wherever its feet and gaze have got to.
+    pub(crate) fn set_body(&mut self, body: &sapphire_anim::BodyTuning) {
+        if let Some(ik) = &mut self.ik {
+            ik.set_body(body);
+        }
+    }
+
     /// This driver, simulating `springs` beside its pose.
     #[must_use]
     pub(crate) fn with_springs(self, springs: Option<SpringBones>) -> Self {

@@ -1,7 +1,7 @@
 //! What a game ships in place of the documents Sapphire compiles in.
 //!
 //! The numbers a simulation or a frame needs before anything's loaded are documents compiled into their
-//! crates (`default_targeting.ron`, `default_character_motion.ron`, `default_hud.ron`,
+//! crates (`default_targeting.ron`, `default_body.ron`, `default_character_motion.ron`, `default_hud.ron`,
 //! `combat_bindings.ron`, `default_effects.ron`). A game names its own in `content/game.documents.ron`, a
 //! [`GameDocuments`]: the cook checks what it names and copies it beside the packs, under [`SHIPPED_DIR`], and
 //! the game reads them at its start. They aren't assets: nothing streams them, nothing refers to them by ID,
@@ -29,7 +29,10 @@ pub struct GameDocuments {
     /// A `TargetingTuning`: who a soft lock picks.
     #[serde(default)]
     pub targeting: Option<String>,
-    /// A `CharacterMotion`: hair, cloth and IK.
+    /// A `BodyTuning`: how bodies place their feet and turn their heads, in the simulation (M3 S3b).
+    #[serde(default)]
+    pub body: Option<String>,
+    /// A `CharacterMotion`: hair, cloth and how much of the IK shows.
     #[serde(default)]
     pub motion: Option<String>,
     /// A `HudDesign`: where the combat HUD's pieces go.
@@ -75,6 +78,7 @@ impl GameDocuments {
     pub fn named(&self) -> impl Iterator<Item = NamedDocument<'_>> {
         [
             ("targeting", "sapphire::gameplay::TargetingTuning", &self.targeting),
+            ("body", "sapphire::body_pose::BodyTuning", &self.body),
             ("motion", "sapphire::anim::CharacterMotion", &self.motion),
             ("hud", "sapphire::ui::HudDesign", &self.hud),
             ("bindings", "sapphire::input::InputBindings", &self.bindings),

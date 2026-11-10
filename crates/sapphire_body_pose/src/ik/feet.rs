@@ -248,6 +248,8 @@ pub struct FootSettings {
     pub soften: f32,
 }
 
+/// Fixed numbers for tests, which a tuned document mustn't move. What a body runs on is a
+/// [`BodyTuning`](crate::BodyTuning) document.
 impl Default for FootSettings {
     fn default() -> Self {
         Self {

@@ -65,7 +65,7 @@ use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
 use sapphire_assets::skeleton::SKELETON_SUB_ASSET;
 use sapphire_assets::{AssetId, AssetKind, NamedAsset};
-use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, HeadAuthority};
+use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, BodyTuning, HeadAuthority};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::{FaceExpression, LightKind, LocalLight, MeshHandle, Renderer};
@@ -742,12 +742,14 @@ const HERO_BODY_CONTACTS: &[&str] = &[
     "J_Bip_R_Hand",
 ];
 
-/// Binds the stock arena heroine before any render driver or IK scene exists.
+/// Binds the stock arena heroine before any render driver or IK scene exists, on `tuning`, the table of the
+/// simulation it's for.
 pub fn arena_body_profile(
     assets: BodyAssets,
     mesh: &ArchivedMesh,
     look_height: f32,
     head_authority: HeadAuthority,
+    tuning: BodyTuning,
 ) -> Result<BodyProfile, String> {
     let skin = mesh.skin.as_ref().ok_or("the stock heroine mesh has no skin")?;
     if skin.skeleton.as_ref() != Some(&assets.graph.skeleton_id)
@@ -764,6 +766,7 @@ pub fn arena_body_profile(
     BodyProfile::bind(
         assets,
         BodyProfileOptions {
+            tuning,
             floor: mesh.streams.bounds.to_native().min[1].max(0.0),
             scale: 1.0,
             morphs: &morphs,

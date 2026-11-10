@@ -35,6 +35,8 @@ const BINDINGS: &str = include_str!("../../../crates/sapphire_controls/combat_bi
 const BINDINGS_FILE: &str = "combat_bindings.ron";
 const TARGETING: &str = include_str!("../../../crates/sapphire_gameplay/default_targeting.ron");
 const TARGETING_FILE: &str = "default_targeting.ron";
+const BODY: &str = include_str!("../../../crates/sapphire_body_pose/default_body.ron");
+const BODY_FILE: &str = "default_body.ron";
 const MOTION: &str = include_str!("../../../crates/sapphire_anim/default_character_motion.ron");
 const MOTION_FILE: &str = "default_character_motion.ron";
 const HUD: &str = include_str!("../../../crates/sapphire_ui/default_hud.ron");
@@ -679,6 +681,7 @@ fn the_documents_that_were_code_take_the_route_the_others_do() {
     let good = [
         (EFFECTS_FILE, EFFECTS.to_owned(), "effects"),
         (TARGETING_FILE, TARGETING.replacen("range: 12.0", "range: 13.0", 1), "targeting"),
+        (BODY_FILE, BODY.replacen("rate: 4.5", "rate: 5.0", 1), "next fight's bodies"),
         (MOTION_FILE, MOTION.replacen("root_inertia: 0.25", "root_inertia: 0.3", 1), "motion"),
         (HUD_FILE, HUD.replacen("margin: 16.0", "margin: 18.0", 1), "HUD"),
     ];
@@ -687,7 +690,7 @@ fn the_documents_that_were_code_take_the_route_the_others_do() {
         assert!(reply.contains(reply_says), "{file}: {reply}");
     }
     let status = client.status().expect("a status");
-    for file in [EFFECTS_FILE, TARGETING_FILE, MOTION_FILE, HUD_FILE] {
+    for file in [EFFECTS_FILE, TARGETING_FILE, BODY_FILE, MOTION_FILE, HUD_FILE] {
         assert_eq!(edits(&status, file), Some(1), "{file}");
     }
     let bindings = BINDINGS.replace("source: Key(J)", "source: Key(U)");
@@ -698,7 +701,8 @@ fn the_documents_that_were_code_take_the_route_the_others_do() {
         (BINDINGS_FILE, BINDINGS.replacen("source:", "sauce:", 1), "source"),
         (EFFECTS_FILE, EFFECTS.replacen("lifetime:", "lifetimes:", 1), "lifetimes"),
         (TARGETING_FILE, TARGETING.replacen("range: 12.0", "range: -1.0", 1), "soft_lock.range"),
-        (MOTION_FILE, MOTION.replacen("soften:", "soft:", 1), "soft"),
+        (BODY_FILE, BODY.replacen("soften:", "soft:", 1), "soft"),
+        (MOTION_FILE, MOTION.replacen("bend_limit:", "bend:", 1), "bend"),
         (HUD_FILE, HUD.replacen("margin:", "marginn:", 1), "marginn"),
     ];
     for (file, text, names) in bad {
@@ -706,7 +710,7 @@ fn the_documents_that_were_code_take_the_route_the_others_do() {
         assert!(refused.to_string().contains(names), "{file}: {refused}");
     }
     let status = client.status().expect("a status");
-    for file in [EFFECTS_FILE, TARGETING_FILE, MOTION_FILE, HUD_FILE] {
+    for file in [EFFECTS_FILE, TARGETING_FILE, BODY_FILE, MOTION_FILE, HUD_FILE] {
         assert_eq!(edits(&status, file), Some(1), "{file} kept what it had");
     }
     assert_eq!(edits(&status, BINDINGS_FILE), Some(0), "none taken");

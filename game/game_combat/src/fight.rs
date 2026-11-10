@@ -528,8 +528,8 @@ impl FightShow {
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
-        enemy::driver(skin, skeleton, Arc::new(binding), ground, content.character_motion())
-            .map_err(AppInitError::msg)
+        let (motion, body) = (content.character_motion(), content.body_tuning());
+        enemy::driver(skin, skeleton, Arc::new(binding), ground, motion, body).map_err(AppInitError::msg)
     }
 
     /// The graph of the kind at `place` as it stands, bound to that kind: the one live tuning took, or the
@@ -2141,6 +2141,7 @@ impl Fight {
         crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())
             .map_err(AppInitError::msg)?;
         content.set_character_motion(self.documents.motion);
+        content.set_body_tuning(self.documents.body);
         let show = &mut self.show;
         let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
         let (pose, figure) = lookdev::hold(content, renderer, gpu)?;

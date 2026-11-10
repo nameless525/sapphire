@@ -1201,9 +1201,9 @@ impl Scene {
         content: &Content,
         pose: &sapphire_anim::CharacterPose,
     ) -> Result<IkDriver, String> {
-        let motion = content.character_motion();
-        let driver =
-            IkDriver::new(lookdev::ik_rig(content, pose)?, ground.clone(), IkControls::of(motion), motion);
+        let (motion, body) = (content.character_motion(), content.body_tuning());
+        let rig = lookdev::ik_rig(content, pose)?;
+        let driver = IkDriver::new(rig, ground.clone(), IkControls::of(motion), motion, body);
         self.ik_ground = Some(ground);
         self.ik_look = look;
         Ok(driver)
@@ -1229,8 +1229,8 @@ impl Scene {
                 if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls())) {
                     match lookdev::ik_rig(content, player.pose()) {
                         Ok(rig) => {
-                            let motion = content.character_motion();
-                            player = player.with_ik(IkDriver::new(rig, ground, controls, motion));
+                            let (motion, body) = (content.character_motion(), content.body_tuning());
+                            player = player.with_ik(IkDriver::new(rig, ground, controls, motion, body));
                         }
                         Err(error) => {
                             tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
@@ -1355,8 +1355,8 @@ impl Scene {
                     {
                         match lookdev::ik_rig(content, driver.player.pose()) {
                             Ok(rig) => {
-                                let motion = content.character_motion();
-                                driver = driver.with_ik(IkDriver::new(rig, ground, controls, motion));
+                                let (motion, body) = (content.character_motion(), content.body_tuning());
+                                driver = driver.with_ik(IkDriver::new(rig, ground, controls, motion, body));
                             }
                             Err(error) => {
                                 tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
@@ -1529,8 +1529,8 @@ impl Scene {
         self.spring_quality = quality;
     }
 
-    /// Runs everything standing here by `motion` from now on: its hair and cloth and its IK, wherever
-    /// they've got to. What's built later takes it from `Content::character_motion`.
+    /// Runs everything standing here by `motion` from now on: its hair and cloth and how much of its IK
+    /// shows, wherever they've got to. What's built later takes it from `Content::character_motion`.
     pub fn set_character_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
         let world = self.ecs.world_mut();
         for mut player in world.query::<&mut ClipPlayer>().iter_mut(world) {
@@ -1538,6 +1538,19 @@ impl Scene {
         }
         for mut driver in world.query::<&mut GraphDriver>().iter_mut(world) {
             driver.set_motion(motion);
+        }
+    }
+
+    /// Solves the IK of everything standing here by `body` from now on, wherever its feet and gaze have got
+    /// to. What's built later takes it from `Content::body_tuning`; a fight's simulation keeps the table its
+    /// bodies were bound on.
+    pub fn set_body_tuning(&mut self, body: &sapphire_anim::BodyTuning) {
+        let world = self.ecs.world_mut();
+        for mut player in world.query::<&mut ClipPlayer>().iter_mut(world) {
+            player.set_body(body);
+        }
+        for mut driver in world.query::<&mut GraphDriver>().iter_mut(world) {
+            driver.set_body(body);
         }
     }
 
@@ -3163,7 +3176,9 @@ mod tests {
             let rig = sapphire_anim::IkRig::new(plain.pose(), &bones, Vec3::ZERO, None, 0.0);
             let ground = Arc::new(IkGround::Flat.world());
             let controls = IkControls { look_target: Some(target), ..IkControls::default() };
-            plain.with_ik(IkDriver::new(rig, ground, controls, sapphire_anim::CharacterMotion::shipped()))
+            let (motion, body) =
+                (sapphire_anim::CharacterMotion::shipped(), sapphire_anim::BodyTuning::shipped());
+            plain.with_ik(IkDriver::new(rig, ground, controls, motion, body))
         }
 
         /// Tells the character's IK to look at `target`.
@@ -3213,7 +3228,7 @@ mod tests {
             }
             scene.step();
             assert!(frame(&mut scene, clip, 1.0, id).palette.is_some(), "the hitstop ended");
-            let settings = sapphire_anim::LookSettings::default();
+            let settings = sapphire_anim::BodyTuning::shipped().look;
             // At most a tick's worth of the head's speed, though the clip turned the head as well.
             let turned = head_turn(&scene).angle_between(held);
             assert!(turned < settings.rate / 60.0 + 0.06, "it turned {turned} rad on thawing");

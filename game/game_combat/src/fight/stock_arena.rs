@@ -59,13 +59,16 @@ impl StockArenaAssets {
         if simulation.tick() != 0 || simulation.party().is_formed() || hero == warrior {
             return Err("the stock overhead requires a fresh two-fighter arena".into());
         }
+        // Both bind on the simulation's table, which a game's `body` document set when the fight started.
+        let tuning = simulation.body_tuning();
         let heroine = lookdev::arena_body_profile(
             self.heroine.clone(),
             self.heroine_mesh.view(),
             self.look.eyes,
             HERO_HEAD,
+            tuning,
         )?;
-        let enemy = enemy::simulation_profile(self.warrior.clone(), &self.look, PLAYER_EYES)?;
+        let enemy = enemy::simulation_profile(self.warrior.clone(), &self.look, PLAYER_EYES, tuning)?;
         let socket = self
             .warrior
             .skeleton

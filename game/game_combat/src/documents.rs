@@ -6,7 +6,7 @@
 //! A game's numbers need no Rust. [`Fight`](crate::fight::Fight) stands a fight on them, and what isn't the
 //! fight's reads its own: the HUD's design, the bindings.
 
-use sapphire_anim::CharacterMotion;
+use sapphire_anim::{BodyTuning, CharacterMotion};
 use sapphire_assets::documents::{GameDocuments, MANIFEST_FILE, NamedDocument, SHIPPED_DIR, shipped_path};
 use sapphire_gameplay::replay::LiveMoves;
 use sapphire_gameplay::targeting::TargetingTuning;
@@ -20,7 +20,10 @@ use sapphire_vfx::EffectLibrary;
 pub struct FightDocuments {
     /// Who a soft lock picks, in the simulation (and so in a replay's hash).
     pub targeting: TargetingTuning,
-    /// Hair, cloth and IK.
+    /// How bodies place their feet and turn their heads: in the simulation, and so in a replay's hash, and in
+    /// presentation's IK.
+    pub body: BodyTuning,
+    /// Hair, cloth and how much of the IK shows.
     pub motion: CharacterMotion,
     /// Where the combat HUD's pieces go.
     pub hud: HudDesign,
@@ -42,6 +45,7 @@ impl FightDocuments {
     pub fn shipped() -> Self {
         Self {
             targeting: TargetingTuning::shipped(),
+            body: *BodyTuning::shipped(),
             motion: *CharacterMotion::shipped(),
             hud: *HudDesign::shipped(),
             bindings: None,
@@ -75,6 +79,7 @@ impl FightDocuments {
                 "targeting" => {
                     documents.targeting = TargetingTuning::from_ron(&text).map_err(|error| bad(&error))?;
                 }
+                "body" => documents.body = BodyTuning::from_ron(&text).map_err(|error| bad(&error))?,
                 "motion" => {
                     documents.motion = CharacterMotion::from_ron(&text).map_err(|error| bad(&error))?
                 }
@@ -94,11 +99,13 @@ impl FightDocuments {
         Ok(documents)
     }
 
-    /// What a fight starts from, for [`Combat`](crate::combat::Combat): its simulation holds the weights.
+    /// What a fight starts from, for [`Combat`](crate::combat::Combat): its simulation holds the weights and
+    /// the body table.
     #[must_use]
     pub fn live(&self) -> LiveMoves {
         let mut live = LiveMoves::default();
         live.set_targeting(self.targeting);
+        live.set_bodies(self.body);
         live
     }
 }
@@ -132,6 +139,7 @@ mod tests {
     use super::*;
 
     const TARGETING: &str = include_str!("../../../crates/sapphire_gameplay/default_targeting.ron");
+    const BODY: &str = include_str!("../../../crates/sapphire_body_pose/default_body.ron");
     const MOTION: &str = include_str!("../../../crates/sapphire_anim/default_character_motion.ron");
     const HUD: &str = include_str!("../../../crates/sapphire_ui/default_hud.ron");
     const BINDINGS: &str = include_str!("../../../crates/sapphire_controls/combat_bindings.ron");
@@ -154,6 +162,7 @@ mod tests {
     fn the_manifests_names_are_these_types() {
         let every = GameDocuments {
             targeting: Some(String::new()),
+            body: Some(String::new()),
             motion: Some(String::new()),
             hud: Some(String::new()),
             bindings: Some(String::new()),
@@ -167,6 +176,7 @@ mod tests {
             names,
             [
                 stable_name::<TargetingTuning>(),
+                stable_name::<BodyTuning>(),
                 stable_name::<CharacterMotion>(),
                 stable_name::<HudDesign>(),
                 stable_name::<InputBindings>(),
@@ -181,6 +191,7 @@ mod tests {
     fn an_empty_manifest_is_sapphires_numbers_and_none_is_old_content() {
         let documents = read(&content("", &[])).expect("reads");
         assert_eq!(documents.targeting, TargetingTuning::shipped());
+        assert_eq!(documents.body, *BodyTuning::shipped());
         assert_eq!(documents.motion, *CharacterMotion::shipped());
         assert_eq!(documents.hud, *HudDesign::shipped());
         assert!(documents.bindings.is_none() && documents.effects.is_none());
@@ -193,10 +204,12 @@ mod tests {
     #[test]
     fn a_game_with_its_own_documents_needs_no_rust() {
         let own = content(
-            "targeting: Some(\"my_targeting.ron\"), motion: Some(\"look/my_motion.ron\"), \
-             hud: Some(\"my_hud.ron\"), bindings: Some(\"my_bindings.ron\"), effects: Some(\"my_effects.ron\")",
+            "targeting: Some(\"my_targeting.ron\"), body: Some(\"look/my_body.ron\"), \
+             motion: Some(\"look/my_motion.ron\"), hud: Some(\"my_hud.ron\"), \
+             bindings: Some(\"my_bindings.ron\"), effects: Some(\"my_effects.ron\")",
             &[
                 ("my_targeting.ron", TARGETING.replacen("range: 12.0", "range: 15.0", 1)),
+                ("look/my_body.ron", BODY.replacen("rate: 4.5", "rate: 5.0", 1)),
                 ("look/my_motion.ron", MOTION.replacen("root_inertia: 0.25", "root_inertia: 0.5", 1)),
                 ("my_hud.ron", HUD.replacen("margin: 16.0", "margin: 30.0", 1)),
                 ("my_bindings.ron", BINDINGS.to_owned()),
@@ -205,6 +218,7 @@ mod tests {
         );
         let documents = read(&own).expect("reads");
         assert_eq!(documents.targeting.soft_lock.range, 15.0);
+        assert_eq!(documents.body.look.rate, 5.0);
         assert_eq!(documents.motion.springs.root_inertia, 0.5);
         assert!(documents.bindings.is_some() && documents.effects.is_some());
 
@@ -218,6 +232,8 @@ mod tests {
             recording.simulation().tables_hash()
         };
         assert_ne!(hash(&documents.live()), hash(&LiveMoves::default()), "a replay can tell");
+        let body_only = FightDocuments { body: documents.body, ..FightDocuments::shipped() };
+        assert_ne!(hash(&body_only.live()), hash(&LiveMoves::default()), "the body table alone too");
         assert_eq!(hash(&FightDocuments::shipped().live()), hash(&LiveMoves::default()), "and only then");
     }
 
@@ -230,6 +246,11 @@ mod tests {
                 "targeting: Some(\"my.ron\")",
                 vec![("my.ron", TARGETING.replacen("range: 12.0", "range: -1.0", 1))],
                 "soft_lock.range",
+            ),
+            (
+                "body: Some(\"my.ron\")",
+                vec![("my.ron", BODY.replacen("soften: 0.985", "soften: 2.0", 1))],
+                "feet.soften",
             ),
             (
                 "motion: Some(\"my.ron\")",

@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use sapphire_anim::{
-    CharacterIk, CharacterMotion, CharacterPose, FeetInput, FootContact, HeldWeapon, IkInput, IkRig,
-    LookInput,
+    BodyTuning, CharacterIk, CharacterMotion, CharacterPose, FeetInput, FootContact, HeldWeapon, IkInput,
+    IkRig, LookInput,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape, StaticCollider, StaticShape};
@@ -245,15 +245,17 @@ impl IkDriver {
         self.set_controls(IkControls { look_target, ..self.controls() });
     }
 
-    /// IK for a character with `rig`'s bones, on `ground`, by `motion`'s numbers.
+    /// IK for a character with `rig`'s bones, on `ground`, solving by `body`'s numbers, the table a
+    /// simulation's bodies run on, and showing as much of it as `motion` says.
     pub fn new(
         rig: IkRig,
         ground: Arc<PhysicsWorld>,
         controls: IkControls,
         motion: &CharacterMotion,
+        body: &BodyTuning,
     ) -> Self {
         Self {
-            ik: CharacterIk::new(rig, motion.feet, motion.look),
+            ik: CharacterIk::new(rig, body.feet, body.look),
             ground,
             controls,
             foot_contact: FootContact::default(),
@@ -264,12 +266,17 @@ impl IkDriver {
         }
     }
 
-    /// Runs by `motion`'s numbers from now on: an edit of its document, on a character already standing.
+    /// Shows as much as `motion` says from now on: an edit of its document, on a character already standing.
     pub(crate) fn set_motion(&mut self, motion: &CharacterMotion) {
-        self.ik.set_settings(motion.feet, motion.look);
         self.feet_weight = motion.feet_weight;
         self.controls.feet = motion.feet_weight;
         self.controls.look = motion.look_weight;
+    }
+
+    /// Solves by `body`'s numbers from now on, wherever the feet and the gaze have got to: an edit of its
+    /// document, on a character already standing.
+    pub(crate) fn set_body(&mut self, body: &BodyTuning) {
+        self.ik.set_settings(body.feet, body.look);
     }
 
     /// How much of the feet shows on the ground.
@@ -451,7 +458,13 @@ mod tests {
     /// Solves `pose` on `world` for a character at `transform`, long enough for everything to settle.
     fn stand(world: &Arc<PhysicsWorld>, transform: Mat4) -> (CharacterPose, IkDriver) {
         let (mut pose, rig) = character();
-        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default(), CharacterMotion::shipped());
+        let mut driver = IkDriver::new(
+            rig,
+            world.clone(),
+            IkControls::default(),
+            CharacterMotion::shipped(),
+            BodyTuning::shipped(),
+        );
         for tick in 0..120 {
             pose.reset();
             assert!(driver.wants_evaluation(f64::from(tick), transform) || driver.ik.is_settled());
@@ -531,6 +544,7 @@ mod tests {
             world.clone(),
             IkControls::default(),
             CharacterMotion::shipped(),
+            BodyTuning::shipped(),
         ))
     }
 
@@ -691,7 +705,13 @@ mod tests {
         let curb = block(1, Vec3::new(2.0, 0.08, 2.0), Vec3::new(0.0, 0.08, 2.5), Quat::IDENTITY);
         let world = world_from(vec![floor(), curb]);
         let (mut pose, rig) = character();
-        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default(), CharacterMotion::shipped());
+        let mut driver = IkDriver::new(
+            rig,
+            world.clone(),
+            IkControls::default(),
+            CharacterMotion::shipped(),
+            BodyTuning::shipped(),
+        );
         let mut last = None;
         for tick in 0..240 {
             let z = tick as f32 * (2.0 / 60.0);
@@ -717,7 +737,8 @@ mod tests {
         let (mut pose, rig) = character();
         let target = Vec3::new(1.0, 1.5, 2.0);
         let controls = IkControls { look_target: Some(target), ..IkControls::default() };
-        let mut driver = IkDriver::new(rig, world, controls, CharacterMotion::shipped());
+        let mut driver =
+            IkDriver::new(rig, world, controls, CharacterMotion::shipped(), BodyTuning::shipped());
         let place = Mat4::IDENTITY;
         assert!(driver.wants_evaluation(0.0, place), "its first");
         for tick in 1..240 {

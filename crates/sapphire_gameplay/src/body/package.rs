@@ -8,8 +8,8 @@ use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedConstraint, CharacterRi
 use sapphire_assets::skeleton::Skeleton;
 use sapphire_assets::{AssetId, CpuResident};
 use sapphire_body_pose::{
-    AuthoredHeadLook, CharacterIk, CharacterPose, ClipSource, FixedBody, FixedBodyPolicy, FixedGraphHistory,
-    FootSettings, GraphBinding, IkRig, LookSettings,
+    AuthoredHeadLook, BodyTuning, CharacterIk, CharacterPose, ClipSource, FixedBody, FixedBodyPolicy,
+    FixedGraphHistory, GraphBinding, IkRig,
 };
 use sapphire_core::Name;
 use sapphire_math::Vec3;
@@ -57,6 +57,9 @@ pub struct HeadAuthority {
 
 /// Static CPU body metadata. Morph order must match the cooked rig and graph tracks.
 pub struct BodyProfileOptions<'a> {
+    /// How its feet and look solve: the table of the simulation it's for ([`crate::Simulation::body_tuning`]),
+    /// which [`crate::Simulation::attach_body`] holds it to.
+    pub tuning: BodyTuning,
     pub floor: f32,
     pub scale: f32,
     pub morphs: &'a [(String, f32)],
@@ -107,6 +110,7 @@ pub struct BodyProfile {
     pub(super) look_height: f32,
     pub(super) look_weight: f32,
     pub(super) grounded_gather: bool,
+    pub(super) tuning: BodyTuning,
     fingerprint: u64,
 }
 
@@ -230,7 +234,7 @@ impl BodyProfile {
                 (IkRig::new(graph.pose(), bones, eye, None, options.floor), spine)
             }
         };
-        let ik = CharacterIk::new(ik, FootSettings::default(), LookSettings::default());
+        let ik = CharacterIk::new(ik, options.tuning.feet, options.tuning.look);
         let policy = FixedBodyPolicy {
             ground_turn: options.ground_turn,
             spine,
@@ -245,11 +249,19 @@ impl BodyProfile {
             look_height: options.look_height,
             look_weight: options.look_weight,
             grounded_gather: options.grounded_gather,
+            tuning: options.tuning,
             fingerprint,
         })
     }
 
-    /// Hash of the exact cooked inputs and all static body policy.
+    /// The table its feet and look solve by.
+    #[must_use]
+    pub fn tuning(&self) -> &BodyTuning {
+        &self.tuning
+    }
+
+    /// Hash of the exact cooked inputs and all static body policy. The table isn't in it: a simulation's
+    /// `tables_hash` takes that once, and holds every body it binds to it.
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
         self.fingerprint

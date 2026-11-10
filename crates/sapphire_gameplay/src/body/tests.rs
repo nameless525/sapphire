@@ -11,7 +11,7 @@ use sapphire_core::alloc::{self, AllocScope, CountingAllocator};
 
 use super::*;
 use crate::checksum::legacy_state;
-use crate::replay::{Replay, SCENARIOS, find_scenario};
+use crate::replay::{LiveMoves, Replay, SCENARIOS, find_scenario};
 use crate::{
     ActorSpawn, ActorTransform, CombatSet, OverheadShadowResult, OverheadShadowShape, ShadowCapsule,
     ShadowEndpoint, SimConfig, Simulation, TickActions,
@@ -69,6 +69,7 @@ fn test_assets_with_joint(name: &str) -> BodyAssets {
 
 fn test_options(scale: f32) -> BodyProfileOptions<'static> {
     BodyProfileOptions {
+        tuning: *BodyTuning::shipped(),
         floor: 0.0,
         scale,
         morphs: &[],
@@ -102,6 +103,147 @@ fn fixed_body_profile_binds_exact_cooked_ids_and_policy() {
     let mut wrong = test_assets();
     wrong.graph.skeleton_id = id(4);
     assert!(matches!(BodyProfile::bind(wrong, test_options(1.0)), Err(BodyBindError::ClipSkeleton(_))));
+}
+
+/// A body with legs and a head, playing the same idle as [`test_assets`]: what the feet and the look act on.
+fn humanoid_assets() -> BodyGraphAssets {
+    const JOINTS: [(&str, Option<u16>, [f32; 3]); 9] = [
+        ("hips", None, [0.0, 0.95, 0.0]),
+        ("left_upper_leg", Some(0), [0.1, -0.05, 0.0]),
+        ("left_lower_leg", Some(1), [0.0, -0.42, 0.0]),
+        ("left_foot", Some(2), [0.0, -0.42, 0.0]),
+        ("right_upper_leg", Some(0), [-0.1, -0.05, 0.0]),
+        ("right_lower_leg", Some(4), [0.0, -0.42, 0.0]),
+        ("right_foot", Some(5), [0.0, -0.42, 0.0]),
+        ("neck", Some(0), [0.0, 0.5, 0.0]),
+        ("head", Some(7), [0.0, 0.1, 0.0]),
+    ];
+    let joints: Vec<Joint> = JOINTS
+        .iter()
+        .map(|&(name, parent, translation)| Joint {
+            name: name.to_owned(),
+            parent,
+            rest: JointTransform { translation, ..JointTransform::IDENTITY },
+        })
+        .collect();
+    let mut assets = test_assets().graph;
+    let clip = Clip {
+        name: "idle".to_owned(),
+        skeleton: Some(id(2)),
+        joint_count: JOINTS.len() as u32,
+        rate: DEFAULT_RATE,
+        ticks: 30,
+        ..Clip::default()
+    };
+    assets.skeleton = CpuResident::from_cooked(Skeleton::new(&joints).to_cooked().unwrap()).unwrap();
+    assets.clips = vec![(id(1), CpuResident::from_cooked(clip.to_cooked().unwrap()).unwrap())];
+    assets
+}
+
+/// [`humanoid_assets`]' bones.
+const HUMANOID: [(HumanBone, usize); 9] = [
+    (HumanBone::Hips, 0),
+    (HumanBone::LeftUpperLeg, 1),
+    (HumanBone::LeftLowerLeg, 2),
+    (HumanBone::LeftFoot, 3),
+    (HumanBone::RightUpperLeg, 4),
+    (HumanBone::RightLowerLeg, 5),
+    (HumanBone::RightFoot, 6),
+    (HumanBone::Neck, 7),
+    (HumanBone::Head, 8),
+];
+
+/// `melee`'s first two fighters, on its floor, as humanoid bodies looking at each other, on a fight started
+/// on `tuning` as a game's document starts one: its `tables_hash`, and both bodies' receipts after each
+/// of `ticks` steps.
+fn humanoid_fight(tuning: BodyTuning, ticks: u32) -> (u64, Vec<[u64; 2]>) {
+    let scenario = find_scenario(&SCENARIOS, "melee").unwrap();
+    let mut live = LiveMoves::default();
+    live.set_bodies(tuning);
+    let (mut sim, cast) = live.start(scenario, scenario.config).unwrap();
+    let pair = [cast[0], cast[1]];
+    for (index, actor) in pair.into_iter().enumerate() {
+        let options = BodyProfileOptions {
+            tuning: sim.body_tuning(),
+            // Its soles 4 cm over its root, as a capsule's round foot leaves them on a slope (sim.md), so the
+            // feet have ground to reach for and the hips somewhere to go.
+            floor: 0.04,
+            contact_joints: &["hips"],
+            look_height: 1.5,
+            look_weight: 1.0,
+            ..test_options(1.0)
+        };
+        let profile = BodyProfile::bind_named(humanoid_assets(), &HUMANOID, Vec3::Y * 0.05, options).unwrap();
+        sim.attach_body(actor, Some(pair[1 - index]), profile).unwrap();
+    }
+    let receipts = (0..ticks)
+        .map(|_| {
+            sim.step(&TickActions::NEUTRAL);
+            pair.map(|actor| sim.body_receipt(actor).expect("published").2)
+        })
+        .collect();
+    (sim.tables_hash(), receipts)
+}
+
+/// The fixture numbers [`FootSettings::default`] and [`LookSettings::default`], which the bodies ran on
+/// until M3 S3b gave the simulation a table.
+fn fixture_tuning() -> BodyTuning {
+    BodyTuning { feet: FootSettings::default(), look: sapphire_body_pose::LookSettings::default() }
+}
+
+/// Taking the table from a document moved no body: the shipped one poses every tick of a fight as the
+/// numbers the bodies ran on before did. This holds the document to those numbers, so a deliberate retune of
+/// `default_body.ron` ends this test, and moves every replay's hash as well.
+#[test]
+fn the_shipped_table_poses_the_bodies_as_the_numbers_they_ran_on_before() {
+    let (shipped_hash, shipped) = humanoid_fight(*BodyTuning::shipped(), 90);
+    let (fixture_hash, fixture) = humanoid_fight(fixture_tuning(), 90);
+    assert_eq!(shipped, fixture);
+    assert_eq!(shipped_hash, fixture_hash);
+}
+
+/// A game's own feet or look reach its bodies, and its replays' hash, so a file recorded on other numbers
+/// refuses rather than plays on.
+#[test]
+fn a_foot_or_look_number_moves_the_tables_hash_and_the_bodies() {
+    let (hash, receipts) = humanoid_fight(*BodyTuning::shipped(), 90);
+    type Edit = fn(&mut BodyTuning);
+    let edits: [(&str, Edit); 2] = [
+        // Less than the 4 cm its feet reach down for.
+        ("feet.max_drop", |tuning| tuning.feet.max_drop = 0.02),
+        // Each turns more than this to the other.
+        ("look.yaw_limit", |tuning| tuning.look.yaw_limit = 0.2),
+    ];
+    for (name, edit) in edits {
+        let mut tuning = *BodyTuning::shipped();
+        edit(&mut tuning);
+        let (edited_hash, edited) = humanoid_fight(tuning, 90);
+        assert_ne!(edited_hash, hash, "{name}");
+        for body in 0..2 {
+            assert!(receipts.iter().zip(&edited).any(|(a, b)| a[body] != b[body]), "{name}: body {body}");
+        }
+    }
+}
+
+/// A simulation's bodies all run on its one table: a profile bound on another is refused, and the table
+/// can't change under a body or a step.
+#[test]
+fn a_body_binds_on_its_simulations_table_and_the_table_holds_from_then() {
+    let mut other = *BodyTuning::shipped();
+    other.feet.soften = 0.9;
+    let mut sim = Simulation::new(SimConfig::default());
+    let actor = sim.spawn(ActorSpawn::default()).unwrap();
+    let elsewhere =
+        BodyProfile::bind(test_assets(), BodyProfileOptions { tuning: other, ..test_options(1.0) });
+    assert_eq!(sim.attach_body(actor, None, elsewhere.unwrap()), Err(BodyAttachError::Tuning));
+    assert_eq!(sim.tune_bodies(other), Ok(true));
+    assert_eq!(sim.tune_bodies(other), Ok(false), "the same table again changes nothing");
+    let here = BodyProfile::bind(test_assets(), BodyProfileOptions { tuning: other, ..test_options(1.0) });
+    sim.attach_body(actor, None, here.unwrap()).unwrap();
+    assert_eq!(sim.tune_bodies(*BodyTuning::shipped()), Err(BodyAttachError::TableInUse));
+    let mut stepped = Simulation::new(SimConfig::default());
+    stepped.step(&TickActions::NEUTRAL);
+    assert_eq!(stepped.tune_bodies(other), Err(BodyAttachError::TableInUse));
 }
 
 #[test]

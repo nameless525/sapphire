@@ -566,6 +566,7 @@ pub struct FramePacket {
 | `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_tiles`, `egui_plot` | M2–M3 |
 | `sapphire_livelink` | dev only, plus its tool | Live link: a dev build's socket the desktop pushes packs, documents, shaders and cvars to, and its desktop tool (dev only) | `postcard` | M1 |
 | `sapphire_replay` | Tools | The headless replay runner: `cargo xtask replay` and CI's `Replays` job (§5.22) | None | M2 |
+| `sapphire_symbols` | Tools | Shipped binaries against their symbols: each stripped, each ID its symbols', named as a minidump names it (§5.2) | `goblin`, `pdb` | M4 |
 | `sapphire_testkit` | Tools | Golden images | `insta`, `nv-flip` | M1 |
 
 **As built (M3 S2), the stage and `game/`:**

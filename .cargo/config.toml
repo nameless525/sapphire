@@ -43,8 +43,15 @@ rustflags = ["-C", "link-arg=/STACK:8388608"]
 # Google Play requires 16 KB page-aligned native libraries (spec §6.7). NDK r28+ already
 # links that way by default (open question Q2, verified with r29); the flag keeps the
 # guarantee explicit.
+#
+# Every ELF link carries a 20-byte SHA-1 build ID, which a crash names its module by and the
+# symbols kept from the same link are found by (M4 C1, xtask/src/platforms/symbols.rs). No linker
+# owes one: lld makes an 8-byte hash for a bare `--build-id`, and a Breakpad debug ID takes 16.
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi", "-C", "link-arg=-Wl,--build-id=sha1"]
 
 [target.x86_64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi", "-C", "link-arg=-Wl,--build-id=sha1"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--build-id=sha1"]

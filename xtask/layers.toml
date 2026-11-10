@@ -173,6 +173,9 @@ sapphire_pipeline = { kind = "tool" }
 sapphire_replay = { kind = "tool" }
 # Generates the placeholder music stems and voice lines under `content/audio/generated/` (M3 A1).
 sapphire_soundgen = { kind = "tool" }
+# Breakpad symbol stores for shipped builds (M4 C1): dump_syms as a library, which `cargo xtask package`
+# and `cargo xtask symbols` run.
+sapphire_symbols = { kind = "tool" }
 sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
 

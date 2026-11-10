@@ -30,6 +30,7 @@ mod pe;
 mod privacy_manifest;
 mod steam;
 mod steampipe;
+mod symbols;
 
 use std::ffi::OsString;
 use std::fmt;

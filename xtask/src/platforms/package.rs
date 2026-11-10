@@ -13,13 +13,13 @@
 //! | `macos` | `<Name>.app`: as iOS's, nested under `Contents/`, with the desktop cook, and actool's `AppIcon.icns` too; signed ad hoc with the hardened runtime and no entitlements, checked ([`super::steam`]) |
 //! | `android` | `<Name>.aab` from Gradle's `bundleRelease`, offline, checked ([`super::aab`]), and `icons/play_store_512.png`; in `checks/`, the APKs Play would make of it for local testing, their badging and release lint's report |
 //! | `windows`, `linux` | `<Name>/`: the executable and the desktop cook; Linux's icon and `.desktop` file beside them, and Windows' `.ico` in `icons/` too; checked for Steam ([`super::steam`]) |
-//! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; and `symbols/`, what the link split out: the dSYM (in the archive for `ios`), the unstripped Android library, the PDB or the `.dwp` |
+//! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; `symbols/`, the symbols from the same link: the dSYM (in the archive for `ios`), the PDB, or the unstripped executable or Android library; and in `modules`, each shipped binary's debug file and ID, checked against them ([`super::symbols`]) |
 //!
 //! It makes what every store's package shares. What a store checks is its own package's: S2 wraps the
 //! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs the AAB (with the upload
 //! key only when the environment names it) and checks it, S4 signs macOS with the hardened runtime, links
 //! Windows' resources and checks Linux's against Steam's runtime (`steampipe` makes the depots from those
-//! three), and C1 strips the binaries and writes the symbol store.
+//! three). Every binary a package ships is stripped, and its ID is checked against its symbols' (C1).
 //! Nothing here uploads or notarizes.
 //!
 //! Shipping builds link with fat LTO, so a package takes minutes and gigabytes: run it through the gate
@@ -36,7 +36,7 @@ use anyhow::{Context as _, anyhow, ensure};
 use serde_json::json;
 
 use super::apple::{self, BundleLayout};
-use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store, steam};
+use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store, steam, symbols};
 use crate::content::{self, Cook};
 use crate::release::{self, Release};
 use crate::version::{Build, Kind};
@@ -166,6 +166,7 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     let mut env: Vec<(&str, OsString)> =
         build.env(&app.version).into_iter().map(|(name, value)| (name, value.into())).collect();
     env.extend(steam::build_env(target, &icons));
+    env.extend(symbols::link_env(target));
 
     let mut made = match target {
         Target::Ios | Target::IosSim | Target::MacOs => {
@@ -177,7 +178,8 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
             let aab = format!("{}.aab", app.bundle_name);
             copy(&packaged.aab, &stage.join(&aab))?;
             let library = packaged.library.file_name().context("the library has a name")?;
-            copy(&packaged.library, &stage.join("symbols").join(library))?;
+            let unstripped = stage.join("symbols").join(library);
+            copy(&packaged.library, &unstripped)?;
             copy(&icons.join("android/play_store_512.png"), &stage.join("icons/play_store_512.png"))?;
             let checked = &packaged.checked;
             let (apks, badging, lint) =
@@ -194,7 +196,16 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
             }
             let checks = checked.summary(apks, badging, lint);
             workspace::remove_dir_if_exists(&work)?;
-            Made { app: aab, symbols: vec![format!("symbols/{}", library.to_string_lossy())], checks }
+            let entry = format!("base/lib/{}/{}", android::ABI, library.to_string_lossy());
+            let unpacked = stage.with_extension("unpacked");
+            let module =
+                symbols::check_in_archive(&stage, &stage.join(&aab), &entry, &unstripped, &unpacked)?;
+            Made {
+                app: aab,
+                symbols: vec![format!("symbols/{}", library.to_string_lossy())],
+                modules: vec![module],
+                checks,
+            }
         }
         Target::Windows | Target::Linux => desktop_app(target, &app, &env, &content, &icons, &stage)?,
     };
@@ -213,12 +224,13 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     Ok(packaged.path.clone())
 }
 
-/// What a package made, by path inside it: the app, what the link split out, and what its store's checks
-/// found, where it has them.
+/// What a package made, by path inside it: the app, the symbols from its link, the modules
+/// [`symbols::check`] found in them, and what its store's checks found, where it has them.
 #[derive(Debug, PartialEq, Eq)]
 struct Made {
     app: String,
     symbols: Vec<String>,
+    modules: Vec<serde_json::Value>,
     checks: serde_json::Value,
 }
 
@@ -276,12 +288,13 @@ fn manifest(
         "release": release,
         "app_path": made.app,
         "symbols": made.symbols,
+        "modules": made.modules,
         "checks": made.checks,
     })
 }
 
 /// The executable cargo builds for `target` in the shipping profile, and the other files the link left
-/// beside it (a dSYM, a PDB or a `.dwp`).
+/// beside it (a dSYM or a PDB).
 fn shipping_executable(
     app: &App,
     rust_target: Option<&str>,
@@ -348,18 +361,29 @@ fn apple_app(
         _ => ios_store::finish_app(&layout, app, target == Target::Ios, &stage.join("checks"))?,
     }
 
-    let mut symbols = Vec::new();
+    let mut dsyms = Vec::new();
     for file in split.iter().filter(|file| file.extension().is_some_and(|ext| ext == "dSYM")) {
         let file_name = file.file_name().context("a dSYM has a name")?;
         workspace::copy_dir(file, &stage.join("symbols").join(file_name))?;
-        symbols.push(format!("symbols/{}", file_name.to_string_lossy()));
+        dsyms.push(format!("symbols/{}", file_name.to_string_lossy()));
     }
-    ensure!(!symbols.is_empty(), "the shipping build left no dSYM beside {}", executable.display());
+    ensure!(!dsyms.is_empty(), "the shipping build left no dSYM beside {}", executable.display());
+    let in_app = layout.executable_dir.join(&app.package);
+    let in_app = in_app.strip_prefix(stage.join(&name)).context("the executable is in the app")?;
     if target == Target::Ios {
-        let (archive, dsym) = ios_store::archive(app, build, stage, &name, &symbols)?;
-        return Ok(Made { app: archive, symbols: vec![dsym], checks: serde_json::Value::Null });
+        let (archive, dsym) = ios_store::archive(app, build, stage, &name, &dsyms)?;
+        // What ships is the archive's app, checked against the dSYM as the archive names it.
+        let shipped = stage.join(&archive).join("Products/Applications").join(&name).join(in_app);
+        let module = symbols::check(stage, &shipped, &stage.join(&dsym))?;
+        return Ok(Made {
+            app: archive,
+            symbols: vec![dsym],
+            modules: vec![module],
+            checks: serde_json::Value::Null,
+        });
     }
-    Ok(Made { app: name, symbols, checks: serde_json::Value::Null })
+    let module = symbols::check(stage, &stage.join(&name).join(in_app), &stage.join(&dsyms[0]))?;
+    Ok(Made { app: name, symbols: dsyms, modules: vec![module], checks: serde_json::Value::Null })
 }
 
 /// Compiles the icon's asset catalog into the bundle's resources with `actool` (no Xcode project), and
@@ -403,7 +427,8 @@ fn desktop_app(
     let (executable, split) = shipping_executable(app, None, env)?;
     let dir = stage.join(&app.bundle_name);
     let file_name = executable.file_name().context("the executable has a name")?;
-    copy(&executable, &dir.join(file_name))?;
+    let shipped = dir.join(file_name);
+    copy(&executable, &shipped)?;
     workspace::copy_dir(content, &dir.join("content"))?;
     match target {
         Target::Linux => {
@@ -413,18 +438,25 @@ fn desktop_app(
         Target::Windows => copy(&icons.join("windows/app.ico"), &stage.join("icons/app.ico"))?,
         _ => unreachable!("a desktop target"),
     }
-    let mut symbols = Vec::new();
-    for file in &split {
-        let name = file.file_name().context("a split file has a name")?;
-        let dest = stage.join("symbols").join(name);
-        if file.is_dir() {
-            workspace::copy_dir(file, &dest)?
-        } else {
-            copy(file, &dest)?
-        }
-        symbols.push(format!("symbols/{}", name.to_string_lossy()));
+    // Windows' symbols are the PDB its link wrote; Linux's are the unstripped executable, whose shipped
+    // copy is stripped here.
+    let from = match target {
+        Target::Windows => split
+            .iter()
+            .find(|file| file.extension().is_some_and(|ext| ext == "pdb"))
+            .with_context(|| format!("the shipping build left no PDB beside {}", executable.display()))?,
+        Target::Linux => &executable,
+        _ => unreachable!("a desktop target"),
+    };
+    let symbols_name = from.file_name().context("symbols have a name")?;
+    let kept = stage.join("symbols").join(symbols_name);
+    copy(from, &kept)?;
+    if target == Target::Linux {
+        symbols::strip_elf(&shipped)?;
     }
-    Ok(Made { app: app.bundle_name.clone(), symbols, checks: serde_json::Value::Null })
+    let module = symbols::check(stage, &shipped, &kept)?;
+    let symbols = vec![format!("symbols/{}", symbols_name.to_string_lossy())];
+    Ok(Made { app: app.bundle_name.clone(), symbols, modules: vec![module], checks: serde_json::Value::Null })
 }
 
 /// Copies a file, creating the directory it goes in.
@@ -462,9 +494,11 @@ mod tests {
     #[test]
     fn the_manifest_says_what_the_package_is() {
         let app = test_game();
+        let module = json!({ "debug_file": "game_app", "debug_id": "0123456789ABCDEF0123456789ABCDEF0" });
         let made = Made {
             app: "SapphireGame.app".into(),
             symbols: vec!["symbols/game_app.dSYM".into()],
+            modules: vec![module],
             checks: json!({ "signed_with": "debug" }),
         };
         let release = Build { number: 4123, kind: Kind::Release, commit: "1a2b3c4d".into() };
@@ -480,6 +514,7 @@ mod tests {
         assert_eq!(written["identity"]["placeholder"], true);
         assert_eq!(written["cook"], "mobile");
         assert_eq!(written["symbols"][0], "symbols/game_app.dSYM");
+        assert_eq!(written["modules"][0]["debug_id"], "0123456789ABCDEF0123456789ABCDEF0");
         assert_eq!(written["checks"]["signed_with"], "debug");
 
         let dev = Build { kind: Kind::Dev("off main".into()), ..release };

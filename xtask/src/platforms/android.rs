@@ -37,7 +37,8 @@ use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
 const TARGET: &str = "aarch64-linux-android";
-const ABI: &str = "arm64-v8a";
+/// The one ABI the app ships: its library is at `base/lib/<ABI>/` in the AAB.
+pub(super) const ABI: &str = "arm64-v8a";
 /// `minSdk` in `platform/android/app/build.gradle.kts` (Android 10, spec §2). The NDK's
 /// compiler drivers carry it in their names, and SDL's CMake build targets it too.
 const MIN_SDK: u32 = 29;

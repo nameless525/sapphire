@@ -73,6 +73,7 @@ members = [
     "tools/sapphire_pipeline",
     "tools/sapphire_replay",
     "tools/sapphire_soundgen",
+    "tools/sapphire_symbols",
     "tools/sapphire_testkit",
     "xtask",
 ]
@@ -380,6 +381,10 @@ toml = "1.1"
 # from a resource script by the Windows SDK's rc.exe in `game_app`'s build script (s0-spike.md §6).
 embed-resource = "3.0.12"
 cargo_metadata = "0.23"
+# Reading shipped binaries' IDs and their symbols' (M4 C1), in `sapphire_symbols` alone. goblin is the
+# version the crash writer already brings; `pdb` reads a PDB's GUID and age.
+goblin = { version = "0.9.3", default-features = false, features = ["std", "elf32", "elf64", "endian_fd", "mach32", "mach64", "pe32", "pe64"] }
+pdb = "0.8.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -418,7 +423,10 @@ lto = false
 # Local importer edits reuse optimized code; CI keeps CARGO_INCREMENTAL=0.
 incremental = true
 
-# Store builds: symbols are split out, uploaded, then stripped.
+# Store builds (`cargo xtask package`): full symbols kept from the same link, and a stripped binary.
+# `packed` is Apple's dSYM, made at the link (Windows' PDB is always split). A profile can't differ by
+# target, so xtask overrides it per target: `strip` on Apple, after the dSYM, and no split on Linux and
+# Android, whose stripped copy is made from the whole ELF (xtask/src/platforms/symbols.rs).
 [profile.shipping]
 inherits = "release"
 lto = "fat"

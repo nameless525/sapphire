@@ -75,18 +75,17 @@
 //! dropping the old one, and requests the sources again there, so nothing built on the old
 //! device can reach the new one.
 //!
-//! # Later: M4's PSO warm-up
+//! # The warm-up (M4 H1)
 //!
-//! The warm-up (spec §5.12) compiles a pack's listed pipelines, which `Renderer::prewarm` builds behind
-//! a load since M3 K1 (`pipeline_builds`), on workers while the game draws
-//! and lets an object show once its pipelines are ready. It can take from here the snapshot of
-//! what a pipeline is built from as an owned, `Send` step, the build inside per-thread error
-//! scopes, the cancellation that lets an owner be dropped mid-build, and handing results back
-//! at a frame boundary. What it adds: a cache of pipelines by descriptor that the lazy builds and
-//! these rebuilds share, so a set grown during a build is topped up rather than built again, and
-//! parallel builds under error scopes. A build here runs on one worker because its sources may be
-//! refused and error scopes are per thread; the compiled-in sources, which aren't, already build
-//! at once when a renderer starts and on first use (`shaders::BuildOn`).
+//! The warm-up (`warm_up`) builds a load's pipelines off the frame as this does an edit: owners hand
+//! over owned, `Send` steps ([`Step`]), a task builds them under the same [`Cancel`] and error scopes,
+//! and `prepare` takes in what's done at a frame boundary. It runs on `sapphire_jobs`' warm-up pool,
+//! not here, because no frame waits on that pool. Each module tells a set grown meanwhile by its
+//! count, as [`Built`] does here, rather than by a cache of pipelines by descriptor: a pipeline's
+//! modules and layouts are made anew for each build, so two descriptors of the same pipeline
+//! wouldn't compare equal. A build here still runs on one worker because its sources may be
+//! refused and error scopes are per thread; the compiled-in sources, which aren't, build across
+//! the pool (`shaders::BuildOn`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -119,7 +118,7 @@ pub(crate) type Step<T> = Box<dyn FnOnce(&ShaderSources, &Cancel) -> T + Send>;
 pub(crate) struct Cancel(Arc<AtomicBool>);
 
 impl Cancel {
-    fn set(&self) {
+    pub(crate) fn set(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
 
@@ -526,7 +525,7 @@ impl Gate {
         self.opened.notify_all();
     }
 
-    fn wait(&self) {
+    pub(crate) fn wait(&self) {
         let open = self.open.lock().expect("no test panics holding it");
         let _open = self.opened.wait_timeout_while(open, Self::TIMEOUT, |open| !*open);
     }

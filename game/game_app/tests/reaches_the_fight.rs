@@ -130,6 +130,9 @@ impl App for OutsideCaller {
         // Exit test 7: from the title through the fight's first seconds, no frame built what the load didn't.
         let first_uses = stage.renderer.stats().pipelines.first_use_builds;
         assert_eq!(first_uses, 0, "the load missed: {}", stage.renderer.first_use_report());
+        // Exit test 1 (M4 H1): after the first frame, none built a pipeline itself; the warm-up did.
+        let on_frame = stage.renderer.stats().pipelines.frame_thread_builds;
+        assert_eq!(on_frame, 0, "a frame built: {}", stage.renderer.first_use_report());
         Ok(Self)
     }
 

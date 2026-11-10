@@ -155,6 +155,9 @@ impl App for OutsideCaller {
         stage.show.shown.fight.check().map_err(AppInitError::msg)?;
         let first_uses = stage.renderer.stats().pipelines.first_use_builds;
         assert_eq!(first_uses, 0, "a trip built what the load didn't: {}", stage.renderer.first_use_report());
+        // Exit test 1 (M4 H1): the hub's prefetch warmed the proving ground up off the frame.
+        let on_frame = stage.renderer.stats().pipelines.frame_thread_builds;
+        assert_eq!(on_frame, 0, "a frame built: {}", stage.renderer.first_use_report());
         println!(
             "zone_trip: {frames} frames, trips held {:?} frames and covered {:?}",
             trips.iter().map(|seen| seen.held).collect::<Vec<_>>(),

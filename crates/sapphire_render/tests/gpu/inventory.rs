@@ -166,7 +166,13 @@ fn a_cooks_keys_build_exactly_what_its_uploads_draw_through() {
         let report = warmed.first_use_report();
         let stats = warmed.stats().pipelines;
         assert_eq!(report.builds, [], "{report}");
-        assert_eq!(stats, PipelineStats { prewarmed: at_start + built, first_use_builds: 0, rebuilt: 0 });
+        // Every one built on the warm-up's threads (M4 H1): the prewarm's take-in built none.
+        let expected = PipelineStats {
+            prewarmed: at_start + built,
+            warmed_off_frame: built,
+            ..PipelineStats::default()
+        };
+        assert_eq!(stats, expected);
         assert!(alive(&gpu) - before <= stats.built() as usize, "wgpu holds one the ledger didn't count");
         drop(warmed);
 

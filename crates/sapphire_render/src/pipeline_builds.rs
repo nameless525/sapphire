@@ -4,14 +4,20 @@
 //! more on a phone. So every `create_render_pipeline` and `create_compute_pipeline` in the renderer goes
 //! through [`PipelineBuilds`], which owns the pipeline cache they share and sorts what it builds into three:
 //!
-//! - **Prewarmed:** built while a renderer is made, or inside a prewarm
-//!   ([`Renderer::prewarm`](crate::Renderer::prewarm) and its kin), or under a load's
+//! - **Prewarmed:** built while a renderer is made, by the warm-up ([`Renderer::warm`](crate::Renderer::warm),
+//!   [`Renderer::prewarm`](crate::Renderer::prewarm) and its kin, the `warm_up` module), or under a load's
 //!   [`Renderer::warm_load`](crate::Renderer::warm_load), when nothing draws.
 //! - **Rebuilt:** an edit's new pipelines, built by `shader_builds`' job from what was already built, off the
 //!   frame thread or with the app asking for that stall.
 //! - **First use:** every other one, wherever it comes from: an upload of a mesh whose key nothing prewarmed,
 //!   a post variant, the sky's, the interface's, a pipeline a probe grid's ambient constants asked for again, if nothing declared the grid.
 //!   Exit test 7 asks for none of these after a load.
+//!
+//! And apart from why, where (M4 H1): a build on a warm-up thread (`sapphire_jobs::spawn_warm_up`) stalls no
+//! frame, and any other, on the frame's thread or on a worker it waits on, stalls the frame that built it. Once a
+//! renderer has prepared its first frame, every build of the second kind that isn't an edit's rebuild is a hitch
+//! ([`PipelineStats::frame_thread_builds`]), named in the report as a first use is, and a bench fails on one as it
+//! does on a first use (exit test 1).
 //!
 //! The count can't be escaped by a new owner: a test scans the workspace's sources for any other route to a
 //! pipeline (`every_pipeline_goes_through_the_route`), and the GPU tests compare the ledger with what wgpu says
@@ -78,19 +84,34 @@ impl fmt::Display for PipelineFamily {
     }
 }
 
-/// What a renderer has built, by why (rule R9, [`RenderStats::pipelines`](crate::RenderStats::pipelines); the
-/// module docs say what each means). Exit test 7's budget for [`Self::first_use_builds`] after a load is 0.
+/// What a renderer has built, by why, and what stalled a frame (rule R9,
+/// [`RenderStats::pipelines`](crate::RenderStats::pipelines); the module docs say what each means). Exit test 7's
+/// budget for [`Self::first_use_builds`] after a load is 0, and exit test 1's for [`Self::hitches`] after the first
+/// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineStats {
     pub prewarmed: u32,
     pub first_use_builds: u32,
     pub rebuilt: u32,
+    /// Of all of them, those the warm-up's threads built, which no frame waited on.
+    pub warmed_off_frame: u32,
+    /// Builds after the renderer's first frame on the frame's thread, or on a worker it waited on: whatever they
+    /// were, prewarmed or first use, each stalled a frame. An edit's rebuild isn't counted.
+    pub frame_thread_builds: u32,
+    /// Times the frame's thread waited for the warm-up after its first frame
+    /// ([`Renderer::prewarm`](crate::Renderer::prewarm) while one builds).
+    pub frame_waits: u32,
 }
 
 impl PipelineStats {
     /// Every pipeline it has built, whichever it replaced.
     pub const fn built(self) -> u32 {
         self.prewarmed + self.first_use_builds + self.rebuilt
+    }
+
+    /// The frames that stalled on a pipeline after the first: a build on the frame's thread, or a wait for one.
+    pub const fn hitches(self) -> u32 {
+        self.frame_thread_builds + self.frame_waits
     }
 }
 
@@ -107,11 +128,14 @@ impl fmt::Display for FirstUseBuild {
     }
 }
 
-/// Every first-use build a renderer has made, and the mesh keys they were for, which no prewarm had listed.
+/// Every first-use build a renderer has made, and the mesh keys they were for, which no prewarm had listed; and
+/// every build a frame stalled on after the first ([`PipelineStats::frame_thread_builds`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FirstUseReport {
     pub builds: Vec<FirstUseBuild>,
     pub keys: Vec<PipelineKey>,
+    /// Built on the frame's thread, or a worker it waited on, after the first frame: first uses among them.
+    pub on_frame: Vec<FirstUseBuild>,
 }
 
 impl fmt::Display for FirstUseReport {
@@ -125,6 +149,12 @@ impl fmt::Display for FirstUseReport {
         }
         for build in &self.builds {
             write!(f, "\n  {build}")?;
+        }
+        if !self.on_frame.is_empty() {
+            write!(f, "\n{} built on a frame's thread after the first frame:", self.on_frame.len())?;
+            for build in &self.on_frame {
+                write!(f, "\n  {build}")?;
+            }
         }
         Ok(())
     }
@@ -199,6 +229,26 @@ impl PipelineInventory {
         }
         listed
     }
+
+    /// Adds what `other` lists: a warm-up asked for while another builds waits with every request since
+    /// (`warm_up`), as a prewarm only adds.
+    pub fn add(&mut self, other: &Self) {
+        let Self { meshes, post, effects, skinning, ui, insets, sky, probe_grid, fades, debug_draw } = other;
+        self.meshes.extend(meshes.iter().copied());
+        self.post |= *post;
+        self.effects |= effects;
+        self.skinning |= skinning;
+        self.ui |= ui;
+        self.insets |= insets;
+        for material in sky {
+            if !self.sky.contains(material) {
+                self.sky.push(*material);
+            }
+        }
+        self.probe_grid |= probe_grid;
+        self.fades |= fades;
+        self.debug_draw |= debug_draw;
+    }
 }
 
 #[derive(Default)]
@@ -208,6 +258,12 @@ struct Ledger {
     prewarmed: AtomicU32,
     first_use_builds: AtomicU32,
     rebuilt: AtomicU32,
+    warmed_off_frame: AtomicU32,
+    frame_thread_builds: AtomicU32,
+    frame_waits: AtomicU32,
+    /// Frames the renderer has started preparing, up to 2: from the second on, a build a frame waits on is a
+    /// hitch.
+    frames: AtomicU32,
     report: Mutex<FirstUseReport>,
 }
 
@@ -312,20 +368,55 @@ impl PipelineBuilds {
 
     fn count(&self, family: PipelineFamily, name: impl FnOnce() -> String) {
         let ledger = &self.ledger;
-        if REBUILDING.get() {
+        // On the warm-up's threads, no frame waits.
+        let off_frame = sapphire_jobs::on_warm_up_thread();
+        let rebuilding = REBUILDING.get();
+        let mut name = Some(name);
+        let mut named = None;
+        if rebuilding {
             ledger.rebuilt.fetch_add(1, Ordering::Relaxed);
-        } else if ledger.warming.load(Ordering::Relaxed) > 0 {
+        } else if off_frame || ledger.warming.load(Ordering::Relaxed) > 0 {
             ledger.prewarmed.fetch_add(1, Ordering::Relaxed);
         } else {
             ledger.first_use_builds.fetch_add(1, Ordering::Relaxed);
-            let pipeline = name();
+            let pipeline = name.take().expect("named once")();
             tracing::warn!(
                 target: LOG_TARGET,
                 %family,
                 %pipeline,
                 "a pipeline built on first use, stalling what wanted it: list it in the load's inventory"
             );
+            named = Some(pipeline.clone());
             self.report().builds.push(FirstUseBuild { family, pipeline });
+        }
+        if off_frame {
+            ledger.warmed_off_frame.fetch_add(1, Ordering::Relaxed);
+        } else if !rebuilding && ledger.frames.load(Ordering::Relaxed) > 1 {
+            ledger.frame_thread_builds.fetch_add(1, Ordering::Relaxed);
+            let pipeline = named.or_else(|| name.map(|name| name())).expect("named once");
+            tracing::warn!(
+                target: LOG_TARGET,
+                %family,
+                %pipeline,
+                "a pipeline built on a frame's thread after the first frame: warm it up off the frame"
+            );
+            self.report().on_frame.push(FirstUseBuild { family, pipeline });
+        }
+    }
+
+    /// The renderer starts preparing a frame: from the second on, a build a frame waits on is a hitch.
+    pub(crate) fn frame_started(&self) {
+        let frames = &self.ledger.frames;
+        if frames.load(Ordering::Relaxed) < 2 {
+            frames.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The frame's thread is about to wait for the warm-up: a hitch past the first frame.
+    pub(crate) fn frame_waits(&self) {
+        if self.ledger.frames.load(Ordering::Relaxed) > 1 {
+            self.ledger.frame_waits.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(target: LOG_TARGET, "a frame waited for the pipeline warm-up after the first frame");
         }
     }
 
@@ -345,6 +436,9 @@ impl PipelineBuilds {
             prewarmed: ledger.prewarmed.load(Ordering::Relaxed),
             first_use_builds: ledger.first_use_builds.load(Ordering::Relaxed),
             rebuilt: ledger.rebuilt.load(Ordering::Relaxed),
+            warmed_off_frame: ledger.warmed_off_frame.load(Ordering::Relaxed),
+            frame_thread_builds: ledger.frame_thread_builds.load(Ordering::Relaxed),
+            frame_waits: ledger.frame_waits.load(Ordering::Relaxed),
         }
     }
 
@@ -478,9 +572,12 @@ mod tests {
             scope.spawn(|| builds.count(PipelineFamily::Post, || panic!("no name")));
         });
         drop(warming);
-        assert_eq!(builds.stats(), PipelineStats { prewarmed: 2, first_use_builds: 0, rebuilt: 0 });
+        assert_eq!(builds.stats(), PipelineStats { prewarmed: 2, ..PipelineStats::default() });
         builds.count(PipelineFamily::Ui, || "ui".to_owned());
-        assert_eq!(builds.stats(), PipelineStats { prewarmed: 2, first_use_builds: 1, rebuilt: 0 });
+        assert_eq!(
+            builds.stats(),
+            PipelineStats { prewarmed: 2, first_use_builds: 1, ..PipelineStats::default() }
+        );
         assert_eq!(builds.stats().built(), 3);
     }
 
@@ -563,6 +660,42 @@ mod tests {
         assert_eq!(refused, [REFUSED], "only the refused build's scope caught it");
         assert_eq!(uncaptured.load(Ordering::Relaxed), 0, "nothing reached the uncaptured handler");
         assert_eq!(builds.stats().prewarmed, 16);
+    }
+
+    #[test]
+    fn past_the_first_frame_a_build_off_the_warm_up_is_a_hitch_and_one_on_it_isnt() {
+        let builds = PipelineBuilds::new(None);
+        let warming = builds.warming();
+        builds.frame_started();
+        builds.count(PipelineFamily::Post, || panic!("the first frame's builds are no hitch"));
+        builds.frame_waits();
+        builds.frame_started();
+        builds.count(PipelineFamily::Sky, || "sky".to_owned());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let off = builds.clone();
+        sapphire_jobs::spawn_warm_up(move || {
+            off.count(PipelineFamily::Mesh, || panic!("a warm-up's build is no hitch"));
+            sender.send(()).expect("the test waits");
+        });
+        receiver.recv().expect("the warm-up ran");
+        {
+            let _rebuilding = Rebuilding::begin();
+            builds.count(PipelineFamily::Post, || panic!("an edit's rebuild is no hitch"));
+        }
+        builds.frame_waits();
+        drop(warming);
+        let stats = builds.stats();
+        assert_eq!((stats.prewarmed, stats.rebuilt, stats.first_use_builds), (3, 1, 0));
+        assert_eq!((stats.warmed_off_frame, stats.frame_thread_builds, stats.frame_waits), (1, 1, 1));
+        assert_eq!(stats.hitches(), 2);
+        let report = builds.first_use_report();
+        assert_eq!(
+            report.on_frame,
+            [FirstUseBuild { family: PipelineFamily::Sky, pipeline: "sky".to_owned() }]
+        );
+        assert!(
+            report.to_string().contains("1 built on a frame's thread after the first frame:\n  sky: sky")
+        );
     }
 
     #[test]

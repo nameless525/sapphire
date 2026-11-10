@@ -44,14 +44,14 @@ use crate::pipeline_builds::{
 };
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES,
-    MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
-    SurfaceVariant, VELOCITY_FORMAT,
+    MeshPass, MeshPipelines, MeshWarm, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT,
+    Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
 use crate::retire::FrameFence;
 use crate::scene::GpuScene;
 use crate::shader_builds::{
-    Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest,
+    Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest, Step,
     scope_error,
 };
 use crate::shaders::{BuildOn, Program, ShaderError, ShaderSources};
@@ -63,6 +63,10 @@ use crate::texture::GpuTexture;
 use crate::ui::{Ui, UiPicture, UiStats};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
+use crate::warm_up::{
+    Done as WarmUpDone, Job as WarmUpJob, WarmUpProgress, WarmUpRequest, WarmUpStats, WarmUps,
+    Warmed as WarmedParts,
+};
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
 
 /// The first shadow view in the view buffer: after the main view and the sky cube's faces.
@@ -449,8 +453,11 @@ pub struct RenderStats {
     /// many were started, started again, superseded and failed.
     pub shader_builds: ShaderBuildStats,
     /// Every pipeline built so far, by why (M3 K1). [`PipelineStats::first_use_builds`] is what exit test 7
-    /// holds at 0 after a load, and [`Renderer::first_use_report`] names them.
+    /// holds at 0 after a load, and [`Renderer::first_use_report`] names them; [`PipelineStats::hitches`], exit
+    /// test 1, after the first frame (M4 H1).
     pub pipelines: PipelineStats,
+    /// The warm-up off the frame (M4 H1): requests, answers and restarts.
+    pub warm_up: WarmUpStats,
     /// Temporal AA's jitter, sizes and history resets; all zero when it is off.
     pub temporal: TemporalStats,
     /// The compositing layers post drew (M1 P2).
@@ -552,6 +559,8 @@ pub struct Renderer {
     /// Shader builds off the frame thread (`shader_builds`). First, so dropping the renderer stops
     /// a build in flight before anything else goes.
     builds: ShaderBuilds,
+    /// The warm-up off the frame (`warm_up`), stopped as early.
+    warm_ups: WarmUps,
     device: wgpu::Device,
     queue: wgpu::Queue,
     settings: RenderSettings,
@@ -913,6 +922,7 @@ impl Renderer {
         let ui = Ui::new(&device, color_format, pipeline_builds.clone(), gpu.label("").is_some());
         let mut renderer = Self {
             builds: ShaderBuilds::default(),
+            warm_ups: WarmUps::default(),
             device,
             queue: gpu.queue().clone(),
             settings,
@@ -1476,14 +1486,10 @@ impl Renderer {
     /// compile it. Apps call it at load with what their frames may draw beyond the settings':
     /// the variants of every screen effect preset gameplay may push (`sapphire_world`'s
     /// `EffectLibrary::post_variants`), so an effect shows on the frame it fires. Says how many
-    /// pipelines it built; synchronous, on this thread.
+    /// pipelines it built; a [`Self::prewarm`], so it waits for the warm-up.
     pub fn prewarm_post(&mut self, variants: PostVariants) -> u32 {
         profiling::scope!("Renderer::prewarm_post");
-        let _warming = self.pipeline_builds.warming();
-        self.checked_build(|renderer| {
-            let on = BuildOn::sources(renderer.edited_shaders);
-            renderer.post.prewarm(variants, on)
-        })
+        self.prewarm(&PipelineInventory { post: variants, ..PipelineInventory::default() })
     }
 
     /// Starts building the renderer's shaders from `sources` off the frame thread (hot reload,
@@ -1754,21 +1760,210 @@ impl Renderer {
     /// Builds what the first effect draws through, ahead: its pipelines, its map and its buffers. A
     /// game calls it at load when it has effects to play, so its first hit doesn't compile a
     /// pipeline on the frame it lands. A frame with effects that wasn't prewarmed builds them
-    /// itself; a renderer that's never given any makes none of this (see the [`vfx`] module).
+    /// itself; a renderer that's never given any makes none of this (see the [`vfx`] module). A
+    /// [`Self::prewarm`], so it waits for the warm-up.
     pub fn prewarm_vfx(&mut self) {
-        let _warming = self.pipeline_builds.warming();
-        self.checked_build(|renderer| {
-            let on = BuildOn::sources(renderer.edited_shaders);
-            renderer.vfx.build(&renderer.shaders, true, on);
-        });
+        self.prewarm(&PipelineInventory { effects: true, ..PipelineInventory::default() });
     }
 
-    /// Builds everything `inventory` lists that isn't built, so no frame after a load stalls on it (M3 K1,
-    /// exit test 7). Call it before the uploads it's for, because what an upload finds unbuilt it builds as a
-    /// first use, and as often as a load has more to declare: it only adds. Says how many pipelines it built;
-    /// synchronous, on this thread and the workers it spreads builds across.
+    /// Starts building everything `inventory` lists that isn't built on the warm-up's threads, which no frame
+    /// waits on (M4 H1, the `warm_up` module), while frames go on drawing: so no frame after a load stalls on it
+    /// (exit tests 1 and 7). The [`Self::prepare`] after it's built takes it in, and [`Self::is_warm`] then says
+    /// so; [`Self::warm_up`] says how far it has got meanwhile. Uploads it's for wait until then, because what an
+    /// upload finds unbuilt it builds as a first use, on its frame. Ask as often as a load has more to declare:
+    /// it only adds, and a request made while one builds waits for it.
+    pub fn warm(&mut self, inventory: &PipelineInventory) -> WarmUpRequest {
+        profiling::scope!("Renderer::warm");
+        let (request, start) = self.warm_ups.request(inventory);
+        if let Some(inventory) = start {
+            self.start_warm_up(request, inventory);
+        }
+        request
+    }
+
+    /// Whether what `request` asked for is built and taken in, with every request before it. Never for another
+    /// renderer's request ([`Self::owns_warm_up`]).
+    pub fn is_warm(&self, request: WarmUpRequest) -> bool {
+        self.warm_ups.is_warm(request)
+    }
+
+    /// Whether `request` was made of this renderer, and not of one it replaced: a caller holding one across a
+    /// renderer made anew (a tier's) asks again.
+    pub fn owns_warm_up(&self, request: WarmUpRequest) -> bool {
+        self.warm_ups.owns(request)
+    }
+
+    /// How far the warm-up has got: what a screen that keeps drawing while it builds shows.
+    pub fn warm_up(&self) -> WarmUpProgress {
+        self.warm_ups.progress(self.pipeline_builds.stats().warmed_off_frame)
+    }
+
+    /// [`Self::warm`], and waits for it, taking it in: for a load that blocks anyway (a capture, a tool, a test,
+    /// and until M4 H2's screens a boot and a zone's load), before the uploads it's for. Its wait after the first
+    /// frame, if anything was built, is a hitch ([`PipelineStats::frame_waits`]). Says how many pipelines it
+    /// built.
     pub fn prewarm(&mut self, inventory: &PipelineInventory) -> u32 {
         profiling::scope!("Renderer::prewarm");
+        let before = self.pipeline_builds.stats();
+        let request = self.warm(inventory);
+        while !self.is_warm(request) {
+            match self.warm_ups.wait() {
+                Some(done) => self.take_in(done),
+                None => {
+                    let (newest, waiting) = self.warm_ups.take_waiting().expect("a request not warm waits");
+                    self.start_warm_up(newest, waiting);
+                }
+            }
+        }
+        let after = self.pipeline_builds.stats();
+        // A wait for a warm-up that found everything built isn't one.
+        if after.warmed_off_frame > before.warmed_off_frame {
+            self.pipeline_builds.frame_waits();
+        }
+        after.prewarmed - before.prewarmed
+    }
+
+    /// Holds every warm-up's task before it builds until `gate` opens (tests).
+    #[cfg(test)]
+    pub(crate) fn hold_warm_ups(&mut self, gate: std::sync::Arc<crate::shader_builds::Gate>) {
+        self.warm_ups.hold = Some(gate);
+    }
+
+    /// Starts warming `inventory` for `request` on the warm-up pool, or, if every owner has it, takes it in at
+    /// once.
+    fn start_warm_up(&mut self, request: WarmUpRequest, inventory: PipelineInventory) {
+        let job = self.warm_job(&inventory);
+        if job.steps() == 0 {
+            self.warm_in(&inventory);
+            self.warm_ups.answer(request);
+            if let Some((newest, waiting)) = self.warm_ups.take_waiting() {
+                self.start_warm_up(newest, waiting);
+            }
+            return;
+        }
+        let snapshot = (self.stats.shader_rebuilds, self.pipelines.fingerprint());
+        self.warm_ups.spawn(request, inventory, job, snapshot);
+    }
+
+    /// Each owner's step for what of `inventory` it lacks (the `warm_up` module).
+    fn warm_job(&self, inventory: &PipelineInventory) -> WarmUpJob {
+        let device = &self.device;
+        let on = BuildOn::sources(self.edited_shaders);
+        let keys: Vec<PipelineKey> = inventory.meshes.iter().copied().collect();
+        let formats: Vec<PositionFormat> = PositionFormat::ALL
+            .into_iter()
+            .filter(|&format| keys.iter().any(|key| key.format == format))
+            .collect();
+        let reflection = keys.iter().any(|key| key.reflection);
+        let mesh = MeshWarm {
+            ambient: inventory.probe_grid.then(|| self.ambient.constants_expecting_grid()),
+            fades: inventory.fades,
+            scene_prepass: inventory.debug_draw,
+            keys,
+        };
+        let debug_draw = (inventory.debug_draw && self.debug_draw.is_none()).then(|| {
+            let (device, builds, color_format) =
+                (device.clone(), self.pipeline_builds.clone(), self.color_format);
+            let step: Step<DebugDraw> =
+                Box::new(move |sources, _| DebugDraw::new(&device, color_format, sources, &builds));
+            step
+        });
+        WarmUpJob {
+            sources: self.shaders.clone(),
+            device: device.clone(),
+            edited: self.edited_shaders,
+            mesh: self.pipelines.warm(device, mesh, on),
+            shadows: self.shadows.warm(device, &formats),
+            ambient: self.ambient.warm(inventory.probe_grid, reflection),
+            skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
+            post: self.post.warm(inventory.post, inventory.insets, on),
+            vfx: inventory.effects.then(|| self.vfx.warm(true, on)).flatten(),
+            ui: inventory.ui.then(|| self.ui.warm()).flatten(),
+            sky: self.sky.warm(&inventory.sky, &self.materials, on),
+            debug_draw,
+        }
+    }
+
+    /// At a frame boundary, before anything reads a pipeline: takes in a warm-up that finished. Never waits.
+    fn poll_warm_ups(&mut self) {
+        if let Some(done) = self.warm_ups.poll() {
+            self.take_in(done);
+        }
+    }
+
+    /// Takes in what a finished warm-up built (the `warm_up` module's "Taking it in"), and runs the prewarm on
+    /// this thread, which then builds nothing; or starts it again, if what it built is stale.
+    fn take_in(&mut self, done: WarmUpDone) {
+        profiling::scope!("Renderer::take_in");
+        let WarmUpDone { request, inventory, sources, mesh, finished } = done;
+        let warmed = match finished {
+            Some(Ok(warmed)) if sources == self.stats.shader_rebuilds => warmed,
+            // Built from shaders that aren't in use any more; or cancelled, which only a drop does.
+            Some(Ok(_)) | None => return self.restart_warm_up(request, inventory),
+            Some(Err(error)) => {
+                tracing::warn!(target: LOG_TARGET, %error, "the warm-up failed; building on the frame's thread");
+                self.warm_in(&inventory);
+                self.warm_ups.answer(request);
+                return self.start_waiting_warm_up();
+            }
+        };
+        let WarmedParts { mesh: warmed_mesh, shadows, ambient, skinning, post, vfx, ui, sky, debug_draw } =
+            warmed;
+        if let Some(casters) = shadows {
+            self.shadows.adopt_casters(casters);
+        }
+        if let Some(pipelines) = ambient {
+            self.ambient.adopt(pipelines);
+        }
+        if let Some(pass) = skinning {
+            self.skinning.adopt(pass);
+        }
+        if let Some(pipelines) = post {
+            self.post.adopt(pipelines);
+        }
+        if let Some(warmed) = vfx {
+            self.vfx.adopt(warmed);
+        }
+        if let Some(warmed) = ui {
+            self.ui.adopt(warmed);
+        }
+        if let Some(pipelines) = sky {
+            self.sky.adopt(pipelines);
+        }
+        if let Some(draw) = debug_draw {
+            self.debug_draw.get_or_insert_with(|| Box::new(draw));
+        }
+        // The mesh set is taken whole, or not at all if something was built into it meanwhile.
+        if let Some(pipelines) = warmed_mesh.filter(|pipelines| pipelines.fingerprint() != mesh) {
+            if self.pipelines.fingerprint() != mesh {
+                return self.restart_warm_up(request, inventory);
+            }
+            self.pipelines = pipelines;
+        }
+        self.warm_in(&inventory);
+        self.warm_ups.answer(request);
+        self.start_waiting_warm_up();
+    }
+
+    /// Starts `request`'s warm-up again from what's built now, with any requests waiting.
+    fn restart_warm_up(&mut self, request: WarmUpRequest, inventory: PipelineInventory) {
+        tracing::debug!(target: LOG_TARGET, "the warm-up starts again: pipelines or shaders changed meanwhile");
+        let (request, inventory) = self.warm_ups.restart(request, inventory);
+        self.start_warm_up(request, inventory);
+    }
+
+    /// Starts the requests that waited for the warm-up just taken in.
+    fn start_waiting_warm_up(&mut self) {
+        if let Some((request, inventory)) = self.warm_ups.take_waiting() {
+            self.start_warm_up(request, inventory);
+        }
+    }
+
+    /// Builds everything `inventory` lists that isn't built, on this thread and the workers it spreads builds
+    /// across (M3 K1): after a warm-up, what sets what isn't a pipeline, building nothing. Says how many
+    /// pipelines it built.
+    fn warm_in(&mut self, inventory: &PipelineInventory) -> u32 {
+        profiling::scope!("Renderer::warm_in");
         let warming = self.pipeline_builds.warming();
         let before = self.pipeline_builds.stats().prewarmed;
         self.checked_build(|renderer| {
@@ -1879,6 +2074,7 @@ impl Renderer {
             "prepare() needs the GpuContext the renderer was created with"
         );
         let (device, queue) = (gpu.device(), gpu.queue());
+        self.pipeline_builds.frame_started();
         self.settle_last_frame();
         self.device_lost = gpu.is_lost();
         self.fence.begin_frame(self.device_lost);
@@ -1886,6 +2082,8 @@ impl Renderer {
         // frame draws with the old set or with the new.
         self.poll_shader_builds(self.device_lost);
         self.stats.shader_builds = self.builds.stats();
+        // And a finished warm-up is taken in, after it: one built from sources just replaced starts again.
+        self.poll_warm_ups();
 
         if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
             self.scene_bind_groups = create_scene_bind_groups(
@@ -2178,24 +2376,7 @@ impl Renderer {
     /// first frame.
     fn prepare_fades(&mut self) {
         let on = BuildOn::sources(self.edited_shaders);
-        for format in PositionFormat::ALL {
-            let Some(mesh) = self.pipelines.mesh(format) else { continue };
-            let draws: Vec<Drawn> = SurfaceVariant::ALL
-                .into_iter()
-                .filter(|variant| {
-                    matches!(variant.shading, Shading::Character(_)) && variant.coverage == Coverage::Opaque
-                })
-                .filter(|&variant| mesh.surface(variant).is_some())
-                .map(|variant| Drawn {
-                    variant: variant.with_coverage(Coverage::AlphaTest),
-                    surface: true,
-                    through_hair: mesh.through_hair(variant).is_some(),
-                })
-                .collect();
-            if !draws.is_empty() {
-                self.pipelines.prepare_draws(&self.device, format, &draws, on);
-            }
-        }
+        self.pipelines.prepare_fades(&self.device, on);
     }
 
     /// The GPU half of a frame: adds the frame's uploads, the skinning pass, the prepasses, the
@@ -2975,6 +3156,7 @@ impl Renderer {
     pub fn stats(&self) -> RenderStats {
         RenderStats {
             pipelines: self.pipeline_builds.stats(),
+            warm_up: self.warm_ups.stats(),
             character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
             environment_pipelines: self.pipelines.built(MaterialFamily::Environment),
             foliage_pipelines: self.pipelines.built(MaterialFamily::Foliage),

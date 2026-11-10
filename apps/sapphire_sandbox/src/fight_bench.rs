@@ -464,6 +464,9 @@ impl Run<'_> {
                     prewarmed = builds.prewarmed,
                     first_use = builds.first_use_builds,
                     rebuilt = builds.rebuilt,
+                    warmed_off_frame = builds.warmed_off_frame,
+                    frame_thread = builds.frame_thread_builds,
+                    frame_waits = builds.frame_waits,
                     "fight pipelines",
                 );
                 return Ok(played);

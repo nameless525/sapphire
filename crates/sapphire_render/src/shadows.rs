@@ -671,6 +671,40 @@ impl Shadows {
         }
     }
 
+    /// A warm-up's step (`warm_up`): the casters of `formats` that aren't built, for [`Self::adopt_casters`].
+    /// `None` while shadows are off or when there are none to build.
+    pub(crate) fn warm(
+        &self,
+        device: &wgpu::Device,
+        formats: &[PositionFormat],
+    ) -> Option<Step<Vec<(PositionFormat, wgpu::RenderPipeline)>>> {
+        let pipelines = self.pipelines.as_ref()?;
+        let missing: Vec<PositionFormat> = PositionFormat::ALL
+            .into_iter()
+            .filter(|format| formats.contains(format) && pipelines.casters[format_index(*format)].is_none())
+            .collect();
+        if missing.is_empty() {
+            return None;
+        }
+        let (builder, device) = (self.builder.clone(), device.clone());
+        Some(Box::new(move |sources, _| {
+            let module = shaders::module(&device, Program::Shadows, sources);
+            missing
+                .into_iter()
+                .map(|format| (format, builder.build_caster(&device, &module, format)))
+                .collect()
+        }))
+    }
+
+    /// Takes in casters a warm-up built, where none is built yet.
+    pub(crate) fn adopt_casters(&mut self, casters: Vec<(PositionFormat, wgpu::RenderPipeline)>) {
+        if let Some(pipelines) = &mut self.pipelines {
+            for (format, caster) in casters {
+                pipelines.casters[format_index(format)].get_or_insert(caster);
+            }
+        }
+    }
+
     /// Its pipelines, to build again from new sources (hot reload, off the frame thread:
     /// `shader_builds`) on the layouts they had: the face pass's and every caster built so far.
     /// `None` while shadows are off.

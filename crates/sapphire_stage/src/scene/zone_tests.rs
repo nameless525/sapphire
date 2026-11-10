@@ -988,11 +988,11 @@ fn a_full_server_makes_a_prefetch_wait_until_someone_is_waiting_for_it() {
     assert_eq!(walk.scene.stream_stats().expect("a zone is open").failed, 0);
 }
 
-/// A hub's next zone builds its pipelines a frame at a time, and asks for no mesh until they're built. Under
-/// a wipe they all go at once, there being nothing on screen to stall.
+/// A hub's next zone warms its pipelines up off the frame (M4 H1), and asks for no mesh until they're taken
+/// in: no frame builds one or waits for one.
 #[test]
 #[ignore = "needs a GPU"]
-fn a_zone_coming_next_builds_a_pipeline_a_frame_unless_someone_is_waiting() {
+fn a_zone_coming_next_warms_up_off_the_frame() {
     let settings = small_settings();
     let flags = [
         MaterialFlags::empty(),
@@ -1015,27 +1015,33 @@ fn a_zone_coming_next_builds_a_pipeline_a_frame_unless_someone_is_waiting() {
     for _ in 0..3 {
         walk.frame();
     }
-    let first_use = walk.renderer.stats().pipelines.first_use_builds;
-    let before = walk.renderer.stats().pipelines.prewarmed;
+    let before = walk.renderer.stats().pipelines;
+    assert_eq!(before.hitches(), 0, "{}", walk.renderer.first_use_report());
     walk.scene.prefetch_zone(room(0), settings);
-    let mut last = before;
-    let mut frames_building = 0;
     let mut frames = 0;
     while walk.scene.zone_load(room(0).zone) != ZoneLoad::Ready {
         walk.frame();
-        let built = walk.renderer.stats().pipelines.prewarmed;
-        assert!(built <= last + 1, "{built} after {last}");
-        frames_building += u32::from(built > last);
-        last = built;
         frames += 1;
         assert!(frames < 100_000, "it never came");
         std::thread::sleep(Duration::from_micros(100));
     }
-    assert!(frames_building >= 2, "over frames: {frames_building}");
+    let warmed = walk.renderer.stats().pipelines;
+    assert!(warmed.prewarmed > before.prewarmed, "its keys were built");
+    assert_eq!(
+        warmed.warmed_off_frame - before.warmed_off_frame,
+        warmed.prewarmed - before.prewarmed,
+        "each on the warm-up's threads"
+    );
+    assert_eq!(walk.renderer.stats().warm_up.answered, walk.renderer.stats().warm_up.requests);
     walk.trip(0, settings);
     walk.settle();
     let stats = walk.renderer.stats().pipelines;
-    assert_eq!(stats.first_use_builds, first_use, "nothing came before its pipelines: {stats:?}");
+    assert_eq!(
+        stats.first_use_builds, before.first_use_builds,
+        "nothing came before its pipelines: {stats:?}"
+    );
+    // The trip's own arrival may wait on a load screen (`Content::open_zone`), but builds nothing on a frame.
+    assert_eq!(stats.frame_thread_builds, 0, "{}", walk.renderer.first_use_report());
 }
 
 /// Trip after trip between two zones, a hub and a room, on each class of device's settings and budgets: each

@@ -610,7 +610,7 @@ impl CubePass<'_> {
 
 /// The sky's pipelines built so far, by variant, and the module later ones are built from: what
 /// [`Sky::rebuild`] builds.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SkyPipelines {
     module: wgpu::ShaderModule,
     /// Into the main pass, by [`Layers::index`].
@@ -803,13 +803,56 @@ impl Sky {
 
     /// Builds every variant `material`, a sky material or not, can draw, for a prewarm.
     pub(crate) fn prewarm(&mut self, material: MaterialHandle, materials: &Materials, on: BuildOn) {
+        self.build_for(self.features_of(material, materials), on);
+    }
+
+    /// What `material` can draw, or the default's if it isn't a sky material.
+    fn features_of(&self, material: MaterialHandle, materials: &Materials) -> Features {
         let material = Some(material)
             .filter(|&handle| materials.record(handle).is_some_and(|r| r.family == MaterialFamily::Sky))
             .unwrap_or(self.default_material);
         let params: SkyParams = bytemuck::pod_read_unaligned(
             materials.params(material).expect("a sky material's block is in its family's mirror"),
         );
-        self.build_for(Features::of(&params), on);
+        Features::of(&params)
+    }
+
+    /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of each of `materials` would build, on a clone of
+    /// the pipelines, where `on` says, for [`Self::adopt`]. `None` when it's built.
+    pub(crate) fn warm(
+        &self,
+        materials: &[MaterialHandle],
+        records: &Materials,
+        on: BuildOn,
+    ) -> Option<Step<SkyPipelines>> {
+        let mut features: Vec<Features> =
+            materials.iter().map(|&material| self.features_of(material, records)).collect();
+        features.retain(|features| self.ready & features.bit() == 0);
+        if features.is_empty() {
+            return None;
+        }
+        let (builder, mut pipelines) = (self.builder.clone(), self.pipelines.clone());
+        Some(Box::new(move |_, _| {
+            let layers = features.into_iter().flat_map(Layers::drawable).collect::<Vec<_>>();
+            pipelines.build_all(&builder, layers.into_iter(), on);
+            pipelines
+        }))
+    }
+
+    /// Takes in what a warm-up built that isn't built yet.
+    pub(crate) fn adopt(&mut self, warmed: SkyPipelines) {
+        let pipelines = &mut self.pipelines;
+        for (slot, pipeline) in pipelines
+            .main
+            .iter_mut()
+            .chain(&mut pipelines.cube)
+            .zip(warmed.main.into_iter().chain(warmed.cube))
+        {
+            if slot.is_none() {
+                *slot = pipeline;
+            }
+        }
+        self.stats.pipelines = self.pipelines.count();
     }
 
     /// Builds every variant a material with `features` can draw, the first time.

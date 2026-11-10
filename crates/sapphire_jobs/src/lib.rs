@@ -1,13 +1,24 @@
 //! The engine's single task pool (spec §4.3, §5.5).
 //!
-//! Owns the worker threads: `bevy_tasks`' `ComputeTaskPool`, sized for the device's cores, and
-//! an `AsyncComputeTaskPool` for work that may span frames. bevy_ecs's executor uses the same
+//! Owns the worker threads: `bevy_tasks`' `ComputeTaskPool`, sized for the device's cores, an
+//! `AsyncComputeTaskPool` for work that may span frames, and a warm-up pool that no frame waits on. bevy_ecs's executor uses the same
 //! compute pool, so the engine never runs two pools that fight over cores (rayon is for tools
 //! only). Waiting on a scope or a [`join`] runs other tasks on the waiting thread instead of
 //! blocking it.
 //!
 //! [`spawn_async`] runs detached work on the async compute pool: asset decode jobs, which the IO
 //! thread starts as its reads complete (M1 A4).
+//!
+//! # The warm-up pool
+//!
+//! [`spawn_warm_up`] runs detached work on a third pool, sized like the compute pool, that no frame
+//! waits on: the renderer's pipeline warm-up (M4 H1). A thread waiting on a scope runs the waited
+//! pool's queued tasks, whatever they are, so a build queued on the compute pool lands on a frame
+//! that waits there for its own work: H0 measured frames of 0.4 to 1.5 s that way on a cold Metal
+//! cache, against a worst of 13 ms with the builds on threads of their own. So a [`scope`], [`join`]
+//! or parallel loop opened on a warm-up thread runs on the warm-up pool, and its tasks never queue
+//! where a frame helps; one opened anywhere else runs on the compute pool, and never runs a warm-up
+//! task.
 //!
 //! Does not own: the IO thread (`sapphire_platform`, spec §4.3). `bevy_tasks`' `IoTaskPool` is
 //! left uninitialized. Named Tracy zones per task and thread priorities arrive with the
@@ -56,6 +67,9 @@ pub struct JobConfig {
     pub compute_threads: Option<usize>,
     /// Workers for long-running tasks. Default: 2 on mobile, physical cores / 4 (1–4) on desktop.
     pub async_compute_threads: Option<usize>,
+    /// Workers for the warm-up, which no frame waits on (see the crate docs). Default: as many as
+    /// the compute pool has, so a warm-up behind a cheap screen builds at the pool's rate.
+    pub warm_up_threads: Option<usize>,
 }
 
 /// The running job system. Lives for the rest of the process once created.
@@ -65,6 +79,7 @@ pub struct JobSystem {
     topology: CpuTopology,
     compute: &'static TaskPool,
     async_compute: &'static TaskPool,
+    warm_up: &'static TaskPool,
 }
 
 impl JobSystem {
@@ -92,6 +107,18 @@ impl JobSystem {
         self.async_compute
     }
 
+    /// The pool [`spawn_warm_up`] runs on, which no frame waits on.
+    #[must_use]
+    pub fn warm_up_pool(&self) -> &'static TaskPool {
+        self.warm_up
+    }
+
+    /// The pool a scope opened on this thread runs on: the warm-up pool on one of its threads, the
+    /// compute pool anywhere else.
+    fn pool_here(&self) -> &'static TaskPool {
+        if on_warm_up_thread() { self.warm_up } else { self.compute }
+    }
+
     fn start(config: JobConfig) -> Self {
         let topology = CpuTopology::detect();
         let form_factor = FormFactor::CURRENT;
@@ -101,6 +128,7 @@ impl JobSystem {
             .async_compute_threads
             .unwrap_or_else(|| topology.default_async_compute_workers(form_factor))
             .max(1);
+        let warm_up_threads = config.warm_up_threads.unwrap_or(compute_threads).max(1);
 
         let mut created = [false; 2];
         let compute: &'static TaskPool = ComputeTaskPool::get_or_init(|| {
@@ -123,15 +151,22 @@ impl JobSystem {
                 );
             }
         }
+        // Not one of bevy's globals: nothing but this crate spawns on it.
+        let warm_up: &'static TaskPool = Box::leak(Box::new(
+            pool_builder("sapphire-warm-up", warm_up_threads)
+                .on_thread_spawn(|| WARM_UP_THREAD.set(true))
+                .build(),
+        ));
         tracing::info!(
             target: "sapphire::jobs",
             ?topology,
             ?form_factor,
             compute_threads = compute.thread_num(),
             async_compute_threads = async_compute.thread_num(),
+            warm_up_threads = warm_up.thread_num(),
             "job system started"
         );
-        Self { config, topology, compute, async_compute }
+        Self { config, topology, compute, async_compute, warm_up }
     }
 }
 
@@ -143,11 +178,11 @@ const WORKER_STACK: usize = 4 * 1024 * 1024;
 
 /// Threads are named `<prefix> (<index>)` so they are recognizable in debuggers and profilers.
 fn build_pool(thread_prefix: &str, threads: usize) -> TaskPool {
-    TaskPoolBuilder::new()
-        .num_threads(threads)
-        .stack_size(WORKER_STACK)
-        .thread_name(thread_prefix.to_owned())
-        .build()
+    pool_builder(thread_prefix, threads).build()
+}
+
+fn pool_builder(thread_prefix: &str, threads: usize) -> TaskPoolBuilder {
+    TaskPoolBuilder::new().num_threads(threads).stack_size(WORKER_STACK).thread_name(thread_prefix.to_owned())
 }
 
 static SYSTEM: OnceLock<JobSystem> = OnceLock::new();
@@ -187,6 +222,14 @@ pub const MAX_NESTED_WAITS: u32 = 16;
 thread_local! {
     /// The waits from this crate active on this thread's stack.
     static NESTED_WAITS: Cell<u32> = const { Cell::new(0) };
+    /// This thread is one of the warm-up pool's.
+    static WARM_UP_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether this thread is one of the warm-up pool's ([`spawn_warm_up`]): what it runs, no frame waits on.
+#[must_use]
+pub fn on_warm_up_thread() -> bool {
+    WARM_UP_THREAD.get()
 }
 
 /// One more wait on this thread's stack, until dropped (unwinding included).
@@ -211,7 +254,8 @@ impl Drop for NestedWait {
     }
 }
 
-/// Spawns tasks that run on the compute pool, from inside a [`scope`] call.
+/// Spawns tasks that run on the compute pool (the warm-up pool on its own threads), from inside a
+/// [`scope`] call.
 ///
 /// Tasks may borrow anything that outlives the `scope` call. Results come back in spawn order
 /// for tasks spawned directly by the closure passed to [`scope`].
@@ -285,7 +329,7 @@ where
         f(Scope { inner: ScopeInner::Inline(&results) });
         return results.into_inner().unwrap_or_else(PoisonError::into_inner);
     };
-    system().compute.scope(|inner| f(Scope { inner: ScopeInner::Pool(inner) }))
+    system().pool_here().scope(|inner| f(Scope { inner: ScopeInner::Pool(inner) }))
 }
 
 /// Runs `a` on the calling thread and `b` on the pool, potentially in parallel, and returns
@@ -307,7 +351,7 @@ where
     };
     let mut result_a = None;
     let mut result_b = None;
-    system().compute.scope(|s| {
+    system().pool_here().scope(|s| {
         s.spawn(async { result_b = Some(b()) });
         result_a = Some(a());
     });
@@ -322,6 +366,15 @@ where
 /// the panic hook still sees it. A task that must always report back catches its own panics.
 pub fn spawn_async(task: impl FnOnce() + Send + 'static) {
     system().async_compute.spawn(async move { task() }).detach();
+}
+
+/// Runs `task` on the warm-up pool, detached: work that may take seconds while frames draw, and that no
+/// frame waits on (the crate docs). A [`scope`], [`join`] or parallel loop it opens stays on the warm-up
+/// pool. `task` reports its result itself. Allocates per call (see the crate docs).
+///
+/// A panic in `task` unwinds out of it and is caught by the pool, as [`spawn_async`]'s is.
+pub fn spawn_warm_up(task: impl FnOnce() + Send + 'static) {
+    system().warm_up.spawn(async move { task() }).detach();
 }
 
 /// Calls `f(start, chunk)` for consecutive chunks of `slice` in parallel, where `start` is the
@@ -347,7 +400,7 @@ where
         return;
     };
     let f = &f;
-    system().compute.scope(|s| {
+    system().pool_here().scope(|s| {
         for (index, chunk) in slice.chunks(chunk_size).enumerate() {
             s.spawn(async move { f(index * chunk_size, chunk) });
         }
@@ -373,7 +426,7 @@ where
         return;
     };
     let f = &f;
-    system().compute.scope(|s| {
+    system().pool_here().scope(|s| {
         for (index, chunk) in slice.chunks_mut(chunk_size).enumerate() {
             s.spawn(async move { f(index * chunk_size, chunk) });
         }
@@ -564,6 +617,52 @@ mod tests {
         });
         assert_eq!(results.len(), 20);
         assert_eq!(total.load(Ordering::Relaxed), 20);
+    }
+
+    /// H0's finding, held: a scope opened on a warm-up thread runs its tasks on warm-up threads alone, and a
+    /// thread waiting on the compute pool meanwhile (a frame) never runs one of them.
+    #[test]
+    fn a_warm_ups_scopes_stay_off_the_pool_a_frame_waits_on() {
+        let frame = std::thread::current().id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let barrier = started.clone();
+        spawn_warm_up(move || {
+            assert!(on_warm_up_thread());
+            barrier.wait();
+            let threads = scope(|s| {
+                for _ in 0..64 {
+                    s.spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        let thread = std::thread::current();
+                        (thread.id(), thread.name().map(str::to_owned), on_warm_up_thread())
+                    });
+                }
+            });
+            sender.send(threads).expect("the test waits");
+        });
+        started.wait();
+        assert!(!on_warm_up_thread());
+        // The frame's own waits while the warm-up's tasks queue.
+        let mut waits = 0;
+        let threads = loop {
+            let sums = scope(|s| {
+                for chunk in [[1, 2], [3, 4]] {
+                    s.spawn(move || chunk.iter().sum::<i32>());
+                }
+            });
+            assert_eq!(sums, [3, 7]);
+            waits += 1;
+            if let Ok(threads) = receiver.try_recv() {
+                break threads;
+            }
+        };
+        assert!(waits > 1, "the frame waited while the warm-up ran");
+        assert_eq!(threads.len(), 64);
+        for (id, name, warm_up) in threads {
+            assert_ne!(id, frame, "a frame ran a warm-up's task");
+            assert!(warm_up && name.is_some_and(|name| name.starts_with("sapphire-warm-up (")));
+        }
     }
 
     #[test]

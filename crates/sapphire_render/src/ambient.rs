@@ -1667,6 +1667,40 @@ impl Ambient {
         }));
     }
 
+    /// A warm-up's step (`warm_up`): the pipelines [`Self::expect_grid`] (`grid`) and
+    /// [`Self::build_reflection_pipelines`] (`reflection`) would build, for [`Self::adopt`]. `None` when they're
+    /// built.
+    pub(crate) fn warm(&self, grid: bool, reflection: bool) -> Option<Step<AmbientPipelines>> {
+        let mut set = PipelineSet::default();
+        if grid {
+            set.projection = true;
+            set.prefilter |= self.environment_reflects;
+            set.grid = true;
+        }
+        if reflection {
+            set.projection = true;
+            set.prefilter = true;
+        }
+        let missing = set.without(self.pipelines.set());
+        if missing.is_empty() {
+            return None;
+        }
+        let (device, layouts, builds) = (self.device.clone(), self.layouts.clone(), self.builds.clone());
+        Some(Box::new(move |sources, _| AmbientPipelines::new(&device, &layouts, &builds, sources, missing)))
+    }
+
+    /// Takes in the groups a warm-up built that aren't built yet.
+    pub(crate) fn adopt(&mut self, built: AmbientPipelines) {
+        self.pipelines.add(built);
+        self.stats.pipelines = self.pipelines.count();
+    }
+
+    /// The constants the environment pipelines take once [`Self::expect_grid`] has run, for a warm-up's mesh
+    /// pipelines.
+    pub(crate) fn constants_expecting_grid(&self) -> Vec<(&'static str, f64)> {
+        constants(&self.occlusion, Some(self.lookup))
+    }
+
     /// The passes' pipelines built so far, to build again from new sources (hot reload, off the
     /// frame thread: `shader_builds`), on the layouts they had: none if none were built.
     pub(crate) fn rebuild(&self) -> Step<AmbientPipelines> {

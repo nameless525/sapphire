@@ -491,6 +491,10 @@ impl RebuiltPipelines {
     }
 }
 
+/// Post's pipelines with what a warm-up built ([`PostProcess::warm`]).
+#[derive(Debug)]
+pub(crate) struct WarmedPost(Pipelines);
+
 /// Group 1 layouts, by the textures a pass reads.
 #[derive(Clone, Debug)]
 struct Layouts {
@@ -741,6 +745,31 @@ impl PostProcess {
     /// or a first use, in the frame that first shows an inset. Says how many it built.
     pub(crate) fn build_inset(&mut self, on: BuildOn) -> u32 {
         self.pipelines.build_all(&self.builder, &self.module, [Slot::Inset], on)
+    }
+
+    /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants` and, with `inset`,
+    /// [`Self::build_inset`] would build, on a clone of these, where `on` says, for [`Self::adopt`]. `None` when
+    /// it's built.
+    pub(crate) fn warm(&self, variants: PostVariants, inset: bool, on: BuildOn) -> Option<Step<WarmedPost>> {
+        let inset = inset.then_some(Slot::Inset);
+        let slots: Vec<Slot> = Slot::within(self.ready | variants, self.bloom_levels)
+            .chain(inset)
+            .filter(|&slot| self.pipelines.get(slot).is_none())
+            .collect();
+        if slots.is_empty() {
+            return None;
+        }
+        let (builder, module, mut pipelines) =
+            (self.builder.clone(), self.module.clone(), self.pipelines.clone());
+        Some(Box::new(move |_, _| {
+            pipelines.build_all(&builder, &module, slots, on);
+            WarmedPost(pipelines)
+        }))
+    }
+
+    /// Takes in what a warm-up built that isn't built yet.
+    pub(crate) fn adopt(&mut self, warmed: WarmedPost) {
+        self.pipelines.adopt(warmed.0);
     }
 
     /// A new inset's constants buffer and groups.

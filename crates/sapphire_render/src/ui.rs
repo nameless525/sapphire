@@ -463,9 +463,57 @@ impl Ui {
             return;
         }
         profiling::scope!("Ui::build");
-        let device = &self.device;
+        let built = self.maker().make(sources);
+        self.adopt(built);
+    }
+
+    /// A warm-up's step (`warm_up`): what [`Self::build`] makes, for [`Self::adopt`]. `None` once it's built.
+    pub(crate) fn warm(&self) -> Option<Step<WarmedUi>> {
+        if self.built.is_some() {
+            return None;
+        }
+        let maker = self.maker();
+        Some(Box::new(move |sources, _| maker.make(sources)))
+    }
+
+    /// Takes in what a warm-up made, unless it was made meanwhile.
+    pub(crate) fn adopt(&mut self, warmed: WarmedUi) {
+        if self.built.is_none() {
+            self.built = Some(warmed.0);
+            self.stats.pipelines = 1;
+        }
+    }
+
+    fn maker(&self) -> UiMaker {
+        UiMaker {
+            device: self.device.clone(),
+            labels: self.labels,
+            color_format: self.color_format,
+            builds: self.builds.clone(),
+            max_bytes: self.max_bytes,
+        }
+    }
+}
+
+/// What makes the pipeline and what it reads, on any thread ([`Ui::build`], [`Ui::warm`]).
+struct UiMaker {
+    device: wgpu::Device,
+    labels: bool,
+    color_format: wgpu::TextureFormat,
+    builds: PipelineBuilds,
+    max_bytes: u64,
+}
+
+/// The pipeline and what it reads, as [`Ui::warm`] made them.
+#[derive(Debug)]
+pub(crate) struct WarmedUi(Box<Built>);
+
+impl UiMaker {
+    fn make(&self, sources: &ShaderSources) -> WarmedUi {
+        let maker = self;
+        let device = &maker.device;
         let group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: self.labels.then_some("ui"),
+            label: maker.labels.then_some("ui"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -496,7 +544,7 @@ impl Ui {
             ],
         });
         let quads_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: self.labels.then_some("ui quads"),
+            label: maker.labels.then_some("ui quads"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -509,19 +557,19 @@ impl Ui {
             }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: self.labels.then_some("ui"),
+            label: maker.labels.then_some("ui"),
             bind_group_layouts: &[Some(&group_layout), Some(&quads_layout)],
             immediate_size: 0,
         });
-        let pipeline = build_pipeline(device, &pipeline_layout, self.color_format, &self.builds, sources);
+        let pipeline = build_pipeline(device, &pipeline_layout, maker.color_format, &maker.builds, sources);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: self.labels.then_some("ui"),
+            label: maker.labels.then_some("ui"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: self.labels.then_some("ui uniforms"),
+            label: maker.labels.then_some("ui uniforms"),
             size: size_of::<UiUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -531,10 +579,10 @@ impl Ui {
             "ui quads",
             wgpu::BufferUsages::STORAGE,
             INITIAL_QUADS * QUAD_BYTES,
-            self.max_bytes,
+            maker.max_bytes,
         );
-        let (quads_group, indices) = bind_quads(device, &quads_layout, quads.buffer(), self.labels);
-        self.built = Some(Box::new(Built {
+        let (quads_group, indices) = bind_quads(device, &quads_layout, quads.buffer(), maker.labels);
+        WarmedUi(Box::new(Built {
             pipeline,
             pipeline_layout,
             group_layout,
@@ -548,10 +596,11 @@ impl Ui {
             pages: BTreeMap::new(),
             page_size: 0,
             fields: Vec::new(),
-        }));
-        self.stats.pipelines = 1;
+        }))
     }
+}
 
+impl Ui {
     /// Takes this frame's list: uploads its atlas if it's new, and copies its quads for the uploads
     /// pass. Allocates nothing once its vector has grown.
     pub(crate) fn prepare(&mut self, queue: &wgpu::Queue, list: &UiDrawList) {

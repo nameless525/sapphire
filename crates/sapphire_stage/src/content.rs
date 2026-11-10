@@ -75,7 +75,7 @@
 //! platform's; a pushed pack is remounted the same way (`Content::apply_pack`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io;
 #[cfg(feature = "dev")]
 use std::path::PathBuf;
@@ -97,8 +97,8 @@ use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::voice::VoiceLines;
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
-    LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, PipelineKey, ReadDone,
-    TextureAsset, Unloaded, Upload, UploadError,
+    LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, ReadDone, TextureAsset, Unloaded,
+    Upload, UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, RemountReport};
@@ -109,7 +109,7 @@ use sapphire_livelink::protocol::PackOutcome;
 use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{MaterialHandle, MeshHandle, PipelineInventory, Renderer};
+use sapphire_render::{MaterialHandle, MeshHandle, PipelineInventory, Renderer, WarmUpRequest};
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 use sapphire_timeline::Timeline;
@@ -163,11 +163,12 @@ pub const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86
 /// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
 pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
 
-/// What's left to build of a zone coming next ([`Content::queue_zone_prewarm`]).
+/// What a zone coming next draws through, warming up off the frame ([`Content::queue_zone_prewarm`]).
 struct ZonePrewarm {
     pack: String,
-    keys: Vec<PipelineKey>,
-    hurried: bool,
+    inventory: PipelineInventory,
+    /// The renderer's request, once asked.
+    request: Option<WarmUpRequest>,
 }
 
 /// The platform's IO thread, serving the asset server's pack reads.
@@ -749,9 +750,9 @@ pub struct Content {
     left_out_of_zones: Option<String>,
     /// The open zone's probe grid, which the renderer holds one of.
     zone_probes: Option<Handle<ProbeGrid>>,
-    /// The pipelines of zones coming next, built over frames: see [`Self::queue_zone_prewarm`].
+    /// The pipelines of zones coming next, warming up off the frame: see [`Self::queue_zone_prewarm`].
     zone_prewarms: Vec<ZonePrewarm>,
-    /// What building them took this frame: [`Self::zone_prewarm_time`].
+    /// What asking for them took this frame: [`Self::zone_prewarm_time`].
     zone_prewarm_time: std::time::Duration,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
@@ -1373,17 +1374,16 @@ impl Content {
         Ok(streamer)
     }
 
-    /// Builds what zone pack `pack` draws through, a pipeline a frame: a zone that may come next, whose first
-    /// mesh mustn't be asked for until [`Self::prewarms_pack`] says it's done, so that no upload finds one
-    /// unbuilt, and no frame in a hub stalls on more than one.
+    /// Warms up what zone pack `pack` draws through, off the frame (M4 H1, `Renderer::warm`): a zone that may
+    /// come next, whose first mesh mustn't be asked for until [`Self::prewarms_pack`] says it's done, so that no
+    /// upload finds one unbuilt. No frame in a hub builds any of it or waits for it.
     pub(crate) fn queue_zone_prewarm(&mut self, pack: &str) {
         let mut inventory =
             PipelineInventory { meshes: self.server.pipeline_keys_of(pack), ..PipelineInventory::default() };
         if let Some(entry) = &self.left_out_of_zones {
             inventory.remove(entry);
         }
-        let keys = inventory.meshes.into_iter().collect();
-        self.zone_prewarms.push(ZonePrewarm { pack: pack.to_owned(), keys, hurried: false });
+        self.zone_prewarms.push(ZonePrewarm { pack: pack.to_owned(), inventory, request: None });
     }
 
     /// Whether what [`Self::queue_zone_prewarm`] asked for has yet to be built.
@@ -1396,14 +1396,8 @@ impl Content {
         self.zone_prewarms.retain(|prewarm| prewarm.pack != pack);
     }
 
-    /// Someone's waiting on `pack` under a wipe: the rest of its pipelines go on the next frame, all at once.
-    pub(crate) fn hurry_zone_prewarm(&mut self, pack: &str) {
-        for prewarm in self.zone_prewarms.iter_mut().filter(|prewarm| prewarm.pack == pack) {
-            prewarm.hurried = true;
-        }
-    }
-
-    /// What this frame's update took to build the pipelines of zones coming next (M3 Z1).
+    /// What this frame's update took to ask for the pipelines of zones coming next (M3 Z1): since M4 H1 they
+    /// build off the frame, so only the asking.
     #[must_use]
     pub fn zone_prewarm_time(&self) -> std::time::Duration {
         self.zone_prewarm_time
@@ -1411,15 +1405,13 @@ impl Content {
 
     fn prewarm_next_zones(&mut self, renderer: &mut Renderer) {
         let stopwatch = Stopwatch::start();
-        let mut built = 0;
         self.zone_prewarms.retain_mut(|prewarm| {
-            while built == 0 || prewarm.hurried {
-                let Some(key) = prewarm.keys.pop() else { break };
-                let inventory =
-                    PipelineInventory { meshes: BTreeSet::from([key]), ..PipelineInventory::default() };
-                built += renderer.prewarm(&inventory);
-            }
-            !prewarm.keys.is_empty()
+            // Asked once, and again of a renderer made since.
+            let request = match prewarm.request {
+                Some(request) if renderer.owns_warm_up(request) => request,
+                _ => *prewarm.request.insert(renderer.warm(&prewarm.inventory)),
+            };
+            !renderer.is_warm(request)
         });
         self.zone_prewarm_time = stopwatch.elapsed();
     }

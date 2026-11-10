@@ -345,6 +345,15 @@ impl Pipelines {
         missing.len() as u32
     }
 
+    /// Takes in what `warmed` (a warm-up's clone of these) built that these lack.
+    pub(crate) fn adopt(&mut self, warmed: Self) {
+        for (slot, pipeline) in self.slots.iter_mut().zip(warmed.slots) {
+            if slot.is_none() {
+                *slot = pipeline;
+            }
+        }
+    }
+
     /// Every pipeline built here, built again from `module`, unless `cancel` is set first: then
     /// what it returns is to be thrown away.
     pub(super) fn rebuilt(&self, builder: &Builder, module: &wgpu::ShaderModule, cancel: &Cancel) -> Self {

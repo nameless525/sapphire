@@ -121,17 +121,25 @@ impl ZoneWalk {
             prewarmed = builds.prewarmed,
             first_use = builds.first_use_builds,
             rebuilt = builds.rebuilt,
+            warmed_off_frame = builds.warmed_off_frame,
+            frame_thread = builds.frame_thread_builds,
+            frame_waits = builds.frame_waits,
             "zone walk"
         );
     }
 }
 
-/// Exit test 7: a load leaves no frame anything to build, wherever it would come from.
+/// Exit test 7: a load leaves no frame anything to build, wherever it would come from; and exit test 1: after
+/// the first frame no frame builds a pipeline itself, the warm-up building them off the frame (M4 H1).
 pub(crate) fn check_first_uses(stage: &Stage) -> Result<(), AppInitError> {
-    if stage.renderer.stats().pipelines.first_use_builds == 0 {
+    let builds = stage.renderer.stats().pipelines;
+    if builds.first_use_builds == 0 && builds.frame_thread_builds == 0 {
         return Ok(());
     }
     let report = stage.renderer.first_use_report();
+    if builds.first_use_builds == 0 {
+        return Err(AppInitError::msg(format!("a frame built pipelines the warm-up should have: {report}")));
+    }
     Err(AppInitError::msg(format!("the load's pipeline inventory missed: {report}")))
 }
 

@@ -11,7 +11,8 @@ fn worker_name(pool: &bevy_tasks::TaskPool) -> String {
 
 #[test]
 fn init_configures_once_and_then_returns_the_same_system() {
-    let config = JobConfig { compute_threads: Some(3), async_compute_threads: Some(2) };
+    let config =
+        JobConfig { compute_threads: Some(3), async_compute_threads: Some(2), warm_up_threads: None };
     let first = sapphire_jobs::init(config);
     assert_eq!(first.config(), config);
     assert_eq!(first.compute_pool().thread_num(), 3);
@@ -22,9 +23,16 @@ fn init_configures_once_and_then_returns_the_same_system() {
     assert!(std::ptr::eq(first.async_compute_pool(), &**AsyncComputeTaskPool::get()));
     assert!(worker_name(first.compute_pool()).starts_with("sapphire-worker ("));
     assert!(worker_name(first.async_compute_pool()).starts_with("sapphire-async ("));
+    // The warm-up pool is sized like the compute pool, and is none of bevy's.
+    assert_eq!(first.warm_up_pool().thread_num(), 3);
+    assert!(worker_name(first.warm_up_pool()).starts_with("sapphire-warm-up ("));
 
     // A second init with another config returns the running system unchanged.
-    let second = sapphire_jobs::init(JobConfig { compute_threads: Some(7), async_compute_threads: None });
+    let second = sapphire_jobs::init(JobConfig {
+        compute_threads: Some(7),
+        async_compute_threads: None,
+        warm_up_threads: None,
+    });
     assert!(std::ptr::eq(first, second));
     assert_eq!(second.config(), config);
     assert_eq!(second.compute_pool().thread_num(), 3);

@@ -291,6 +291,10 @@ struct SkinningPipeline {
     pipeline: wgpu::ComputePipeline,
 }
 
+/// The pass's pipeline and layouts, as a warm-up built them ([`Skinning::warm`]).
+#[derive(Debug)]
+pub(crate) struct SkinningPass(SkinningPipeline);
+
 impl Skinning {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let limits = device.limits();
@@ -334,6 +338,20 @@ impl Skinning {
         if self.pass.is_none() {
             self.pass = Some(SkinningPipeline::new(device, builds, sources));
         }
+    }
+
+    /// A warm-up's step (`warm_up`): what [`Self::enable`] builds, for [`Self::adopt`]. `None` once built.
+    pub(crate) fn warm(&self, device: &wgpu::Device, builds: &PipelineBuilds) -> Option<Step<SkinningPass>> {
+        if self.pass.is_some() {
+            return None;
+        }
+        let (device, builds) = (device.clone(), builds.clone());
+        Some(Box::new(move |sources, _| SkinningPass(SkinningPipeline::new(&device, &builds, sources))))
+    }
+
+    /// Takes in what a warm-up built, unless the pass was made meanwhile.
+    pub(crate) fn adopt(&mut self, pass: SkinningPass) {
+        self.pass.get_or_insert(pass.0);
     }
 
     /// The pass's pipeline, to build from new sources instead (off the frame thread:

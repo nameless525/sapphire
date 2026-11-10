@@ -11,7 +11,7 @@
 //! # Zones coming next (M3 W4)
 //!
 //! [`Scene::prefetch_zone`] brings one in over frames, placing nothing, while another's on stage: its pack's
-//! mount, then its pipelines, one a frame, then the zone and its hard references at
+//! mount, then its pipelines, warmed up off the frame (M4 H1), then the zone and its hard references at
 //! [`LoadPriority::Prefetch`], then the meshes near where it's arrived at, with
 //! [`Streamer::prefetch`]'s limits. So no frame stalls on any of it, on a hub's way there or under a wipe,
 //! and nothing's asked for before what draws it is built, so `first_use` stays 0 across a change, as a load
@@ -143,9 +143,6 @@ impl NextZone {
                 }
             }
             Coming::Prewarming => {
-                if self.hurried {
-                    content.hurry_zone_prewarm(pack);
-                }
                 if !content.prewarms_pack(pack) {
                     let priority = self.priority();
                     let (server, _) = content.streaming_parts();

@@ -1793,6 +1793,19 @@ pub(crate) struct Pipelines {
     scene_prepass: bool,
 }
 
+/// What a warm-up builds of the mesh pipelines ([`Pipelines::warm`]), as a prewarm on the frame's thread would.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MeshWarm {
+    /// The ambient constants a probe grid's arrival sets, if one is expected.
+    pub ambient: Option<Vec<(&'static str, f64)>>,
+    /// What meshes draw through.
+    pub keys: Vec<PipelineKey>,
+    /// A fading character's pipelines, for every anime character surface built by then.
+    pub fades: bool,
+    /// The scene prepass's, kept from then on: debug lines read it.
+    pub scene_prepass: bool,
+}
+
 /// The modules the mesh pipelines are built from.
 #[derive(Clone, Debug)]
 struct MeshModules {
@@ -2007,6 +2020,87 @@ impl Pipelines {
     pub(crate) fn rebuild(&self, device: &wgpu::Device, changed: &[Program]) -> Step<(Self, u32)> {
         let (pipelines, device, changed) = (self.clone(), device.clone(), changed.to_vec());
         Box::new(move |sources, cancel| pipelines.rebuilt(&device, sources, &changed, cancel))
+    }
+
+    /// A warm-up's step (`warm_up`): a clone of these, with what `warm` asks for built on the warm-up's threads
+    /// where `on` says, in the order a prewarm on the frame's thread builds it, for the frame to take in whole if
+    /// these are as they were ([`Self::fingerprint`]). `None` when it would build nothing.
+    pub(crate) fn warm(&self, device: &wgpu::Device, warm: MeshWarm, on: BuildOn) -> Option<Step<Self>> {
+        if !self.lacks(&warm) {
+            return None;
+        }
+        let (mut pipelines, device) = (self.clone(), device.clone());
+        Some(Box::new(move |_, cancel| {
+            if let Some(constants) = warm.ambient {
+                pipelines.set_ambient_constants(&device, constants);
+            }
+            for format in PositionFormat::ALL {
+                let keys = warm.keys.iter().filter(|key| key.format == format);
+                let draws: Vec<Drawn> = keys.clone().copied().filter_map(Drawn::of_key).collect();
+                if cancel.is_set() || keys.count() == 0 {
+                    continue;
+                }
+                pipelines.prepare_format(&device, format, on);
+                pipelines.prepare_draws(&device, format, &draws, on);
+            }
+            if warm.fades && !cancel.is_set() {
+                pipelines.prepare_fades(&device, on);
+            }
+            if warm.scene_prepass && !cancel.is_set() {
+                pipelines.keep_scene_prepass(&device, on);
+            }
+            pipelines
+        }))
+    }
+
+    /// Whether [`Self::warm`] would build anything.
+    fn lacks(&self, warm: &MeshWarm) -> bool {
+        if warm.ambient.as_ref().is_some_and(|constants| *constants != self.target.ambient)
+            || (warm.scene_prepass && !self.scene_prepass)
+        {
+            return true;
+        }
+        let casters = self.target.foliage_caster_layout.is_some();
+        let mut pieces = Vec::new();
+        for format in PositionFormat::ALL {
+            let keys = warm.keys.iter().filter(|key| key.format == format);
+            let Some(mesh) = self.mesh(format) else {
+                if keys.count() > 0 {
+                    return true;
+                }
+                continue;
+            };
+            let mut draws: Vec<Drawn> = keys.copied().filter_map(Drawn::of_key).collect();
+            if warm.fades {
+                draws.extend(fade_draws(mesh));
+            }
+            for draw in draws {
+                mesh.missing(draw, casters, self.scene_prepass, &mut pieces);
+            }
+            if !pieces.is_empty() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// What tells these apart from a clone they were made from, as built: their generation, their count and
+    /// whether they keep the scene prepass. A warm-up takes a clone in only where it is still the same.
+    pub(crate) fn fingerprint(&self) -> (u32, u32, bool) {
+        (self.generation, self.count(), self.scene_prepass)
+    }
+
+    /// Builds what a fading character draws through (M1 C7): for every opaque anime character surface built, its
+    /// alpha-tested variant, with its outline, eyes through hair if the opaque one has them, and the prepasses'
+    /// masked pipelines, as a fade's first frame would.
+    pub(crate) fn prepare_fades(&mut self, device: &wgpu::Device, on: BuildOn) {
+        for format in PositionFormat::ALL {
+            let Some(mesh) = self.mesh(format) else { continue };
+            let draws = fade_draws(mesh);
+            if !draws.is_empty() {
+                self.prepare_draws(device, format, &draws, on);
+            }
+        }
     }
 
     /// The same pipelines as these, with the programs in `changed` (mesh programs among them)
@@ -2854,6 +2948,23 @@ impl PipelineTarget {
 /// The index of `format` in [`PositionFormat::ALL`].
 pub(crate) fn format_index(format: PositionFormat) -> usize {
     PositionFormat::ALL.iter().position(|&f| f == format).expect("ALL lists every format")
+}
+
+/// What a fading character draws through, for every opaque anime character surface `mesh` has built
+/// ([`Pipelines::prepare_fades`]).
+fn fade_draws(mesh: &MeshPipelines) -> Vec<Drawn> {
+    SurfaceVariant::ALL
+        .into_iter()
+        .filter(|variant| {
+            matches!(variant.shading, Shading::Character(_)) && variant.coverage == Coverage::Opaque
+        })
+        .filter(|&variant| mesh.surface(variant).is_some())
+        .map(|variant| Drawn {
+            variant: variant.with_coverage(Coverage::AlphaTest),
+            surface: true,
+            through_hair: mesh.through_hair(variant).is_some(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

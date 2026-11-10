@@ -888,6 +888,7 @@ pub mod texture;
 mod ui;
 pub mod vfx;
 mod view_cull;
+mod warm_up;
 
 pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
@@ -937,6 +938,7 @@ pub use temporal::{HistoryReset, TemporalStats};
 pub use ui::{UI_PASS, UiStats};
 pub use vfx::VfxRenderStats;
 pub use view_cull::ViewCullingStats;
+pub use warm_up::{WarmUpProgress, WarmUpRequest, WarmUpStats};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

@@ -492,11 +492,77 @@ impl VfxPipelines {
     pub(crate) fn count(&self) -> u32 {
         u32::from(self.color.is_some()) + u32::from(self.mask.is_some())
     }
+
+    /// Builds the color pipeline and, with `mask`, the mask's, unless built, where `on` says.
+    fn build_missing(&mut self, builder: &Builder, mask: bool, on: BuildOn) {
+        let mut missing: Vec<bool> = Vec::new();
+        if self.color.is_none() {
+            missing.push(false);
+        }
+        if mask && self.mask.is_none() {
+            missing.push(true);
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let module = &self.module;
+        let builds = missing
+            .iter()
+            .map(|&mask| move || if mask { builder.mask(module) } else { builder.color(module) })
+            .collect();
+        let built = on.run(builds);
+        for (is_mask, pipeline) in missing.iter().zip(built) {
+            let slot = if *is_mask { &mut self.mask } else { &mut self.color };
+            *slot = Some(pipeline);
+        }
+    }
+}
+
+/// What makes effects' builder and layouts, on any thread ([`Vfx::build`], [`Vfx::warm`]).
+struct VfxMaker {
+    device: wgpu::Device,
+    frame_layout: wgpu::BindGroupLayout,
+    view_layout: wgpu::BindGroupLayout,
+    samples: u32,
+    after_resolve: bool,
+    builds: PipelineBuilds,
+}
+
+impl VfxMaker {
+    fn builder(&self) -> (Builder, Layouts) {
+        let device = &self.device;
+        let layouts = Layouts::new(device);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vfx"),
+            bind_group_layouts: &[
+                Some(&self.frame_layout),
+                Some(&self.view_layout),
+                Some(&layouts.buffers),
+                Some(&layouts.textures),
+            ],
+            immediate_size: 0,
+        });
+        let builder = Builder {
+            device: device.clone(),
+            layout,
+            samples: self.samples,
+            after_resolve: self.after_resolve,
+            builds: self.builds.clone(),
+        };
+        (builder, layouts)
+    }
+}
+
+/// What a warm-up made of effects' first frame ([`Vfx::warm`]): all of it, or the pipelines missing.
+#[derive(Debug)]
+pub(crate) enum WarmedVfx {
+    Made(Box<VfxGpu>),
+    Pipelines(VfxPipelines),
 }
 
 /// Everything effects make when they're first drawn.
 #[derive(Debug)]
-struct VfxGpu {
+pub(crate) struct VfxGpu {
     builder: Builder,
     pipelines: VfxPipelines,
     sprites: GrowableBuffer,
@@ -779,56 +845,66 @@ impl Vfx {
     }
 
     /// Makes what the first effect needs, and the pipelines it draws through (`mask` too, if post
-    /// reads scene color's alpha), that aren't built yet. A load-time cost where it can be
-    /// ([`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx)): on the frame thread otherwise.
+    /// reads scene color's alpha), that aren't built yet. Off the frame where it can be ([`Self::warm`],
+    /// [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx)): on the frame thread otherwise.
     pub(crate) fn build(&mut self, sources: &ShaderSources, mask: bool, on: BuildOn) {
         if self.gpu.is_none() {
-            let device = &self.device;
-            let layouts = Layouts::new(device);
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("vfx"),
-                bind_group_layouts: &[
-                    Some(&self.frame_layout),
-                    Some(&self.view_layout),
-                    Some(&layouts.buffers),
-                    Some(&layouts.textures),
-                ],
-                immediate_size: 0,
-            });
-            let builder = Builder {
-                device: device.clone(),
-                layout,
-                samples: self.samples,
-                after_resolve: self.after_resolve,
-                builds: self.builds.clone(),
-            };
-            let module = shaders::module(device, Program::Vfx, sources);
+            let (builder, layouts) = self.maker().builder();
+            let module = shaders::module(&self.device, Program::Vfx, sources);
             let pipelines = VfxPipelines { module, color: None, mask: None };
-            self.gpu = Some(Box::new(VfxGpu::new(device, &self.queue, builder, pipelines, layouts)));
+            self.gpu = Some(Box::new(VfxGpu::new(&self.device, &self.queue, builder, pipelines, layouts)));
         }
         let gpu = self.gpu.as_mut().expect("made above");
-        let builder = &gpu.builder;
-        let module = &gpu.pipelines.module;
-        let mut missing: Vec<bool> = Vec::new();
-        if gpu.pipelines.color.is_none() {
-            missing.push(false);
-        }
-        if mask && gpu.pipelines.mask.is_none() {
-            missing.push(true);
-        }
-        if missing.is_empty() {
-            return;
-        }
-        let builds = missing
-            .iter()
-            .map(|&mask| move || if mask { builder.mask(module) } else { builder.color(module) })
-            .collect();
-        let built = on.run(builds);
-        for (is_mask, pipeline) in missing.iter().zip(built) {
-            let slot = if *is_mask { &mut gpu.pipelines.mask } else { &mut gpu.pipelines.color };
-            *slot = Some(pipeline);
-        }
+        gpu.pipelines.build_missing(&gpu.builder, mask, on);
         self.stats.pipelines = gpu.pipelines.count();
+    }
+
+    /// A warm-up's step (`warm_up`): what [`Self::build`] would make and build, where `on` says, for
+    /// [`Self::adopt`]. `None` when it's built.
+    pub(crate) fn warm(&self, mask: bool, on: BuildOn) -> Option<Step<WarmedVfx>> {
+        if let Some(gpu) = &self.gpu {
+            if gpu.pipelines.color.is_some() && (!mask || gpu.pipelines.mask.is_some()) {
+                return None;
+            }
+            let (builder, mut pipelines) = (gpu.builder.clone(), gpu.pipelines.clone());
+            return Some(Box::new(move |_, _| {
+                pipelines.build_missing(&builder, mask, on);
+                WarmedVfx::Pipelines(pipelines)
+            }));
+        }
+        let (maker, queue) = (self.maker(), self.queue.clone());
+        Some(Box::new(move |sources, _| {
+            let (builder, layouts) = maker.builder();
+            let module = shaders::module(&maker.device, Program::Vfx, sources);
+            let mut pipelines = VfxPipelines { module, color: None, mask: None };
+            pipelines.build_missing(&builder, mask, on);
+            WarmedVfx::Made(Box::new(VfxGpu::new(&maker.device, &queue, builder, pipelines, layouts)))
+        }))
+    }
+
+    /// Takes in what a warm-up made or built, where it's still missing. What it made is dropped if the first
+    /// effect made its own meanwhile: what that lacks, the prewarm that follows builds.
+    pub(crate) fn adopt(&mut self, warmed: WarmedVfx) {
+        match (warmed, &mut self.gpu) {
+            (WarmedVfx::Made(made), None) => self.gpu = Some(made),
+            (WarmedVfx::Pipelines(warmed), Some(gpu)) => {
+                gpu.pipelines.color = gpu.pipelines.color.take().or(warmed.color);
+                gpu.pipelines.mask = gpu.pipelines.mask.take().or(warmed.mask);
+            }
+            _ => {}
+        }
+        self.stats.pipelines = self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count());
+    }
+
+    fn maker(&self) -> VfxMaker {
+        VfxMaker {
+            device: self.device.clone(),
+            frame_layout: self.frame_layout.clone(),
+            view_layout: self.view_layout.clone(),
+            samples: self.samples,
+            after_resolve: self.after_resolve,
+            builds: self.builds.clone(),
+        }
     }
 
     /// The CPU half of a frame: orders the frame's effects, back to front from `camera`, sizes their

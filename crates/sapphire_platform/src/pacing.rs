@@ -258,10 +258,15 @@ impl FramePacer {
         Some(self.refresh.map_or(interval, |refresh| interval.max(refresh)))
     }
 
-    /// One frame's worth of time when there is no interval to measure: the target interval, else
-    /// a refresh, else nothing.
+    /// One frame's worth of time: the target interval, else a refresh, else nothing (no target and
+    /// no known refresh). What a frame's work is measured against, and what a frame with no interval
+    /// to measure is given.
+    pub fn frame_budget(&self) -> Option<Duration> {
+        self.interval().or(self.refresh)
+    }
+
     fn nominal_interval(&self) -> Duration {
-        self.interval().or(self.refresh).unwrap_or_default()
+        self.frame_budget().unwrap_or_default()
     }
 
     /// The frame's interval in whole refreshes against the refresh it was due on (module docs).

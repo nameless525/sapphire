@@ -30,6 +30,7 @@ use crate::event::{self, Event, GamepadEvent, GamepadId, GamepadType, Keycode, L
 use crate::frame_clock::{FrameClock, FramePacing};
 use crate::host::Host;
 use crate::system::SystemInfo;
+use crate::thermal::{Thermal, ThermalReading};
 use crate::window::{Window, WindowDesc};
 use crate::{AppMetadata, LOG_TARGET, sdl};
 
@@ -67,6 +68,7 @@ pub struct Platform {
     gamepads: Vec<(GamepadId, NonNull<SDL_Gamepad>)>,
     last_background_transition: Option<LifecycleEvent>,
     frame_clock: FrameClock,
+    thermal: Thermal,
     _main_thread_only: PhantomData<*mut ()>,
 }
 
@@ -92,6 +94,7 @@ impl Platform {
             gamepads: Vec::new(),
             last_background_transition: None,
             frame_clock: FrameClock::new(),
+            thermal: Thermal::new(),
             _main_thread_only: PhantomData,
         }
     }
@@ -147,6 +150,7 @@ impl Platform {
             gamepads: Vec::new(),
             last_background_transition: None,
             frame_clock: FrameClock::new(),
+            thermal: Thermal::new(),
             _main_thread_only: PhantomData,
         })
     }
@@ -228,6 +232,11 @@ impl Platform {
         self.frame_clock.begin_frame()
     }
 
+    /// Runs after each [`App::iterate`](crate::App::iterate) that [`Self::begin_frame`] let through.
+    pub(crate) fn end_frame(&mut self) {
+        self.frame_clock.end_frame();
+    }
+
     /// Tells the OS the app plays sound, before its first audio stream, once or more: iOS's audio
     /// session takes its category (`Ambient`: the player's music plays on under the game, and the
     /// silent switch is obeyed) and goes active, and on Android cpal is given the app's VM and
@@ -249,10 +258,13 @@ impl Platform {
         crate::audio_session::activate()
     }
 
-    /// How hot the OS says the device is running (spec §6.3). It asks the OS, a binder call on
-    /// Android, so read it every few seconds rather than every frame.
-    pub fn thermal_state(&self) -> crate::ThermalState {
-        crate::thermal::current()
+    /// What the OS says about heat and power now (spec §6.3), with whatever the `thermal.*` cvars
+    /// force: read it once a frame. It asks the OS only for what's due (the state once a second,
+    /// Android's headroom once every ten), so between those it costs a clock read.
+    pub fn thermal(&mut self) -> ThermalReading {
+        // SAFETY: SDL_GetTicksNS has no preconditions.
+        let now = unsafe { SDL_GetTicksNS() };
+        self.thermal.read(now, self.frame_clock.hint_session())
     }
 
     /// A human-readable name for a key under the current layout (for rebinding UI and

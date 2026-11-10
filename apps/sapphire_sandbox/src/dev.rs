@@ -121,6 +121,7 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&sapphire_render::debug_view::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
             .and_then(|()| cvars.register_all(&game_combat::combat_views::CVARS))
+            .and_then(|()| cvars.register_all(&sapphire_platform::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());
         let tuning = LiveTuning::new(&options.tuned_run(), content);

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use sapphire_platform::{FramePacing, PacingStats, ThermalState};
+use sapphire_platform::{FramePacing, PacingStats, ThermalReading};
 use sapphire_rhi::SkipReason;
 
 use crate::LOG_TARGET;
@@ -71,7 +71,8 @@ impl FrameStats {
         }
     }
 
-    /// Records one frame, paced as `pacing` says; logs and resets once per [`REPORT_INTERVAL`].
+    /// Records one frame, paced as `pacing` says, with the frame's thermal reading; logs and resets
+    /// once per [`REPORT_INTERVAL`].
     pub fn record(
         &mut self,
         frame_time: Duration,
@@ -79,7 +80,7 @@ impl FrameStats {
         presented: bool,
         stages: &Stages,
         pacing: &FramePacing,
-        thermal: impl FnOnce() -> ThermalState,
+        thermal: ThermalReading,
     ) {
         if presented {
             self.presented += 1;
@@ -128,8 +129,9 @@ impl FrameStats {
             sim_dropped_ms = self.dropped.as_millis(),
             allocs_per_frame = (allocations - self.allocations_at_start) / u64::from(frames),
             live_bytes = heap.live_bytes,
-            // What exit test 4's soak reads: whether the OS says it's throttling (spec §6.3).
-            thermal = ?thermal(),
+            // Whether the OS says it's throttling, and what else it says about heat and power (spec
+            // §6.3): what M2's soak read, and what the quality ladder answers.
+            thermal = %thermal,
             "frame stats",
         );
         *self = Self {

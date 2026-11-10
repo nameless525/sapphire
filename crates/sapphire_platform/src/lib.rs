@@ -28,14 +28,19 @@
 //! - **A gamepad's rumble** (M2 E3, [`Platform::rumble_gamepad`]), since it holds the open pads.
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
 //! - **Frame pacing** (M1 F7, F8): when [`App::iterate`] runs, at the rate the app sets with
-//!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below.
+//!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below. On
+//!   Android it also reports each frame's work to an ADPF hint session for the frame thread (M4 T1).
+//! - **Heat and power** (M4 T1): [`Platform::thermal`]'s [`ThermalReading`] a frame, from each
+//!   source the OS has (Android's thermal status, headroom and hint session, iOS's thermal state
+//!   and Low Power Mode), and the [`CVARS`] that force one.
 //!
 //! # Does not own
 //!
 //! GPU devices and swapchains (`sapphire_rhi`), mixing and streams (`sapphire_audio`), logging setup
 //! (the app wires `tracing` to [`sdl_log`]), packs and what is in them (`sapphire_assets`), and,
 //! until their milestones, IME composition text (shown while composing; committed text already
-//! arrives), a phone's haptics, clipboard, and thermal state (M4).
+//! arrives), a phone's haptics and clipboard. Answering heat is the quality ladder's
+//! (`sapphire_render::quality`): this crate only reads it.
 //!
 //! # Later milestones
 //!
@@ -141,6 +146,7 @@ mod dirs;
 mod durable;
 mod event;
 mod frame_clock;
+mod hint;
 mod host;
 mod io;
 #[cfg(target_os = "ios")]
@@ -174,7 +180,10 @@ pub use pacing::{PacingSource, PacingStats};
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;
 pub use system::{DeviceClass, Os, SystemInfo};
-pub use thermal::ThermalState;
+pub use thermal::{
+    CVARS, FORCE_HEADROOM, FORCE_LOW_POWER, FORCE_STATE, ForcedState, ForcedSwitch, ThermalReading,
+    ThermalState,
+};
 pub use window::{
     Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId, points_per_coordinate,
 };

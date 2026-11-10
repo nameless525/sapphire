@@ -634,7 +634,9 @@ impl<A: App> Runtime<A> {
             if !state.platform.begin_frame() {
                 return AppControl::Continue;
             }
-            state.app.iterate(&mut state.platform)
+            let control = state.app.iterate(&mut state.platform);
+            state.platform.end_frame();
+            control
         })
     }
 

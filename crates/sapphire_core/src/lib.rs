@@ -8,6 +8,8 @@
 //! - [`alloc`]: [`alloc::CountingAllocator`] and per-thread allocation scopes for rule R6.
 //! - [`path`]: existing-prefix filesystem identity; callers own output overlap/publication policy.
 //! - [`target`]: [`target::FormFactor`], the one definition of desktop versus mobile.
+//! - [`thermal`]: [`thermal::ThermalReading`], what the OS says about heat and power, as plain data
+//!   that `sapphire_platform` fills and the quality ladder reads.
 //! - [`cvar`]: console variables, typed statics that runtime crates declare and dev tools set by
 //!   name (the facade of spec §5.20: only development builds link a console).
 //! - [`debug_draw`]: lines, shapes and labels from any thread, as plain data for the frame packet;
@@ -25,6 +27,7 @@ pub mod log;
 pub mod name;
 pub mod path;
 pub mod target;
+pub mod thermal;
 
 pub use guid::Guid;
 pub use name::Name;

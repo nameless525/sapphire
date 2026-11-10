@@ -6,7 +6,8 @@
 //! display link on iOS, the engine's vsync loop on Android, the time the frame begins on desktop),
 //! asks the [`FramePacer`] whether the tick becomes a frame, and keeps the display's refresh
 //! current: from the choreographer's reports on Android 11 and later, else from SDL's display
-//! events.
+//! events. After the app's iteration it reports the frame's work to Android's ADPF hint session
+//! (`hint.rs`), against the frame's budget.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -16,6 +17,7 @@ use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_WasInit};
 use sdl3_sys::video::{SDL_DisplayID, SDL_GetCurrentDisplayMode, SDL_GetPrimaryDisplay};
 
 use crate::LOG_TARGET;
+use crate::hint::HintSession;
 use crate::pacing::{FramePacer, PacingSource, PacingStats};
 
 /// How frames are paced, and how evenly they come: a snapshot for stats panels and logs (rule R9).
@@ -48,6 +50,11 @@ pub(crate) struct FrameClock {
     refresh_hz: Option<f32>,
     /// The current frame's interval.
     interval: Duration,
+    /// The frame thread's hint session, where the OS has them.
+    hint: HintSession,
+    /// When the frame being iterated started its work, in SDL's nanoseconds, where a hint session
+    /// wants it.
+    work_started: Option<u64>,
 }
 
 impl FrameClock {
@@ -67,6 +74,8 @@ impl FrameClock {
             reported_refresh: None,
             refresh_hz: None,
             interval: Duration::ZERO,
+            hint: HintSession::new(),
+            work_started: None,
         }
     }
 
@@ -124,10 +133,30 @@ impl FrameClock {
         match self.pacer.tick(vsync) {
             Some(interval) => {
                 self.interval = interval;
+                if self.hint.live().is_some() {
+                    // SAFETY: SDL_GetTicksNS has no preconditions.
+                    self.work_started = Some(unsafe { sdl3_sys::timer::SDL_GetTicksNS() });
+                }
                 true
             }
             None => false,
         }
+    }
+
+    /// Runs after the app's iteration of a frame [`Self::begin_frame`] let through: reports the
+    /// frame's work, from then to now, to the hint session against the frame's budget, once there is
+    /// one (a target rate or a known refresh).
+    pub fn end_frame(&mut self) {
+        let Some(started) = self.work_started.take() else { return };
+        let Some(budget) = self.pacer.frame_budget() else { return };
+        // SAFETY: SDL_GetTicksNS has no preconditions.
+        let now = unsafe { sdl3_sys::timer::SDL_GetTicksNS() };
+        self.hint.report(budget, Duration::from_nanos(now.saturating_sub(started)));
+    }
+
+    /// Whether the frame thread's hint session is live: `None` where the OS has none.
+    pub fn hint_session(&self) -> Option<bool> {
+        self.hint.live()
     }
 
     /// The app leaves the foreground: frames may stall or sleep there, so they aren't measured.

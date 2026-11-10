@@ -214,7 +214,7 @@ impl Gradle<'_> {
         // the variable and Gradle fetches the Android plugin there, as it did before packaging went offline.
         let mut gradle = Command::new(project.join("gradlew"));
         gradle.current_dir(&project);
-        if gradle_offline(std::env::var_os(GRADLE_ONLINE).as_deref()) {
+        if gradle_offline(env::var_os(GRADLE_ONLINE).as_deref()) {
             gradle.arg("--offline");
         }
         gradle

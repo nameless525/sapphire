@@ -54,12 +54,15 @@ pub enum After {
     Playing,
 }
 
-/// What a pause holds, to go back to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a pause holds, to go back to: anything the player can pause from, a fall or a win too, whose holds
+/// wait for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Held {
     Playing,
     Cutscene { beat: u8 },
     Dialogue { beat: u8 },
+    Defeat { since: f32 },
+    Victory { since: f32 },
 }
 
 /// Where the game is.
@@ -99,7 +102,8 @@ pub enum FlowCommand {
     Skip,
     /// The dialogue that's open has ended.
     DialogueEnded,
-    /// From the title or the pause: quits.
+    /// Quits, from wherever it's asked: the title or the pause, and either of those while a wipe covers a
+    /// restart.
     Leave,
 }
 
@@ -218,14 +222,20 @@ impl Flow {
         self.banner.map(|(banner, _)| banner)
     }
 
-    /// The score's phase the flow asks for, where it has a say: the title, a defeat, a win.
+    /// The score's phase the flow asks for, where it has a say: the title, a defeat, a win, a pause of either
+    /// of those last two, and a restart's wipe, which has the title's: nothing plays under it, and the fight's
+    /// own phase there would be the last step's of the run it ends, its fight still running.
     #[must_use]
     pub fn music_phase(&self) -> Option<&str> {
         let music = &self.document.music;
         match self.state {
-            FlowState::Title { .. } => Some(&music.title),
-            FlowState::Defeat { .. } => Some(&music.defeat),
-            FlowState::Victory { .. } => Some(&music.victory),
+            FlowState::Title { .. } | FlowState::Restarting { .. } => Some(&music.title),
+            FlowState::Defeat { .. } | FlowState::Paused { under: Held::Defeat { .. } } => {
+                Some(&music.defeat)
+            }
+            FlowState::Victory { .. } | FlowState::Paused { under: Held::Victory { .. } } => {
+                Some(&music.victory)
+            }
             _ => None,
         }
     }
@@ -298,7 +308,9 @@ impl Flow {
             FlowState::Playing => Some(Held::Playing),
             FlowState::Cutscene { beat } => Some(Held::Cutscene { beat }),
             FlowState::Dialogue { beat } => Some(Held::Dialogue { beat }),
-            _ => None,
+            FlowState::Defeat { since } => Some(Held::Defeat { since }),
+            FlowState::Victory { since } => Some(Held::Victory { since }),
+            FlowState::Title { .. } | FlowState::Restarting { .. } | FlowState::Paused { .. } => None,
         };
         if command == FlowCommand::Pause
             && let Some(under) = held
@@ -332,6 +344,8 @@ impl Flow {
                     Held::Playing => FlowState::Playing,
                     Held::Cutscene { beat } => FlowState::Cutscene { beat },
                     Held::Dialogue { beat } => FlowState::Dialogue { beat },
+                    Held::Defeat { since } => FlowState::Defeat { since },
+                    Held::Victory { since } => FlowState::Victory { since },
                 };
                 None
             }
@@ -344,9 +358,12 @@ impl Flow {
                 self.state = FlowState::Playing;
                 None
             }
-            (FlowState::Title { .. } | FlowState::Paused { .. }, FlowCommand::Leave) => {
-                Some(FlowAction::Exit)
+            // The panel stays up through a pause and can be read to its end there: the pause then holds play.
+            (FlowState::Paused { under: Held::Dialogue { .. } }, FlowCommand::DialogueEnded) => {
+                self.state = FlowState::Paused { under: Held::Playing };
+                None
             }
+            (_, FlowCommand::Leave) => Some(FlowAction::Exit),
             _ => {
                 self.stats.commands_ignored += 1;
                 None
@@ -594,6 +611,11 @@ mod tests {
             flow.state(),
             FlowState::Restarting { run: Run::Saved, then: After::Playing, covered: false }
         );
+        assert_eq!(
+            flow.music_phase(),
+            Some("waiting"),
+            "the title's under the wipe, not the dead run's fight's"
+        );
         assert_eq!(wipe_through(&mut flow), Run::Saved);
         assert_eq!(flow.state(), FlowState::Playing);
         let again = Seen { started: vec![id(GATE_FIGHT)], ..Seen::default() };
@@ -641,6 +663,60 @@ mod tests {
         assert_eq!(flow.command(FlowCommand::Pause), None);
         assert!(matches!(flow.state(), FlowState::Restarting { .. }), "nothing pauses a restart");
         assert_eq!(flow.observe(&seen), None, "nor does a restart observe");
+    }
+
+    /// A conversation's panel stays up through a pause, and can be read to its end there (a desktop's focus
+    /// going pauses under it): the pause then holds play, so a resume plays on rather than waiting for ever
+    /// on a conversation that's gone.
+    #[test]
+    fn a_conversation_that_ends_under_a_pause_resumes_into_play() {
+        let mut flow = playing();
+        let mut seen = Seen { started: vec![id(GATE_FIGHT)], ..Seen::default() };
+        flow.observe(&seen);
+        seen.ended.push(id(GATE_SCENE));
+        assert!(matches!(flow.observe(&seen), Some(FlowAction::OpenDialogue(_))));
+        flow.command(FlowCommand::Pause);
+        assert_eq!(flow.command(FlowCommand::DialogueEnded), None);
+        assert_eq!(flow.state(), FlowState::Paused { under: Held::Playing });
+        flow.command(FlowCommand::Resume);
+        assert_eq!(flow.state(), FlowState::Playing);
+        assert!(flow.runs_steps());
+        assert_eq!(flow.stats().commands_ignored, 0);
+    }
+
+    /// A fall and a win pause as play does, their holds waiting and their music kept, and from that pause
+    /// the title and a quit are there as from any other. A quit is heard under a restart's wipe too.
+    #[test]
+    fn a_fall_or_a_win_pauses_and_its_pause_leads_where_any_does() {
+        let mut flow = playing();
+        flow.observe(&Seen { fallen: true, ..Seen::default() });
+        flow.update(1.0);
+        assert_eq!(flow.command(FlowCommand::Pause), None);
+        assert_eq!(flow.state(), FlowState::Paused { under: Held::Defeat { since: 1.0 } });
+        assert_eq!(flow.music_phase(), Some("waiting"), "the defeat's");
+        assert!(!flow.runs_steps());
+        flow.update(10.0);
+        assert!(matches!(flow.state(), FlowState::Paused { .. }), "the hold waits for the pause");
+        flow.command(FlowCommand::Resume);
+        assert_eq!(flow.state(), FlowState::Defeat { since: 1.0 });
+        flow.command(FlowCommand::Pause);
+        assert_eq!(flow.command(FlowCommand::Leave), Some(FlowAction::Exit));
+        flow.command(FlowCommand::ToTitle);
+        assert_eq!(
+            flow.state(),
+            FlowState::Restarting { run: Run::Saved, then: After::Title, covered: false }
+        );
+        assert_eq!(flow.command(FlowCommand::Leave), Some(FlowAction::Exit), "a quit under the wipe");
+        assert_eq!(flow.stats().commands_ignored, 0);
+
+        let mut won = playing();
+        won.observe(&Seen { cleared: vec![id(LAST_FIGHT)], ..Seen::default() });
+        won.command(FlowCommand::Pause);
+        assert_eq!(won.state(), FlowState::Paused { under: Held::Victory { since: 0.0 } });
+        assert_eq!(won.music_phase(), Some("cleared"), "the win's");
+        won.command(FlowCommand::Resume);
+        assert_eq!(won.state(), FlowState::Victory { since: 0.0 });
+        assert_eq!(won.stats().commands_ignored, 0);
     }
 
     /// The title offers what there is to continue, and the HUD shows a checkpoint's banner while it holds and

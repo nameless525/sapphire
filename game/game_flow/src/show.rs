@@ -246,11 +246,11 @@ impl GameShow {
         // A pause on its way out is over, as far as the flow goes: its screen has closed.
         let paused = self.controls.is_paused() && !self.controls.is_resuming();
         let state = game.flow().state();
+        // A fall and a win pause too, so the pause's rows (the title, a quit) mean what they say there.
         let command = match state {
-            FlowState::Playing | FlowState::Cutscene { .. } | FlowState::Dialogue { .. } if paused => {
-                FlowCommand::Pause
-            }
             FlowState::Paused { .. } if !paused => FlowCommand::Resume,
+            FlowState::Paused { .. } | FlowState::Title { .. } | FlowState::Restarting { .. } => return,
+            _ if paused => FlowCommand::Pause,
             _ => return,
         };
         self.command_game(command);

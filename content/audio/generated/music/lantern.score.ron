@@ -1,4 +1,4 @@
-// The fight's placeholder score (M3 A1): four stems `sapphire_soundgen` synthesized, a loop of four
+// The fight's placeholder score (M3 A1): five stems `sapphire_soundgen` synthesized, a loop of four
 // bars at 120 beats a minute. Nobody has heard it: every level here is a guess for someone who can.
 (
     type: "sapphire::assets::Score",
@@ -12,6 +12,7 @@
             (name: "pulse", sound: "42cf919e-36b4-4d9c-add5-9b9b0949ad18"), // lantern_pulse
             (name: "drums", sound: "5c40acf9-f47f-4cea-9a41-cf89f8e0b90d"), // lantern_drums
             (name: "bells", sound: "a7e89534-a6cb-455f-8d08-2a40d683a6f8"), // lantern_bells
+            (name: "toll", sound: "9b5c6a92-5f58-40b9-9311-fc6f46b034bc"), // lantern_toll
         ],
         // An encounter's phases, as the fight folds them: calm before and between, everything while it
         // runs, and the bells over the pad once it's won.
@@ -19,6 +20,10 @@
             (name: "waiting", play: ["pad"]),
             (name: "running", play: ["pad", "pulse", "drums", "bells"]),
             (name: "cleared", play: ["pad", "bells"]),
+            // The Knell Colossus's second wind (M3 Z5a): its kind's phase of this name, which the fight plays
+            // in place of `running` once its health is past it. Its great bell tolls each bar in place of
+            // the lighter bells.
+            (name: "tolling", play: ["pad", "pulse", "drums", "toll"]),
         ],
         fade_beats: 2.0,
         volume_db: -12.0,

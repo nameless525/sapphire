@@ -3,9 +3,10 @@
 //! no recording and no download. Own work, under the workspace's license.
 //!
 //! - **Music:** one loop of four bars of 4/4 at 120 beats a minute, eight seconds, as four stems that
-//!   start together: a pad, a pulse in the bass, drums and bells over A minor's i, VI, III, VII. Each
-//!   is rendered into a ring the loop's length, so what rings past the end comes round at the start,
-//!   and the loop has no seam but the codec's.
+//!   start together: a pad, a pulse in the bass, drums and bells over A minor's i, VI, III, VII, and a
+//!   fifth, a great bell's toll on each bar, for a boss's `tolling` phase (M3 Z5a). Each is rendered
+//!   into a ring the loop's length, so what rings past the end comes round at the start, and the loop
+//!   has no seam but the codec's.
 //! - **Voice:** two lines, `perfect-dodge` and `swap-in`, in English and in Japanese: no words, only
 //!   a voice's shape. A pulse train at the speaker's pitch is shaped by two formants moving between
 //!   vowels, a syllable at a time; English lines are timed by stress and Japanese ones by even morae
@@ -56,6 +57,7 @@ pub fn generate() -> Vec<Generated> {
         ("audio/generated/music/lantern_pulse.ogg", pulse()),
         ("audio/generated/music/lantern_drums.ogg", drums()),
         ("audio/generated/music/lantern_bells.ogg", bells()),
+        ("audio/generated/music/lantern_toll.ogg", toll()),
     ];
     let lines = [
         ("audio/generated/voice/en/perfect-dodge.ogg", speak(EN_PERFECT_DODGE)),
@@ -286,6 +288,36 @@ fn bells() -> Vec<f32> {
     ring.0
 }
 
+/// A great bell's partials, as multiples of its strike note, each with its share and how long it rings, in
+/// seconds: the hum an octave down, the strike note, the minor third that makes a bell sound like one, the
+/// fifth, the octave, and two upper partials that die first.
+const TOLL_PARTIALS: [(f64, f64, f64); 7] = [
+    (0.5, 0.6, 3.0),
+    (1.0, 1.0, 2.2),
+    (1.2, 0.5, 1.6),
+    (1.5, 0.3, 1.2),
+    (2.0, 0.45, 0.9),
+    (2.5, 0.2, 0.5),
+    (3.0, 0.15, 0.35),
+];
+
+/// A deep bell tolled on each bar's top, on the chord's root an octave below the pad, ringing on into the
+/// bars after: a boss's second wind (M3 Z5a), its score's `tolling` phase.
+fn toll() -> Vec<f32> {
+    let mut ring = Ring::new();
+    for (bar, chord) in CHORDS.iter().enumerate() {
+        let strike = hz(chord[0] - 12);
+        ring.add(bar as f64 * BAR, 2.0 * BAR, |t| {
+            let tone: f64 = TOLL_PARTIALS
+                .iter()
+                .map(|&(ratio, share, rings)| share * (TAU * strike * ratio * t).sin() * (-t / rings).exp())
+                .sum();
+            tone * (t / 0.003).min(1.0)
+        });
+    }
+    ring.0
+}
+
 /// A vowel by its first two formants, in hertz.
 #[derive(Clone, Copy)]
 struct Vowel(f64, f64);
@@ -389,7 +421,7 @@ mod tests {
     fn every_file_comes_out_the_same_twice_and_as_long_as_it_must_be() {
         let mut first = generate();
         let mut again = generate();
-        assert_eq!(first.len(), 8);
+        assert_eq!(first.len(), 9);
         for (file, twin) in first.iter_mut().zip(&mut again) {
             let bytes = file.encode().unwrap();
             assert_eq!(bytes, twin.encode().unwrap(), "{}", file.path);

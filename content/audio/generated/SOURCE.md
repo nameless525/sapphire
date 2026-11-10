@@ -25,6 +25,7 @@ point may differ in the last bits, so compare the hashes before taking a regener
 | `music/lantern_pulse.ogg` | An eighth-note bass pulse, the same length | `8bd2fd94a433a123fda343681eba5a6e15d204a69c117f9fa8aeecaf0d3a2a06` |
 | `music/lantern_drums.ogg` | Synthesized kick, snare and hat, the same length | `adaf9706ed47cdedba1c6d8f82c02283c6056a2109f69f1b860ea3899e1fdf3d` |
 | `music/lantern_bells.ogg` | A pentatonic bell tune, the same length | `e22fb1e2c6386c24aa7f421be216c28e4a321f981a7fa8c243d98b3b09c810d5` |
+| `music/lantern_toll.ogg` | A great bell tolled on each bar's root, the same length, for a boss's `tolling` phase (M3 Z5a) | `7670287d921863973dca1c948a3994a3b6fe4e91748d5ab27ef35817828ed2d8` |
 | `voice/en/perfect-dodge.ogg` | The `perfect-dodge` line's English placeholder | `74ff4edf829615bb23b6d4b52644f6169edf1876f504be1ed404608e96687c9d` |
 | `voice/en/swap-in.ogg` | The `swap-in` line's English placeholder | `753abb716222b6afd638e28d0314c2aa127ee1e7ad1536d8b7aac5363d7c2d98` |
 | `voice/ja/perfect-dodge.ogg` | The `perfect-dodge` line's Japanese placeholder | `21eadfb5bd0f709d9e4a5787baa51e917cd5a77bfe9007a288100aa66a035150` |

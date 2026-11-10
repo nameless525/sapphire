@@ -1,17 +1,24 @@
-//! The window: its surface, its clocks and the frame loop around a stage.
+//! The window: its surface, its clocks and the frame loop, first around the boot screen while the game builds
+//! and stands under it (`game_flow::boot`, M4 H2), then around the stood game's stage.
 //!
 //! **The OS moving the app (spec §6.5, M4 S6)** is [`duties`]' table, in order: going down, a run someone's
 //! playing pauses and what's on its way to disk gets there before the audio falls silent; coming back, the
-//! pause's screen is what's drawn, and the player's tap on it is what goes on.
+//! pause's screen is what's drawn, and the player's tap on it is what goes on. A boot in the background draws
+//! and uploads nothing, as no frame does there, and holds where it was; the warm-up pool goes on building, and
+//! the boot screen is what comes back.
 //!
-//! **A lost device** takes the stage with it. The show ends as a quit ends it, writing the run's file and the
-//! save; the device, its surface and a stage are made again, and the game stands on them where the save has it,
-//! waiting at the pause if someone was playing. A device lost again before the next stage presents a frame
-//! counts toward [`Losses`]' limit; the audio, the settings and the window go on through it.
+//! **A lost device** takes the stage with it, or the boot. The show ends as a quit ends it, writing the run's
+//! file and the save; the device, its surface and a boot are made again, and once that boot has stood the game
+//! it goes back where the save has it, waiting at the pause if someone was playing. A boot whose device is lost
+//! starts again on a new one, from where the last lost stage left the game, or from the title. A device lost
+//! again before the next stage presents a frame counts toward [`Losses`]' limit; the audio, the settings and
+//! the window go on through it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use game_combat::cues::PadRumble;
+use game_flow::boot::Boot;
 use game_flow::show::{GameShow, Reload};
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::raw_window_handle::HandleError;
@@ -19,6 +26,7 @@ use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
     SurfaceHandle, Window, WindowDesc, WindowEvent, durable_replace,
 };
+use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
@@ -35,19 +43,24 @@ use crate::{LOG_TARGET, build_info};
 const IDLE_FRAME: Duration = Duration::from_millis(33);
 /// Longest real-time step presentation takes in one frame, so a hitch can't fling the camera.
 const MAX_PRESENTATION_DT: Duration = Duration::from_millis(100);
-/// How long a window with no surface, or a game with no stage, waits before trying to make one again.
+/// How long a window with no surface, or a game with no device, waits before trying to make one again.
 const RETRY: Duration = Duration::from_secs(1);
 
 /// See this module.
 pub struct GameApp {
-    /// Before the window, whose native handle its surface holds. None from a lost device until the game stands
-    /// on the next.
+    /// Before the window, whose native handle its surface holds. None from a lost device until a boot starts on
+    /// the next.
     on_device: Option<OnDevice>,
-    /// Where the game goes back to once it stands on the next device.
+    /// Where the game goes back to once a boot on the next device has stood it.
     reload: Option<Reload>,
     losses: Losses,
-    /// Outlives a lost device: what it plays was read from the content, and nothing of it is on the GPU.
+    /// Made once the first boot has stood the game. Outlives a lost device: what it plays was read from the
+    /// content, and nothing of it is on the GPU.
     audio: Option<DeviceAudio>,
+    /// Whether the first boot has stood the game, so the audio's made and the title's been passed or shown.
+    heard: bool,
+    /// What the player had chosen as the app started: what a boot stands the first show with.
+    chosen: PlayerSettings,
     settings: KeptSettings,
     /// Whether a pad may shake.
     rumble: bool,
@@ -60,7 +73,7 @@ pub struct GameApp {
     suspended: bool,
     /// Whether the fight has the pointer.
     pointer_held: bool,
-    /// When a missing surface or stage is next tried for.
+    /// When a missing surface or device is next tried for.
     retry_due: Duration,
     /// Frames presented, for `--lose-device`.
     #[cfg(feature = "dev")]
@@ -69,9 +82,16 @@ pub struct GameApp {
 
 /// The game on one device: what a lost device takes.
 struct OnDevice {
-    /// Before the stage: it's on the stage's device, and holds the window's native handle.
+    /// Before the game: it's on the game's device, and holds the window's native handle.
     surface: Option<RenderSurface>,
-    stage: Stage<GameShow>,
+    game: Game,
+}
+
+/// The game on its device: booting, then stood.
+enum Game {
+    /// The boot screen up, the rest building where no frame waits.
+    Booting(Box<Boot>),
+    Stood(Box<Stage<GameShow>>),
 }
 
 impl App for GameApp {
@@ -82,39 +102,24 @@ impl App for GameApp {
         version: env!("CARGO_PKG_VERSION"),
     };
 
+    /// The window, the device and the boot screen with its one pipeline: everything else builds while it draws.
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let mut options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         let info = *platform.system_info();
         tracing::info!(target: LOG_TARGET, build = build_info::BUILD_ID, ?info, ?options, "starting");
         let window = platform
             .create_window(&WindowDesc { title: Self::METADATA.name.to_owned(), ..WindowDesc::default() })?;
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let rumble = chosen.rumble;
-        let (volumes, mono) = (volumes_of(&chosen), chosen.mono);
-        let voice = chosen.locale().voice;
-        let mut on_device =
-            stand_on_device(platform, &window, &options, chosen).map_err(|failed| failed.error)?;
-        let Stage { show, content, renderer, gpu, .. } = &mut on_device.stage;
-        let mut audio = match show.shown.fight.show.cue_show() {
-            Some(cues) => DeviceAudio::for_show(&cues.sounds_to_load(), platform, content, renderer, gpu)?,
-            None => None,
-        };
-        if let Some(audio) = &mut audio {
-            audio.set_volumes(volumes);
-            audio.set_mono(mono);
-            speak_in(audio, &voice);
-        }
-        // Only the first show starts past its title: a reload goes back where the game was.
-        if let Some(command) = options.choose.take() {
-            show.choose(command);
-        } else {
-            tracing::info!(target: LOG_TARGET, "the title is up");
-        }
+        let on_device =
+            boot_on_device(platform, &window, &options, chosen.clone()).map_err(|failed| failed.error)?;
         Ok(Self {
             on_device: Some(on_device),
             reload: None,
             losses: Losses::default(),
-            audio,
+            audio: None,
+            heard: false,
+            chosen,
             settings,
             rumble,
             window,
@@ -131,8 +136,9 @@ impl App for GameApp {
     }
 
     fn event(&mut self, platform: &mut Platform, event: &Event) -> AppControl {
-        if let Some(on_device) = &mut self.on_device {
-            on_device.stage.show.handle_event(event);
+        // Nothing's there to play while booting, so input goes nowhere.
+        if let Some(show) = self.show_mut() {
+            show.handle_event(event);
         }
         match event {
             Event::Quit { .. } => return AppControl::Exit,
@@ -166,8 +172,8 @@ impl App for GameApp {
         // Where vsyncs start frames, the frame's time is its interval in whole vsyncs, so steady frames run
         // whole fixed steps whatever the scheduler's jitter.
         let frame_time = platform.frame_delta().unwrap_or(measured);
-        if let Some(on_device) = &mut self.on_device
-            && on_device.stage.show.read_input(&self.window, self.desktop, platform.now())
+        if let Some(OnDevice { game: Game::Stood(stage), .. }) = &mut self.on_device
+            && stage.show.read_input(&self.window, self.desktop, platform.now())
         {
             return AppControl::Exit;
         }
@@ -182,8 +188,7 @@ impl App for GameApp {
         }
         #[cfg(feature = "dev")]
         self.lose_device_when_asked();
-        let Some(on_device) = self.on_device.as_mut().filter(|on_device| !on_device.stage.gpu.is_lost())
-        else {
+        let Some(on_device) = self.on_device.as_mut().filter(|on_device| !on_device.gpu().is_lost()) else {
             if let Err(error) = self.recover(platform) {
                 tracing::error!(target: LOG_TARGET, %error, "the game can't stand on a GPU device");
                 return AppControl::Fail;
@@ -193,10 +198,37 @@ impl App for GameApp {
         };
         if on_device.surface.is_none() && self.real.elapsed() >= self.retry_due {
             self.retry_due = self.real.elapsed() + RETRY;
-            on_device.surface = rebuild_surface(&self.window, &on_device.stage.gpu);
+            on_device.surface = rebuild_surface(&self.window, on_device.gpu());
         }
 
-        let stage = &mut on_device.stage;
+        let OnDevice { surface, game } = on_device;
+        let stage = match game {
+            Game::Booting(boot) => {
+                let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
+                match boot_frame(surface, boot, dt) {
+                    Ok(Some(stage)) => *game = Game::Stood(Box::new(stage)),
+                    Ok(None) => {}
+                    Err(error) if boot.gpu().is_lost() => {
+                        // The next frame boots again on a new device.
+                        tracing::warn!(target: LOG_TARGET, %error, "the device was lost booting");
+                    }
+                    Err(error) => {
+                        tracing::error!(target: LOG_TARGET, %error, "the game didn't boot");
+                        return AppControl::Fail;
+                    }
+                }
+                if matches!(game, Game::Stood(_))
+                    && let Err(error) = self.stood(platform)
+                {
+                    tracing::error!(target: LOG_TARGET, %error, "the game didn't boot");
+                    return AppControl::Fail;
+                }
+                profiling::finish_frame!();
+                return AppControl::Continue;
+            }
+            Game::Stood(stage) => stage,
+        };
+
         let steps = stage.show.advance(&stage.scene, &mut self.driver, frame_time);
         for _ in 0..steps.count {
             stage.fixed_step();
@@ -218,10 +250,10 @@ impl App for GameApp {
             &mut PadRumble { platform, pad },
         );
 
-        let presented = match on_device.render(steps.alpha) {
+        let presented = match render(surface, stage, steps.alpha) {
             Ok(presented) => presented,
-            Err(error) if on_device.stage.gpu.is_lost() => {
-                // The next frame stands the game on a new device.
+            Err(error) if stage.gpu.is_lost() => {
+                // The next frame boots the game again on a new device.
                 tracing::warn!(target: LOG_TARGET, %error, "the device was lost drawing the frame");
                 false
             }
@@ -232,9 +264,9 @@ impl App for GameApp {
             }
         };
         // A lost device's frame presents nothing it drew, and proves nothing.
-        if presented && !on_device.stage.gpu.is_lost() {
+        if presented && !stage.gpu.is_lost() {
             // Rendering works with this pipeline cache, so the next boot may trust it.
-            on_device.stage.gpu.confirm_pipeline_cache();
+            stage.gpu.confirm_pipeline_cache();
             self.losses.presented();
             #[cfg(feature = "dev")]
             {
@@ -244,7 +276,7 @@ impl App for GameApp {
             // Nothing blocked on vsync this frame, so pace the loop here instead of spinning a core.
             std::thread::sleep(IDLE_FRAME);
         }
-        on_device.stage.scene.end_frame();
+        stage.scene.end_frame();
         profiling::finish_frame!();
         AppControl::Continue
     }
@@ -253,7 +285,7 @@ impl App for GameApp {
         self.save_pipeline_cache();
         self.settings.finish();
         // The run's file, if it keeps one, and the save's last write. A stage lost and not yet stood again
-        // wrote both as it went.
+        // wrote both as it went, and a boot has neither yet.
         if let Some(show) = self.show_mut()
             && let Err(error) = show.finish()
         {
@@ -264,15 +296,62 @@ impl App for GameApp {
 }
 
 impl GameApp {
+    /// The stood game's show: none while booting.
     fn show_mut(&mut self) -> Option<&mut GameShow> {
-        self.on_device.as_mut().map(|on_device| &mut on_device.stage.show)
+        match &mut self.on_device {
+            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut stage.show),
+            _ => None,
+        }
+    }
+
+    fn show(&self) -> Option<&GameShow> {
+        match &self.on_device {
+            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&stage.show),
+            _ => None,
+        }
+    }
+
+    /// The game a boot has just stood, in the window that booted it: sized to the window and named in its
+    /// language, then, the first time, heard and on its title or past it as the arguments say; after a lost
+    /// device, back where the save has it.
+    fn stood(&mut self, platform: &mut Platform) -> Result<(), AppInitError> {
+        let Some(OnDevice { game: Game::Stood(stage), .. }) = &mut self.on_device else {
+            unreachable!("a boot has just stood the game");
+        };
+        let window_size = self.window.size();
+        stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
+        name_window(&self.window, &stage.show);
+        let Stage { show, content, renderer, gpu, .. } = &mut **stage;
+        if !self.heard {
+            self.heard = true;
+            self.audio = match show.shown.fight.show.cue_show() {
+                Some(cues) => {
+                    DeviceAudio::for_show(&cues.sounds_to_load(), platform, content, renderer, gpu)?
+                }
+                None => None,
+            };
+            if let Some(audio) = &mut self.audio {
+                audio.set_volumes(volumes_of(&self.chosen));
+                audio.set_mono(self.chosen.mono);
+                speak_in(audio, &self.chosen.locale().voice);
+            }
+        }
+        if let Some(reload) = self.reload.take() {
+            show.reload_from(&reload);
+            tracing::info!(target: LOG_TARGET, "the game stands on a new GPU device");
+        } else if let Some(command) = self.options.choose.take() {
+            // Only the first show starts past its title: a reload goes back where the game was.
+            show.choose(command);
+        } else {
+            tracing::info!(target: LOG_TARGET, "the title is up");
+        }
+        Ok(())
     }
 
     /// A fight someone's playing at a desktop holds the pointer: the mouse turns its camera, which a cursor
     /// reaching the screen's edge would stop. A pause gives it back, once for each change.
     fn follow_pointer(&mut self) {
-        let show = self.on_device.as_ref().map(|on_device| &on_device.stage.show);
-        let playing = show.is_some_and(|show| show.is_played() && !show.controls.is_paused());
+        let playing = self.show().is_some_and(|show| show.is_played() && !show.controls.is_paused());
         let held = self.desktop && playing && self.window.has_keyboard_focus();
         if held != self.pointer_held {
             self.pointer_held = held;
@@ -283,8 +362,8 @@ impl GameApp {
     /// What the player has just chosen: heard now, the window named in its language, and kept for the next
     /// run. The language and size have reached the screens already.
     fn follow_settings(&mut self, chosen: &PlayerSettings, platform: &mut Platform) {
-        if let Some(on_device) = &self.on_device {
-            name_window(&self.window, &on_device.stage.show);
+        if let Some(show) = self.show() {
+            name_window(&self.window, show);
         }
         if let Some(audio) = &mut self.audio {
             audio.set_volumes(volumes_of(chosen));
@@ -310,7 +389,8 @@ impl GameApp {
         }
     }
 
-    /// Spec §6.5, as [`duties`] orders it.
+    /// Spec §6.5, as [`duties`] orders it. A boot has no show to pause or keep, and no audio yet unless a lost
+    /// device's boot follows a stood game.
     fn lifecycle(&mut self, event: LifecycleEvent, platform: &mut Platform) {
         tracing::info!(target: LOG_TARGET, ?event, "lifecycle");
         for &duty in duties(event) {
@@ -340,6 +420,9 @@ impl GameApp {
                 // next frame would otherwise see the whole pause as one frame.
                 Duty::RestartClock => {
                     self.real.update();
+                    if let Some(OnDevice { game: Game::Booting(boot), .. }) = &mut self.on_device {
+                        boot.restart_clock();
+                    }
                 }
                 Duty::Draw => self.suspended = false,
                 Duty::RebuildSurface => {
@@ -347,21 +430,30 @@ impl GameApp {
                         self.on_device.as_mut().filter(|on_device| on_device.surface.is_none())
                     {
                         self.retry_due = self.real.elapsed() + RETRY;
-                        on_device.surface = rebuild_surface(&self.window, &on_device.stage.gpu);
+                        on_device.surface = rebuild_surface(&self.window, on_device.gpu());
                     }
                 }
             }
         }
     }
 
-    /// Stands the game on a new device after the last was lost. The first call ends the lost stage's show,
-    /// which writes the run's file and the save; then each try, a second apart, makes a device and a stage and
-    /// takes the game back where the save has it. A failed try leaves the app running with no stage. An error
-    /// when [`Losses`] says to stop.
+    /// Boots the game again on a new device after the last was lost. The first call ends the lost stage's
+    /// show, which writes the run's file and the save (a lost boot has neither); then each try, a second apart,
+    /// makes a device and starts a boot on it, which takes the game back where the save has it once it's stood
+    /// ([`Self::stood`]). A failed try leaves the app running with no device. An error when [`Losses`] says to
+    /// stop.
     fn recover(&mut self, platform: &mut Platform) -> Result<(), String> {
         if let Some(mut lost) = self.on_device.take() {
-            tracing::warn!(target: LOG_TARGET, "the GPU device was lost; the game stands again on a new one");
-            self.reload = Some(lost.stage.show.end_for_reload());
+            match &mut lost.game {
+                Game::Stood(stage) => {
+                    tracing::warn!(target: LOG_TARGET, "the GPU device was lost; the game boots again on a new one");
+                    self.reload = Some(stage.show.end_for_reload());
+                }
+                // Where an earlier loss left the game is still where the next boot takes it.
+                Game::Booting(_) => {
+                    tracing::warn!(target: LOG_TARGET, "the GPU device was lost booting; the game boots again on a new one");
+                }
+            }
             // Everything on the old device, the surface first, before a new surface is made for the window.
             drop(lost);
             self.losses.lost()?;
@@ -371,20 +463,18 @@ impl GameApp {
             return Ok(());
         }
         self.retry_due = self.real.elapsed() + RETRY;
-        let Some(reload) = &self.reload else { return Ok(()) };
-        match stand_on_device(platform, &self.window, &self.options, reload.settings.clone()) {
-            Ok(mut on_device) => {
-                on_device.stage.show.reload_from(reload);
-                self.reload = None;
+        let settings = self.reload.as_ref().map_or(&self.chosen, |reload| &reload.settings).clone();
+        match boot_on_device(platform, &self.window, &self.options, settings) {
+            Ok(on_device) => {
                 self.on_device = Some(on_device);
-                tracing::info!(target: LOG_TARGET, "the game stands on a new GPU device");
+                tracing::info!(target: LOG_TARGET, "the game boots on a new GPU device");
             }
             Err(Failed { error, lost: true }) => {
-                tracing::warn!(target: LOG_TARGET, %error, "the new GPU device was lost as the game stood");
+                tracing::warn!(target: LOG_TARGET, %error, "the new GPU device was lost as the game booted");
                 self.losses.lost()?;
             }
             Err(Failed { error, lost: false }) => {
-                tracing::warn!(target: LOG_TARGET, %error, retry_in = ?RETRY, "the game didn't stand on a new GPU device");
+                tracing::warn!(target: LOG_TARGET, %error, retry_in = ?RETRY, "the game didn't boot on a new GPU device");
             }
         }
         Ok(())
@@ -398,7 +488,7 @@ impl GameApp {
         {
             self.options.lose_device = None;
             tracing::warn!(target: LOG_TARGET, presented = self.presented, "losing the GPU device, as --lose-device asks");
-            let gpu = &on_device.stage.gpu;
+            let gpu = on_device.gpu();
             gpu.device().destroy();
             // wgpu reports a destroyed device once its queue drains, during a poll: this frame's checks see it.
             let _ = gpu.device().poll(sapphire_rhi::wgpu::PollType::wait_indefinitely());
@@ -407,35 +497,74 @@ impl GameApp {
 
     fn save_pipeline_cache(&self) {
         let Some(on_device) = &self.on_device else { return };
-        if let Err(error) = on_device.stage.gpu.save_pipeline_cache() {
+        if let Err(error) = on_device.gpu().save_pipeline_cache() {
             tracing::warn!(target: LOG_TARGET, %error, "pipeline cache not saved");
         }
     }
 }
 
 impl OnDevice {
-    /// Draws and presents the frame if the surface gave an image. Every frame is prepared, drawn or not, so
-    /// the renderer's persistent scene sees every packet's deltas. Returns whether one was presented.
-    fn render(&mut self, alpha: f32) -> Result<bool, AppInitError> {
-        profiling::scope!("render");
-        let skipped = match self.surface.as_mut().map(RenderSurface::acquire) {
-            Some(SurfaceAcquire::Frame(frame)) => {
-                self.stage.render(frame.view(), alpha, |_, _| {})?;
-                frame.present();
-                self.stage.show.say_first_uses(&self.stage.renderer);
-                return Ok(true);
-            }
-            Some(SurfaceAcquire::Skip(reason)) => Some(reason),
-            None => None,
-        };
-        self.stage.skip_frame(alpha);
-        // `Lost` is sticky until the surface is rebuilt from a fresh native handle. `DeviceLost` is the next
-        // frame's to stand the game again on.
-        if skipped == Some(SkipReason::Lost) {
-            self.surface = None;
+    fn gpu(&self) -> &GpuContext {
+        match &self.game {
+            Game::Booting(boot) => boot.gpu(),
+            Game::Stood(stage) => &stage.gpu,
         }
-        Ok(false)
     }
+}
+
+/// A boot frame: moved on, and its screen drawn and presented if the surface gave an image. Returns the stage
+/// once it's stood and warm.
+fn boot_frame(
+    surface: &mut Option<RenderSurface>,
+    boot: &mut Boot,
+    dt: f32,
+) -> Result<Option<Stage<GameShow>>, AppInitError> {
+    // The image, if any, goes with this statement, before a lost surface is let go of.
+    let (stage, presented, lost) = match surface.as_mut().map(RenderSurface::acquire) {
+        Some(SurfaceAcquire::Frame(frame)) => {
+            let stage = boot.frame(Some(frame.view()), dt)?;
+            frame.present();
+            (stage, true, false)
+        }
+        Some(SurfaceAcquire::Skip(reason)) => (boot.frame(None, dt)?, false, reason == SkipReason::Lost),
+        None => (boot.frame(None, dt)?, false, false),
+    };
+    // `Lost` is sticky until the surface is rebuilt from a fresh native handle.
+    if lost {
+        *surface = None;
+    }
+    if !presented && stage.is_none() {
+        // Nothing blocked on vsync this frame, so pace the loop here instead of spinning a core.
+        std::thread::sleep(IDLE_FRAME);
+    }
+    Ok(stage)
+}
+
+/// Draws and presents the stage's frame if the surface gave an image. Every frame is prepared, drawn or not, so
+/// the renderer's persistent scene sees every packet's deltas. Returns whether one was presented.
+fn render(
+    surface: &mut Option<RenderSurface>,
+    stage: &mut Stage<GameShow>,
+    alpha: f32,
+) -> Result<bool, AppInitError> {
+    profiling::scope!("render");
+    let skipped = match surface.as_mut().map(RenderSurface::acquire) {
+        Some(SurfaceAcquire::Frame(frame)) => {
+            stage.render(frame.view(), alpha, |_, _| {})?;
+            frame.present();
+            stage.show.say_first_uses(&stage.renderer);
+            return Ok(true);
+        }
+        Some(SurfaceAcquire::Skip(reason)) => Some(reason),
+        None => None,
+    };
+    stage.skip_frame(alpha);
+    // `Lost` is sticky until the surface is rebuilt from a fresh native handle. `DeviceLost` is the next
+    // frame's to boot the game again on.
+    if skipped == Some(SkipReason::Lost) {
+        *surface = None;
+    }
+    Ok(false)
 }
 
 /// What the app does as the OS moves it (spec §6.5), each in [`duties`]' order.
@@ -487,10 +616,10 @@ fn duties(event: LifecycleEvent) -> &'static [Duty] {
     }
 }
 
-/// Devices lost in a row with no frame presented between: a device lost while the game stands, or before it
+/// Devices lost in a row with no frame presented between: a device lost while the game boots, or before it
 /// draws, would be lost again on every try (the sandbox's `CreationLosses` has the emulator's case), so the
-/// [`Self::LIMIT`]th stops the app. A presented frame, which only a stage standing on a live device draws, ends
-/// the run of losses.
+/// [`Self::LIMIT`]th stops the app. A presented frame, which only a stood stage on a live device draws (the
+/// boot screen's don't count), ends the run of losses.
 #[derive(Debug, Default)]
 struct Losses {
     in_a_row: u32,
@@ -499,7 +628,7 @@ struct Losses {
 impl Losses {
     const LIMIT: u32 = 3;
 
-    /// A device was lost: the one in use, or one the game was standing on.
+    /// A device was lost: the one in use, or one the game was booting on.
     fn lost(&mut self) -> Result<(), String> {
         self.in_a_row += 1;
         if self.in_a_row >= Self::LIMIT {
@@ -517,15 +646,16 @@ impl Losses {
     }
 }
 
-/// Why the game didn't stand on a device, and whether the device was lost.
+/// Why the game didn't start booting on a device, and whether the device was lost.
 struct Failed {
     error: AppInitError,
     lost: bool,
 }
 
 /// The game on a new device for `window`: the device, the window's surface sized to it, and the show `options`
-/// make with `settings` stood on a stage, at its title ([`crate::stand_game`]). At startup and after a lost one.
-fn stand_on_device(
+/// make with `settings` booting on it, its screen's pipeline built and the rest building
+/// (`game_flow::boot`). At startup and after a lost one.
+fn boot_on_device(
     platform: &mut Platform,
     window: &Window,
     options: &Options,
@@ -568,13 +698,11 @@ fn stand_on_device(
         .ok_or_else(|| AppInitError::msg("configured surface reports no format"))
         .map_err(&lost)?;
     let (show, first) = options.show(platform, settings).map_err(failed)?;
-    let mut stage = crate::stand_game(platform.host(), gpu, format, show, &first).map_err(&lost)?;
-    // Frames are paced to the tier's rate (spec §6.2).
-    platform.set_frame_rate(stage.quality.frame_rate());
-    let window_size = window.size();
-    stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
-    name_window(window, &stage.show);
-    Ok(OnDevice { surface: Some(surface), stage })
+    let quality = QualitySettings::default();
+    let boot = Boot::start(platform.host(), Arc::new(gpu), format, quality, show, &first).map_err(&lost)?;
+    // Frames are paced to the tier's rate (spec §6.2), the boot screen's from its first.
+    platform.set_frame_rate(boot.frame_rate());
+    Ok(OnDevice { surface: Some(surface), game: Game::Booting(Box::new(boot)) })
 }
 
 /// Makes the surface again from a freshly fetched native handle, or none, logged, for another try later.

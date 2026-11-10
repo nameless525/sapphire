@@ -1,6 +1,7 @@
-//! The game's show over `zone-trip`'s replay, frame by frame, from outside the crates (M3 W4): the wipe covers
-//! the screen from before the zone changes until the new zone's first cells are in, every frame it covers is the
-//! same picture, and nothing's built on a frame that the load didn't. Then a game's flow on `ground-trip`
+//! The game's show over `zone-trip`'s replay, frame by frame, from outside the crates (M3 W4), booted as the
+//! game's window boots it (M4 H2): the wipe covers the screen from before the zone changes until the new zone's
+//! first cells are in, every frame it covers is the same picture, and nothing's built on a frame that the load
+//! didn't, or built or waited for on a frame at all. Then a game's flow on `ground-trip`
 //! goes back to the title while its trip's wipe covers, and the title's run stands only once the trip's over,
 //! where its scenario starts, rather than being carried through the rest of the trip (M3 Z3f), the stage taken
 //! back there by a trip of its own under the same wipe (M3 G1b). And a game's run restarted in the hub after its
@@ -14,6 +15,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow};
@@ -21,6 +23,7 @@ use game_combat::combat::CombatOption;
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use game_combat::fight::trip::TripPhase;
+use game_flow::boot::Boot;
 use game_flow::document::FlowDocument;
 use game_flow::flow::{FlowCommand, FlowState, Run};
 use game_flow::game::{FlowContent, Game, GameSetup};
@@ -30,6 +33,7 @@ use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platf
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
+use sapphire_time::Stopwatch;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const WIDTH: u32 = 160;
@@ -76,6 +80,9 @@ struct Seen {
     swapped_covered: bool,
     /// Frames while the simulation was held.
     held: u32,
+    /// The real time its frames took, and the longest of them (M4 H2's measure of a trip's hold).
+    took: Duration,
+    longest: Duration,
 }
 
 /// Does it all in `init`, and the first frame exits.
@@ -90,18 +97,25 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let gpu = headless_gpu()?;
+        let gpu = Arc::new(headless_gpu()?);
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
-        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
-        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents, screens, PlayerSettings::default())?;
+        let show = GameShow::new(documents, screens, PlayerSettings::default())?;
         let replay = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/zone-trip.sreplay");
         let option = CombatOption::Replay { path: replay, to_end: false };
-        let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
-        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
-        let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+        let boot = Boot::start(platform.host(), gpu, FORMAT, QualitySettings::default(), show, &option)?;
+        let (mut stage, report) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+        // Exit test 1 (M4 H2): from the boot screen's first frame, nothing was built on a frame or waited for.
+        let booted = report.pipelines;
+        assert_eq!((booted.frame_thread_builds, booted.frame_waits), (0, 0), "{report:?}");
+        println!(
+            "zone_trip: booted in {} frames, {:.0} ms; longest frame {:.1} ms ({}); {} pipelines warmed off the frame",
+            report.frames,
+            report.warm.as_secs_f64() * 1e3,
+            report.longest_frame.as_secs_f64() * 1e3,
+            report.longest_in,
+            booted.warmed_off_frame,
+        );
         assert!(stage.show.shown.wipe.is_some(), "a fight that goes between zones has a wipe");
         stage.show.open_fight();
 
@@ -113,7 +127,9 @@ impl App for OutsideCaller {
             stage.show.drive_view(Duration::from_millis(16));
             let phase = stage.show.shown.fight.show.trip_phase();
             let covered_before = wipe_state(&stage) == "covered";
+            let drawing = Stopwatch::start();
             let pixels = frame(&mut stage)?;
+            let took = drawing.elapsed();
             frames += 1;
             assert!(frames < 20_000, "it never got to tick {TICKS}");
             let on_stage = stage.scene.zone_on_stage();
@@ -125,6 +141,8 @@ impl App for OutsideCaller {
                 if phase.holds_simulation() {
                     seen.held += 1;
                 }
+                seen.took += took;
+                seen.longest = seen.longest.max(took);
                 if covered_before && wipe_state(&stage) == "covered" {
                     seen.covered.push(pixels);
                     seen.swapped_covered |= on_stage != zone;
@@ -155,13 +173,18 @@ impl App for OutsideCaller {
         stage.show.shown.fight.check().map_err(AppInitError::msg)?;
         let first_uses = stage.renderer.stats().pipelines.first_use_builds;
         assert_eq!(first_uses, 0, "a trip built what the load didn't: {}", stage.renderer.first_use_report());
-        // Exit test 1 (M4 H1): the hub's prefetch warmed the proving ground up off the frame.
-        let on_frame = stage.renderer.stats().pipelines.frame_thread_builds;
-        assert_eq!(on_frame, 0, "a frame built: {}", stage.renderer.first_use_report());
+        // Exit test 1 (M4 H1, H2): the hub's prefetch warmed the proving ground up off the frame, and no frame
+        // waited for it.
+        let pipelines = stage.renderer.stats().pipelines;
+        let on_frame = (pipelines.frame_thread_builds, pipelines.frame_waits);
+        assert_eq!(on_frame, (0, 0), "a frame built or waited: {}", stage.renderer.first_use_report());
         println!(
-            "zone_trip: {frames} frames, trips held {:?} frames and covered {:?}",
+            "zone_trip: {frames} frames, trips held {:?} frames and covered {:?}; their frames took {:?} ms, the \
+             longest {:?} ms",
             trips.iter().map(|seen| seen.held).collect::<Vec<_>>(),
             trips.iter().map(|seen| seen.covered.len()).collect::<Vec<_>>(),
+            trips.iter().map(|seen| seen.took.as_millis()).collect::<Vec<_>>(),
+            trips.iter().map(|seen| format!("{:.1}", seen.longest.as_secs_f64() * 1e3)).collect::<Vec<_>>(),
         );
         to_the_title_mid_trip(platform)?;
         restart_after_a_trip(platform)?;
@@ -272,6 +295,9 @@ fn to_the_title_mid_trip(platform: &mut Platform) -> Result<(), AppInitError> {
     assert_eq!(sim.tick(), 0, "and hasn't stepped");
     let first_uses = stage.renderer.stats().pipelines.first_use_builds;
     assert_eq!(first_uses, 0, "the trips built what the loads didn't: {}", stage.renderer.first_use_report());
+    let pipelines = stage.renderer.stats().pipelines;
+    let waited = pipelines.frame_waits;
+    assert_eq!(waited, 0, "a frame waited for the hub's pipelines: {}", stage.renderer.first_use_report());
     println!("zone_trip: back to the title mid-trip in {frames} frames, and home in {home}");
     Ok(())
 }
@@ -316,12 +342,28 @@ fn restart_after_a_trip(platform: &mut Platform) -> Result<(), AppInitError> {
 
     let Stage { show, scene, content, .. } = &mut stage;
     show.shown.fight.take_exit(scene, content, "to_proving_hub").map_err(AppInitError::msg)?;
-    let mut frames = 0;
-    while stage.show.shown.fight.show.trip_phase().is_some() {
+    // How long the trip out held, in real time, warming the hub up, which nothing fetched ahead (M4 H2): its
+    // wipe holds until the hub's pipelines are built, frames going on meanwhile.
+    let (mut frames, mut held, mut longest) = (0, 0, Duration::ZERO);
+    let trip = Stopwatch::start();
+    while let Some(phase) = stage.show.shown.fight.show.trip_phase() {
+        let frame = Stopwatch::start();
         play(&mut stage)?;
+        longest = longest.max(frame.elapsed());
+        held += u32::from(phase.holds_simulation());
         frames += 1;
         assert!(frames < MOST_FRAMES, "the trip out never ended");
     }
+    let warmed = stage.show.shown.fight.show.last_trip().is_some_and(|trip| trip.warm);
+    println!(
+        "zone_trip: the trip to the hub took {frames} frames, {held} held, in {:.0} ms, longest {:.1} ms; \
+         warm ahead: {warmed}",
+        trip.elapsed().as_secs_f64() * 1e3,
+        longest.as_secs_f64() * 1e3,
+    );
+    let pipelines = stage.renderer.stats().pipelines;
+    let on_frame = (pipelines.frame_thread_builds, pipelines.frame_waits);
+    assert_eq!(on_frame, (0, 0), "the trip built or waited: {}", stage.renderer.first_use_report());
     let hub = stage.scene.zone_on_stage();
     assert!(hub.is_some_and(|hub| hub != ground), "the stage went to the hub: {hub:?}");
 

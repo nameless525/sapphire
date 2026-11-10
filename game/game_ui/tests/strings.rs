@@ -21,8 +21,9 @@ use support::{content, document, document_in, kind_names, menus, subtitles, tabl
 
 const LOCALES: [&str; 2] = ["en", "ja"];
 
-/// The game's documents beside its menus, which show no text: the zone trip's wipe (M3 W4).
-const TEXTLESS: [&str; 1] = ["zone_wipe"];
+/// The game's documents beside its menus, which the code shows itself: the boot screen (M4 H2) and the zone
+/// trip's wipe (M3 W4).
+const BESIDE_MENUS: [&str; 2] = ["boot", "zone_wipe"];
 
 fn keys(table: &StringTable) -> BTreeSet<&str> {
     table.entries.iter().map(|entry| table.str(entry.key)).collect()
@@ -31,7 +32,12 @@ fn keys(table: &StringTable) -> BTreeSet<&str> {
 /// What every one of the game's screens names: its keys, and the prefixes its `key_from`s choose whole keys
 /// under. The window's title is the one key the app names rather than a screen (M3 Z5b).
 fn named() -> (BTreeSet<String>, BTreeSet<String>) {
-    let (mut keys, prefixes) = named_in(&menus(), &[content().join("ui")]);
+    let ui = content().join("ui");
+    let (mut keys, mut prefixes) = named_in(&menus(), std::slice::from_ref(&ui));
+    let beside = BESIDE_MENUS.map(|name| (name.to_owned(), document_in(name, std::slice::from_ref(&ui))));
+    let (beside_keys, beside_prefixes) = named_by(beside.into_iter());
+    keys.extend(beside_keys);
+    prefixes.extend(beside_prefixes);
     keys.insert(WINDOW_TITLE.to_owned());
     (keys, prefixes)
 }
@@ -125,8 +131,8 @@ fn variables(table: &StringTable, key: &str) -> BTreeSet<String> {
     found
 }
 
-/// The game's documents are the screens its menus document lists, and those that show no text: a document
-/// beside them would show strings no test reads.
+/// The game's documents are the screens its menus document lists, and those the code shows beside them: a
+/// document beside those would show strings no test reads.
 #[test]
 fn the_game_s_documents_are_its_screens() {
     let mut found: Vec<String> = fs::read_dir(content().join("ui"))
@@ -135,14 +141,9 @@ fn the_game_s_documents_are_its_screens() {
         .collect();
     found.sort();
     let mut known: Vec<String> = menus().screens.into_iter().map(|screen| screen.name).collect();
-    known.extend(TEXTLESS.map(str::to_owned));
+    known.extend(BESIDE_MENUS.map(str::to_owned));
     known.sort();
     assert_eq!(found, known);
-    for stem in TEXTLESS {
-        let source = fs::read_to_string(content().join(format!("ui/{stem}.ui.ron"))).unwrap();
-        let document = UiDocument::from_document(&source).unwrap_or_else(|error| panic!("{stem}: {error}"));
-        assert_eq!(document.texts().count(), 0, "{stem} shows text, so it's a screen to test as one");
-    }
 }
 
 #[test]

@@ -116,7 +116,9 @@ use sapphire_livelink::protocol::PackOutcome;
 use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{MaterialHandle, MeshHandle, PipelineInventory, Renderer, WarmUpRequest};
+use sapphire_render::{
+    MaterialHandle, MeshHandle, PipelineInventory, Renderer, WarmUpProgress, WarmUpRequest,
+};
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 use sapphire_timeline::Timeline;
@@ -169,6 +171,9 @@ const PACK: &str = "shared";
 pub const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86adf26a1");
 /// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
 pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
+
+/// How long [`Content::load_screens_alone`] and [`Content::zone_pipelines`] wait for what they read, all told.
+const SCREENS_ALONE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What a zone coming next draws through, warming up off the frame ([`Content::queue_zone_prewarm`]).
 struct ZonePrewarm {
@@ -761,6 +766,8 @@ pub struct Content {
     zone_prewarms: Vec<ZonePrewarm>,
     /// What asking for them took this frame: [`Self::zone_prewarm_time`].
     zone_prewarm_time: std::time::Duration,
+    /// How far the renderer's warm-up had got at the last update: [`Self::warm_up`].
+    warm_up: WarmUpProgress,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -966,6 +973,7 @@ impl Content {
             zone_probes: None,
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
+            warm_up: WarmUpProgress::default(),
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -1335,6 +1343,16 @@ impl Content {
     /// Mounts the pack of the zone whose source's stem is `stem`, and returns that zone, ready to read: a zone
     /// found by its name alone, so that no code names its ID. A pack holds one zone (`pack.rs`' grouping).
     pub fn find_zone(&mut self, stem: &str) -> Result<Handle<Zone>, AppInitError> {
+        let id = self.zone_id(stem)?;
+        let zone = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        self.server
+            .finish(&zone, |upload| panic!("a zone sent {} to the uploader", upload.kind()))
+            .map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
+        Ok(zone)
+    }
+
+    /// The ID of the zone whose source's stem is `stem`, its pack mounted.
+    fn zone_id(&mut self, stem: &str) -> Result<AssetId, AppInitError> {
         let pack = sapphire_zone::pack_name(stem);
         if !self.server.is_mounted(&pack) {
             self.server.mount_now(&pack).map_err(AppInitError::msg)?;
@@ -1343,11 +1361,31 @@ impl Content {
         let [id] = zones.as_slice() else {
             return Err(AppInitError::msg(format!("{pack} holds {} zones, not one", zones.len())));
         };
-        let zone = self.server.load_with(*id, LoadPriority::Critical).map_err(AppInitError::msg)?;
-        self.server
-            .finish(&zone, |upload| panic!("a zone sent {} to the uploader", upload.kind()))
-            .map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
-        Ok(zone)
+        Ok(*id)
+    }
+
+    /// What the zone whose source's stem is `stem` draws through as [`Self::open_zone`] opens it: its pack's keys,
+    /// and the ambient pass and the grid's constants if a probe grid comes with it. Its pack is mounted and its
+    /// zone read, not uploaded, to say, so what else is loading waits for an uploader. For a boot that warms its
+    /// first zone up off the frame before it stands it (M4 H2), so the open's prewarm finds everything built.
+    pub fn zone_pipelines(&mut self, stem: &str) -> Result<PipelineInventory, AppInitError> {
+        let id = self.zone_id(stem)?;
+        let zone = self.server.load_with::<Zone>(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let stopwatch = Stopwatch::start();
+        let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
+        let read = self.server.finish_cpu(&zone, &remaining);
+        let read = read.map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
+        let probe_grid = read.view().presentation.probes.is_some();
+        let pack = sapphire_zone::pack_name(stem);
+        let mut inventory = PipelineInventory {
+            meshes: self.server.pipeline_keys_of(&pack),
+            probe_grid,
+            ..PipelineInventory::default()
+        };
+        if let Some(entry) = &self.left_out_of_zones {
+            inventory.remove(entry);
+        }
+        Ok(inventory)
     }
 
     /// Mounts zone `id`'s pack, builds what its meshes draw through, and loads until the zone is ready,
@@ -1428,7 +1466,15 @@ impl Content {
             };
             !renderer.is_warm(request)
         });
+        self.warm_up = renderer.warm_up();
         self.zone_prewarm_time = stopwatch.elapsed();
+    }
+
+    /// How far the renderer's warm-up had got at the last [`Self::update`]: what a wipe held for a zone's
+    /// pipelines shows (M4 H2).
+    #[must_use]
+    pub fn warm_up(&self) -> WarmUpProgress {
+        self.warm_up
     }
 
     /// The cooked bytes of asset `id`, while the server holds them.
@@ -1907,6 +1953,57 @@ impl Content {
                 .map_err(|error| failed(&error))?;
             let font = server.get(&font).ok_or_else(|| failed(&"a font isn't loaded"))?;
             fonts.push(font.to_owned_font());
+        }
+        Ok(ScreenAssets { documents, tables, fonts })
+    }
+
+    /// As [`Self::load_screens`], before there's a renderer: a boot screen's (M4 H2). Each asset is read and
+    /// decoded but not uploaded (`AssetServer::finish_cpu`), so nothing else loading meanwhile, the character's
+    /// meshes say, is handed to an uploader that can't take it; the boot's later [`Self::load_screens`] finishes
+    /// them. Call it before anything else reads the screens' packs, whose fonts keep no bytes once uploaded.
+    pub fn load_screens_alone(&mut self, screens: &[AssetId]) -> Result<ScreenAssets, AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("a screen: {error}"));
+        for pack in [FONTS_PACK, UI_PACK, LOC_PACK] {
+            if !self.server.is_mounted(pack) {
+                self.server
+                    .mount_now(pack)
+                    .map_err(|error| failed(&format!("the pack `{pack}`: {error}")))?;
+            }
+        }
+        let stopwatch = Stopwatch::start();
+        let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
+        let server = &mut self.server;
+        let mut documents = Vec::with_capacity(screens.len());
+        for &screen in screens {
+            let document = server.load_with::<UiDocument>(screen, LoadPriority::Critical);
+            let document = server.finish_cpu(&document.map_err(|error| failed(&error))?, &remaining);
+            documents.push(
+                document
+                    .map_err(|error| failed(&error))?
+                    .view()
+                    .to_owned_document()
+                    .map_err(|error| failed(&error))?,
+            );
+        }
+        let mut tables = Vec::with_capacity(LOCALES.len());
+        for id in LOCALES {
+            let table = server.load_with::<StringTable>(id, LoadPriority::Critical);
+            let table = server.finish_cpu(&table.map_err(|error| failed(&error))?, &remaining);
+            tables.push(
+                StringTable::read(table.map_err(|error| failed(&error))?.view())
+                    .map_err(|error| failed(&error))?,
+            );
+        }
+        let chains = server.load_with::<FontChains>(FONT_CHAINS, LoadPriority::Critical);
+        let chains = server.finish_cpu(&chains.map_err(|error| failed(&error))?, &remaining);
+        let mut ids: Vec<AssetId> = chains.map_err(|error| failed(&error))?.view().font_ids().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut fonts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let font = server.load_with::<Font>(id, LoadPriority::Critical);
+            let font = server.finish_cpu(&font.map_err(|error| failed(&error))?, &remaining);
+            fonts.push(font.map_err(|error| failed(&error))?.view().to_owned_font());
         }
         Ok(ScreenAssets { documents, tables, fonts })
     }

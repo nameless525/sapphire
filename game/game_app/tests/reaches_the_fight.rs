@@ -1,5 +1,5 @@
-//! A caller outside the crates, with nothing but their public surface: stand the game's show on a stage, wait
-//! at the title, press its start, and see a fight go by.
+//! A caller outside the crates, with nothing but their public surface: boot the game's show as its window does
+//! (M4 H2), wait at the title, press its start, and see a fight go by.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content, so it runs only when asked, as an `#[ignore]`d test
@@ -8,12 +8,13 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow};
 use game_combat::combat::CombatOption;
 use game_combat::documents::FightDocuments;
-use game_combat::fight::fight_stage;
+use game_flow::boot::Boot;
 use game_ui::menus::{MenuDocument, PlayerSettings};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, KeyEvent, Keycode, Modifiers, Platform, RunOptions,
@@ -22,7 +23,7 @@ use sapphire_platform::{
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::anim_graph::GraphDriver;
-use sapphire_stage::{Content, FrameLaps, Readback, Stage, StageDesc, headless_gpu};
+use sapphire_stage::{FrameLaps, Readback, Stage, headless_gpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const WIDTH: u32 = 320;
@@ -57,18 +58,21 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let gpu = headless_gpu()?;
+        let gpu = Arc::new(headless_gpu()?);
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
-        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
-        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents, screens, PlayerSettings::default())?;
+        let show = GameShow::new(documents, screens, PlayerSettings::default())?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
-        let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
+        let boot = Boot::start(platform.host(), gpu, FORMAT, QualitySettings::default(), show, &option)?;
+        let (mut stage, report) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+        assert!(report.frames > 1, "the boot screen drew while the game built: {report:?}");
+        assert_eq!(report.screen_pipelines, 1, "the boot screen draws through the interface's one pipeline");
+        // Exit test 1 (M4 H2): from the boot screen's first frame, nothing was built on a frame or waited for.
+        let booted = report.pipelines;
+        assert_eq!((booted.frame_thread_builds, booted.frame_waits), (0, 0), "{report:?}");
+        assert!(booted.warmed_off_frame > 0, "the warm-up built what the game draws: {report:?}");
+        let combat = stage.show.shown.fight.combat.as_ref().expect("the boot stood the fight");
         assert!(combat.simulation().overhead_presentation_pair().is_some());
-        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
-        let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
 
         for _ in 0..30 {
             stage.step();
@@ -130,9 +134,11 @@ impl App for OutsideCaller {
         // Exit test 7: from the title through the fight's first seconds, no frame built what the load didn't.
         let first_uses = stage.renderer.stats().pipelines.first_use_builds;
         assert_eq!(first_uses, 0, "the load missed: {}", stage.renderer.first_use_report());
-        // Exit test 1 (M4 H1): after the first frame, none built a pipeline itself; the warm-up did.
-        let on_frame = stage.renderer.stats().pipelines.frame_thread_builds;
-        assert_eq!(on_frame, 0, "a frame built: {}", stage.renderer.first_use_report());
+        // Exit test 1 (M4 H1, H2): after the boot screen's first frame, none built a pipeline itself or waited for
+        // one; the warm-up built them.
+        let pipelines = stage.renderer.stats().pipelines;
+        let on_frame = (pipelines.frame_thread_builds, pipelines.frame_waits);
+        assert_eq!(on_frame, (0, 0), "a frame built or waited: {}", stage.renderer.first_use_report());
         Ok(Self)
     }
 

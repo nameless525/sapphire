@@ -647,6 +647,7 @@ impl SceneShow for ShownFight {
                 None => wipe.follow(flow, flow_time),
             }
             show.say_trip_wipe(wipe.covered(), wipe.clear());
+            wipe.follow_warm_up(content.warm_up());
         }
         self.fight.follow_content(scene, content, changes);
     }

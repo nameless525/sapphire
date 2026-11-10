@@ -128,3 +128,9 @@ enemy-lancer = 槍使い
 
 boss-captain = 骸骨の隊長
 boss-knell-colossus = 弔鐘の巨像
+
+boot-step-shaders = シェーダーを準備中
+boot-step-loading = 読み込み中
+boot-percent = { $percent }%
+
+wipe-loading = 読み込み中

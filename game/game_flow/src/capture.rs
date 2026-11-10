@@ -1,8 +1,10 @@
 //! A game drawn with no window (M3 G1): what the game's `--capture` and the sandbox's `--game` draw. The show
 //! stands on a headless GPU, the title chooses what it's told to, and each tick is a frame: stepped, its view
 //! driven and drawn, as the window's loop would, small until [`GameCapture::draw_from`]. The last frame is read
-//! back.
+//! back. With [`GameCapture::boot`] it boots as the game's window does first (`crate::boot`), its boot screen
+//! drawn at the tier's pace until the title's warm, and logs what that took.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use game_combat::combat::CombatOption;
@@ -16,6 +18,7 @@ use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
+use crate::boot::{Boot, BootReport};
 use crate::flow::{FlowCommand, FlowState};
 use crate::show::GameShow;
 
@@ -49,6 +52,10 @@ pub struct GameCapture {
     /// TAA's history, as a camera cut does. So a capture draws full size from its last cut or a few frames
     /// before, and its last frame is byte for byte the one drawing them all would give.
     pub draw_from: u32,
+    /// Whether it boots as the game's window does (M4 H2), its boot screen's frames paced at the tier's rate
+    /// while the pipelines build off them, and says how it went ([`BootReport`]); else it stands the game at
+    /// once and prewarms, as a golden needs nothing more.
+    pub boot: bool,
 }
 
 /// A capture's last frame.
@@ -58,6 +65,8 @@ pub struct Captured {
     pub pixels: Vec<u8>,
     /// The GPU that drew it, for a golden to compare against its own backend's.
     pub adapter: wgpu::AdapterInfo,
+    /// What its boot took, if it booted.
+    pub boot: Option<BootReport>,
 }
 
 /// Stands `show` with `first`, its first run, draws [`GameCapture::ticks`] frames and returns the last one,
@@ -70,14 +79,21 @@ pub fn capture(
     capture: &GameCapture,
 ) -> Result<Captured, AppInitError> {
     let gpu = headless_gpu()?;
-    let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, capture.quality));
-    let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-    let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
-    let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
-    let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-    show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+    let (mut stage, boot) = if capture.boot {
+        let boot = Boot::start(platform.host(), Arc::new(gpu), FORMAT, capture.quality, show, first)?;
+        let (stage, report) = boot.run_offscreen(capture.size, true)?;
+        (stage, Some(report))
+    } else {
+        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, capture.quality));
+        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
+        let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
+        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
+        let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
+        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
+        (stage, None)
+    };
     if let Some(command) = capture.choose {
-        show.choose(command);
+        stage.show.choose(command);
     }
 
     let (width, height) = capture.size;
@@ -130,9 +146,19 @@ pub fn capture(
     stage.check_gpu()?;
     stage.show.say_first_uses(&stage.renderer);
     let pixels = readback.read(&stage.gpu).map_err(AppInitError::msg)?;
+    if let Some(boot) = &boot {
+        let pipelines = stage.renderer.stats().pipelines;
+        tracing::info!(
+            target: LOG_TARGET,
+            ticks = capture.ticks,
+            frame_thread = pipelines.frame_thread_builds - boot.pipelines.frame_thread_builds,
+            frame_waits = pipelines.frame_waits - boot.pipelines.frame_waits,
+            "the title and the game's frames after the boot"
+        );
+    }
     stage.show.finish().map_err(AppInitError::msg)?;
     tracing::info!(target: LOG_TARGET, ticks = capture.ticks, "a game drawn with no window");
-    Ok(Captured { pixels, adapter: stage.gpu.caps().adapter.clone() })
+    Ok(Captured { pixels, adapter: stage.gpu.caps().adapter.clone(), boot })
 }
 
 /// The keyboard's forward, down or up, at `now`, as a window would send it.

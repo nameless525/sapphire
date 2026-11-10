@@ -143,3 +143,9 @@ enemy-lancer = Lancer
 
 boss-captain = Skeleton Captain
 boss-knell-colossus = Knell Colossus
+
+boot-step-shaders = Preparing shaders
+boot-step-loading = Loading
+boot-percent = { $percent }%
+
+wipe-loading = Loading

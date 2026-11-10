@@ -96,7 +96,8 @@ pub(crate) fn game(
         language.clone_into(&mut settings.language);
     }
     let (show, first) = GameShow::from_content(platform.content(), settings, setup)?;
-    let capture = GameCapture { choose: start.command(), size, ticks, quality, forward, draw_from };
+    let capture =
+        GameCapture { choose: start.command(), size, ticks, quality, forward, draw_from, boot: false };
     let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
     write_png(path, size.0, size.1, &captured.pixels)?;
     write_adapter_info(path, &captured.adapter)?;

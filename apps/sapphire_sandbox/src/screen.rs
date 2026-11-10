@@ -5,8 +5,11 @@
 //! game's own menus run in `game_app`. `--ui-dialogue [<name>:]<nexts>` puts the dialogue panel on a real
 //! conversation in place of its sample: `content/dialogue/<name>.dialogue.ron`, cooked, that many lines in
 //! (M3 Q2b), found by its name with no list in code (M3 Z5e), and the Lantern Ward guide's with no name.
+//! `boot`, the boot screen (M4 H2), isn't a menu, so it's found by name beside the menus document, on a
+//! sample of a boot under way.
 
 use bevy_reflect::PartialReflect;
+use game_ui::boot::{BOOT_SCREEN, BootModel};
 use game_ui::menus::{
     DialogueModel, HudModel, MenuDocument, MenuModel, PlayerSettings, ScreenModel, SubtitleBackground,
     SubtitleSize, Subtitles, TextSize,
@@ -120,6 +123,9 @@ pub fn parse_subtitles(raw: &str) -> Result<Subtitles, String> {
 /// Where the screen's clock stands with no `--ui-time`: well past what any screen does as it opens.
 const SETTLED: f32 = 60.0;
 
+/// The boot screen's name, which the menus document doesn't have: it shows before they load.
+pub const BOOT: &str = "boot";
+
 impl ScreenOptions {
     /// The screen named `screen` as it settles, in English.
     #[must_use]
@@ -169,6 +175,12 @@ impl ScreenOptions {
         gpu: &GpuContext,
         atlas: Atlas,
     ) -> Result<(ScreenStack, bool), AppInitError> {
+        if self.screen == BOOT {
+            let assets = content.load_screens(&[BOOT_SCREEN], renderer, gpu)?;
+            let sample = Box::new(BootModel::sample());
+            let stack = self.stack_on(assets, atlas, sample).map_err(AppInitError::msg)?;
+            return Ok((stack, false));
+        }
         let (id, model) = self.find(screens).map_err(AppInitError::msg)?;
         let assets = content.load_screens(&[id], renderer, gpu)?;
         let inset =
@@ -195,15 +207,6 @@ impl ScreenOptions {
         dialogue: Option<&Dialogue>,
         model: ScreenModel,
     ) -> Result<ScreenStack, String> {
-        if let Some(step) =
-            self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
-        {
-            return Err(format!("--ui-walk: `{step}` isn't up, down, left, right or confirm"));
-        }
-        let setup = StackSetup { locale: self.locale.clone(), pseudo: self.pseudo, scale: self.scale };
-        let shown = |error| format!("--ui-game: {error}");
-        let mut stack = ScreenStack::new(assets.tables, assets.fonts, atlas, setup).map_err(shown)?;
-        let start = Timestamp::from_nanos(0);
         let model: Box<dyn PartialReflect> = match (&self.dialogue, dialogue) {
             (Some(preview), Some(dialogue)) => conversation(dialogue, preview.lines)?,
             (Some(preview), None) => return Err(format!("--ui-dialogue: `{}` wasn't loaded", preview.name)),
@@ -223,6 +226,25 @@ impl ScreenOptions {
                 None => model.sample(),
             },
         };
+        self.stack_on(assets, atlas, model)
+    }
+
+    /// `assets` over `atlas` as these flags ask, on `model`, opened at the clock's start.
+    fn stack_on(
+        &self,
+        assets: ScreenAssets,
+        atlas: Atlas,
+        model: Box<dyn PartialReflect>,
+    ) -> Result<ScreenStack, String> {
+        if let Some(step) =
+            self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
+        {
+            return Err(format!("--ui-walk: `{step}` isn't up, down, left, right or confirm"));
+        }
+        let setup = StackSetup { locale: self.locale.clone(), pseudo: self.pseudo, scale: self.scale };
+        let shown = |error| format!("--ui-game: {error}");
+        let mut stack = ScreenStack::new(assets.tables, assets.fonts, atlas, setup).map_err(shown)?;
+        let start = Timestamp::from_nanos(0);
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
         if self.plain {
             stack.push_plain_under(start).map_err(shown)?;

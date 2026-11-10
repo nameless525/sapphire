@@ -11,13 +11,18 @@
 //!
 //! With no trip and nothing on screen, it draws nothing and costs a branch. One look for every trip, and
 //! that look's a first draft: the document's to change, not this.
+//!
+//! A trip holds covered until its zone's pipelines are warm (M4 H1's warm-up, which no frame waits on), its zone
+//! loaded and the cells around where it arrives on the renderer. Held covered for longer than [`SLOW_AFTER`] it
+//! shows how far the warm-up has got, in its corner (M4 H2): a cold cache's trip can take seconds.
 
+use bevy_reflect::Reflect;
 use game_combat::fight::trip::TripPhase;
 use sapphire_assets::AssetId;
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_platform::{AppInitError, Timestamp};
 use sapphire_render::quality::TierId;
-use sapphire_render::{PipelineInventory, Renderer};
+use sapphire_render::{PipelineInventory, Renderer, WarmUpProgress};
 use sapphire_rhi::GpuContext;
 use sapphire_stage::content::{Content, ScreenAssets};
 use sapphire_stage::scene::stream_settings;
@@ -31,6 +36,19 @@ pub const ZONE_WIPE: AssetId = AssetId::from_text("6b1d4e9a-2f73-4c58-9e06-d47a8
 
 /// How many points high the wipe lays out on any target, so its slats' offsets clear any screen's width.
 const POINTS_HIGH: f32 = 720.0;
+
+/// How long, in seconds on its clock, it holds covered before it shows how far the load has got: longer than a
+/// warm trip takes, so a trip whose zone a hub had coming never shows it.
+pub const SLOW_AFTER: f64 = 1.0;
+
+/// What the wipe's paths read.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct WipeModel {
+    /// It's held covered past [`SLOW_AFTER`]: it shows how far the load has got.
+    pub slow: bool,
+    /// How much of the renderer's warm-up is done, 0 to 1: 1 once nothing warms.
+    pub progress: f32,
+}
 
 /// Loads the wipe and covers `shown`'s zone trips with it, if its fight goes between zones
 /// ([`Fight::travels`](game_combat::fight::Fight::travels)), streaming zones as `tier` does: once the fight's
@@ -81,6 +99,8 @@ pub struct ZoneWipe {
     told: Option<(&'static str, f64)>,
     /// It has something on screen, or is about to.
     showing: bool,
+    /// How long it's held covered, on its clock, while still asked to cover.
+    covered_for: f64,
 }
 
 impl ZoneWipe {
@@ -89,8 +109,8 @@ impl ZoneWipe {
         let setup = StackSetup { locale: "en".to_owned(), pseudo: false, scale: 1.0 };
         let document = assets.documents.first().ok_or("no wipe document")?;
         let mut layer = ScreenStack::new(assets.tables, assets.fonts, atlas, setup)?;
-        layer.push(document, Box::new(()), Timestamp::from_nanos(0), Vec::new())?;
-        Ok(Self { layer, now: 0.0, asked: None, told: None, showing: false })
+        layer.push(document, Box::new(WipeModel::default()), Timestamp::from_nanos(0), Vec::new())?;
+        Ok(Self { layer, now: 0.0, asked: None, told: None, showing: false, covered_for: 0.0 })
     }
 
     /// [`ZONE_WIPE`], loaded, over `atlas`, with what it draws through built, so its first frame builds
@@ -115,6 +135,11 @@ impl ZoneWipe {
         if self.showing || ask.is_some() {
             self.now += f64::from(dt.max(0.0));
         }
+        self.covered_for = if self.covered() && ask == Some(WipeAsk::Cover) {
+            self.covered_for + f64::from(dt.max(0.0))
+        } else {
+            0.0
+        };
         match (self.asked, ask) {
             (None | Some(WipeAsk::Clear), Some(WipeAsk::Cover)) => {
                 self.told = Some(("cover", at));
@@ -139,6 +164,15 @@ impl ZoneWipe {
     #[must_use]
     pub fn clear(&self) -> bool {
         self.told.is_none() && self.layer.tree(0).state().is_none_or(|state| state == "clear")
+    }
+
+    /// How far the renderer's warm-up has got, as the content's last update saw it, for the next draw: what it
+    /// shows once it's held covered past [`SLOW_AFTER`].
+    pub fn follow_warm_up(&mut self, warm_up: WarmUpProgress) {
+        let slow = self.covered_for >= SLOW_AFTER;
+        let model = self.layer.model_mut::<WipeModel>(0).expect("the wipe reads a WipeModel");
+        model.slow = slow;
+        model.progress = if warm_up.warming { warm_up.fraction() } else { 1.0 };
     }
 
     /// What the renderer's glyph pages hold, for the next draw.
@@ -231,6 +265,53 @@ mod tests {
         wipe.follow(None, 1.0 / 60.0);
         wipe.draw((320, 180), &mut list);
         assert!(list.quads.is_empty(), "nothing once it's clear again");
+    }
+
+    #[test]
+    fn the_wipe_reads_its_model() {
+        use bevy_reflect::Typed;
+        use sapphire_assets::ui::UiModel;
+
+        let document = UiDocument::from_document(DOCUMENT).expect("it reads");
+        assert_eq!(document.model.as_deref(), Some("zone_wipe.model.ron"));
+        let model = UiModel::from_document(include_str!("../../../content/ui/zone_wipe.model.ron"))
+            .expect("it reads");
+        assert_eq!(model, UiModel::of_type(WipeModel::type_info()));
+        assert!(document.path_issues(&model).is_empty());
+    }
+
+    /// A load held covered shows how far it's got only past [`SLOW_AFTER`], and not once it uncovers: a warm
+    /// trip's frames are what they were before M4 H2.
+    #[test]
+    fn a_load_held_long_shows_how_far_it_has_got() {
+        let mut wipe = wipe();
+        let loading = |wipe: &ZoneWipe| {
+            let tree = wipe.tree();
+            tree.is_visible(tree.find("loading").expect("its corner"))
+        };
+        let warming = WarmUpProgress { warming: true, steps: 4, steps_done: 1, built: 9 };
+        frames(&mut wipe, Some(TripPhase::Covering), ZoneWipe::covered);
+        let mut list = UiDrawList::default();
+        let mut shown_after = None;
+        for frame in 0..120 {
+            wipe.follow(Some(WipeAsk::Cover), 1.0 / 60.0);
+            wipe.follow_warm_up(warming);
+            list.reset();
+            wipe.draw((320, 180), &mut list);
+            if loading(&wipe) {
+                shown_after = Some(frame);
+                break;
+            }
+        }
+        let shown_after = shown_after.expect("a long hold shows its progress");
+        assert!((58..=62).contains(&shown_after), "shown after {shown_after} frames");
+        let model = wipe.layer.model_mut::<WipeModel>(0).expect("its model");
+        assert_eq!(model.progress, 0.25);
+        wipe.follow(Some(WipeAsk::Clear), 1.0 / 60.0);
+        wipe.follow_warm_up(WarmUpProgress::default());
+        list.reset();
+        wipe.draw((320, 180), &mut list);
+        assert!(!loading(&wipe), "uncovering hides it");
     }
 
     #[test]

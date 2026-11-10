@@ -1,0 +1,92 @@
+// The boot screen (M4 H2): the game's name and how far it's got, from the first frame until the title, while
+// what the game draws through is built off the frame. It draws alone, by the interface's one pipeline, before
+// the game has a renderer, and lays out 720 points high on any target. What's under way is a key the boot
+// chooses under `boot-step-`. A first draft: the document's to change, not the code.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "boot.model.ron",
+        styles: [
+            (name: "name", role: "display", size: 48, weight: 700),
+            (name: "step", role: "body", size: 16, weight: 500),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, justify: End, padding: (left: 48, right: 48, top: 24, bottom: 40), safe_area: true),
+                look: (fill: Gradient(from: (14, 18, 46, 255), to: (46, 30, 96, 255), angle: 0)),
+            ),
+            (
+                name: "name",
+                parent: "root",
+                layout: (margin: (bottom: 20)),
+                text: (
+                    key: "title-name",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "status",
+                parent: "root",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    width: Points(360),
+                    max_width: Percent(100),
+                    margin: (bottom: 8),
+                ),
+            ),
+            (
+                name: "step",
+                parent: "status",
+                text: (
+                    key: "boot-step-shaders",
+                    style: "step",
+                    color: (200, 212, 240, 255),
+                    key_from: (path: "step", prefix: "boot-step-"),
+                ),
+            ),
+            (
+                name: "percent",
+                parent: "status",
+                text: (
+                    key: "boot-percent",
+                    style: "step",
+                    color: (200, 212, 240, 255),
+                    args: [(name: "percent", path: "percent")],
+                ),
+            ),
+            (
+                name: "track",
+                parent: "root",
+                layout: (width: Points(360), max_width: Percent(100), height: Points(4)),
+                look: (shape: Slice(sprite: Bar, corner: 2), fill: Color((36, 44, 92, 255))),
+            ),
+            (
+                name: "bar",
+                parent: "track",
+                layout: (width: Percent(100), height: Percent(100)),
+                look: (
+                    shape: Slice(sprite: Bar, corner: 2),
+                    fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                ),
+                binds: [(to: Fill, path: "progress")],
+            ),
+        ],
+        timelines: [
+            (
+                name: "breathe",
+                looping: true,
+                tracks: [
+                    (node: "step", property: Opacity, keys: [(at: 0, value: 1), (at: 0.8, value: 0.6), (at: 1.6, value: 1)]),
+                ],
+            ),
+        ],
+        states: [(name: "shown", play: "breathe")],
+    ),
+)

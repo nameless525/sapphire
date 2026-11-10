@@ -24,10 +24,13 @@
 //!   app and the sandbox's `--game` both stand it.
 //! - **With no window** ([`capture`]): a game drawn to a frame it reads back, for the game's `--capture` and
 //!   the sandbox's `--game`.
+//! - **The boot** ([`boot`]): [`Boot`](boot::Boot), from the game's first frame to the title, its screen drawing
+//!   while the renderer and what the game draws through build where no frame waits (M4 H2).
 //!
 //! **Not here:** the simulation, the fight (`game_combat`) and the screens (`game_ui`), which know nothing of
 //! the flow; the window's loop, which is the app's.
 
+pub mod boot;
 pub mod capture;
 pub mod document;
 pub mod flow;

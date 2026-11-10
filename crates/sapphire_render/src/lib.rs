@@ -871,6 +871,7 @@ mod frame;
 mod gpu_types;
 pub mod graph;
 pub mod inset;
+mod interface_screen;
 mod lights;
 mod materials;
 mod mesh_pool;
@@ -910,6 +911,7 @@ pub use frame::{
     PacketRange, SkinnedInstance, ViewData, Weather, Wind,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
+pub use interface_screen::InterfaceScreen;
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;

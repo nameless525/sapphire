@@ -3,10 +3,12 @@
 //! [`hud::ShownFight`] is a fight with its HUD on it, as a `sapphire_stage::SceneShow`, and [`menus::GameMenus`]
 //! the title, the pause and the rest, on documents, over it. [`dialogue::DialoguePanel`] puts the dialogue
 //! screen up on a fight's conversation.
+//! [`boot::BootScreen`] is what the game shows from its first frame until the title (M4 H2).
 
 // These docs are read with `--document-private-items`, as CI renders them.
 #![allow(rustdoc::private_intra_doc_links)]
 
+pub mod boot;
 pub mod dialogue;
 pub mod hud;
 pub mod menus;

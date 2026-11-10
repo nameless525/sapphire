@@ -276,7 +276,21 @@ impl Stage {
     pub fn new_with_content(
         gpu: impl Into<Arc<GpuContext>>,
         desc: StageDesc,
+        content: Content,
+    ) -> Result<Self, AppInitError> {
+        let gpu = gpu.into();
+        let renderer = Renderer::new(&gpu, desc.format, desc.settings)?;
+        Self::new_with_renderer(gpu, desc, content, renderer)
+    }
+
+    /// As [`Self::new_with_content`], on `renderer`, made for `desc`'s format and settings elsewhere, as [`Self::new_with_content`] makes it: a game's
+    /// boot makes it on the warm-up pool while its screen draws, and warms the packs on it first (M4 H2), so
+    /// that [`StageDesc::prewarm_packs`] finds them built.
+    pub fn new_with_renderer(
+        gpu: impl Into<Arc<GpuContext>>,
+        desc: StageDesc,
         mut content: Content,
+        mut renderer: Renderer,
     ) -> Result<Self, AppInitError> {
         if content.selection() != (desc.character, desc.sky) {
             return Err(AppInitError::msg("preloaded content differs from the stage character or sky"));
@@ -285,7 +299,7 @@ impl Stage {
         let StageDesc {
             format,
             quality,
-            settings,
+            settings: _,
             character: _,
             sky: _,
             keep_character_mesh,
@@ -296,7 +310,6 @@ impl Stage {
             inventory_without,
             warm_load,
         } = desc;
-        let mut renderer = Renderer::new(&gpu, format, settings)?;
         let load_warmup = warm_load.then(|| renderer.warm_load());
         if prewarm_packs {
             let mut inventory = content.pipeline_inventory();

@@ -34,8 +34,9 @@
 //!
 //! A trip to the background pauses a run someone's playing, writes the save, the settings and a kept run's
 //! file, and suspends the audio; the return lands on the pause's screen, the "tap to continue" (`app.rs`). A
-//! lost device takes the stage: the game stands again on a new device and goes back where its save has it,
-//! paused if someone was playing ([`stand_game`], `game_flow`'s `Reload`).
+//! lost device takes the stage: the game boots again on a new device, under the boot screen (M4 H2), and goes
+//! back where its save has it, paused if someone was playing (`game_flow`'s `Boot` and `Reload`; a test stands
+//! it at once with [`stand_game`]).
 //!
 //! # What it doesn't do yet
 //!
@@ -100,8 +101,8 @@ pub fn startup() {
 }
 
 /// The game's `show` stood on a stage on `gpu`, drawing into `format` targets, at its title with `first` the
-/// run behind it: what the window does at startup and again on a new device after one's lost (M4 S6), and what
-/// a test does with no window. Fails if the device is lost while it stands, rather than hand back a stage of
+/// run behind it, in one go: what a test does with no window. The window boots it over frames instead, under
+/// the boot screen (`game_flow::boot`, M4 H2), at startup and again on a new device after one's lost (M4 S6). Fails if the device is lost while it stands, rather than hand back a stage of
 /// dead objects.
 pub fn stand_game(
     host: &Host,

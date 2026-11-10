@@ -139,6 +139,7 @@ impl Options {
             quality: QualitySettings::default(),
             forward: false,
             draw_from: 0,
+            boot: true,
         }
     }
 }
@@ -174,6 +175,7 @@ mod tests {
                 quality: QualitySettings::default(),
                 forward: false,
                 draw_from: 0,
+                boot: true,
             }
         );
         assert!(!options.saves());

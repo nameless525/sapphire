@@ -1810,6 +1810,21 @@ impl Renderer {
         self.warm_ups.progress(self.pipeline_builds.stats().warmed_off_frame)
     }
 
+    /// Takes in a warm-up that finished, as [`Self::prepare`] does, for a renderer that draws no frames yet: one
+    /// made behind a screen drawn apart ([`InterfaceScreen`](crate::InterfaceScreen), M4 H2's boot). Never waits.
+    pub fn take_in_warm_up(&mut self) {
+        self.poll_warm_ups();
+    }
+
+    /// Counts what this thread builds or waits for from now on as a hitch ([`PipelineStats::frame_thread_builds`],
+    /// [`PipelineStats::frame_waits`]), as it would after the renderer's first frame: for a renderer made behind a
+    /// screen drawn apart (M4 H2's boot), whose first frame isn't the player's. Exit test 1 counts from the boot
+    /// screen's first frame.
+    pub fn count_hitches_from_now(&mut self) {
+        self.pipeline_builds.frame_started();
+        self.pipeline_builds.frame_started();
+    }
+
     /// [`Self::warm`], and waits for it, taking it in: for a load that blocks anyway (a capture, a tool, a test,
     /// and until M4 H2's screens a boot and a zone's load), before the uploads it's for. Its wait after the first
     /// frame, if anything was built, is a hitch ([`PipelineStats::frame_waits`]). Says how many pipelines it

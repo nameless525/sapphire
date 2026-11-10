@@ -1,10 +1,13 @@
 // The wipe that covers a zone's load (M3 W4): staggered slats in from the right, held while the next zone
 // comes in, then out to the left. One look for every trip: a first draft. Its slats lie past any screen's
-// edge at 3200 points, since the layer draws 720 points high whatever the target.
+// edge at 3200 points, since the layer draws 720 points high whatever the target. A load held covered for long
+// shows how far it's got in the corner (M4 H2), over the slats, which never move then.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
     data: (
+        model: "zone_wipe.model.ron",
+        styles: [(name: "loading", role: "body", size: 16, weight: 500)],
         nodes: [
             (name: "root", layout: (direction: Column)),
             (
@@ -42,6 +45,39 @@
                 parent: "root",
                 layout: (grow: 1, width: Percent(100)),
                 look: (fill: Gradient(from: (20, 24, 58, 255), to: (64, 38, 118, 255), angle: 0)),
+            ),
+            (
+                name: "loading",
+                parent: "root",
+                layout: (
+                    anchored: (right: Points(48), bottom: Points(40)),
+                    direction: Column,
+                    align: End,
+                    gap: 8,
+                    width: Points(240),
+                ),
+                binds: [(to: Shown, path: "slow")],
+            ),
+            (
+                name: "loading-text",
+                parent: "loading",
+                text: (key: "wipe-loading", style: "loading", color: (200, 212, 240, 255)),
+            ),
+            (
+                name: "loading-track",
+                parent: "loading",
+                layout: (width: Percent(100), height: Points(4)),
+                look: (shape: Slice(sprite: Bar, corner: 2), fill: Color((36, 44, 92, 255))),
+            ),
+            (
+                name: "loading-bar",
+                parent: "loading-track",
+                layout: (width: Percent(100), height: Percent(100)),
+                look: (
+                    shape: Slice(sprite: Bar, corner: 2),
+                    fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                ),
+                binds: [(to: Fill, path: "progress")],
             ),
         ],
         timelines: [

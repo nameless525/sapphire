@@ -409,8 +409,48 @@ impl GameShow {
         self.follow_flow();
     }
 
-    /// Stands the fight, which waits at the title until [`Self::open_fight`], and loads the menus.
+    /// Stands the fight, which waits at the title until [`Self::open_fight`], and loads the menus, with what they
+    /// may draw built, so their first frame builds nothing: a load that blocks, as a capture's or a test's.
     pub fn stand(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        tier: TierId,
+    ) -> Result<(), AppInitError> {
+        self.stand_unwarmed(combat, scene, content, renderer, gpu, tier)?;
+        // The menus' and the HUD's interface with it, though neither's drawn yet.
+        scene.prewarm(&*self, renderer);
+        let builds = renderer.stats().pipelines;
+        tracing::info!(
+            target: LOG_TARGET,
+            prewarmed = builds.prewarmed,
+            first_use = builds.first_use_builds,
+            "what the game may draw is built"
+        );
+        Ok(())
+    }
+
+    /// [`Self::stand`], leaving what the stood show declares ([`Scene::declared_pipelines`]) for the caller to
+    /// warm: the boot's, which warms it off the frame while its screen draws (M4 H2).
+    pub fn stand_unwarmed(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        tier: TierId,
+    ) -> Result<(), AppInitError> {
+        self.stand_fight(combat, scene, content, renderer, gpu, tier)?;
+        self.stand_screens(content, renderer, gpu, tier)
+    }
+
+    /// [`Self::stand_unwarmed`]'s first half: the fight, `combat`, and the zone around where it starts. A boot
+    /// stands the halves on two frames (M4 H2).
+    pub fn stand_fight(
         &mut self,
         combat: Combat,
         scene: &mut Scene,
@@ -421,6 +461,18 @@ impl GameShow {
     ) -> Result<(), AppInitError> {
         let followed = self.shown.fight.stand_prepared(combat, scene, content, renderer, gpu, tier)?;
         self.shown.hear(followed);
+        Ok(())
+    }
+
+    /// [`Self::stand_unwarmed`]'s second half, after [`Self::stand_fight`]: the menus, on the title, and the
+    /// wipe over the fight's trips and the game's restarts.
+    pub fn stand_screens(
+        &mut self,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        tier: TierId,
+    ) -> Result<(), AppInitError> {
         let assets = content.load_screens(&self.setup.screens.ids(), renderer, gpu)?;
         let mut menus = GameMenus::new(assets, self.atlas.clone(), self.setup.clone())
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
@@ -434,16 +486,13 @@ impl GameShow {
         if self.game.is_some() && !trips {
             self.shown.wipe_trips(ZoneWipe::load(self.atlas.clone(), content, renderer, gpu)?);
         }
-        // The menus' and the HUD's interface with it, though neither's drawn yet.
-        scene.prewarm(&*self, renderer);
-        let builds = renderer.stats().pipelines;
-        tracing::info!(
-            target: LOG_TARGET,
-            prewarmed = builds.prewarmed,
-            first_use = builds.first_use_builds,
-            "what the game may draw is built"
-        );
         Ok(())
+    }
+
+    /// The language the player reads, as their settings say: what the boot's screen shows (M4 H2).
+    #[must_use]
+    pub fn language(&self) -> &str {
+        &self.setup.settings.language
     }
 
     /// Says so when a frame has built a pipeline the load didn't, naming it: exit test 7's count, which should

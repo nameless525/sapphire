@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_core::alloc::{AllocCounts, AllocScope};
+use sapphire_core::thermal::ThermalReading;
 use sapphire_platform::{AppInitError, Host};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
@@ -247,6 +248,12 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub gpu: Arc<GpuContext>,
     /// The last frame's stage times, measured while something draws over the frames.
     last_times: Option<StageTimes>,
+    /// The platform's thermal reading the quality tier's thermal ladder follows (M4 T2): whoever runs the
+    /// stage sets it each frame from `Platform::thermal`. Unknown until then, so only dynamic resolution's
+    /// pressure and `r.rung` move the ladder.
+    pub thermal: ThermalReading,
+    /// The ladder's clock: frames here have no real length, so it advances by [`FRAME`] a frame.
+    ladder_clock: Duration,
     /// Held from the renderer's making to the first frame, with [`StageDesc::warm_load`].
     load_warmup: Option<PipelineWarmup>,
     format: wgpu::TextureFormat,
@@ -335,6 +342,8 @@ impl Stage {
             laps: FrameLaps::default(),
             gpu,
             last_times: None,
+            thermal: ThermalReading::default(),
+            ladder_clock: Duration::ZERO,
             load_warmup,
             format,
         })
@@ -357,6 +366,8 @@ impl Stage {
             laps,
             gpu,
             last_times,
+            thermal,
+            ladder_clock,
             load_warmup,
             format,
         } = self;
@@ -375,6 +386,8 @@ impl Stage {
             laps,
             gpu,
             last_times,
+            thermal,
+            ladder_clock,
             load_warmup,
             format,
         }
@@ -399,6 +412,8 @@ impl<S: SceneShow> Stage<S> {
             laps,
             gpu,
             last_times,
+            thermal,
+            ladder_clock,
             load_warmup,
             format,
         } = self;
@@ -417,6 +432,8 @@ impl<S: SceneShow> Stage<S> {
             laps,
             gpu,
             last_times,
+            thermal,
+            ladder_clock,
             load_warmup,
             format,
         }
@@ -444,6 +461,19 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// An error if the GPU has reported one since the stage was made: see [`gpu_failure`].
     pub fn check_gpu(&self) -> Result<(), AppInitError> {
         gpu_failure(&self.gpu).map_err(AppInitError::msg)
+    }
+
+    /// Follows [`Self::thermal`] and dynamic resolution's pressure along the tier's thermal ladder (M4 T2),
+    /// a frame's length on, and sheds on the renderer what the ladder's rung sheds: in place, so nothing
+    /// builds. The scale follows in the frame's render scale. The frame-rate cap ([`Quality::frame_rate`])
+    /// and a tier the ladder asks for ([`Quality::take_tier_request`], at a pause or a wipe) are the
+    /// caller's.
+    fn follow_heat(&mut self) -> Result<(), AppInitError> {
+        self.ladder_clock += FRAME;
+        self.quality.follow_heat(self.ladder_clock, &self.thermal);
+        // Every frame rather than on a step, so a renderer made since gets the rung's shed too.
+        let shed = self.quality.ladder().state().shed;
+        self.renderer.set_shed(shed).map_err(AppInitError::msg)
     }
 
     /// Whether something draws over the frames: see [`FrameHooks::overlay_visible`].
@@ -566,6 +596,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.laps.prepare += laps.lap();
         self.laps.prepare_allocations = next_scope(&mut scope);
         let timing = FrameTiming::new(&self.graph, FRAME);
+        self.follow_heat()?;
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
         let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
         if H::TOOLS {

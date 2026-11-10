@@ -821,6 +821,9 @@ struct Reflection {
 #[derive(Debug)]
 struct Gtao {
     settings: GtaoSettings,
+    /// The thermal ladder sheds it in place ([`Ambient::shed_gtao`]): no textures, so nothing
+    /// dispatches and the environment reads the open stand-in.
+    shed: bool,
     /// The scene's size last fitted to ([`Ambient::fit`]); `None` before the first frame.
     fitted: Option<(u32, u32)>,
     /// `None` also while the scene is too small for the view distance's mips
@@ -1381,7 +1384,8 @@ impl Ambient {
             ..Default::default()
         });
         let placeholders = Placeholders::new(device, queue);
-        let gtao = occlusion.gtao.map(|settings| Gtao { settings, fitted: None, textures: None });
+        let gtao =
+            occlusion.gtao.map(|settings| Gtao { settings, shed: false, fitted: None, textures: None });
         let compute_frame = compute_frame_group(
             device,
             &ambient_layouts,
@@ -1755,11 +1759,25 @@ impl Ambient {
         }
     }
 
+    /// Sheds GTAO from the next frame, or brings it back (the thermal ladder's
+    /// [`OptionalPass::Gtao`](crate::quality::OptionalPass::Gtao)), in place: its pipelines and the
+    /// environment's stay, and [`Self::fit`] drops or makes its textures. Shed, the environment
+    /// reads the open stand-in, whose visibility of exactly 1 leaves capsule AO as it was: the
+    /// picture of a renderer made without GTAO. Nothing where the tier has no GTAO.
+    pub(crate) fn shed_gtao(&mut self, shed: bool) {
+        if let Some(gtao) = &mut self.gtao
+            && gtao.shed != shed
+        {
+            gtao.shed = shed;
+            gtao.fitted = None;
+        }
+    }
+
     /// Makes GTAO's textures fit a scene of `size` pixels, before a frame records, or drops them
-    /// for a scene too small for the view distance's mips ([`GTAO_MIN_SIDE`]): GTAO then
-    /// dispatches nothing and the environment reads the open stand-in, as without GTAO (review
-    /// PW-001). Returns whether the output changed, so the frame group, which binds it, must be
-    /// rebuilt.
+    /// for a scene too small for the view distance's mips ([`GTAO_MIN_SIDE`]) or while it is shed
+    /// ([`Self::shed_gtao`]): GTAO then dispatches nothing and the environment reads the open
+    /// stand-in, as without GTAO (review PW-001). Returns whether the output changed, so the frame
+    /// group, which binds it, must be rebuilt.
     pub(crate) fn fit(&mut self, size: (u32, u32)) -> bool {
         let Some(gtao) = &mut self.gtao else { return false };
         if gtao.fitted == Some(size) {
@@ -1767,7 +1785,7 @@ impl Ambient {
         }
         gtao.fitted = Some(size);
         let half = (size.0.div_ceil(2), size.1.div_ceil(2));
-        if half.0.max(half.1) < GTAO_MIN_SIDE {
+        if gtao.shed || half.0.max(half.1) < GTAO_MIN_SIDE {
             self.block.ambient.occlusion_size = [1.0; 4];
             self.stats.gtao_size = (0, 0);
             return gtao.textures.take().is_some();

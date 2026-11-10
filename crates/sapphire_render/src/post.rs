@@ -463,7 +463,10 @@ pub(crate) struct PostProcess {
     slots: LutSlots<LutKey>,
     /// Bake output, kept so a bake doesn't allocate it.
     texels: Vec<u32>,
+    /// The levels its pipelines are built for.
     bloom_levels: u32,
+    /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
+    shed_levels: u32,
     bind_groups: Box<BindGroups>,
     /// What the last `prepare` decided.
     uniforms: PostUniforms,
@@ -718,6 +721,7 @@ impl PostProcess {
             slots: LutSlots::default(),
             texels: vec![0; LUT_TEXELS],
             bloom_levels,
+            shed_levels: 0,
             bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
             variant: Variant::default(),
@@ -739,6 +743,18 @@ impl PostProcess {
             tracing::debug!(target: crate::LOG_TARGET, built, ready = ?self.ready, "post variants prewarmed");
         }
         built
+    }
+
+    /// Draws `levels` fewer bloom levels from the next frame, the widest first (the thermal ladder's
+    /// [`OptionalPass::BloomLevel`](crate::quality::OptionalPass::BloomLevel)): a shorter chain of the
+    /// same pipelines, so nothing builds.
+    pub(crate) fn shed_bloom_levels(&mut self, levels: u32) {
+        self.shed_levels = levels.min(self.bloom_levels);
+    }
+
+    /// The levels a frame draws.
+    fn drawn_levels(&self) -> u32 {
+        self.bloom_levels - self.shed_levels
     }
 
     /// Builds the inset resolve's pipeline unless it is built (M3 U6): an inventory's, while nothing draws,
@@ -875,7 +891,7 @@ impl PostProcess {
             let visible = flare_threshold(sun.luminance, uniforms.composite[0]);
             uniforms.flare_sun = [sun.uv.x, sun.uv.y, sun.radius, visible];
         }
-        self.bloom = self.bloom_levels > 0 && (uniforms.composite[1] > 0.0 || layers.diffusion());
+        self.bloom = self.drawn_levels() > 0 && (uniforms.composite[1] > 0.0 || layers.diffusion());
         // The character mask changes only what blooms.
         self.variant = Variant {
             characters: layers.variant.characters && self.bloom,
@@ -900,7 +916,7 @@ impl PostProcess {
             ..PostStats::default()
         };
         self.uniforms = uniforms;
-        let drawn = Slot::drawn(self.variant, self.bloom, self.bloom_levels);
+        let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels());
         let built = self.pipelines.build(&self.builder, &self.module, drawn);
         if built > 0 {
             self.first_use_builds += built;
@@ -972,6 +988,7 @@ impl PostProcess {
             ref lut_views,
             ref mut bind_groups,
             bloom_levels,
+            shed_levels,
             bound,
             bloom,
             variant,
@@ -980,6 +997,7 @@ impl PostProcess {
         } = *self;
         let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
         let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = **bind_groups;
+        let bloom_levels = bloom_levels - shed_levels;
         let pass = |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache };
         let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
 

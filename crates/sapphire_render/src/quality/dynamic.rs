@@ -22,6 +22,16 @@
 //!   come back: GPU timings arrive one to three frames late, and judging the new scale by old
 //!   frames is what makes naive controllers ring.
 //!
+//! # The ladder above it
+//!
+//! The thermal ladder ([`super::ladder`]) sets a ceiling ([`DynamicResolution::set_ceiling`]): the
+//! controller works between its floor and the ceiling, and a ceiling under the floor holds the scale at
+//! the ceiling (Mobile-Low's 0.75 rung under its 0.85 floor). Off, the controller renders at the
+//! ceiling. It tells the ladder how loaded the GPU is ([`DynamicResolution::pressure`]): over budget
+//! at its lowest scale, which the ladder answers with its next rung, or the share of the budget the
+//! frame takes, which says whether a rung can come back. A frame-rate cap stretches its budgets
+//! ([`DynamicResolution::set_budget`]) without losing its estimate.
+//!
 //! Steps keep the frame graph's transient pool from making new textures for every frame: each
 //! step is one new set of scene-sized targets, and the pool keeps one spare set, for 60 frames at
 //! most (`sapphire_rhi::EVICT_AFTER_FRAMES`).
@@ -52,8 +62,8 @@ pub const STEP: f32 = 0.05;
 /// How far each sample moves the smoothed load toward itself.
 const SMOOTHING: f32 = 0.2;
 /// Predicted times must stay under this fraction of the budget for the scale to rise, and a
-/// drop aims under it.
-const LOW_WATER: f32 = 0.85;
+/// drop aims under it. The ladder brings a rung back under it too.
+pub const LOW_WATER: f32 = 0.85;
 /// Where the frame-time signal counts as over: a vsync-paced frame lands right on its budget.
 const FRAME_TIME_HIGH_WATER: f32 = 1.15;
 /// The most steps one decision drops.
@@ -62,6 +72,19 @@ const MAX_DROP_STEPS: u32 = 3;
 const RAISE_HOLD_FRAMES: u64 = 30;
 /// Frames whose scales are remembered for timings that come back late.
 const HISTORY: usize = 8;
+
+/// How loaded the GPU is, by a controller's last decision: what the thermal ladder reads
+/// ([`super::ladder`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Pressure {
+    /// At its lowest scale, this fraction of the base, and still predicted over budget.
+    Over(f32),
+    /// Within budget: the share of it the frame is predicted to take at the scale chosen.
+    Within(f32),
+    /// Nothing measured: off, or no sample yet.
+    #[default]
+    Unknown,
+}
 
 /// What a controller follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,21 +137,34 @@ fn levels_to(floor: f32) -> u32 {
     ((1.0 - floor) / STEP - 1e-4).ceil().max(0.0) as u32
 }
 
+/// The whole steps that stay at or above `ceiling`.
+fn levels_within(ceiling: f32) -> u32 {
+    ((1.0 - ceiling) / STEP + 1e-4).floor().max(0.0) as u32
+}
+
 /// A dynamic-resolution controller (see the [module docs](self)). It is the hook later tuning
 /// builds on: thermal input, per-pass budgets and an upscaler's own ranges replace the inputs and
 /// constants, not the shape.
 #[derive(Clone, Debug)]
 pub struct DynamicResolution {
     budget: ResolutionBudget,
-    /// The lowest factor: the budget's, or higher where the renderer can't go lower
-    /// ([`Self::limit_floor`]).
+    /// The lowest factor the renderer can realize from the base scale ([`Self::limit_floor`]).
+    limit: f32,
+    /// The ladder's ceiling ([`Self::set_ceiling`]).
+    ceiling: f32,
+    /// The lowest factor: the budget's floor, or the ceiling under it, but never under the limit.
     floor: f32,
+    /// The highest: the ceiling, or the limit over it.
+    top: f32,
     /// The device times GPU passes, so the controller follows GPU time alone.
     gpu_timings: bool,
     enabled: bool,
-    /// Steps below the base: the factor is `1 − level × STEP`, at least the floor.
+    /// Steps below the base: the factor is `1 − level × STEP`, within the floor and the top.
     level: u32,
+    min_level: u32,
     max_level: u32,
+    /// The load by its last decision, at the scale it chose.
+    pressure: Pressure,
     signal: Option<ResolutionSignal>,
     /// Smoothed seconds per scene pixel for `signal`.
     load: Option<f32>,
@@ -148,6 +184,10 @@ pub struct DynamicResolutionStats {
     /// The fraction of the base scale it renders at.
     pub factor: f32,
     pub floor: f32,
+    /// The ladder's ceiling on the factor.
+    pub ceiling: f32,
+    /// The load the ladder reads.
+    pub pressure: Pressure,
     /// What it follows, once it has a sample.
     pub signal: Option<ResolutionSignal>,
     /// The time it predicts for the current scale.
@@ -170,11 +210,16 @@ impl DynamicResolution {
         let floor = if budget.floor.is_finite() { budget.floor.clamp(f32::EPSILON, 1.0) } else { 1.0 };
         Self {
             budget: ResolutionBudget { floor, ..budget },
+            limit: f32::EPSILON,
+            ceiling: 1.0,
             floor,
+            top: 1.0,
             gpu_timings,
             enabled: false,
             level: 0,
+            min_level: 0,
             max_level: levels_to(floor),
+            pressure: Pressure::Unknown,
             signal: None,
             load: None,
             history: [(0, 1.0, 0.0); HISTORY],
@@ -188,11 +233,43 @@ impl DynamicResolution {
     /// from the base scale (`MIN_RENDER_SCALE / base`). Below that the scene stays the same size
     /// while the factor and its pixels went on falling, and the load came out wrong.
     pub fn limit_floor(&mut self, floor: f32) {
-        let floor = floor.max(self.budget.floor).clamp(f32::EPSILON, 1.0);
-        self.max_level = levels_to(floor);
-        self.floor = floor;
-        if self.level > self.max_level {
-            self.level = self.max_level;
+        self.limit = if floor.is_finite() { floor.clamp(f32::EPSILON, 1.0) } else { 1.0 };
+        self.bound();
+    }
+
+    /// Holds the factor at or under `ceiling` (the ladder's [`Rung::Scale`](super::Rung::Scale)), but
+    /// never under the renderer's limit. Under the budget's floor it holds the factor there.
+    pub fn set_ceiling(&mut self, ceiling: f32) {
+        self.ceiling = if ceiling.is_finite() { ceiling.clamp(f32::EPSILON, 1.0) } else { 1.0 };
+        self.bound();
+    }
+
+    /// Holds frames to `budget` from now on, keeping the scale and the estimate: a frame-rate cap's
+    /// longer frame.
+    pub fn set_budget(&mut self, budget: ResolutionBudget) {
+        let floor = if budget.floor.is_finite() { budget.floor.clamp(f32::EPSILON, 1.0) } else { 1.0 };
+        self.budget = ResolutionBudget { floor, ..budget };
+        self.pressure = Pressure::Unknown;
+        self.bound();
+    }
+
+    /// How loaded the GPU is by the last decision (see the [module docs](self)): what the thermal
+    /// ladder reads. Off it measures nothing.
+    pub fn pressure(&self) -> Pressure {
+        if self.enabled { self.pressure } else { Pressure::Unknown }
+    }
+
+    /// Fits the levels to the limit, the floor and the ceiling.
+    fn bound(&mut self) {
+        self.top = self.ceiling.max(self.limit);
+        self.floor = self.budget.floor.min(self.top).max(self.limit);
+        self.min_level = levels_within(self.top);
+        self.max_level = levels_to(self.floor).max(self.min_level);
+        let level =
+            if self.enabled { self.level.clamp(self.min_level, self.max_level) } else { self.min_level };
+        if level != self.level {
+            self.level = level;
+            self.pressure = Pressure::Unknown;
             self.changes += 1;
         }
     }
@@ -204,10 +281,11 @@ impl DynamicResolution {
             return;
         }
         self.enabled = enabled;
-        if !enabled && self.level != 0 {
+        if !enabled && self.level != self.min_level {
             self.changes += 1;
         }
-        self.level = 0;
+        self.level = self.min_level;
+        self.pressure = Pressure::Unknown;
         self.signal = None;
         self.load = None;
     }
@@ -253,6 +331,8 @@ impl DynamicResolution {
             enabled: self.enabled,
             factor: self.factor(),
             floor: self.floor,
+            ceiling: self.ceiling,
+            pressure: self.pressure(),
             signal: self.signal,
             estimate: estimate.map(Duration::from_secs_f32),
             low: Duration::from_secs_f32(low),
@@ -262,7 +342,7 @@ impl DynamicResolution {
     }
 
     fn factor_at(&self, level: u32) -> f32 {
-        (1.0 - level as f32 * STEP).max(self.floor)
+        (1.0 - level as f32 * STEP).clamp(self.floor, self.top)
     }
 
     /// The pixels of the newest remembered frame.
@@ -316,7 +396,7 @@ impl DynamicResolution {
             // The first step down whose predicted time is under the low-water mark.
             let deepest = (self.level + MAX_DROP_STEPS).min(self.max_level);
             (self.level + 1..=deepest).find(|&level| time_at(level) <= low).unwrap_or(deepest)
-        } else if self.level > 0
+        } else if self.level > self.min_level
             && frame >= self.changed_at + RAISE_HOLD_FRAMES
             && time_at(self.level - 1) <= low
         {
@@ -329,6 +409,13 @@ impl DynamicResolution {
             self.changed_at = frame;
             self.changes += 1;
         }
+        // The ladder's reading, until a frame at a new scale says otherwise.
+        let time = load * base_pixels * self.factor().powi(2);
+        self.pressure = if self.level == self.max_level && time > high {
+            Pressure::Over(self.factor_at(self.level))
+        } else {
+            Pressure::Within(time * LOW_WATER / low)
+        };
     }
 
     /// The band for `signal`, in seconds: (low, high).
@@ -606,5 +693,62 @@ mod tests {
         controller.set_enabled(false);
         assert_eq!(controller.update(&timing, BASE_PIXELS), 1.0);
         assert_eq!(controller.stats().estimate, None);
+    }
+
+    #[test]
+    fn the_ladders_ceiling_caps_it_on_or_off_and_lowers_the_floor_with_it() {
+        let mut controller = DynamicResolution::new(BUDGET, true);
+        controller.set_ceiling(0.85);
+        assert_eq!(controller.factor(), 0.85, "off, it draws at the ceiling");
+        controller.set_enabled(true);
+        let mut gpu = Gpu::new(1.0, 9.0, 2);
+        let mut timing = FrameTiming { frame: 1, ..FrameTiming::default() };
+        let factors = drive(&mut controller, &mut gpu, 1..200, |_| 1.0, &mut timing);
+        assert!(factors.iter().all(|&factor| factor == 0.85), "under budget, it stays at the ceiling");
+        // A ceiling under the budget's floor takes the floor down with it.
+        controller.set_ceiling(0.6);
+        assert_eq!((controller.factor(), controller.stats().floor), (0.6, 0.6));
+        // The renderer's limit wins over both.
+        controller.limit_floor(0.7);
+        assert_eq!(controller.factor(), 0.7);
+        controller.limit_floor(f32::EPSILON);
+        controller.set_ceiling(1.0);
+        assert_eq!(controller.stats().floor, BUDGET.floor);
+    }
+
+    #[test]
+    fn pressure_is_over_only_at_the_floor_and_still_over_budget() {
+        let mut controller = DynamicResolution::new(BUDGET, true);
+        assert_eq!(controller.pressure(), Pressure::Unknown, "off");
+        controller.set_enabled(true);
+        let mut gpu = Gpu::new(2.0, 60.0, 1);
+        let mut timing = FrameTiming { frame: 1, ..FrameTiming::default() };
+        drive(&mut controller, &mut gpu, 1..120, |_| 1.0, &mut timing);
+        assert_eq!(controller.pressure(), Pressure::Over(BUDGET.floor));
+        // A light load: within, as a share of the band's low water.
+        let mut controller = DynamicResolution::new(BUDGET, true);
+        controller.set_enabled(true);
+        let mut gpu = Gpu::new(1.0, 6.0, 1);
+        let mut timing = FrameTiming { frame: 1, ..FrameTiming::default() };
+        drive(&mut controller, &mut gpu, 1..120, |_| 1.0, &mut timing);
+        let Pressure::Within(share) = controller.pressure() else { panic!("{:?}", controller.pressure()) };
+        assert!((0.4..0.6).contains(&share), "6 ms of 12 at 85% low water: {share}");
+    }
+
+    #[test]
+    fn a_new_budget_keeps_what_it_learned() {
+        let mut controller = DynamicResolution::new(BUDGET, true);
+        controller.set_enabled(true);
+        let mut gpu = Gpu::new(1.0, 16.0, 1);
+        let mut timing = FrameTiming { frame: 1, ..FrameTiming::default() };
+        drive(&mut controller, &mut gpu, 1..60, |_| 1.0, &mut timing);
+        let estimate = controller.stats().estimate;
+        assert!(estimate.is_some() && controller.factor() < 1.0);
+        // Twice the frame (a 30 fps cap): the same load is now well within it.
+        let doubled = ResolutionBudget { frame: BUDGET.frame * 2, gpu_frame: BUDGET.gpu_frame * 2, ..BUDGET };
+        controller.set_budget(doubled);
+        assert_eq!(controller.stats().estimate, estimate);
+        drive(&mut controller, &mut gpu, 60..400, |_| 1.0, &mut timing);
+        assert_eq!(controller.factor(), 1.0);
     }
 }

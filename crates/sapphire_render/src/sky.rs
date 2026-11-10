@@ -794,6 +794,16 @@ impl Sky {
         self.pipelines.count()
     }
 
+    /// Draws a cube face every `interval` frames from the next one due, carrying on in turn (the
+    /// thermal ladder's [`OptionalPass::SkyFaceRate`](crate::quality::OptionalPass::SkyFaceRate)): a
+    /// schedule, so nothing builds.
+    pub(crate) fn set_cube_interval(&mut self, interval: u32) {
+        let interval = interval.clamp(1, SkySettings::MAX_CUBE_INTERVAL);
+        self.settings.cube_interval = interval;
+        self.cube.schedule.interval = interval;
+        self.cube.before.0.interval = interval;
+    }
+
     /// Draws with `pipelines` from the next frame, which draws every face of the cube again, as
     /// the first frame does, so the cube shows the new shaders at once.
     pub(crate) fn set_pipelines(&mut self, pipelines: SkyPipelines) {

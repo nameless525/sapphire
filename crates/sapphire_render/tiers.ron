@@ -36,6 +36,17 @@
 //   history, so their scene is twice the picture's, which the resolve box-filters; phones draw it
 //   with their 4x MSAA in tile memory at the picture's size. The sides hold a character screen's
 //   showcase at each tier's height (`sapphire_render::inset`).
+// - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
+//   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
+//   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
+//   plan §3, from T0's measures on an M5): desktops lower the scale to 0.85, which TAA rebuilds (14-15%
+//   of Desktop-Low's frame), then shed the sky's face rate, GTAO (12-14%) and a bloom level, then the
+//   scale to the floor; phones, whose bilinear upscale softens the hard two-tone edge and the lines,
+//   shed first (a bloom level is 11-13% of Mobile-Low's frame) and lower the scale after. Then a
+//   30 fps cap, and last the class's lower tier, which the game takes at a pause or a wipe. Every
+//   shed is in place, so no rung builds a pipeline; the cirrus and the wind levels can't be (they
+//   are pipeline constants) and T0 measured no saving from either. Mobile-Low is the device floor: it
+//   already runs at 30 fps and has no lower tier.
 // - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4), `max_particles`
 //   (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
@@ -105,6 +116,13 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
                 inset: (max_side: 960, supersample: 2),
+                ladder: [
+                    Scale(0.85),
+                    Shed([SkyFaceRate, Gtao, BloomLevel]),
+                    Scale(0.7),
+                    FrameRate(30),
+                    Tier(DesktopLow),
+                ],
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -138,6 +156,12 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
                 inset: (max_side: 720, supersample: 2),
+                ladder: [
+                    Scale(0.85),
+                    Shed([SkyFaceRate, Gtao, BloomLevel]),
+                    Scale(0.7),
+                    FrameRate(30),
+                ],
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -172,6 +196,13 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 64),
                 inset: (max_side: 720, supersample: 1),
+                ladder: [
+                    Shed([SkyFaceRate, BloomLevel, Gtao]),
+                    Scale(0.85),
+                    Scale(0.75),
+                    FrameRate(30),
+                    Tier(MobileLow),
+                ],
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -179,7 +210,9 @@
                 id: MobileLow,
                 frame_rate: 30,
                 gpu_frame_ms: 26.0,
-                resolution: (scale: 1.0, max_height: 590, dynamic_floor: 0.75),
+                // Dynamic resolution stops at 0.85: 0.75 of a 590-row scene is the softest frame any
+                // tier draws (M4 T0), so it is the ladder's last rung, not an everyday floor.
+                resolution: (scale: 1.0, max_height: 590, dynamic_floor: 0.85),
                 antialiasing: (msaa: X4, temporal: false),
                 // Four levels reach 1/16 of the ~590-row scene.
                 bloom_levels: 4,
@@ -208,6 +241,12 @@
                 foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
                 reflections: (cube_size: 32),
                 inset: (max_side: 512, supersample: 1),
+                // No GTAO to shed, no frame rate under its own 30 and no tier below.
+                ladder: [
+                    Shed([SkyFaceRate, BloomLevel]),
+                    Scale(0.85),
+                    Scale(0.75),
+                ],
             ),
         ],
     ),

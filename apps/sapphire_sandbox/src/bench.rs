@@ -289,6 +289,7 @@ pub(crate) fn run(
         render_scale = format_args!("{:.3}", quality.render_scale),
         scene = format_args!("{scene_width}x{scene_height}"),
         dynamic_resolution = quality.dynamic.enabled,
+        rung = quality.ladder.state.depth,
         msaa = settings.msaa.sample_count(),
         taa = settings.temporal,
         shadows = settings.shadows.is_some(),

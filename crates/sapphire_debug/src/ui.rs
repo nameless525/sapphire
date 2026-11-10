@@ -775,6 +775,7 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             TierSource::Device => "the device's",
             TierSource::Setting => "the player's",
             TierSource::Cvar => "r.tier",
+            TierSource::Ladder => "the thermal ladder's",
         };
         row(ui, "Quality tier", format!("{} ({source})", quality.tier.id));
         if quality.tier.source != TierSource::Device {
@@ -807,6 +808,19 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             (true, ..) => format!("on, waiting for timings; ×{:.2}", dynamic.factor),
         };
         row(ui, "Dynamic resolution", state);
+        let ladder = quality.ladder;
+        let state = ladder.state;
+        let mut held = format!(
+            "rung {} of {}, {:?}: ×{:.2}, shed {}",
+            state.depth, ladder.rungs, ladder.heat, state.scale, state.shed
+        );
+        if let Some(rate) = state.frame_rate {
+            held.push_str(&format!(", {rate} fps"));
+        }
+        if let Some(tier) = ladder.tier_request {
+            held.push_str(&format!(", asks for {tier}"));
+        }
+        row(ui, "Thermal ladder", held);
     });
 }
 

@@ -333,6 +333,9 @@ pub(crate) struct Options {
     /// `--outline-distance <scale>`: the scale on outlines' LOD cutoffs (`r.outline_distance`)
     /// instead of 1; 0 draws none, for profiling.
     pub outline_distance: Option<f32>,
+    /// `--rung <n>`: hold the tier's thermal ladder `n` rungs down (`r.rung`, M4 T2) instead of following
+    /// heat and dynamic resolution's pressure.
+    pub rung: Option<usize>,
     /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
     pub debug_view: Option<DebugView>,
     /// `--debug-draw <what>`: turn debug draw on and draw this (M2 T1).
@@ -496,6 +499,11 @@ impl Options {
             && let Err(error) = sapphire_render::quality::OUTLINE_DISTANCE.set(scale)
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--outline-distance");
+        }
+        if let Some(rung) = self.rung
+            && let Err(error) = sapphire_render::quality::RUNG.set(rung as i32)
+        {
+            tracing::warn!(target: crate::LOG_TARGET, %error, "--rung");
         }
         if let Some(view) = self.debug_view
             && let Err(error) = sapphire_render::debug_view::DEBUG_VIEW.set(view)
@@ -994,6 +1002,14 @@ impl Options {
                         return Err(format!("--outline-distance expects 0 to 4, got {scale}"));
                     }
                     options.outline_distance = Some(scale);
+                }
+                "--rung" => {
+                    let rung: usize = number(&value("--rung")?, "--rung")?;
+                    let most = sapphire_render::quality::ladder::MAX_RUNGS;
+                    if rung > most {
+                        return Err(format!("--rung expects 0 to {most}, got {rung}"));
+                    }
+                    options.rung = Some(rung);
                 }
                 "--debug-view" => {
                     let name = value("--debug-view")?;
@@ -2529,6 +2545,14 @@ mod tests {
         assert!(parse(&["--zoom", "inf"]).is_err());
         assert!(parse(&["--outline-distance", "-1"]).is_err());
         assert!(parse(&["--outline-distance", "5"]).is_err());
+    }
+
+    #[test]
+    fn a_rung_holds_the_ladder_down() {
+        assert_eq!(parse(&["--rung", "3"]).unwrap().0.rung, Some(3));
+        assert_eq!(Options::default().rung, None);
+        assert!(parse(&["--rung", "9"]).unwrap_err().contains("0 to 8"));
+        assert!(parse(&["--rung", "-1"]).is_err());
     }
 
     #[test]

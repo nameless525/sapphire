@@ -21,7 +21,7 @@ use sapphire_assets::mesh::{
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
-use sapphire_render::quality::{QualityTier, TierId, TierTable};
+use sapphire_render::quality::{LadderState, OptionalPass, QualityTier, Rung, TierId, TierTable};
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId,
     MeshHandle, MeshInstance, PostParams, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
@@ -59,14 +59,16 @@ fn output(tier: TierId) -> (u32, u32) {
 }
 
 /// The scales a tier draws at for `height` output rows: 1, the tier's own (the phones' capped
-/// height), the ladder's 0.85 of it, and its dynamic floor.
+/// height), the ladder's 0.85 of it, and its floor: the lowest of its dynamic floor and its ladder's
+/// lowest scale (Mobile-Low's 0.75 is a rung only, M4 T2).
 fn scales(tier: &QualityTier, height: u32) -> Vec<(&'static str, f32)> {
     let base = tier.resolution.base_scale(height);
     let mut scales = vec![("scale 1", 1.0)];
     if base < 1.0 {
         scales.push(("the tier's scale", base));
     }
-    scales.extend([("0.85", 0.85 * base), ("floor", tier.resolution.dynamic_floor * base)]);
+    let floor = tier.resolution.dynamic_floor.min(LadderState::of(&tier.ladder).scale);
+    scales.extend([("0.85", 0.85 * base), ("floor", floor * base)]);
     scales
 }
 
@@ -393,6 +395,40 @@ fn lines_and_two_tone_edges_hold_at_every_tier_and_scale() {
                     own.edge_width
                 );
             }
+        }
+    }
+}
+
+/// Each shipped tier's thermal ladder walked down to its deepest rung short of a tier and back up
+/// (M4 T2), on one renderer, as `Quality::follow_heat` moves it: every rung's passes shed in place
+/// and its scale under the tier's own, so no step builds a pipeline on the frame, GTAO's textures go
+/// with it and come back, and nothing draws invalidly.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_ladder_walks_down_and_back_without_building_on_the_frame() {
+    let gpu = gpu();
+    let table = TierTable::shipped();
+    for tier in table.tiers() {
+        let mut shot = Shot::new(&gpu, tier);
+        let base = tier.resolution.base_scale(output(tier.id).1);
+        let frames = if tier.antialiasing.temporal { 3 } else { 2 };
+        shot.render(&gpu, base, frames);
+        let soft = tier.ladder.iter().take_while(|rung| !matches!(rung, Rung::Tier(_))).count();
+        for depth in (0..=soft).chain((0..soft).rev()) {
+            let state = LadderState::of(&tier.ladder[..depth]);
+            shot.renderer.set_shed(state.shed).expect("every shipped rung sheds in place");
+            shot.render(&gpu, state.scale * base, frames);
+            let stats = shot.renderer.stats();
+            let what = format!("{} at rung {depth} ({}, scale {})", tier.id, state.shed, state.scale);
+            assert_eq!(
+                (stats.pipelines.frame_thread_builds, stats.pipelines.hitches()),
+                (0, 0),
+                "{what}: {}",
+                shot.renderer.first_use_report()
+            );
+            let gtao = tier.ambient_occlusion.gtao.is_some() && !state.shed.contains(OptionalPass::Gtao);
+            let size = stats.ambient.gtao_size;
+            assert_eq!(size != (0, 0), gtao, "{what}: GTAO's textures {size:?}");
         }
     }
 }

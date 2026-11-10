@@ -4,6 +4,7 @@ use std::fmt;
 use std::time::Duration;
 
 use sapphire_assets::AssetStats;
+use sapphire_core::thermal::ThermalReading;
 use sapphire_gameplay::ActorId;
 use sapphire_gameplay::replay::ActionSource;
 use sapphire_platform::raw_window_handle::HandleError;
@@ -621,6 +622,9 @@ impl App for SandboxApp {
             &mut PadRumble { platform, pad },
         );
         self.stages.audio = stopwatch.lap();
+        // Before the render scale, which reads the ladder's rung.
+        let thermal = platform.thermal();
+        self.follow_heat(platform, &thermal);
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
             Err(error) => {
@@ -643,7 +647,6 @@ impl App for SandboxApp {
         }
 
         self.scene.end_frame();
-        let thermal = platform.thermal();
         self.stats.record(frame_time, steps.dropped, presented, &self.stages, &pacing, thermal);
         profiling::finish_frame!();
         self.frame_limit_control().unwrap_or(AppControl::Continue)
@@ -1182,6 +1185,21 @@ impl SandboxApp {
         self.scene.set_spring_quality(sapphire_stage::animate::spring_quality(self.quality.active().id));
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())
+    }
+
+    /// Follows heat and dynamic resolution's pressure along the tier's thermal ladder (M4 T2) on the
+    /// real clock: sheds the rung's passes in place on the renderer, so nothing builds, and paces to
+    /// its frame-rate cap. A tier the ladder asks for is logged and left, as a fight would leave it:
+    /// taking one belongs to the game, at a pause or a wipe (`r.tier` changes it here).
+    fn follow_heat(&mut self, platform: &mut Platform, thermal: &ThermalReading) {
+        let step = self.quality.follow_heat(self.real.elapsed(), thermal);
+        if step.is_some_and(|step| step.from.frame_rate != step.to.frame_rate) {
+            platform.set_frame_rate(self.quality.frame_rate());
+        }
+        // Every frame rather than on a step, so a renderer made since (a new tier, device loss) sheds too.
+        if let Err(error) = self.renderer.set_shed(self.quality.ladder().state().shed) {
+            tracing::error!(target: LOG_TARGET, %error, "the thermal ladder's rung");
+        }
     }
 
     /// `--frames N`: exit successfully once N frames were presented, or fail once the run's

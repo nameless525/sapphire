@@ -48,6 +48,7 @@ use crate::pipelines::{
     Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
+use crate::quality::{OptionalPass, OptionalPasses};
 use crate::retire::FrameFence;
 use crate::scene::GpuScene;
 use crate::shader_builds::{
@@ -572,6 +573,8 @@ pub struct Renderer {
     outline_distance: f32,
     /// The debug view asked for ([`Self::set_debug_view`]).
     debug_view: DebugView,
+    /// Optional passes shed in place ([`Self::set_shed`]).
+    shed: OptionalPasses,
     /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
     /// then, so a renderer that never shows one builds nothing for them.
     debug_views: Option<Box<DebugViews>>,
@@ -930,6 +933,7 @@ impl Renderer {
             render_scale: 1.0,
             outline_distance: 1.0,
             debug_view: DebugView::Off,
+            shed: OptionalPasses::NONE,
             debug_views: None,
             debug_draw: None,
             labels: gpu.label("").is_some(),
@@ -3274,6 +3278,40 @@ impl Renderer {
     /// The render scale the next [`Self::record`] uses.
     pub fn render_scale(&self) -> f32 {
         self.render_scale
+    }
+
+    /// Sheds `passes` from the next frame, each a step below what the renderer was made with, and
+    /// brings back what an earlier call shed and `passes` leaves out: the thermal ladder's
+    /// [`Rung::Shed`](crate::quality::Rung::Shed) (M4 T2), which [`Quality::follow_heat`] says when
+    /// to apply. All in place, so nothing builds: GTAO's passes skip and the environment reads the
+    /// open stand-in (its pipelines and the GTAO constant stay), post draws one bloom level fewer with
+    /// the same pipelines, and the sky draws its faces half as often. A pass only a new renderer can
+    /// shed ([`OptionalPass::in_place`]) is refused, changing nothing.
+    ///
+    /// [`Quality::follow_heat`]: crate::quality::Quality::follow_heat
+    pub fn set_shed(&mut self, passes: OptionalPasses) -> Result<(), RenderError> {
+        if passes.iter().any(|pass| !pass.in_place()) {
+            return Err(RenderError::InvalidSettings {
+                field: "shed",
+                problem: "the cirrus and the wind levels shed only with a new renderer",
+            });
+        }
+        if passes == self.shed {
+            return Ok(());
+        }
+        self.shed = passes;
+        self.ambient.shed_gtao(passes.contains(OptionalPass::Gtao));
+        self.post.shed_bloom_levels(u32::from(passes.contains(OptionalPass::BloomLevel)));
+        let interval = self.settings.sky.cube_interval;
+        let doubled = passes.contains(OptionalPass::SkyFaceRate);
+        self.sky.set_cube_interval(if doubled { interval * 2 } else { interval });
+        tracing::debug!(target: LOG_TARGET, shed = %passes, "optional passes shed in place");
+        Ok(())
+    }
+
+    /// What [`Self::set_shed`] sheds.
+    pub fn shed(&self) -> OptionalPasses {
+        self.shed
     }
 
     /// The local lights, for tests that read their buffers back.

@@ -35,8 +35,14 @@
 //!
 //! The player's settings can also shed [`OptionalPass`]es, each a step of what the tier draws that
 //! the look can spare (GTAO, the cirrus, a wind level, half the sky's face rate, a bloom level):
-//! [`QualitySettings::shed`], the thermal ladder's second rung (M4 plan §3) and the sandbox's
-//! `--shed`.
+//! [`QualitySettings::shed`], with the renderer, and the sandbox's `--shed`.
+//!
+//! # The thermal ladder
+//!
+//! Each tier lists the rungs it gives up when the device runs hot or the GPU can't hold its budget
+//! ([`QualityTier::ladder`], M4 T2): a lower render scale, optional passes off in place, a frame-rate
+//! cap, and last a lower tier. [`Quality::follow_heat`] runs the tier's [`Ladder`] every frame from the
+//! platform's [`ThermalReading`] and dynamic resolution's pressure; [`ladder`] has the controller.
 //!
 //! One more knob is a cvar rather than a tier's: `r.outline_distance`, a scale on every
 //! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
@@ -74,9 +80,6 @@
 //!
 //! # Later milestones
 //!
-//! - **Thermal input** (§6.3): the platform's thermal state (iOS `thermalState`, Android thermal
-//!   headroom) lowers dynamic resolution's budget first, then drops the tier, the ladder's third
-//!   step.
 //! - **Selection by measurement:** the rules are a first heuristic (spec §3's numbers are all
 //!   Proposals). They can't see VRAM, so a GTX 1060 machine with 16 GB of RAM qualifies for
 //!   Desktop-High; a device database keyed by adapter, and a startup benchmark, refine them on
@@ -94,6 +97,7 @@
 //!   upscaler's input range (R7) in place of a fixed floor.
 
 pub mod dynamic;
+pub mod ladder;
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -101,6 +105,7 @@ use std::time::Duration;
 use bevy_reflect::{Reflect, TypePath};
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_core::target::FormFactor;
+use sapphire_core::thermal::ThermalReading;
 use sapphire_reflect::Versioned;
 use sapphire_rhi::{GpuCaps, wgpu};
 use sapphire_serialize::DocumentError;
@@ -112,8 +117,9 @@ use crate::{
     ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
-    DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
+    DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
 };
+pub use ladder::{Cause, Ladder, LadderState, LadderStats, LadderStep, Rung};
 
 /// The shipped table (see the module docs).
 const SHIPPED: &str = include_str!("../tiers.ron");
@@ -243,6 +249,10 @@ pub struct QualityTier {
     /// without it gets the desktop tiers'.
     #[serde(default)]
     pub inset: InsetSettings,
+    /// The thermal ladder's rungs, from the top (M4 T2, [`ladder`]). A tier without them answers
+    /// neither heat nor dynamic resolution's pressure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ladder: Vec<Rung>,
 }
 
 /// The scene's size relative to the output.
@@ -406,9 +416,21 @@ impl QualityTier {
 
     /// The budgets dynamic resolution holds this tier's frames to.
     pub fn resolution_budget(&self) -> ResolutionBudget {
+        self.resolution_budget_at(self.frame_rate)
+    }
+
+    /// The budgets at `frame_rate` frames a second, a ladder's cap: the GPU frame stretched as the
+    /// frame is.
+    pub fn resolution_budget_at(&self, frame_rate: u32) -> ResolutionBudget {
+        let frame_rate = frame_rate.max(1);
+        let gpu_frame = Duration::from_secs_f32(self.gpu_frame_ms / 1000.0);
         ResolutionBudget {
-            gpu_frame: Duration::from_secs_f32(self.gpu_frame_ms / 1000.0),
-            frame: Duration::from_secs_f64(1.0 / f64::from(self.frame_rate)),
+            gpu_frame: if frame_rate == self.frame_rate {
+                gpu_frame
+            } else {
+                gpu_frame.mul_f64(f64::from(self.frame_rate) / f64::from(frame_rate))
+            },
+            frame: Duration::from_secs_f64(1.0 / f64::from(frame_rate)),
             floor: self.resolution.dynamic_floor,
         }
     }
@@ -470,6 +492,9 @@ impl QualityTier {
         }
         if let Err((field, problem)) = self.inset.validate() {
             return invalid(field, problem);
+        }
+        if let Err(problem) = ladder::validate(self) {
+            return invalid("ladder", problem);
         }
         Ok(())
     }
@@ -706,8 +731,17 @@ pub static OUTLINE_DISTANCE: Cvar<f32> = Cvar::with_range(
     "Scales every material's outline LOD cutoff: below 1 lines stop nearer, fading out as always; 0 draws none (profiling).",
 );
 
+/// Holds the thermal ladder at a depth (M4 T2): goldens, the overlay and tests walk it with this.
+pub static RUNG: Cvar<i32> = Cvar::with_range(
+    "r.rung",
+    -1,
+    -1,
+    ladder::MAX_RUNGS as i32,
+    "Holds the thermal ladder this many rungs down (spec §6.3): -1 follows heat and dynamic resolution's pressure.",
+);
+
 /// This module's cvars, for the app's registry.
-pub static CVARS: [&dyn AnyCvar; 4] = [&TIER, &RENDER_SCALE, &DYNAMIC_RESOLUTION, &OUTLINE_DISTANCE];
+pub static CVARS: [&dyn AnyCvar; 5] = [&TIER, &RENDER_SCALE, &DYNAMIC_RESOLUTION, &OUTLINE_DISTANCE, &RUNG];
 
 /// The player's quality settings: a settings screen's, saved with the player's settings later
 /// (M3); the sandbox takes them from its command line.
@@ -724,14 +758,15 @@ pub struct QualitySettings {
     pub shadows: Switch,
     /// Ambient occlusion: the tier's, or a level of the player's (M1 W5).
     pub ambient_occlusion: OcclusionSetting,
-    /// Optional passes to go without, after the settings above: the thermal ladder's second rung
-    /// (M4 plan §3, "The ladder"), and the sandbox's `--shed` for captures and benches (M4 T0).
+    /// Optional passes to go without, after the settings above, with the renderer: the sandbox's
+    /// `--shed` for captures and benches (M4 T0). The ladder sheds in place on top of them.
     pub shed: OptionalPasses,
 }
 
 /// A pass a tier can go without and keep the look (M4 plan §3, "The ladder"): shedding one never
 /// touches the character family, the outlines, the ramps or the grade. Each sheds one step of what
-/// its tier draws, and nothing where the tier draws none. M4 T0 measured what each saves.
+/// its tier draws, and nothing where the tier draws none. M4 T0 measured what each saves. Three shed
+/// in place, on a renderer that has them ([`Self::in_place`]); the other two only with a new one.
 ///
 /// The ladder's list names two more that nothing here sheds: volumetric fog, which no package
 /// builds yet (`QualityTier::volumetric_fog` is plain data), and the particle cap, which is
@@ -769,6 +804,14 @@ impl OptionalPass {
     /// The pass [`Self::key`] spells, ignoring case.
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|pass| pass.key().eq_ignore_ascii_case(key))
+    }
+
+    /// Whether [`Renderer::set_shed`](crate::Renderer::set_shed) sheds it in place, building nothing:
+    /// GTAO, the sky's face rate and a bloom level, the passes the thermal ladder takes. The cirrus
+    /// and the wind levels aren't rungs (M4 plan §3), and only a new renderer sheds them: the wind
+    /// levels are pipeline constants.
+    pub fn in_place(self) -> bool {
+        matches!(self, Self::Gtao | Self::SkyFaceRate | Self::BloomLevel)
     }
 
     /// `settings` without this pass: as they are where they draw none of it.
@@ -827,6 +870,22 @@ impl OptionalPasses {
     }
 }
 
+impl std::fmt::Display for OptionalPasses {
+    /// `gtao+bloom-level`, or `none`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_empty() {
+            return f.write_str("none");
+        }
+        for (index, pass) in self.iter().enumerate() {
+            if index > 0 {
+                f.write_str("+")?;
+            }
+            f.write_str(pass.key())?;
+        }
+        Ok(())
+    }
+}
+
 impl FromIterator<OptionalPass> for OptionalPasses {
     fn from_iter<I: IntoIterator<Item = OptionalPass>>(passes: I) -> Self {
         passes.into_iter().fold(Self::NONE, Self::with)
@@ -870,6 +929,8 @@ pub enum TierSource {
     Setting,
     /// The `r.tier` cvar.
     Cvar,
+    /// The thermal ladder's, at a pause or a wipe ([`Quality::take_tier_request`]).
+    Ladder,
 }
 
 /// The tier in use and where it came from.
@@ -890,8 +951,8 @@ pub fn choose_tier(cvar: TierChoice, setting: Option<TierId>, device: TierId) ->
 }
 
 /// Quality tiers as an app runs them: the table, the device's tier, the player's settings, the
-/// active tier and its dynamic resolution. Per frame it reads three cvars and does a few dozen
-/// floating-point operations, and allocates nothing.
+/// active tier, its thermal ladder and its dynamic resolution. Per frame it reads four cvars and
+/// does a few dozen floating-point operations, and allocates nothing.
 #[derive(Debug)]
 pub struct Quality {
     table: TierTable,
@@ -903,6 +964,9 @@ pub struct Quality {
     /// The device can time GPU passes, for each tier's dynamic resolution.
     timestamps: bool,
     dynamic: DynamicResolution,
+    ladder: Ladder,
+    /// The ladder of the tier a change replaced, for [`Self::restore`].
+    previous_ladder: Option<Ladder>,
     /// What the last [`Self::render_scale`] chose.
     base_scale: f32,
     render_scale: f32,
@@ -919,6 +983,7 @@ pub struct QualityStats {
     pub base_scale: f32,
     pub render_scale: f32,
     pub dynamic: DynamicResolutionStats,
+    pub ladder: LadderStats,
 }
 
 impl Quality {
@@ -928,6 +993,7 @@ impl Quality {
         let seen = TIER.get();
         let active = choose_tier(seen, settings.tier, device_tier);
         let dynamic = DynamicResolution::new(table.get(active.id).resolution_budget(), device.timestamps);
+        let ladder = Ladder::new(table.get(active.id));
         tracing::info!(
             target: LOG_TARGET,
             tier = active.id.name(),
@@ -944,6 +1010,8 @@ impl Quality {
             seen,
             timestamps: device.timestamps,
             dynamic,
+            ladder,
+            previous_ladder: None,
             base_scale: 1.0,
             render_scale: 1.0,
         }
@@ -954,10 +1022,92 @@ impl Quality {
         self.table.get(self.active.id)
     }
 
-    /// The frame rate the active tier is built for, which the platform paces frames to (spec
-    /// §6.2, M1 F7). Tables are validated, so it is never zero.
+    /// The frame rate the active tier is built for, under the ladder's cap, which the platform
+    /// paces frames to (spec §6.2, M1 F7). Tables are validated, so it is never zero.
     pub fn frame_rate(&self) -> Option<NonZeroU32> {
-        NonZeroU32::new(self.tier().frame_rate)
+        let tier = self.tier().frame_rate;
+        NonZeroU32::new(self.ladder.state().frame_rate.map_or(tier, |cap| cap.min(tier)))
+    }
+
+    /// The active tier's thermal ladder.
+    pub fn ladder(&self) -> &Ladder {
+        &self.ladder
+    }
+
+    /// Follows heat and dynamic resolution's pressure along the active tier's ladder ([`ladder`]):
+    /// call it once a frame, before [`Self::render_scale`], with the app's clock (it only moves
+    /// forward) and the platform's reading. A move is logged and returned for the app to apply:
+    /// [`Renderer::set_shed`](crate::Renderer::set_shed) with `to.shed` when the shed changed, and
+    /// [`Self::frame_rate`] to the platform when the cap did; the scale follows in
+    /// [`Self::render_scale`]. A tier the ladder asks for waits for [`Self::take_tier_request`].
+    pub fn follow_heat(&mut self, now: Duration, reading: &ThermalReading) -> Option<LadderStep> {
+        let forced = usize::try_from(RUNG.get()).ok();
+        let asked = self.ladder.tier_request();
+        let step = self.ladder.update(now, reading, self.dynamic.pressure(), forced);
+        let asking = self.ladder.tier_request();
+        if asking != asked {
+            tracing::info!(
+                target: LOG_TARGET,
+                tier = asking.map(TierId::name),
+                active = self.active.id.name(),
+                "thermal ladder asks for a tier at the next pause"
+            );
+        }
+        let step = step?;
+        if step.from.frame_rate != step.to.frame_rate {
+            self.dynamic.set_budget(self.tier().resolution_budget_at(self.capped_rate()));
+        }
+        tracing::info!(
+            target: LOG_TARGET,
+            depth = step.to.depth,
+            from = step.from.depth,
+            cause = ?step.cause,
+            scale = format_args!("{:.2}", step.to.scale),
+            shed = %step.to.shed,
+            frame_rate = step.to.frame_rate,
+            heat = %reading,
+            "thermal ladder"
+        );
+        Some(step)
+    }
+
+    /// The tier the ladder asks for: lower, at its last rung, or back to the one it lowered from once
+    /// calm. Never in a fight: the game takes it with [`Self::take_tier_request`] at a pause or a wipe.
+    pub fn tier_request(&self) -> Option<TierId> {
+        self.ladder.tier_request()
+    }
+
+    /// Makes the tier the ladder asks for active, at `now`: the game calls it at a pause or a wipe,
+    /// then makes a new renderer from [`Self::render_settings`] (its pipelines warmed first, H1),
+    /// sheds [`Ladder::state`]'s passes on it and paces to [`Self::frame_rate`], as for
+    /// [`Self::update_tier`], or calls [`Self::restore`] with what this returns if that fails. The new
+    /// tier's ladder starts at its deepest rung short of a tier and climbs back as its holds allow.
+    pub fn take_tier_request(&mut self, now: Duration) -> Option<ActiveTier> {
+        let id = self.ladder.tier_request().filter(|&id| id != self.active.id)?;
+        let previous = self.active;
+        let lowered_from = (id < previous.id).then_some(previous.id);
+        let ladder = Ladder::entered(self.table.get(id), &self.ladder, lowered_from, now);
+        self.previous_ladder = Some(std::mem::replace(&mut self.ladder, ladder));
+        self.active = ActiveTier { id, source: TierSource::Ladder };
+        self.reset_dynamic();
+        tracing::info!(
+            target: LOG_TARGET,
+            tier = id.name(),
+            from = previous.id.name(),
+            "quality tier changed by the thermal ladder"
+        );
+        Some(previous)
+    }
+
+    /// The tier's frame rate under the ladder's cap.
+    fn capped_rate(&self) -> u32 {
+        self.frame_rate().map_or(self.tier().frame_rate, NonZeroU32::get)
+    }
+
+    /// A new dynamic resolution for the active tier at the ladder's frame rate.
+    fn reset_dynamic(&mut self) {
+        let budget = self.tier().resolution_budget_at(self.capped_rate());
+        self.dynamic = DynamicResolution::new(budget, self.timestamps);
     }
 
     pub fn active(&self) -> ActiveTier {
@@ -993,15 +1143,21 @@ impl Quality {
         if previous.id == next.id {
             return None;
         }
-        self.dynamic = DynamicResolution::new(self.tier().resolution_budget(), self.timestamps);
+        let ladder = Ladder::new(self.tier());
+        self.previous_ladder = Some(std::mem::replace(&mut self.ladder, ladder));
+        self.reset_dynamic();
         tracing::info!(target: LOG_TARGET, tier = next.id.name(), from = previous.id.name(), "quality tier changed");
         Some(previous)
     }
 
-    /// Makes `previous` (from [`Self::update_tier`]) active again.
+    /// Makes `previous` (from [`Self::update_tier`] or [`Self::take_tier_request`]) active again,
+    /// with its ladder as it was.
     pub fn restore(&mut self, previous: ActiveTier) {
         self.active = previous;
-        self.dynamic = DynamicResolution::new(self.tier().resolution_budget(), self.timestamps);
+        if let Some(ladder) = self.previous_ladder.take() {
+            self.ladder = ladder;
+        }
+        self.reset_dynamic();
     }
 
     /// Whether dynamic resolution is on, so the frame graph should time passes on the GPU
@@ -1023,6 +1179,7 @@ impl Quality {
         let base = if base.is_finite() { base.clamp(MIN_RENDER_SCALE, 1.0) } else { 1.0 };
         self.dynamic.set_enabled(self.wants_gpu_timing());
         self.dynamic.limit_floor(MIN_RENDER_SCALE / base);
+        self.dynamic.set_ceiling(self.ladder.state().scale);
         let (width, height) = scaled_size(size, base);
         let factor = self.dynamic.update(timing, width as f32 * height as f32);
         self.base_scale = base;
@@ -1045,6 +1202,7 @@ impl Quality {
             base_scale: self.base_scale,
             render_scale: self.render_scale,
             dynamic: self.dynamic.stats(),
+            ladder: self.ladder.stats(),
         }
     }
 }

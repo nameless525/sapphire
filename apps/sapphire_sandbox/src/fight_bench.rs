@@ -636,6 +636,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         scene = format_args!("{scene_width}x{scene_height}"),
         rate,
         steps_a_frame = run.steps,
+        rung = quality.ladder.state.depth,
         arena = ?options.arena,
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?run.stage.graph.stats(),

@@ -75,8 +75,11 @@
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before
 //!   W5 pin, compiles the environment shader as it was before ambient occlusion.
 //! - `--shed gtao|cirrus|wind-level|sky-face-rate|bloom-level`, repeatable: an optional pass the
-//!   tier goes without (`sapphire_render::quality::OptionalPass`, the thermal ladder's second
-//!   rung), after `--ao`: one step of what the tier draws, and nothing where it draws none.
+//!   tier goes without (`sapphire_render::quality::OptionalPass`), after `--ao`, built so from
+//!   the start: one step of what the tier draws, and nothing where it draws none.
+//! - `--rung <0..8>`: hold the tier's thermal ladder this many rungs down (`r.rung`, M4 T2;
+//!   `tiers.ron` lists each tier's rungs): its scale, its passes shed in place and its frame-rate
+//!   cap, whatever the heat. The golden scenes `tier-*-rung-*` draw each rung.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
 //! - `--vfx arc|hit|dust|duel`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark

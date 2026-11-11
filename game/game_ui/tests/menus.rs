@@ -8,8 +8,8 @@ mod support;
 use std::path::Path;
 
 use game_ui::menus::{
-    CharacterModel, DialogueChoice, DialogueModel, GameMenus, HudModel, MenuCommand, MenuModel, MenuScreen,
-    MenuSetup, OPENED_BY_CODE, PlayerSettings, RowAction, ScreenModel,
+    CharacterModel, DialogueChoice, DialogueModel, Flashes, GameMenus, HudModel, MenuCommand, MenuModel,
+    MenuScreen, MenuSetup, OPENED_BY_CODE, PlayerSettings, RowAction, ScreenModel,
 };
 use sapphire_assets::ui::UiModel;
 use sapphire_gameplay::assist::TimingAssist;
@@ -121,11 +121,31 @@ fn walk_the_remap_screens(walk: &mut Walk, pseudo: bool) {
     assert!(walk.menus.is_open(CONTROLS), "back to the controls page, {at}");
 }
 
+/// The photosensitivity notice over the title (M4 A3): its setting steps there and back, and going on marks it
+/// read and leaves the title.
+fn walk_the_notice(walk: &mut Walk, pseudo: bool) {
+    let at = format!("by {:?} at {:?}", walk.device, walk.size);
+    walk.menus.open(MenuScreen::NOTICE);
+    walk.settle();
+    walk.check(MenuScreen::NOTICE, pseudo);
+    walk.choose(MenuScreen::NOTICE, "flashes");
+    assert_eq!(walk.menus.settings().flashes, Flashes::Reduced, "{at}");
+    assert!(walk.menus.is_open(MenuScreen::NOTICE), "a step stays on the notice, {at}");
+    walk.check(MenuScreen::NOTICE, pseudo);
+    walk.choose(MenuScreen::NOTICE, "flashes");
+    assert_eq!(walk.menus.settings().flashes, Flashes::Normal, "{at}");
+    walk.choose(MenuScreen::NOTICE, "continue");
+    assert!(walk.menus.settings().flash_notice_read, "{at}");
+    assert!(walk.menus.tree(MenuScreen::NOTICE).is_none(), "{at}");
+    assert!(walk.menus.is_open(MenuScreen::TITLE), "{at}");
+}
+
 /// Every menu, by one device.
 fn walk_every_menu(walk: &mut Walk, pseudo: bool) {
     walk.menus.open(MenuScreen::TITLE);
     walk.settle();
     walk.check(MenuScreen::TITLE, pseudo);
+    walk_the_notice(walk, pseudo);
     if walk.device != Device::Finger {
         assert_eq!(walk.tree(MenuScreen::TITLE).focus_name(), Some("new"), "with nothing to continue");
     }

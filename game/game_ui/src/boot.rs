@@ -41,6 +41,12 @@ impl BootModel {
     pub fn sample() -> Self {
         Self { step: "boot-step-shaders".to_owned(), progress: 0.4, percent: 40 }
     }
+
+    /// A boot downloading an update (M4 P4), as a golden shows it: a tenth of the way.
+    #[must_use]
+    pub fn update_sample() -> Self {
+        Self { step: "boot-step-update".to_owned(), progress: 0.1, percent: 10 }
+    }
 }
 
 /// The boot screen: see the [module docs](self).

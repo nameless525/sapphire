@@ -11,7 +11,7 @@ use game_combat::combat::CombatOption;
 use game_combat::fight::fight_stage;
 use game_ui::hud::OffscreenDisplay;
 use sapphire_platform::{
-    AppInitError, Event, KeyEvent, Keycode, Modifiers, Platform, Scancode, Timestamp, WindowId,
+    AppInitError, Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId,
 };
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
@@ -19,7 +19,7 @@ use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
-use crate::boot::{Boot, BootReport};
+use crate::boot::{Boot, BootReport, BootUpdate};
 use crate::flow::{FlowCommand, FlowState};
 use crate::show::GameShow;
 
@@ -73,24 +73,28 @@ pub struct Captured {
     pub boot: Option<BootReport>,
 }
 
-/// Stands `show` with `first`, its first run, draws [`GameCapture::ticks`] frames and returns the last one,
-/// unless the GPU reported an error. The run's file, if it keeps one, is written and the save's writes waited
-/// for.
+/// Stands `show` with `first`, its first run, on `host`'s content, draws [`GameCapture::ticks`] frames and returns
+/// the last one, unless the GPU reported an error. The run's file, if it keeps one, is written and the save's
+/// writes waited for. A boot ([`GameCapture::boot`]) runs `update` first, if given (M4 P4).
 pub fn capture(
-    platform: &Platform,
+    host: &Host,
     mut show: GameShow,
     first: &CombatOption,
     capture: &GameCapture,
+    update: Option<BootUpdate>,
 ) -> Result<Captured, AppInitError> {
     show.stand_for(capture.display);
     let gpu = headless_gpu()?;
     let (mut stage, boot) = if capture.boot {
-        let boot = Boot::start(platform.host(), Arc::new(gpu), FORMAT, capture.quality, show, first)?;
+        let mut boot = Boot::start(host, Arc::new(gpu), FORMAT, capture.quality, show, first)?;
+        if let Some(update) = update {
+            boot = boot.with_update(update);
+        }
         let (stage, report) = boot.run_offscreen(capture.size, true)?;
         (stage, Some(report))
     } else {
-        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, capture.quality));
-        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
+        let desc = fight_stage(StageDesc::new(host, &gpu, FORMAT, capture.quality));
+        let mut content = Content::new(host, desc.character, desc.sky)?;
         let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;

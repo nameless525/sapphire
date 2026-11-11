@@ -1,11 +1,17 @@
 //! `--capture <png>`: the game with no window, for a run nobody's watching. Draws its ticks
 //! (`game_flow::capture`), writes the last frame and exits. `main` runs it on desktop and iOS, and Android's
 //! `SDL_main` when the launching intent asks (M3 Z2b), under an activity whose window nothing draws to.
+//!
+//! With `--patch-dir` it patches as the window does (M4 P4): what's staged there installed first, then the
+//! boot's update from the build's host (or `--update-host`'s, in a dev build), and the launch confirmed once
+//! the frame's drawn. Exit test 2's lane (`cargo xtask patch rehearse`) runs it so.
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
+use game_flow::boot::BootUpdate;
+use game_flow::update::Patches;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 
@@ -27,10 +33,20 @@ impl App for OffscreenGame {
         if path.is_relative() && platform.system_info().device_class != DeviceClass::Desktop {
             path = platform.cache_dir().join(path);
         }
+        let mut patches = options.patch_setup(platform).map(|setup| Patches::open(platform.host(), setup));
+        let host = patches.as_ref().map_or(platform.host(), Patches::host).clone();
         // A run nobody's playing shows the defaults, whatever whoever's machine this is has chosen.
-        let (show, first) = options.show(platform, PlayerSettings::default())?;
+        let (show, first) = options.show(platform, host.content(), PlayerSettings::default())?;
+        let update = patches.as_ref().and_then(Patches::check).map(|update| BootUpdate {
+            update,
+            remake: options.make_show(platform, PlayerSettings::default()),
+        });
         let capture = options.capture();
-        let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
+        let captured = game_flow::capture::capture(&host, show, &first, &capture, update)?;
+        if let Some(patches) = &mut patches {
+            patches.reopen();
+            patches.confirm_launch();
+        }
         let (width, height) = capture.size;
         write_png(&path, width, height, &captured.pixels)?;
         tracing::info!(target: LOG_TARGET, path = %path.display(), "captured");

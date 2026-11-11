@@ -7,6 +7,11 @@
 //! interface's one pipeline ([`InterfaceScreen`]), and the rest happens here, a frame at a time, in [`Step`]'s
 //! order:
 //!
+//! 0. **An update** ([`Step::Update`], M4 P4), if the boot has one ([`Boot::with_update`]): the build's host
+//!    asked for a newer release, what it adds downloaded and then installed on threads of their own
+//!    (`crate::update`), the screen saying which and the bar how far. A release installed here is what the rest
+//!    of the boot stands: the content is made again on it, and the show with it ([`BootUpdate::remake`]). The
+//!    renderer builds beside it all along. Nothing that goes wrong stops the boot: it goes on with what it has.
 //! 1. **The renderer** ([`Step::Renderer`]): `Renderer::new` on the warm-up pool (`sapphire_jobs::spawn_warm_up`),
 //!    whose scopes stay on its threads, so its builds never land on a frame. It starts in [`Boot::start`].
 //! 2. **The packs' pipelines** ([`Step::Packs`]): what the mounted packs' meshes and the first zone's draw
@@ -25,13 +30,14 @@
 //!
 //! Then [`Boot::frame`] hands the stage back, and the title is the next frame. [`BootReport`] says what it took.
 //!
-//! # Adding a step (M4 P4's update)
+//! # Adding a step
 //!
 //! A step is a variant of [`Step`] with a key under `boot-step-` in both languages' `game_ui.ftl`, its share of
-//! the bar ([`Step::share`]), and what moves it on in `Boot::advance`. An update check and its download go
-//! first, before [`Step::Renderer`], which keeps building beside them, and finish before [`Step::Packs`] reads
-//! what the mounted packs list, so packs mounted over the installed ones are what warms and stands. The boot
-//! screen's own strings and fonts are the installed ones, read in [`Boot::start`].
+//! the bar ([`Step::share`]), and what moves it on in `Boot::advance`. The update goes first, before
+//! [`Step::Renderer`], which keeps building beside it, and ends before [`Step::Packs`] reads what the mounted
+//! packs list, so packs a patch placed over the shipped ones are what warms and stands. The boot screen's own
+//! strings and fonts are the ones the game started on, read in [`Boot::start`]: an update installed under it
+//! shows from the title on.
 
 use std::num::NonZeroU32;
 use std::sync::{Arc, mpsc};
@@ -41,7 +47,7 @@ use game_combat::arena::FightPlace;
 use game_combat::combat::{Combat, CombatOption};
 use game_combat::fight::fight_stage;
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
-use sapphire_platform::{AppInitError, Host};
+use sapphire_platform::{AppInitError, ContentFs, Host};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::quality::QualitySettings;
 use sapphire_render::{
@@ -54,7 +60,11 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::show::GameShow;
+use crate::update::{Update, UpdateState};
 
+/// The update's share of the bar once it downloads: a check that finds nothing takes none, and the steps after
+/// share the rest as they would without it.
+const UPDATE_SHARE: f32 = 0.3;
 /// Each step's share of the boot screen's bar ([`Step::share`]), roughly what each took of a cold boot on Metal.
 const RENDERER_SHARE: f32 = 0.15;
 const PACKS_SHARE: f32 = 0.65;
@@ -66,8 +76,10 @@ const DEFAULT_RATE: u32 = 60;
 /// What the boot is doing: see the [module docs](self).
 #[derive(Debug)]
 pub enum Step {
+    /// An update from the build's host, while the renderer builds.
+    Update(UpdateStage),
     /// The renderer's own pipelines, built with it on the warm-up pool.
-    Renderer(mpsc::Receiver<Result<Renderer, RenderError>>),
+    Renderer,
     /// The packs' and the first zone's pipelines, warming.
     Packs(WarmUpRequest),
     /// The stage made on the renderer, on the next frame.
@@ -82,21 +94,37 @@ pub enum Step {
     Done,
 }
 
+/// Where the boot's update is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateStage {
+    /// Asking the host for its release.
+    Checking,
+    /// Fetching what a newer release adds.
+    Downloading,
+    /// Assembling it beside the current release.
+    Installing,
+}
+
 impl Step {
     /// Its key, under `boot-step-`, for the screen.
     #[must_use]
     pub const fn key(&self) -> &'static str {
         match self {
-            Self::Renderer(_) | Self::Packs(_) | Self::Declared(_) | Self::Done => "boot-step-shaders",
+            Self::Update(UpdateStage::Checking) => "boot-step-update-check",
+            Self::Update(UpdateStage::Downloading) => "boot-step-update",
+            Self::Update(UpdateStage::Installing) => "boot-step-update-install",
+            Self::Renderer | Self::Packs(_) | Self::Declared(_) | Self::Done => "boot-step-shaders",
             Self::Stage | Self::Stand | Self::Screens => "boot-step-loading",
         }
     }
 
-    /// Its share of the bar, in order: the pipelines are most of a cold boot, and loading is a frame.
+    /// Its share of the bar, in order: the pipelines are most of a cold boot, and loading is a frame. An update
+    /// that downloads takes 30 % of it first, and the rest share what's left.
     #[must_use]
     pub const fn share(&self) -> f32 {
         match self {
-            Self::Renderer(_) => RENDERER_SHARE,
+            Self::Update(_) => UPDATE_SHARE,
+            Self::Renderer => RENDERER_SHARE,
             Self::Packs(_) => PACKS_SHARE,
             Self::Stage | Self::Stand | Self::Screens => STAND_SHARE / 3.0,
             Self::Declared(_) => 1.0 - RENDERER_SHARE - PACKS_SHARE - STAND_SHARE,
@@ -108,7 +136,8 @@ impl Step {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Renderer(_) => "renderer",
+            Self::Update(_) => "update",
+            Self::Renderer => "renderer",
             Self::Packs(_) => "packs",
             Self::Stage => "stage",
             Self::Stand => "stand",
@@ -124,6 +153,11 @@ impl Step {
 pub struct BootReport {
     /// Boot screen frames drawn, or prepared with nowhere to draw.
     pub frames: u32,
+    /// From [`Boot::start`] to its update's end, and the bytes it received from the host: zero with none.
+    pub update: Duration,
+    pub update_received: u64,
+    /// Whether the update installed a release, and the boot stood it.
+    pub updated: bool,
     /// From [`Boot::start`] to each step's end: the renderer made, the packs warm, the stage stood, all warm.
     pub renderer: Duration,
     pub packs: Duration,
@@ -146,10 +180,31 @@ pub struct BootReport {
     pub screen_pipelines: u32,
 }
 
+/// What a boot makes its show from: the content it stands on, read again when an update installs a release.
+pub type MakeShow = Box<dyn FnMut(&ContentFs) -> Result<(GameShow, CombatOption), AppInitError>>;
+
+/// An update for a boot to run first ([`Boot::with_update`]).
+pub struct BootUpdate {
+    /// The download, from `Patches::check`.
+    pub update: Update,
+    /// The show and its first run, made again on the content a release installed under the boot screen: what
+    /// made the one [`Boot::start`] took, on the new content.
+    pub remake: MakeShow,
+}
+
 /// The game booting: see the [module docs](self).
 pub struct Boot {
     gpu: Arc<GpuContext>,
+    /// The device, and the content the game stands on.
+    host: Host,
     step: Step,
+    /// The renderer, building on the warm-up pool until [`Step::Renderer`] takes it.
+    built: mpsc::Receiver<Result<Renderer, RenderError>>,
+    update: Option<BootUpdate>,
+    /// The bar's share the update took: [`UPDATE_SHARE`] once it downloads, else none.
+    update_share: f32,
+    /// How far its download has got, 0 to 1.
+    downloaded: f32,
     /// What stands, until it does.
     desc: Option<StageDesc>,
     content: Option<Content>,
@@ -219,7 +274,12 @@ impl Boot {
         );
         Ok(Self {
             gpu,
-            step: Step::Renderer(built),
+            host: host.clone(),
+            step: Step::Renderer,
+            built,
+            update: None,
+            update_share: 0.0,
+            downloaded: 0.0,
             desc: Some(desc),
             content: Some(content),
             show: Some(show),
@@ -238,6 +298,20 @@ impl Boot {
             since_frame: None,
             report,
         })
+    }
+
+    /// Runs `update` before anything else, under its screen (see the [module docs](self)).
+    #[must_use]
+    pub fn with_update(mut self, update: BootUpdate) -> Self {
+        self.step = Step::Update(UpdateStage::Checking);
+        self.update = Some(update);
+        self
+    }
+
+    /// The device and the content the game stands on: a release an update installed, once it has.
+    #[must_use]
+    pub fn host(&self) -> &Host {
+        &self.host
     }
 
     /// The device it boots on, the stage's from then on.
@@ -302,6 +376,9 @@ impl Boot {
         tracing::info!(
             target: LOG_TARGET,
             frames = report.frames,
+            update_ms = ms(report.update),
+            update_received = report.update_received,
+            updated = report.updated,
             renderer_ms = ms(report.renderer),
             packs_ms = ms(report.packs),
             stood_ms = ms(report.stood),
@@ -363,7 +440,33 @@ impl Boot {
     /// Moves the boot on as far as this frame can without waiting.
     fn advance(&mut self) -> Result<(), AppInitError> {
         match &self.step {
-            Step::Renderer(built) => match built.try_recv() {
+            Step::Update(_) => {
+                let update = &mut self.update.as_mut().expect("an update while it's the step").update;
+                let state = update.poll();
+                self.report.update_received = update.received();
+                match state {
+                    UpdateState::Checking => {}
+                    UpdateState::Downloading(fraction) => {
+                        self.update_share = UPDATE_SHARE;
+                        self.downloaded = fraction;
+                        self.step = Step::Update(UpdateStage::Downloading);
+                    }
+                    UpdateState::Installing => {
+                        self.downloaded = 1.0;
+                        self.step = Step::Update(UpdateStage::Installing);
+                    }
+                    UpdateState::Done(installed) => {
+                        let BootUpdate { remake, .. } =
+                            self.update.take().expect("an update while it's the step");
+                        if let Some(content) = installed {
+                            self.stand_on(content, remake);
+                        }
+                        self.report.update = self.started.elapsed();
+                        self.step = Step::Renderer;
+                    }
+                }
+            }
+            Step::Renderer => match self.built.try_recv() {
                 Ok(renderer) => {
                     let mut renderer = renderer?;
                     renderer.count_hitches_from_now();
@@ -420,6 +523,41 @@ impl Boot {
             Step::Done => {}
         }
         Ok(())
+    }
+
+    /// Makes the content again on `content`, a release an update installed, and the show and its first run on
+    /// it with `remake`, in place of what [`Self::start`] made on the release before. If that fails, the boot goes
+    /// on with what it had, whose files stay until the next launch confirms.
+    fn stand_on(&mut self, content: ContentFs, mut remake: MakeShow) {
+        let stopwatch = Stopwatch::start();
+        let host = self.host.with_content(content);
+        let desc = self.desc.as_ref().expect("a desc until the stage is made");
+        let (character, sky) = (desc.character, desc.sky);
+        let made = (|| -> Result<_, AppInitError> {
+            let (mut show, first) = remake(host.content())?;
+            let mut content = Content::new(&host, character, sky)?;
+            let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
+            let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
+            let zone = place.zone.map_or(lookdev::TOWN_STEM, |(stem, _)| stem);
+            Ok((show, content, combat, zone))
+        })();
+        match made {
+            Ok((show, content, combat, zone)) => {
+                (self.show, self.content, self.combat, self.zone) =
+                    (Some(show), Some(content), Some(combat), zone);
+                self.host = host;
+                self.report.updated = true;
+                tracing::info!(
+                    target: LOG_TARGET,
+                    elapsed_ms = format_args!("{:.1}", stopwatch.elapsed().as_secs_f64() * 1e3),
+                    zone,
+                    "the game's content is the update's"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, %error, "the update's content didn't stand; the game goes on with what it had");
+            }
+        }
     }
 
     /// Makes the stage on the warm renderer, with the character and the sky.
@@ -493,7 +631,8 @@ impl Boot {
         let warmed =
             |renderer: Option<&Renderer>| renderer.map_or(0.0, |renderer| renderer.warm_up().fraction());
         let (before, done) = match &self.step {
-            Step::Renderer(_) => (0.0, 0.0),
+            Step::Update(_) => return self.update_share * self.downloaded,
+            Step::Renderer => (0.0, 0.0),
             Step::Packs(_) => (RENDERER_SHARE, warmed(self.renderer.as_ref())),
             Step::Stage => (RENDERER_SHARE + PACKS_SHARE, 0.0),
             Step::Stand => (RENDERER_SHARE + PACKS_SHARE + STAND_SHARE / 3.0, 0.0),
@@ -504,7 +643,7 @@ impl Boot {
             ),
             Step::Done => return 1.0,
         };
-        before + self.step.share() * done
+        self.update_share + (1.0 - self.update_share) * (before + self.step.share() * done)
     }
 }
 

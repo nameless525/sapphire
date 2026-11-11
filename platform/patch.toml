@@ -1,0 +1,17 @@
+# Where the game's patches come from, and who may sign them (M4 P4, docs/m4-plan.md §3 "What's signed"). The
+# game's build script compiles both in (`game_app::build_info`).
+#
+# Both are the maintainer's to fill (docs/m4-plan.md §7). Until then a build checks no host, and a build without
+# `dev` trusts no key, so it starts only on what it shipped. A `dev` build also trusts the test key, whose seed
+# is public (`sapphire_patch::TEST_KEY`), and takes `--update-host`, so a patch can be made and served on this
+# machine; `cargo xtask package` refuses a binary or a release manifest holding that key.
+
+[game_app]
+# The release's host: an https:// URL ending in `/`, where `cargo xtask release` laid the release out
+# (release.smanifest, packs/, files/). Empty: no update is checked.
+host = ""
+# The ed25519 public keys a build trusts, each 64 hex digits: the public half of each seed the maintainer signs
+# releases with (SAPPHIRE_RELEASE_KEY). A patch starts only if one of these, or a key the shipped release names,
+# signed it, and an unsigned shipped release takes these as the keys its first patch is signed by
+# (sapphire_patch's `Installation::open`).
+release-keys = []

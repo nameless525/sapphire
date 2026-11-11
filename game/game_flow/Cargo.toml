@@ -34,6 +34,9 @@ sapphire_ui.workspace = true
 # The save holds B4's `ZoneStart`, and gives the `RunStart` a continued run starts from (G1's third commit).
 sapphire_gameplay.workspace = true
 sapphire_jobs.workspace = true
+# The boot's update: a download from the build's host and its install, and which release the game starts on
+# (M4 P4).
+sapphire_patch.workspace = true
 sapphire_reflect.workspace = true
 sapphire_save.workspace = true
 sapphire_serialize.workspace = true

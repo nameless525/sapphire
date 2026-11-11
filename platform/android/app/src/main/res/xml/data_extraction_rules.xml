@@ -3,13 +3,16 @@
   Android 12+ cloud backup and device-to-device transfer. Only the files directory goes:
   sapphire_platform's user_dir, for settings and saves. Pipeline caches and crash dumps
   live in its cache_dir, the app's cache directory, which Android never backs up or
-  transfers. Cloud backup stays off (allowBackup="false") until saves exist (M3).
+  transfers. Cloud backup stays off (allowBackup="false") until saves exist (M3). Patches
+  (files/patch/, M4 P4) never go: the game fetches them again.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="file" path="." />
+        <exclude domain="file" path="patch/" />
     </cloud-backup>
     <device-transfer>
         <include domain="file" path="." />
+        <exclude domain="file" path="patch/" />
     </device-transfer>
 </data-extraction-rules>

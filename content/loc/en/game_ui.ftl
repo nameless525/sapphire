@@ -161,6 +161,9 @@ boss-knell-colossus = Knell Colossus
 
 boot-step-shaders = Preparing shaders
 boot-step-loading = Loading
+boot-step-update-check = Checking for updates
+boot-step-update = Downloading an update
+boot-step-update-install = Installing the update
 boot-percent = { $percent }%
 
 wipe-loading = Loading

@@ -27,6 +27,11 @@
 //! - `--record <dir>`: each run's replay is kept here, `<scenario>-<n>.sreplay`.
 //! - `--capture <png>`, with `--size <w>x<h>` and `--ticks <n>`: draws that many steps with no window, writes
 //!   the last frame and exits.
+//! - `--patch-dir <dir>`: patches install and stage here, not in the player's directory's `patch/`. A capture
+//!   patches only where this says.
+//! - `--update-host <url>` (dev builds): the boot looks for an update here, `http://127.0.0.1:<port>/` from
+//!   `cargo xtask patch serve`, in place of the build's host (`platform/patch.toml`, empty until the
+//!   maintainer names one).
 //! - `--lose-device <frames>` (dev builds): destroys the GPU device once, after that many frames presented, so
 //!   the rebuild below runs where nothing loses a device when asked.
 //! - `--crash panic|fault` (every build, the store's too): crashes as soon as crash capture is installed, so
@@ -47,6 +52,13 @@
 //! battery saver. Each frame the platform's heat goes to the tier's thermal ladder; a tier the ladder or the
 //! player wants is built off the frame and changed to at the title, a pause or a wipe ([`tiers`]). A Steam Deck
 //! starts on Desktop-Low, fullscreen at its panel's 1280 × 800.
+//!
+//! # Patches (M4 P4)
+//!
+//! The first boot checks the build's host before anything else, downloads and installs a newer release under
+//! its boot screen's bar, and stands the game on it; nothing it can't do stops the game, which then starts on
+//! what it has (`game_flow::update`). A build trusts the keys `platform/patch.toml` lists, and a dev build
+//! the test key too (`sapphire_patch::TEST_KEY`).
 //!
 //! # What it doesn't do yet
 //!

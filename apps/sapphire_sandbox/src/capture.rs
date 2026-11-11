@@ -108,7 +108,7 @@ pub(crate) fn game(
         boot: false,
         display,
     };
-    let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
+    let captured = game_flow::capture::capture(platform.host(), show, &first, &capture, None)?;
     write_png(path, size.0, size.1, &captured.pixels)?;
     write_adapter_info(path, &captured.adapter)?;
     tracing::info!(target: LOG_TARGET, path = %path.display(), ?start, "the game captured");

@@ -3,15 +3,19 @@
 use std::path::PathBuf;
 
 use game_combat::combat::CombatOption;
+use game_flow::boot::MakeShow;
 use game_flow::capture::GameCapture;
 use game_flow::flow::FlowCommand;
 use game_flow::game::GameSetup;
 use game_flow::progress::progress_store;
 use game_flow::show::GameShow;
+use game_flow::update::PatchSetup;
 use game_ui::hud::OffscreenDisplay;
 use game_ui::menus::PlayerSettings;
-use sapphire_platform::{AppInitError, Platform, durable_replace};
+use sapphire_platform::{AppInitError, ContentFs, Platform, durable_replace};
 use sapphire_render::quality::QualitySettings;
+
+use crate::build_info;
 
 const CAPTURE_FLAG: &str = "--capture";
 
@@ -28,6 +32,12 @@ pub(crate) struct Options {
     pub capture: Option<PathBuf>,
     pub size: (u32, u32),
     pub ticks: u32,
+    /// Where patches install and stage, in place of the platform's directory for them (M4 P4).
+    pub patch_dir: Option<PathBuf>,
+    /// `--update-host <url>` (dev builds): where the boot looks for an update, in place of the build's host, so
+    /// a patch served on this machine reaches a desktop, the Simulator and the emulator (M4 P4).
+    #[cfg(feature = "dev")]
+    pub update_host: Option<String>,
     /// `--lose-device <frames>` (dev builds): the window's GPU device is destroyed once, after that many frames
     /// were presented, so the game's rebuild runs where no device is lost when asked (M4 S6), as the sandbox's
     /// `debug.lose_device` does.
@@ -45,6 +55,9 @@ impl Default for Options {
             capture: None,
             size: (1280, 720),
             ticks: 180,
+            patch_dir: None,
+            #[cfg(feature = "dev")]
+            update_host: None,
             #[cfg(feature = "dev")]
             lose_device: None,
         }
@@ -71,6 +84,9 @@ impl Options {
                 "--continue" => options.choose = Some(FlowCommand::Continue),
                 "--script" => options.script = Some(value()?.to_owned()),
                 "--save-dir" => options.save_dir = Some(PathBuf::from(value()?)),
+                "--patch-dir" => options.patch_dir = Some(PathBuf::from(value()?)),
+                #[cfg(feature = "dev")]
+                "--update-host" => options.update_host = Some(value()?.to_owned()),
                 "--record" => options.record = Some(PathBuf::from(value()?)),
                 CAPTURE_FLAG => options.capture = Some(PathBuf::from(value()?)),
                 "--size" => {
@@ -116,22 +132,55 @@ impl Options {
         self.capture.is_none() || self.save_dir.is_some()
     }
 
-    /// The show this run stands with `settings`, and the run it stands first: the game's flow over its runs
-    /// where the content names one, with its save where `--save-dir` or the platform says, else the arena's
-    /// fight alone.
+    /// Whether the game patches: always in a window, and in a capture only where `--patch-dir` says, so a run
+    /// nobody's watching neither installs nor fetches into anybody's game.
+    fn patches(&self) -> bool {
+        self.capture.is_none() || self.patch_dir.is_some()
+    }
+
+    /// How this run patches (M4 P4), if it does: in `--patch-dir` or the player's directory's `patch/`, from the
+    /// build's host (or `--update-host`'s, in a dev build), trusting the build's keys (and the test key, in a dev
+    /// build), as the build `cargo xtask package` numbered, or 0 for one it didn't.
+    pub(crate) fn patch_setup(&self, platform: &Platform) -> Option<PatchSetup> {
+        if !self.patches() {
+            return None;
+        }
+        let dir = self.patch_dir.clone().unwrap_or_else(|| platform.user_dir().join("patch"));
+        let host = Some(build_info::PATCH_HOST).filter(|host| !host.is_empty()).map(str::to_owned);
+        #[cfg(feature = "dev")]
+        let host = self.update_host.clone().or(host);
+        let mut root_keys = build_info::RELEASE_KEYS.to_vec();
+        if cfg!(feature = "dev") {
+            root_keys.push(sapphire_patch::TEST_KEY);
+        }
+        Some(PatchSetup { dir, host, root_keys, app_build: build_info::BUILD_NUMBER.unwrap_or(0) })
+    }
+
+    /// The show this run stands with `settings` on `content`, and the run it stands first: the game's flow over
+    /// its runs where the content names one, with its save where `--save-dir` or the platform says, else the
+    /// arena's fight alone.
     pub(crate) fn show(
         &self,
         platform: &Platform,
+        content: &ContentFs,
         settings: PlayerSettings,
     ) -> Result<(GameShow, CombatOption), AppInitError> {
+        (self.make_show(platform, settings))(content)
+    }
+
+    /// What makes [`Self::show`] on any content: a boot's, which makes it again on a release it installs.
+    pub(crate) fn make_show(&self, platform: &Platform, settings: PlayerSettings) -> MakeShow {
         let dir = self.save_dir.clone().unwrap_or_else(|| platform.user_dir().to_owned());
-        let setup = GameSetup {
-            store: self.saves().then(|| progress_store(&dir, durable_replace)),
-            script: self.script.clone(),
-            record: self.record.clone(),
-            replay: None,
-        };
-        GameShow::from_content(platform.content(), settings, setup)
+        let (saves, script, record) = (self.saves(), self.script.clone(), self.record.clone());
+        Box::new(move |content| {
+            let setup = GameSetup {
+                store: saves.then(|| progress_store(&dir, durable_replace)),
+                script: script.clone(),
+                record: record.clone(),
+                replay: None,
+            };
+            GameShow::from_content(content, settings.clone(), setup)
+        })
     }
 
     /// What `--capture` draws.
@@ -185,13 +234,19 @@ mod tests {
             }
         );
         assert!(!options.saves());
+        assert!(!options.patches(), "a capture patches nothing unless told where");
         assert!(is_offscreen_flag("--capture") && is_offscreen_flag("--capture=a.png"));
         assert!(!is_offscreen_flag("--script"));
         let options =
             parse(&["--capture", "a.png", "--save-dir", "saves", "--continue", "--record", "runs"]).unwrap();
         assert!(options.saves());
+        assert!(!options.patches());
         assert_eq!(options.choose, Some(FlowCommand::Continue));
         assert_eq!(options.record, Some(PathBuf::from("runs")));
+        let options = parse(&["--capture", "a.png", "--patch-dir", "patches"]).unwrap();
+        assert_eq!(options.patch_dir, Some(PathBuf::from("patches")));
+        assert!(options.patches());
+        assert!(parse(&[]).unwrap().patches(), "a window's game patches");
         assert_eq!(parse(&["--open-fight"]).unwrap().choose, Some(FlowCommand::NewGame));
     }
 
@@ -203,12 +258,27 @@ mod tests {
         assert!(parse(&["--ticks", "many"]).is_err());
         assert!(parse(&["--script"]).is_err());
         assert!(parse(&["--save-dir"]).is_err());
+        assert!(parse(&["--patch-dir"]).is_err());
         let refused = parse(&["--capture", "a.png", "--continue"]).expect_err("nothing to continue");
         assert!(refused.contains("--save-dir"), "{refused}");
         assert!(parse(&["--continue"]).is_ok(), "a window's game keeps its save");
         // A kind that isn't one is refused, rather than crashing some other way.
         let refused = parse(&["--crash", "soon"]).expect_err("no such crash");
         assert!(refused.contains("panic, fault"), "{refused}");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_dev_build_looks_for_updates_where_told() {
+        let options = parse(&["--update-host", "http://127.0.0.1:8475/"]).unwrap();
+        assert_eq!(options.update_host.as_deref(), Some("http://127.0.0.1:8475/"));
+        assert!(parse(&["--update-host"]).is_err());
+    }
+
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn only_a_dev_build_looks_elsewhere_for_updates() {
+        assert!(parse(&["--update-host", "http://127.0.0.1:8475/"]).is_err());
     }
 
     #[cfg(feature = "dev")]

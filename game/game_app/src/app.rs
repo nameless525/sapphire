@@ -13,17 +13,23 @@
 //! starts again on a new one, from where the last lost stage left the game, or from the title. A device lost
 //! again before the next stage presents a frame counts toward [`Losses`]' limit; the audio, the settings and
 //! the window go on through it.
+//!
+//! **Patches (M4 P4)** are the first boot's to fetch and install (`game_flow::update`): it checks the build's
+//! host before anything else, and stands the game on what it installs. Every later boot, after a lost device,
+//! stands on the release that's current then. The launch is confirmed, and earlier releases' files cleared,
+//! once the stood game has presented a frame.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use game_combat::cues::PadRumble;
-use game_flow::boot::Boot;
+use game_flow::boot::{Boot, BootUpdate};
 use game_flow::show::{GameShow, Reload};
+use game_flow::update::Patches;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform, Size,
+    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Host, LifecycleEvent, Os, Platform, Size,
     SurfaceHandle, SystemInfo, Window, WindowDesc, WindowEvent, durable_replace,
 };
 use sapphire_rhi::{
@@ -59,6 +65,11 @@ pub struct GameApp {
     audio: Option<DeviceAudio>,
     /// Whether the first boot has stood the game, so the audio's made and the title's been passed or shown.
     heard: bool,
+    /// The release the game stands on, and the means to look for the next. None where the options say a run
+    /// patches nothing.
+    patches: Option<Patches>,
+    /// Whether a stood game has presented a frame on its release, so the launch is confirmed.
+    launched: bool,
     /// What the player had chosen as the app started: what a boot stands the first show with.
     chosen: PlayerSettings,
     settings: KeptSettings,
@@ -113,14 +124,22 @@ impl App for GameApp {
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let tiers = TierFollower::new(&chosen, info.device_class);
         let rumble = chosen.rumble;
-        let on_device =
-            boot_on_device(platform, &window, &options, chosen.clone()).map_err(|failed| failed.error)?;
+        let patches = options.patch_setup(platform).map(|setup| Patches::open(platform.host(), setup));
+        let host = host_of(platform, patches.as_ref());
+        let update = patches
+            .as_ref()
+            .and_then(Patches::check)
+            .map(|update| BootUpdate { update, remake: options.make_show(platform, chosen.clone()) });
+        let on_device = boot_on_device(platform, &host, &window, &options, chosen.clone(), update)
+            .map_err(|failed| failed.error)?;
         Ok(Self {
             on_device: Some(on_device),
             reload: None,
             losses: Losses::default(),
             audio: None,
             heard: false,
+            patches,
+            launched: false,
             chosen,
             settings,
             tiers,
@@ -209,7 +228,15 @@ impl App for GameApp {
             Game::Booting(boot) => {
                 let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
                 match boot_frame(surface, boot, dt) {
-                    Ok(Some(stage)) => *game = Game::Stood(Box::new(stage)),
+                    Ok(Some(stage)) => {
+                        // A boot that installed a release stood on it: so does every boot after.
+                        if boot.report().updated
+                            && let Some(patches) = &mut self.patches
+                        {
+                            patches.reopen();
+                        }
+                        *game = Game::Stood(Box::new(stage));
+                    }
                     Ok(None) => {}
                     Err(error) if boot.gpu().is_lost() => {
                         // The next frame boots again on a new device.
@@ -276,6 +303,13 @@ impl App for GameApp {
             // Rendering works with this pipeline cache, so the next boot may trust it.
             stage.gpu.confirm_pipeline_cache();
             self.losses.presented();
+            // And with this release, so what earlier ones left can go.
+            if !self.launched {
+                self.launched = true;
+                if let Some(patches) = &mut self.patches {
+                    patches.confirm_launch();
+                }
+            }
             #[cfg(feature = "dev")]
             {
                 self.presented += 1;
@@ -477,7 +511,8 @@ impl GameApp {
         }
         self.retry_due = self.real.elapsed() + RETRY;
         let settings = self.reload.as_ref().map_or(&self.chosen, |reload| &reload.settings).clone();
-        match boot_on_device(platform, &self.window, &self.options, settings) {
+        let host = host_of(platform, self.patches.as_ref());
+        match boot_on_device(platform, &host, &self.window, &self.options, settings, None) {
             Ok(on_device) => {
                 self.on_device = Some(on_device);
                 tracing::info!(target: LOG_TARGET, "the game boots on a new GPU device");
@@ -665,14 +700,21 @@ struct Failed {
     lost: bool,
 }
 
+/// The device with the release the game stands on: `patches`', else what the app shipped.
+fn host_of(platform: &Platform, patches: Option<&Patches>) -> Host {
+    patches.map_or(platform.host(), Patches::host).clone()
+}
+
 /// The game on a new device for `window`: the device, the window's surface sized to it, and the show `options`
-/// make with `settings` booting on it, its screen's pipeline built and the rest building
-/// (`game_flow::boot`). At startup and after a lost one.
+/// make with `settings` on `host`'s content booting on it, its screen's pipeline built and the rest building
+/// (`game_flow::boot`), the update first if given. At startup and after a lost one.
 fn boot_on_device(
     platform: &mut Platform,
+    host: &Host,
     window: &Window,
     options: &Options,
     settings: PlayerSettings,
+    update: Option<BootUpdate>,
 ) -> Result<OnDevice, Failed> {
     let info = *platform.system_info();
     let failed = |error: AppInitError| Failed { error, lost: false };
@@ -710,10 +752,13 @@ fn boot_on_device(
         .format()
         .ok_or_else(|| AppInitError::msg("configured surface reports no format"))
         .map_err(&lost)?;
-    let (show, first) = options.show(platform, settings).map_err(failed)?;
+    let (show, first) = options.show(platform, host.content(), settings).map_err(failed)?;
     // The player's tier and dynamic resolution from the start, so a held tier's renderer is the first made.
     let quality = crate::tiers::starting_quality(&show, info.device_class);
-    let boot = Boot::start(platform.host(), Arc::new(gpu), format, quality, show, &first).map_err(&lost)?;
+    let mut boot = Boot::start(host, Arc::new(gpu), format, quality, show, &first).map_err(&lost)?;
+    if let Some(update) = update {
+        boot = boot.with_update(update);
+    }
     // Frames are paced to the tier's rate (spec §6.2), the boot screen's from its first, until the stood game's
     // first frame paces them as the player's cap and the ladder say (`tiers`).
     platform.set_frame_rate(boot.frame_rate());

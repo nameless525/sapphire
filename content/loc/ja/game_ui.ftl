@@ -146,6 +146,9 @@ boss-knell-colossus = 弔鐘の巨像
 
 boot-step-shaders = シェーダーを準備中
 boot-step-loading = 読み込み中
+boot-step-update-check = アップデートを確認中
+boot-step-update = アップデートをダウンロード中
+boot-step-update-install = アップデートをインストール中
 boot-percent = { $percent }%
 
 wipe-loading = 読み込み中

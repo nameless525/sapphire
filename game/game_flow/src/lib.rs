@@ -26,6 +26,8 @@
 //!   the sandbox's `--game`.
 //! - **The boot** ([`boot`]): [`Boot`](boot::Boot), from the game's first frame to the title, its screen drawing
 //!   while the renderer and what the game draws through build where no frame waits (M4 H2).
+//! - **Patches** ([`update`]): [`Patches`](update::Patches), which release the game starts on, a staged one
+//!   installed first, and the boot's check for the next, downloaded and installed under its screen (M4 P4).
 //!
 //! **Not here:** the simulation, the fight (`game_combat`) and the screens (`game_ui`), which know nothing of
 //! the flow; the window's loop, which is the app's.
@@ -39,6 +41,7 @@ pub mod kept;
 pub mod menus;
 pub mod progress;
 pub mod show;
+pub mod update;
 
 /// Where the flow logs.
 pub(crate) const LOG_TARGET: &str = "game::flow";

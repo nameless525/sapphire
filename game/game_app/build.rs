@@ -3,6 +3,8 @@
 //! (`SAPPHIRE_BUILD_NUMBER` and `SAPPHIRE_BUILD_ID`, xtask's `version` module). A build xtask's `package`
 //! didn't make has no number, and a build ID marked `local`. `game_app::build_info` holds them.
 //!
+//! Where patches come from and the keys that sign them (M4 P4) come from `platform/patch.toml`.
+//!
 //! For Windows (M4 S4) it links the executable's resources: the application manifest
 //! (`platform/windows/game_app.manifest`), VERSIONINFO with the same version and number, and the icon a
 //! package's build names in `SAPPHIRE_WINDOWS_ICON`. A package's build (one with a number) is also a GUI
@@ -21,7 +23,9 @@ fn main() {
     // Joined, never formatted: on Windows a canonical root is a `\\?\` path, where `/` isn't a separator.
     let platform = manifest.join("..").join("..").join("platform");
     let identities = platform.join("identity.toml");
+    let patching = platform.join("patch.toml");
     println!("cargo:rerun-if-changed={}", identities.display());
+    println!("cargo:rerun-if-changed={}", patching.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed={NUMBER}");
     println!("cargo:rerun-if-env-changed={ID}");
@@ -39,6 +43,32 @@ fn main() {
         .and_then(|names| names.get("en"))
         .and_then(toml::Value::as_str)
         .expect("platform/identity.toml names game_app's English display name");
+
+    let text = fs::read_to_string(&patching).expect("platform/patch.toml");
+    let table: toml::Table = toml::from_str(&text).expect("platform/patch.toml is TOML");
+    let game =
+        table.get("game_app").and_then(toml::Value::as_table).expect("platform/patch.toml has [game_app]");
+    let patch_host =
+        game.get("host").and_then(toml::Value::as_str).expect("platform/patch.toml names a host");
+    assert!(
+        patch_host.is_empty() || (patch_host.starts_with("https://") && patch_host.ends_with('/')),
+        "platform/patch.toml's host is empty or an https:// URL ending in `/`, not {patch_host:?}"
+    );
+    let release_keys: Vec<[u8; 32]> = game
+        .get("release-keys")
+        .and_then(toml::Value::as_array)
+        .expect("platform/patch.toml lists release-keys")
+        .iter()
+        .map(|key| {
+            let hex = key.as_str().filter(|hex| hex.len() == 64).unwrap_or_else(|| {
+                panic!("platform/patch.toml's release-keys are 64 hex digits each, not {key}")
+            });
+            std::array::from_fn(|at| {
+                u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16)
+                    .unwrap_or_else(|_| panic!("platform/patch.toml's release key {hex:?} isn't hex"))
+            })
+        })
+        .collect();
 
     let version = env::var("CARGO_PKG_VERSION").expect("cargo sets it");
     let number = env::var(NUMBER).ok().map(|number| {
@@ -60,6 +90,10 @@ pub const BUNDLE_ID: &str = {bundle_id:?};
 pub const BUILD_NUMBER: Option<u32> = {number:?};
 /// The version and build number, as the pipeline cache and crash reports name this build.
 pub const BUILD_ID: &str = {id:?};
+/// The host patches come from (`platform/patch.toml`): empty, and nothing's checked.
+pub const PATCH_HOST: &str = {patch_host:?};
+/// The keys this build trusts to sign a patch (`platform/patch.toml`), each an ed25519 public key.
+pub const RELEASE_KEYS: &[[u8; 32]] = &{release_keys:?};
 "
     );
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets it"));

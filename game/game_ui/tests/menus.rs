@@ -19,7 +19,8 @@ use sapphire_platform::Scancode;
 use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
 use support::walk::{
-    CHARACTER, CONTROLS, DISPLAY, Device, GRAPHICS, REMAP_KEYS, REMAP_PAD, SETTINGS, SOUND, SUBTITLES, Walk,
+    CHARACTER, CONTROLS, DISPLAY, Device, GRAPHICS, PRIVACY, REMAP_KEYS, REMAP_PAD, SETTINGS, SOUND,
+    SUBTITLES, Walk,
 };
 use support::{
     Screens, assets, content, document_in, kind_names, menus, screens_of, subtitles, table, testdata,
@@ -32,8 +33,9 @@ const SIZES: [(u32, u32); 6] = [(1024, 768), (1280, 720), (1280, 800), (1680, 72
 
 /// The settings' pages (M4 A1): the hub's row that opens each, the page, and each of its rows in the order a
 /// walk steps them. The interface's size and the text's come round to where they started, so the rest walks
-/// at them, and the graphics page's rows come round too (M4 T3).
-const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 5] = [
+/// at them, and the graphics page's rows come round too (M4 T3). The privacy policy's page (M4 Z3b) has no row
+/// but its way back.
+const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 6] = [
     (
         "display",
         DISPLAY,
@@ -54,6 +56,7 @@ const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 5] = [
         CONTROLS,
         &["auto-target", "hold-light", "hold-heavy", "hold-dodge", "hold-skill", "hold-lock-on"],
     ),
+    ("privacy", PRIVACY, &[]),
 ];
 
 /// The settings' hub, each of its pages and each of their rows, and back out of each.

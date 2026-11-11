@@ -38,6 +38,7 @@ use anyhow::{Context as _, anyhow, ensure};
 use serde_json::json;
 
 use super::apple::{self, BundleLayout};
+use super::privacy::PrivacyPolicy;
 use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store, steam, symbols};
 use crate::content::{self, Cook};
 use crate::release::{self, Release};
@@ -137,6 +138,14 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
              chooses the game's",
             app.bundle_id,
             super::IDENTITY_FILE
+        );
+    }
+    let policy = PrivacyPolicy::load(app.placeholder)?;
+    if policy.placeholder {
+        eprintln!(
+            "warning: the privacy policy's address, which the game shows and every store asks for, is a \
+             placeholder: `privacy-url` in {}",
+            super::privacy::STRINGS.map(|(_, file)| file).join(" and ")
         );
     }
 
@@ -241,7 +250,7 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
         }
     }
     symbols::remap_dsym_relocations(&shipped, &remaps)?;
-    let manifest = manifest(target, &app, &build, &made, release);
+    let manifest = manifest(target, &app, &policy, &build, &made, release);
     let path = stage.join("package.json");
     fs::write(&path, serde_json::to_string_pretty(&manifest).expect("JSON values serialize") + "\n")
         .with_context(|| format!("failed to write {}", path.display()))?;
@@ -275,6 +284,7 @@ fn with_manifest(cooked: &Path, manifest: &Path, out: &Path) -> anyhow::Result<(
 fn manifest(
     target: Target,
     app: &App,
+    policy: &PrivacyPolicy,
     build: &Build,
     made: &Made,
     release: Option<&Release>,
@@ -310,6 +320,14 @@ fn manifest(
             "bundle_name": app.bundle_name,
             "display_name": { "en": app.display_name.en, "ja": app.display_name.ja },
             "placeholder": app.placeholder,
+        },
+        "privacy_policy": {
+            "urls": policy
+                .urls
+                .iter()
+                .map(|(language, url)| ((*language).to_owned(), json!(url)))
+                .collect::<serde_json::Map<_, _>>(),
+            "placeholder": policy.placeholder,
         },
         "profile": "shipping",
         "cook": target.cook().name(),
@@ -537,7 +555,14 @@ mod tests {
             checks: json!({ "signed_with": "debug" }),
         };
         let release = Build { number: 4123, kind: Kind::Release, commit: "1a2b3c4d".into() };
-        let written = manifest(Target::Ios, &app, &release, &made, None);
+        let policy = PrivacyPolicy {
+            urls: vec![
+                ("en", "https://example.com/privacy".into()),
+                ("ja", "https://example.com/privacy/ja".into()),
+            ],
+            placeholder: true,
+        };
+        let written = manifest(Target::Ios, &app, &policy, &release, &made, None);
         assert_eq!(written["release"], json!({ "signed": false }));
         assert_eq!(written["version"], "0.1.0");
         assert_eq!(written["build"]["number"], 4123);
@@ -547,6 +572,8 @@ mod tests {
         assert_eq!(written["identity"]["bundle_id"], "com.example.sapphire.game");
         assert_eq!(written["identity"]["display_name"]["ja"], "サファイア");
         assert_eq!(written["identity"]["placeholder"], true);
+        assert_eq!(written["privacy_policy"]["urls"]["ja"], "https://example.com/privacy/ja");
+        assert_eq!(written["privacy_policy"]["placeholder"], true);
         assert_eq!(written["cook"], "mobile");
         assert_eq!(written["symbols"][0], "symbols/game_app.dSYM");
         assert_eq!(written["modules"][0]["debug_id"], "0123456789ABCDEF0123456789ABCDEF0");
@@ -560,7 +587,7 @@ mod tests {
             next_keys: None,
             patch_from: Some(Path::new("host").join("manifests").join("6.smanifest")),
         };
-        let written = manifest(Target::MacOs, &app, &dev, &made, Some(&signed));
+        let written = manifest(Target::MacOs, &app, &policy, &dev, &made, Some(&signed));
         assert_eq!(written["build"]["kind"], "dev");
         assert_eq!(written["build"]["dev_because"], "off main");
         assert_eq!(written["build"]["id"], "0.1.0+4123.dev.1a2b3c4");

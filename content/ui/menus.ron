@@ -45,8 +45,15 @@
                     (node: "sound", does: Open("sound")),
                     (node: "subtitles", does: Open("subtitles")),
                     (node: "controls", does: Open("controls")),
+                    (node: "privacy", does: Open("privacy")),
                     (node: "back", does: Nothing),
                 ],
+            ),
+            // The privacy policy (M4 Z3b): what the game collects, which is nothing, and where the whole policy is.
+            (
+                name: "privacy",
+                document: "322f7643-af51-4371-9a3b-bbca91acbe8e",
+                rows: [(node: "back", does: Nothing)],
             ),
             // The settings' pages (M4 A1): each row steps one of `PlayerSettings`, which the app keeps.
             (

@@ -21,6 +21,7 @@ pub const GRAPHICS: MenuScreen = MenuScreen::named("graphics");
 pub const SOUND: MenuScreen = MenuScreen::named("sound");
 pub const SUBTITLES: MenuScreen = MenuScreen::named("subtitles");
 pub const CONTROLS: MenuScreen = MenuScreen::named("controls");
+pub const PRIVACY: MenuScreen = MenuScreen::named("privacy");
 /// The remap screens' tabs (M4 A4), which the controls page opens.
 pub const REMAP_PAD: MenuScreen = MenuScreen::named("remap_pad");
 pub const REMAP_KEYS: MenuScreen = MenuScreen::named("remap_keys");

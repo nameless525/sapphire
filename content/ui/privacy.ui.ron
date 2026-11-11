@@ -1,0 +1,157 @@
+// The privacy policy's page (M4 Z3b), from the settings: what the game keeps and sends, which is nothing, and
+// where the whole policy is. Apple's guideline 5.1.1(i) and Play's User Data policy want the policy reachable
+// inside the app as well as on the store's listing. The address is a string the maintainer fills
+// (`privacy-url`), shown as text: nothing here opens a browser. The words scroll, so the largest text still
+// fits a phone.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "menu.model.ron",
+        styles: [
+            (name: "title", role: "heading", size: 32, weight: 800),
+            (name: "body", role: "body", size: 18, weight: 500),
+            (name: "row", role: "body", size: 20, weight: 500),
+            (name: "value", role: "body", size: 18, weight: 700),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center, safe_area: true),
+                look: (fill: Color((6, 8, 14, 190))),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Column, gap: 8, width: Points(640), max_width: Percent(92), max_height: Percent(96), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "title",
+                parent: "panel",
+                text: (
+                    key: "privacy-title",
+                    style: "title",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    wrap: true,
+                ),
+            ),
+            (
+                name: "list",
+                parent: "panel",
+                layout: (direction: Column, gap: 12, shrink: 1, min_height: Points(112), padding: (left: 4, right: 4, top: 4, bottom: 4)),
+                mask: true,
+                scroll: Vertical,
+            ),
+            (
+                name: "body",
+                parent: "list",
+                layout: (shrink: 0),
+                text: (
+                    key: "privacy-body",
+                    style: "body",
+                    color: (226, 234, 250, 255),
+                    wrap: true,
+                ),
+            ),
+            (
+                name: "link",
+                parent: "list",
+                layout: (shrink: 0),
+                text: (
+                    key: "privacy-link",
+                    style: "body",
+                    color: (200, 212, 240, 255),
+                    wrap: true,
+                ),
+            ),
+            (
+                name: "url",
+                parent: "list",
+                layout: (shrink: 0),
+                text: (
+                    key: "privacy-url",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    wrap: true,
+                ),
+            ),
+            (
+                name: "foot",
+                parent: "panel",
+                layout: (direction: Column, shrink: 0, padding: (left: 4, right: 4)),
+            ),
+            (
+                name: "back",
+                parent: "foot",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    first: true,
+                    fires: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "back-text",
+                parent: "back",
+                text: (
+                    key: "privacy-back",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                    wrap: true,
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-back",
+                tracks: [(node: "back", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

@@ -29,6 +29,7 @@ mod package;
 #[cfg(test)]
 mod packages_workflow;
 mod pe;
+mod privacy;
 mod privacy_manifest;
 mod steam;
 mod steampipe;

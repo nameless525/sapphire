@@ -30,6 +30,7 @@ settings-graphics = グラフィック
 settings-sound = サウンド
 settings-subtitles = 字幕
 settings-controls = 操作
+settings-privacy = プライバシーポリシー
 settings-more = ›
 settings-back = 戻る
 settings-switch-on = オン
@@ -75,6 +76,12 @@ notice-body = ごく一部の方が、強い光の点滅や模様を見て発作
 notice-reduced = 戦闘で画面全体が点滅する回数は抑えてあります。フラッシュを「軽減」にすると、その点滅も暗く抑えます。あとで「設定」の「画面」から変えられます。
 notice-flashes = フラッシュ
 notice-continue = 続ける
+
+privacy-title = プライバシーポリシー
+privacy-body = このゲームは情報を一切収集しません。アカウント、広告、分析、トラッキングはなく、お客様や端末に関する情報をどこにも送信しません。セーブデータ、設定、クラッシュレポートは、この端末の中に保存されます。
+privacy-link = ポリシーの全文はこちら：
+privacy-url = https://example.com/sapphire/privacy/ja
+privacy-back = 戻る
 
 sound-title = サウンド
 sound-volume = 全体の音量

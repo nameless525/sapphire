@@ -45,6 +45,7 @@ settings-graphics = Graphics
 settings-sound = Sound
 settings-subtitles = Subtitles
 settings-controls = Controls
+settings-privacy = Privacy policy
 settings-more = ›
 settings-back = Back
 settings-switch-on = On
@@ -90,6 +91,16 @@ notice-body = A very small share of people may have a seizure when they see flas
 notice-reduced = The fights limit how often a flash fills the screen, and Reduced flashes dims them too. You can change it later in Settings, under Display.
 notice-flashes = Flashes
 notice-continue = Continue
+
+# The privacy policy's page (M4 Z3b), which the settings open. `privacy-url` is where the maintainer hosts the
+# policy (docs/store/privacy-policy.md), the address each store's listing gives. Until it's chosen it lies under
+# example.com, which RFC 2606 reserves: `cargo xtask package` says so, and refuses it once the game's identity
+# is chosen (xtask's `platforms::privacy`).
+privacy-title = Privacy policy
+privacy-body = This game collects nothing. It has no account, no advertising, no analytics and no tracking, and it sends no information about you or your device to anyone. Your save, your settings and any crash reports stay on this device.
+privacy-link = The full policy is at:
+privacy-url = https://example.com/sapphire/privacy
+privacy-back = Back
 
 sound-title = Sound
 sound-volume = Master volume

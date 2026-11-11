@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 332] {
+pub fn scenes() -> [Scene; 334] {
     [
         Scene {
             name: "turntable-start",
@@ -5031,14 +5031,16 @@ pub fn scenes() -> [Scene; 332] {
             "--ui-subtitle",
             "small:off"
         ),
-        // The photosensitivity notice (M4 A3) at U7's aspects in both languages, and at the largest text in
-        // Japanese, its longest, where its words scroll.
+        // The photosensitivity notice (M4 A3) at U7's aspects and the Deck's in both languages, and at the
+        // largest text in Japanese, its longest, where its words scroll.
         game_scene!("game-notice-tablet-en", "notice", "1024x768", "en"),
         game_scene!("game-notice-tablet-ja", "notice", "1024x768", "ja"),
         game_scene!("game-notice-wide-en", "notice", "1280x720", "en"),
         game_scene!("game-notice-wide-ja", "notice", "1280x720", "ja"),
         game_scene!("game-notice-ultrawide-en", "notice", "1680x720", "en"),
         game_scene!("game-notice-ultrawide-ja", "notice", "1680x720", "ja"),
+        game_scene!("game-notice-deck-en", "notice", "1280x800", "en"),
+        game_scene!("game-notice-deck-ja", "notice", "1280x800", "ja"),
         game_scene!("game-notice-larger-text-wide-ja", "notice", "1280x720", "ja", "--ui-text", "larger"),
     ]
 }
@@ -5780,17 +5782,24 @@ mod tests {
         // And the Steam Deck's 16:10 (M4 S4), every screen in each language.
         assert!((size_of("game-title-deck-ja") - 16.0 / 10.0).abs() < 0.01);
         // Every screen at 16:9 has its Deck scene. The ward's gate is a fight's, A2's option variants (larger
-        // text, subtitle bands) show screens the Deck already has, and the boot's update is the boot screen's
-        // layout, which the boot's scenes hold at the widest and narrowest aspects, the Deck's between them.
+        // text, subtitle bands) and A3's notice at the larger text show screens the Deck already has, and the
+        // boot's update is the boot screen's layout, which the boot's scenes hold at the widest and narrowest
+        // aspects, the Deck's between them.
         let names: Vec<&str> = scenes().into_iter().map(|scene| scene.name).collect();
         let missing: Vec<&str> = names
             .iter()
             .copied()
             .filter(|name| name.starts_with("game-") && name.contains("-wide-"))
             .filter(|name| {
-                !["game-ward-gate-", "game-display-larger-text-", "game-subtitle-band-", "game-boot-update-"]
-                    .iter()
-                    .any(|variant| name.starts_with(variant))
+                ![
+                    "game-ward-gate-",
+                    "game-display-larger-text-",
+                    "game-subtitle-band-",
+                    "game-notice-larger-text-",
+                    "game-boot-update-",
+                ]
+                .iter()
+                .any(|variant| name.starts_with(variant))
             })
             .filter(|name| !names.contains(&name.replace("-wide-", "-deck-").as_str()))
             .collect();

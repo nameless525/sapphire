@@ -151,6 +151,8 @@ pub struct Verdict {
     pub rate: u32,
     /// The frame that second ended on, and the field.
     pub rate_at: Option<(u32, Region)>,
+    /// The frames of that second the field made its transitions on, a bit each, that frame lowest.
+    pub rate_frames: u128,
     /// The largest share of a 10° field whose cells made a transition one way at once, less the share that made
     /// one the other way: past [`MOST_AREA`], the field made one.
     pub area: f32,
@@ -280,12 +282,27 @@ struct Fields {
     /// A bit a frame, newest lowest, set where the field made a transition.
     transitions: Vec<u128>,
     verdict: Verdict,
+    trace: Vec<Traced>,
 }
 
 impl Fields {
     fn new(places: usize) -> Self {
-        Self { above: vec![[false; 2]; places], transitions: vec![0; places], verdict: Verdict::default() }
+        Self {
+            above: vec![[false; 2]; places],
+            transitions: vec![0; places],
+            verdict: Verdict::default(),
+            trace: Vec::new(),
+        }
     }
+}
+
+/// One frame of a test's trace ([`FlashAnalyser::trace`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traced {
+    /// The most transitions any field made in the second ending on this frame.
+    pub most: u32,
+    /// Whether some field made a transition on it.
+    pub transition: bool,
 }
 
 /// Reads a sequence a frame at a time (see the module docs).
@@ -418,6 +435,11 @@ impl FlashAnalyser {
         FlashReport { frames: self.frames, general: self.general.verdict, red: self.red.verdict }
     }
 
+    /// Each frame so far, for the general test and the red: to find what made a sequence's transitions.
+    pub fn trace(&self) -> [&[Traced]; 2] {
+        [&self.general.trace, &self.red.trace]
+    }
+
     /// Follows every field through `frame`, and updates its verdict with the second ending there.
     fn judge(&mut self, frame: u32, kind: Kind) {
         let Self { tiles, cells, pixels, tables, area_table, second, concurrent, .. } = self;
@@ -470,14 +492,19 @@ impl FlashAnalyser {
                 }
             }
         }
+        let mut traced = Traced::default();
         for (place, transitions) in fields.transitions.iter().enumerate() {
             let rate = (transitions & window).count_ones();
+            traced.most = traced.most.max(rate);
+            traced.transition |= transitions & 1 != 0;
             if rate > fields.verdict.rate {
                 let (column, row) = (place as u32 % across, place as u32 / across);
                 fields.verdict.rate = rate;
                 fields.verdict.rate_at = Some((frame, tiles.field_region(column, row)));
+                fields.verdict.rate_frames = transitions & window;
             }
         }
+        fields.trace.push(traced);
     }
 }
 

@@ -1089,7 +1089,6 @@ impl FightShow {
             Ok::<_, String>((show, variants))
         })?;
         scene.will_push_effects(variants);
-        show.limit_flashes(self.effect_scale.limits_flashes());
         self.cues = Some(show);
         Ok(())
     }
@@ -1157,13 +1156,10 @@ impl FightShow {
 
     /// How much of the fight's screen effects shows from the next frame (M4 A2, A3): the player's flashes and
     /// camera motion, through [`PostEffects::scaled`](sapphire_render::PostEffects::scaled), after a
-    /// timeline's post, and with flashes held, at most three full-screen flashes a second from the cues.
-    /// [`EffectScale::FULL`], where it starts, draws them as authored.
+    /// timeline's post. [`EffectScale::FULL`], where it starts, draws them as authored; the cues let one
+    /// full-screen flash a second through at every setting.
     pub fn set_effect_scale(&mut self, scale: EffectScale) {
         self.effect_scale = scale;
-        if let Some(cues) = &mut self.cues {
-            cues.limit_flashes(scale.limits_flashes());
-        }
     }
 
     /// The screen effects' scale, as [`Self::set_effect_scale`] last said.

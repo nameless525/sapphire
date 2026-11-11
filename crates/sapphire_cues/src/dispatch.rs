@@ -110,7 +110,7 @@ pub struct CueStats {
     pub lines_dropped: u64,
     pub shakes: u64,
     pub screens: u64,
-    /// Full-screen flashes held back with flashes reduced (M4 A3): past three a second.
+    /// Full-screen flashes held back (M4 A3): within a second of the last one shown.
     pub flashes_held: u64,
     pub rumbles: u64,
 }
@@ -228,8 +228,8 @@ pub struct CueDispatcher {
     read_tick: Option<u64>,
     /// Each actor's step, for [`Self::advance_effects`].
     owners: Vec<(OwnerId, f32)>,
-    /// The full-screen flashes let through of late, when flashes are reduced (M4 A3).
-    flashes: Option<FlashRate>,
+    /// The full-screen flashes let through of late (M4 A3).
+    flashes: FlashRate,
     /// Real seconds since it was made, from [`Self::end_frame`]'s.
     seconds: f64,
     stats: CueStats,
@@ -252,7 +252,7 @@ impl CueDispatcher {
             mixer: RumbleMixer::new(),
             read_tick: None,
             owners: Vec::new(),
-            flashes: None,
+            flashes: FlashRate::default(),
             seconds: 0.0,
             stats: CueStats::default(),
         };
@@ -267,9 +267,11 @@ impl CueDispatcher {
 
     /// Begins another fight without discarding resolved rows or their allocated storage.
     /// Pending rumble is released at the next frame, where a pad is available. Lifetime
-    /// statistics remain cumulative, so callers can count cues across restart boundaries.
+    /// statistics remain cumulative, so callers can count cues across restart boundaries. The flash rate
+    /// starts over too: the restart clears the screen's effects, the last flash's with them.
     pub fn start_over(&mut self) {
         self.read_tick = None;
+        self.flashes = FlashRate::default();
         self.owners.clear();
         self.sounds.clear();
         self.mixer.release();
@@ -365,14 +367,9 @@ impl CueDispatcher {
         if let Some((id, center)) = row.screen
             && let Some(preset) = step.presets.preset(id)
         {
-            // With flashes reduced, a fourth full-screen flash in a second shows nothing; the rest of its row
+            // A second full-screen flash within a second shows nothing, at every setting; the rest of its row
             // still fires.
-            let seconds = self.seconds;
-            let flashes = &mut self.flashes;
-            let held = row
-                .flash
-                .zip(flashes.as_mut())
-                .is_some_and(|(length, flashes)| !flashes.admit(seconds, length));
+            let held = row.flash.is_some_and(|length| !self.flashes.admit(self.seconds, length));
             if held {
                 self.stats.flashes_held += 1;
             } else {
@@ -516,44 +513,33 @@ impl CueDispatcher {
         self.mixer.set_setting(setting);
     }
 
-    /// The player's flashes reduced, or not (M4 A3): while they are, at most three full-screen flashes show
-    /// in any second, a screen effect with an inversion or a duotone ([`EffectPreset::flash_seconds`]). One
-    /// past them pushes nothing, and the rest of its row fires as ever. Post holds the effects' swing as
-    /// well; this keeps what the swing can't, a flash of colour, to WCAG 2.3.1's three a second.
-    pub fn limit_flashes(&mut self, limit: bool) {
-        if limit != self.flashes.is_some() {
-            self.flashes = limit.then(FlashRate::default);
-        }
-    }
-
     #[must_use]
     pub fn stats(&self) -> CueStats {
         self.stats
     }
 }
 
-/// The last three full-screen flashes let through, oldest first, each by when it started and ended in real
-/// seconds (M4 A3). A flash is two transitions, its start and its end, and WCAG 2.3.1 allows six in any
-/// second. A flash is let through only when its start is a second or more after the third-last's start, and
-/// its end a second or more after that one's end, so no second holds four starts, nor four ends of flashes
-/// one after another: six transitions at most, whatever their lengths. Flashes over one another blend into
-/// one longer change on screen, which has fewer.
+/// The last full-screen flash let through, by when it started and ended in real seconds (M4 A3). A flash is
+/// two transitions, its start and its end, and WCAG 2.3.1 allows six in any second. A flash is let through
+/// only when its start is a second or more after the last one's start, and its end a second or more after that
+/// one's end: one flash, two transitions, in any second, whatever their lengths, which leaves four of the six
+/// to the fight itself, its camera, its fighters and their effects. Measured on the stress fight, a camera
+/// passing a pillar takes four on its own; three flashes a second, as WCAG would allow alone, failed it.
 #[derive(Clone, Copy, Debug, Default)]
 struct FlashRate {
-    last: [Option<(f64, f64)>; 3],
+    last: Option<(f64, f64)>,
 }
 
 impl FlashRate {
     /// Whether a flash `length` seconds long may start at `now`, which it then does.
     fn admit(&mut self, now: f64, length: f32) -> bool {
         let end = now + f64::from(length);
-        if let Some((start, ended)) = self.last[0]
+        if let Some((start, ended)) = self.last
             && (now - start < 1.0 || end - ended < 1.0)
         {
             return false;
         }
-        self.last.rotate_left(1);
-        self.last[2] = Some((now, end));
+        self.last = Some((now, end));
         true
     }
 }
@@ -1120,11 +1106,10 @@ mod tests {
         assert_eq!(sinks.vfx.stats().effects, 1, "there's room again");
     }
 
-    /// With flashes reduced (M4 A3), a full-screen flash comes at most three a second, its start and its end
-    /// a second past the third-last's, while what isn't a flash and the rest of a held flash's row fire as
-    /// ever. Unreduced, every flash shows.
+    /// A full-screen flash comes at most once a second at every setting (M4 A3), its start and its end a
+    /// second past the last one's, while what isn't a flash and the rest of a held flash's row fire as ever.
     #[test]
-    fn reduced_flashes_let_three_full_screen_flashes_a_second_through() {
+    fn a_full_screen_flash_a_second_comes_through() {
         let pushing = |cue: &str, preset: &str| CueRow {
             screen: Some(ScreenFire { preset: preset.to_owned(), center: ScreenCenter::Hit }),
             shake: Some(ShakeFire { preset: "hit_light".to_owned(), strength: 1.0 }),
@@ -1148,31 +1133,27 @@ mod tests {
             }
             sinks.shakes.0.len()
         };
-        let mut unlimited = dispatcher(rows.clone());
-        fire(&mut unlimited, "heavy", &[0, 10, 20, 30, 40]);
-        assert_eq!((unlimited.stats().screens, unlimited.stats().flashes_held), (5, 0));
+        let mut apart = dispatcher(rows.clone());
+        fire(&mut apart, "heavy", &[0, 61, 122]);
+        assert_eq!((apart.stats().screens, apart.stats().flashes_held), (3, 0), "a second apart");
 
-        let mut reduced = dispatcher(rows.clone());
-        reduced.limit_flashes(true);
-        // A heavy hit every sixth of a second: the fourth waits for a second after the first.
-        let shaken = fire(&mut reduced, "heavy", &[0, 10, 20, 30, 40, 50, 61, 71]);
+        let mut busy = dispatcher(rows.clone());
+        // A heavy hit every sixth of a second: the next to show waits for a second after the first.
+        let shaken = fire(&mut busy, "heavy", &[0, 10, 20, 30, 40, 50, 61, 71]);
         assert_eq!(shaken, 8, "each row's shake still fires");
-        let stats = reduced.stats();
-        assert_eq!((stats.screens, stats.flashes_held), (5, 3), "frames 0, 10, 20, 61 and 71");
+        let stats = busy.stats();
+        assert_eq!((stats.screens, stats.flashes_held), (2, 6), "frames 0 and 61");
         // A light hit's split isn't a flash.
-        fire(&mut reduced, "light", &[0, 1, 2, 3, 4, 5]);
-        assert_eq!((reduced.stats().screens, reduced.stats().flashes_held), (11, 3));
+        fire(&mut busy, "light", &[0, 1, 2, 3, 4, 5]);
+        assert_eq!((busy.stats().screens, busy.stats().flashes_held), (8, 6));
 
-        // A long flash's end counts too: three short ones after a finish's 0.7 s fall wait for a second past it.
-        let mut reduced = dispatcher(rows);
-        reduced.limit_flashes(true);
-        fire(&mut reduced, "finish", &[0]);
-        fire(&mut reduced, "heavy", &[40, 50, 61, 100]);
-        let stats = reduced.stats();
-        assert_eq!((stats.screens, stats.flashes_held), (4, 1), "the one at 61 ends 0.37 s past the finish");
-        reduced.limit_flashes(false);
-        fire(&mut reduced, "heavy", &[0, 1, 2, 3]);
-        assert_eq!(reduced.stats().flashes_held, 1, "unreduced again, nothing's held");
+        // A long flash's end counts too: a short one a second after a finish's start waits until it ends a second
+        // after the finish's 0.7 s fall.
+        let mut busy = dispatcher(rows);
+        fire(&mut busy, "finish", &[0]);
+        fire(&mut busy, "heavy", &[61, 100]);
+        let stats = busy.stats();
+        assert_eq!((stats.screens, stats.flashes_held), (2, 1), "the one at 61 ends 0.37 s past the finish");
     }
 
     /// The table's screen presets draw through these, and a preset nothing pushes adds nothing.

@@ -83,7 +83,7 @@ graphics-back = Back
 
 notice-title = Photosensitivity
 notice-body = A very small share of people may have a seizure when they see flashing lights or patterns, and the fights in this game flash. If you or anyone in your family has had a seizure or epilepsy, talk to a doctor before you play. Stop at once if you feel dizzy, your sight changes, or your eyes or muscles twitch.
-notice-reduced = Reduced flashes dims the fights' flashes and lets at most three a second fill the screen. You can change it later in Settings, under Display.
+notice-reduced = The fights let at most one flash a second fill the screen, and Reduced flashes dims them too. You can change it later in Settings, under Display.
 notice-flashes = Flashes
 notice-continue = Continue
 

@@ -442,11 +442,6 @@ impl CueShow {
         self.dispatcher.set_rumble_setting(share);
     }
 
-    /// Whether at most three full-screen flashes a second show: the player's flashes reduced (M4 A3).
-    pub(crate) fn limit_flashes(&mut self, limit: bool) {
-        self.dispatcher.limit_flashes(limit);
-    }
-
     /// Stops any rumble at once: the app lost focus or the foreground.
     pub(crate) fn stop_rumble(&mut self, rumble: &mut dyn RumbleSink) {
         self.dispatcher.stop_rumble(rumble);

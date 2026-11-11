@@ -38,12 +38,13 @@ Usage:
   sapphire_testkit compare <reference.png> <capture.png>
       Compare two images as a golden is compared: FLIP's mean, p99, worst 16x16 tile and
       maximum, and whether the golden gates pass.
-  sapphire_testkit flashes <dir> [--rate <frames a second>]
+  sapphire_testkit flashes <dir> [--rate <frames a second>] [--trace]
       Run WCAG 2.3.1's general and red flash tests over the .png frames in <dir>, in the
       order of their names, captured at --rate (default 60): one line of the most
       transitions a second over a quarter of a 10-degree field and the largest share of a
-      field over the limit, for each test (sapphire_testkit::flashes). Fails a sequence
-      that doesn't pass.";
+      field over the limit, for each test (sapphire_testkit::flashes). --trace adds a
+      line for each frame where a field made a transition, with the most any field made
+      in the second ending there. Fails a sequence that doesn't pass.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -174,12 +175,14 @@ fn compare(args: &[String]) -> Result<(), String> {
 /// order of their names, and fails a sequence that doesn't pass.
 #[allow(clippy::print_stdout, reason = "the line is the command's output, for scripts to read")]
 fn flashes(args: &[String]) -> Result<Vec<String>, String> {
-    let (dir, rate) = match args {
-        [dir] => (dir, 60),
-        [dir, flag, rate] if flag == "--rate" => {
-            (dir, rate.parse().map_err(|_| format!("invalid --rate {rate:?}: expected frames a second"))?)
+    let trace = args.iter().any(|arg| arg == "--trace");
+    let args: Vec<&String> = args.iter().filter(|arg| *arg != "--trace").collect();
+    let (dir, rate) = match args.as_slice() {
+        [dir] => (*dir, 60),
+        [dir, flag, rate] if *flag == "--rate" => {
+            (*dir, rate.parse().map_err(|_| format!("invalid --rate {rate:?}: expected frames a second"))?)
         }
-        _ => return Err("flashes expects a directory of frames and an optional --rate".into()),
+        _ => return Err("flashes expects a directory of frames, an optional --rate and --trace".into()),
     };
     let entries = std::fs::read_dir(dir).map_err(|error| format!("{dir}: {error}"))?;
     let mut frames = entries
@@ -196,6 +199,24 @@ fn flashes(args: &[String]) -> Result<Vec<String>, String> {
         analyser.push(&frame).map_err(|error| format!("{}: {error}", path.display()))?;
     }
     let report = analyser.report();
+    if trace {
+        let [general, red] = analyser.trace();
+        for (frame, (general, red)) in general.iter().zip(red).enumerate() {
+            if general.transition || red.transition {
+                println!("trace frame={frame} general={} red={}", general.most, red.most);
+            }
+        }
+        for (test, verdict) in [("general", report.general), ("red", report.red)] {
+            if let Some((frame, _)) = verdict.rate_at {
+                let frames: Vec<String> = (0..128)
+                    .filter(|bit| (verdict.rate_frames >> bit) & 1 != 0)
+                    .map(|bit| (frame - bit).to_string())
+                    .rev()
+                    .collect();
+                println!("trace {test}_transitions={}", frames.join(","));
+            }
+        }
+    }
     let at = |verdict: &Verdict| match verdict.rate_at.or(verdict.area_at) {
         Some((frame, field)) => format!("{frame}@{},{},{},{}", field.x, field.y, field.width, field.height),
         None => "-".to_owned(),

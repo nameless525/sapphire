@@ -1248,7 +1248,7 @@ mod tests {
         assert!(!is_open(&show, MenuScreen::NOTICE) && show.on_title(), "back left the notice, not the game");
         assert!(show.take_changed_settings().expect("read by back").flash_notice_read);
         let fight = &show.shown.fight.show;
-        assert!(fight.effect_scale().limits_flashes(), "the setting reached the fight");
+        assert!(fight.effect_scale().flash_swing < 1.0, "the setting reached the fight");
     }
 
     #[test]

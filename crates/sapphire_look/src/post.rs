@@ -449,13 +449,6 @@ impl EffectScale {
     /// Reduced flashes' swing (M4 A3): a fifth under WCAG 2.3.1's general flash threshold of 0.1, so no screen
     /// effect makes a flash at any rate, with room under the threshold for 8-bit output's rounding.
     pub const SAFE_FLASH_SWING: f32 = 0.08;
-
-    /// Whether flashes are held at all, which also has the cue dispatcher let at most three full-screen
-    /// flashes a second through (`sapphire_cues`).
-    #[must_use]
-    pub fn limits_flashes(self) -> bool {
-        self.flash_swing < 1.0 || self.flash_swing.is_nan()
-    }
 }
 
 impl Default for EffectScale {
@@ -613,7 +606,6 @@ mod tests {
     #[test]
     fn full_scale_changes_nothing() {
         assert_eq!(every_effect().scaled(EffectScale::FULL), every_effect());
-        assert!(!EffectScale::FULL.limits_flashes());
         let none = EffectScale { flash_swing: 0.0, motion: 0.0 };
         assert_eq!(PostEffects::NONE.scaled(none), PostEffects { swing: 0.0, ..PostEffects::NONE });
     }
@@ -624,7 +616,6 @@ mod tests {
     fn each_share_scales_its_own_effects() {
         let all = every_effect();
         let reduced = EffectScale { flash_swing: EffectScale::SAFE_FLASH_SWING, motion: 1.0 };
-        assert!(reduced.limits_flashes());
         let flashes = all.scaled(reduced);
         assert_eq!(flashes, PostEffects { swing: 0.08, ..all });
         let again = flashes.scaled(EffectScale { flash_swing: 0.5, motion: 1.0 });
@@ -641,7 +632,6 @@ mod tests {
         assert_eq!(past.swing, 1.0, "a share past 1 reads as 1");
         assert_eq!(past.radial_blur.strength, 0.0, "and one under 0 as 0");
         let unknown = EffectScale { flash_swing: f32::NAN, motion: 1.0 };
-        assert!(unknown.limits_flashes(), "not a number holds them");
         assert_eq!(all.scaled(unknown).swing, 0.0, "all the way");
     }
 }

@@ -184,14 +184,21 @@ fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Co
 
 /// Builds the pipeline and returns its executable: optimized, without paying for cross-crate LTO after
 /// each cooker edit. Cargo reports the path, including custom target directories and suffixes.
+///
+/// `SAPPHIRE_COOKER_CXX` names the cooker's own C++ compiler, for a host whose default is too old for the
+/// texture encoders' AVX2 kernels (M4 C3): Steam Linux Runtime 3.0's g++ 10 has no `_mm256_cvtsi256_si32`.
+/// Only the cooker takes it, in its own profile; the game builds with the runtime's compiler, so it needs no
+/// newer libstdc++ than the runtime's.
 pub fn pipeline() -> anyhow::Result<PathBuf> {
+    let cxx = std::env::var_os("SAPPHIRE_COOKER_CXX").filter(|cxx| !cxx.is_empty());
+    let env: Vec<(&str, std::ffi::OsString)> = cxx.into_iter().map(|cxx| ("CXX", cxx)).collect();
     workspace::build_binary(
         &CargoBuild {
             package: "sapphire_pipeline",
             target: None,
             profile: BuildProfile::Tools,
             features: &[],
-            env: &[],
+            env: &env,
         },
         "sapphire_pipeline",
     )

@@ -315,9 +315,16 @@ jobs:
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$channel"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # The cooker's texture encoders (C3) need GCC 11's AVX2 intrinsics, and the SDK's default is GCC 10: the
+      # cooker alone builds with the newest g++ the SDK has (`SAPPHIRE_COOKER_CXX`), the game with the default.
       - name: Package
         shell: bash
-        run: cargo --locked xtask --locked package --platform linux $PACKAGE_KIND
+        run: |
+          for version in 14 13 12 11; do
+            if command -v "g++-$version" >/dev/null; then export SAPPHIRE_COOKER_CXX="g++-$version"; break; fi
+          done
+          echo "The cooker's C++ compiler: ${SAPPHIRE_COOKER_CXX:-none newer than the default}"
+          cargo --locked xtask --locked package --platform linux $PACKAGE_KIND
       - name: Write the symbol store
         shell: bash
         run: cargo --locked xtask --locked symbols --package target/package/linux

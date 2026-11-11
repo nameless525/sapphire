@@ -1278,6 +1278,7 @@ fn device_name(device: Option<DeviceKind>, gamepads: usize) -> String {
         Some(DeviceKind::KeyboardMouse) => "keyboard and mouse",
         Some(DeviceKind::Touch) => "touch",
         Some(DeviceKind::Gamepad(GamepadFamily::Xbox)) => "gamepad (Xbox)",
+        Some(DeviceKind::Gamepad(GamepadFamily::Steam)) => "gamepad (Steam)",
         Some(DeviceKind::Gamepad(GamepadFamily::PlayStation)) => "gamepad (PlayStation)",
         Some(DeviceKind::Gamepad(GamepadFamily::Nintendo)) => "gamepad (Nintendo)",
         Some(DeviceKind::Gamepad(GamepadFamily::Generic)) => "gamepad",

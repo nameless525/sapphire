@@ -23,8 +23,9 @@ use support::{
     with_help,
 };
 
-/// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.
-const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
+/// The aspects a screen ships at, in points: 4:3, 16:9, the Steam Deck's 16:10 at its 1280×800 (M4 S4) and
+/// 21:9, and the smallest phone that runs the game.
+const SIZES: [(u32, u32); 6] = [(1024, 768), (1280, 720), (1280, 800), (1680, 720), (844, 390), (667, 375)];
 
 /// The settings' pages (M4 A1): the hub's row that opens each, the page, and each of its rows in the order a
 /// walk steps them. The interface's size and the text's come round to where they started, so the rest walks

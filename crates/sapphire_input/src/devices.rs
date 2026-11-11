@@ -26,8 +26,13 @@ pub enum DeviceKind {
 /// Which glyph set a gamepad's prompts use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GamepadFamily {
-    /// A B X Y, as on Xbox controllers and the Steam Deck.
+    /// A B X Y, LB RB LT RT, View and Menu: Xbox controllers.
     Xbox,
+    /// Valve's: the Steam Deck and Steam Controllers. A B X Y where Xbox has them, but L1 R1 L2 R2 for the
+    /// shoulders and triggers, and the Deck's own View and Menu, so Steam's Verified check wants its glyphs
+    /// rather than Xbox's (partner.steamgames.com/doc/steamdeck/compat, read 2026-11-10). Under Steam
+    /// Input, SDL reports the physical controller's type, not the virtual pad's.
+    Steam,
     /// Cross, circle, square, triangle.
     PlayStation,
     /// A B X Y with A and B (and X and Y) swapped from the Xbox positions.
@@ -39,7 +44,8 @@ pub enum GamepadFamily {
 impl GamepadFamily {
     pub fn of(kind: GamepadType) -> Self {
         match kind {
-            GamepadType::Xbox360 | GamepadType::XboxOne | GamepadType::Steam => Self::Xbox,
+            GamepadType::Xbox360 | GamepadType::XboxOne => Self::Xbox,
+            GamepadType::Steam => Self::Steam,
             GamepadType::PlayStation3 | GamepadType::PlayStation4 | GamepadType::PlayStation5 => {
                 Self::PlayStation
             }
@@ -335,6 +341,12 @@ mod tests {
     #[test]
     fn families_follow_the_controller() {
         assert_eq!(GamepadFamily::of(GamepadType::SwitchPro), GamepadFamily::Nintendo);
+        assert_eq!(
+            GamepadFamily::of(GamepadType::Steam),
+            GamepadFamily::Steam,
+            "a Steam Deck isn't an Xbox pad"
+        );
+        assert_eq!(GamepadFamily::of(GamepadType::XboxOne), GamepadFamily::Xbox);
         assert_eq!(GamepadFamily::of(GamepadType::Standard), GamepadFamily::Generic);
         assert_eq!(GamepadFamily::of(GamepadType::Unknown), GamepadFamily::Generic);
     }

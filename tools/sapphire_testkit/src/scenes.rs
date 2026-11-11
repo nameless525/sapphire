@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 276] {
+pub fn scenes() -> [Scene; 298] {
     [
         Scene {
             name: "turntable-start",
@@ -4153,6 +4153,30 @@ pub fn scenes() -> [Scene; 276] {
         game_scene!("game-hud-wide-ja", "hud", "1280x720", "ja", "--hud", "fixed"),
         game_scene!("game-hud-ultrawide-en", "hud", "1680x720", "en", "--hud", "fixed"),
         game_scene!("game-hud-ultrawide-ja", "hud", "1680x720", "ja", "--hud", "fixed"),
+        // Every screen on a Steam Deck's 1280×800 (M4 S4), in both languages: what Valve's Deck review reads
+        // at 16:10, its smallest text included.
+        game_scene!("game-title-deck-en", "title", "1280x800", "en"),
+        game_scene!("game-title-deck-ja", "title", "1280x800", "ja"),
+        game_scene!("game-pause-deck-en", "pause", "1280x800", "en"),
+        game_scene!("game-pause-deck-ja", "pause", "1280x800", "ja"),
+        game_scene!("game-settings-deck-en", "settings", "1280x800", "en"),
+        game_scene!("game-settings-deck-ja", "settings", "1280x800", "ja"),
+        game_scene!("game-display-deck-en", "display", "1280x800", "en"),
+        game_scene!("game-display-deck-ja", "display", "1280x800", "ja"),
+        game_scene!("game-sound-deck-en", "sound", "1280x800", "en"),
+        game_scene!("game-sound-deck-ja", "sound", "1280x800", "ja"),
+        game_scene!("game-subtitles-deck-en", "subtitles", "1280x800", "en"),
+        game_scene!("game-subtitles-deck-ja", "subtitles", "1280x800", "ja"),
+        game_scene!("game-controls-deck-en", "controls", "1280x800", "en"),
+        game_scene!("game-controls-deck-ja", "controls", "1280x800", "ja"),
+        game_scene!("game-character-deck-en", "character", "1280x800", "en"),
+        game_scene!("game-character-deck-ja", "character", "1280x800", "ja"),
+        game_scene!("game-dialogue-deck-en", "dialogue", "1280x800", "en"),
+        game_scene!("game-dialogue-deck-ja", "dialogue", "1280x800", "ja"),
+        game_scene!("game-guide-deck-en", "dialogue", "1280x800", "en", "--ui-dialogue", "1"),
+        game_scene!("game-guide-deck-ja", "dialogue", "1280x800", "ja", "--ui-dialogue", "1"),
+        game_scene!("game-hud-deck-en", "hud", "1280x800", "en", "--hud", "fixed"),
+        game_scene!("game-hud-deck-ja", "hud", "1280x800", "ja", "--hud", "fixed"),
         // Motion on a game's screen (M3 C3, in place of U5's test menu): the pause screen a tenth of a second
         // into its entrance, and the settings after a walk down their list, focus and its pulse moved with it.
         game_scene!("game-pause-entering-ja", "pause", "1280x720", "ja", "--ui-time", "0.1"),
@@ -5703,6 +5727,14 @@ mod tests {
         assert!((size_of("game-title-tablet-ja") - 4.0 / 3.0).abs() < 0.01);
         assert!((size_of("game-title-wide-ja") - 16.0 / 9.0).abs() < 0.01);
         assert!((size_of("game-title-ultrawide-ja") - 21.0 / 9.0).abs() < 0.01);
+        // And the Steam Deck's 16:10 (M4 S4), every screen in each language.
+        assert!((size_of("game-title-deck-ja") - 16.0 / 10.0).abs() < 0.01);
+        let deck = scenes().into_iter().filter(|scene| scene.name.contains("-deck-")).count();
+        let wide = scenes()
+            .into_iter()
+            .filter(|scene| scene.name.starts_with("game-") && scene.name.contains("-wide-"))
+            .count();
+        assert_eq!(deck, wide - 2, "a screen at 16:9 has its Deck scene (the ward's gate is a fight's)");
     }
 
     #[test]

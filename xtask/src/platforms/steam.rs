@@ -1,6 +1,6 @@
 //! Steam's desktop packages (M4 S4): what `cargo xtask package` adds to the Windows, Linux and macOS
 //! packages for Steam, and the checks each passes offline before it's published. The depots are made from
-//! the three packages by [`super::steampipe`].
+//! the three packages by [`super::steampipe()`].
 //!
 //! | Platform | Added | Checked (`checks/`) |
 //! |---|---|---|

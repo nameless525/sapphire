@@ -149,7 +149,7 @@ impl Image<'_> {
             let entry = at + 16 + index * 8;
             let name = self.file.u32(entry)?;
             let target = self.file.u32(entry + 4)?;
-            let id = (name & 0x8000_0000 == 0).then(|| (name & 0xffff) as u16);
+            let id = (name & 0x8000_0000 == 0).then_some((name & 0xffff) as u16);
             let offset = root + usize::try_from(target & 0x7fff_ffff)?;
             let child =
                 if target & 0x8000_0000 != 0 { Entry::Directory(offset) } else { Entry::Data(offset) };
@@ -253,8 +253,10 @@ impl<'a> Node<'a> {
     fn text(&self) -> anyhow::Result<String> {
         let units: Vec<u16> = self
             .value
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair))
             .take_while(|&unit| unit != 0)
             .collect();
         String::from_utf16(&units).with_context(|| format!("{}'s value isn't UTF-16", self.key))

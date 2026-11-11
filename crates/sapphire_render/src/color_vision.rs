@@ -20,9 +20,10 @@
 //! # Off costs nothing
 //!
 //! Off (the default, and every shipping frame), nothing is built and the frame's graph is what it was.
-//! The first frame that shows a dichromacy builds its pipeline on the frame's thread, a post pipeline
-//! of family `debug`, kept for the next time; the matrix is the pipeline's constants, so each
-//! dichromacy is a pipeline of its own.
+//! Each dichromacy is a post pipeline of its own, of family `debug`: the matrix is the pipeline's
+//! constants. A load with the view on declares it (`PipelineInventory::color_vision`, part of the
+//! `debug` entry, M4 H3), so a capture or a bench with it on builds it with the rest; one turned on
+//! later builds it on the frame that first shows it, kept for the next time.
 
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_look::Dichromacy;

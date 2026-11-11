@@ -765,13 +765,20 @@ impl PostProcess {
         self.pipelines.build_all(&self.builder, &self.module, [Slot::Inset], on)
     }
 
-    /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants` and, with `inset`,
-    /// [`Self::build_inset`] would build, on a clone of these, where `on` says, for [`Self::adopt`]. `None` when
-    /// it's built.
-    pub(crate) fn warm(&self, variants: PostVariants, inset: bool, on: BuildOn) -> Option<Step<WarmedPost>> {
+    /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants`, with `inset` [`Self::build_inset`],
+    /// and [`Self::build_color_vision`] of each of `color_vision` would build, on a clone of these, where `on`
+    /// says, for [`Self::adopt`]. `None` when it's built.
+    pub(crate) fn warm(
+        &self,
+        variants: PostVariants,
+        inset: bool,
+        color_vision: &[Dichromacy],
+        on: BuildOn,
+    ) -> Option<Step<WarmedPost>> {
         let inset = inset.then_some(Slot::Inset);
         let slots: Vec<Slot> = Slot::within(self.ready | variants, self.bloom_levels)
             .chain(inset)
+            .chain(color_vision.iter().map(|&dichromacy| Slot::ColorVision(dichromacy)))
             .filter(|&slot| self.pipelines.get(slot).is_none())
             .collect();
         if slots.is_empty() {
@@ -791,7 +798,8 @@ impl PostProcess {
     }
 
     /// Builds the colour-vision view's pipeline for `dichromacy` unless it is built (M4 A5,
-    /// [`color_vision`](crate::color_vision)): in the frame that first shows it. Says how many it built.
+    /// [`color_vision`](crate::color_vision)): an inventory's, while nothing draws, or a first use, in the frame
+    /// that first shows it. Says how many it built.
     pub(crate) fn build_color_vision(&mut self, dichromacy: Dichromacy, on: BuildOn) -> u32 {
         self.pipelines.build_all(&self.builder, &self.module, [Slot::ColorVision(dichromacy)], on)
     }

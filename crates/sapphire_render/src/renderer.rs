@@ -1903,7 +1903,7 @@ impl Renderer {
             shadows: self.shadows.warm(device, &formats),
             ambient: self.ambient.warm(inventory.probe_grid, reflection),
             skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
-            post: self.post.warm(inventory.post, inventory.insets, on),
+            post: self.post.warm(inventory.post, inventory.insets, &inventory.color_vision, on),
             vfx: inventory.effects.then(|| self.vfx.warm(true, on)).flatten(),
             ui: inventory.ui.then(|| self.ui.warm()).flatten(),
             sky: self.sky.warm(&inventory.sky, &self.materials, on),
@@ -2019,6 +2019,9 @@ impl Renderer {
             }
             if inventory.insets {
                 renderer.post.build_inset(on);
+            }
+            for &dichromacy in &inventory.color_vision {
+                renderer.post.build_color_vision(dichromacy, on);
             }
             for &material in &inventory.sky {
                 renderer.sky.prewarm(material, &renderer.materials, on);

@@ -102,6 +102,7 @@ use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
+use sapphire_render::color_vision::COLOR_VISION;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
     MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers, ViewData, Wind,
@@ -2028,6 +2029,7 @@ impl Scene {
             sky: self.sky_material.into_iter().collect(),
             fades: self.fade != Fade::Off,
             debug_draw: demo || debug_draw::enabled(),
+            color_vision: COLOR_VISION.get().dichromacy().into_iter().collect(),
             ..PipelineInventory::default()
         };
         show.declare_pipelines(&mut inventory);

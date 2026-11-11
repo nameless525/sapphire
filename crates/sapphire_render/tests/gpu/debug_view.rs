@@ -1056,3 +1056,43 @@ fn the_color_vision_view_shows_each_pixel_as_the_simulation_does() {
         assert_eq!(after, before, "{view:?}: off again leaves the frame as it was");
     }
 }
+
+/// Declared, the colour-vision view builds nothing on the frame it comes on (M4 H3): a load with it on lists
+/// its dichromacy in the inventory's `debug` entry, and the prewarm builds its pipeline. One not declared is
+/// built on the frame that first shows it, named as a first use of family `debug`.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_declared_color_vision_view_builds_nothing_when_it_comes_on() {
+    use sapphire_look::Dichromacy;
+    use sapphire_render::{ColorVision, PipelineInventory};
+
+    let gpu = gpu();
+    let texture = target(&gpu);
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: false, ..RenderSettings::default() };
+    let mut scene = Scene::new(&gpu, settings);
+    let mesh = scene.upload(&environment_sphere([0.8, 0.1, 0.1]));
+    scene.place(mesh, Vec3::ZERO, 0.7, false);
+    scene.render(&gpu, &texture, DebugView::Off);
+
+    let inventory =
+        PipelineInventory { color_vision: vec![Dichromacy::Deuteranopia], ..PipelineInventory::default() };
+    assert_eq!(inventory.entries(), ["debug"]);
+    assert_eq!(scene.renderer.prewarm(&inventory), 1, "the view's one pipeline");
+    assert_eq!(scene.renderer.prewarm(&inventory), 0);
+    let before = scene.renderer.stats().pipelines;
+    scene.renderer.set_color_vision(ColorVision::Simulated(Dichromacy::Deuteranopia));
+    scene.render(&gpu, &texture, DebugView::Off);
+    assert_eq!(scene.renderer.stats().pipelines, before, "{}", scene.renderer.first_use_report());
+
+    let mut without = inventory.clone();
+    assert!(without.remove("debug"));
+    assert!(without.color_vision.is_empty() && without.entries().is_empty());
+
+    let earlier = scene.renderer.first_use_report().builds.len();
+    scene.renderer.set_color_vision(ColorVision::Simulated(Dichromacy::Tritanopia));
+    scene.render(&gpu, &texture, DebugView::Off);
+    let report = scene.renderer.first_use_report();
+    let new: Vec<String> = report.builds[earlier..].iter().map(ToString::to_string).collect();
+    assert_eq!(new.len(), 1, "{report}");
+    assert!(new[0].starts_with("debug: "), "{report}");
+}

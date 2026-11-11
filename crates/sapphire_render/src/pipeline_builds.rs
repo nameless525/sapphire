@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sapphire_assets::PipelineKey;
+use sapphire_look::Dichromacy;
 use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
@@ -189,6 +190,10 @@ pub struct PipelineInventory {
     pub fades: bool,
     /// It draws debug lines (M2 T1): their pass's pipeline, and the scene prepass's, whose depth it reads.
     pub debug_draw: bool,
+    /// The dichromacies the colour-vision view shows ([`color_vision`](crate::color_vision), M4 A5): one post
+    /// pipeline each. A debug view's pipeline is declared when the view is on, so a capture or a bench with it
+    /// on builds nothing on the frame that first shows it. Part of the `debug` entry.
+    pub color_vision: Vec<Dichromacy>,
 }
 
 impl PipelineInventory {
@@ -205,7 +210,7 @@ impl PipelineInventory {
             (PipelineFamily::Sky.name(), !self.sky.is_empty()),
             (PipelineFamily::Ambient.name(), self.probe_grid),
             ("fades", self.fades),
-            (PipelineFamily::Debug.name(), self.debug_draw),
+            (PipelineFamily::Debug.name(), self.debug_draw || !self.color_vision.is_empty()),
         ];
         entries.extend(others.into_iter().filter(|&(_, listed)| listed).map(|(name, _)| name.to_owned()));
         entries
@@ -224,7 +229,10 @@ impl PipelineInventory {
             "sky" => self.sky.clear(),
             "ambient" => self.probe_grid = false,
             "fades" => self.fades = false,
-            "debug" => self.debug_draw = false,
+            "debug" => {
+                self.debug_draw = false;
+                self.color_vision.clear();
+            }
             _ => self.meshes.retain(|key| format!("mesh {key}") != name),
         }
         listed
@@ -233,7 +241,19 @@ impl PipelineInventory {
     /// Adds what `other` lists: a warm-up asked for while another builds waits with every request since
     /// (`warm_up`), as a prewarm only adds.
     pub fn add(&mut self, other: &Self) {
-        let Self { meshes, post, effects, skinning, ui, insets, sky, probe_grid, fades, debug_draw } = other;
+        let Self {
+            meshes,
+            post,
+            effects,
+            skinning,
+            ui,
+            insets,
+            sky,
+            probe_grid,
+            fades,
+            debug_draw,
+            color_vision,
+        } = other;
         self.meshes.extend(meshes.iter().copied());
         self.post |= *post;
         self.effects |= effects;
@@ -248,6 +268,11 @@ impl PipelineInventory {
         self.probe_grid |= probe_grid;
         self.fades |= fades;
         self.debug_draw |= debug_draw;
+        for dichromacy in color_vision {
+            if !self.color_vision.contains(dichromacy) {
+                self.color_vision.push(*dichromacy);
+            }
+        }
     }
 }
 

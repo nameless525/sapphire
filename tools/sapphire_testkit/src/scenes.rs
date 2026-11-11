@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 304] {
+pub fn scenes() -> [Scene; 306] {
     [
         Scene {
             name: "turntable-start",
@@ -4170,6 +4170,8 @@ pub fn scenes() -> [Scene; 304] {
         game_scene!("game-settings-deck-ja", "settings", "1280x800", "ja"),
         game_scene!("game-display-deck-en", "display", "1280x800", "en"),
         game_scene!("game-display-deck-ja", "display", "1280x800", "ja"),
+        game_scene!("game-graphics-deck-en", "graphics", "1280x800", "en"),
+        game_scene!("game-graphics-deck-ja", "graphics", "1280x800", "ja"),
         game_scene!("game-sound-deck-en", "sound", "1280x800", "en"),
         game_scene!("game-sound-deck-ja", "sound", "1280x800", "ja"),
         game_scene!("game-subtitles-deck-en", "subtitles", "1280x800", "en"),

@@ -437,6 +437,10 @@ fn value_of(settings: &PlayerSettings, setting: Setting) -> String {
         Setting::Speakers => settings.subtitles.speakers.to_string(),
         Setting::AutoTarget => format!("{:?}", settings.auto_target),
         Setting::Hold(action) => format!("{:?} {:?}", action, settings.holds.mode(action)),
+        Setting::Quality => format!("{:?}", settings.quality),
+        Setting::FrameCap => format!("{:?}", settings.frame_cap),
+        Setting::DynamicResolution => settings.dynamic_resolution.to_string(),
+        Setting::BatterySaver => settings.battery_saver.to_string(),
     }
 }
 

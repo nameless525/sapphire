@@ -85,6 +85,8 @@ sapphire_colliders.workspace = true
 sapphire_loc.workspace = true
 sapphire_look.workspace = true
 sapphire_strings.workspace = true
+# The fight's flashes, judged by the analyser (`tests/flashes.rs`, M4 Z3c).
+sapphire_testkit.workspace = true
 
 [lints]
 workspace = true

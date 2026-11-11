@@ -285,7 +285,7 @@ fn key_glyph(key: Key) -> Cow<'static, str> {
 }
 
 fn pad_glyph(button: PadButton, family: GamepadFamily) -> &'static str {
-    use GamepadFamily::{Nintendo, PlayStation};
+    use GamepadFamily::{Nintendo, PlayStation, Steam};
     match (button, family) {
         (PadButton::South, PlayStation) => "\u{d7}",
         (PadButton::East, PlayStation) => "\u{25cb}",
@@ -307,13 +307,16 @@ fn pad_glyph(button: PadButton, family: GamepadFamily) -> &'static str {
         (PadButton::Start, Nintendo) => "+",
         (PadButton::Start, _) => "Menu",
         (PadButton::Guide, PlayStation) => "PS",
+        (PadButton::Guide, Steam) => "Steam",
         (PadButton::Guide, _) => "Home",
-        (PadButton::LeftStick, PlayStation) => "L3",
-        (PadButton::RightStick, PlayStation) => "R3",
+        // A Deck's stick clicks, shoulders and triggers are printed as PlayStation's are, its back grips L4 to
+        // R5, and its quick access button is an ellipsis.
+        (PadButton::LeftStick, PlayStation | Steam) => "L3",
+        (PadButton::RightStick, PlayStation | Steam) => "R3",
         (PadButton::LeftStick, _) => "LS",
         (PadButton::RightStick, _) => "RS",
-        (PadButton::LeftShoulder, PlayStation) => "L1",
-        (PadButton::RightShoulder, PlayStation) => "R1",
+        (PadButton::LeftShoulder, PlayStation | Steam) => "L1",
+        (PadButton::RightShoulder, PlayStation | Steam) => "R1",
         (PadButton::LeftShoulder, Nintendo) => "L",
         (PadButton::RightShoulder, Nintendo) => "R",
         (PadButton::LeftShoulder, _) => "LB",
@@ -324,7 +327,12 @@ fn pad_glyph(button: PadButton, family: GamepadFamily) -> &'static str {
         (PadButton::DpadRight, _) => "D-pad \u{2192}",
         (PadButton::Misc1, PlayStation) => "Mute",
         (PadButton::Misc1, Nintendo) => "Capture",
+        (PadButton::Misc1, Steam) => "\u{2026}",
         (PadButton::Misc1, _) => "Share",
+        (PadButton::RightPaddle1, Steam) => "R4",
+        (PadButton::LeftPaddle1, Steam) => "L4",
+        (PadButton::RightPaddle2, Steam) => "R5",
+        (PadButton::LeftPaddle2, Steam) => "L5",
         (PadButton::RightPaddle1, _) => "P1",
         (PadButton::LeftPaddle1, _) => "P3",
         (PadButton::RightPaddle2, _) => "P2",
@@ -339,10 +347,10 @@ fn pad_glyph(button: PadButton, family: GamepadFamily) -> &'static str {
 }
 
 fn axis_glyph(axis: PadAxis, family: GamepadFamily) -> &'static str {
-    use GamepadFamily::{Nintendo, PlayStation};
+    use GamepadFamily::{Nintendo, PlayStation, Steam};
     match (axis, family) {
-        (PadAxis::LeftTrigger, PlayStation) => "L2",
-        (PadAxis::RightTrigger, PlayStation) => "R2",
+        (PadAxis::LeftTrigger, PlayStation | Steam) => "L2",
+        (PadAxis::RightTrigger, PlayStation | Steam) => "R2",
         (PadAxis::LeftTrigger, Nintendo) => "ZL",
         (PadAxis::RightTrigger, Nintendo) => "ZR",
         (PadAxis::LeftTrigger, _) => "LT",
@@ -467,6 +475,12 @@ mod tests {
         assert_eq!(glyph(&west, GamepadFamily::PlayStation), "\u{25a1}");
         assert_eq!(glyph(&west, GamepadFamily::Nintendo), "Y");
         assert_eq!(glyph(&Source::PadAxis(PadAxis::RightTrigger), GamepadFamily::Generic), "RT");
+        // A Deck's are its own, not the Xbox's its face buttons share (Steam's Deck review checks them).
+        assert_eq!(glyph(&west, GamepadFamily::Steam), "X");
+        assert_eq!(glyph(&Source::Pad(PadButton::LeftShoulder), GamepadFamily::Steam), "L1");
+        assert_eq!(glyph(&Source::PadAxis(PadAxis::RightTrigger), GamepadFamily::Steam), "R2");
+        assert_eq!(glyph(&Source::Pad(PadButton::RightStick), GamepadFamily::Steam), "R3");
+        assert_eq!(glyph(&Source::Pad(PadButton::LeftPaddle2), GamepadFamily::Steam), "L5");
         assert_eq!(glyph(&Source::Key(Key::J), GamepadFamily::Xbox), "J");
         assert_eq!(glyph(&Source::Key(Key::F11), GamepadFamily::Xbox), "F11");
         assert_eq!(glyph(&Source::Key(Key::LeftShift), GamepadFamily::Xbox), "Shift");

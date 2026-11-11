@@ -138,3 +138,33 @@ fn an_unstripped_binary_is_refused() {
     assert!(format!("{error:#}").contains("isn't stripped"), "{error:#}");
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// A package's whole store, as the nightly packages keep it: every module its `package.json` lists gets
+/// its `.sym` where Breakpad looks, and filling it again writes nothing new.
+#[test]
+fn a_package_fills_its_store() {
+    let dir = scratch("store");
+    let linked = link(&dir, "hello", HELLO, true);
+    let module = check(&linked.shipped, &linked.symbols).unwrap();
+    let mut listed = module.to_json();
+    let symbols = linked.symbols.strip_prefix(&dir).unwrap();
+    let symbols: Vec<&str> = symbols.iter().map(|part| part.to_str().unwrap()).collect();
+    listed["symbols"] = symbols.join("/").into();
+    fs::write(dir.join("package.json"), serde_json::json!({ "modules": [listed] }).to_string()).unwrap();
+
+    let packaged = store::packaged(std::slice::from_ref(&dir)).unwrap();
+    let store = store::Store { root: dir.join("store") };
+    let written = store.fill(&packaged).unwrap();
+    assert_eq!(written, [store.root.join(module.store_path())]);
+    let sym = fs::read_to_string(&written[0]).unwrap();
+    let first = sym.lines().next().unwrap();
+    assert!(
+        first.starts_with("MODULE ")
+            && first.ends_with(&format!("{} {}", module.debug_id, module.debug_file))
+    );
+    assert!(sym.lines().any(|line| line.starts_with("FUNC ")), "no functions in {}", written[0].display());
+    let modified = fs::metadata(&written[0]).unwrap().modified().unwrap();
+    assert_eq!(store.fill(&packaged).unwrap(), written);
+    assert_eq!(fs::metadata(&written[0]).unwrap().modified().unwrap(), modified);
+    fs::remove_dir_all(dir).unwrap();
+}

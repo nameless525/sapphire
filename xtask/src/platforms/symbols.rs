@@ -205,7 +205,19 @@ pub fn symbolicate(packages: &[PathBuf], store: &Path, reports: &[PathBuf]) -> a
     workspace::run(&mut command)
 }
 
-/// Where `cargo xtask symbolicate` keeps the `.sym` files it makes, as a Breakpad store:
+/// `cargo xtask symbols`: writes the `.sym` of every module `packages` shipped into `store`, the whole
+/// Breakpad store for them, where `symbolicate` writes only the modules a crash names. The nightly packages
+/// keep it beside each package (M4 I2).
+pub fn write_store(packages: &[PathBuf], store: &Path) -> anyhow::Result<()> {
+    let mut command = Command::new(checker()?);
+    command.arg("store").arg("--store").arg(store);
+    for package in packages {
+        command.arg("--package").arg(package);
+    }
+    workspace::run(&mut command)
+}
+
+/// Where `cargo xtask symbolicate` and `symbols` keep the `.sym` files they make, as a Breakpad store:
 /// `target/symbols/<debug file>/<debug ID>/<name>.sym`.
 pub fn default_store() -> PathBuf {
     workspace::output_dir().join("symbols")

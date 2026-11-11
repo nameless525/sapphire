@@ -6,8 +6,8 @@
 //! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
 //! as processes too. `package` builds the game for a store: the shipping profile, one version and build
 //! number, one identity and the project's icon, staged for each store's own package; `symbolicate` reads its
-//! crashes back with the symbols kept beside it, and `store-shots` draws the stores' screenshots by the
-//! goldens' road.
+//! crashes back with the symbols kept beside it, `symbols` writes their whole Breakpad store, and
+//! `store-shots` draws the stores' screenshots by the goldens' road.
 
 mod cli;
 mod content;
@@ -122,6 +122,11 @@ Commands:
       Prints each thread's frames with function, file and line, inlined calls included, with
       the paths a shipping build remaps (/sapphire, /cargo) mapped back to this machine's.
       The .sym files it makes are kept in <dir> (default target/symbols/), a Breakpad store.
+  symbols [--package <dir>]... [--store <dir>]
+      Write the Breakpad .sym of every module the packages shipped (every package under
+      target/package/ unless --package names them) into <dir> (default target/symbols/), from
+      the symbols kept beside each: the whole store, where symbolicate writes only what a crash
+      names. A .sym the store has already is kept.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
@@ -294,6 +299,18 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 bail!("symbolicate needs a report to read\n\n{USAGE}");
             }
             platforms::symbolicate(&packages, &store, &reports)
+        }
+        "symbols" => {
+            let mut packages = Vec::new();
+            while let Some(package) = args.value::<PathBuf>("--package")? {
+                packages.push(package);
+            }
+            let store = args.value::<PathBuf>("--store")?.unwrap_or_else(platforms::default_symbol_store);
+            args.finish(false)?;
+            if packages.is_empty() {
+                packages = made_packages()?;
+            }
+            platforms::write_symbol_store(&packages, &store)
         }
         "link" => link::run(args.rest()),
         "editor" => editor::run(args.rest()),

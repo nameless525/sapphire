@@ -17,6 +17,8 @@ Usage:
       Prints the module's Breakpad .sym, after the same check.
   sapphire_symbols symbolicate --store <dir> [--package <dir>]... [--map <shipped>=<local>]... <report>...
       Reads each crash report with the symbols the packages kept, and prints its frames.
+  sapphire_symbols store --store <dir> --package <dir>...
+      Writes the Breakpad .sym of every module the packages shipped into the store, and prints each path.
   sapphire_symbols scan [--forbid <path>]... <file or directory>...
       Fails if any file holds a forbidden path, with either kind of slash.";
 
@@ -93,6 +95,18 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
                 let crash = crash::read(report.as_ref(), &packaged, &store)?;
                 writeln!(stdout.lock(), "{report}\n{}", crash::render(&crash, &maps))?;
             }
+        }
+        "store" => {
+            let args = Args::parse(args, &["--store", "--package"])?;
+            ensure!(args.rest.is_empty(), "{USAGE}");
+            let packages: Vec<PathBuf> = args.all("--package").map(PathBuf::from).collect();
+            ensure!(!packages.is_empty(), "store needs a package\n\n{USAGE}");
+            let store = Store { root: args.one("--store")? };
+            let mut out = BufWriter::new(stdout.lock());
+            for path in store.fill(&store::packaged(&packages)?)? {
+                writeln!(out, "{}", path.display())?;
+            }
+            out.flush()?;
         }
         "scan" => {
             let args = Args::parse(args, &["--forbid"])?;

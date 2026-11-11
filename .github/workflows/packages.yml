@@ -1,25 +1,45 @@
-# Steam's desktop packages (M4 S4): `cargo xtask package` for Windows and Linux, on the hosts that build
-# them, with every check it runs offline, kept as artifacts. macOS's runs on a Mac (exit test 3's run). I2
-# grows this into the nightly packages of all five platforms (m4-plan §3, "CI"): shipping builds link with
-# fat LTO, so this runs nightly, on demand, and on pull requests that touch packaging, never on every one.
+# The nightly packages (M4 I2): `cargo xtask package` for all five platforms on the hosts that build them,
+# every check it runs offline (S2's archive, S3's bundle, S4's Steam builds), and each package's Breakpad
+# symbol store (C1, C2), all kept as artifacts. Shipping builds link with fat LTO, so this runs nightly, on
+# demand, and on pull requests that touch what packaging reads, never on every one (m4-plan §3, "CI").
 #
-# Off `main` (a pull request's merge commit) a package is a dev build, `--dev`; on `main` it's a release's,
-# numbered by the commit count, which needs the whole history.
+# Off `main` (a pull request's merge commit, or a dispatch on another branch) a package is a dev build,
+# `--dev`; on `main` it's a release's, numbered by the commit count, which needs the whole history
+# (`fetch-depth: 0`): a shallow or changed checkout fails the package rather than numbering it wrongly.
+# Nothing is signed for a store: Apple's are ad hoc, Android's takes the debug key (no
+# SAPPHIRE_UPLOAD_KEYSTORE here), and the content's release stays unsigned (no SAPPHIRE_RELEASE_KEY).
+#
+# Caches: these jobs only read, never write. `main`'s caches already fill most of the repository's 10 GB
+# (M4 I1), and shipping builds' are large, so a job restores CI's `golden` cache for its runner where its
+# environment hashes the same (xtask, and the cooker in the `tools` profile, built warm), and builds the
+# shipping profile cold. The CARGO_PROFILE_* lines below are CI's, for that reason.
 
 name: Packages
 
 on:
+  # What packaging reads; xtask's `the_packages_workflow_runs_on_what_packaging_reads` test holds the list
+  # to the code. Shipping-profile and dependency changes (Cargo.toml, Cargo.lock) wait for the nightly run.
   pull_request:
     paths:
       - '.github/workflows/packages.yml'
-      - 'xtask/src/platforms/**'
-      - 'xtask/src/version.rs'
+      - '.cargo/config.toml'
+      - 'rust-toolchain.toml'
       - 'platform/**'
       - 'game/game_app/build.rs'
       - 'game/game_app/Cargo.toml'
       - 'game/game_app/src/main.rs'
+      - 'tools/sapphire_pipeline/src/icon.rs'
+      - 'tools/sapphire_symbols/**'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/cli.rs'
+      - 'xtask/src/content.rs'
+      - 'xtask/src/release.rs'
+      - 'xtask/src/version.rs'
+      - 'xtask/src/workspace.rs'
+      - 'xtask/src/platforms/**'
+  # Two and a half hours after CI's nightly run, so the `main` caches it saves are there to read.
   schedule:
-    - cron: '43 9 * * *'
+    - cron: '43 11 * * *'
   workflow_dispatch:
 
 permissions:
@@ -32,17 +52,176 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TOOLS_DEBUG: "0"
   RUST_BACKTRACE: short
   # Packages of anything but main's commits are dev builds. The empty string comes last: it's falsy, so
   # `cond && '' || x` would always be x.
   PACKAGE_KIND: ${{ github.ref != 'refs/heads/main' && '--dev' || '' }}
   RUST_CACHE_ENV_VARS: CARGO CC CFLAGS CXX CMAKE RUST ImageOS SDKROOT
-  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' }}
+  # Two weeks of nightlies, to compare a package and its checks across a regression and to read a crash
+  # from any of them; a pull request's run proves the change and is read within days, as CI's captures.
+  KEEP_DAYS: ${{ github.event_name == 'pull_request' && 7 || 14 }}
 
 jobs:
+  # S4's macOS package for Steam: signed ad hoc with the hardened runtime, and drawn from.
+  macos:
+    name: Package (macOS)
+    runs-on: macos-26
+    # Locally 6 to 16 minutes on an M5 (S1, S4, C2); a 3-core runner, cold but for the cooker.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # As CI's Metal job, so the cache's key is the same; xtask names it too.
+      - name: Select the macOS SDK
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: golden
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          save-if: false
+      - name: Package
+        run: cargo --locked xtask --locked package --platform macos $PACKAGE_KIND
+      - name: Write the symbol store
+        run: cargo --locked xtask --locked symbols --package target/package/macos
+      # The stripped, signed game, launched from a copy of its bundle, draws the title headless.
+      - name: Draw the title from the package
+        run: |
+          app=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["app_path"])' target/package/macos/package.json)
+          run="$RUNNER_TEMP/packaged"
+          mkdir -p "$run"
+          cp -R "target/package/macos/$app" "$run/"
+          "$run/$app/Contents/MacOS/game_app" --capture "$RUNNER_TEMP/title.png" --size 640x360 --ticks 30
+          test -s "$RUNNER_TEMP/title.png"
+          cp "$RUNNER_TEMP/title.png" target/package/macos/checks/title.png
+      - name: Keep the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-macos
+          path: target/package/macos
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the symbol store
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: symbols-macos
+          path: target/symbols
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Disk left
+        if: always()
+        run: df -h .
+
+  # S2's archive for the App Store, and the same recipe's Simulator app. No cache: iOS builds must not see
+  # the macOS SDKROOT that CI's `golden` key hashes, and CI's own iOS job keeps no cooker.
+  ios:
+    name: Package (iOS)
+    runs-on: macos-26
+    # Locally 6 to 12 minutes for the archive and 6 for the Simulator app on an M5 (S2, C2); both cold here.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+        with:
+          group: ios
+      - name: Package the archive
+        run: cargo --locked xtask --locked package --platform ios $PACKAGE_KIND
+      - name: Package the Simulator app
+        run: cargo --locked xtask --locked package --platform ios-sim $PACKAGE_KIND
+      - name: Write the symbol store
+        run: cargo --locked xtask --locked symbols --package target/package/ios --package target/package/ios-sim
+      - name: Keep the archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-ios
+          path: target/package/ios
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the Simulator app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-ios-sim
+          path: target/package/ios-sim
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the symbol store
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: symbols-ios
+          path: target/symbols
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Disk left
+        if: always()
+        run: df -h .
+
+  # S3's bundle for Play, with bundletool's, aapt2's and zipalign's checks and release lint.
+  android:
+    name: Package (Android)
+    runs-on: ubuntu-24.04
+    # Locally 7 to 8 minutes on an M5 (S3, C1, C2).
+    timeout-minutes: 120
+    env:
+      # xtask runs Gradle offline unless this is set; the runner's Gradle cache starts empty.
+      SAPPHIRE_GRADLE_ONLINE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+        with:
+          group: android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: golden
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          save-if: false
+      # As CI's Android job: it validates the wrapper; read-only, for the reason caches are (above).
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-provider: basic
+          cache-read-only: true
+      # The image's default ANDROID_NDK_HOME is r27, older than the r28+ 16 KB alignment needs: CI's
+      # Android job and local builds use the preinstalled r29.
+      - name: Package
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
+          cargo --locked xtask --locked package --platform android $PACKAGE_KIND
+      - name: Write the symbol store
+        run: cargo --locked xtask --locked symbols --package target/package/android
+      - name: Keep the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-android
+          path: target/package/android
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the symbol store
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: symbols-android
+          path: target/symbols
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Disk left
+        if: always()
+        run: df -h .
+
+  # S4's Windows package for Steam.
   windows:
     name: Package (Windows)
     runs-on: windows-2025
+    # CI's dev build of the sandbox takes about 30 minutes cold here; a fat LTO link and a PDB on top.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,14 +232,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: v1-rust
-          shared-key: package
+          shared-key: golden
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
-          save-if: ${{ env.SAVE_RUST_CACHE }}
+          save-if: false
       # The resources go in through the Windows SDK's rc.exe, which embed-resource finds; the package reads
       # the manifest, VERSIONINFO, icon and subsystem back from the executable (checks/windows-resources.txt).
       - name: Package
         shell: bash
         run: cargo --locked xtask --locked package --platform windows $PACKAGE_KIND
+      - name: Write the symbol store
+        shell: bash
+        run: cargo --locked xtask --locked symbols --package target/package/windows
       # Windows' own reading of the version, beside xtask's.
       - name: Read the version as Windows does
         shell: pwsh
@@ -94,15 +276,28 @@ jobs:
           name: package-windows
           path: target/package/windows
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the symbol store
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: symbols-windows
+          path: target/symbols
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Disk left
+        if: always()
+        shell: bash
+        run: df -h .
 
   # In Steam Linux Runtime 3.0's SDK (m4-plan §3, "Steam"), so the game links the runtime's glibc (2.31) and
   # GCC 10's libstdc++; the package fails if it needs anything newer (checks/linux-needs.txt). The image is
   # Valve's, pulled as CI pulls WARP. Its Python is 3.9 and it has no rustup, so Rust comes from rustup's
-  # installer at rust-toolchain.toml's version, and the hosted runners' setup action isn't used.
+  # installer at rust-toolchain.toml's version, and the hosted runners' setup action isn't used. No cache:
+  # what the hosted runners cache was built against a newer glibc than the runtime's.
   linux:
     name: Package (Linux, Steam Linux Runtime 3.0)
     runs-on: ubuntu-24.04
+    # Cold every time: everything, the cooker too, in the runtime's toolchain.
     timeout-minutes: 120
     container:
       image: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
@@ -119,19 +314,26 @@ jobs:
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$channel"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          prefix-key: v1-rust
-          shared-key: package-sniper
-          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
-          save-if: ${{ env.SAVE_RUST_CACHE }}
       - name: Package
         shell: bash
         run: cargo --locked xtask --locked package --platform linux $PACKAGE_KIND
+      - name: Write the symbol store
+        shell: bash
+        run: cargo --locked xtask --locked symbols --package target/package/linux
       - name: Keep the package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-linux
           path: target/package/linux
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Keep the symbol store
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: symbols-linux
+          path: target/symbols
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}
+      - name: Disk left
+        if: always()
+        run: df -h .

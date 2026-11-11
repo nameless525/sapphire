@@ -1,6 +1,7 @@
 //! Where a crash's modules find their symbols (M4 C2): the packages' `package.json` `modules`, each a
 //! shipped binary's debug file and ID beside its native symbols, and a Breakpad store of the `.sym` files
-//! made from them, written the first time a crash needs one.
+//! made from them, written the first time a crash needs one, or for every module at once (`store`, which the
+//! nightly packages run, M4 I2).
 
 use std::fs;
 use std::io::{BufWriter, Write as _};
@@ -103,6 +104,13 @@ impl Store {
         }
         eprintln!("wrote {} from {}", path.display(), packaged.symbols.display());
         Ok(path)
+    }
+
+    /// The `.sym` of every module in `packaged`, each written unless the store has it already: a whole
+    /// store for a set of packages, as the nightly packages keep one beside them (M4 I2), rather than the
+    /// modules one crash names.
+    pub fn fill(&self, packaged: &[Packaged]) -> anyhow::Result<Vec<PathBuf>> {
+        packaged.iter().map(|packaged| self.ensure(packaged)).collect()
     }
 }
 

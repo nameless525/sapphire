@@ -26,6 +26,8 @@ mod ios_sim;
 mod ios_store;
 mod macos;
 mod package;
+#[cfg(test)]
+mod packages_workflow;
 mod pe;
 mod privacy_manifest;
 mod steam;
@@ -48,7 +50,7 @@ use crate::workspace::{self, BuildProfile, CargoBuild};
 pub use host::HostExecutable;
 pub use package::{Target as PackageTarget, default_out as default_package_dir, package};
 pub use steampipe::steampipe;
-pub use symbols::{default_store as default_symbol_store, symbolicate};
+pub use symbols::{default_store as default_symbol_store, symbolicate, write_store as write_symbol_store};
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

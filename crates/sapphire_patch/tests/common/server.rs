@@ -136,6 +136,12 @@ impl Host {
             }
             thread::sleep(Duration::from_millis(1));
         }
+        self.log_so_far()
+    }
+
+    /// What's logged this moment, without waiting for answers in flight: for a test that polls the log
+    /// while a download runs, to act between one request and the next.
+    pub fn log_so_far(&self) -> Vec<Served> {
         self.state.log.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 

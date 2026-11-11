@@ -403,7 +403,7 @@ fn a_second_download_of_one_staging_directory_waits_its_turn() {
     host.set_faults(|_| Fault::Delay(20));
     let dir = TestDir::new("busy");
     let first = download(&host, &dir);
-    while host.log().is_empty() {
+    while host.log_so_far().is_empty() {
         std::thread::sleep(Duration::from_millis(2));
     }
     let error = download(&host, &dir).join().expect_err("busy");

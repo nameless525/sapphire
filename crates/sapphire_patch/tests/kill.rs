@@ -83,7 +83,7 @@ fn kill_loop(dir: &TestDir) {
             if let Some(status) = helper.try_wait().expect("polls the helper") {
                 break Some(status);
             }
-            if host.log().len() - first >= allowed {
+            if host.log_so_far().len() - first >= allowed {
                 // Somewhere between this request's answer and the next one's.
                 thread::sleep(Duration::from_micros(next_random(&mut random) % 3000));
                 helper.kill().expect("kills the helper");

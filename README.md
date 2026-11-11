@@ -11,7 +11,7 @@ Sapphire is a Rust game engine built for 3D anime-aesthetic action games in the 
 - **World:** one time-of-day key moves the sky, fog, ambient light, shadow tint, the character light rig and the grade. Under it are a stylized environment shader, cascaded shadows, ambient probes and AO, and NPR foliage in the wind.
 - **Post:** HDR with bloom, a diffusion glow, gradient layers and a custom grade, TAA on desktop and 4× MSAA on phones, and a stack of combat screen effects.
 - **Iteration:** hot reload on the desktop, and live link to any development build. Content, materials, time-of-day keys, cvars and shaders change in the running app without a restart.
-- **Golden images:** 144 scenes, compared on Metal, Vulkan (lavapipe) and DX12 (WARP) on every pull request.
+- **Golden images:** 334 scenes, compared on Metal, Vulkan (lavapipe) and DX12 (WARP) on every pull request.
 
 The look-dev stage (`--look-dev`) puts it all together: a VRM character in a Jinzhou-style town, through a day and a night.
 
@@ -145,14 +145,14 @@ On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb
 
 ### Golden images
 
-`cargo xtask golden` renders the golden scenes (144 of them, in `tools/sapphire_testkit/src/scenes.rs`) with `--capture` (640×360) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP. `--scene <name>` runs one scene, and `--shard <index>/<count>` one of `count` shards, dealt by the scenes' CI times where that backend has them (`tools/sapphire_testkit/src/scenes/costs.rs`) and in turn elsewhere.
+`cargo xtask golden` renders the golden scenes (334 of them, in the document `tests/golden/scenes.ron`) with `--capture` (640×360 unless a scene gives its own size) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP. `--scene <name>` runs one scene, and `--shard <index>/<count>` one of `count` shards, dealt by the scenes' CI times where that backend has them (each scene's `ci_seconds`) and in turn elsewhere.
 
 - **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
 - **CI** schedules every golden scene on every pull request: lavapipe in three shards, WARP in six and Metal in one job. The separate ignored GPU-test suite runs on lavapipe for pull requests; its WARP workflow runs on main pushes and pull requests changing that workflow.
 - **Gates:** mean error, 99th-percentile error and the worst 16×16 tile's mean error, not the maximum, because hard two-tone edges flip whole pixels between backends. Spec §9 has the numbers and the noise they sit above.
 - **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`).
 - **CI artifacts:** every golden job uploads `target/golden/` (each scene's capture, plus the failures' diffs), kept for 7 days.
-- **New scene or intended change:** `cargo xtask golden --update` writes this machine's family. The other families' images come from the CI run's artifacts, which a passing run has too.
+- **New scene or intended change:** a new scene is a row in `tests/golden/scenes.ron`. `cargo xtask golden --update --scene <name>` writes this machine's family. The other families' images come from the CI run's artifacts, which a passing run has too, with each scene's time in `timings.json`.
 
 ## Everyday commands
 

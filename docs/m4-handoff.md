@@ -139,7 +139,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust after Z5e:** a recipe's only Rust steps are a golden's row in `scenes.rs` and a screen showing a value no model holds. The first is a test list, which a commit of documents alone can do without: a golden is a check someone chooses to add. The second is code by design. A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
+**What's left of Rust:** a recipe's only Rust step is a screen showing a value no model holds, which is code by design. A golden is a row in `tests/golden/scenes.ron` and its PNG since M4 R1 ("A golden"). A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -211,7 +211,7 @@ Walked, as part of both recipes above.
    ```
    The script is any document in `content/inputs/`, whose `fight-back` serves any encounter. An input none of them gives is a new `<name>.inputs.ron` there, which takes no Rust (M4 R2).
 5. **Every replay on the zone moves,** because the zone's digest is in `tables_hash`. Re-stamp them with `cargo xtask replay --update`. The walk moved six. x86-64's lines are owed from CI. On the Lantern Ward, a fight that plays differently also needs `ward-whole-walk` recorded again by its recorder (see "Tools"), which is data. No test counts the ward's kinds or fighters (Z5e): `a_zones_encounters_bring_the_kinds_they_spawn` reads them from every zone's spawners.
-6. **A golden** of the fight in its zone, if you want one. **Rust step:** a golden scene is a row in `tools/sapphire_testkit/src/scenes.rs`, with the replay's `--arena --replay` capture and a tick. It's a test list, so a fight lands without it: exit test 2 allows the PNG in the boss's commit, and the row goes in a commit of its own, as the ward's did.
+6. **A golden** of the fight in its zone, if you want one: a row in `tests/golden/scenes.ron` with the replay's `--arena --replay` capture and a tick, and its PNG ("A golden"). Exit test 2 allows both in the boss's commit, since `tests/golden/` is one of the three directories it may touch.
 
 ### A zone, with checkpoints and exits
 
@@ -247,7 +247,7 @@ The worked example is [court_gate.timeline.ron](../content/zones/lantern_ward/co
 2. **A new pose:** a `.keypose.ron` and its sidecar, named as a clip and a move in [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron).
 3. **Subtitles:** keys and speakers in `content/loc/{en,ja}/cutscenes.ftl`, a line under `subtitle-` and a speaker under `speaker-`: the HUD shows only keys under those prefixes. `tools/sapphire_pipeline/tests/cutscene_strings.rs` and `game_ui --test strings` hold them.
 4. **Look at it:** `--arena --timeline <id>` plays one on the sandbox, and the editor's sequencer pane scrubs it.
-5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads, and each timeline it names to its sidecar's ID and its place; the whole walk counts at least one cutscene (Z5e). A beat's timeline is recorded into the run's file, so the whole walk's replay holds it with no scripted input. A replay that plays it on a scenario with no flow is a scripted input document with a `PlayTimeline` at a tick (`content/inputs/`, M4 R2), which takes no Rust. **Rust step,** for a check you choose to add: its goldens are rows in `scenes.rs`.
+5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads, and each timeline it names to its sidecar's ID and its place; the whole walk counts at least one cutscene (Z5e). A beat's timeline is recorded into the run's file, so the whole walk's replay holds it with no scripted input. A replay that plays it on a scenario with no flow is a scripted input document with a `PlayTimeline` at a tick (`content/inputs/`, M4 R2), which takes no Rust. Its goldens, if you want them, are rows in `tests/golden/scenes.ron` ("A golden").
 
 ### A game screen
 
@@ -262,7 +262,7 @@ The worked examples are the six documents in [content/ui/](../content/ui/). Spec
    ```bash
    cargo xtask run --platform desktop -- --capture <png> --ui-plain --ui-game <name> --ui-locale ja
    ```
-   with `--ui-pseudo` for pseudo-localization. **Rust step:** goldens at 4:3, 16:9 and 21:9 are rows in `scenes.rs`.
+   with `--ui-pseudo` for pseudo-localization. Goldens at 4:3, 16:9, 21:9 and the Deck's 16:10 are rows in `tests/golden/scenes.ron` on the `game-screen` base, each with its `--ui-game` screen and `--ui-locale` ("A golden").
 
 ### Music by encounter phase, and voice lines
 
@@ -273,6 +273,14 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 3. **Voice lines:** each line is a `Cue` document on the `Voice` bus with its `.ogg`. Each language's `VoiceLines` document lists `(key, cue)`, and `voices:` in `default_cues.ron` names each language's document. A cue-table row speaks a line with `line: Some("<key>")` when the simulation publishes that row's cue. The voice language follows the player's language setting.
 4. **A placeholder sound,** until a recording replaces it, is a spec, `tools/sounds/<name>.sound.ron`, which takes no Rust: a stem of the score's tempo, beats and bars playing one of the generator's instruments (a pad's chords, a pulse's notes, a drum pattern, a bell tune or a toll), or a line's syllables at a speaker's pitch (`tools/sapphire_soundgen`'s docs). `cargo run -p sapphire_soundgen` from the workspace root writes each missing `.ogg` to the `path` its spec names; add its row to the `SOURCE.md` beside it, which the generator's tests hold, and name it from the score or the line's cue. A recorded `.ogg` needs no spec.
 5. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred").
+
+### A golden
+
+A golden is a row and its PNG (M4 R1). The scenes are `tests/golden/scenes.ron`, whose header says what each field means and why each family of scenes pins what it pins.
+
+1. **The row:** a block at the end of `scenes`, after a comment saying what it shows: its `name` (the PNG's stem, lowercase letters and hyphens), `ticks`, its `size` if not 640×360, a `base` if it shares one, and `args`, the rest of the sandbox's `--capture` command line. Pin off what it isn't about, as its neighbours do, so a later feature doesn't move it; a `--game` scene pins `--tier`. Leave out `gates` unless a review chose its own, and `ci_seconds` until CI has timed it: it counts as the costliest scene meanwhile.
+2. **Its Metal golden:** `cargo xtask golden --update --scene <name>`, which writes `tests/golden/<name>.metal.png`. Look at it. Its log in `target/golden/<name>.log` must have `first_use=0` on its "captured frame" line.
+3. **The other backends,** from the PR's first CI run, which fails on their missing goldens and uploads the captures: each golden job's artifact holds `<name>.<family>.actual.png`, which becomes `tests/golden/<name>.<family>.png` for `vulkan-lavapipe` and `dx12-warp` once compared against the Metal golden by eye, and the scene's `ci_seconds` come from the same artifacts' `timings.json`, one per family. The testkit's tests then hold all three PNGs to the row.
 
 ### A patch
 
@@ -309,9 +317,8 @@ A patch is a release of the content that changes only what the simulation doesn'
 
 ### Rust steps left in the "How to add" recipes
 
-M3's first pillar counts each of these as a bug. The first is a test list: a commit of documents alone lands without it, and it's the Rust a check someone chooses to add takes.
+M3's first pillar counts each of these as a bug.
 
-- **A golden scene** is a row in `tools/sapphire_testkit/src/scenes.rs`. Every recipe that wants a picture has this step.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust.
 - **A remappable binding** (M4 A4) is a named binding in `combat_bindings.ron` ending in `.gamepad` or `.keyboard`, a `Remap` row on `remap_pad.ui.ron` or `remap_keys.ui.ron` and its `remap-action-<action>` strings, but the glyph its row shows is a field of `game_ui::menus::BindingGlyphs`, named by the action.
 

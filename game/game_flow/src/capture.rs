@@ -43,7 +43,7 @@ pub struct GameCapture {
     /// Frames drawn, a tick each: with [`at_tick`](Self::at_tick), the most it may take.
     pub ticks: u32,
     /// Draws until the run stands at this tick, its frame the last, rather than for [`ticks`](Self::ticks)
-    /// frames: a moment of a replayed run, which a cutscene or the title may put more frames than ticks before
+    /// frames: a moment of a replayed run, which a cutscene holding the run's steps may put more frames than ticks before
     /// (M4 F2, a playtest's mark). Frames more than [`AT_TICK_LEAD`] ticks before it are drawn small, as those
     /// before [`draw_from`](Self::draw_from) are. An error if the run doesn't get there in `ticks` frames.
     pub at_tick: Option<u64>,

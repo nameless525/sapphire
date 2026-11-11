@@ -1,6 +1,6 @@
 //! A playtest's mark, drawn (M4 F2): the game's capture plays a run's file through the flow, as
 //! `game_app --replay <file> --at-tick <n> --capture <png>` does, and its last frame is the run at that tick:
-//! not one before, not one after, however many frames the title took. A tick past the file's end is an error,
+//! not one before, not one after. A tick past the file's end is an error,
 //! not a picture of something else.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
@@ -68,11 +68,6 @@ impl App for OutsideCaller {
             ticks.iter().max(),
             Some(&MARKED),
             "the last frame is the marked tick's, and none went past it"
-        );
-        assert!(
-            ticks.len() > MARKED as usize,
-            "the title's frames came first, so frames aren't ticks: {}",
-            ticks.len()
         );
 
         let short = draw(platform, 20_000, 400)

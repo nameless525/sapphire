@@ -19,7 +19,7 @@ use crate::build_info;
 
 const CAPTURE_FLAG: &str = "--capture";
 
-/// How many more frames than ticks `--at-tick` may take: ten minutes of a cutscene's held steps, and the title.
+/// How many more frames than ticks `--at-tick` may take: ten minutes of a cutscene's held steps.
 const HELD_FRAMES: u32 = 10 * 60 * 60;
 
 /// A run's arguments.

@@ -7,7 +7,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::server::Host;
+use common::server::{Fault, Host};
 use common::{
     APP_BUILD, EXPIRES, NOW, TRUSTED, TestDir, assert_staged_whole, first_release, retries, second_release,
 };
@@ -70,4 +70,20 @@ fn the_platform_verifier_refuses_a_certificate_no_trust_store_holds() {
         other => panic!("{other}"),
     }
     assert!(host.log().is_empty(), "no request got past the handshake");
+}
+
+#[test]
+fn a_redirect_from_the_tls_host_to_plain_http_is_never_followed() {
+    let next = second_release();
+    let plain = Host::start(next.host(&next.signed(2, EXPIRES, TRUSTED)));
+    let (host, der) = tls_host();
+    let port = plain.port();
+    host.set_faults(move |_| Fault::Redirect(port));
+    let dir = TestDir::new("tls-redirect");
+    let error = download(&host, Roots::Specific(vec![der]), &dir).expect_err("refused");
+    match &error {
+        DownloadError::Host { path, .. } => assert_eq!(path, MANIFEST_PATH),
+        other => panic!("{other}"),
+    }
+    assert!(plain.log().is_empty(), "nothing was asked over plain HTTP");
 }

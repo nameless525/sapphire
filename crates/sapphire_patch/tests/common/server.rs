@@ -35,6 +35,8 @@ pub enum Fault {
     /// Announces the whole body and sends it a byte every [`DRIBBLE`], so each read arrives well inside any
     /// read timeout and the body never seems to stall.
     Dribble,
+    /// Answers `302 Found`, sending the client to the same path on this port of 127.0.0.1, over plain HTTP.
+    Redirect(u16),
 }
 
 /// A request as the host read it.
@@ -112,6 +114,11 @@ impl Host {
             }
         });
         Self { addr, state }
+    }
+
+    /// The port it listens on, on 127.0.0.1.
+    pub fn port(&self) -> u16 {
+        self.addr.port()
     }
 
     /// The release's base URL.
@@ -235,6 +242,14 @@ fn answer(
 ) -> io::Result<bool> {
     if let Fault::Delay(millis) = fault {
         thread::sleep(Duration::from_millis(millis));
+    }
+    if let Fault::Redirect(port) = fault {
+        let location = format!("http://127.0.0.1:{port}/{}", asked.path);
+        stream.write_all(
+            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+        )?;
+        stream.flush()?;
+        return Ok(true);
     }
     let Some(file) = file.filter(|_| fault != Fault::Missing) else {
         stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")?;

@@ -52,7 +52,8 @@ const STAGED: &str = "staged";
 pub struct PatchSetup {
     /// Where patches install and stage: `<dir>/installed/` and `<dir>/staging/`.
     pub dir: PathBuf,
-    /// The host's URL, `http://` or `https://` and ending in `/`: a release laid out as `xtask release` lays it.
+    /// The host's URL, `https://` (or `http://` to this machine) and ending in `/`: a release laid out as
+    /// `xtask release` lays it.
     /// None, and nothing is checked.
     pub host: Option<String>,
     /// The keys the build trusts (`Installation::open`'s).

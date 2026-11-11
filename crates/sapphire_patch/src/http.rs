@@ -74,16 +74,23 @@ impl Timeouts {
 /// A host that can't be reached through this transport.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HttpError {
-    #[error("a release's host is an http:// or https:// URL ending in `/`, not {0:?}")]
+    #[error(
+        "a release's host is an https:// URL ending in `/`, or http:// to this machine (127.0.0.1, [::1] or \
+         localhost), not {0:?}"
+    )]
     BadBase(String),
 }
 
 impl HttpTransport {
-    /// A transport to the release laid out under `base`, an `http://` or `https://` URL ending in `/`: where
-    /// `release.smanifest` and the `packs/` and `files/` directories are (`xtask release`'s layout).
+    /// A transport to the release laid out under `base`, an `https://` URL ending in `/`: where
+    /// `release.smanifest` and the `packs/` and `files/` directories are (`xtask release`'s layout). Plain
+    /// `http://` reaches only this machine, for a host a test or `xtask patch serve` runs (the emulator reaches
+    /// one through `adb reverse`), and follows no redirect. An `https://` host's redirects stay on `https://`:
+    /// integrity rests on the hashes either way, but nothing a player's device asks goes out in the clear.
     pub fn new(base: &str, roots: Roots, timeouts: Timeouts) -> Result<Self, HttpError> {
-        let web = base.starts_with("https://") || base.starts_with("http://");
-        if !web || !base.ends_with('/') {
+        let https = base.starts_with("https://");
+        let local = base.strip_prefix("http://").is_some_and(is_this_machine);
+        if !(https || local) || !base.ends_with('/') {
             return Err(HttpError::BadBase(base.to_owned()));
         }
         let root_certs = match roots {
@@ -104,6 +111,9 @@ impl HttpTransport {
             .tls_config(tls)
             // Statuses are the download's to judge: a 200 to a range request isn't an error to `ureq`.
             .http_status_as_error(false)
+            // `ureq` follows a redirect to `http://` unless told not to.
+            .https_only(https)
+            .max_redirects(if https { 10 } else { 0 })
             .timeout_connect(Some(timeouts.connect))
             .timeout_recv_response(Some(timeouts.response))
             .timeout_per_read(Some(timeouts.read))
@@ -153,6 +163,20 @@ impl Transport for HttpTransport {
     }
 }
 
+/// Whether a URL's part after `http://` names this machine: the loopback address or `localhost`, with no user
+/// before an `@`, which would make what follows it the host.
+fn is_this_machine(rest: &str) -> bool {
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    matches!(host, "127.0.0.1" | "::1" | "localhost")
+}
+
 fn fetch_error(error: ureq::Error) -> FetchError {
     match error {
         ureq::Error::Timeout(timeout) => FetchError::Timeout(timeout.to_string()),
@@ -192,10 +216,22 @@ mod tests {
 
     #[test]
     fn a_host_is_a_web_url_ending_in_a_slash() {
-        for base in ["https://patches.example/game/", "http://127.0.0.1:8080/"] {
+        let this_machine = ["http://127.0.0.1:8080/", "http://[::1]:8080/r/", "http://localhost/"];
+        for base in ["https://patches.example/game/"].into_iter().chain(this_machine) {
             assert!(HttpTransport::new(base, Roots::Platform, Timeouts::default()).is_ok(), "{base}");
         }
-        for base in ["https://patches.example/game", "ftp://patches.example/", "patches.example/", ""] {
+        for base in [
+            "https://patches.example/game",
+            "ftp://patches.example/",
+            "patches.example/",
+            "",
+            // Plain HTTP anywhere but this machine.
+            "http://patches.example/game/",
+            "http://127.0.0.1.patches.example/",
+            // A user before an `@`, split so it reads as no address.
+            concat!("http://127.0.0.1", "@", "patches.example/"),
+            "http://localhost.patches.example:80/",
+        ] {
             assert_eq!(
                 HttpTransport::new(base, Roots::Platform, Timeouts::default()).unwrap_err(),
                 HttpError::BadBase(base.to_owned())

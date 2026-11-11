@@ -54,7 +54,9 @@
 //! [`Transport`] is the one thing that speaks HTTP, so another client can slot in (m4-plan §3's undo:
 //! `reqwest`). [`HttpTransport`] is `ureq` 3, blocking, on `rustls` with the `ring` provider. It trusts
 //! the OS's verifier everywhere but Android, where it trusts Mozilla's roots, compiled in ([`Roots`]).
-//! Integrity never rests on TLS: the signed manifest and every block's hash carry it.
+//! Integrity never rests on TLS: the signed manifest and every block's hash carry it. Still, nothing goes out
+//! in the clear: a host is `https://`, its redirects stay there, and plain `http://` reaches only this
+//! machine, for tests and `xtask patch serve` ([`HttpTransport::new`]).
 //!
 //! # Installing
 //!

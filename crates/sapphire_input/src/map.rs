@@ -323,6 +323,9 @@ fn compile(document: InputBindings, mut virtuals: Vec<String>) -> Result<InputMa
                 modifier.validate().map_err(invalid)?;
             }
             let trigger = TriggerSpec::compile(binding.trigger).map_err(invalid)?;
+            if trigger == TriggerSpec::Toggle && actions[action.index()].kind != ActionKind::Button {
+                return Err(invalid("only a button action can toggle"));
+            }
             let threshold = binding_threshold(binding, actions[action.index()].kind).map_err(invalid)?;
             let modifier_start = modifiers.len();
             modifiers.extend_from_slice(&binding.modifiers);

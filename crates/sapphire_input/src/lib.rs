@@ -10,8 +10,8 @@
 //!   whose actions consume their sources hides those sources from every lower context.
 //! - **Modifiers** ([`Modifier`]): axial and radial dead zones, response curves, negation,
 //!   scaling, swizzles, and scaling by the update's length.
-//! - **Triggers** ([`Trigger`]): down, down from a press, pressed, released, hold, tap and double
-//!   tap, plus chords (a binding's `chord`: another action that must be triggered). A chord also
+//! - **Triggers** ([`Trigger`]): down, down from a press, pressed, released, hold, tap, double
+//!   tap and toggle, plus chords (a binding's `chord`: another action that must be triggered). A chord also
 //!   blocks the unchorded bindings of its source while it is held, so `Ctrl+S` doesn't fire `S`.
 //! - **Touch gestures** ([`Gesture`]): press (so taps, double taps and long presses come from
 //!   the triggers), one-finger drag, two-finger pinch, and swipes by direction. On-screen
@@ -20,7 +20,8 @@
 //! - **Bindings as data:** [`InputBindings`] is a RON document (`sapphire_serialize`,
 //!   `sapphire::input::InputBindings`, schema version 1), registered for loading by name.
 //!   [`InputSystem::rebind`] rebinds a named binding at runtime, and
-//!   [`InputSystem::capture_next`] captures the source a player presses for it.
+//!   [`InputSystem::capture_next`] captures the source a player presses for it, from the devices
+//!   asked ([`CaptureFrom`]).
 //! - **The last-used device** ([`DeviceKind`], with the gamepad's [`GamepadFamily`]), for
 //!   prompt glyphs.
 //! - **Where pointers are** ([`InputSystem::pointers`]): the mouse's left button and fingers, in
@@ -33,8 +34,8 @@
 //!   simulation. Intents are `sapphire_gameplay`'s, from that input, in the fixed step.
 //! - On-screen controls' layout and drawing, and routing touches to them: `sapphire_ui` (M2 I2),
 //!   whose touch zones take a finger before this crate's gestures can see it.
-//! - Persisting rebinds: user settings (`sapphire_save`, M3). [`InputSystem::bindings`] is the
-//!   document they will store.
+//! - Persisting rebinds, and which held actions toggle: the player's settings (M4 A4), laid over a
+//!   game's bindings document by `sapphire_controls`.
 //!
 //! # Time
 //!
@@ -84,8 +85,6 @@
 //! - Trigger rumble (a pad's rumble is M2 E3's: which pad is [`InputSystem::active_gamepad`], SDL's call
 //!   is `sapphire_platform`'s, and what fires it is `sapphire_cues`'); DualSense LEDs
 //!   and gyro, and gamepad touchpads.
-//! - Persisted rebinds and accessibility options, such as hold-to-toggle (spec §6.8), with user
-//!   settings (M3); glyph tables with the UI (M3).
 //! - Hot reload of bindings documents with the asset pipeline (A8): [`InputBindings`] already
 //!   loads through `sapphire_serialize::from_ron_dynamic` once registered ([`register_types`]).
 
@@ -107,8 +106,8 @@ pub use raw::RawInput;
 pub use sapphire_platform::Timestamp;
 pub use source::{Gesture, Key, MouseButton, PadAxis, PadButton, Source, Stick, SwipeDirection};
 pub use system::{
-    ActionEvent, ActionEventKind, ActionPhase, ActionState, InputSystem, MAX_UPDATE_DELTA, Pointer,
-    PointerEvent, PointerPhase, RebindError,
+    ActionEvent, ActionEventKind, ActionPhase, ActionState, CaptureFrom, InputSystem, MAX_UPDATE_DELTA,
+    Pointer, PointerEvent, PointerPhase, RebindError,
 };
 pub use trigger::Trigger;
 

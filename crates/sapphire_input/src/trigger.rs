@@ -20,10 +20,19 @@ use serde::{Deserialize, Serialize};
 /// | `Hold` | until held `seconds` | from then until released |
 /// | `Tap` | while held, up to `seconds` | once, on a release before `seconds` |
 /// | `DoubleTap` | from the first tap until the window closes | once, on a press within `seconds` of a tap's release |
+/// | `Toggle` | — | from a press until the next press of any of its action's toggles |
 ///
 /// "Once" means a pulse: the action triggers and completes at the same instant. A tap or
 /// double tap held too long cancels instead. Chords are the binding's `chord` field: an action
 /// that must be triggered for the binding to fire at all.
+///
+/// `Toggle` is for a held action a player would rather not hold (spec §6.8): a press latches the action
+/// triggered and the next lets it go, so a step reads what holding from one press to the next would
+/// have. The latch is the action's, not the binding's: a key can let go what a pad's button latched.
+/// Only a button action takes one ([`MapError::InvalidBinding`](crate::MapError::InvalidBinding)). A
+/// toggle lets go as a held input does: when everything lets go (focus or the foreground lost), and
+/// when none of its action's toggles is active any more (its context went, or a rebind). A pad that
+/// disconnects leaves it latched, since the player can still let it go from another device.
 ///
 /// An input already held when a binding becomes active (its context was enabled, or a rebind) reads
 /// as nothing to every trigger but `Down` until it lets go, as does an axis held through a loss of
@@ -58,6 +67,8 @@ pub enum Trigger {
     DoubleTap {
         seconds: f32,
     },
+    /// Pressed once to hold and again to let go: hold-or-toggle's toggle (A4).
+    Toggle,
 }
 
 impl Trigger {
@@ -76,6 +87,7 @@ pub(crate) enum TriggerSpec {
     Hold(u64),
     Tap(u64),
     DoubleTap(u64),
+    Toggle,
 }
 
 impl TriggerSpec {
@@ -88,6 +100,7 @@ impl TriggerSpec {
             Trigger::Hold { seconds } => Self::Hold(nanos(seconds)?),
             Trigger::Tap { seconds } => Self::Tap(nanos(seconds)?),
             Trigger::DoubleTap { seconds } => Self::DoubleTap(nanos(seconds)?),
+            Trigger::Toggle => Self::Toggle,
         })
     }
 }
@@ -116,19 +129,21 @@ pub(crate) enum TriggerState {
     Triggered,
 }
 
-/// The result of one evaluation: the state from now on, and whether the binding fired an
-/// instantaneous trigger at this instant.
+/// The result of one evaluation: the state from now on, whether the binding fired an
+/// instantaneous trigger at this instant, and whether a toggle flipped its action's latch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Fire {
     pub state: TriggerState,
     pub pulse: bool,
+    pub flip: bool,
 }
 
 impl Fire {
-    const IDLE: Self = Self { state: TriggerState::Idle, pulse: false };
-    const ONGOING: Self = Self { state: TriggerState::Ongoing, pulse: false };
-    const TRIGGERED: Self = Self { state: TriggerState::Triggered, pulse: false };
-    const PULSE: Self = Self { state: TriggerState::Idle, pulse: true };
+    const IDLE: Self = Self { state: TriggerState::Idle, pulse: false, flip: false };
+    const ONGOING: Self = Self { state: TriggerState::Ongoing, pulse: false, flip: false };
+    const TRIGGERED: Self = Self { state: TriggerState::Triggered, pulse: false, flip: false };
+    const PULSE: Self = Self { state: TriggerState::Idle, pulse: true, flip: false };
+    const FLIP: Self = Self { state: TriggerState::Idle, pulse: false, flip: true };
 }
 
 /// What a binding's trigger remembers between evaluations.
@@ -258,6 +273,14 @@ pub(crate) fn evaluate(
                 Fire::IDLE
             }
         }
+        // The latch is the action's (`InputSystem`'s), so every toggle of an action shares one.
+        TriggerSpec::Toggle => {
+            if rising {
+                Fire::FLIP
+            } else {
+                Fire::IDLE
+            }
+        }
         TriggerSpec::DoubleTap(window) => {
             if memory.armed_at.is_some_and(|at| now >= after(at, window)) {
                 memory.armed_at = None;
@@ -301,7 +324,11 @@ pub(crate) fn deadline(spec: TriggerSpec, memory: &Memory) -> Option<Timestamp> 
                 memory.armed_at.map(|at| after(at, window))
             }
         }
-        TriggerSpec::Down | TriggerSpec::DownFromPress | TriggerSpec::Pressed | TriggerSpec::Released => None,
+        TriggerSpec::Down
+        | TriggerSpec::DownFromPress
+        | TriggerSpec::Pressed
+        | TriggerSpec::Released
+        | TriggerSpec::Toggle => None,
     }
 }
 
@@ -324,6 +351,7 @@ mod tests {
     const O: Fire = Fire::ONGOING;
     const T: Fire = Fire::TRIGGERED;
     const P: Fire = Fire::PULSE;
+    const F: Fire = Fire::FLIP;
 
     #[test]
     fn deadlines_at_the_end_of_the_clock_retire() {
@@ -396,6 +424,33 @@ mod tests {
         assert_eq!(run(double, &[(0, true), (100, false), (400, true)]), [O, O, O]);
         // The first press is too long to be a tap.
         assert_eq!(run(double, &[(0, true), (300, true), (350, false), (400, true)]), [O, I, I, O]);
+    }
+
+    #[test]
+    fn toggle_flips_on_each_press_and_nothing_else() {
+        // The latch is the action's: a binding says only when a press flips it.
+        let toggle = Trigger::Toggle;
+        assert_eq!(
+            run(toggle, &[(0, true), (10, true), (20, false), (30, true), (40, false)]),
+            [F, I, I, F, I]
+        );
+        let spec = TriggerSpec::compile(toggle).expect("valid");
+        let mut memory = Memory::default();
+        evaluate(spec, &mut memory, true, ms(0), Abort::No);
+        assert_eq!(deadline(spec, &memory), None, "time alone never flips it");
+
+        // Held as the binding became active: no press until it lets go, as for any edge.
+        let mut memory = Memory::entering(true);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(10), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(20), Abort::No), F);
+
+        // A release of any kind flips nothing: letting go is the next press's.
+        for abort in [Abort::Release, Abort::All] {
+            let mut memory = Memory::default();
+            assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), F);
+            assert_eq!(evaluate(spec, &mut memory, false, ms(10), abort), I, "{abort:?}");
+        }
     }
 
     #[test]

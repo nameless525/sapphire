@@ -4,8 +4,8 @@
 
 use sapphire_input::ActionEventKind::{Canceled, Completed, Started, Triggered};
 use sapphire_input::{
-    ActionEventKind, ActionId, DeviceKind, GamepadFamily, InputMap, InputSystem, Key, MAX_FINGERS,
-    MouseButton, PadAxis, PadButton, RawInput, RebindError, Source, Timestamp,
+    ActionEventKind, ActionId, CaptureFrom, DeviceKind, GamepadFamily, InputMap, InputSystem, Key,
+    MAX_FINGERS, MouseButton, PadAxis, PadButton, RawInput, RebindError, Source, Timestamp,
 };
 use sapphire_math::Vec2;
 use sapphire_platform::{
@@ -796,7 +796,7 @@ fn bindings_rebind_by_name_and_capture_the_next_press() {
     );
     let mut rig = Rig::new(map, &["main"]);
     // Rebinding UI: capture what the player presses next. The press is a choice, not input.
-    rig.input.capture_next();
+    rig.input.capture_next(CaptureFrom::Anything);
     rig.key(10, Scancode::J, true);
     assert_eq!(rig.update(20), []);
     let captured = rig.input.take_captured().expect("captured a key");
@@ -812,6 +812,110 @@ fn bindings_rebind_by_name_and_capture_the_next_press() {
     );
     assert_eq!(rig.input.bindings().contexts[0].bindings[0].source, Source::Key(Key::J));
     assert!(matches!(rig.input.rebind("dodge", Source::Key(Key::K)), Err(RebindError::UnknownBinding(_))));
+}
+
+/// A remap screen's capture takes only its own device's presses: the rest are input as ever, so a key can
+/// still back out while a pad's button is awaited.
+#[test]
+fn a_capture_takes_only_the_devices_it_asks_for() {
+    let map = map(
+        r#"(name: "back", kind: Button)"#,
+        r#"(name: "main", bindings: [(action: "back", source: Key(Escape), trigger: Pressed)])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.update(5);
+    rig.input.capture_next(CaptureFrom::Gamepad);
+    assert!(rig.input.is_capturing());
+    rig.key(10, Scancode::ESCAPE, true);
+    rig.key(15, Scancode::ESCAPE, false);
+    rig.push(20, RawInput::PadButton { pad: 0, button: PadButton::North, down: true });
+    let events = rig.update(30);
+    assert!(events.contains(&ev("back", Triggered, 10)), "the key is input: {events:?}");
+    assert_eq!(rig.input.take_captured(), Some(Source::Pad(PadButton::North)));
+    assert!(!rig.input.is_capturing());
+
+    // Keys alone: a mouse button is input, and a canceled capture takes nothing.
+    rig.input.capture_next(CaptureFrom::Keyboard);
+    rig.push(40, RawInput::MouseButton { button: MouseButton::Left, down: true });
+    rig.update(50);
+    assert_eq!(rig.input.take_captured(), None);
+    rig.input.cancel_capture();
+    rig.key(60, Scancode::J, true);
+    rig.update(70);
+    assert_eq!(rig.input.take_captured(), None, "canceled");
+}
+
+/// A toggle latches its action from one press to the next, as holding the button between them would: the
+/// same phases, at the same instants.
+#[test]
+fn a_toggle_holds_from_one_press_to_the_next() {
+    let actions = r#"(name: "guard", kind: Button)"#;
+    let toggled = map(
+        actions,
+        r#"(name: "main", bindings: [
+            (action: "guard", source: Key(G), trigger: Toggle),
+            (action: "guard", source: Pad(East), trigger: Toggle),
+        ])"#,
+    );
+    let held = map(
+        actions,
+        r#"(name: "main", bindings: [(action: "guard", source: Key(G), trigger: DownFromPress)])"#,
+    );
+
+    let mut toggle = Rig::new(toggled, &["main"]);
+    toggle.key(10, Scancode::G, true);
+    toggle.key(20, Scancode::G, false);
+    assert_eq!(toggle.update_for(30, "guard"), [ev("guard", Started, 10), ev("guard", Triggered, 10)]);
+    assert!(toggle.input.state(toggle.action("guard")).is_triggered(), "latched with the key up");
+    assert_eq!(toggle.update_for(500, "guard"), [], "time alone lets nothing go");
+    toggle.key(600, Scancode::G, true);
+    assert_eq!(toggle.update_for(610, "guard"), [ev("guard", Completed, 600)]);
+    toggle.key(620, Scancode::G, false);
+    assert_eq!(toggle.update_for(630, "guard"), []);
+
+    let mut hold = Rig::new(held, &["main"]);
+    hold.key(10, Scancode::G, true);
+    assert_eq!(hold.update_for(30, "guard"), [ev("guard", Started, 10), ev("guard", Triggered, 10)]);
+    hold.key(600, Scancode::G, false);
+    assert_eq!(hold.update_for(610, "guard"), [ev("guard", Completed, 600)]);
+
+    // The latch is the action's: the pad lets go what the key latched.
+    toggle.key(700, Scancode::G, true);
+    toggle.push(710, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    toggle.push(720, RawInput::PadButton { pad: 0, button: PadButton::East, down: true });
+    assert_eq!(
+        toggle.update_for(730, "guard"),
+        [ev("guard", Started, 700), ev("guard", Triggered, 700), ev("guard", Completed, 720)]
+    );
+
+    // It lets go with everything, as a held key does, and a pad leaving lets nothing go.
+    toggle.key(740, Scancode::G, false);
+    toggle.push(745, RawInput::PadButton { pad: 0, button: PadButton::East, down: false });
+    toggle.key(750, Scancode::G, true);
+    toggle.push(760, RawInput::GamepadRemoved { pad: 0 });
+    assert_eq!(toggle.update_for(770, "guard"), [ev("guard", Started, 750), ev("guard", Triggered, 750)]);
+    toggle.focus_lost(800);
+    assert_eq!(toggle.update_for(810, "guard"), [ev("guard", Completed, 800)]);
+
+    // And with its context: one that comes back finds it let go.
+    toggle.key(820, Scancode::G, false);
+    toggle.key(830, Scancode::G, true);
+    toggle.update(840);
+    let main = toggle.input.map().context("main").unwrap();
+    toggle.input.disable_context(main);
+    assert_eq!(toggle.update_for(850, "guard"), [ev("guard", Completed, 840)]);
+    toggle.input.enable_context(main, 0);
+    toggle.key(860, Scancode::G, false);
+    assert_eq!(toggle.update_for(870, "guard"), [], "the key held over the return isn't a press");
+}
+
+#[test]
+fn only_a_button_toggles() {
+    let text = r#"(type: "sapphire::input::InputBindings", version: 1, data: (actions: [(name: "move", kind: Axis2D)],
+        contexts: [(name: "main", bindings: [(action: "move", source: Key(W), trigger: Toggle)])]))"#;
+    let refused = InputMap::from_ron(text).expect_err("an axis can't latch");
+    assert!(refused.to_string().contains("toggle"), "{refused}");
 }
 
 /// On-screen controls and device events take two roads to the queue, so what's pushed later can have
@@ -1040,7 +1144,7 @@ fn an_axis_held_through_a_loss_is_not_captured() {
     rig.update(10);
     rig.focus_lost(20);
     rig.update(30);
-    rig.input.capture_next();
+    rig.input.capture_next(CaptureFrom::Anything);
     rig.push(40, axis(0.89));
     rig.update(50);
     assert_eq!(rig.input.take_captured(), None);
@@ -1889,7 +1993,7 @@ fn captured_axes_wait_for_rest_before_dispatching_any_trigger() {
         let mut rig = Rig::new(map(r#"(name: "fire", kind: Button)"#, &bindings), &["main"]);
         rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
         rig.update(1);
-        rig.input.capture_next();
+        rig.input.capture_next(CaptureFrom::Anything);
         let axis = |value| RawInput::PadAxis { pad: 0, axis: PadAxis::RightTrigger, value };
         rig.push(2, axis(0.9));
         assert_eq!(rig.update(10), [], "{trigger}");
@@ -1911,7 +2015,7 @@ fn a_capture_lasts_until_rest_past_a_threshold_above_it() {
     let mut rig = Rig::new(map(r#"(name: "fire", kind: Button)"#, bindings), &["main"]);
     rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
     rig.update(1);
-    rig.input.capture_next();
+    rig.input.capture_next(CaptureFrom::Anything);
     let axis = |value| RawInput::PadAxis { pad: 0, axis: PadAxis::RightTrigger, value };
     rig.push(2, axis(0.5));
     assert_eq!(rig.update(10), []);

@@ -12,7 +12,7 @@ use crate::map::{ActionId, Channel, ContextId, InputMap, MapError, SourceId, Vir
 use crate::modifier;
 use crate::raw::{PlatformAdapter, RawInput};
 use crate::source::{Key, MouseButton, PadAxis, Source};
-use crate::trigger::{self, Abort, Memory, TriggerState};
+use crate::trigger::{self, Abort, Memory, TriggerSpec, TriggerState};
 
 /// The longest update [`Modifier::ScaleByDeltaTime`](crate::Modifier::ScaleByDeltaTime) sees,
 /// so a hitch or a return from the background doesn't fling a rate-driven value.
@@ -112,6 +112,8 @@ pub struct ActionState {
     fired: u32,
     since: Timestamp,
     triggered_since_start: bool,
+    /// Latched by a [`Trigger::Toggle`](crate::Trigger::Toggle) binding's press, until the next.
+    toggled: bool,
 }
 
 impl ActionState {
@@ -148,6 +150,26 @@ impl ActionState {
     /// When the current phase began.
     pub fn since(&self) -> Timestamp {
         self.since
+    }
+}
+
+/// Which devices a rebinding capture ([`InputSystem::capture_next`]) takes its input from. Input from any
+/// other goes on to the bindings as usual, so a menu can still be backed out of while a pad's button is
+/// awaited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CaptureFrom {
+    /// A key, a mouse button, a gamepad's button or a pushed axis.
+    #[default]
+    Anything,
+    Keyboard,
+    Mouse,
+    /// A gamepad's button, or a stick or trigger pushed past half way.
+    Gamepad,
+}
+
+impl CaptureFrom {
+    fn takes(self, from: Self) -> bool {
+        self == Self::Anything || self == from
     }
 }
 
@@ -273,6 +295,9 @@ struct Combined {
     value: Vec2,
     pulse: bool,
     pulse_value: Vec2,
+    /// Whether any of its active bindings is a toggle, and how many toggles' presses this evaluation saw.
+    toggles: bool,
+    flips: u32,
 }
 
 impl Combined {
@@ -344,7 +369,7 @@ pub struct InputSystem {
     /// action starts at its timestamp.
     waiting: [bool; Channel::COUNT],
     next_deadline: Option<Timestamp>,
-    capture_armed: bool,
+    capture_armed: Option<CaptureFrom>,
     captured: Option<Source>,
 }
 
@@ -377,7 +402,7 @@ impl InputSystem {
             frame: 0,
             waiting: [false; Channel::COUNT],
             next_deadline: None,
-            capture_armed: false,
+            capture_armed: None,
             captured: None,
             map,
         }
@@ -583,11 +608,22 @@ impl InputSystem {
         self.devices.gamepads()
     }
 
-    /// Makes the next key, mouse button, gamepad button or pushed axis a capture for
-    /// rebinding instead of input: [`take_captured`](Self::take_captured) returns it.
-    pub fn capture_next(&mut self) {
-        self.capture_armed = true;
+    /// Makes the next key, mouse button, gamepad button or pushed axis from `from` a capture for
+    /// rebinding instead of input: [`take_captured`](Self::take_captured) returns it. Only a press is
+    /// taken, so the release of whatever armed it still reaches its bindings.
+    pub fn capture_next(&mut self, from: CaptureFrom) {
+        self.capture_armed = Some(from);
         self.captured = None;
+    }
+
+    /// Whether a capture is armed and hasn't taken anything yet.
+    pub fn is_capturing(&self) -> bool {
+        self.capture_armed.is_some()
+    }
+
+    /// Disarms a capture that hasn't taken anything, so the next press is input again.
+    pub fn cancel_capture(&mut self) {
+        self.capture_armed = None;
     }
 
     /// The source captured since [`capture_next`](Self::capture_next), once there is one.
@@ -647,12 +683,12 @@ impl InputSystem {
         self.contexts_changed = true;
     }
 
-    /// Captures `source` if a capture is armed; returns whether it did.
-    fn capture(&mut self, source: impl FnOnce() -> Source) -> bool {
-        if !self.capture_armed {
+    /// Captures `source`, which came from `from`, if a capture for it is armed; returns whether it did.
+    fn capture(&mut self, from: CaptureFrom, source: impl FnOnce() -> Source) -> bool {
+        if !self.capture_armed.is_some_and(|armed| armed.takes(from)) {
             return false;
         }
-        self.capture_armed = false;
+        self.capture_armed = None;
         self.captured = Some(source());
         true
     }
@@ -660,7 +696,7 @@ impl InputSystem {
     fn apply(&mut self, now: Timestamp, input: RawInput) {
         match input {
             RawInput::Key { scancode, down } => {
-                if down && self.capture(|| Source::Key(Key::from_scancode(scancode))) {
+                if down && self.capture(CaptureFrom::Keyboard, || Source::Key(Key::from_scancode(scancode))) {
                     return;
                 }
                 if down {
@@ -671,7 +707,7 @@ impl InputSystem {
                 }
             }
             RawInput::MouseButton { button, down } => {
-                if down && self.capture(|| Source::Mouse(button)) {
+                if down && self.capture(CaptureFrom::Mouse, || Source::Mouse(button)) {
                     return;
                 }
                 if down {
@@ -709,7 +745,7 @@ impl InputSystem {
                 }
             }
             RawInput::PadButton { pad, button, down } => {
-                if down && self.capture(|| Source::Pad(button)) {
+                if down && self.capture(CaptureFrom::Gamepad, || Source::Pad(button)) {
                     return;
                 }
                 if self.devices.set_pad_button(pad, button, down) {
@@ -718,7 +754,9 @@ impl InputSystem {
             }
             RawInput::PadAxis { pad, axis, value } => {
                 let held = self.devices.take_held_through_loss(pad, axis);
-                let captured = !held && value.abs() >= CAPTURE_AXIS && self.capture(|| Source::PadAxis(axis));
+                let captured = !held
+                    && value.abs() >= CAPTURE_AXIS
+                    && self.capture(CaptureFrom::Gamepad, || Source::PadAxis(axis));
                 let changed = self.devices.set_pad_axis(pad, axis, value);
                 if changed || captured {
                     if captured {
@@ -871,6 +909,7 @@ impl InputSystem {
             for &index in &self.active[start..end] {
                 let binding = &map.bindings()[index];
                 let state = &mut self.bindings[index];
+                combined.toggles |= binding.trigger == TriggerSpec::Toggle;
                 // Chords come earlier in the order, so they are already judged as of `now`.
                 let triggered = |chord: ActionId| self.actions[chord.index()].phase == ActionPhase::Triggered;
                 let gated = binding.chord.is_some_and(|chord| !triggered(chord))
@@ -925,12 +964,20 @@ impl InputSystem {
                 state.output = if gated && channel.is_none() {
                     Output::default()
                 } else {
+                    combined.flips += u32::from(fire.flip);
                     Output { state: fire.state, pulse: fire.pulse, value }
                 };
                 combined.add(state.output);
             }
             let kind = map.actions()[action.index()].kind;
-            transition(&mut self.actions[action.index()], action, kind, combined, now, &mut self.events);
+            let held = &mut self.actions[action.index()];
+            // The latch lets go as a held input would: with everything, or with the last of its toggles.
+            held.toggled =
+                combined.toggles && abort != Abort::All && (held.toggled ^ (combined.flips % 2 == 1));
+            if held.toggled {
+                combined.state = TriggerState::Triggered;
+            }
+            transition(held, action, kind, combined, now, &mut self.events);
         }
         self.next_deadline = self
             .active

@@ -111,3 +111,47 @@ fn losing_focus_lets_a_toggle_go_as_it_lets_a_hold_go() {
     assert_eq!(hold, toggle);
     assert_eq!(hold, TickActions::NEUTRAL, "both let go");
 }
+
+/// A pause lets a toggle go as it lets a hold go (M4 Z3c): the combat context gives way to the pause's, and a
+/// held action comes back from it read as let go until it's pressed again, so a toggle latched before the
+/// pause doesn't stick through it. The next press after it is a press for both.
+#[test]
+fn a_pause_lets_a_toggle_go_as_it_lets_a_hold_go() {
+    let base = default_bindings().expect("the default bindings");
+    let escape = [key(Scancode::ESCAPE, true), key(Scancode::ESCAPE, false)];
+    for (action, button, scancode) in HELD {
+        let mut holding = Rig::on(CombatControls::new(InputMap::new(base.clone()).unwrap()).unwrap());
+        let mut toggling =
+            Rig::on(CombatControls::new(InputMap::new(layered(&base, &[], &[action])).unwrap()).unwrap());
+        let by_pad = (pad(button, true), pad(button, false));
+        for (press, release) in [by_pad, (key(scancode, true), key(scancode, false))] {
+            holding.frame(&[press]);
+            toggling.frame(&[press, release]);
+            let held = holding.controls.next_tick(PLAYER, 0.0);
+            assert_ne!(held, TickActions::NEUTRAL, "{action}: held");
+            assert_eq!(toggling.controls.next_tick(PLAYER, 0.0), held, "{action}: latched");
+            // The hold goes on through the pause, and the toggle is left alone.
+            for rig in [&mut holding, &mut toggling] {
+                rig.frame(&escape);
+                assert!(rig.controls.is_paused(), "{action}");
+                rig.frame(&escape);
+                rig.frame(&[]);
+                assert!(!rig.controls.is_paused(), "{action}");
+            }
+            let hold = holding.controls.next_tick(PLAYER, 0.0);
+            assert_eq!(hold, TickActions::NEUTRAL, "{action}: a hold through the pause reads let go");
+            assert_eq!(toggling.controls.next_tick(PLAYER, 0.0), hold, "{action}: and so does a toggle");
+            // Let go, and pressed again: a press for both, and let go for both.
+            holding.frame(&[release]);
+            holding.frame(&[press]);
+            toggling.frame(&[press, release]);
+            let hold = holding.controls.next_tick(PLAYER, 0.0);
+            assert_ne!(hold, TickActions::NEUTRAL, "{action}: pressed again");
+            assert_eq!(toggling.controls.next_tick(PLAYER, 0.0), hold, "{action}: pressed again");
+            holding.frame(&[release]);
+            toggling.frame(&[press, release]);
+            let hold = holding.controls.next_tick(PLAYER, 0.0);
+            assert_eq!(toggling.controls.next_tick(PLAYER, 0.0), hold, "{action}: let go");
+        }
+    }
+}

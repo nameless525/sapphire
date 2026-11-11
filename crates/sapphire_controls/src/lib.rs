@@ -15,6 +15,9 @@
 //! - **The pause:** it stops the steps, not the app, and resuming takes no burst.
 //! - **A menu's controls** ([`MenuControls`], `menu_bindings.ron`, M3 U5): keyboard, gamepad, mouse and
 //!   fingers, as one plain `UiInput` for `sapphire_ui`'s tree.
+//! - **The player's bindings over a document** (M4 A4, [`layered`]): what they remapped ([`Remapped`], by
+//!   a binding's name, per [`RemapDevice`]) and which held actions toggle. With them, what a remap screen
+//!   asks: whether a press is another binding's ([`taken`]), and a source's prompt ([`glyph`]).
 //!
 //! # Doesn't own
 //!
@@ -94,6 +97,7 @@
 mod controls;
 mod latch;
 mod menu;
+mod remap;
 
 pub use controls::{
     BUTTON_ACTIONS, COMBAT_CONTEXT, COMBAT_PRIORITY, CombatControls, ControlsError, ControlsSource,
@@ -101,3 +105,6 @@ pub use controls::{
     default_bindings,
 };
 pub use menu::{MENU_BINDINGS, MENU_CONTEXT, MenuControls, MenuError, menu_bindings};
+pub use remap::{RemapDevice, Remapped, Taken, glyph, layered, reset, set, source_of, taken};
+
+const LOG_TARGET: &str = "sapphire::controls";

@@ -83,7 +83,12 @@ impl MenuControls {
         })
     }
 
-    /// The input system, for rebinding and the last-used device.
+    /// The input system: the last-used device, and a remap's capture.
+    pub fn input(&self) -> &InputSystem {
+        &self.input
+    }
+
+    /// The input system, for rebinding and a remap's capture.
     pub fn input_mut(&mut self) -> &mut InputSystem {
         &mut self.input
     }

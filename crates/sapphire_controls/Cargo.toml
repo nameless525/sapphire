@@ -17,7 +17,10 @@ sapphire_serialize.workspace = true
 sapphire_time.workspace = true
 # For `TouchActions`, the plain values `read_touch` takes: the bindings stay the one place verbs live.
 sapphire_ui.workspace = true
+# A player's remapped bindings, which their settings keep (M4 A4).
+serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 # The screen a menu's test walks.

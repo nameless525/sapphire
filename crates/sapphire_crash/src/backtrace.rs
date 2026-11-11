@@ -220,7 +220,23 @@ mod imp {
         unsafe {
             libc::dl_iterate_phdr(Some(collect), std::ptr::from_mut(&mut out).cast());
         }
+        // glibc lists the program itself first, named "": a report names it by its file.
+        if let Some(program) = out.first_mut().filter(|module| module.name.is_empty()) {
+            program.name = std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.file_name()?.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+        }
         out
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn the_program_is_named() {
+        let exe = std::env::current_exe().expect("this program");
+        let name = exe.file_name().expect("a name").to_string_lossy();
+        let modules = modules(&[]);
+        assert!(modules[0].name.ends_with(name.as_ref()), "{:?}", modules[0]);
     }
 
     const NT_GNU_BUILD_ID: u32 = 3;

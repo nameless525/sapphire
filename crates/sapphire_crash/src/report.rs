@@ -305,16 +305,13 @@ impl PanicReport {
             let _ = writeln!(out, "{key}: {}", one_line(value));
         }
 
-        // Modules: `0x<base> <debug_id> <name>`, name last because it may contain spaces.
+        // Modules: `0x<base> <debug_id> <name>`, name last because it may contain spaces. Only the
+        // file's name: its directory is where the player keeps the game, often under a home
+        // directory named after them, and the ID alone finds the symbols.
         out.push_str(MODULES_MARKER);
         for module in &self.modules {
-            let _ = writeln!(
-                out,
-                "{:#018x} {} {}",
-                module.base,
-                one_line(&module.debug_id),
-                one_line(&module.name),
-            );
+            let name = module.name.rsplit(['/', '\\']).next().unwrap_or_default();
+            let _ = writeln!(out, "{:#018x} {} {}", module.base, one_line(&module.debug_id), one_line(name));
         }
         out.push_str(FRAMES_MARKER);
         for ip in &self.frames {
@@ -573,6 +570,19 @@ mod tests {
         assert!(text.contains("0x0000000100000000 5351CD93-0F5D-347A-88AC-CBF7CBEF0492 demo\n"), "{text}");
         assert!(text.contains(&format!("\nframes:\n{:#018x}\n", report.frames[0])), "{text}");
         assert_eq!(PanicReport::parse(&text), Some(report));
+    }
+
+    /// A module's directory names where the player keeps the game, which a report has no use for.
+    #[test]
+    fn panic_reports_name_modules_without_their_directories() {
+        let mut report = sample_report();
+        report.modules[0].name = "/Users/you/Games/Sapphire.app/Contents/MacOS/game_app".into();
+        report.modules[1].name = "/home/you/.local/share/Steam/libs/libsystem c.so".into();
+        let text = report.render();
+        assert!(!text.contains("/Users/") && !text.contains("/home/"), "{text}");
+        let parsed = PanicReport::parse(&text).expect("parses");
+        let names: Vec<&str> = parsed.modules.iter().map(|module| module.name.as_str()).collect();
+        assert_eq!(names, ["game_app", "libsystem c.so"]);
     }
 
     #[test]

@@ -30,7 +30,11 @@
 //!   - *iOS:* none yet: only the panic hook is installed. Native crash capture on iOS needs an
 //!     Apple-side reporter (for example sentry-cocoa) linked by the Xcode project (spec §5.2).
 //! - **Reading back** what previous runs left ([`pending_reports`]), and **pruning** it: nothing
-//!   consumes reports yet, so [`install`] keeps the newest 8 runs' and deletes the rest.
+//!   consumes reports yet, so [`install`] keeps the newest 8 runs' and deletes the rest. On Android 12
+//!   and later the app's activity also keeps the tombstone of each native crash, which the next launch
+//!   reads from `ApplicationExitInfo` (`<time>-<pid>.tombstone.pb`, [`ReportKind::Tombstone`]).
+//! - **Crashing on purpose** ([`ForcedCrash`]), for proving all of this on a shipping build. Every
+//!   report is read offline, to its function, file and line, by `cargo xtask symbolicate` (M4 C2).
 //!
 //! # What it deliberately does not do
 //!
@@ -112,14 +116,17 @@
 //!   (clone a child at crash time that ptraces the parent) needs an allocation-free writer,
 //!   and `minidump-writer` allocates.
 //!
-//! **Answer:** these crates give no minidumps on Android. M0 ships the in-process signal record,
-//! which detects the crash and keeps the faulting PC, LR and module map for `addr2line`, while
-//! `debuggerd` tombstones cover development. Symbolicated native crashes in a crash service should
-//! come from that service's Android NDK SDK (for Sentry, `sentry-android-ndk` in the Gradle
-//! project). Both can coexist: this crate's handler hands the signal on to whichever handler
-//! was installed before it.
+//! **Answer:** these crates give no minidumps on Android. The app keeps two records of a native
+//! crash instead, both read offline by `cargo xtask symbolicate` (M4 C2): the in-process signal
+//! record, with the faulting PC, LR, the module map and the build IDs of the modules loaded at
+//! install; and, on Android 12 (API 31) and later, `debuggerd`'s own tombstone, with every thread's
+//! unwound frames and their build IDs, which the activity copies from `ApplicationExitInfo` at the
+//! next launch (M4 plan §3, "Symbols and crashes"). So symbolicated native crashes need no crash
+//! service's NDK SDK; one can still coexist, since this crate's handler hands the signal on to
+//! whichever handler was installed before it.
 
 mod backtrace;
+mod forced;
 mod panic_hook;
 mod report;
 
@@ -139,6 +146,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use forced::{CRASH_FLAG, ForcedCrash};
 pub use report::{PendingReport, ReportKind, pending_reports};
 
 /// What [`install`] needs to know about the app.

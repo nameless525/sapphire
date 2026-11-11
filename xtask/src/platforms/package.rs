@@ -19,8 +19,10 @@
 //! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs the AAB (with the upload
 //! key only when the environment names it) and checks it, S4 signs macOS with the hardened runtime, links
 //! Windows' resources and checks Linux's against Steam's runtime (`steampipe` makes the depots from those
-//! three). Every binary a package ships is stripped, and its ID is checked against its symbols' (C1).
-//! Nothing here uploads or notarizes.
+//! three). Every binary a package ships is stripped, and its ID is checked against its symbols' (C1). The
+//! build remaps this machine's paths (the workspace, Cargo's home, the NDK) to fixed ones, and the package
+//! fails if the app or its symbols still hold one (C2); `cargo xtask symbolicate` maps them back to read a
+//! crash. Nothing here uploads or notarizes.
 //!
 //! Shipping builds link with fat LTO, so a package takes minutes and gigabytes: run it through the gate
 //! slots (`slot --all --load 8`), never on a PR's CI (m4-plan §3, "CI").
@@ -166,7 +168,14 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     let mut env: Vec<(&str, OsString)> =
         build.env(&app.version).into_iter().map(|(name, value)| (name, value.into())).collect();
     env.extend(steam::build_env(target, &icons));
-    env.extend(symbols::link_env(target));
+    let mut remaps = symbols::remaps()?;
+    if target == Target::Android {
+        remaps.push(symbols::Remap { local: android::ndk_root()?, shipped: symbols::NDK_PREFIX });
+    }
+    let link = symbols::link_env(target, &remaps)?;
+    env.extend(link.iter().map(|(name, value)| (name.as_str(), value.clone())));
+    // Android's library, unpacked from the AAB to be checked and scanned.
+    let unpacked = stage.with_extension("unpacked");
 
     let mut made = match target {
         Target::Ios | Target::IosSim | Target::MacOs => {
@@ -197,7 +206,6 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
             let checks = checked.summary(apks, badging, lint);
             workspace::remove_dir_if_exists(&work)?;
             let entry = format!("base/lib/{}/{}", android::ABI, library.to_string_lossy());
-            let unpacked = stage.with_extension("unpacked");
             let module =
                 symbols::check_in_archive(&stage, &stage.join(&aab), &entry, &unstripped, &unpacked)?;
             Made {
@@ -216,10 +224,23 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     workspace::remove_dir_if_exists(&icons)?;
     workspace::remove_dir_if_exists(&signed)?;
 
+    // What ships and its symbols; not `checks/`, which is for testing here and names local files. An iOS
+    // package's dSYM is in its archive, and `symbols/` is gone.
+    let (app_path, symbols_dir) = (stage.join(&made.app), stage.join("symbols"));
+    let mut shipped = vec![app_path.as_path()];
+    for dir in [&symbols_dir, &unpacked] {
+        if dir.exists() {
+            shipped.push(dir);
+        }
+    }
+    symbols::remap_dsym_relocations(&shipped, &remaps)?;
     let manifest = manifest(target, &app, &build, &made, release);
     let path = stage.join("package.json");
     fs::write(&path, serde_json::to_string_pretty(&manifest).expect("JSON values serialize") + "\n")
         .with_context(|| format!("failed to write {}", path.display()))?;
+    symbols::scan(&shipped, &remaps)?;
+    workspace::remove_dir_if_exists(&unpacked)?;
+    eprintln!("neither the app nor its symbols hold this machine's paths");
     let packaged = claim.publish(&stage)?;
     Ok(packaged.path.clone())
 }

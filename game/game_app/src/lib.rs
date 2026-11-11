@@ -29,6 +29,9 @@
 //!   the last frame and exits.
 //! - `--lose-device <frames>` (dev builds): destroys the GPU device once, after that many frames presented, so
 //!   the rebuild below runs where nothing loses a device when asked.
+//! - `--crash panic|fault` (every build, the store's too): crashes as soon as crash capture is installed, so
+//!   `cargo xtask symbolicate` can show the crash read back (M4 C2). On Android, where a store build takes no
+//!   launch arguments, `adb shell setprop debug.sapphire.crash panic|fault` asks instead.
 //!
 //! # Leaving the foreground, and a lost device (M4 S6)
 //!
@@ -60,7 +63,7 @@ use game_combat::combat::CombatOption;
 use game_combat::fight::fight_stage;
 use sapphire_core::alloc::EngineAllocator;
 use sapphire_core::log::{LogConfig, LogSink};
-use sapphire_crash::{CrashConfig, CrashGuard};
+use sapphire_crash::{CrashConfig, CrashGuard, ForcedCrash};
 use sapphire_platform::{App, AppInitError, DeviceClass, Host, Os, PlatformLogSink};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{GpuContext, wgpu};
@@ -81,7 +84,8 @@ pub(crate) const LOG_TARGET: &str = "game::app";
 static CRASH_GUARD: Mutex<Option<CrashGuard>> = Mutex::new(None);
 
 /// Process setup that runs before SDL starts, in the order `sapphire_crash` requires: logging, crash
-/// capture, then the job system (spec §5.2). Called from `main` on desktop and iOS (after
+/// capture, a crash if one's asked for (`--crash`, or Android's `debug.sapphire.crash`), then the job system
+/// (spec §5.2). Called from `main` on desktop and iOS (after
 /// `sapphire_crash::run_monitor_if_requested`), and from `SDL_main` on Android, where it must not panic. Only
 /// the first call does anything.
 pub fn startup() {
@@ -96,6 +100,11 @@ pub fn startup() {
         }
         let guard = install_crash_capture();
         *CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = guard;
+        match ForcedCrash::requested() {
+            Ok(Some(crash)) => crash.now(),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "no crash forced"),
+        }
         sapphire_jobs::init(sapphire_jobs::JobConfig::default());
     });
 }

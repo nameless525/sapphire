@@ -5,7 +5,8 @@
 //! as a process, and golden-image tests (`golden`), which compare sandbox captures with
 //! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
 //! as processes too. `package` builds the game for a store: the shipping profile, one version and build
-//! number, one identity and the project's icon, staged for each store's own package.
+//! number, one identity and the project's icon, staged for each store's own package; `symbolicate` reads its
+//! crashes back with the symbols kept beside it.
 
 mod cli;
 mod content;
@@ -111,6 +112,14 @@ Commands:
       for each package found, and depots.txt with each depot's files and launch option. The IDs
       are platform/steam.toml's (placeholders until the maintainer's). Nothing is uploaded: the
       maintainer runs `steamcmd +login <account> +run_app_build <app build> +quit`.
+  symbolicate [--package <dir>]... [--store <dir>] <report>...
+      Read crash reports offline with the symbols kept beside each package (every package under
+      target/package/ unless --package names them), found by each module's debug file and ID in
+      package.json: a desktop minidump (<run>.dmp), a panic report (<run>.panic-<n>.txt, iOS's
+      too), an Android signal record (<run>.native.txt) or tombstone (<run>.tombstone.pb).
+      Prints each thread's frames with function, file and line, inlined calls included, with
+      the paths a shipping build remaps (/sapphire, /cargo) mapped back to this machine's.
+      The .sym files it makes are kept in <dir> (default target/symbols/), a Breakpad store.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
@@ -260,6 +269,24 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             eprintln!("wrote SteamPipe's scripts into {}", written.display());
             Ok(())
         }
+        "symbolicate" => {
+            let mut packages = Vec::new();
+            while let Some(package) = args.value::<PathBuf>("--package")? {
+                packages.push(package);
+            }
+            if packages.is_empty() {
+                packages = made_packages()?;
+            }
+            let store = args.value::<PathBuf>("--store")?.unwrap_or_else(platforms::default_symbol_store);
+            let reports: Vec<PathBuf> = args.rest().into_iter().map(PathBuf::from).collect();
+            if let Some(flag) = reports.iter().find(|report| report.to_string_lossy().starts_with("--")) {
+                bail!("unexpected argument `{}`", flag.display());
+            }
+            if reports.is_empty() {
+                bail!("symbolicate needs a report to read\n\n{USAGE}");
+            }
+            platforms::symbolicate(&packages, &store, &reports)
+        }
         "link" => link::run(args.rest()),
         "editor" => editor::run(args.rest()),
         "golden" => {
@@ -291,6 +318,20 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         }
         other => bail!("unknown command `{other}`\n\n{USAGE}"),
     }
+}
+
+/// Every package made under the default directory, which `symbolicate` reads symbols from unless told.
+fn made_packages() -> anyhow::Result<Vec<PathBuf>> {
+    let dir = platforms::default_package_dir();
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|error| anyhow::anyhow!("no packages in {}: {error}; pass --package", dir.display()))?;
+    let mut packages: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join("package.json").is_file())
+        .collect();
+    packages.sort();
+    Ok(packages)
 }
 
 /// The app `run` or `bundle` builds.

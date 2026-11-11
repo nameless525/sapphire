@@ -48,6 +48,7 @@ use crate::workspace::{self, BuildProfile, CargoBuild};
 pub use host::HostExecutable;
 pub use package::{Target as PackageTarget, default_out as default_package_dir, package};
 pub use steampipe::steampipe;
+pub use symbols::{default_store as default_symbol_store, symbolicate};
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

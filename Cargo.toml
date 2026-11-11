@@ -385,6 +385,22 @@ cargo_metadata = "0.23"
 # version the crash writer already brings; `pdb` reads a PDB's GUID and age.
 goblin = { version = "0.9.3", default-features = false, features = ["std", "elf32", "elf64", "endian_fd", "mach32", "mach64", "pe32", "pe64"] }
 pdb = "0.8.0"
+# Writing Breakpad `.sym` files and reading crashes with them (M4 C2), in `sapphire_symbols` alone.
+# gimli reads DWARF (dSYM, ELF) and `pdb` the PDB, and the demanglers name what they find. Not
+# `symbolic-debuginfo`, which `dump_syms` is built on: 13.9 doesn't build without its `sourcebundle` feature,
+# which brings `zip` 7 (four advisories). rust-minidump reads minidumps and `.sym` files, offline: no `http`
+# feature.
+gimli = { version = "0.33.0", default-features = false, features = ["read", "std"] }
+rustc-demangle = "0.1.28"
+cpp_demangle = "0.4.5"
+minidump = "0.27.0"
+minidump-processor = { version = "0.27.0", default-features = false }
+# Its symbol provider's trait, implemented to name a module the minidump knows only by ID.
+minidump-unwind = { version = "0.27.0", default-features = false }
+async-trait = "0.1.92"
+breakpad-symbols = "0.27.0"
+debugid = "0.8.0"
+memchr = "2.8.3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

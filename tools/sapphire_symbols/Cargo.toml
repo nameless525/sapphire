@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_symbols"
-description = "Breakpad symbol stores for shipped builds: dumps a build's own symbols with dump_syms and checks each stripped binary's ID against them. Never shipped."
+description = "Shipped builds' symbols and crashes: checks each stripped binary against the symbols from its link, writes Breakpad .sym files from them, and reads crash reports back to function, file and line. Never shipped."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,9 +13,28 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+breakpad-symbols.workspace = true
+cpp_demangle.workspace = true
+debugid.workspace = true
+gimli.workspace = true
 goblin.workspace = true
+memchr.workspace = true
+minidump.workspace = true
+minidump-processor.workspace = true
+minidump-unwind.workspace = true
 pdb.workspace = true
+rustc-demangle.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The crash end to end: a test program crashes under the real crash monitor, and its minidump is read.
+sapphire_crash.workspace = true
+
+# Crashes a copy of itself under `sapphire_crash`'s monitor, so the test owns `main`.
+[[test]]
+name = "crash"
+harness = false
 
 [lints]
 workspace = true

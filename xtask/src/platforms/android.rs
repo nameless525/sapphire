@@ -36,7 +36,8 @@ use crate::content::{self, Cook};
 use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
-const TARGET: &str = "aarch64-linux-android";
+/// The Rust target the app's library builds for.
+pub(super) const TARGET: &str = "aarch64-linux-android";
 /// The one ABI the app ships: its library is at `base/lib/<ABI>/` in the AAB.
 pub(super) const ABI: &str = "arm64-v8a";
 /// `minSdk` in `platform/android/app/build.gradle.kts` (Android 10, spec §2). The NDK's
@@ -562,6 +563,12 @@ fn gradle_properties(app: &App, build: u32, ndk: &Ndk, gen_dir: &Path, gradle_di
         format!("-Psapphire.versionName={}", app.version).into(),
         format!("-Psapphire.versionCode={build}").into(),
     ]
+}
+
+/// The NDK a package builds with, whose C and C++ headers' and runtime's paths a shipping build remaps
+/// ([`super::symbols`]).
+pub(super) fn ndk_root() -> anyhow::Result<PathBuf> {
+    Ok(Ndk::locate(&sdk_dir()?)?.root)
 }
 
 /// The Android SDK: `ANDROID_HOME`, else the deprecated `ANDROID_SDK_ROOT`, else Android

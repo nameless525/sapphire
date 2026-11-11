@@ -11,9 +11,19 @@
 //! | ELF | the file's name (Android: the library's soname) | the GNU build ID's first 16 bytes read as a little-endian GUID, age 0 | the whole build ID |
 //! | PE | the PDB's name in the CodeView record | the CodeView GUID and age | `TimeDateStamp` and `SizeOfImage` |
 //!
-//! Each ID is read from both files, never assumed. What writes the store's `.sym` files isn't here: §3 of
-//! the M4 plan chose `dump_syms`, whose dependencies don't pass `cargo deny` yet (C1's As built note).
-//! `cargo xtask package` runs this crate's binary on every package it makes. It never ships.
+//! Each ID is read from both files, never assumed. `cargo xtask package` runs this crate's binary on every
+//! package it makes, and `cargo xtask symbolicate` to read crashes. It never ships. Beside the check (M4 C2):
+//!
+//! - [`sym`] writes a module's Breakpad `.sym` from its native symbols, and [`store`] finds a crash's
+//!   modules in the packages' `package.json` and keeps their `.sym` files in a Breakpad store;
+//! - [`crash`] reads minidumps, panic reports and Android's signal records and tombstones back to
+//!   function, file and line;
+//! - [`scan`] proves a package holds none of the builder's directories.
+
+pub mod crash;
+pub mod scan;
+pub mod store;
+pub mod sym;
 
 use std::fmt;
 use std::fs;
@@ -293,8 +303,13 @@ fn mach_is_stripped(macho: &MachO<'_>) -> anyhow::Result<bool> {
     if mach_sections(macho)?.iter().any(|(segment, _)| segment == "__DWARF") {
         return Ok(false);
     }
+    // ld64's `N_OPT` entry, `radr://5614542`, which `strip` keeps: it marks the file, and names no code.
+    const N_OPT: u8 = 0x3c;
     for symbol in macho.symbols() {
         let (_, nlist) = symbol?;
+        if nlist.n_type == N_OPT {
+            continue;
+        }
         if nlist.is_stab() || (!nlist.is_global() && !nlist.is_undefined()) {
             return Ok(false);
         }

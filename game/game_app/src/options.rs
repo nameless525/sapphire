@@ -86,6 +86,9 @@ impl Options {
                     options.ticks =
                         raw.parse().map_err(|_| format!("--ticks expects a count, got {raw:?}"))?;
                 }
+                // `startup` crashes first where the process's own arguments ask (desktop and iOS); a debuggable
+                // Android build's arrive here, from the launching intent.
+                sapphire_crash::CRASH_FLAG => sapphire_crash::ForcedCrash::from_name(value()?)?.now(),
                 #[cfg(feature = "dev")]
                 "--lose-device" => {
                     let raw = value()?;
@@ -200,6 +203,9 @@ mod tests {
         let refused = parse(&["--capture", "a.png", "--continue"]).expect_err("nothing to continue");
         assert!(refused.contains("--save-dir"), "{refused}");
         assert!(parse(&["--continue"]).is_ok(), "a window's game keeps its save");
+        // A kind that isn't one is refused, rather than crashing some other way.
+        let refused = parse(&["--crash", "soon"]).expect_err("no such crash");
+        assert!(refused.contains("panic, fault"), "{refused}");
     }
 
     #[cfg(feature = "dev")]

@@ -1,9 +1,22 @@
 package $(PACKAGE);
 
+import android.annotation.TargetApi;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
+import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.List;
+import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.libsdl.app.SDLActivity;
@@ -23,6 +36,89 @@ public final class $(CLASS) extends SDLActivity {
     static final String EXTRA_ARGS = "sapphire.args";
 
     private static final String TAG = "Sapphire";
+
+    /**
+     * Where {@code sapphire_crash} keeps reports: {@code crashes/} in the app's cache directory,
+     * as {@code game_app} installs it. Kept tombstones go beside its signal records.
+     */
+    private static final String CRASH_DIR = "crashes";
+
+    /**
+     * The newest exit whose tombstone was kept, as its time in milliseconds, so a tombstone the
+     * crate's cleanup deleted isn't copied again from the system's exit history.
+     */
+    private static final String TOMBSTONES_LAST = "tombstones.last";
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        // Before SDL starts the app, so crash capture finds the last run's tombstone in place.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            keepTombstones();
+        }
+        super.onCreate(savedInstanceState);
+    }
+
+    /**
+     * Copies the tombstones {@code debuggerd} wrote for this app's native crashes since the last
+     * launch, which Android 12 and later keep in the app's exit history, to
+     * {@code <run>.tombstone.pb} in the crash directory, named by the crash's time and process ID
+     * like the crate's other reports. {@code cargo xtask symbolicate} reads them. Failure only
+     * logs: the app runs without them.
+     */
+    @TargetApi(Build.VERSION_CODES.S)
+    private void keepTombstones() {
+        File dir = new File(getCacheDir(), CRASH_DIR);
+        File marker = new File(dir, TOMBSTONES_LAST);
+        long last = 0;
+        try {
+            if (marker.isFile()) {
+                String text = new String(Files.readAllBytes(marker.toPath()), StandardCharsets.UTF_8);
+                last = Long.parseLong(text.trim());
+            }
+        } catch (IOException | NumberFormatException e) {
+            Log.w(TAG, "unreadable " + TOMBSTONES_LAST + "; keeping every tombstone the system has", e);
+        }
+        ActivityManager manager = getSystemService(ActivityManager.class);
+        List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(getPackageName(), 0, 0);
+        long newest = last;
+        for (ApplicationExitInfo exit : exits) {
+            if (exit.getReason() != ApplicationExitInfo.REASON_CRASH_NATIVE || exit.getTimestamp() <= last) {
+                continue;
+            }
+            String run = String.format(Locale.ROOT, "%013d-%d", exit.getTimestamp(), exit.getPid());
+            File out = new File(dir, run + ".tombstone.pb");
+            File partial = new File(dir, out.getName() + ".partial");
+            try (InputStream in = exit.getTraceInputStream()) {
+                if (in == null) {
+                    continue;
+                }
+                if (!dir.isDirectory() && !dir.mkdirs()) {
+                    throw new IOException("can't make " + dir);
+                }
+                try (OutputStream file = new FileOutputStream(partial)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    for (int read; (read = in.read(buffer)) > 0; ) {
+                        file.write(buffer, 0, read);
+                    }
+                }
+                if (!partial.renameTo(out)) {
+                    throw new IOException("can't rename " + partial + " to " + out);
+                }
+                newest = Math.max(newest, exit.getTimestamp());
+                Log.i(TAG, "kept the tombstone of a native crash as " + out.getName());
+            } catch (IOException e) {
+                partial.delete();
+                Log.w(TAG, "can't keep the tombstone of run " + run, e);
+            }
+        }
+        if (newest > last) {
+            try {
+                Files.write(marker.toPath(), Long.toString(newest).getBytes(StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                Log.w(TAG, "can't write " + TOMBSTONES_LAST, e);
+            }
+        }
+    }
 
     @Override
     protected String[] getLibraries() {

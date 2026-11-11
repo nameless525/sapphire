@@ -8,6 +8,7 @@
 //! | `<run>.dmp`, then `<run>.<n>.dmp` | the desktop crash monitor, `n` counting its dumps within the run |
 //! | `<run>.panic-<n>.txt` | the panic hook, `n` counting panics within the run |
 //! | `<run>.native.txt` | Android's in-process signal handler |
+//! | `<run>.tombstone.pb` | Android 12 and later, at the next launch: the activity copies the tombstone `debuggerd` wrote for a native crash from `ApplicationExitInfo`; its `<run>` is the crash's time and the process's ID |
 //!
 //! A run can leave several minidumps: the panic hook asks the monitor for one per panic (up to a
 //! cap), and the app may recover from a panic and crash natively later.
@@ -46,6 +47,7 @@ const RUN_TIME_DIGITS: usize = 13;
 const PARTIAL_SUFFIX: &str = ".partial";
 const MINIDUMP_SUFFIX: &str = "dmp";
 const NATIVE_SUFFIX: &str = "native.txt";
+const TOMBSTONE_SUFFIX: &str = "tombstone.pb";
 const PANIC_PREFIX: &str = "panic-";
 const TEXT_SUFFIX: &str = ".txt";
 
@@ -59,6 +61,9 @@ pub enum ReportKind {
     Panic,
     /// An Android signal record (`<run>.native.txt`, plain text).
     NativeSignal,
+    /// An Android tombstone (`<run>.tombstone.pb`, `debuggerd`'s protobuf), which the app's activity
+    /// copies from `ApplicationExitInfo` at the launch after a native crash, on Android 12 and later.
+    Tombstone,
 }
 
 /// A crash artifact in the dump directory, waiting for an uploader (or the next launch) to
@@ -135,6 +140,7 @@ fn classify(file_name: &str) -> Option<(ReportKind, &str, u32)> {
     let (kind, seq) = match suffix {
         MINIDUMP_SUFFIX => (ReportKind::Minidump, 0),
         NATIVE_SUFFIX => (ReportKind::NativeSignal, 0),
+        TOMBSTONE_SUFFIX => (ReportKind::Tombstone, 0),
         _ => {
             if let Some(seq) = suffix.strip_suffix(MINIDUMP_SUFFIX).and_then(|seq| seq.strip_suffix('.')) {
                 (ReportKind::Minidump, parse_seq(seq)?)
@@ -541,6 +547,8 @@ mod tests {
         assert_eq!(classify(&panic_file_name(run, 0)), Some((ReportKind::Panic, run, 0)));
         assert_eq!(classify(&panic_file_name(run, 17)), Some((ReportKind::Panic, run, 17)));
         assert_eq!(classify(&native_file_name(run)), Some((ReportKind::NativeSignal, run, 0)));
+        assert_eq!(classify(&format!("{run}.tombstone.pb")), Some((ReportKind::Tombstone, run, 0)));
+        assert_eq!(classify("tombstones.last"), None);
 
         assert_eq!(classify(&partial_name(&minidump_file_name(run, 0))), None);
         assert_eq!(classify(&partial_name(&minidump_file_name(run, 1))), None);
@@ -772,6 +780,7 @@ mod tests {
             minidump_file_name(run, 1),
             panic_file_name(run, 0),
             native_file_name(run),
+            format!("{run}.tombstone.pb"),
         ];
         for name in &names {
             fs::write(dir.join(name), b"x").expect("write");

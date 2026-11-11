@@ -3,8 +3,9 @@
 //! `minidumper` needs a monitor process that an Android app cannot launch, and `minidump-writer`
 //! cannot dump the process it runs in (see the crate docs). So the crash handler writes a short
 //! text record from inside the signal handler: signal, fault address, the crashing thread's key
-//! registers and a copy of `/proc/self/maps`, which together locate the faulting instruction in
-//! its `.so` for `addr2line`. It then declines the signal so the previous handler, normally
+//! registers and a copy of `/proc/self/maps`, after the build IDs of the modules loaded at install,
+//! which together locate the faulting instruction in its `.so` and find its symbols
+//! (`cargo xtask symbolicate`). It then declines the signal so the previous handler, normally
 //! `debuggerd`, still writes its tombstone and logcat backtrace.
 //!
 //! The record is published as `<run>.native.txt` only if every part of it was written and synced;
@@ -42,7 +43,8 @@ impl SignalCapture {
         let final_name = report::native_file_name(run_id);
         let partial_path = c_path(&config.dump_dir.join(report::partial_name(&final_name)))?;
         let final_path = c_path(&config.dump_dir.join(&final_name))?;
-        let header = signal_record::header(&config.app_name, &config.release, run_id).into_bytes();
+        let modules = crate::backtrace::loaded_modules();
+        let header = signal_record::header(&config.app_name, &config.release, run_id, &modules).into_bytes();
 
         // SAFETY: the event runs inside a signal handler of a crashed process. `write_record`
         // only uses async-signal-safe system calls (open, flock, read, write, fsync, close,

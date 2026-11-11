@@ -7,6 +7,8 @@
 
 use std::fmt::{self, Write as _};
 
+use crate::report::ModuleId;
+
 /// A fixed-capacity text buffer. Output past the capacity is dropped, and the buffer remembers
 /// that it was.
 pub(crate) struct FixedBuf<const N: usize> {
@@ -55,15 +57,29 @@ pub(crate) struct SignalInfo<'a> {
     pub registers: &'a [(&'static str, u64)],
 }
 
-/// The first lines of a record, prepared at install time when allocating is still fine.
-pub(crate) fn header(app_name: &str, release: &str, run_id: &str) -> String {
+/// The first lines of a record, prepared at install time when allocating is still fine: the app, and the
+/// modules loaded then, each as `module: 0x<load bias> <GNU build ID> <path>`, which is what finds a
+/// module's symbols (the maps at the end name files but no IDs). The app's own library is among them,
+/// since it installs the handler.
+pub(crate) fn header(app_name: &str, release: &str, run_id: &str, modules: &[ModuleId]) -> String {
     let one_line = |s: &str| s.replace(['\r', '\n'], " ");
-    format!(
-        "Sapphire native crash record v1\napp: {}\nrelease: {}\nrun: {}\n",
+    let mut header = format!(
+        "Sapphire native crash record v2\napp: {}\nrelease: {}\nrun: {}\n",
         one_line(app_name),
         one_line(release),
         one_line(run_id),
-    )
+    );
+    for module in modules.iter().filter(|module| !module.debug_id.is_empty()) {
+        // Writing to a String cannot fail.
+        let _ = writeln!(
+            header,
+            "module: {:#018x} {} {}",
+            module.base,
+            one_line(&module.debug_id),
+            one_line(&module.name)
+        );
+    }
+    header
 }
 
 /// Appends the crash-time lines of a record. A full buffer truncates the output, which
@@ -267,8 +283,21 @@ mod tests {
     #[test]
     fn header_keeps_one_value_per_line() {
         assert_eq!(
-            header("game\nevil: 1", "1.0", "1-2"),
-            "Sapphire native crash record v1\napp: game evil: 1\nrelease: 1.0\nrun: 1-2\n"
+            header("game\nevil: 1", "1.0", "1-2", &[]),
+            "Sapphire native crash record v2\napp: game evil: 1\nrelease: 1.0\nrun: 1-2\n"
+        );
+        let modules = [
+            ModuleId {
+                base: 0x7a_0000_0000,
+                debug_id: "5fc134e7".into(),
+                name: "/data/app/lib/libgame_app.so".into(),
+            },
+            ModuleId { base: 0x7b_0000_0000, debug_id: String::new(), name: "[vdso]".into() },
+        ];
+        assert_eq!(
+            header("game", "1.0", "1-2", &modules),
+            "Sapphire native crash record v2\napp: game\nrelease: 1.0\nrun: 1-2\n\
+             module: 0x0000007a00000000 5fc134e7 /data/app/lib/libgame_app.so\n"
         );
     }
 

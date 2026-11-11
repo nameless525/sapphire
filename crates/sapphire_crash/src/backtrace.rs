@@ -29,6 +29,12 @@ pub(crate) struct Capture {
     pub modules: Vec<ModuleId>,
 }
 
+/// Every loaded module, for Android's signal record, whose handler can't look them up when it runs.
+#[cfg(target_os = "android")]
+pub(crate) fn loaded_modules() -> Vec<ModuleId> {
+    imp::modules(&[])
+}
+
 /// Captures the current thread's frame IPs and the modules they are in (on Linux, every loaded
 /// module).
 pub(crate) fn capture() -> Capture {

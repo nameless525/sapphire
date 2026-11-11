@@ -173,8 +173,9 @@ sapphire_pipeline = { kind = "tool" }
 sapphire_replay = { kind = "tool" }
 # Generates the placeholder music stems and voice lines under `content/audio/generated/` (M3 A1).
 sapphire_soundgen = { kind = "tool" }
-# Breakpad symbol stores for shipped builds (M4 C1): dump_syms as a library, which `cargo xtask package`
-# and `cargo xtask symbols` run.
+# Shipped builds' symbols (M4 C1) and crash reading (M4 C2): checks each stripped binary against its
+# symbols, writes Breakpad `.sym` files from them and reads crashes with them. `cargo xtask package` and
+# `cargo xtask symbolicate` run it.
 sapphire_symbols = { kind = "tool" }
 sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
@@ -284,7 +285,7 @@ forbidden = ["cpal", "kira", "parry3d", "rapier3d", "sapphire_physics", "sapphir
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax", "skera", "fdsm", "nalgebra", "vorbis_rs"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax", "skera", "fdsm", "nalgebra", "vorbis_rs", "gimli", "minidump-processor", "minidump-unwind", "breakpad-symbols"]
 
 # Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
 # other than through a dev-only crate would link it into builds without `dev`.

@@ -32,6 +32,9 @@ pub enum Fault {
     Missing,
     /// Waits this many milliseconds, then serves it as asked.
     Delay(u64),
+    /// Announces the whole body and sends it a byte every [`DRIBBLE`], so each read arrives well inside any
+    /// read timeout and the body never seems to stall.
+    Dribble,
 }
 
 /// A request as the host read it.
@@ -71,6 +74,9 @@ pub struct Host {
 
 /// How long [`Fault::Stall`] stalls: past every test's read timeout.
 pub const STALL: Duration = Duration::from_secs(2);
+
+/// How long [`Fault::Dribble`] waits between bytes: a manifest of 600 bytes takes 12 seconds.
+pub const DRIBBLE: Duration = Duration::from_millis(20);
 
 impl Host {
     /// Serves `files` by path on a port of its own, over plain HTTP.
@@ -256,6 +262,15 @@ fn answer(
     }
     let announced = body.len();
     stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {announced}\r\n\r\n").as_bytes())?;
+    if fault == Fault::Dribble {
+        for byte in body.chunks(1) {
+            stream.write_all(byte)?;
+            stream.flush()?;
+            *sent += 1;
+            thread::sleep(DRIBBLE);
+        }
+        return Ok(true);
+    }
     let now = match fault {
         Fault::Drop | Fault::Stall => &body[..half],
         _ => &body[..],

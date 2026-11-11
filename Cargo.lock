@@ -4690,6 +4690,7 @@ dependencies = [
  "rustls",
  "sapphire_assets",
  "sapphire_platform",
+ "sapphire_time",
  "thiserror 2.0.21",
  "tracing",
  "ureq",

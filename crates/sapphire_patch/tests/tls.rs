@@ -42,7 +42,7 @@ fn download(host: &Host, roots: Roots, dir: &TestDir) -> Result<Outcome, Downloa
         retries: retries(),
     };
     let quick = Duration::from_secs(5);
-    let timeouts = Timeouts { connect: quick, response: quick, read: quick };
+    let timeouts = Timeouts { connect: quick, response: quick, read: quick, ..Timeouts::default() };
     Download::start(request, HttpTransport::new(&host.url(), roots, timeouts).expect("a host"))
         .expect("starts")
         .join()

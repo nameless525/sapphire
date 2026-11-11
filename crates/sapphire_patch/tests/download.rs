@@ -21,7 +21,7 @@ use sapphire_patch::{
 /// Timeouts short enough that a stall costs a test a moment, not a minute.
 fn timeouts() -> Timeouts {
     let quick = Duration::from_millis(400);
-    Timeouts { connect: quick, response: quick, read: quick }
+    Timeouts { connect: quick, response: quick, read: quick, ..Timeouts::default() }
 }
 
 fn download(host: &Host, staging: &TestDir) -> Download {
@@ -420,4 +420,18 @@ fn a_stall_longer_than_the_tries_stops_with_a_timeout() {
     assert!(matches!(error, DownloadError::Host { last: FetchError::Timeout(_), .. }), "{error}");
     // Stalled connections close on their own.
     std::thread::sleep(STALL);
+}
+
+#[test]
+fn a_host_that_dribbles_a_body_is_cut_off_and_stops_with_a_timeout() {
+    // Each byte arrives inside the read timeout, so only a floor on the body's rate ends the request: without
+    // one, a host (or anyone on the path) holds the boot's update, and so the boot, for as long as it likes.
+    let host = patch_host(2, EXPIRES, TRUSTED);
+    host.set_faults(|asked| if asked.path == MANIFEST_PATH { Fault::Dribble } else { Fault::None });
+    let dir = TestDir::new("dribbled");
+    let error = download(&host, &dir).join().expect_err("gives up");
+    match &error {
+        DownloadError::Host { path, last: FetchError::Timeout(_), .. } => assert_eq!(path, MANIFEST_PATH),
+        other => panic!("{other}"),
+    }
 }

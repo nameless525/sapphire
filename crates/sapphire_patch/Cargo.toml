@@ -14,6 +14,8 @@ rustls.workspace = true
 sapphire_assets.workspace = true
 # The staged manifest's durable write, and the OS that picks the TLS roots.
 sapphire_platform.workspace = true
+# How fast a body comes (`Timeouts::min_rate`).
+sapphire_time.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

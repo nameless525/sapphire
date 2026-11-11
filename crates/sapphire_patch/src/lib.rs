@@ -26,11 +26,11 @@
 //!
 //! # A host that misbehaves
 //!
-//! A dropped connection, a short or long body, wrong bytes, an ignored `Range` and a stall
-//! ([`Timeouts`]) each fail the request they hit ([`FetchError`]). Failed requests are tried again, with a
-//! wait that doubles ([`Retries`]); blocks that arrived whole and right before a failure are kept. An item
-//! still failing after its attempts stops the download with [`DownloadError::Host`], naming it, and
-//! what was kept stays for the next run. Nothing the host sends is trusted without its hash or signature,
+//! A dropped connection, a short or long body, wrong bytes, an ignored `Range`, a stall and a body that comes
+//! slower than [`Timeouts::min_rate`] each fail the request they hit ([`FetchError`]). Failed requests are
+//! tried again, with a wait that doubles ([`Retries`]); blocks that arrived whole and right before a failure
+//! are kept. An item still failing after its attempts stops the download with [`DownloadError::Host`],
+//! naming it, and what was kept stays for the next run. Nothing the host sends is trusted without its hash or signature,
 //! and nothing it sends can panic the patcher.
 //!
 //! # Staging, and resuming

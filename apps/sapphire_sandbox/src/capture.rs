@@ -102,6 +102,7 @@ pub(crate) fn game(
         choose: start.command(),
         size,
         ticks,
+        at_tick: None,
         quality,
         forward,
         draw_from,

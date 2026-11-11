@@ -19,6 +19,9 @@ use crate::build_info;
 
 const CAPTURE_FLAG: &str = "--capture";
 
+/// How many more frames than ticks `--at-tick` may take: ten minutes of a cutscene's held steps, and the title.
+const HELD_FRAMES: u32 = 10 * 60 * 60;
+
 /// A run's arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Options {
@@ -29,6 +32,10 @@ pub(crate) struct Options {
     pub save_dir: Option<PathBuf>,
     /// Where each run's replay is kept.
     pub record: Option<PathBuf>,
+    /// A run's file each run plays, from its start, in place of anyone's input (M4 F2).
+    pub replay: Option<PathBuf>,
+    /// With `--capture` and `--replay`: the run's tick whose frame it draws.
+    pub at_tick: Option<u64>,
     pub capture: Option<PathBuf>,
     pub size: (u32, u32),
     pub ticks: u32,
@@ -52,6 +59,8 @@ impl Default for Options {
             script: None,
             save_dir: None,
             record: None,
+            replay: None,
+            at_tick: None,
             capture: None,
             size: (1280, 720),
             ticks: 180,
@@ -74,6 +83,7 @@ impl Options {
     /// reach here, and a typo in an unattended run should say so.
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut options = Self::default();
+        let mut ticks = false;
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             let mut value =
@@ -88,6 +98,13 @@ impl Options {
                 #[cfg(feature = "dev")]
                 "--update-host" => options.update_host = Some(value()?.to_owned()),
                 "--record" => options.record = Some(PathBuf::from(value()?)),
+                "--replay" => options.replay = Some(PathBuf::from(value()?)),
+                "--at-tick" => {
+                    let raw = value()?;
+                    let tick = raw.parse().ok().filter(|&tick| tick > 0);
+                    options.at_tick =
+                        Some(tick.ok_or_else(|| format!("--at-tick expects a tick from 1, got {raw:?}"))?);
+                }
                 CAPTURE_FLAG => options.capture = Some(PathBuf::from(value()?)),
                 "--size" => {
                     let raw = value()?;
@@ -99,6 +116,7 @@ impl Options {
                         .ok_or_else(|| format!("--size expects <w>x<h>, got {raw:?}"))?;
                 }
                 "--ticks" => {
+                    ticks = true;
                     let raw = value()?;
                     options.ticks =
                         raw.parse().map_err(|_| format!("--ticks expects a count, got {raw:?}"))?;
@@ -116,6 +134,34 @@ impl Options {
                 }
                 _ => return Err(format!("unknown argument {arg:?}")),
             }
+        }
+        if options.replay.is_some() {
+            if options.script.is_some()
+                || options.record.is_some()
+                || options.choose == Some(FlowCommand::Continue)
+            {
+                return Err(
+                    "--replay plays its file from its start, as recorded: drop --script, --record and \
+                            --continue"
+                        .to_owned(),
+                );
+            }
+            // There's nothing to choose: the title's new game is the file's run.
+            options.choose = Some(FlowCommand::NewGame);
+        }
+        if let Some(tick) = options.at_tick {
+            if options.replay.is_none() || options.capture.is_none() {
+                return Err(
+                    "--at-tick draws a tick of a run's file: it needs --replay and --capture".to_owned()
+                );
+            }
+            if ticks {
+                return Err("--at-tick draws as many frames as the tick takes: drop --ticks".to_owned());
+            }
+            options.ticks = u32::try_from(tick)
+                .ok()
+                .and_then(|tick| tick.checked_add(HELD_FRAMES))
+                .ok_or_else(|| format!("--at-tick {tick} is past any run's end"))?;
         }
         if options.choose == Some(FlowCommand::Continue) && !options.saves() {
             // It would draw the title, as a continue with nothing to continue does, and say nothing.
@@ -171,13 +217,14 @@ impl Options {
     /// What makes [`Self::show`] on any content: a boot's, which makes it again on a release it installs.
     pub(crate) fn make_show(&self, platform: &Platform, settings: PlayerSettings) -> MakeShow {
         let dir = self.save_dir.clone().unwrap_or_else(|| platform.user_dir().to_owned());
-        let (saves, script, record) = (self.saves(), self.script.clone(), self.record.clone());
+        let (saves, script, record, replay) =
+            (self.saves(), self.script.clone(), self.record.clone(), self.replay.clone());
         Box::new(move |content| {
             let setup = GameSetup {
                 store: saves.then(|| progress_store(&dir, durable_replace)),
                 script: script.clone(),
                 record: record.clone(),
-                replay: None,
+                replay: replay.clone(),
             };
             let made = GameShow::from_content(content, settings.clone(), setup);
             // A playtest build's show offers the mark and hands each run over, however often it's made again.
@@ -193,6 +240,7 @@ impl Options {
             choose: self.choose,
             size: self.size,
             ticks: self.ticks,
+            at_tick: self.at_tick,
             quality: QualitySettings::default(),
             forward: false,
             draw_from: 0,
@@ -230,6 +278,7 @@ mod tests {
                 choose: Some(FlowCommand::NewGame),
                 size: (640, 360),
                 ticks: 9,
+                at_tick: None,
                 quality: QualitySettings::default(),
                 forward: false,
                 draw_from: 0,
@@ -252,6 +301,30 @@ mod tests {
         assert!(options.patches());
         assert!(parse(&[]).unwrap().patches(), "a window's game patches");
         assert_eq!(parse(&["--open-fight"]).unwrap().choose, Some(FlowCommand::NewGame));
+    }
+
+    #[test]
+    fn a_replay_plays_a_runs_file_and_can_draw_one_of_its_ticks() {
+        let options = parse(&["--replay", "runs/1/ward-run-1.sreplay"]).unwrap();
+        assert_eq!(options.replay, Some(PathBuf::from("runs/1/ward-run-1.sreplay")));
+        assert_eq!(options.choose, Some(FlowCommand::NewGame), "past the title, to the file's run");
+        let options =
+            parse(&["--replay", "a.sreplay", "--at-tick", "1634", "--capture", "mark-1.png"]).unwrap();
+        let capture = options.capture();
+        assert_eq!(capture.at_tick, Some(1634));
+        assert_eq!(capture.ticks, 1634 + HELD_FRAMES);
+        for refused in [
+            &["--replay", "a.sreplay", "--script", "fight-back"][..],
+            &["--replay", "a.sreplay", "--record", "runs"],
+            &["--replay", "a.sreplay", "--continue"],
+            &["--at-tick", "5", "--capture", "a.png"],
+            &["--replay", "a.sreplay", "--at-tick", "5"],
+            &["--replay", "a.sreplay", "--at-tick", "5", "--capture", "a.png", "--ticks", "9"],
+            &["--replay", "a.sreplay", "--at-tick", "0", "--capture", "a.png"],
+            &["--replay", "a.sreplay", "--at-tick", "soon", "--capture", "a.png"],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]

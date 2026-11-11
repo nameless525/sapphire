@@ -29,6 +29,10 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// How many times smaller each side of the frames before [`GameCapture::draw_from`] is.
 const SMALL: u32 = 10;
 
+/// How many ticks before [`GameCapture::at_tick`] its frames are drawn whole, for what the renderer carries
+/// from frame to frame.
+pub const AT_TICK_LEAD: u64 = 30;
+
 /// What a capture draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameCapture {
@@ -36,8 +40,13 @@ pub struct GameCapture {
     pub choose: Option<FlowCommand>,
     /// The frame's size in pixels.
     pub size: (u32, u32),
-    /// Frames drawn, a tick each.
+    /// Frames drawn, a tick each: with [`at_tick`](Self::at_tick), the most it may take.
     pub ticks: u32,
+    /// Draws until the run stands at this tick, its frame the last, rather than for [`ticks`](Self::ticks)
+    /// frames: a moment of a replayed run, which a cutscene or the title may put more frames than ticks before
+    /// (M4 F2, a playtest's mark). Frames more than [`AT_TICK_LEAD`] ticks before it are drawn small, as those
+    /// before [`draw_from`](Self::draw_from) are. An error if the run doesn't get there in `ticks` frames.
+    pub at_tick: Option<u64>,
     /// The player's quality settings: the defaults, so the device's tier, for the game's own; a golden pins
     /// its tier, since a device chooses its own (CI's Metal runner a lower one than a Mac's).
     pub quality: QualitySettings,
@@ -131,7 +140,13 @@ pub fn capture_with(
     let mut now = Duration::ZERO;
     // Whether it still walks, until a timeline plays, and whether forward's pressed yet.
     let (mut forward, mut held) = (capture.forward, false);
+    let reached = |stage: &Stage<GameShow>| {
+        capture.at_tick.is_some_and(|tick| run_tick(stage).is_some_and(|now| now >= tick))
+    };
     for frame_at in 1..capture.ticks {
+        if reached(&stage) {
+            break;
+        }
         now += frame;
         let at = Timestamp::from_nanos(now.as_nanos() as u64);
         stage.show.update_menus(at);
@@ -151,18 +166,36 @@ pub fn capture_with(
         }
         stage.step();
         stage.show.drive_view(frame);
-        let into = if frame_at < capture.draw_from { &small } else { &view };
+        let whole = match capture.at_tick {
+            Some(tick) => run_tick(&stage).is_some_and(|now| now + AT_TICK_LEAD >= tick),
+            None => frame_at >= capture.draw_from,
+        };
+        let into = if whole { &view } else { &small };
         stage.render(into, 1.0, |_, _| {})?;
         stage.show.say_first_uses(&stage.renderer);
         after(&mut stage);
     }
-    now += frame;
-    let at = Timestamp::from_nanos(now.as_nanos() as u64);
-    stage.show.update_menus(at);
-    stage.show.follow_input(at);
-    if capture.ticks > 0 {
-        stage.step();
-        stage.show.drive_view(frame);
+    match capture.at_tick {
+        // The frame that tick drew is the one to read back.
+        Some(tick) => {
+            if !reached(&stage) {
+                return Err(AppInitError::msg(format!(
+                    "the run stood at tick {} after {} frames, short of tick {tick}: past its end, or held there",
+                    run_tick(&stage).unwrap_or_default(),
+                    capture.ticks
+                )));
+            }
+        }
+        None => {
+            now += frame;
+            let at = Timestamp::from_nanos(now.as_nanos() as u64);
+            stage.show.update_menus(at);
+            stage.show.follow_input(at);
+            if capture.ticks > 0 {
+                stage.step();
+                stage.show.drive_view(frame);
+            }
+        }
     }
     let readback = Readback::new(&stage.gpu, width, height);
     stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
@@ -180,10 +213,17 @@ pub fn capture_with(
         );
     }
     after(&mut stage);
+    // The tick the picture shows, before the finish puts the run away.
+    let drawn = run_tick(&stage);
     stage.show.finish().map_err(AppInitError::msg)?;
     after(&mut stage);
-    tracing::info!(target: LOG_TARGET, ticks = capture.ticks, "a game drawn with no window");
+    tracing::info!(target: LOG_TARGET, ticks = capture.ticks, run_tick = ?drawn, "a game drawn with no window");
     Ok(Captured { pixels, adapter: stage.gpu.caps().adapter.clone(), boot })
+}
+
+/// The standing run's tick, if one stands.
+fn run_tick(stage: &Stage<GameShow>) -> Option<u64> {
+    Some(stage.show.shown.fight.combat.as_ref()?.simulation().tick())
 }
 
 /// The keyboard's forward, down or up, at `now`, as a window would send it.

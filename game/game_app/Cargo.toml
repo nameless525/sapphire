@@ -97,5 +97,10 @@ harness = false
 name = "declares_every_setting"
 harness = false
 
+# A playtest's mark, drawn: a run's file played to the tick it names (M4 F2).
+[[test]]
+name = "draws_a_marked_tick"
+harness = false
+
 [lints]
 workspace = true

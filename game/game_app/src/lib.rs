@@ -27,6 +27,9 @@
 //! - `--record <dir>`: each run's replay is kept here, `<scenario>-<n>.sreplay`.
 //! - `--capture <png>`, with `--size <w>x<h>` and `--ticks <n>`: draws that many steps with no window, writes
 //!   the last frame and exits.
+//! - `--replay <file>`: each run plays this run's file from its start, past the title, in place of anyone's
+//!   input (M4 F2): a playtest's run watched again. With `--capture`, `--at-tick <n>` draws the frame of the
+//!   run's tick `n` in place of `--ticks`: what a playtest's report gives for each mark.
 //! - `--patch-dir <dir>`: patches install and stage here, not in the player's directory's `patch/`. A capture
 //!   patches only where this says.
 //! - `--update-host <url>` (dev builds): the boot looks for an update here, `http://127.0.0.1:<port>/` from

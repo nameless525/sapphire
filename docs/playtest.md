@@ -119,6 +119,7 @@ The session keeps the settings at the start and after each change, as `settings-
 | Was the music, the effects or a voice too loud? | `sound`, `music`, `effects`, `voice`, `mono` | The defaults, and a sound's `volume_db` in `content/audio/<name>.cue.ron` |
 | Did holding a button tire them? | `holds` (hold or toggle per action), `rumble` | The defaults |
 | Did they change the language, and did anything read wrong? | `language` | `content/loc/<locale>/` |
+| Did it look rough, run hot or drain the battery, and did they change the graphics page for it? | `quality` (automatic or a held tier), `frame_cap`, `dynamic_resolution`, `battery_saver`; with Frames and heat below | The tiers' numbers and ladder in [tiers.ron](../crates/sapphire_render/tiers.ron); the defaults |
 
 ### Frames and heat
 

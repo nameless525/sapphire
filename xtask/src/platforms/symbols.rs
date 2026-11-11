@@ -15,12 +15,13 @@
 //!
 //! **Paths (M4 C2).** A build records where its sources were: in panic locations in the binary and in every
 //! line of its symbols. A shipping build remaps this machine's directories to fixed names, rustc's paths
-//! with `--remap-path-prefix` and C and C++'s with `-ffile-prefix-map`: the workspace to
-//! [`WORKSPACE_PREFIX`], Cargo's home (the registry's crates) to [`CARGO_HOME_PREFIX`], a target directory
-//! outside the workspace to `/target`, and Android's NDK to `/ndk`. MSVC has no map, so its `/d1trimfile`
-//! cuts the directories from the C and C++ `__FILE__`s the executable holds (Luau's asserts name theirs),
-//! and its PDB names this machine (no flag of link.exe's remaps the directory it ran in or its objects'
-//! paths): a Windows package's scan reads only what ships. [`scan`] proves that no package carries them or
+//! with `--remap-path-prefix` and C and C++'s with `-ffile-prefix-map` (and `-fdebug-prefix-map`, the only
+//! one GCC 10 hands its assembler, so ring's `.S` files' compile directories are remapped too): the
+//! workspace to [`WORKSPACE_PREFIX`], Cargo's home (the registry's crates) to [`CARGO_HOME_PREFIX`], a
+//! target directory outside the workspace to `/target`, and Android's NDK to `/ndk`. MSVC has no map, so
+//! its `/d1trimfile` cuts the directories from the C and C++ `__FILE__`s the executable holds (Luau's
+//! asserts name theirs), and its PDB names this machine (no flag of link.exe's remaps the directory it ran
+//! in or its objects' paths): a Windows package's scan reads only what ships. [`scan`] proves that no package carries them or
 //! the builder's home directory, and `cargo xtask symbolicate` maps the names back ([`symbolicate`]).
 
 use std::ffi::{OsStr, OsString};
@@ -119,11 +120,15 @@ pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String,
              split at spaces"
         );
         rustflags.push(format!("--remap-path-prefix={local}={}", remap.shipped));
-        cflags.push(if msvc {
-            format!("/d1trimfile:{local}")
+        if msvc {
+            cflags.push(format!("/d1trimfile:{local}"));
         } else {
-            format!("-ffile-prefix-map={local}={}", remap.shipped)
-        });
+            // `-ffile-prefix-map` covers `__FILE__` and the debug information, but the Steam Linux
+            // Runtime's GCC 10 doesn't pass it on to the assembler as `--debug-prefix-map`, and an assembly
+            // file's DWARF then names the directory it was assembled in (ring's, in Cargo's registry).
+            cflags.push(format!("-ffile-prefix-map={local}={}", remap.shipped));
+            cflags.push(format!("-fdebug-prefix-map={local}={}", remap.shipped));
+        }
     }
     let triple = triple(target);
     let upper = triple.to_uppercase().replace('-', "_");
@@ -341,7 +346,10 @@ mod tests {
         );
         assert_eq!(
             get("CXXFLAGS_aarch64_linux_android"),
-            Some("-ffile-prefix-map=/work/engine=/sapphire -ffile-prefix-map=/u/ana/.cargo=/cargo")
+            Some(
+                "-ffile-prefix-map=/work/engine=/sapphire -fdebug-prefix-map=/work/engine=/sapphire \
+                 -ffile-prefix-map=/u/ana/.cargo=/cargo -fdebug-prefix-map=/u/ana/.cargo=/cargo"
+            )
         );
         let ios = link_env(Target::IosSim, &remaps).unwrap();
         assert!(ios.iter().any(|(name, _)| name == "CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUSTFLAGS"));

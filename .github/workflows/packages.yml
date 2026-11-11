@@ -33,6 +33,7 @@ on:
       - 'xtask/src/main.rs'
       - 'xtask/src/cli.rs'
       - 'xtask/src/content.rs'
+      - 'xtask/src/patch.rs'
       - 'xtask/src/release.rs'
       - 'xtask/src/version.rs'
       - 'xtask/src/workspace.rs'

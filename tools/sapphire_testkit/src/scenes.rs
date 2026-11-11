@@ -5750,15 +5750,16 @@ mod tests {
         assert!((size_of("game-title-ultrawide-ja") - 21.0 / 9.0).abs() < 0.01);
         // And the Steam Deck's 16:10 (M4 S4), every screen in each language.
         assert!((size_of("game-title-deck-ja") - 16.0 / 10.0).abs() < 0.01);
-        // Every screen at 16:9 has its Deck scene. The ward's gate is a fight's, and A2's option variants
-        // (larger text, subtitle bands) show screens the Deck already has.
+        // Every screen at 16:9 has its Deck scene. The ward's gate is a fight's, A2's option variants (larger
+        // text, subtitle bands) show screens the Deck already has, and the boot's update is the boot screen's
+        // layout, which the boot's scenes hold at the widest and narrowest aspects, the Deck's between them.
         let names: Vec<&str> = scenes().into_iter().map(|scene| scene.name).collect();
         let missing: Vec<&str> = names
             .iter()
             .copied()
             .filter(|name| name.starts_with("game-") && name.contains("-wide-"))
             .filter(|name| {
-                !["game-ward-gate-", "game-display-larger-text-", "game-subtitle-band-"]
+                !["game-ward-gate-", "game-display-larger-text-", "game-subtitle-band-", "game-boot-update-"]
                     .iter()
                     .any(|variant| name.starts_with(variant))
             })

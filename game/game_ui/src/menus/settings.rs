@@ -6,14 +6,22 @@
 //! (hold or toggle) and the run's (auto-target, which a step reads, so the run records it). Every other
 //! setting is presentation and never reaches a checksum.
 //!
+//! Version 3 (M4 T3) adds the graphics page's: the quality tier (automatic, or one the player holds), the frame
+//! cap, dynamic resolution and the battery saver, which the app gives its stage's quality and its platform's
+//! pacing. A phone's cap is 30 or 60: what a desktop's file says past that reads as 60 there.
+//!
 //! A value that parses but makes no sense, a volume of 900, is read as the nearest that does. A name this
 //! build doesn't have fails its field alone, which the settings file's repair gives its default.
 
+use std::num::NonZeroU32;
+
 use bevy_reflect::TypePath;
+use sapphire_core::target::FormFactor;
 use sapphire_gameplay::targeting::AutoTarget;
 use sapphire_loc::LocaleSettings;
 use sapphire_look::EffectScale;
 use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
+use sapphire_render::quality::TierId;
 use serde::{Deserialize, Serialize};
 
 /// The languages the game ships, in the order the setting steps through them.
@@ -147,6 +155,66 @@ choices! {
     HeldAction { Light = "light", Heavy = "heavy", Dodge = "dodge", Skill = "skill", LockOn = "lock-on" }
 }
 
+choices! {
+    /// The quality tier the game draws at (M4 T3): the device's, which the thermal ladder may lower in a long
+    /// session and raise again, or the high or low tier of the device's class, held whatever the heat (the
+    /// ladder then steps down only within it).
+    #[derive(Default)]
+    QualityChoice { #[default] Automatic = "automatic", High = "high", Low = "low" }
+}
+
+impl QualityChoice {
+    /// The tier it holds on a device of `class`; `None` for automatic.
+    #[must_use]
+    pub const fn tier(self, class: FormFactor) -> Option<TierId> {
+        match (self, class) {
+            (Self::Automatic, _) => None,
+            (Self::High, FormFactor::Desktop) => Some(TierId::DesktopHigh),
+            (Self::Low, FormFactor::Desktop) => Some(TierId::DesktopLow),
+            (Self::High, FormFactor::Mobile) => Some(TierId::MobileHigh),
+            (Self::Low, FormFactor::Mobile) => Some(TierId::MobileLow),
+        }
+    }
+}
+
+choices! {
+    /// The most frames a second the game draws (M4 T3, spec §6.2): 30, 60, 120 or as many as the display shows
+    /// on a desktop, 30 or 60 on a phone. Under the tier's own rate and the thermal ladder's cap.
+    #[derive(Default)]
+    FrameCap { Thirty = "30", Sixty = "60", OneTwenty = "120", #[default] Unlimited = "unlimited" }
+}
+
+impl FrameCap {
+    /// The caps a phone offers, in the order a press steps through them.
+    pub const PHONE: &[Self] = &[Self::Thirty, Self::Sixty];
+
+    /// What it is on a device of `class`: a phone's 120 and unlimited are its 60, the most it offers.
+    #[must_use]
+    pub fn on(self, class: FormFactor) -> Self {
+        if class == FormFactor::Mobile && !Self::PHONE.contains(&self) { Self::Sixty } else { self }
+    }
+
+    /// The one a press steps to on a device of `class`.
+    #[must_use]
+    pub fn next_on(self, class: FormFactor) -> Self {
+        match class {
+            FormFactor::Desktop => self.next(),
+            FormFactor::Mobile => next_of(Self::PHONE, self.on(class)),
+        }
+    }
+
+    /// Frames a second at most; `None` for as many as the display shows.
+    #[must_use]
+    pub const fn rate(self) -> Option<NonZeroU32> {
+        match self {
+            Self::Thirty => NonZeroU32::new(30),
+            Self::Sixty => NonZeroU32::new(60),
+            Self::OneTwenty => NonZeroU32::new(120),
+            Self::Unlimited => None,
+        }
+    }
+}
+
 impl HeldAction {
     /// Its action's name in the combat bindings (`sapphire_controls`' `combat_bindings.ron`).
     #[must_use]
@@ -231,8 +299,9 @@ impl Holds {
     }
 }
 
-/// What the player has chosen, which the app keeps between runs. Version 2 (M4 A1); version 1 (M3 U7) had the
-/// language, the size, one volume and the rumble, and upgrades with everything else at its default.
+/// What the player has chosen, which the app keeps between runs. Version 3 (M4 T3); version 2 (M4 A1) had all
+/// but the graphics page's, and version 1 (M3 U7) the language, the size, one volume and the rumble, and each
+/// upgrades with everything else at its default.
 #[derive(Clone, Debug, PartialEq, TypePath, Serialize, Deserialize)]
 #[type_path = "sapphire::game_ui"]
 #[serde(default)]
@@ -263,10 +332,63 @@ pub struct PlayerSettings {
     /// How hard auto-target pulls on touch: the one setting a step reads, so a run records it.
     pub auto_target: AutoTarget,
     pub holds: Holds,
+    /// The quality tier: automatic, or one the player holds.
+    pub quality: QualityChoice,
+    pub frame_cap: FrameCap,
+    /// Whether dynamic resolution lowers the render scale to keep the frame's time. Off, as before M4 T3.
+    pub dynamic_resolution: bool,
+    /// Draws at 30 frames a second, a step down the thermal ladder, to last longer on a battery.
+    pub battery_saver: bool,
 }
 
 impl Versioned for PlayerSettings {
-    /// 1: M3 U7. 2: M4 A1's accessibility settings.
+    /// 1: M3 U7. 2: M4 A1's accessibility settings. 3: M4 T3's graphics page.
+    const VERSION: u32 = 3;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        decode_versioned::<PlayerSettingsV2, D>(version, data).map(|old| Self {
+            language: old.language,
+            size: old.size,
+            text_size: old.text_size,
+            shake: old.shake,
+            flashes: old.flashes,
+            camera_motion: old.camera_motion,
+            sound: old.sound,
+            music: old.music,
+            effects: old.effects,
+            voice: old.voice,
+            mono: old.mono,
+            rumble: old.rumble,
+            subtitles: old.subtitles,
+            auto_target: old.auto_target,
+            holds: old.holds,
+            ..Self::default()
+        })
+    }
+}
+
+/// [`PlayerSettings`] version 2 (M4 A1), frozen: what a player's file from before M4 T3 holds.
+#[derive(Deserialize)]
+#[serde(default)]
+struct PlayerSettingsV2 {
+    language: String,
+    size: String,
+    text_size: TextSize,
+    shake: u8,
+    flashes: Flashes,
+    camera_motion: u8,
+    sound: u8,
+    music: u8,
+    effects: u8,
+    voice: u8,
+    mono: bool,
+    rumble: bool,
+    subtitles: Subtitles,
+    auto_target: AutoTarget,
+    holds: Holds,
+}
+
+impl Versioned for PlayerSettingsV2 {
     const VERSION: u32 = 2;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
@@ -277,6 +399,29 @@ impl Versioned for PlayerSettings {
             rumble: old.rumble,
             ..Self::default()
         })
+    }
+}
+
+impl Default for PlayerSettingsV2 {
+    fn default() -> Self {
+        let now = PlayerSettings::default();
+        Self {
+            language: now.language,
+            size: now.size,
+            text_size: now.text_size,
+            shake: now.shake,
+            flashes: now.flashes,
+            camera_motion: now.camera_motion,
+            sound: now.sound,
+            music: now.music,
+            effects: now.effects,
+            voice: now.voice,
+            mono: now.mono,
+            rumble: now.rumble,
+            subtitles: now.subtitles,
+            auto_target: now.auto_target,
+            holds: now.holds,
+        }
     }
 }
 
@@ -319,6 +464,10 @@ impl Default for PlayerSettings {
             subtitles: Subtitles::default(),
             auto_target: AutoTarget::default(),
             holds: Holds::default(),
+            quality: QualityChoice::default(),
+            frame_cap: FrameCap::default(),
+            dynamic_resolution: false,
+            battery_saver: false,
         }
     }
 }
@@ -344,6 +493,11 @@ pub enum Setting {
     Speakers,
     AutoTarget,
     Hold(HeldAction),
+    Quality,
+    /// A desktop's steps; a phone's menu steps [`FrameCap::next_on`] its own.
+    FrameCap,
+    DynamicResolution,
+    BatterySaver,
 }
 
 impl PlayerSettings {
@@ -422,6 +576,18 @@ impl PlayerSettings {
                 let mode = self.holds.mode_mut(action);
                 *mode = mode.next();
             }
+            Setting::Quality => self.quality = self.quality.next(),
+            Setting::FrameCap => self.frame_cap = self.frame_cap.next(),
+            Setting::DynamicResolution => self.dynamic_resolution = !self.dynamic_resolution,
+            Setting::BatterySaver => self.battery_saver = !self.battery_saver,
+        }
+    }
+
+    /// [`Self::step`] on a device of `class`: a phone's frame cap steps between its own two.
+    pub fn step_on(&mut self, setting: Setting, class: FormFactor) {
+        match setting {
+            Setting::FrameCap => self.frame_cap = self.frame_cap.next_on(class),
+            _ => self.step(setting),
         }
     }
 }
@@ -480,6 +646,10 @@ mod tests {
             Setting::SubtitleBackground,
             Setting::Speakers,
             Setting::AutoTarget,
+            Setting::Quality,
+            Setting::FrameCap,
+            Setting::DynamicResolution,
+            Setting::BatterySaver,
         ];
         every.extend(HeldAction::ALL.iter().map(|action| Setting::Hold(*action)));
         let start = PlayerSettings::default();
@@ -514,6 +684,10 @@ mod tests {
                 again.subtitles != start.subtitles,
                 again.auto_target != start.auto_target,
                 again.holds != start.holds,
+                again.quality != start.quality,
+                again.frame_cap != start.frame_cap,
+                again.dynamic_resolution != start.dynamic_resolution,
+                again.battery_saver != start.battery_saver,
             ];
             assert_eq!(changed.iter().filter(|changed| **changed).count(), 1, "{setting:?}");
         }
@@ -527,6 +701,33 @@ mod tests {
         assert_eq!(step_percent(200, MOTION_STEP), 0, "past the top reads as the top");
         assert_eq!(step_percent(0, MOTION_STEP), 25);
         assert_eq!(PlayerSettings::share(250), 1.0);
+    }
+
+    /// M4 T3: a desktop steps through every cap, a phone between 30 and 60, and what a desktop's file says
+    /// past 60 is a phone's 60; each choice holds its class's tier.
+    #[test]
+    fn a_phone_caps_at_30_or_60_and_a_choice_holds_its_class_s_tier() {
+        let mut settings = PlayerSettings::default();
+        assert_eq!(settings.frame_cap.rate(), None, "a desktop paces to its display, as before");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            settings.step_on(Setting::FrameCap, FormFactor::Desktop);
+            seen.push(settings.frame_cap.rate().map(NonZeroU32::get));
+        }
+        assert_eq!(seen, [Some(30), Some(60), Some(120), None]);
+        assert_eq!(FrameCap::Unlimited.on(FormFactor::Mobile), FrameCap::Sixty);
+        assert_eq!(FrameCap::OneTwenty.on(FormFactor::Mobile), FrameCap::Sixty);
+        assert_eq!(FrameCap::Thirty.on(FormFactor::Mobile), FrameCap::Thirty);
+        let mut phone = PlayerSettings::default();
+        let mut caps = Vec::new();
+        for _ in 0..3 {
+            phone.step_on(Setting::FrameCap, FormFactor::Mobile);
+            caps.push(phone.frame_cap);
+        }
+        assert_eq!(caps, [FrameCap::Thirty, FrameCap::Sixty, FrameCap::Thirty]);
+        assert_eq!(QualityChoice::Automatic.tier(FormFactor::Desktop), None);
+        assert_eq!(QualityChoice::High.tier(FormFactor::Mobile), Some(TierId::MobileHigh));
+        assert_eq!(QualityChoice::Low.tier(FormFactor::Desktop), Some(TierId::DesktopLow));
     }
 
     /// A4 maps each held action to its binding by name: each is an action the combat bindings have.

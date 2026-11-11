@@ -859,6 +859,12 @@ impl Vfx {
         self.stats.pipelines = gpu.pipelines.count();
     }
 
+    /// Whether the effects' pipelines are built, and their mask's: what effects of another tier build before
+    /// they take these ones' place (M4 T3). `None` while nothing is.
+    pub(crate) fn held(&self) -> Option<bool> {
+        self.gpu.as_ref().filter(|gpu| gpu.pipelines.color.is_some()).map(|gpu| gpu.pipelines.mask.is_some())
+    }
+
     /// A warm-up's step (`warm_up`): what [`Self::build`] would make and build, where `on` says, for
     /// [`Self::adopt`]. `None` when it's built.
     pub(crate) fn warm(&self, mask: bool, on: BuildOn) -> Option<Step<WarmedVfx>> {

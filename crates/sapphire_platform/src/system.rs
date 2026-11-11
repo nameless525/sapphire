@@ -71,6 +71,9 @@ pub struct SystemInfo {
     /// from real devices (the Android emulator's Vulkan driver crashes on debug labels,
     /// for example). Always `false` on desktop.
     pub is_emulator: bool,
+    /// A desktop OS on a handheld PC: a Steam Deck (M4 T3), which starts on the lowest desktop tier at its
+    /// panel's 1280 × 800. Only Linux tells, from Steam's `SteamDeck` variable or the board's DMI names.
+    pub handheld: bool,
 }
 
 impl SystemInfo {
@@ -83,8 +86,42 @@ impl SystemInfo {
             ram_mib: u32::try_from(ram).unwrap_or(0),
             logical_cores: u32::try_from(cores).unwrap_or(1).max(1),
             is_emulator: is_emulator(),
+            handheld: is_handheld(),
         }
     }
+}
+
+/// Whether what Steam and the firmware say names a Steam Deck: Steam sets `SteamDeck=1` for what it launches
+/// there, in game mode and on the desktop, and the board's DMI vendor is Valve with a Deck's product name (the
+/// LCD's Jupiter, the OLED's Galileo) for what runs outside Steam. Read on Linux alone, a Deck's OS.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "only Linux reads it, and its test")
+)]
+pub(crate) fn names_a_steam_deck(
+    steam_deck: Option<&str>,
+    board_vendor: Option<&str>,
+    product: Option<&str>,
+) -> bool {
+    if steam_deck.is_some_and(|value| value.trim() == "1") {
+        return true;
+    }
+    let valve = board_vendor.is_some_and(|vendor| vendor.trim().eq_ignore_ascii_case("valve"));
+    valve && product.is_some_and(|product| matches!(product.trim(), "Jupiter" | "Galileo"))
+}
+
+#[cfg(target_os = "linux")]
+fn is_handheld() -> bool {
+    let read = |path| std::fs::read_to_string(path).ok();
+    let steam_deck = std::env::var("SteamDeck").ok();
+    let (vendor, product) =
+        (read("/sys/devices/virtual/dmi/id/board_vendor"), read("/sys/devices/virtual/dmi/id/product_name"));
+    names_a_steam_deck(steam_deck.as_deref(), vendor.as_deref(), product.as_deref())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_handheld() -> bool {
+    false
 }
 
 #[cfg(target_os = "android")]
@@ -135,6 +172,21 @@ mod tests {
             assert_eq!(info.os, Os::MacOs);
             assert_eq!(info.device_class, DeviceClass::Desktop);
             assert!(!info.is_emulator);
+            assert!(!info.handheld);
         }
+    }
+
+    #[test]
+    fn a_steam_deck_is_named_by_steam_or_its_board() {
+        // Steam's variable, in game mode or on the desktop.
+        assert!(names_a_steam_deck(Some("1"), None, None));
+        assert!(!names_a_steam_deck(Some("0"), None, None));
+        // The firmware's names, outside Steam: the LCD's and the OLED's, as sysfs reads them, newline and all.
+        assert!(names_a_steam_deck(None, Some("Valve\n"), Some("Jupiter\n")));
+        assert!(names_a_steam_deck(None, Some("Valve"), Some("Galileo")));
+        // Another of Valve's boards, or another vendor's handheld, isn't one.
+        assert!(!names_a_steam_deck(None, Some("Valve"), Some("Index")));
+        assert!(!names_a_steam_deck(None, Some("ASUSTeK COMPUTER INC."), Some("Jupiter")));
+        assert!(!names_a_steam_deck(None, None, None));
     }
 }

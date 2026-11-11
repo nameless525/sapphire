@@ -1769,6 +1769,12 @@ impl SceneShow for FightShow {
         inventory.effects |= self.cues.is_some();
     }
 
+    fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {
+        if let Some(cues) = &mut self.cues {
+            cues.set_budget(vfx::budget(tier));
+        }
+    }
+
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
         for kind in 0..self.assets.kinds.len() {
             let waits = self.assets.kinds[kind].waits;
@@ -2341,6 +2347,11 @@ impl Fight {
 impl SceneShow for Fight {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         self.show.declare_pipelines(inventory);
+    }
+
+    fn tier_changed(&mut self, scene: &mut Scene, tier: TierId) {
+        scene.set_spring_quality(animate::spring_quality(tier));
+        self.show.tier_changed(scene, tier);
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {

@@ -928,7 +928,7 @@ pub use post::{
 // its own, beneath the renderer and time of day, so tools that light by it link neither.
 pub use renderer::{
     CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,
-    RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
+    RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, TierBuild, TierRefused, scaled_size,
 };
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,

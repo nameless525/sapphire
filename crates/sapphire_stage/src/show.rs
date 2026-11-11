@@ -8,6 +8,7 @@
 //!
 //! `()` plays nothing, and costs nothing.
 
+use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, PostParams, UiDrawList, UiPageState, VfxFrame};
 
 use crate::content::Content;
@@ -70,6 +71,11 @@ pub trait SceneShow {
 
     /// Its debug draws, last in the frame, which go out with the packet.
     fn draw_debug(&mut self) {}
+
+    /// The renderer changed to `tier`'s, at a pause or a wipe (M4 T3, [`crate::Stage::take_tier_change`]): what
+    /// it sizes by the tier follows, presentation only (springs' quality, effects' budget), never the
+    /// simulation's.
+    fn tier_changed(&mut self, _scene: &mut Scene, _tier: TierId) {}
 }
 
 impl SceneShow for () {}

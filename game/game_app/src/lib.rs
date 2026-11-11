@@ -41,14 +41,22 @@
 //! back where its save has it, paused if someone was playing (`game_flow`'s `Boot` and `Reload`; a test stands
 //! it at once with [`stand_game`]).
 //!
+//! # Quality tiers (M4 T3)
+//!
+//! The settings' graphics page chooses the tier (automatic or held), the frame cap, dynamic resolution and the
+//! battery saver. Each frame the platform's heat goes to the tier's thermal ladder; a tier the ladder or the
+//! player wants is built off the frame and changed to at the title, a pause or a wipe ([`tiers`]). A Steam Deck
+//! starts on Desktop-Low, fullscreen at its panel's 1280 × 800.
+//!
 //! # What it doesn't do yet
 //!
-//! It stays on the tier it started on. A lost device costs what was played since the save.
+//! A lost device costs what was played since the save.
 
 mod app;
 mod offscreen;
 mod options;
 mod settings;
+pub mod tiers;
 
 /// What this build of the game is, compiled in by the build script: the bundle ID from
 /// `platform/identity.toml`, and the build number and ID `cargo xtask package` gave it. The patch manifest
@@ -65,7 +73,6 @@ use sapphire_core::alloc::EngineAllocator;
 use sapphire_core::log::{LogConfig, LogSink};
 use sapphire_crash::{CrashConfig, CrashGuard, ForcedCrash};
 use sapphire_platform::{App, AppInitError, DeviceClass, Host, Os, PlatformLogSink};
-use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_stage::{Content, Stage, StageDesc};
 
@@ -120,7 +127,8 @@ pub fn stand_game(
     mut show: GameShow,
     first: &CombatOption,
 ) -> Result<Stage<GameShow>, AppInitError> {
-    let desc = fight_stage(StageDesc::new(host, &gpu, format, QualitySettings::default()));
+    let quality = tiers::starting_quality(&show, host.system_info().device_class);
+    let desc = fight_stage(StageDesc::new(host, &gpu, format, quality));
     let mut content = Content::new(host, desc.character, desc.sky)?;
     let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
     let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);

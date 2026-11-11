@@ -132,12 +132,12 @@ impl Slot {
     const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len();
 
     /// The pipelines outside the frame's variants, which something else asks for.
-    fn others() -> impl Iterator<Item = Self> {
+    pub(super) fn others() -> impl Iterator<Item = Self> {
         [Self::Inset].into_iter().chain(Dichromacy::ALL.map(Self::ColorVision))
     }
 
     /// Every pipeline post has, in [`Self::index`]'s order.
-    fn all() -> impl Iterator<Item = Self> {
+    pub(super) fn all() -> impl Iterator<Item = Self> {
         [Self::Prefilter { characters: false }, Self::Prefilter { characters: true }, Self::Down, Self::Up]
             .into_iter()
             .chain((0..Variant::COMPOSITES).map(Self::Composite))

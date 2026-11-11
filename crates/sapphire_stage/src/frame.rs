@@ -18,8 +18,8 @@ use sapphire_platform::{AppInitError, Host};
 use sapphire_render::color_vision::ColorVision;
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
-use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierTable};
-use sapphire_render::{MeshHandle, PipelineWarmup, RenderSettings, Renderer};
+use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierId, TierTable};
+use sapphire_render::{MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 use sapphire_time::Stopwatch;
 
@@ -178,7 +178,8 @@ impl StageDesc {
         settings: QualitySettings,
     ) -> Self {
         let device = host.system_info();
-        let profile = DeviceProfile::new(device.device_class, gpu.caps(), device.ram_mib);
+        let profile =
+            DeviceProfile::new(device.device_class, gpu.caps(), device.ram_mib).handheld(device.handheld);
         let quality = Quality::new(TierTable::shipped(), &profile, settings);
         let settings = quality.render_settings();
         Self {
@@ -255,6 +256,8 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub thermal: ThermalReading,
     /// The ladder's clock: frames here have no real length, so it advances by [`FRAME`] a frame.
     ladder_clock: Duration,
+    /// A tier's renderer building off the frame (M4 T3, [`Self::prepare_tier_change`]).
+    tier_change: TierChange,
     /// Held from the renderer's making to the first frame, with [`StageDesc::warm_load`].
     load_warmup: Option<PipelineWarmup>,
     format: wgpu::TextureFormat,
@@ -358,6 +361,7 @@ impl Stage {
             last_times: None,
             thermal: ThermalReading::default(),
             ladder_clock: Duration::ZERO,
+            tier_change: TierChange::default(),
             load_warmup,
             format,
         })
@@ -382,6 +386,7 @@ impl Stage {
             last_times,
             thermal,
             ladder_clock,
+            tier_change,
             load_warmup,
             format,
         } = self;
@@ -402,10 +407,18 @@ impl Stage {
             last_times,
             thermal,
             ladder_clock,
+            tier_change,
             load_warmup,
             format,
         }
     }
+}
+
+/// A tier's renderer building off the frame, and a tier whose renderer failed ([`Stage::prepare_tier_change`]).
+#[derive(Debug, Default)]
+struct TierChange {
+    build: Option<(TierId, TierBuild)>,
+    failed: Option<TierId>,
 }
 
 impl<S: SceneShow> Stage<S> {
@@ -428,6 +441,7 @@ impl<S: SceneShow> Stage<S> {
             last_times,
             thermal,
             ladder_clock,
+            tier_change,
             load_warmup,
             format,
         } = self;
@@ -448,6 +462,7 @@ impl<S: SceneShow> Stage<S> {
             last_times,
             thermal,
             ladder_clock,
+            tier_change,
             load_warmup,
             format,
         }
@@ -488,6 +503,73 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         // Every frame rather than on a step, so a renderer made since gets the rung's shed too.
         let shed = self.quality.ladder().state().shed;
         self.renderer.set_shed(shed).map_err(AppInitError::msg)
+    }
+
+    /// Starts building the renderer of the tier [`Quality::wanted_tier`] names on the warm-up's threads, which no
+    /// frame waits on, with every pipeline the live renderer has (M4 T3): once a frame, so that
+    /// [`Self::take_tier_change`] finds it built at the next pause or wipe. Lets a build go when its tier isn't
+    /// wanted any more. A tier whose renderer failed isn't built again until another is wanted.
+    pub fn prepare_tier_change(&mut self) {
+        let wanted = self.quality.wanted_tier();
+        let change = &mut self.tier_change;
+        if change.build.as_ref().map(|(id, _)| *id) != wanted {
+            change.build = None;
+        }
+        if change.failed != wanted {
+            change.failed = None;
+        }
+        let Some(id) = wanted else { return };
+        if change.build.is_some() || change.failed == Some(id) {
+            return;
+        }
+        match self.renderer.build_tier(&self.gpu, self.quality.render_settings_of(id)) {
+            Ok(build) => change.build = Some((id, build)),
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, tier = id.name(), %error, "a tier's renderer can't be built");
+                change.failed = Some(id);
+            }
+        }
+    }
+
+    /// Whether a tier's renderer is built, for [`Self::take_tier_change`] to take. Never waits.
+    pub fn tier_change_ready(&mut self) -> bool {
+        self.tier_change.build.as_mut().is_some_and(|(_, build)| build.is_ready())
+    }
+
+    /// Changes to the tier quality wants, if [`Self::prepare_tier_change`] has its renderer built: the game
+    /// calls it at a pause or a wipe, never while a fight moves (M4 T3). The renderer changes in place, keeping
+    /// every mesh, material and instance, and builds nothing on the frame; the show hears of it
+    /// ([`SceneShow::tier_changed`]). Returns the tier it changed to. The cap may have changed with it
+    /// ([`Quality::frame_rate`]), which is the caller's to pace. If the renderer can't be taken, quality goes
+    /// back to the tier it had, and the live renderer goes on.
+    pub fn take_tier_change(&mut self) -> Option<TierId> {
+        if !self.tier_change_ready() || self.renderer.is_warming() {
+            return None;
+        }
+        let (id, build) = self.tier_change.build.take().expect("ready");
+        if self.quality.wanted_tier() != Some(id) {
+            return None;
+        }
+        let previous = self.quality.change_tier(self.ladder_clock)?;
+        let grid = self.content.zone_probe_grid();
+        match self.renderer.take_tier(build, grid) {
+            Ok(()) => {
+                self.show.tier_changed(&mut self.scene, id);
+                tracing::info!(target: LOG_TARGET, tier = id.name(), from = previous.id.name(), "tier changed");
+                Some(id)
+            }
+            Err(refused) => {
+                self.quality.restore(previous);
+                if matches!(refused, TierRefused::Stale | TierRefused::Warming) {
+                    // Built before the live renderer's latest pipelines: the next frame builds it again.
+                    tracing::debug!(target: LOG_TARGET, tier = id.name(), "a tier's renderer was stale");
+                } else {
+                    tracing::warn!(target: LOG_TARGET, tier = id.name(), error = %refused, "a tier's renderer failed");
+                    self.tier_change.failed = Some(id);
+                }
+                None
+            }
+        }
     }
 
     /// Whether something draws over the frames: see [`FrameHooks::overlay_visible`].

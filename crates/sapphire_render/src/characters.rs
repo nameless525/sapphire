@@ -356,6 +356,13 @@ impl Characters {
         Self { list: CharacterList::default(), unsent: false, buffer, capsule_ao }
     }
 
+    /// Whether characters take capsule AO from each other's bodies from the next frame on: another tier's
+    /// setting (M4 T3), whose renderer keeps these entries.
+    pub(crate) fn set_capsule_ao(&mut self, capsule_ao: bool) {
+        self.capsule_ao = capsule_ao;
+        self.unsent = true;
+    }
+
     /// Uploads the entries again with the next frame, whether they changed or not: what a pass
     /// wrote into them on the GPU (the probe grid's ambient, M1 W5) no longer holds.
     pub(crate) fn invalidate(&mut self) {

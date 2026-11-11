@@ -849,6 +849,32 @@ impl Sky {
         }))
     }
 
+    /// What the materials drawn so far have had built, as bits: for a sky of another tier to build the same
+    /// (M4 T3, [`Self::build_ready`]).
+    pub(crate) fn ready(&self) -> u8 {
+        self.ready
+    }
+
+    /// Builds every variant `ready` (another sky's [`Self::ready`]) says its materials can draw, where `on` says.
+    pub(crate) fn build_ready(&mut self, ready: u8, on: BuildOn) {
+        let all = [false, true]
+            .into_iter()
+            .flat_map(|nebula| [false, true].map(|lit_clouds| Features { nebula, lit_clouds }));
+        let features: Vec<Features> = all.filter(|features| ready & features.bit() != 0).collect();
+        let layers = features.iter().copied().flat_map(Layers::drawable).collect::<Vec<_>>();
+        self.pipelines.build_all(&self.builder, layers.into_iter(), on);
+        for features in features {
+            self.ready |= features.bit();
+        }
+        self.stats.pipelines = self.pipelines.count();
+    }
+
+    /// Draws `held`'s default material, which another renderer's material store holds, in place of its own
+    /// (M4 T3): every renderer's default is the same block, so the sky taking another's place draws it the same.
+    pub(crate) fn share_default_material(&mut self, held: &Self) {
+        self.default_material = held.default_material;
+    }
+
     /// Takes in what a warm-up built that isn't built yet.
     pub(crate) fn adopt(&mut self, warmed: SkyPipelines) {
         let pipelines = &mut self.pipelines;

@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 298] {
+pub fn scenes() -> [Scene; 304] {
     [
         Scene {
             name: "turntable-start",
@@ -4032,6 +4032,13 @@ pub fn scenes() -> [Scene; 298] {
         game_scene!("game-display-wide-ja", "display", "1280x720", "ja"),
         game_scene!("game-display-ultrawide-en", "display", "1680x720", "en"),
         game_scene!("game-display-ultrawide-ja", "display", "1680x720", "ja"),
+        // The graphics page (M4 T3): automatic, unlimited, dynamic resolution and the battery saver off.
+        game_scene!("game-graphics-tablet-en", "graphics", "1024x768", "en"),
+        game_scene!("game-graphics-tablet-ja", "graphics", "1024x768", "ja"),
+        game_scene!("game-graphics-wide-en", "graphics", "1280x720", "en"),
+        game_scene!("game-graphics-wide-ja", "graphics", "1280x720", "ja"),
+        game_scene!("game-graphics-ultrawide-en", "graphics", "1680x720", "en"),
+        game_scene!("game-graphics-ultrawide-ja", "graphics", "1680x720", "ja"),
         game_scene!("game-sound-tablet-en", "sound", "1024x768", "en"),
         game_scene!("game-sound-tablet-ja", "sound", "1024x768", "ja"),
         game_scene!("game-sound-wide-en", "sound", "1280x720", "en"),

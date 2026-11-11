@@ -938,8 +938,9 @@ pub(crate) mod override_constant {
     pub const VELOCITY: &str = "SCENE_PREPASS_VELOCITY";
 }
 
-/// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
-#[derive(Debug)]
+/// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family. A renderer for another
+/// tier is made on its clone (M4 T3), so what's bound with these binds with its pipelines.
+#[derive(Clone, Debug)]
 pub(crate) struct Layouts {
     /// Group 0: frame constants, local lights and their lists, the characters' entries, the
     /// shadows' uniforms, maps and comparison sampler (M1 R4), the character prepass's depth and
@@ -1450,6 +1451,46 @@ impl MeshPipelines {
         }
     }
 
+    /// Every piece built, but the character prepass's two, which come with the format: what [`Self::store`]
+    /// keeps, listed back.
+    fn built_pieces(&self) -> Vec<Piece> {
+        let mut pieces: Vec<Piece> = SurfaceVariant::ALL
+            .into_iter()
+            .filter(|variant| self.surfaces[variant.index()].is_some())
+            .map(Piece::Surface)
+            .collect();
+        for coverage in Coverage::DEPTH_WRITING {
+            let index = coverage.index();
+            let two_sided = &self.two_sided[index];
+            let built = [
+                (self.outline[index].is_some(), Piece::Outline(coverage)),
+                (self.foliage_prepass[index].is_some(), Piece::FoliagePrepass(coverage)),
+                (self.foliage_casters[index].is_some(), Piece::FoliageCaster(coverage)),
+                (two_sided.character.is_some(), Piece::TwoSidedCharacterPrepass { coverage, hair: false }),
+                (
+                    two_sided.character_hair.is_some(),
+                    Piece::TwoSidedCharacterPrepass { coverage, hair: true },
+                ),
+                (two_sided.scene.is_some(), Piece::TwoSidedScenePrepass(coverage)),
+            ];
+            pieces.extend(built.into_iter().filter(|&(built, _)| built).map(|(_, piece)| piece));
+        }
+        let built = [
+            (self.scene_prepass.is_some(), Piece::ScenePrepass),
+            (self.outline_prepass.is_some(), Piece::OutlinePrepass),
+            (self.masked.is_some(), Piece::Masked),
+            (self.masked_scene.is_some(), Piece::MaskedScenePrepass),
+            (self.masked_outline.is_some(), Piece::MaskedOutlinePrepass),
+        ];
+        pieces.extend(built.into_iter().filter(|&(built, _)| built).map(|(_, piece)| piece));
+        pieces.extend(
+            (0..SurfaceVariant::THROUGH_HAIR.len())
+                .filter(|&index| self.through_hair[index].is_some())
+                .map(Piece::ThroughHair),
+        );
+        pieces
+    }
+
     /// Keeps `built`, what `piece` built.
     fn store(&mut self, piece: Piece, built: BuiltPiece) {
         let built = match built {
@@ -1806,6 +1847,18 @@ pub(crate) struct MeshWarm {
     pub scene_prepass: bool,
 }
 
+/// What a renderer's mesh pipelines have built, as pieces per [`PositionFormat::ALL`] entry
+/// ([`Pipelines::shape`], M4 T3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MeshShape([Option<Vec<Piece>>; 2]);
+
+impl MeshShape {
+    /// The position formats it has pipelines for.
+    pub(crate) fn formats(&self) -> impl Iterator<Item = PositionFormat> + '_ {
+        PositionFormat::ALL.into_iter().filter(|&format| self.0[format_index(format)].is_some())
+    }
+}
+
 /// The modules the mesh pipelines are built from.
 #[derive(Clone, Debug)]
 struct MeshModules {
@@ -2088,6 +2141,47 @@ impl Pipelines {
     /// whether they keep the scene prepass. A warm-up takes a clone in only where it is still the same.
     pub(crate) fn fingerprint(&self) -> (u32, u32, bool) {
         (self.generation, self.count(), self.scene_prepass)
+    }
+
+    /// What these have built, per position format (M4 T3): what a renderer for another tier builds for its own
+    /// settings before it takes their place ([`Self::build_shape`]).
+    pub(crate) fn shape(&self) -> MeshShape {
+        MeshShape(self.mesh.each_ref().map(|mesh| mesh.as_ref().map(MeshPipelines::built_pieces)))
+    }
+
+    /// Builds what `shape` lists, for these pipelines' own target, where `on` says: each format's own, every
+    /// surface's draws as this target draws them (the scene prepass's or the casters' variants its settings add),
+    /// then any piece `shape` has beyond those. What's built is left as it is.
+    pub(crate) fn build_shape(&mut self, device: &wgpu::Device, shape: &MeshShape, on: BuildOn) {
+        for format in PositionFormat::ALL {
+            let Some(pieces) = &shape.0[format_index(format)] else { continue };
+            self.prepare_format(device, format, on);
+            let draws: Vec<Drawn> = pieces
+                .iter()
+                .filter_map(|piece| match *piece {
+                    Piece::Surface(variant) => Some(Drawn {
+                        variant,
+                        surface: true,
+                        through_hair: variant
+                            .through_hair_index()
+                            .is_some_and(|index| pieces.contains(&Piece::ThroughHair(index))),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            self.prepare_draws(device, format, &draws, on);
+            let slot = format_index(format);
+            let built = self.mesh[slot].as_ref().expect("prepared above").built_pieces();
+            let missing: Vec<Piece> = pieces.iter().copied().filter(|piece| !built.contains(piece)).collect();
+            let (target, modules) = (&self.target, &self.modules);
+            let builds =
+                missing.iter().map(|&piece| move || piece.build(device, target, modules, format)).collect();
+            let built = on.run(builds);
+            let mesh = self.mesh[slot].as_mut().expect("prepared above");
+            for (&piece, built) in missing.iter().zip(built) {
+                mesh.store(piece, built);
+            }
+        }
     }
 
     /// Builds what a fading character draws through (M1 C7): for every opaque anime character surface built, its

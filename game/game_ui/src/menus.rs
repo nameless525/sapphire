@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use bevy_reflect::{PartialReflect, Reflect, TypeInfo, Typed};
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::{MenuControls, MenuError};
+use sapphire_core::target::FormFactor;
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
@@ -33,8 +34,8 @@ use serde::{Deserialize, Serialize};
 
 pub use self::document::{MenuDocument, MenuScreen, RowAction, ScreenEntry, ScreenModel, ScreenRow};
 pub use self::settings::{
-    Flashes, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, REDUCED_FLASHES, SIZES, Setting,
-    SubtitleBackground, SubtitleSize, Subtitles, TextSize,
+    Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice,
+    REDUCED_FLASHES, SIZES, Setting, SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use crate::screen::{ScreenStack, StackSetup};
 
@@ -120,6 +121,12 @@ pub struct MenuModel {
     pub hold_dodge: String,
     pub hold_skill: String,
     pub hold_lock_on: String,
+    /// The graphics page's (M4 T3): the quality tier, the frame cap as this device has it, dynamic resolution
+    /// and the battery saver.
+    pub quality: String,
+    pub frame_cap: String,
+    pub dynamic_resolution: String,
+    pub battery_saver: String,
 }
 
 impl MenuModel {
@@ -158,6 +165,10 @@ impl MenuModel {
         self.hold_dodge = held(HeldAction::Dodge);
         self.hold_skill = held(HeldAction::Skill);
         self.hold_lock_on = held(HeldAction::LockOn);
+        self.quality = format!("graphics-quality-{}", settings.quality.name());
+        self.frame_cap = format!("graphics-cap-{}", settings.frame_cap.on(FormFactor::CURRENT).name());
+        self.dynamic_resolution = switch(settings.dynamic_resolution);
+        self.battery_saver = switch(settings.battery_saver);
     }
 }
 
@@ -734,7 +745,7 @@ impl GameMenus {
     /// Steps a setting on, shows it on every menu, and says it's time to keep them.
     fn step(&mut self, setting: Setting) {
         let settings = &mut self.settings;
-        settings.step(setting);
+        settings.step_on(setting, FormFactor::CURRENT);
         let language = settings.known_language().to_owned();
         let scale = settings.scale();
         if let Err(error) = self.stack.set_locale(&language) {

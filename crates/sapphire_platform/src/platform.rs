@@ -89,6 +89,7 @@ impl Platform {
                     ram_mib: 0,
                     logical_cores: 1,
                     is_emulator: false,
+                    handheld: false,
                 },
             ),
             gamepads: Vec::new(),
@@ -210,6 +211,19 @@ impl Platform {
     /// frames, it is what [`Self::frame_pacing`] measures against.
     pub fn set_frame_rate(&mut self, rate: Option<NonZeroU32>) {
         self.frame_clock.set_frame_rate(rate);
+    }
+
+    /// Caps the desktop's frames at `cap` a second, or lifts the cap with `None` (spec §6.2, M4 T3): the player's
+    /// frame cap, under the thermal ladder's. Each frame sleeps, on the clock, until it's due, a cap interval
+    /// after the last was, and FIFO's present keeps frames on vsyncs. Ignored on iOS and Android, where
+    /// [`Self::set_frame_rate`] paces frames to vsyncs and is the cap. Takes effect from the next frame.
+    pub fn set_frame_cap(&mut self, cap: Option<NonZeroU32>) {
+        self.frame_clock.set_frame_cap(cap);
+    }
+
+    /// The desktop's frame cap, if one is set ([`Self::set_frame_cap`]).
+    pub fn frame_cap(&self) -> Option<NonZeroU32> {
+        self.frame_clock.frame_cap()
     }
 
     /// How frames are paced and how evenly they have come (rule R9).

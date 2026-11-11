@@ -1642,6 +1642,23 @@ impl Ambient {
         self.build_pipelines(sources, set);
     }
 
+    /// Whether a grid is here or expected, and whether the reflection cube's prefilter is built: what an
+    /// ambient pass of another tier builds before it takes this one's place (M4 T3, [`Self::build_held`]).
+    pub(crate) fn held(&self) -> (bool, bool) {
+        (self.grid.is_some() || self.grid_expected, self.pipelines.set().prefilter)
+    }
+
+    /// Builds what [`Self::held`] of another ambient pass says it has: a grid's pipelines, expecting it, and the
+    /// reflection cube's.
+    pub(crate) fn build_held(&mut self, (grid, reflection): (bool, bool), sources: &ShaderSources) {
+        if grid {
+            self.expect_grid(sources);
+        }
+        if reflection {
+            self.build_reflection_pipelines(sources);
+        }
+    }
+
     /// Builds the pipelines a reflective character's first frame would ([`Self::set_reflective`]): the sky's
     /// projection and the prefilter, but not the cube, which that frame makes (M3 K1: a reflective material's
     /// upload builds them).

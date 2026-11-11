@@ -146,7 +146,8 @@ impl App for SandboxApp {
         };
         let mut device = create_device(platform, &window, debug)?;
         // The tier comes from the device the GPU stack runs on; the renderer is made for it.
-        let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
+        let profile =
+            DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib).handheld(info.handheld);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it, and on Android its frame limiter holds it and the window asks for it.

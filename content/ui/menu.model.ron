@@ -7,11 +7,14 @@
     data: (
         fields: [
             (path: "auto_target", kind: Text),
+            (path: "battery_saver", kind: Text),
             (path: "camera_motion", kind: Number),
             (path: "can_continue", kind: Bool),
             (path: "can_leave", kind: Bool),
+            (path: "dynamic_resolution", kind: Text),
             (path: "effects", kind: Number),
             (path: "flashes", kind: Text),
+            (path: "frame_cap", kind: Text),
             (path: "hold_dodge", kind: Text),
             (path: "hold_heavy", kind: Text),
             (path: "hold_light", kind: Text),
@@ -20,6 +23,7 @@
             (path: "language", kind: Text),
             (path: "mono", kind: Text),
             (path: "music", kind: Number),
+            (path: "quality", kind: Text),
             (path: "rumble", kind: Text),
             (path: "shake", kind: Number),
             (path: "size", kind: Text),

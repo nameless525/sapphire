@@ -376,6 +376,10 @@ pub struct DeviceProfile {
     /// The GPU can time passes (`GpuCaps::timestamp_query`), so dynamic resolution follows GPU
     /// time; without it, the frame time.
     pub timestamps: bool,
+    /// A handheld PC (`sapphire_platform::SystemInfo::handheld`, a Steam Deck): it starts on its class's lowest
+    /// tier, whatever its GPU and RAM would qualify for, since its panel is 1280 × 800 and its battery small
+    /// (M4 T3).
+    pub handheld: bool,
 }
 
 impl DeviceProfile {
@@ -387,7 +391,14 @@ impl DeviceProfile {
             backend: caps.backend().into(),
             ram_mib,
             timestamps: caps.timestamp_query,
+            handheld: false,
         }
+    }
+
+    /// The same device, a handheld PC or not.
+    #[must_use]
+    pub fn handheld(self, handheld: bool) -> Self {
+        Self { handheld, ..self }
     }
 }
 
@@ -584,8 +595,11 @@ impl TierTable {
         self.tiers.iter().find(|tier| tier.id == id).expect("a checked table holds every tier")
     }
 
-    /// The highest tier of `device`'s class that it qualifies for.
+    /// The highest tier of `device`'s class that it qualifies for; a handheld's lowest.
     pub fn select(&self, device: &DeviceProfile) -> TierId {
+        if device.handheld {
+            return TierId::lowest(device.class);
+        }
         self.tiers
             .iter()
             .filter(|tier| tier.id.class() == device.class && tier.qualifies(device))
@@ -1099,6 +1113,70 @@ impl Quality {
         Some(previous)
     }
 
+    /// The player's settings.
+    pub fn settings(&self) -> QualitySettings {
+        self.settings
+    }
+
+    /// Takes the player's new settings (M4 T3). Dynamic resolution and the render scale follow from the next
+    /// frame. A tier they choose, or automatic in place of one, waits for [`Self::wanted_tier`] and
+    /// [`Self::change_tier`]; so do shadows and ambient occlusion, which only a new renderer changes.
+    pub fn set_settings(&mut self, settings: QualitySettings) {
+        if settings != self.settings {
+            tracing::info!(target: LOG_TARGET, ?settings, "quality settings");
+        }
+        self.settings = settings;
+    }
+
+    /// The tier `r.tier` or the player chose, if either did: one the ladder never changes ([`Self::wanted_tier`]).
+    fn chosen(&self) -> Option<ActiveTier> {
+        let chosen = choose_tier(TIER.get(), self.settings.tier, self.device);
+        (chosen.source != TierSource::Device).then_some(chosen)
+    }
+
+    /// The tier the game should change to at its next pause or wipe (M4 T3), if not the active one: the one
+    /// `r.tier` or the player chose; with neither, automatic, the ladder's request, or the device's tier in
+    /// place of one a choice had made active. A chosen tier holds whatever the heat, its ladder stepping down
+    /// only within it: the player asked for that look. The game builds its renderer from
+    /// [`Self::render_settings_of`] off the frame first, then calls [`Self::change_tier`].
+    pub fn wanted_tier(&self) -> Option<TierId> {
+        let wanted = match self.chosen() {
+            Some(chosen) => chosen.id,
+            None => match self.active.source {
+                TierSource::Setting | TierSource::Cvar => self.ladder.tier_request().unwrap_or(self.device),
+                TierSource::Device | TierSource::Ladder => self.ladder.tier_request()?,
+            },
+        };
+        (wanted != self.active.id).then_some(wanted)
+    }
+
+    /// What a renderer for tier `id` is made with, under the player's settings: [`Self::render_settings`] for a
+    /// tier not yet active.
+    pub fn render_settings_of(&self, id: TierId) -> RenderSettings {
+        self.settings_for(self.table.get(id))
+    }
+
+    /// Makes [`Self::wanted_tier`] active, at `now` on the ladder's clock, once the game has the new tier's
+    /// renderer: at a pause or a wipe, never in a fight's frame. Returns the tier it replaced, for
+    /// [`Self::restore`] if the renderer can't be taken after all. A ladder's tier starts at its deepest rung
+    /// short of a tier ([`Self::take_tier_request`]); a chosen one, or the device's, at the top.
+    pub fn change_tier(&mut self, now: Duration) -> Option<ActiveTier> {
+        let id = self.wanted_tier()?;
+        self.seen = TIER.get();
+        let chosen = self.chosen();
+        if chosen.is_none() && self.ladder.tier_request() == Some(id) {
+            return self.take_tier_request(now);
+        }
+        let previous = self.active;
+        let source = chosen.map_or(TierSource::Device, |chosen| chosen.source);
+        let ladder = Ladder::new(self.table.get(id));
+        self.previous_ladder = Some(std::mem::replace(&mut self.ladder, ladder));
+        self.active = ActiveTier { id, source };
+        self.reset_dynamic();
+        tracing::info!(target: LOG_TARGET, tier = id.name(), from = previous.id.name(), ?source, "quality tier changed");
+        Some(previous)
+    }
+
     /// The tier's frame rate under the ladder's cap.
     fn capped_rate(&self) -> u32 {
         self.frame_rate().map_or(self.tier().frame_rate, NonZeroU32::get)
@@ -1120,7 +1198,12 @@ impl Quality {
 
     /// What a renderer for the active tier is created with, under the player's settings.
     pub fn render_settings(&self) -> RenderSettings {
-        let tier = self.tier().render_settings();
+        self.settings_for(self.tier())
+    }
+
+    /// What a renderer for `tier` is made with, under the player's settings.
+    fn settings_for(&self, tier: &QualityTier) -> RenderSettings {
+        let tier = tier.render_settings();
         self.settings.shed.shed(RenderSettings {
             shadows: tier.shadows.filter(|_| self.settings.shadows.resolve(true)),
             ambient_occlusion: self.settings.ambient_occlusion.resolve(tier.ambient_occlusion),
@@ -1216,7 +1299,7 @@ mod tests {
     use super::*;
 
     fn device(class: FormFactor, gpu: GpuKind, backend: GpuBackend, ram_gib: u32) -> DeviceProfile {
-        DeviceProfile { class, gpu, backend, ram_mib: ram_gib * 1024, timestamps: true }
+        DeviceProfile { class, gpu, backend, ram_mib: ram_gib * 1024, timestamps: true, handheld: false }
     }
 
     /// The shipped table with `edit` applied to `id`'s tier, unchecked.
@@ -1446,6 +1529,19 @@ mod tests {
     }
 
     #[test]
+    fn a_handheld_starts_on_its_class_s_lowest_tier() {
+        let table = TierTable::shipped();
+        // A Steam Deck, as `sapphire_platform` names it: Desktop-Low, whatever a later handheld's GPU and RAM.
+        let deck = device(FormFactor::Desktop, GpuKind::Integrated, GpuBackend::Vulkan, 16).handheld(true);
+        assert_eq!(table.select(&deck), TierId::DesktopLow);
+        let stronger = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32).handheld(true);
+        assert_eq!(table.select(&stronger), TierId::DesktopLow);
+        assert_eq!(table.select(&stronger.handheld(false)), TierId::DesktopHigh);
+        let quality = Quality::new(table, &deck, QualitySettings::default());
+        assert_eq!(quality.active(), ActiveTier { id: TierId::DesktopLow, source: TierSource::Device });
+    }
+
+    #[test]
     fn profiles_name_the_gpu_as_wgpu_reports_it() {
         // `DeviceProfile::new` reads these two from `GpuCaps::adapter`.
         assert_eq!(GpuKind::from(wgpu::DeviceType::Cpu), GpuKind::Cpu);
@@ -1662,5 +1758,60 @@ mod tests {
             (stats.base_scale, stats.render_scale, stats.device_tier),
             (1.0, 1.0, TierId::DesktopHigh)
         );
+        // Here rather than a test of its own: both read `r.tier`, which this one sets.
+        tier_changes_wait_for_the_game();
+    }
+
+    /// M4 T3: a tier the ladder, the player or `r.tier` asks for is only wanted until the game changes it, at a
+    /// pause or a wipe; a chosen one holds whatever the heat; automatic goes back to the device's.
+    fn tier_changes_wait_for_the_game() {
+        use sapphire_core::thermal::ThermalState;
+        let device = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32);
+        let mut quality = Quality::new(TierTable::shipped(), &device, QualitySettings::default());
+        assert_eq!(quality.wanted_tier(), None);
+        assert_eq!(quality.change_tier(Duration::ZERO), None, "nothing to change");
+        // Critical heat walks the ladder down to its tier rung: wanted, not taken.
+        let critical = ThermalReading { state: ThermalState::Critical, ..ThermalReading::default() };
+        let mut now = Duration::ZERO;
+        while quality.tier_request().is_none() {
+            now += Duration::from_millis(100);
+            assert!(now < Duration::from_secs(600), "the ladder never asked for a tier");
+            quality.follow_heat(now, &critical);
+        }
+        assert_eq!(quality.wanted_tier(), Some(TierId::DesktopLow));
+        assert_eq!(quality.active().id, TierId::DesktopHigh, "a fight's frames never change it");
+        let low = quality.render_settings_of(TierId::DesktopLow);
+        let previous = quality.change_tier(now).expect("the ladder's tier");
+        assert_eq!(previous, ActiveTier { id: TierId::DesktopHigh, source: TierSource::Device });
+        assert_eq!(quality.active(), ActiveTier { id: TierId::DesktopLow, source: TierSource::Ladder });
+        assert_eq!(quality.render_settings(), low, "what the renderer was built with");
+        assert_eq!(quality.wanted_tier(), None);
+        // A renderer that can't be taken goes back, wanting it again.
+        quality.restore(previous);
+        assert_eq!(quality.active().id, TierId::DesktopHigh);
+        assert_eq!(quality.wanted_tier(), Some(TierId::DesktopLow));
+        quality.change_tier(now).expect("again");
+
+        // The player chooses Desktop-High: wanted over the heat, and held there.
+        quality.set_settings(QualitySettings { tier: Some(TierId::DesktopHigh), ..quality.settings() });
+        assert_eq!(quality.wanted_tier(), Some(TierId::DesktopHigh));
+        quality.change_tier(now).expect("the player's tier");
+        assert_eq!(quality.active(), ActiveTier { id: TierId::DesktopHigh, source: TierSource::Setting });
+        for _ in 0..6000 {
+            now += Duration::from_millis(100);
+            quality.follow_heat(now, &critical);
+        }
+        assert_eq!(quality.wanted_tier(), None, "a chosen tier's ladder steps down within it");
+        assert!(quality.ladder().state().depth > 0);
+
+        // Automatic again: the device's tier, then the ladder's as the heat asks.
+        quality.set_settings(QualitySettings { tier: None, ..quality.settings() });
+        assert_eq!(quality.wanted_tier(), Some(TierId::DesktopLow), "the ladder still asks");
+        quality.change_tier(now).expect("the ladder's tier");
+        assert_eq!(quality.active().source, TierSource::Ladder);
+        quality.set_settings(QualitySettings { tier: Some(TierId::DesktopLow), ..quality.settings() });
+        assert_eq!(quality.wanted_tier(), None, "chosen and active already");
+        quality.set_settings(QualitySettings { dynamic_resolution: true, ..quality.settings() });
+        assert!(quality.wants_gpu_timing(), "dynamic resolution follows at once");
     }
 }

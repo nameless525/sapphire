@@ -634,6 +634,10 @@ impl SceneShow for ShownFight {
         self.hear(followed);
     }
 
+    fn tier_changed(&mut self, scene: &mut Scene, tier: sapphire_render::quality::TierId) {
+        self.fight.tier_changed(scene, tier);
+    }
+
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
         self.fight.end_steps(scene, dt);
     }

@@ -439,6 +439,13 @@ pub struct PostStats {
     pub first_use_builds: u32,
 }
 
+/// What a post pass has built and is ready for ([`PostProcess::held`], M4 T3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PostShape {
+    ready: PostVariants,
+    slots: Vec<Slot>,
+}
+
 /// Post's pipelines, layouts and persistent resources, and the per-pass bind group caches.
 #[derive(Debug)]
 pub(crate) struct PostProcess {
@@ -763,6 +770,24 @@ impl PostProcess {
     /// or a first use, in the frame that first shows an inset. Says how many it built.
     pub(crate) fn build_inset(&mut self, on: BuildOn) -> u32 {
         self.pipelines.build_all(&self.builder, &self.module, [Slot::Inset], on)
+    }
+
+    /// What these have built and are ready for: what a post pass of another tier builds before it takes this
+    /// one's place (M4 T3, [`Self::build_held`]).
+    pub(crate) fn held(&self) -> PostShape {
+        let built = Slot::all().chain(Slot::others()).filter(|&slot| self.pipelines.get(slot).is_some());
+        PostShape { ready: self.ready, slots: built.collect() }
+    }
+
+    /// Builds what another post pass's [`Self::held`] says it has, where `on` says.
+    pub(crate) fn build_held(&mut self, held: &PostShape, on: BuildOn) {
+        self.ready |= held.ready;
+        // Of the other's first uses, those this pass can draw: a shorter bloom chain draws fewer levels.
+        let drawable: Vec<Slot> =
+            Slot::within(PostVariants::ALL, self.bloom_levels).chain(Slot::others()).collect();
+        let carried = held.slots.iter().copied().filter(|slot| drawable.contains(slot));
+        let slots: Vec<Slot> = Slot::within(self.ready, self.bloom_levels).chain(carried).collect();
+        self.pipelines.build_all(&self.builder, &self.module, slots, on);
     }
 
     /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants`, with `inset` [`Self::build_inset`],

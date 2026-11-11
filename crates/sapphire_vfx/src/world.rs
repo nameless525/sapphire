@@ -208,6 +208,18 @@ impl VfxWorld {
         self.budget
     }
 
+    /// Plays within `budget` from now on (a quality tier's change, M4 T3), resizing what it's sized by: every
+    /// effect playing ends, as with [`Self::clear`], and the seeded sequence goes on. Allocates, so a game calls
+    /// it at a pause or a wipe, never in a step. Nothing changes for the budget it has.
+    pub fn set_budget(&mut self, budget: VfxBudget) {
+        if budget == self.budget {
+            return;
+        }
+        let fresh = Self::new(self.library.clone(), budget, self.seed);
+        let (spawned, marks) = (self.spawned, self.marks);
+        *self = Self { spawned, marks, ..fresh };
+    }
+
     /// Replaces the effects (a reload), ending every effect playing: their places in the library
     /// may have moved.
     pub fn set_library(&mut self, library: EffectLibrary) {

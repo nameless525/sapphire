@@ -303,9 +303,131 @@ fn land_in_time(elapsed: Duration, interval: Duration) -> Landing {
     }
 }
 
+/// The desktop's frame cap (spec §6.2, M4 T3): when the next frame may start. SDL gives a desktop no vsync to
+/// wait for, so the frame clock sleeps, on the clock, until the time this says, and FIFO's present keeps the
+/// frames on vsyncs. Pure, like [`FramePacer`]: it's fed the clock.
+///
+/// Each frame is due one cap interval after the last one was due, so a frame that starts a little late takes
+/// nothing from the cadence and a frame's sleep absorbs the clock's jitter. A frame later than a whole
+/// interval starts the cadence afresh from now, taking no time back with a short one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CapGate {
+    cap: Option<NonZeroU32>,
+    /// When the last frame let through was due, in nanoseconds.
+    due: Option<u64>,
+}
+
+impl CapGate {
+    /// Caps frames at `cap` per second from the next frame on, or lifts the cap (`None`).
+    pub(crate) fn set_cap(&mut self, cap: Option<NonZeroU32>) {
+        if cap != self.cap {
+            self.cap = cap;
+            self.due = None;
+        }
+    }
+
+    pub(crate) fn cap(&self) -> Option<NonZeroU32> {
+        self.cap
+    }
+
+    /// A frame would start at `now_ns`: how long to sleep first. It's then counted as started when it was due.
+    pub(crate) fn wait(&mut self, now_ns: u64) -> Duration {
+        let Some(cap) = self.cap else { return Duration::ZERO };
+        let interval = (NANOS_PER_SECOND / u64::from(cap.get())).max(1);
+        let due = match self.due {
+            Some(last) if (last..last.saturating_add(2 * interval)).contains(&now_ns) => last + interval,
+            // The first frame, a frame a whole interval late, or a clock gone back: now.
+            _ => now_ns,
+        };
+        self.due = Some(due);
+        Duration::from_nanos(due.saturating_sub(now_ns))
+    }
+
+    /// The app leaves the foreground or comes back: the next frame starts afresh.
+    pub(crate) fn reset(&mut self) {
+        self.due = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// Runs frames whose work takes `work` nanoseconds each through `gate`, sleeping as it says: when each
+    /// frame starts.
+    fn capped_starts(gate: &mut CapGate, work: impl Fn(usize) -> u64, frames: usize) -> Vec<u64> {
+        let mut now = 1_000 * MS;
+        let mut starts = Vec::new();
+        for frame in 0..frames {
+            now += u64::try_from(gate.wait(now).as_nanos()).unwrap();
+            starts.push(now);
+            now += work(frame);
+        }
+        starts
+    }
+
+    #[test]
+    fn a_capped_desktop_starts_frames_a_cap_interval_apart() {
+        for cap in [30, 60, 120] {
+            let mut gate = CapGate::default();
+            gate.set_cap(rate(cap));
+            let interval = NANOS_PER_SECOND / u64::from(cap);
+            // Work of a few milliseconds, with jitter: the sleeps take it up.
+            let starts = capped_starts(&mut gate, |frame| (2 + frame as u64 % 3) * MS, 20);
+            assert!(starts.windows(2).all(|pair| pair[1] - pair[0] == interval), "{cap}: {starts:?}");
+        }
+    }
+
+    #[test]
+    fn an_uncapped_desktop_never_sleeps() {
+        let mut gate = CapGate::default();
+        assert_eq!(gate.wait(5 * MS), Duration::ZERO);
+        gate.set_cap(rate(60));
+        gate.set_cap(None);
+        assert_eq!(gate.cap(), None);
+        let starts = capped_starts(&mut gate, |_| 3 * MS, 4);
+        assert!(starts.windows(2).all(|pair| pair[1] - pair[0] == 3 * MS));
+    }
+
+    #[test]
+    fn a_frame_late_by_less_than_an_interval_keeps_the_cadence() {
+        let mut gate = CapGate::default();
+        gate.set_cap(rate(60));
+        let interval = NANOS_PER_SECOND / 60;
+        // The third frame's work overruns by 5 ms; the next sleeps less, and the cadence holds.
+        let starts = capped_starts(&mut gate, |frame| if frame == 2 { interval + 5 * MS } else { 4 * MS }, 6);
+        assert_eq!(starts[3] - starts[2], interval + 5 * MS);
+        assert_eq!(starts[4] - starts[0], 4 * interval);
+        assert_eq!(starts[5] - starts[4], interval);
+    }
+
+    #[test]
+    fn a_frame_late_by_a_whole_interval_starts_the_cadence_afresh() {
+        let mut gate = CapGate::default();
+        gate.set_cap(rate(30));
+        let interval = NANOS_PER_SECOND / 30;
+        let starts = capped_starts(&mut gate, |frame| if frame == 1 { 3 * interval } else { MS }, 5);
+        // No short frames to take the time back: a full interval after the late one.
+        assert_eq!(starts[2] - starts[1], 3 * interval);
+        assert_eq!(starts[3] - starts[2], interval);
+        assert_eq!(starts[4] - starts[3], interval);
+    }
+
+    #[test]
+    fn a_new_cap_or_a_reset_starts_at_once() {
+        let mut gate = CapGate::default();
+        gate.set_cap(rate(30));
+        assert_eq!(gate.wait(0), Duration::ZERO);
+        assert!(gate.wait(MS) > Duration::ZERO);
+        gate.set_cap(rate(60));
+        assert_eq!(gate.wait(2 * MS), Duration::ZERO);
+        gate.reset();
+        assert_eq!(gate.wait(3 * MS), Duration::ZERO);
+        // A clock gone back starts afresh too.
+        assert_eq!(gate.wait(MS), Duration::ZERO);
+    }
 
     fn rate(hz: u32) -> Option<NonZeroU32> {
         NonZeroU32::new(hz)

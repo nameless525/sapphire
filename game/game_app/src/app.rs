@@ -23,10 +23,9 @@ use game_flow::show::{GameShow, Reload};
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
-    SurfaceHandle, Window, WindowDesc, WindowEvent, durable_replace,
+    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform, Size,
+    SurfaceHandle, SystemInfo, Window, WindowDesc, WindowEvent, durable_replace,
 };
-use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
@@ -37,6 +36,7 @@ use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
 use crate::settings::KeptSettings;
+use crate::tiers::{Pacing, TierFollower};
 use crate::{LOG_TARGET, build_info};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
@@ -62,6 +62,8 @@ pub struct GameApp {
     /// What the player had chosen as the app started: what a boot stands the first show with.
     chosen: PlayerSettings,
     settings: KeptSettings,
+    /// The quality tier, the heat and the frame cap, frame by frame (M4 T3).
+    tiers: TierFollower,
     /// Whether a pad may shake.
     rumble: bool,
     window: Window,
@@ -107,9 +109,9 @@ impl App for GameApp {
         let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         let info = *platform.system_info();
         tracing::info!(target: LOG_TARGET, build = build_info::BUILD_ID, ?info, ?options, "starting");
-        let window = platform
-            .create_window(&WindowDesc { title: Self::METADATA.name.to_owned(), ..WindowDesc::default() })?;
+        let window = platform.create_window(&window_desc(Self::METADATA.name, &info))?;
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
+        let tiers = TierFollower::new(&chosen, info.device_class);
         let rumble = chosen.rumble;
         let on_device =
             boot_on_device(platform, &window, &options, chosen.clone()).map_err(|failed| failed.error)?;
@@ -121,6 +123,7 @@ impl App for GameApp {
             heard: false,
             chosen,
             settings,
+            tiers,
             rumble,
             window,
             desktop: info.device_class == DeviceClass::Desktop,
@@ -250,6 +253,11 @@ impl App for GameApp {
             &mut PadRumble { platform, pad },
         );
 
+        // Between frames: the ladder's heat, a tier change while the show holds still, and the pace.
+        let heat = platform.thermal();
+        if let Some(pacing) = self.tiers.frame(stage, heat) {
+            pace(platform, pacing);
+        }
         let presented = match render(surface, stage, steps.alpha) {
             Ok(presented) => presented,
             Err(error) if stage.gpu.is_lost() => {
@@ -321,6 +329,8 @@ impl GameApp {
         let window_size = self.window.size();
         stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
         name_window(&self.window, &stage.show);
+        // The boot paced its own frames: the game's first tells the platform again.
+        self.tiers.stood();
         let Stage { show, content, renderer, gpu, .. } = &mut **stage;
         if !self.heard {
             self.heard = true;
@@ -374,6 +384,9 @@ impl GameApp {
             self.stop_rumble(platform);
         }
         self.rumble = chosen.rumble;
+        if let Some(OnDevice { game: Game::Stood(stage), .. }) = &mut self.on_device {
+            self.tiers.follow_settings(chosen, stage);
+        }
         self.settings.keep(chosen);
     }
 
@@ -698,11 +711,28 @@ fn boot_on_device(
         .ok_or_else(|| AppInitError::msg("configured surface reports no format"))
         .map_err(&lost)?;
     let (show, first) = options.show(platform, settings).map_err(failed)?;
-    let quality = QualitySettings::default();
+    // The player's tier and dynamic resolution from the start, so a held tier's renderer is the first made.
+    let quality = crate::tiers::starting_quality(&show, info.device_class);
     let boot = Boot::start(platform.host(), Arc::new(gpu), format, quality, show, &first).map_err(&lost)?;
-    // Frames are paced to the tier's rate (spec §6.2), the boot screen's from its first.
+    // Frames are paced to the tier's rate (spec §6.2), the boot screen's from its first, until the stood game's
+    // first frame paces them as the player's cap and the ladder say (`tiers`).
     platform.set_frame_rate(boot.frame_rate());
     Ok(OnDevice { surface: Some(surface), game: Game::Booting(Box::new(boot)) })
+}
+
+/// Tells the platform how to pace frames (`tiers`).
+fn pace(platform: &mut Platform, pacing: Pacing) {
+    platform.set_frame_rate(pacing.rate);
+    platform.set_frame_cap(pacing.cap);
+}
+
+/// The game's window on a device `info` describes: a Steam Deck's fills its 1280 × 800 panel (M4 T3).
+fn window_desc(title: &str, info: &SystemInfo) -> WindowDesc {
+    let desc = WindowDesc { title: title.to_owned(), ..WindowDesc::default() };
+    if info.handheld {
+        return WindowDesc { size: Size { width: 1280, height: 800 }, fullscreen: true, ..desc };
+    }
+    desc
 }
 
 /// Makes the surface again from a freshly fetched native handle, or none, logged, for another try later.
@@ -785,6 +815,25 @@ mod tests {
         };
         assert_eq!(GameApp::METADATA.identifier, field("bundle-id"));
         assert_eq!(GameApp::METADATA.name, field("{ en"), "the English display name");
+    }
+
+    /// M4 T3: a Steam Deck starts fullscreen at its panel's size, on Desktop-Low (`sapphire_render`'s
+    /// selection test holds the tier); any other desktop in the window it had.
+    #[test]
+    fn a_steam_deck_starts_at_1280_by_800() {
+        use sapphire_platform::Os;
+        let info = |handheld| SystemInfo {
+            os: Os::Linux,
+            device_class: DeviceClass::Desktop,
+            ram_mib: 16 * 1024,
+            logical_cores: 8,
+            is_emulator: false,
+            handheld,
+        };
+        let deck = window_desc("Sapphire", &info(true));
+        assert_eq!((deck.size.width, deck.size.height, deck.fullscreen), (1280, 800, true));
+        let desk = window_desc("Sapphire", &info(false));
+        assert_eq!(desk, WindowDesc { title: "Sapphire".to_owned(), ..WindowDesc::default() });
     }
 
     fn at(duties: &[Duty], duty: Duty) -> usize {

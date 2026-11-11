@@ -16,11 +16,13 @@ pub const SETTINGS: MenuScreen = MenuScreen::named("settings");
 pub const CHARACTER: MenuScreen = MenuScreen::named("character");
 /// The settings' pages (M4 A1), which their hub opens.
 pub const DISPLAY: MenuScreen = MenuScreen::named("display");
+/// The graphics page (M4 T3).
+pub const GRAPHICS: MenuScreen = MenuScreen::named("graphics");
 pub const SOUND: MenuScreen = MenuScreen::named("sound");
 pub const SUBTITLES: MenuScreen = MenuScreen::named("subtitles");
 pub const CONTROLS: MenuScreen = MenuScreen::named("controls");
 /// The settings' hub and its pages, each a scrolling list of rows over a way back.
-pub const SETTINGS_SCREENS: [MenuScreen; 5] = [SETTINGS, DISPLAY, SOUND, SUBTITLES, CONTROLS];
+pub const SETTINGS_SCREENS: [MenuScreen; 6] = [SETTINGS, DISPLAY, GRAPHICS, SOUND, SUBTITLES, CONTROLS];
 
 /// How a walk presses.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -512,6 +512,16 @@ impl GameShow {
         !self.fight_open
     }
 
+    /// Whether a quality tier may change now (M4 T3): at the title, at a pause, or while a wipe covers the
+    /// screen, when nothing a player is fighting moves on it. Never in a fight's frames: the change cuts the
+    /// camera's history and the shadows' caches.
+    #[must_use]
+    pub fn holds_still(&self) -> bool {
+        self.on_title()
+            || self.controls.is_paused()
+            || self.shown.wipe.as_ref().is_some_and(ZoneWipe::covered)
+    }
+
     /// The title's new game: the fight from its start, over again if it's been played.
     fn new_game(&mut self) {
         if self.fight_begun
@@ -842,6 +852,10 @@ impl SceneShow for GameShow {
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
         self.shown.end_steps(scene, dt);
+    }
+
+    fn tier_changed(&mut self, scene: &mut Scene, tier: TierId) {
+        self.shown.tier_changed(scene, tier);
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {

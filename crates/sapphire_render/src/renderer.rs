@@ -678,6 +678,14 @@ pub struct Renderer {
     pub(crate) readable_depth: bool,
 }
 
+/// What a renderer is made with that another tier's shares with it ([`Renderer::create`]).
+struct Shared {
+    layouts: Layouts,
+    pipeline_builds: PipelineBuilds,
+    shaders: ShaderSources,
+    edited_shaders: bool,
+}
+
 #[derive(Debug)]
 struct PreparedFrame {
     camera: CameraData,
@@ -705,6 +713,25 @@ impl Renderer {
         color_format: wgpu::TextureFormat,
         settings: RenderSettings,
     ) -> Result<Self, RenderError> {
+        let shared = Shared {
+            layouts: Layouts::new(gpu.device()),
+            pipeline_builds: PipelineBuilds::new(gpu.pipeline_cache()),
+            shaders: ShaderSources::compiled_in(),
+            edited_shaders: false,
+        };
+        Self::create(gpu, color_format, settings, shared)
+    }
+
+    /// [`Self::new`], with what `shared` holds: a renderer's own, or, for another tier's (M4 T3), the live one's,
+    /// so that what's bound with its layouts binds with the new one's pipelines, and its builds count where
+    /// the live one's do.
+    fn create(
+        gpu: &GpuContext,
+        color_format: wgpu::TextureFormat,
+        settings: RenderSettings,
+        shared: Shared,
+    ) -> Result<Self, RenderError> {
+        let Shared { layouts, pipeline_builds, shaders, edited_shaders } = shared;
         if gpu.is_lost() {
             return Err(RenderError::DeviceLost);
         }
@@ -730,9 +757,7 @@ impl Renderer {
         if let Some(shadows) = &settings.shadows {
             shadows.check_limit(gpu.device().limits().max_texture_dimension_2d)?;
         }
-        let shaders = ShaderSources::compiled_in();
         let device = gpu.device().clone();
-        let layouts = Layouts::new(&device);
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -746,10 +771,10 @@ impl Renderer {
         // another on an M5 (`BuildOn`). The sky comes before the ambient passes, which read its cube.
         let (device_ref, layouts_ref, shaders_ref, frame_ref) =
             (&device, &layouts, &shaders, &frame_uniforms);
-        let pipeline_builds = PipelineBuilds::new(gpu.pipeline_cache());
         let builds = &pipeline_builds;
-        // What a renderer builds to start with is the load's, not a first use.
-        let _warming = builds.warming();
+        // What a renderer builds to start with is the load's, not a first use. The warm-up's threads count
+        // theirs so already, and a hold on a ledger the frames share would count the frames' too.
+        let _warming = (!sapphire_jobs::on_warm_up_thread()).then(|| builds.warming());
         let ((post, pipelines), (mut shadows, (lights, (temporal, sky_and_ambient)))) = sapphire_jobs::join(
             || {
                 sapphire_jobs::join(
@@ -983,7 +1008,7 @@ impl Renderer {
             pipeline_builds,
             prewarmed_keys: BTreeSet::new(),
             shaders,
-            edited_shaders: false,
+            edited_shaders,
             device_lost: false,
             fence: FrameFence::default(),
             warned_stale_mesh: false,
@@ -1805,6 +1830,11 @@ impl Renderer {
         self.warm_ups.owns(request)
     }
 
+    /// Whether a warm-up is building or waiting to ([`Self::warm`]): a tier change waits for it (M4 T3).
+    pub fn is_warming(&self) -> bool {
+        self.warm_ups.stats().warming
+    }
+
     /// How far the warm-up has got: what a screen that keeps drawing while it builds shows.
     pub fn warm_up(&self) -> WarmUpProgress {
         self.warm_ups.progress(self.pipeline_builds.stats().warmed_off_frame)
@@ -1991,7 +2021,7 @@ impl Renderer {
     /// pipelines it built.
     fn warm_in(&mut self, inventory: &PipelineInventory) -> u32 {
         profiling::scope!("Renderer::warm_in");
-        let warming = self.pipeline_builds.warming();
+        let warming = (!sapphire_jobs::on_warm_up_thread()).then(|| self.pipeline_builds.warming());
         let before = self.pipeline_builds.stats().prewarmed;
         self.checked_build(|renderer| {
             if inventory.probe_grid {
@@ -3807,6 +3837,10 @@ fn create_scene_bind_groups(
         })
     })
 }
+
+mod tier_change;
+
+pub use tier_change::{TierBuild, TierRefused};
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@ use sdl3_sys::video::{SDL_DisplayID, SDL_GetCurrentDisplayMode, SDL_GetPrimaryDi
 
 use crate::LOG_TARGET;
 use crate::hint::HintSession;
-use crate::pacing::{FramePacer, PacingSource, PacingStats};
+use crate::pacing::{CapGate, FramePacer, PacingSource, PacingStats};
 
 /// How frames are paced, and how evenly they come: a snapshot for stats panels and logs (rule R9).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,6 +40,9 @@ pub struct FramePacing {
 pub(crate) struct FrameClock {
     source: PacingSource,
     pacer: FramePacer,
+    /// The desktop's frame cap (M4 T3): how long each frame sleeps before it starts. Unused where vsyncs start
+    /// frames, whose pacer holds ticks back instead.
+    cap: CapGate,
     /// The SDL display frames are shown on, once a window has reported one; else the primary one.
     display: Option<u32>,
     /// The refresh must be read again before the next frame (a display or its mode changed).
@@ -69,6 +72,7 @@ impl FrameClock {
         Self {
             source,
             pacer: FramePacer::new(source),
+            cap: CapGate::default(),
             display: None,
             refresh_stale: true,
             reported_refresh: None,
@@ -85,6 +89,20 @@ impl FrameClock {
         crate::ios_loop::set_frame_rate(rate);
         #[cfg(target_os = "android")]
         crate::android_loop::set_frame_rate(rate);
+    }
+
+    /// The desktop's frame cap (spec §6.2): frames start at most `cap` times a second, sleeping until each is
+    /// due, and presentation keeps them on vsyncs; `None` lifts it. Ignored where vsyncs start frames (iOS,
+    /// Android): there the frame rate is the cap.
+    pub fn set_frame_cap(&mut self, cap: Option<NonZeroU32>) {
+        if self.source == PacingSource::Presentation {
+            self.cap.set_cap(cap);
+        }
+    }
+
+    /// The desktop's frame cap, if one is set.
+    pub fn frame_cap(&self) -> Option<NonZeroU32> {
+        self.cap.cap()
     }
 
     pub fn pacing(&self) -> FramePacing {
@@ -122,6 +140,9 @@ impl FrameClock {
                 .or_else(|| display_refresh(self.display));
             self.refresh_hz = refresh.map(|(hz, _)| hz);
             self.pacer.set_refresh(refresh.map(|(_, period)| period));
+        }
+        if self.cap.cap().is_some() {
+            sleep_for_cap(&mut self.cap);
         }
         let Some(vsync) = frame_tick() else {
             // Outside a vsync's tick: on iOS only the display link starts frames, and SDL 3.4.18
@@ -162,6 +183,7 @@ impl FrameClock {
     /// The app leaves the foreground: frames may stall or sleep there, so they aren't measured.
     pub fn pause(&mut self) {
         self.pacer.pause();
+        self.cap.reset();
     }
 
     /// The app is back: the next frame starts the cadence afresh. On Android the tick being
@@ -169,6 +191,7 @@ impl FrameClock {
     /// dropped: the next vsync starts that frame.
     pub fn resume(&mut self) {
         self.pacer.resume();
+        self.cap.reset();
         #[cfg(target_os = "android")]
         crate::android_loop::discard_vsync();
     }
@@ -217,6 +240,17 @@ fn frame_tick() -> Option<u64> {
 fn frame_tick() -> Option<u64> {
     // SAFETY: SDL_GetTicksNS has no preconditions.
     Some(unsafe { sdl3_sys::timer::SDL_GetTicksNS() })
+}
+
+/// Sleeps until the next frame is due under the desktop's cap, on the clock SDL's ticks use.
+fn sleep_for_cap(cap: &mut CapGate) {
+    // SAFETY: SDL_GetTicksNS has no preconditions.
+    let now = unsafe { sdl3_sys::timer::SDL_GetTicksNS() };
+    let wait = cap.wait(now);
+    if !wait.is_zero() {
+        // SAFETY: SDL_DelayPrecise has no preconditions.
+        unsafe { sdl3_sys::timer::SDL_DelayPrecise(u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX)) };
+    }
 }
 
 /// The display's refresh period as the vsync source reports it: Android's choreographer, from

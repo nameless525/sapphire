@@ -96,7 +96,7 @@ use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack;
-use sapphire_assets::probes::ProbeGrid;
+use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
@@ -2342,6 +2342,12 @@ impl Content {
         }
         loaded.map_err(|error| AppInitError::msg(format!("the sky material didn't load: {error}")))?;
         Ok(self.gpu.materials.get(&self.sky_id).expect("a ready material was uploaded here").object)
+    }
+
+    /// The open zone's probe grid, if it's resident: what a tier's renderer takes in place of the one the
+    /// renderer it replaces holds (M4 T3).
+    pub fn zone_probe_grid(&self) -> Option<&ArchivedProbeGrid> {
+        self.server.get(self.zone_probes.as_ref()?)
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

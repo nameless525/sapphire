@@ -231,6 +231,12 @@ impl CueShow {
         })
     }
 
+    /// Plays effects within `budget` from now on: a quality tier's change, at a pause or a wipe (M4 T3). Effects
+    /// playing end.
+    pub(crate) fn set_budget(&mut self, budget: VfxBudget) {
+        self.world.set_budget(budget);
+    }
+
     /// Reserves actor-owned presentation storage before the first fixed step.
     pub(crate) fn prepare(&mut self, sim: &Simulation) {
         let capacity = sim.world().resource::<sapphire_gameplay::ActorRequests>().capacity() as usize;

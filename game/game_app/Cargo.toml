@@ -61,6 +61,11 @@ harness = false
 name = "zone_trip"
 harness = false
 
+# Heat forced on the thermal ladder, and the tier it asks for changed under a trip's wipe (M4 T3).
+[[test]]
+name = "follows_the_ladder"
+harness = false
+
 # A conversation in the show, opened from the pack's dialogue and walked by the keyboard (M3 Q2b).
 [[test]]
 name = "opens_the_guide"

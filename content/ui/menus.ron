@@ -39,6 +39,7 @@
                 rows: [
                     (node: "language", does: Step(Language)),
                     (node: "display", does: Open("display")),
+                    (node: "graphics", does: Open("graphics")),
                     (node: "sound", does: Open("sound")),
                     (node: "subtitles", does: Open("subtitles")),
                     (node: "controls", does: Open("controls")),
@@ -55,6 +56,18 @@
                     (node: "shake", does: Step(Shake)),
                     (node: "flashes", does: Step(Flashes)),
                     (node: "camera", does: Step(CameraMotion)),
+                    (node: "back", does: Nothing),
+                ],
+            ),
+            // M4 T3's: the quality tier, the frame cap, dynamic resolution and the battery saver.
+            (
+                name: "graphics",
+                document: "5b0e7c61-2d4a-4f3b-9e8d-1a6c3f7b9d24",
+                rows: [
+                    (node: "quality", does: Step(Quality)),
+                    (node: "cap", does: Step(FrameCap)),
+                    (node: "dynamic", does: Step(DynamicResolution)),
+                    (node: "saver", does: Step(BatterySaver)),
                     (node: "back", does: Nothing),
                 ],
             ),

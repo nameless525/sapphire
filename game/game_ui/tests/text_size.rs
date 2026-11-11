@@ -25,8 +25,8 @@ const FRAMES: [(&str, (u32, u32), f32); 3] =
 const FLOOR: f32 = 9.0;
 const AIM: f32 = 12.0;
 
-/// The aspects a screen ships at, in points, as exit test 4's walk has them.
-const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
+/// The aspects a screen ships at, in points, as exit test 4's walk has them: the Deck's 16:10 too (M4 Z3c).
+const SIZES: [(u32, u32); 6] = [(1024, 768), (1280, 720), (1280, 800), (1680, 720), (844, 390), (667, 375)];
 
 /// The player's smallest sizes: the interface's, and the subtitles'. The text's smallest is its default.
 fn smallest(language: &str) -> PlayerSettings {
@@ -215,6 +215,53 @@ fn every_screen_fits_at_the_largest_interface_size_at_every_aspect() {
                     wrong.push(format!("{language}, {name} at {size:?}: {overflowing:?} doesn't fit"));
                 }
             });
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every line a subtitle shows, a cutscene's and a fight's voice lines' (M4 A2), stays on the screen at the
+/// largest text and subtitles, at every aspect, in both languages (M4 Z3c): its band within the frame, and
+/// nothing of the HUD out of its frame. At the default sizes, `menus.rs` holds a cutscene's to two lines as
+/// well; at these, on a phone, the longest reaches a little above the frame's middle.
+#[test]
+fn every_subtitle_stays_on_the_screen_at_the_largest_sizes_at_every_aspect() {
+    let mut lines = support::subtitles();
+    let cues = sapphire_cues::CueTable::default_table();
+    let spoken = cues.rows().iter().filter_map(|row| row.line.as_deref());
+    lines.extend(spoken.map(|line| {
+        let key = format!("{}{line}", game_combat::cues::CAPTION_PREFIX);
+        (key, Some(game_ui::menus::PLAYER_SPEAKER.to_owned()))
+    }));
+    assert!(lines.iter().any(|(line, _)| line.starts_with("subtitle-perfect")), "{lines:?}");
+    let mut wrong = Vec::new();
+    for language in ["en", "ja"] {
+        let settings = largest(language);
+        let mut menus = menus_with(settings.clone());
+        menus.open(MenuScreen::HUD);
+        let mut list = UiDrawList::default();
+        for size in SIZES {
+            for (line, speaker) in &lines {
+                let hud = menus.model_mut::<HudModel>(MenuScreen::HUD).expect("the HUD is up");
+                hud.follow_subtitle(Some(line), speaker.as_deref());
+                hud.follow_subtitle_look(&settings.subtitles);
+                for frame in 1..=30u64 {
+                    menus.update(Timestamp::from_nanos(1_000_000_000 + frame * 16_666_667));
+                    list.reset();
+                    menus.draw(size, &mut list);
+                }
+                let at = format!("{language}, {size:?}: {line}");
+                let tree = menus.tree(MenuScreen::HUD).unwrap();
+                let band = tree.screen_rect(tree.find("subtitle-band").unwrap());
+                let (width, height) = (size.0 as f32, size.1 as f32);
+                if band.min.x < 0.0 || band.max.x > width || band.max.y > height || band.min.y < 0.0 {
+                    wrong.push(format!("{at}: the band's at {band:?} in {size:?}"));
+                }
+                let overflowing = tree.overflowing();
+                if !overflowing.is_empty() {
+                    wrong.push(format!("{at}: {overflowing:?} doesn't fit"));
+                }
+            }
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));

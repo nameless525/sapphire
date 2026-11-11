@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 307] {
+pub fn scenes() -> [Scene; 325] {
     [
         Scene {
             name: "turntable-start",
@@ -4057,6 +4057,20 @@ pub fn scenes() -> [Scene; 307] {
         game_scene!("game-controls-wide-ja", "controls", "1280x720", "ja"),
         game_scene!("game-controls-ultrawide-en", "controls", "1680x720", "en"),
         game_scene!("game-controls-ultrawide-ja", "controls", "1680x720", "ja"),
+        // Remapping (M4 A4): each device's tab with its glyphs, and a press another binding has, at a wide
+        // and a narrow size.
+        game_scene!("game-remap-pad-tablet-en", "remap_pad", "1024x768", "en"),
+        game_scene!("game-remap-pad-tablet-ja", "remap_pad", "1024x768", "ja"),
+        game_scene!("game-remap-pad-wide-en", "remap_pad", "1280x720", "en"),
+        game_scene!("game-remap-pad-wide-ja", "remap_pad", "1280x720", "ja"),
+        game_scene!("game-remap-keys-tablet-en", "remap_keys", "1024x768", "en"),
+        game_scene!("game-remap-keys-tablet-ja", "remap_keys", "1024x768", "ja"),
+        game_scene!("game-remap-keys-wide-en", "remap_keys", "1280x720", "en"),
+        game_scene!("game-remap-keys-wide-ja", "remap_keys", "1280x720", "ja"),
+        game_scene!("game-remap-taken-tablet-en", "remap_taken", "1024x768", "en"),
+        game_scene!("game-remap-taken-tablet-ja", "remap_taken", "1024x768", "ja"),
+        game_scene!("game-remap-taken-wide-en", "remap_taken", "1280x720", "en"),
+        game_scene!("game-remap-taken-wide-ja", "remap_taken", "1280x720", "ja"),
         game_scene!("game-character-tablet-en", "character", "1024x768", "en"),
         game_scene!("game-character-tablet-ja", "character", "1024x768", "ja"),
         game_scene!("game-character-wide-en", "character", "1280x720", "en"),
@@ -4179,6 +4193,12 @@ pub fn scenes() -> [Scene; 307] {
         game_scene!("game-subtitles-deck-ja", "subtitles", "1280x800", "ja"),
         game_scene!("game-controls-deck-en", "controls", "1280x800", "en"),
         game_scene!("game-controls-deck-ja", "controls", "1280x800", "ja"),
+        game_scene!("game-remap-pad-deck-en", "remap_pad", "1280x800", "en"),
+        game_scene!("game-remap-pad-deck-ja", "remap_pad", "1280x800", "ja"),
+        game_scene!("game-remap-keys-deck-en", "remap_keys", "1280x800", "en"),
+        game_scene!("game-remap-keys-deck-ja", "remap_keys", "1280x800", "ja"),
+        game_scene!("game-remap-taken-deck-en", "remap_taken", "1280x800", "en"),
+        game_scene!("game-remap-taken-deck-ja", "remap_taken", "1280x800", "ja"),
         game_scene!("game-character-deck-en", "character", "1280x800", "en"),
         game_scene!("game-character-deck-ja", "character", "1280x800", "ja"),
         game_scene!("game-dialogue-deck-en", "dialogue", "1280x800", "en"),

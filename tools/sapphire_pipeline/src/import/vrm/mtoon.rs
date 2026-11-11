@@ -116,6 +116,7 @@ use sapphire_assets::material::{
     AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, CharacterSurface, DiffuseMode, Emission,
     EyeShading, LightSplit, Matcap, Outline, OutlineCurve, RegionGi, RegionMatcap, Rim,
 };
+use sapphire_math::det;
 use serde::Deserialize;
 use vrm_spec::vrm_0_0::VRMMaterial;
 use vrm_spec::vrmc_materials_mtoon_1_0::{OutlineWidthMode, VrmcMaterialsMtoonSchema};
@@ -725,7 +726,7 @@ impl Mtoon {
         let rim_mean = self.rim_multiply_texture.map_or([1.0; 3], |rim| rim.mean);
         let (rim_strength, rim_color) = strength_and_tint(times(self.rim_color, rim_mean));
         // MToon raises the falloff to max(power, ε); 0.5^(1/ε) underflows to 0, a full-width rim.
-        let half = 0.5f32.powf(1.0 / self.rim_fresnel_power.max(1e-4));
+        let half = det::pow(0.5, 1.0 / self.rim_fresnel_power.max(1e-4));
         let rim_fresnel = (1.0 + self.rim_lift - half).clamp(0.0, 1.0);
         let (matcap_strength, matcap_color) = strength_and_tint(self.matcap_factor);
         let default_curve = OutlineCurve::default();
@@ -741,7 +742,7 @@ impl Mtoon {
             // measured from, beyond which the curve keeps the width in meters.
             OutlineWidth::World(meters) => {
                 let view_height =
-                    2.0 * WORLD_OUTLINE_DISTANCE * (0.5 * WORLD_OUTLINE_FOV_DEGREES).to_radians().tan();
+                    2.0 * WORLD_OUTLINE_DISTANCE * det::tan((0.5 * WORLD_OUTLINE_FOV_DEGREES).to_radians());
                 let knot = (WORLD_OUTLINE_DISTANCE, 1.0);
                 let curve =
                     OutlineCurve { near: knot, mid: WORLD_OUTLINE_DISTANCE, far: knot, ..default_curve };

@@ -43,7 +43,8 @@ use crate::texture::{RampSettings, TextureClass};
 
 /// This importer, as cache keys know it: reading the document and baking its rows. Bump the
 /// version whenever the rows change for the same document.
-pub const IMPORTER: Stage = Stage { name: "ramp", version: 1 };
+/// 2: colors decode and encode through `sapphire_math::det` (M4 C3).
+pub const IMPORTER: Stage = Stage { name: "ramp", version: 2 };
 
 /// A `.ramp.ron` document: the day and night ramps of up to [`MATERIAL_IDS`] materials.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]

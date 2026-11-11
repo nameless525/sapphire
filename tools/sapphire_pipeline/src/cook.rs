@@ -262,7 +262,9 @@ pub struct Recipe {
 /// 4: a shared skeleton's repeated joint name is an error, where the palette aliased two joints (the
 /// review's IMP-001).
 /// 5: reject non-finite UV components and overflowing UV extents before quantization.
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 5 };
+/// 6: the LOD test poses and the foliage bake turn through `sapphire_math::det`, and generated
+/// materials pack through its cosines (M4 C3).
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 6 };
 
 /// What a source's skeleton's ID is derived from.
 pub const SKELETON: &str = sapphire_assets::skeleton::SKELETON_SUB_ASSET;

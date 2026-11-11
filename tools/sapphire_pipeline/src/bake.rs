@@ -108,6 +108,10 @@ pub fn outline_normals(mesh: &mut ImportedMesh, settings: &OutlineSettings) {
             continue;
         };
         for k in 0..3 {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "glam's angle_between is arithmetic alone (a polynomial acos), the same on every OS"
+            )]
             let angle = (p[(k + 1) % 3] - p[k]).angle_between(p[(k + 2) % 3] - p[k]);
             let group = group_of[corners[k]];
             sums[group] += face_normal * angle;

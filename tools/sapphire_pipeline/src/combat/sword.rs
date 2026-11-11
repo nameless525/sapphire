@@ -14,7 +14,7 @@ use sapphire_math::det;
 use serde_json::json;
 
 use super::{gradient, png};
-use crate::color::exact::linear_to_srgb;
+use crate::color::linear_to_srgb;
 use crate::color::unorm8;
 use crate::gltf_writer::{Geometry, GltfWriter};
 

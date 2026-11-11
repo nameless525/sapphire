@@ -7,8 +7,8 @@
 use sapphire_assets::character_maps::{MaterialId, ilm};
 
 use super::{Figure, FigureError, Region};
-use crate::color::exact::{linear_to_srgb, srgb_to_linear};
 use crate::color::unorm8;
+use crate::color::{linear_to_srgb, srgb_to_linear};
 use crate::combat::png;
 
 /// The palette's texels across a cell, and down it.

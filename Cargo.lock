@@ -856,29 +856,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctt"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40b50d5d23600dd8fda3e0f1ac9444507862925e08804c2f5f0bfb22d9afdc09"
-dependencies = [
- "bytemuck",
- "ctt-astcenc",
- "ctt-bc7enc-rdo",
- "ctt-intel-texture-compressor",
- "ddsfile",
- "fast_image_resize",
- "fearless_simd 1.2.0",
- "flate2",
- "half",
- "ktx2",
- "log",
- "miniz_oxide 0.9.1",
- "profiling",
- "thiserror 2.0.21",
- "zstd",
-]
-
-[[package]]
 name = "ctt-astcenc"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,18 +943,6 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
-
-[[package]]
-name = "ddsfile"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be425797f9962624aba78dee473dad28c15999e6ee6feb28ad3ee7928a3bc5b"
-dependencies = [
- "bitflags",
- "byteorder",
- "enum-primitive-derive",
- "num-traits",
-]
 
 [[package]]
 name = "debugid"
@@ -1246,17 +1211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enum-primitive-derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c"
-dependencies = [
- "num-traits",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "enumn"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1403,18 +1357,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
 
 [[package]]
-name = "fast_image_resize"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c50201dc184ba6553da1695aac20a042efffbe2d84542cee31917c86c3ab1e"
-dependencies = [
- "cfg-if",
- "document-features",
- "num-traits",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1445,12 +1387,6 @@ name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
-
-[[package]]
-name = "fearless_simd"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "629c9d6b6f30b5604089e0980f4d924a013aacb1654a6cdf5d3d852224f68651"
 
 [[package]]
 name = "fiat-crypto"
@@ -2024,7 +1960,6 @@ version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
- "bytemuck",
  "cfg-if",
  "crunchy",
  "num-traits",
@@ -4321,6 +4256,7 @@ dependencies = [
  "sapphire_core",
  "sapphire_dialogue",
  "sapphire_jobs",
+ "sapphire_math",
  "sapphire_moves",
  "sapphire_navmesh",
  "sapphire_reflect",
@@ -4780,7 +4716,9 @@ dependencies = [
  "bevy_reflect",
  "blake3",
  "bytemuck",
- "ctt",
+ "ctt-astcenc",
+ "ctt-bc7enc-rdo",
+ "ctt-intel-texture-compressor",
  "ed25519-dalek",
  "fdsm",
  "fluent-syntax",
@@ -6180,7 +6118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
 dependencies = [
  "bytemuck",
- "fearless_simd 0.4.1",
+ "fearless_simd",
  "guillotiere",
  "log",
  "peniko",

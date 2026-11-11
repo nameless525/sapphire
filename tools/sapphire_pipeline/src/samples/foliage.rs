@@ -29,6 +29,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::material::{
     DistanceStylization, FoliageGradient, FoliageMaterial, MaterialDocument, Translucency, Wind,
 };
+use sapphire_math::det;
 use serde_json::json;
 
 use super::noise::{Rng, fbm, smoothstep};
@@ -216,7 +217,7 @@ fn trunk(y: f32) -> Vec3 {
 
 /// A point `s` meters out along a branch: rising, then arching over toward its tip.
 fn branch((height, turns, _, rise): (f32, f32, f32, f32), s: f32) -> Vec3 {
-    let out = Vec3::new((turns * TAU).cos(), 0.0, (turns * TAU).sin());
+    let out = Vec3::new(det::cos(turns * TAU), 0.0, det::sin(turns * TAU));
     trunk(height) + out * s + Vec3::Y * (rise * s - 0.12 * s * s)
 }
 
@@ -230,8 +231,10 @@ fn tree_wood() -> Geometry {
     let mut wood = Geometry::default();
     let trunk_points: Vec<Vec3> = (0..=8).map(|i| trunk(TRUNK_TOP * i as f32 / 8.0)).collect();
     // Flared at the foot, thin under the crown.
-    let trunk_radii: Vec<f32> =
-        (0..=8).map(|i| i as f32 / 8.0).map(|t| 0.1 + 0.08 * (1.0 - t) + 0.08 * (1.0 - t).powi(6)).collect();
+    let trunk_radii: Vec<f32> = (0..=8)
+        .map(|i| 1.0 - i as f32 / 8.0)
+        .map(|s| 0.1 + 0.08 * s + 0.08 * ((s * s) * ((s * s) * (s * s))))
+        .collect();
     append(&mut wood, tube(&trunk_points, &trunk_radii, 12));
     for shape in BRANCHES {
         let points: Vec<Vec3> = (0..=5).map(|i| branch(shape, shape.2 * i as f32 / 5.0)).collect();
@@ -295,8 +298,8 @@ pub fn grass_glb() -> Vec<u8> {
         }
         let at = at * GRASS_RADIUS;
         let height = height * (1.0 - 0.45 * edge);
-        let across = Vec3::new(heading.cos(), 0.0, heading.sin()) * (width * 0.5);
-        let facing = Vec3::new(-heading.sin(), 0.0, heading.cos());
+        let across = Vec3::new(det::cos(heading), 0.0, det::sin(heading)) * (width * 0.5);
+        let facing = Vec3::new(-det::sin(heading), 0.0, det::cos(heading));
         let foot = Vec3::new(at.x, -0.03, at.y);
         let first = blades.positions.len() as u32;
         for row in 0..=2 {
@@ -328,7 +331,7 @@ fn in_ball(rng: &mut Rng, bias: f32) -> Vec3 {
             break p.normalize();
         }
     };
-    let radius = rng.next().cbrt();
+    let radius = det::cbrt(rng.next());
     direction * (radius + (1.0 - radius) * bias)
 }
 
@@ -345,7 +348,7 @@ fn card(rng: &mut Rng, at: Vec3, size: f32) -> Geometry {
     let helper = if normal.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
     let u0 = normal.cross(helper).normalize();
     let v0 = normal.cross(u0);
-    let (sin, cos) = spin.sin_cos();
+    let (sin, cos) = det::sin_cos(spin);
     let (u, v) = (u0 * cos + v0 * sin, v0 * cos - u0 * sin);
     let half = size * 0.5;
     let corner = |s: f32, t: f32| at + (u * s + v * t) * half;
@@ -374,7 +377,7 @@ fn tube(points: &[Vec3], radii: &[f32], segments: u32) -> Geometry {
         let other = along.cross(side);
         for segment in 0..=segments {
             let angle = TAU * segment as f32 / segments as f32;
-            let normal = side * angle.cos() + other * angle.sin();
+            let normal = side * det::cos(angle) + other * det::sin(angle);
             geometry.positions.push((p + normal * radius).to_array());
             geometry.normals.push(normal.to_array());
             geometry.uvs.push([segment as f32 / segments as f32, index as f32 / (count - 1) as f32]);
@@ -429,9 +432,9 @@ pub fn leaves_png() -> io::Result<Vec<u8>> {
     let leaves: Vec<(Vec2, Vec2, f32, f32)> = (0..34)
         .map(|i| {
             let turns = i as f32 * 0.618_034 + rng.range(-0.05, 0.05);
-            let out = Vec2::from_angle(turns * TAU);
+            let out = det::vec2_from_angle(turns * TAU);
             let stem = out * rng.range(0.0, 0.24);
-            let direction = Vec2::from_angle(turns * TAU + rng.range(-0.5, 0.5));
+            let direction = det::vec2_from_angle(turns * TAU + rng.range(-0.5, 0.5));
             (stem, direction, rng.range(0.15, 0.21), rng.range(0.07, 0.1))
         })
         .collect();
@@ -448,7 +451,7 @@ pub fn leaves_png() -> io::Result<Vec<u8>> {
                 continue;
             }
             // Widest a third of the way out, pointed at the tip.
-            let half_width = width * (PI * t.powf(0.7)).sin() * 0.5;
+            let half_width = width * det::sin(PI * det::pow(t, 0.7)) * 0.5;
             let inside = smoothstep(-1.5 * texel, 1.5 * texel, half_width - across.abs());
             // The leaf on top shows.
             if inside > 0.0 {
@@ -492,7 +495,7 @@ pub fn grass_png() -> io::Result<Vec<u8>> {
                 continue;
             }
             let center = foot + lean * t * t;
-            let half_width = 0.5 * width * (1.0 - t).powf(0.8);
+            let half_width = 0.5 * width * det::pow(1.0 - t, 0.8);
             coverage = coverage.max(smoothstep(-1.2 * texel, 1.2 * texel, half_width - (u - center).abs()));
         }
         // Clear in the outer texels, so repeating samples never bleed in (its foot, which stands

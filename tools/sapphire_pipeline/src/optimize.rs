@@ -47,6 +47,7 @@
 use glam::{Mat3, Mat4, Vec3};
 use meshopt::{SimplifyOptions, VertexDataAdapter};
 use sapphire_assets::mesh::{Lod, Submesh};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use crate::bake;
@@ -414,7 +415,20 @@ fn posed_positions(mesh: &ImportedMesh, skin: &ImportedSkin, axis: Vec3, angle: 
     }
     // Per joint, its posed transform in mesh space: `rotation · x + translation`. Parents come
     // first.
-    let turn = Mat3::from_axis_angle(axis, angle);
+    // glam's `Mat3::from_axis_angle`, with the sine and cosine pinned.
+    let turn = {
+        let (sin, cos) = det::sin_cos(angle);
+        let (x, y, z) = axis.into();
+        let (xsin, ysin, zsin) = (axis * sin).into();
+        let (x2, y2, z2) = (axis * axis).into();
+        let omc = 1.0 - cos;
+        let (xyomc, xzomc, yzomc) = (x * y * omc, x * z * omc, y * z * omc);
+        Mat3::from_cols(
+            Vec3::new(x2 * omc + cos, xyomc + zsin, xzomc - ysin),
+            Vec3::new(xyomc - zsin, y2 * omc + cos, yzomc + xsin),
+            Vec3::new(xzomc + ysin, yzomc - xsin, z2 * omc + cos),
+        )
+    };
     let mut posed: Vec<(Mat3, Vec3)> = Vec::with_capacity(skin.joints.len());
     for (joint, pivot) in skin.joints.iter().zip(&pivots) {
         let (rotation, translation) = joint

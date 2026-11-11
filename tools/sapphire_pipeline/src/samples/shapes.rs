@@ -5,6 +5,8 @@
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
+use sapphire_math::det;
+
 use crate::gltf_writer::Geometry;
 
 /// One point of a surface-of-revolution profile, in the (radius, height) half-plane.
@@ -110,7 +112,7 @@ pub(crate) fn cuboid(half_extents: [f32; 3]) -> Geometry {
 /// above and below the origin, capped: every edge hard, each face its own vertices.
 pub(crate) fn prism(sides: u32, radius: f32, half_height: f32) -> Geometry {
     let corner = |k: u32, y: f32| {
-        let (sin, cos) = (TAU * k as f32 / sides as f32).sin_cos();
+        let (sin, cos) = det::sin_cos(TAU * k as f32 / sides as f32);
         [radius * sin, y, radius * cos]
     };
     let mut geometry = Geometry::default();
@@ -123,7 +125,7 @@ pub(crate) fn prism(sides: u32, radius: f32, half_height: f32) -> Geometry {
             corner(k, half_height),
         ];
         let middle = (k as f32 + 0.5) / sides as f32 * TAU;
-        flat_polygon(&mut geometry, &quad, [middle.sin(), 0.0, middle.cos()]);
+        flat_polygon(&mut geometry, &quad, [det::sin(middle), 0.0, det::cos(middle)]);
     }
     let top: Vec<[f32; 3]> = (0..sides).map(|k| corner(k, half_height)).collect();
     flat_polygon(&mut geometry, &top, [0.0, 1.0, 0.0]);
@@ -136,7 +138,7 @@ pub(crate) fn prism(sides: u32, radius: f32, half_height: f32) -> Geometry {
 /// apexes `half_height` above and below by flat faces, every edge hard.
 pub(crate) fn bipyramid(sides: u32, radius: f32, half_height: f32) -> Geometry {
     let ring = |k: u32| {
-        let (sin, cos) = (TAU * k as f32 / sides as f32).sin_cos();
+        let (sin, cos) = det::sin_cos(TAU * k as f32 / sides as f32);
         glam::Vec3::new(radius * sin, 0.0, radius * cos)
     };
     let mut geometry = Geometry::default();
@@ -160,7 +162,7 @@ fn flat_polygon(geometry: &mut Geometry, corners: &[[f32; 3]], normal: [f32; 3])
         geometry.positions.push(corner);
         geometry.normals.push(normal);
         let angle = TAU * index as f32 / corners.len() as f32;
-        geometry.uvs.push([0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()]);
+        geometry.uvs.push([0.5 + 0.5 * det::cos(angle), 0.5 + 0.5 * det::sin(angle)]);
     }
     for k in 1..corners.len() as u32 - 1 {
         geometry.indices.extend([base, base + k, base + k + 1]);
@@ -173,7 +175,7 @@ fn arc(radius: f32, center_y: f32, from: f32, to: f32, steps: u32) -> Vec<Profil
     (0..=steps)
         .map(|k| {
             let theta = from + (to - from) * k as f32 / steps as f32;
-            let (sin, cos) = theta.sin_cos();
+            let (sin, cos) = det::sin_cos(theta);
             // Snap the poles so `lathe` sees an exact point and emits triangles, not
             // slivers.
             let sin = if sin.abs() < 1e-6 { 0.0 } else { sin };
@@ -188,7 +190,7 @@ fn arc(radius: f32, center_y: f32, from: f32, to: f32, steps: u32) -> Vec<Profil
 /// along a bottom cap).
 fn lathe(strips: &[Vec<ProfilePoint>], segments: u32) -> Geometry {
     let length = |strip: &[ProfilePoint]| -> f32 {
-        strip.windows(2).map(|w| (w[1].radius - w[0].radius).hypot(w[1].y - w[0].y)).sum()
+        strip.windows(2).map(|w| det::hypot(w[1].radius - w[0].radius, w[1].y - w[0].y)).sum()
     };
     let total_length: f32 = strips.iter().map(|s| length(s)).sum();
     let columns = segments + 1; // The seam column is duplicated for UVs.
@@ -200,11 +202,11 @@ fn lathe(strips: &[Vec<ProfilePoint>], segments: u32) -> Geometry {
         for (i, point) in strip.iter().enumerate() {
             if i > 0 {
                 let prev = strip[i - 1];
-                travelled += (point.radius - prev.radius).hypot(point.y - prev.y);
+                travelled += det::hypot(point.radius - prev.radius, point.y - prev.y);
             }
             let [nr, ny] = point.normal;
             for j in 0..columns {
-                let (sin, cos) = (TAU * j as f32 / segments as f32).sin_cos();
+                let (sin, cos) = det::sin_cos(TAU * j as f32 / segments as f32);
                 geometry.positions.push([point.radius * sin, point.y, point.radius * cos]);
                 geometry.normals.push([nr * sin, ny, nr * cos]);
                 geometry.uvs.push([j as f32 / segments as f32, travelled / total_length]);

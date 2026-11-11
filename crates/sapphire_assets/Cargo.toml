@@ -33,6 +33,8 @@ sapphire_zone.workspace = true
 sapphire_core.workspace = true
 # Decode jobs run on the engine's task pool.
 sapphire_jobs.workspace = true
+# Material blocks are cooked: their angles go through its pinned trigonometry (spec §5.27).
+sapphire_math.workspace = true
 # Move sets are cooked assets, checked as the simulation reads them.
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true

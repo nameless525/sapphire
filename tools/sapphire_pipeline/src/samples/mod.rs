@@ -37,6 +37,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use sapphire_math::det;
 use serde_json::{Value, json};
 
 use crate::color::srgb8;
@@ -337,13 +338,13 @@ pub fn mannequin_glb() -> Vec<u8> {
 
 /// A glTF rotation quaternion (`[x, y, z, w]`) about +Z.
 fn rotation_z(degrees: f32) -> [f32; 4] {
-    let (sin, cos) = (degrees.to_radians() / 2.0).sin_cos();
+    let (sin, cos) = det::sin_cos(degrees.to_radians() / 2.0);
     [0.0, 0.0, sin, cos]
 }
 
 /// A glTF rotation quaternion (`[x, y, z, w]`) about +X.
 fn rotation_x(degrees: f32) -> [f32; 4] {
-    let (sin, cos) = (degrees.to_radians() / 2.0).sin_cos();
+    let (sin, cos) = det::sin_cos(degrees.to_radians() / 2.0);
     [sin, 0.0, 0.0, cos]
 }
 
@@ -357,7 +358,7 @@ mod tests {
 
     use super::*;
     use crate::import;
-    use crate::test_util::{FloatKind, assert_glb_matches, assert_png_matches, assert_text_matches};
+    use crate::test_util::{assert_glb_matches, assert_png_matches, assert_text_matches};
 
     #[test]
     fn keep_publication_preserves_a_competing_creator() {
@@ -533,41 +534,15 @@ mod tests {
         assert_eq!(fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }
 
-    /// Whether two floats of a sample, generated on different platforms, agree, by what they
-    /// hold: a direction's components within 3e-3 (about 0.17°), anything else within 1e-5 of
-    /// its size but at least 1 (10 µm under a meter).
-    ///
-    /// Both bounds sit above the worst another libm can do, measured: with every `sin`, `cos`,
-    /// `asin`, `atan2`, `cbrt`, `exp`, `hypot`, `powf` and `sin_cos` the generators call nudged
-    /// by a random one or two ulps (32 seeds each, in a throwaway experiment), directions moved by
-    /// at most 9.9e-4 and 1.9e-3, and other floats by 2.4e-6 and 4.6e-6 of their size.
-    /// Directions suffer most where they come from differences between nearby points: on the
-    /// face's ring next to its pole, 2 mrad around the ring is a tenth as long as at its equator,
-    /// and the courtyard ground's slopes difference heights of up to 19 m taken 0.1 m apart. CI
-    /// has seen less. On Linux the courtyard's normal 208 was 1.2e-4 off, from glibc's `atan2f`
-    /// two ulps from Apple's in the heights that slope differences (an f32 emulation with
-    /// correctly rounded libm gives the Mac's bytes; nudge `atan2f` at one height two ulps, or at
-    /// each one ulp apart, and it gives Linux's). The face's normals were 1.4e-6 off on Linux and
-    /// 6.6e-6 on Windows.
-    ///
-    /// A generator change moves positions by far more: each constant tried, moved by a
-    /// thousandth of itself, fails here (the hills' height, the boulders' flattening, the
-    /// ground's texture tile, the face's radius and jaw, the tree's trunk, the mannequin's head),
-    /// and counts, indices and text must match exactly. What gets through is a change to
-    /// directions alone, under 0.17°: scaling the up component of the ground's slope normals by
-    /// 1.001 (a tilt of at most 0.02°) passes.
-    fn sample_floats_agree(kind: FloatKind, a: f64, b: f64) -> bool {
-        match kind {
-            FloatKind::Direction => (a - b).abs() <= 3e-3,
-            FloatKind::Value => (a - b).abs() <= 1e-5 * a.abs().max(b.abs()).max(1.0),
-        }
-    }
-
-    /// The committed samples (`content/samples/`) are what the generator makes, but for float
-    /// rounding between platforms' libm ([`sample_floats_agree`]), so a generator change that
-    /// isn't regenerated, or a committed file edited by hand, fails here rather than drifting
-    /// until a regeneration rewrites it. Every file is compared before the test fails, so one run
-    /// names all that differ.
+    /// The committed samples (`content/samples/`) are what the generator makes, byte for byte, on
+    /// every OS CI tests (spec §5.27, "Reproducible cooks"): every transcendental the generators
+    /// call goes through `sapphire_math::det`, and they use none of glam's SIMD types, so nothing
+    /// rounds by platform. A generator change that isn't regenerated, or a committed file edited by
+    /// hand, fails here rather than drifting until a regeneration rewrites it. A file that differs
+    /// is compared by value first, so the failure says what moved; every file is compared before
+    /// the test fails, so one run names all that differ. A failure on one OS alone is a
+    /// determinism bug, never bytes to commit per platform. Regenerate with `cargo run -p
+    /// sapphire_pipeline --profile tools -- gen-samples --out content/samples --force`.
     #[test]
     fn the_committed_samples_are_generated() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
@@ -576,15 +551,18 @@ mod tests {
             .iter()
             .filter(|(name, generated)| {
                 let committed = fs::read(dir.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+                if committed == *generated {
+                    return false;
+                }
                 let compare = || {
                     if name.ends_with(".glb") {
-                        assert_glb_matches(name, &committed, generated, sample_floats_agree);
+                        assert_glb_matches(name, &committed, generated, |_, a, b| a == b);
                     } else if name.ends_with(".png") {
                         assert_png_matches(name, &committed, generated);
                     } else {
-                        let agree = |a, b| sample_floats_agree(FloatKind::Value, a, b);
-                        assert_text_matches(name, &committed, generated, agree);
+                        assert_text_matches(name, &committed, generated, |a, b| a == b);
                     }
+                    panic!("{name}: the generated bytes differ from the committed ones");
                 };
                 // Each failure's message is printed as it panics.
                 std::panic::catch_unwind(compare).is_err()

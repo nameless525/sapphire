@@ -673,7 +673,8 @@ impl Drape {
         }
         if s < self.rest && cloth.sweep > 0.0 {
             let along = 1.0 - smoothstep(0.0, cloth.sweep_reach, self.half.x - x.abs());
-            y += cloth.sweep * along * (1.0 - s / self.rest).powi(2);
+            let rest = 1.0 - s / self.rest;
+            y += cloth.sweep * along * (rest * rest);
         }
         y
     }

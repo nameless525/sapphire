@@ -14,7 +14,7 @@
                 distance: 0.15,
             )),
         )),
-        base_color: (0.92158204, 0.92158204, 0.9734455, 1.0),
+        base_color: (0.92158204, 0.92158204, 0.9734454, 1.0),
         base_color_map: None,
         alpha: Opaque,
         control_map: None,

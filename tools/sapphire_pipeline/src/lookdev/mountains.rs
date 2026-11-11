@@ -118,7 +118,7 @@ impl Cascades {
     /// corner).
     pub fn may_hold(&self, center: Vec3, radius: f32) -> bool {
         let reach = self.radius + radius;
-        let corner = (2.0 * reach * reach + (reach + CASTER_REACH).powi(2)).sqrt();
+        let corner = (2.0 * reach * reach + (reach + CASTER_REACH) * (reach + CASTER_REACH)).sqrt();
         center.length() - self.center <= corner
     }
 }

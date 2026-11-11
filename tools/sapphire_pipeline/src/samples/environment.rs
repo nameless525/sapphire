@@ -52,6 +52,7 @@ use sapphire_assets::material::{
     CardFacing, DistanceStylization, EnvironmentMaterial, FogCardMaterial, MaterialDocument, Terminator,
     TerminatorBand,
 };
+use sapphire_math::det;
 use serde_json::json;
 
 use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
@@ -354,9 +355,9 @@ where
 /// The ground's height in meters at `(x, z)`: flat around the character, rolling beyond, and
 /// rising into hills far out.
 pub fn ground_height(x: f32, z: f32) -> f32 {
-    let r = x.hypot(z);
-    let rolling = 1.3 * (x / 7.0).sin() * (z / 9.0).cos() + 0.8 * ((x + 2.0 * z) / 13.0).sin();
-    let hills = 9.0 + 7.0 * (3.0 * z.atan2(x) + 0.6).sin();
+    let r = det::hypot(x, z);
+    let rolling = 1.3 * det::sin(x / 7.0) * det::cos(z / 9.0) + 0.8 * det::sin((x + 2.0 * z) / 13.0);
+    let hills = 9.0 + 7.0 * det::sin(3.0 * det::atan2(z, x) + 0.6);
     smoothstep(FLAT_RADIUS, 26.0, r) * (rolling + 0.9) + smoothstep(HILLS_START, 95.0, r) * hills
 }
 
@@ -463,8 +464,9 @@ fn rocks() -> Geometry {
 /// moved surface's tangents and spherical UVs. Counter-clockwise from outside.
 fn sphere_surface(rings: u32, segments: u32, shape: impl Fn(Vec3) -> Vec3) -> Geometry {
     let mut geometry = Geometry::default();
-    let direction =
-        |theta: f32, phi: f32| Vec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos());
+    let direction = |theta: f32, phi: f32| {
+        Vec3::new(det::sin(theta) * det::sin(phi), det::cos(theta), det::sin(theta) * det::cos(phi))
+    };
     for ring in 0..=rings {
         let theta = PI * ring as f32 / rings as f32;
         for segment in 0..=segments {
@@ -472,9 +474,9 @@ fn sphere_surface(rings: u32, segments: u32, shape: impl Fn(Vec3) -> Vec3) -> Ge
             let e = 1e-3;
             let d_theta = shape(direction(theta + e, phi)) - shape(direction(theta - e, phi));
             let d_phi = shape(direction(theta, phi + e)) - shape(direction(theta, phi - e));
-            let normal = d_theta.cross(d_phi).try_normalize().unwrap_or(Vec3::Y * theta.cos().signum());
+            let normal = d_theta.cross(d_phi).try_normalize().unwrap_or(Vec3::Y * det::cos(theta).signum());
             // At the poles the tangent along phi vanishes: the axis is the normal.
-            let normal = if ring == 0 || ring == rings { Vec3::Y * theta.cos().signum() } else { normal };
+            let normal = if ring == 0 || ring == rings { Vec3::Y * det::cos(theta).signum() } else { normal };
             geometry.positions.push(shape(direction(theta, phi)).to_array());
             geometry.normals.push(normal.to_array());
             geometry.uvs.push([segment as f32 / segments as f32, ring as f32 / rings as f32]);
@@ -650,13 +652,13 @@ fn gateway() -> Geometry {
     let center = Vec2::new(cx, GATEWAY_SPRING);
     let height = GATEWAY_TOP - GATEWAY_SPRING;
     let mut angles: Vec<f32> = (0..=24).map(|i| PI * i as f32 / 24.0).collect();
-    angles.push(height.atan2(x1 - cx));
-    angles.push(height.atan2(x0 - cx));
+    angles.push(det::atan2(height, x1 - cx));
+    angles.push(det::atan2(height, x0 - cx));
     angles.sort_by(f32::total_cmp);
     angles.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
-    let inner = |angle: f32| center + Vec2::new(angle.cos(), angle.sin()) * r;
+    let inner = |angle: f32| center + Vec2::new(det::cos(angle), det::sin(angle)) * r;
     let outer = |angle: f32| {
-        let direction = Vec2::new(angle.cos(), angle.sin());
+        let direction = Vec2::new(det::cos(angle), det::sin(angle));
         let mut t = f32::INFINITY;
         if direction.x > 1e-6 {
             t = t.min((x1 - cx) / direction.x);
@@ -678,7 +680,7 @@ fn gateway() -> Geometry {
         quad(&mut geometry, [at(pb, z0), at(qb, z0), at(qa, z0), at(pa, z0)], [0.0, 0.0, -1.0]);
         // The arch's underside, facing its center.
         let mid = (a + b) * 0.5;
-        let inward = [-mid.cos(), -mid.sin(), 0.0];
+        let inward = [-det::cos(mid), -det::sin(mid), 0.0];
         quad(&mut geometry, [at(pa, z0), at(pa, z1), at(pb, z1), at(pb, z0)], inward);
     }
     // The block's outer sides and top above the piers.

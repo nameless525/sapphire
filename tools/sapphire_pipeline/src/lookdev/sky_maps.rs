@@ -26,6 +26,7 @@ use std::f32::consts::{PI, TAU};
 use std::io;
 
 use glam::{Vec2, Vec3};
+use sapphire_math::det;
 
 use crate::color::unorm8;
 use crate::samples::noise::{NO_PERIOD, Rng, fbm, smoothstep};
@@ -234,7 +235,7 @@ impl Shape {
         for lobe in &self.lobes {
             let behind = front - height(lobe);
             if behind < 12.0 * FRONT_SOFTNESS {
-                let w = (-behind / FRONT_SOFTNESS).exp();
+                let w = det::exp(-behind / FRONT_SOFTNESS);
                 normal += ((q - lobe.center) / lobe.radius).clamp_length_max(1.0) * w;
                 front_depth += lobe.depth * w;
                 weight += w;
@@ -277,7 +278,7 @@ fn row_elevation(y: f32) -> f32 {
     let (width, height) = (CUMULUS_SIZE.0 as f32, CUMULUS_SIZE.1 as f32);
     let band = TAU * height / width;
     let sine = BAND_BASE + (height - y) / height * band;
-    sine.clamp(-1.0, 1.0).asin().to_degrees()
+    det::asin(sine.clamp(-1.0, 1.0)).to_degrees()
 }
 
 /// The card band of towering cumulus (see the module docs).
@@ -287,7 +288,7 @@ pub fn cumulus_png() -> io::Result<Vec<u8>> {
         let azimuth = (x as f32 + 0.5) / TEXELS_PER_DEGREE;
         let elevation = row_elevation(y as f32 + 0.5);
         // Degrees of arc along the parallel at this elevation, and up.
-        let arc = elevation.to_radians().cos();
+        let arc = det::cos(elevation.to_radians());
         // Where no cloud is, the map holds the flat normal and an open sky.
         let (mut normal, mut closed, mut field) = (Vec2::ZERO, 0.0, 0.0f32);
         for shape in &shapes {
@@ -324,17 +325,17 @@ pub fn nebula_png() -> io::Result<Vec<u8>> {
     let image = fill(NEBULA_SIZE, |x, y| {
         let (u, v) = ((x as f32 + 0.5) / width as f32, (y as f32 + 0.5) / height as f32);
         let (theta, phi) = (v * PI, (u - 0.5) * TAU);
-        let c = Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin());
+        let c = Vec3::new(det::sin(theta) * det::cos(phi), det::cos(theta), det::sin(theta) * det::sin(phi));
         // Galactic latitude's sine, and longitude around the band in turns.
         let across = c.dot(pole);
-        let along = c.dot(second).atan2(c.dot(first)) / TAU + 0.5;
+        let along = det::atan2(c.dot(second), c.dot(first)) / TAU + 0.5;
         let period = (AROUND, NO_PERIOD);
         let p = Vec2::new(along * AROUND as f32, across * 12.0);
         // The band's course and width wander along it.
         let course = 0.12 * (fbm(Vec2::new(p.x / 8.0, 0.0), (AROUND / 8, NO_PERIOD), 2, 0x7a1) - 0.5);
         let width = 0.22 + 0.22 * fbm(Vec2::new(p.x / 4.0, 3.0), (AROUND / 4, NO_PERIOD), 2, 0x7a2);
         let offset = (across - course) / width;
-        let band = (-offset * offset).exp();
+        let band = det::exp(-offset * offset);
         // A broad, gentle warp, so the billows lean and stretch along the band without marbling.
         let warp = Vec2::new(
             fbm(p * 0.25, (AROUND / 4, NO_PERIOD), 3, 0x7b1),

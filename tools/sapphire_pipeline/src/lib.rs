@@ -107,6 +107,12 @@
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
 
+// The crate's clippy.toml bans `std`'s transcendentals, so what it cooks and generates is the same
+// bytes on every OS (spec §5.27, "Reproducible cooks"). Unit tests build their inputs and measure
+// results with them freely: nothing they compute is written, and clippy still holds the crate's own
+// code to the bans in its non-test build.
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests' own arithmetic is never cooked"))]
+
 pub mod anim_graph;
 pub mod assembly;
 pub mod audio;

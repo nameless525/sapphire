@@ -33,7 +33,8 @@ use crate::color::srgb_to_linear;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file.
-pub const IMPORTER: Stage = Stage { name: "image", version: 1 };
+/// 2: sRGB decodes through `sapphire_math::det`, the same on every OS (M4 C3).
+pub const IMPORTER: Stage = Stage { name: "image", version: 2 };
 
 /// The largest image the pipeline decodes: a size on each side and a count of texels in all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

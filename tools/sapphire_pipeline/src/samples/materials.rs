@@ -33,6 +33,7 @@ use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, Emission, FabricDirection, LightSplit, Matcap, MatcapBlend,
     MatcapChannel, MaterialDocument, Outline, RegionMatcap, Specular, SpecularModel, Stockings,
 };
+use sapphire_math::det;
 use sapphire_serialize::to_ron;
 
 use super::noise::smoothstep;
@@ -193,7 +194,7 @@ pub fn matcap_png() -> io::Result<Vec<u8>> {
         let n = if n.length() > 1.0 { n.normalize() } else { n };
         let facing = (1.0 - n.length_squared()).max(0.0).sqrt();
         // A soft key highlight high on the left, a cool bounce along the lower rim.
-        let key = (-(n - glam::Vec2::new(-0.38, 0.42)).length_squared() * 7.0).exp();
+        let key = det::exp(-(n - glam::Vec2::new(-0.38, 0.42)).length_squared() * 7.0);
         let bounce = smoothstep(0.65, 0.95, n.length()) * smoothstep(0.1, -0.6, n.y);
         let base = 0.04 + 0.1 * facing;
         let color = [
@@ -203,7 +204,7 @@ pub fn matcap_png() -> io::Result<Vec<u8>> {
         ];
         // The grayscale falloff: white facing the camera, darker toward the rim, a little lifted
         // under the key.
-        let falloff = (0.5 + 0.5 * facing.powf(0.6) + 0.1 * key).min(1.0);
+        let falloff = (0.5 + 0.5 * det::pow(facing, 0.6) + 0.1 * key).min(1.0);
         let [r, g, b] = color.map(|c| unorm8(linear_to_srgb(c)));
         image::Rgba([r, g, b, unorm8(falloff)])
     });

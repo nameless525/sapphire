@@ -10,6 +10,11 @@
 //!   drawn,** so moving a building leaves neither a way through it nor an invisible wall.
 //! - **The probe grid sees where things are.**
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test's own measurements are never cooked (the crate's clippy.toml)"
+)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;

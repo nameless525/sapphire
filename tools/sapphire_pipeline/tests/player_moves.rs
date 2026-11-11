@@ -3,6 +3,11 @@
 //! played in the simulation. What these hold is the shape a move is meant to have, not whether it
 //! looks good: only eyes can judge that, and the plan's feel reviews do.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test's own measurements are never cooked (the crate's clippy.toml)"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

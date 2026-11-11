@@ -88,7 +88,8 @@ use crate::meta::MeshSettings;
 /// stylized GI's region weights (M1 C2 follow-up). 3: VRoid Studio's eye materials map onto
 /// anime eyes' layers (M1 C6). 2: MToon's rim maps onto the depth-offset rim's Fresnel gate and
 /// light gate (M1 C5).
-pub const IMPORTER: Stage = Stage { name: "vrm", version: (6 << 16) | gltf_import::IMPORTER.version };
+/// 7: colors decode and MToon's rim and outline compute through `sapphire_math::det` (M4 C3).
+pub const IMPORTER: Stage = Stage { name: "vrm", version: (7 << 16) | gltf_import::IMPORTER.version };
 
 /// An iris's parallax depth (M1 C6): this share of its height, in meters.
 const IRIS_PARALLAX: f32 = 0.1;

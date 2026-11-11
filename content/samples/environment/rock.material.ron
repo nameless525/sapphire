@@ -2,7 +2,7 @@
     type: "sapphire::render::EnvironmentMaterial",
     version: 1,
     data: (
-        base_color: (0.4341537, 0.37123778, 0.30498737, 1.0),
+        base_color: (0.4341537, 0.37123775, 0.30498737, 1.0),
         base_color_map: None,
         alpha: Opaque,
         normal_map: None,

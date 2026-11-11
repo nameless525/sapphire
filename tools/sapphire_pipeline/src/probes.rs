@@ -81,12 +81,13 @@ mod tests;
 use std::path::{Path, PathBuf};
 
 use bevy_reflect::TypePath;
-use glam::{Quat, Vec2, Vec3};
+use glam::{Vec2, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnyMaterialDocument, FoliageMaterial, MaterialFamily};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use sapphire_assets::probes::{ProbeGrid, ProbeGridError};
 use sapphire_look::sky::sky_radiance;
+use sapphire_math::det;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use sapphire_tod::TodTimeline;
@@ -108,7 +109,8 @@ pub const IMPORTER: Stage = Stage { name: "probe grid document", version: 1 };
 /// 3: color maps read as their textures' cook reads them, past one and at their own depth (the
 /// review's AST-003).
 /// 4: equal-distance ray hits consistently choose the lowest accepted triangle index.
-pub const COOKER: Stage = Stage { name: "sprobe bake", version: 4 };
+/// 5: placed meshes turn through `sapphire_math::det` (M4 C3).
+pub const COOKER: Stage = Stage { name: "sprobe bake", version: 5 };
 
 /// What a probe grid source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".probes.ron";
@@ -452,7 +454,7 @@ fn scene<'a>(
     for placed in &document.meshes {
         let (path, _) = cooked_mesh(placed.mesh, input)?;
         let mesh = read_mesh(path)?;
-        let rotation = Quat::from_rotation_y(placed.yaw.to_radians());
+        let rotation = det::quat_from_rotation_y(placed.yaw.to_radians());
         let translation = Vec3::from(placed.translation);
         let vertices: Vec<(Vec3, Vec3, Vec2)> = (0..mesh.streams.len())
             .filter_map(|index| mesh.streams.vertex(index))

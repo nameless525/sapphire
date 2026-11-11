@@ -62,6 +62,7 @@ use sapphire_assets::material::{
     HairHighlight, HairShading, HighlightMotion, HighlightStyle, IrisShape, LightSplit, MaterialDocument,
     Outline, RegionGi, Rim, ThroughHair,
 };
+use sapphire_math::det;
 use serde_json::json;
 
 use crate::character_maps::FaceSdfMap;
@@ -250,7 +251,7 @@ fn point(u: f32, v: f32) -> (f32, f32) {
 
 /// The jaw's narrowing at sphere height `y`: 1 above the center, less toward the chin.
 fn taper(y: f32) -> f32 {
-    if y >= 0.0 { 1.0 } else { 1.0 - JAW_TAPER * (y / RADIUS).powi(2) }
+    if y >= 0.0 { 1.0 } else { 1.0 - JAW_TAPER * ((y / RADIUS) * (y / RADIUS)) }
 }
 
 /// A sphere point moved onto the head: the lower half drawn out and narrowed into a jaw.
@@ -258,7 +259,7 @@ fn head_point([x, y, z]: [f32; 3]) -> [f32; 3] {
     if y >= 0.0 {
         return [x, y, z];
     }
-    let flatten = 1.0 - JAW_FLATTEN * (y / RADIUS).powi(2);
+    let flatten = 1.0 - JAW_FLATTEN * ((y / RADIUS) * (y / RADIUS));
     [x * taper(y), y * JAW_STRETCH, z * flatten]
 }
 
@@ -291,15 +292,15 @@ fn normal_angles(x: f32, y: f32) -> (f32, f32) {
     let level = (RADIUS * RADIUS - sy * sy).sqrt();
     let sx = (x / taper(sy)).clamp(-0.999 * level, 0.999 * level);
     let sz = (level * level - sx * sx).max(0.0).sqrt();
-    let azimuth = (sx / level).asin().to_degrees();
-    let elevation = sy.atan2(sz).to_degrees();
+    let azimuth = det::asin(sx / level).to_degrees();
+    let elevation = det::atan2(sy, sz).to_degrees();
     (azimuth, elevation)
 }
 
 /// A soft bump: 1 at `center`, falling off over `radii`.
 fn bump(x: f32, y: f32, center: (f32, f32), radii: (f32, f32)) -> f32 {
     let (dx, dy) = ((x - center.0) / radii.0, (y - center.1) / radii.1);
-    (-(dx * dx + dy * dy)).exp()
+    det::exp(-(dx * dx + dy * dy))
 }
 
 /// The horizontal channel's field: the light angle, in degrees from the front toward the head's
@@ -347,7 +348,7 @@ pub fn vertical_threshold(x: f32, y: f32) -> Option<f32> {
         ((0.0, -0.103), (0.016, 0.007), 40.0),
     ];
     for ((cx, cy), (rx, ry), limit) in shapes {
-        if ((x.abs() - cx) / rx).hypot((y - cy) / ry) < 1.0 {
+        if det::hypot((x.abs() - cx) / rx, (y - cy) / ry) < 1.0 {
             angle = angle.min(limit);
         }
     }
@@ -393,7 +394,7 @@ pub fn sdf_document() -> String {
 /// Coverage of an ellipse around `center` with `half` extents at `(x, y)`, anti-aliased over a
 /// texel.
 fn ellipse(x: f32, y: f32, center: (f32, f32), half: (f32, f32)) -> f32 {
-    let k = ((x - center.0) / half.0).hypot((y - center.1) / half.1);
+    let k = det::hypot((x - center.0) / half.0, (y - center.1) / half.1);
     let texel = UV_SPAN / SIZE as f32 / half.0.min(half.1);
     smoothstep(1.0 + texel, 1.0 - texel, k)
 }
@@ -402,7 +403,7 @@ fn ellipse(x: f32, y: f32, center: (f32, f32), half: (f32, f32)) -> f32 {
 fn stroke(x: f32, y: f32, a: (f32, f32), b: (f32, f32), width: f32) -> f32 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let t = (((x - a.0) * dx + (y - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    let distance = (x - a.0 - t * dx).hypot(y - a.1 - t * dy);
+    let distance = det::hypot(x - a.0 - t * dx, y - a.1 - t * dy);
     let texel = UV_SPAN / SIZE as f32;
     smoothstep(0.5 * width + texel, 0.5 * width - texel, distance)
 }
@@ -452,7 +453,7 @@ fn mask(x: f32, y: f32) -> [f32; 3] {
 
 /// The expression map: blush on the cheeks, gloom over the brow.
 fn expression(x: f32, y: f32) -> [f32; 3] {
-    let k = ((x.abs() - 0.058) / 0.024).hypot((y + 0.05) / 0.012);
+    let k = det::hypot((x.abs() - 0.058) / 0.024, (y + 0.05) / 0.012);
     let blush = smoothstep(1.0, 0.35, k);
     let gloom = if near_head(x, y) { smoothstep(-0.016, 0.022, y) } else { 0.0 };
     [blush, gloom, 0.0]
@@ -664,11 +665,11 @@ pub fn lash_material_document() -> String {
 /// edges wavy as an artist's are; G tilts the band a little; B darkens the roots.
 fn hair_mask(u: f32, v: f32) -> [f32; 3] {
     let texel = 1.0 / SIZE as f32;
-    let top = 0.28 + 0.05 * (u * TAU).cos();
-    let bottom = 0.55 + 0.05 * (u * 3.0 * PI).sin();
+    let top = 0.28 + 0.05 * det::cos(u * TAU);
+    let bottom = 0.55 + 0.05 * det::sin(u * 3.0 * PI);
     let band = smoothstep(top - texel, top + texel, v) * smoothstep(bottom + texel, bottom - texel, v);
     let shift = 0.5 + 0.08 * (u - 0.5);
-    let occlusion = (0.6 + 0.4 * smoothstep(0.0, 0.35, v)) * (0.85 + 0.15 * (PI * u).sin());
+    let occlusion = (0.6 + 0.4 * smoothstep(0.0, 0.35, v)) * (0.85 + 0.15 * det::sin(PI * u));
     [band, shift, occlusion]
 }
 
@@ -757,7 +758,7 @@ fn head() -> Geometry {
         for segment in 0..=SEGMENTS {
             let phi = TAU * segment as f32 / SEGMENTS as f32;
             let at = |theta: f32, phi: f32| {
-                let s = [theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos()];
+                let s = [det::sin(theta) * det::sin(phi), det::cos(theta), det::sin(theta) * det::cos(phi)];
                 head_point(s.map(|c| c * RADIUS))
             };
             let position = at(theta, phi);
@@ -767,7 +768,7 @@ fn head() -> Geometry {
             let d_phi = sub(at(theta, phi + e), at(theta, phi - e));
             let mut normal = normalize(cross(d_theta, d_phi));
             if !normal.iter().all(|c| c.is_finite()) || theta < e || theta > PI - e {
-                normal = [0.0, theta.cos().signum(), 0.0];
+                normal = [0.0, det::cos(theta).signum(), 0.0];
             }
             geometry.positions.push(position);
             geometry.normals.push(normal);
@@ -793,14 +794,14 @@ fn hair_cap() -> Geometry {
     let radius = RADIUS * 1.08;
     let max_polar = 100f32.to_radians();
     let tip = -34f32.to_radians();
-    let (sin, cos) = tip.sin_cos();
+    let (sin, cos) = det::sin_cos(tip);
     let mut geometry = Geometry::default();
     let stride = SEGMENTS + 1;
     for ring in 0..=CAP_RINGS {
         let theta = max_polar * ring as f32 / CAP_RINGS as f32;
         for segment in 0..=SEGMENTS {
             let phi = TAU * segment as f32 / SEGMENTS as f32;
-            let n = [theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos()];
+            let n = [det::sin(theta) * det::sin(phi), det::cos(theta), det::sin(theta) * det::cos(phi)];
             // Tipped back about X, and nudged up.
             let n = [n[0], n[1] * cos - n[2] * sin, n[1] * sin + n[2] * cos];
             geometry.positions.push([n[0] * radius, n[1] * radius + 0.004, n[2] * radius]);
@@ -856,7 +857,7 @@ fn bangs() -> Geometry {
             let half = STRAND_HALF_WIDTH * (1.0 - v * v).max(0.02);
             for (column, offset) in [-half, 0.0, half].into_iter().enumerate() {
                 let phi = (azimuth + offset).to_radians();
-                let n = [theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos()];
+                let n = [det::sin(theta) * det::sin(phi), det::cos(theta), det::sin(theta) * det::cos(phi)];
                 geometry.positions.push(n.map(|c| c * BANGS_RADIUS));
                 geometry.normals.push(n);
                 geometry.uvs.push([column as f32 * 0.5, v]);
@@ -894,10 +895,10 @@ fn brows() -> Geometry {
         let first = geometry.positions.len() as u32;
         for step in 0..=BROW_STEPS {
             let t = BROW_SPAN * (2.0 * step as f32 / BROW_STEPS as f32 - 1.0);
-            let thickness = BROW_THICKNESS * (1.0 - 0.6 * (t / BROW_SPAN).powi(2));
-            let x = side * (BROW_CENTER.0 + BROW_RADII.0 * t.sin());
+            let thickness = BROW_THICKNESS * (1.0 - 0.6 * ((t / BROW_SPAN) * (t / BROW_SPAN)));
+            let x = side * (BROW_CENTER.0 + BROW_RADII.0 * det::sin(t));
             for edge in [0.0, -thickness] {
-                let y = BROW_CENTER.1 + BROW_RADII.1 * t.cos() + edge;
+                let y = BROW_CENTER.1 + BROW_RADII.1 * det::cos(t) + edge;
                 let [sx, sy, sz] = sphere_point(x, y).expect("the brows lie on the face");
                 let n = normalize([sx, sy, sz]);
                 let lift = RADIUS + BROW_LIFT;
@@ -990,12 +991,12 @@ fn eye_middle(s: f32) -> f32 {
 /// The eye's top and bottom outline at `s`, in head-local y.
 fn eye_top(s: f32) -> f32 {
     let (rise, fullness) = EYE_ARCS.0;
-    eye_middle(s) + EYE_HALF.1 * rise * (1.0 - s * s).max(0.0).powf(fullness)
+    eye_middle(s) + EYE_HALF.1 * rise * det::pow((1.0 - s * s).max(0.0), fullness)
 }
 
 fn eye_bottom(s: f32) -> f32 {
     let (fall, fullness) = EYE_ARCS.1;
-    eye_middle(s) - EYE_HALF.1 * fall * (1.0 - s * s).max(0.0).powf(fullness)
+    eye_middle(s) - EYE_HALF.1 * fall * det::pow((1.0 - s * s).max(0.0), fullness)
 }
 
 /// The unit normal, outward from the eye, of the outline `curve` (in eye-local coordinates, x
@@ -1005,7 +1006,7 @@ fn outline_normal(curve: impl Fn(f32) -> (f32, f32), phi: f32, upper: bool) -> (
     let e = 1e-3;
     // At the corners, from just inside them: the curve turns back on itself there.
     let phi = phi.clamp(2.0 * e, PI - 2.0 * e);
-    let (a, b) = (curve(-(phi - e).cos()), curve(-(phi + e).cos()));
+    let (a, b) = (curve(-det::cos(phi - e)), curve(-det::cos(phi + e)));
     let (tx, ty) = normalize2((b.0 - a.0, b.1 - a.1));
     if upper { (-ty, tx) } else { (ty, -tx) }
 }
@@ -1019,7 +1020,7 @@ fn eye_x(s: f32, side: f32, widen: f32) -> f32 {
 /// `s` for column `t` (0 to 1) of an eye on `side`, columns running toward +X: denser toward the
 /// corners, where the outline turns.
 fn eye_column(t: f32, side: f32) -> f32 {
-    side * (PI * (t - 0.5)).sin()
+    side * det::sin(PI * (t - 0.5))
 }
 
 /// The lids' lower edge over `s` (clamped to the eye), `closed` of the way shut.
@@ -1132,7 +1133,7 @@ fn step(c: u32, columns: u32) -> f32 {
 }
 
 fn normalize2((x, y): (f32, f32)) -> (f32, f32) {
-    let length = x.hypot(y);
+    let length = det::hypot(x, y);
     (x / length, y / length)
 }
 
@@ -1161,7 +1162,7 @@ fn upper_lash() -> Vec<LashColumn> {
     (0..LASH_COLUMNS)
         .map(|k| {
             let phi = PI * step(k, LASH_COLUMNS);
-            let s = -phi.cos();
+            let s = -det::cos(phi);
             let (x, y) = (s * hx, lid_edge(s, 0.0));
             let n = outline_normal(edge, phi, true);
             let t = lash_thickness(phi);
@@ -1210,10 +1211,10 @@ fn lower_lash() -> Vec<LashColumn> {
         .map(|k| {
             let f = step(k, LOWER_LASH_COLUMNS);
             let phi = PI * (0.45 + 0.52 * f);
-            let s = -phi.cos();
+            let s = -det::cos(phi);
             let (x, y) = (s * hx, eye_bottom(s));
             let n = outline_normal(|s| (s * hx, eye_bottom(s)), phi, false);
-            let t = 0.0003 + 0.0006 * (PI * f).sin();
+            let t = 0.0003 + 0.0006 * det::sin(PI * f);
             LashColumn { inner: (x - n.0 * 0.0003, y - n.1 * 0.0003), outer: (x + n.0 * t, y + n.1 * t), s }
         })
         .collect()
@@ -1268,7 +1269,7 @@ fn eyes() -> [Geometry; 6] {
             let center = (iris_center.0 + offset.0, iris_center.1 + offset.1);
             let middle = highlights.vertex(center, [0.5, 0.5], Motion::Gaze);
             for segment in 0..HIGHLIGHT_SEGMENTS {
-                let (sin, cos) = (TAU * segment as f32 / HIGHLIGHT_SEGMENTS as f32).sin_cos();
+                let (sin, cos) = det::sin_cos(TAU * segment as f32 / HIGHLIGHT_SEGMENTS as f32);
                 let at = (center.0 + half.0 * cos, center.1 + half.1 * sin);
                 highlights.vertex(at, [0.5 + 0.5 * cos, 0.5 - 0.5 * sin], Motion::Gaze);
             }
@@ -1348,7 +1349,7 @@ const EYE_MAP_SIZE: u32 = 256;
 /// The lid's shadow on the eye white (M1 C6), `eye_shadow.png`: white, its coverage strongest at
 /// the eye's top (`v` = 0) and gone two fifths of the way down.
 fn eye_shadow(_u: f32, v: f32) -> [f32; 4] {
-    let alpha = 0.8 * (1.0 - smoothstep(0.0, 0.42, v)).powf(1.4);
+    let alpha = 0.8 * det::pow(1.0 - smoothstep(0.0, 0.42, v), 1.4);
     [1.0, 1.0, 1.0, alpha]
 }
 
@@ -1362,20 +1363,20 @@ fn iris(u: f32, v: f32) -> [f32; 4] {
     const RING: [u8; 3] = [18, 22, 56];
     const PUPIL: [u8; 3] = [14, 14, 36];
     let q = (2.0 * u - 1.0, 2.0 * v - 1.0);
-    let d = q.0.hypot(q.1);
+    let d = det::hypot(q.0, q.1);
     let texel = 2.0 / EYE_MAP_SIZE as f32;
     let alpha = smoothstep(1.0, 1.0 - 2.0 * texel, d);
     let top = TOP.map(|c| f32::from(c) / 255.0);
     let mut color = layer(top, BOTTOM, smoothstep(-0.95, 0.9, q.1));
     // Fibers: a fine radial ripple through the iris's middle.
-    let angle = q.1.atan2(q.0);
-    let fibers = 0.5 + 0.5 * (angle * 23.0 + 2.0 * (angle * 5.0).sin()).sin();
+    let angle = det::atan2(q.1, q.0);
+    let fibers = 0.5 + 0.5 * det::sin(angle * 23.0 + 2.0 * det::sin(angle * 5.0));
     let band = smoothstep(0.3, 0.45, d) * smoothstep(0.88, 0.7, d);
     color = color.map(|c| c * (1.0 - 0.1 * band * fibers));
     let crescent = smoothstep(0.15, 0.6, q.1) * smoothstep(0.35, 0.5, d) * smoothstep(0.86, 0.7, d);
     color = layer(color, GLOW, 0.6 * crescent);
     color = layer(color, RING, 0.85 * smoothstep(0.76, 0.93, d));
-    let pupil = (q.0 / 0.27).hypot((q.1 - 0.06) / 0.4);
+    let pupil = det::hypot(q.0 / 0.27, (q.1 - 0.06) / 0.4);
     color = layer(color, PUPIL, smoothstep(1.0, 0.85, pupil));
     [color[0], color[1], color[2], alpha]
 }
@@ -1383,7 +1384,7 @@ fn iris(u: f32, v: f32) -> [f32; 4] {
 /// A highlight (M1 C6), `eye_highlight.png`: a white disc filling the texture, its edge crisp
 /// but soft.
 fn highlight(u: f32, v: f32) -> [f32; 4] {
-    let d = (2.0 * u - 1.0).hypot(2.0 * v - 1.0);
+    let d = det::hypot(2.0 * u - 1.0, 2.0 * v - 1.0);
     [1.0, 1.0, 1.0, smoothstep(1.0, 0.8, d)]
 }
 

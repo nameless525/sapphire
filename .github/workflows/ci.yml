@@ -314,6 +314,29 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The two desktop cooks above, from one commit on two OSes and C libraries and whatever CPUs the
+  # runners have, must be the same bytes (M4 C3). A difference fails here, naming each asset that
+  # moved, rather than as a golden that a pack from one runner changed.
+  cooks-agree:
+    name: Cooks agree (Linux, Windows)
+    needs: [golden-build-linux, golden-build-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: golden-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: golden-inputs-dx12-warp
+          path: ${{ runner.temp }}/windows
+      - name: Compare the cooks
+        run: |
+          python3 .github/scripts/cooks_agree.py "$RUNNER_TEMP/linux/golden-bundle.tar.gz" \
+            "$RUNNER_TEMP/windows/golden-bundle.tar.gz"
+
   golden-linux:
     name: Golden images (vulkan-lavapipe ${{ matrix.shard }}/3)
     needs: golden-build-linux

@@ -483,7 +483,8 @@ impl<'a> Plan<'a> {
         }
         let distance = (self.corner(slope, s) - c.abs()).max(0.0);
         let along = 1.0 - smoothstep(0.0, roof.sweep_reach, distance);
-        let fall = (1.0 - s / self.wall).powi(2);
+        let rest = 1.0 - s / self.wall;
+        let fall = rest * rest;
         roof.sweep * along * fall
     }
 
@@ -772,7 +773,8 @@ impl<'a> Plan<'a> {
             let path: Vec<Vec3> = (0..=2 * samples)
                 .map(|k| {
                     let t = k as f32 / samples as f32 - 1.0;
-                    self.origin + Vec3::new(t * length, top + rising * t.abs().powi(4), 0.0)
+                    let square = t * t;
+                    self.origin + Vec3::new(t * length, top + rising * (square * square), 0.0)
                 })
                 .collect();
             mesh.sweep(Part::Ridge, &path, ridge.width, ridge.height, EMBED + rising, false);

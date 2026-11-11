@@ -65,6 +65,7 @@ use std::f32::consts::TAU;
 
 use glam::Vec3;
 use sapphire_assets::mesh::FoliageVertex;
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 use super::weld;
@@ -338,7 +339,7 @@ fn number_groups(members: &[bool], mut root: impl FnMut(usize) -> usize) -> (Vec
 /// The phase field (see the [module docs](self)): the azimuth around the vertical axis as a
 /// fraction of a turn, plus [`PHASE_PER_METER`] a meter outward, wrapped.
 fn phase_at(p: Vec3) -> f32 {
-    (p.z.atan2(p.x) / TAU + PHASE_PER_METER * horizontal(p).length()).rem_euclid(1.0)
+    (det::atan2(p.z, p.x) / TAU + PHASE_PER_METER * horizontal(p).length()).rem_euclid(1.0)
 }
 
 /// Each vertex's branch phase (see the [module docs](self)): a canopy clump's (the whole
@@ -567,7 +568,7 @@ fn field_normal(clumps: &[Clump], p: Vec3) -> Option<Vec3> {
     let top = clumps.iter().map(exponent).fold(f32::NEG_INFINITY, f32::max);
     clumps
         .iter()
-        .map(|clump| (p - clump.center) * ((exponent(clump) - top).exp() / (clump.radius * clump.radius)))
+        .map(|clump| (p - clump.center) * (det::exp(exponent(clump) - top) / (clump.radius * clump.radius)))
         .sum::<Vec3>()
         .try_normalize()
 }

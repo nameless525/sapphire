@@ -44,12 +44,15 @@
 //!
 //! # Determinism
 //!
-//! A cook's output depends only on its inputs: mips are computed in a fixed order, the
-//! encoders run serially (ctt without `rayon`) and the KTX2 writer writes no timestamps, so
-//! two cooks of one source are byte-identical. Across machines, the encoders' SIMD kernels
-//! (prebuilt ISPC, astcenc) and the platform's `powf` (sRGB decoding) may round differently;
-//! the shared cache (later) takes whichever machine cooked first, which is still a valid
-//! texture.
+//! A cook's output depends only on its inputs, on every machine of an architecture (spec §5.27,
+//! "Reproducible cooks"): mips are computed in a fixed order in scalar code, the cooker itself
+//! quantizes texels before an encoder sees them (the `encode` module), sRGB decoding uses
+//! `sapphire_math::det` rather than the platform's `powf`, the encoders run serially, and the
+//! KTX2 writer writes no timestamps. The block encoders are SIMD kernels that pick an
+//! instruction set at run time, so the `kernels` module calls one fixed set by name: AVX2 on
+//! x86-64, NEON on Arm. An x86 cook and an Arm cook still differ in their block bits, because
+//! the kernels round differently per instruction set; the test
+//! `cooks_the_same_bytes_on_every_machine_of_an_architecture` pins both.
 //!
 //! # Later milestones
 //!
@@ -59,13 +62,16 @@
 //!   same problem in its own mip generator).
 //! - Per-cook size caps from the content budgets (spec §3.4: 2K desktop, 1K mobile), by
 //!   dropping the top levels on mobile.
-//! - Parallel encoding (ctt's `rayon` feature, whose output doesn't depend on the thread count)
-//!   once content is large enough; a 2048² color texture takes 1.2 s (BC7) and 0.5 s (ASTC)
+//! - Parallel encoding (blocks encode independently, so splitting a level into runs of blocks
+//!   can't change its bytes) once content is large enough; a 2048² color texture takes 1.2 s (BC7) and 0.5 s (ASTC)
 //!   serially on an M5.
 
 pub mod mips;
 
 mod encode;
+mod kernels;
+
+pub use self::kernels::EncodeError;
 
 use std::path::Path;
 
@@ -88,7 +94,7 @@ use crate::import::image::{
 /// output the cook embeds, and a test keeps it in step with `Cargo.lock`: every `ctt*` crate
 /// (the encoders are separate crates on caret ranges, so `cargo update` can move them alone)
 /// and `ktx2`, whose generated descriptors the reader compares byte for byte.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 2 };
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 3 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;
@@ -334,7 +340,7 @@ pub enum TextureError {
         level: u32,
         format: TextureFormat,
         #[source]
-        source: ctt::Error,
+        source: EncodeError,
     },
 }
 
@@ -941,6 +947,64 @@ mod tests {
             format!("ktx2 (ktx2 {}, ctt {})", ktx2[0], ctt[0]),
             "an encoder or ktx2 upgrade changes cooked bytes: rename the cooker with it"
         );
+    }
+
+    /// Committed sources' cooked bytes, pinned per architecture (spec §5.27, "Reproducible cooks"):
+    /// on every OS and every CPU of one, a texture cooks the same as on CI's Linux runners, the one
+    /// way to catch an encoder that picks its kernels by the CPU, as the BC7 kernels did when the
+    /// same commit cooked two ways on two runners. The block encoders round differently on x86-64
+    /// and AArch64, so each has its own hashes; x86-64's mobile cook has none yet, since CI's packs
+    /// are desktop cooks. The sources are `gen-combat`'s, whose bytes are themselves pinned.
+    ///
+    /// On a deliberate change (an encoder upgrade, a new quantization), the cooker's version
+    /// moves too: take the new hashes from this test's failure on each architecture.
+    #[test]
+    fn cooks_the_same_bytes_on_every_machine_of_an_architecture() {
+        // (source, cook, blake3 of the cooked KTX2 on x86-64, the same on AArch64).
+        let pinned: [(&str, Cook, Option<&str>, &str); 4] = [
+            (
+                // Mask, four channels: BC7 without perceptual weighting, and ASTC 4×4 data.
+                "combat/player/sword_layers.png",
+                Cook::Desktop,
+                Some("6211b10d5a7fa3ecc08b73b3320c99e6427faa3b3a84881af3c6b3eeb0d171e4"),
+                "56842cf141f64a36e96493a873703f94e2317264944bc1fcc1844ca65d3090d1",
+            ),
+            (
+                "combat/player/sword_layers.png",
+                Cook::Mobile,
+                None,
+                "9e2e3a5140e79fcce2c6ce26ed4e82db9a91ea915d691abcdc08578bfe532a3c",
+            ),
+            (
+                // Color: sRGB decoding, then BC7 sRGB perceptual and ASTC sRGB.
+                "combat/lancer/lancer_matcap.png",
+                Cook::Desktop,
+                Some("10396c7251eaaa335647fc90a4bc1f312a9a515af5d186a59c465c90de4b15dc"),
+                "3c3a7bd918af8df5ed73aef492e9e666b1643f74063eef731666e9867b946ba1",
+            ),
+            (
+                "combat/lancer/lancer_matcap.png",
+                Cook::Mobile,
+                None,
+                "ea7140502b95050dc62ee177fba07195689dc7b94b86636a3eb152b14a4d28ad",
+            ),
+        ];
+        let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let mut wrong = Vec::new();
+        for (source, cook, x86_64, aarch64) in pinned {
+            let path = content.join(source);
+            let ImportSettings::Texture(settings) = meta::read(&sidecar_path(&path)).unwrap().importer else {
+                panic!("{source} isn't a texture");
+            };
+            let bytes = fs::read(&path).unwrap();
+            let hash =
+                blake3::hash(&cook_source(&path, &bytes, &settings, cook).unwrap()).to_hex().to_string();
+            let expected = if cfg!(target_arch = "x86_64") { x86_64 } else { Some(aarch64) };
+            if expected.is_some_and(|expected| expected != hash) {
+                wrong.push(format!("{source} ({cook:?}): {hash}, pinned {expected:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "cooked bytes moved on {}:\n{}", std::env::consts::ARCH, wrong.join("\n"));
     }
 
     /// Writes `image` to `path` in `format`, creating directories.

@@ -30,7 +30,9 @@
 //!   the workspace's, since clippy reads the nearest file instead of adding them up.
 //! - No crate in `[cooker]` reaches a `forbidden` crate through normal dependencies: the renderer
 //!   and the world would cost a cook after every shader edit (M1 A8's follow-up), and a collision
-//!   library has no business there (M2 D3).
+//!   library has no business there (M2 D3). Each has a `clippy.toml` banning std's
+//!   transcendentals, so its bytes don't depend on the OS, and holding every ban in the
+//!   workspace's (M4 C3).
 //!
 //! Dev-dependencies are exempt throughout: tests never ship, and test-support tool
 //! crates (`en_testkit` in the spec) exist to be dev-depended on. The resolve graph is
@@ -333,6 +335,10 @@ pub enum Violation {
         dependency: String,
         path: Vec<String>,
     },
+    CookerClippy {
+        krate: String,
+        problem: String,
+    },
 }
 
 // Sorting violations groups them by kind, then by crate.
@@ -414,6 +420,9 @@ impl fmt::Display for Violation {
             Self::SimulationClippy { krate, problem } => {
                 write!(f, "`{krate}`'s clippy.toml {problem}")
             }
+            Self::CookerClippy { krate, problem } => {
+                write!(f, "the content tool `{krate}`'s clippy.toml {problem}")
+            }
             Self::CookerReachable { krate, dependency, path } => write!(
                 f,
                 "`{dependency}` is in the dependency tree of the content tool `{krate}`: {}",
@@ -455,6 +464,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let mut violations = check(&config, &metadata)?;
     violations.extend(check_simulation_clippy_files(&config, &workspace::root())?);
+    violations.extend(check_cooker_clippy_files(&config, &workspace::root())?);
     if violations.is_empty() {
         eprintln!("check-layers: {} crates placed, no violations", config.crates.len());
         return Ok(());
@@ -527,6 +537,60 @@ fn check_simulation_clippy(
                 problem(format!("differs from `{other}`'s: every crate in [simulation] holds the same file"));
             }
             Some(_) => {}
+        }
+    }
+    Ok(violations)
+}
+
+/// Reads the workspace's clippy.toml and each content tool's, and checks them.
+fn check_cooker_clippy_files(config: &Config, root: &Path) -> anyhow::Result<Vec<Violation>> {
+    let workspace_path = root.join("clippy.toml");
+    let workspace = std::fs::read_to_string(&workspace_path)
+        .with_context(|| format!("failed to read {}", workspace_path.display()))?;
+    let crates: Vec<(&str, Option<String>)> = config
+        .cooker
+        .crates
+        .iter()
+        .map(|name| {
+            (name.as_str(), std::fs::read_to_string(root.join("tools").join(name).join("clippy.toml")).ok())
+        })
+        .collect();
+    check_cooker_clippy(&workspace, &crates)
+}
+
+/// What a content tool's clippy.toml must ban besides the workspace's bans: std's transcendentals,
+/// which round by each platform's C library, so a cook's bytes would depend on the OS (spec §5.27,
+/// "Reproducible cooks").
+const COOKER_BANS: [&str; 10] = [
+    "f32::sin",
+    "f32::cos",
+    "f32::sin_cos",
+    "f32::tan",
+    "f32::atan2",
+    "f32::exp",
+    "f32::powf",
+    "f32::powi",
+    "f32::hypot",
+    "f32::cbrt",
+];
+
+/// Each content tool must have a clippy.toml (`None` if not), holding every ban in the workspace's
+/// and [`COOKER_BANS`].
+fn check_cooker_clippy(workspace: &str, crates: &[(&str, Option<String>)]) -> anyhow::Result<Vec<Violation>> {
+    let mut required = banned_methods(workspace).context("the workspace's clippy.toml")?;
+    required.extend(COOKER_BANS.map(str::to_owned));
+    let mut violations = Vec::new();
+    for (krate, text) in crates {
+        let mut problem = |problem: String| {
+            violations.push(Violation::CookerClippy { krate: (*krate).to_owned(), problem });
+        };
+        let Some(text) = text else {
+            problem("is missing: the cooker bans what rounds by platform".to_owned());
+            continue;
+        };
+        let bans = banned_methods(text).with_context(|| format!("`{krate}`'s clippy.toml"))?;
+        for missing in required.difference(&bans) {
+            problem(format!("doesn't ban `{missing}`"));
         }
     }
     Ok(violations)
@@ -1486,6 +1550,29 @@ mod tests {
         {
             assert!(config.simulation.forbidden.iter().any(|forbidden| forbidden == name), "{name}");
         }
+    }
+
+    #[test]
+    fn the_cookers_clippy_file_holds_the_workspaces_bans_and_std_maths() {
+        let workspace = r#"disallowed-methods = [{ path = "std::time::Instant::now" }]"#;
+        let all: String = std::iter::once("std::time::Instant::now")
+            .chain(COOKER_BANS)
+            .map(|path| format!("{{ path = \"{path}\" }},"))
+            .collect();
+        let good = format!("disallowed-methods = [{all}]");
+        let check = |crates: &[(&str, Option<String>)]| {
+            let violations = check_cooker_clippy(workspace, crates).unwrap();
+            violations.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(check(&[("a", Some(good.clone()))]), [] as [&str; 0]);
+        let missing = check(&[("a", None)]);
+        assert!(missing[0].contains("`a`'s clippy.toml is missing"), "{missing:?}");
+        let no_powf = check(&[("a", Some(good.replace(r#"{ path = "f32::powf" },"#, "")))]);
+        assert_eq!(no_powf.len(), 1);
+        assert!(no_powf[0].contains("doesn't ban `f32::powf`"), "{no_powf:?}");
+        let config = Config::parse(include_str!("../layers.toml")).unwrap();
+        assert!(config.cooker.crates.iter().any(|krate| krate == "sapphire_pipeline"));
+        assert_eq!(check_cooker_clippy_files(&config, &workspace::root()).unwrap(), []);
     }
 
     #[test]

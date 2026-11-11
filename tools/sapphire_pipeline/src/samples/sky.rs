@@ -40,6 +40,7 @@ use std::io;
 use glam::{Vec2, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{CloudLayer, CloudShading, Disc, Moon, SkyMaterial, Stars};
+use sapphire_math::det;
 use sapphire_serialize::to_ron;
 
 use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
@@ -151,7 +152,7 @@ impl Card {
         for row in 0..=rows {
             let t = row as f32 / rows as f32;
             let radius = height * (0.34 - 0.16 * t) * rng.range(0.85, 1.15);
-            let half_width = 0.5 * width * (1.0 - t.powf(1.6)).max(0.0).powf(0.6);
+            let half_width = 0.5 * width * det::pow((1.0 - det::pow(t, 1.6)).max(0.0), 0.6);
             let y = base + t * (height - radius) + radius * 0.25;
             let span = (half_width - radius * 0.6).max(0.0);
             let count = ((2.0 * span) / (radius * 1.25)).ceil().max(1.0) as u32;
@@ -377,15 +378,16 @@ fn milky_way(c: Vec3) -> (f32, f32, f32) {
     // Along the band: an angle around its pole, 0 at its core.
     let first = pole.cross(Vec3::Y).normalize();
     let second = pole.cross(first);
-    let along = c.dot(second).atan2(c.dot(first));
+    let along = det::atan2(c.dot(second), c.dot(first));
     let band = Vec2::new(along / TAU * 48.0, across * 24.0);
     let clumps = smoothstep(0.3, 0.75, fbm(band, (48, NO_PERIOD), 4, 0x6a1));
-    let glow = (-(across * across) / (0.15 * 0.15)).exp() * (0.25 + 1.1 * clumps)
-        + 0.15 * (-(across * across) / (0.32 * 0.32)).exp();
-    let core = (-(along * along) / (0.7 * 0.7)).exp();
-    let lane_center = 0.03 * (3.0 * along).sin();
+    let glow = det::exp(-(across * across) / (0.15 * 0.15)) * (0.25 + 1.1 * clumps)
+        + 0.15 * det::exp(-(across * across) / (0.32 * 0.32));
+    let core = det::exp(-(along * along) / (0.7 * 0.7));
+    let lane_center = 0.03 * det::sin(3.0 * along);
     let lane_noise = fbm(band * Vec2::new(1.0, 2.0) + Vec2::splat(5.0), (48, NO_PERIOD), 3, 0x6a2);
-    let lanes = (-((across - lane_center).powi(2)) / (0.05 * 0.05)).exp() * smoothstep(0.3, 0.65, lane_noise);
+    let lanes = det::exp(-((across - lane_center) * (across - lane_center)) / (0.05 * 0.05))
+        * smoothstep(0.3, 0.65, lane_noise);
     (glow.clamp(0.0, 1.5), core, lanes)
 }
 
@@ -395,7 +397,7 @@ fn dome_png(size: (u32, u32), texel: impl Fn(Vec3) -> Vec3) -> io::Result<Vec<u8
     let image = image::RgbImage::from_fn(size.0, size.1, |x, y| {
         let (u, v) = ((x as f32 + 0.5) / size.0 as f32, (y as f32 + 0.5) / size.1 as f32);
         let (theta, phi) = (v * PI, (u - 0.5) * TAU);
-        let c = Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin());
+        let c = Vec3::new(det::sin(theta) * det::cos(phi), det::cos(theta), det::sin(theta) * det::sin(phi));
         let rgb = texel(c).to_array().map(|value| unorm8(linear_to_srgb(value)));
         image::Rgb(rgb)
     });

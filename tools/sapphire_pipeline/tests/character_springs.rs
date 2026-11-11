@@ -3,6 +3,10 @@
 //! is whether they hold on what ships, which needs no GPU and no cook.
 
 #![allow(clippy::print_stdout, reason = "the measurements here are worth reading with --nocapture")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test's own measurements are never cooked (the crate's clippy.toml)"
+)]
 
 use std::path::Path;
 

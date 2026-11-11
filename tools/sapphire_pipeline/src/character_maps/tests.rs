@@ -294,7 +294,7 @@ fn document_kinds_go_by_their_compound_extensions() {
         assert_eq!(kind.importer().version & 0xffff, image_import::IMPORTER.version);
         assert_eq!(kind.importer().version >> 16, 1);
     }
-    assert_eq!(MapKind::Ramp.importer().version, 1);
+    assert_eq!(MapKind::Ramp.importer().version, 2);
 }
 
 #[test]

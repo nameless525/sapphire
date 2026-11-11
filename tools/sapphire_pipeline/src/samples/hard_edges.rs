@@ -8,8 +8,8 @@
 //! hexagonal prism, a triangular prism (60° edges) and an eight-sided gem, each in a material of
 //! its own with a dark color line.
 
-use glam::{EulerRot, Quat};
 use sapphire_assets::AssetId;
+use sapphire_math::det;
 use serde_json::json;
 
 use super::{Look, shapes};
@@ -77,22 +77,27 @@ pub fn glb() -> Vec<u8> {
         let material = gltf.add_material(look.material());
         let mesh = gltf.add_mesh(name, &[(&geometry, Some(material))]);
         let x = (index as f32 - (count - 1.0) / 2.0) * SPACING;
-        let rotation = Quat::from_euler(
-            EulerRot::YXZ,
-            f32::to_radians(yaw),
-            f32::to_radians(pitch),
-            f32::to_radians(roll),
-        );
+        let rotation = yaw_pitch_roll(f32::to_radians(yaw), f32::to_radians(pitch), f32::to_radians(roll));
         children.push(gltf.add_node(json!({
             "name": name,
             "mesh": mesh,
             "translation": [x, CENTER_HEIGHT, 0.0],
-            "rotation": rotation.to_array(),
+            "rotation": rotation,
         })));
     }
     let root = gltf.add_node(json!({ "name": "HardEdges", "children": children }));
     gltf.add_root(root);
     gltf.to_glb()
+}
+
+/// glam's `Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll)` as `[x, y, z, w]`, with the sines and cosines
+/// pinned.
+fn yaw_pitch_roll(yaw: f32, pitch: f32, roll: f32) -> [f32; 4] {
+    let (si, ci) = det::sin_cos(yaw * 0.5);
+    let (sj, cj) = det::sin_cos(pitch * 0.5);
+    let (sh, ch) = det::sin_cos(roll * 0.5);
+    let (cc, cs, sc, ss) = (ci * ch, ci * sh, si * ch, si * sh);
+    [cj * ss + sj * cc, cj * sc - sj * cs, cj * cs - sj * sc, cj * cc + sj * ss]
 }
 
 #[cfg(test)]

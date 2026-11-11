@@ -41,7 +41,10 @@ pub const IMPORTER: Stage = Stage { name: "material", version: 1 };
 
 /// Validation, texture checks and packing. Bump the version whenever they change output for the
 /// same document and textures.
-pub const COOKER: Stage = Stage { name: "smat", version: 1 };
+///
+/// 2: the anime character family packs its through-hair cosines through `sapphire_math::det` (M4
+/// C3).
+pub const COOKER: Stage = Stage { name: "smat", version: 2 };
 
 /// What a material source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".material.ron";

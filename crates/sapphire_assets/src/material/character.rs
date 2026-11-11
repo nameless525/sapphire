@@ -336,7 +336,8 @@ impl ThroughHair {
     /// zero for none.
     fn gpu(through: Option<&Self>) -> [f32; 4] {
         through.map_or([0.0; 4], |t| {
-            [t.opacity, t.fade_yaw.to_radians().cos(), t.fade_pitch.to_radians().cos(), t.distance]
+            let cos = |degrees: f32| sapphire_math::det::cos(degrees.to_radians());
+            [t.opacity, cos(t.fade_yaw), cos(t.fade_pitch), t.distance]
         })
     }
 }

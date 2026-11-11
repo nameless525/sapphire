@@ -52,7 +52,9 @@ anyhow.workspace = true
 bevy_reflect.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
-ctt.workspace = true
+ctt-astcenc.workspace = true
+ctt-bc7enc-rdo.workspace = true
+ctt-intel-texture-compressor.workspace = true
 # Signs release manifests (M4 P1), with a key from the environment that's wiped when it's dropped.
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 getrandom.workspace = true

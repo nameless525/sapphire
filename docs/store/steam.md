@@ -5,7 +5,9 @@
 - **IDs:** `platform/steam.toml`'s app and depot IDs are Valve's examples, marked placeholders.
 - **Related:** [the privacy policy](privacy-policy.md), [the App Store](apple.md), [Google Play](google-play.md).
 
-**Count:** 30 rules: 19 met here (two of them as drafts the maintainer enters), 11 owed: 6 to the maintainer's account, art or Valve's review (2, 11, 13, 26, 28, 29), 4 to CI's first runs or a Deck (15, 16, 25, 30) and 1 to A4 (19). Rule 10 is met for English; its Japanese waits for a reader.
+**Count:** 30 rules: 21 met here (two of them as drafts the maintainer enters), 9 owed: 6 to the maintainer's account, art or Valve's review (2, 11, 13, 26, 28, 29) and 3 to a run under Steam or a Deck (15, 16, 25). Rule 10 is met for English; its Japanese waits for a reader.
+
+**Reviewed (M4 Z3b, 2026-11-11):** every met rule's test or command was found and its claim read against the code at d8b621cc. The packages workflow's first full run (#291, run 43002018202, all five jobs passed) meets rule 30 and moves rules 15 and 16 to what only Steam or a Deck shows; rule 19 is met now that Valve's pads have glyphs of their own.
 
 ## Rules
 
@@ -19,17 +21,17 @@
 | 6 | Every feature the store page lists is in the build. | "Review process", 2026-11-10 | The drafts name only what's built | Met |
 | 7 | In-game purchases go through the Steam Wallet. | same | The game sells nothing | Met: not needed |
 | 8 | The mature content survey: general content, mature content, and generative AI. | "Content survey", partner.steamgames.com/doc/gettingstarted/contentsurvey, 2026-11-10 | [Content survey](#content-survey) below | Met (draft) |
-| 9 | Single-player content plays with no internet connection. | "Getting your game ready for Steam Deck and Steam Machine", 2026-11-10 | The game makes no network connection ([privacy policy's audit](privacy-policy.md#why-collects-nothing-holds)) | Met |
+| 9 | Single-player content plays with no internet connection. | "Getting your game ready for Steam Deck and Steam Machine", 2026-11-10 | The game needs no connection: it checks for a patch only once `platform/patch.toml` names a host, and a check that can't connect starts the game on what it has (M4 P4; [the privacy policy's audit](privacy-policy.md#why-collects-nothing-holds)) | Met |
 | 10 | The store text reads well in each language it's offered in. | m4-plan §7 | English drafted here | Met for English; owed: a Japanese reader |
 | 11 | Generative AI: content made with AI tools is described in the survey. | "Content survey", 2026-11-10 | The code was written with an AI assistant; the art and sounds are third-party or procedural (`content/third_party/README.md`, `sapphire_soundgen`) | Owed: the maintainer answers, against the survey's own wording |
 | 12 | macOS builds are 64-bit and use the hardened runtime, with no app-sandbox entitlement, which Steam doesn't support. | "Platforms", partner.steamgames.com/doc/store/application/platforms, 2026-11-10 (the page dates from 2019); Apple's notarization page (S4) | `package --platform macos` signs with the hardened runtime and `platform/macos/package.entitlements`, which grants nothing, and reads both back (S4) | Met |
 | 13 | macOS builds are notarized, with a Developer ID. | same | | Owed: the maintainer's Apple account |
 | 14 | The Steam overlay may need `disable-library-validation` on macOS. | same (it names that entitlement and `allow-dyld-environment-variables`) | Not granted (rule 12) | Met for a build with no overlay; S4 owes the check with Steam running |
-| 15 | The Linux build runs in the Steam Linux Runtime the app chooses: 3.0, sniper. | S4, from the runtime's package manifest, 2026-11-10; "Linux", the platforms page's own, 2026-11-10 (summary: a runtime is chosen per branch) | `package --platform linux` refuses a library or symbol version newer than sniper's (S4, `xtask/src/platforms/elf.rs`) | Owed: CI's first Linux package run (`.github/workflows/packages.yml`); choosing the runtime is the maintainer's |
-| 16 | The build launches from Steam on every OS the store page lists. | "Review process", 2026-11-10 | macOS: the packaged game drew its title and a new game at 1280×800, headless (S4) | Owed: the Windows and Linux CI runs, and Valve's review |
+| 15 | The Linux build runs in the Steam Linux Runtime the app chooses: 3.0, sniper. | S4, from the runtime's package manifest, 2026-11-10; "Linux", the platforms page's own, 2026-11-10 (summary: a runtime is chosen per branch) | `package --platform linux` refuses a library or symbol version newer than sniper's (S4, `xtask/src/platforms/elf.rs`); CI builds it inside sniper's SDK, and the check passed there (`packages.yml`, run 43002018202, 2026-11-11) | Owed: a run under the runtime, from Steam (a Deck or a Linux machine); choosing the runtime is the maintainer's |
+| 16 | The build launches from Steam on every OS the store page lists. | "Review process", 2026-11-10 | macOS: the packaged game drew its title and a new game at 1280×800, headless (S4); Windows: CI draws the title from the package on WARP (`packages.yml`, run 43002018202) | Owed: Linux's packaged game drawing (CI's Linux job has no GPU), a launch from Steam itself, and Valve's review |
 | 17 | App and depot build scripts. | "Uploading to Steam", partner.steamgames.com/doc/sdk/uploading (S4) | `cargo xtask steampipe` writes them, one depot per OS (S4) | Met |
 | 18 | Windows builds need no Authenticode signature. | None found (S4) | | Met: not needed |
-| 19 | Deck: on-screen glyphs match the controller in use. | "Steam Deck compatibility review", partner.steamgames.com/doc/steamdeck/compat, 2026-11-10 (summary) | `GamepadFamily::Steam` tells Valve's controllers apart (S4) | Owed: A4 draws the glyphs |
+| 19 | Deck: on-screen glyphs match the controller in use. | "Steam Deck compatibility review", partner.steamgames.com/doc/steamdeck/compat, 2026-11-10 (summary) | `GamepadFamily::Steam` tells Valve's controllers apart (S4); the remap screens draw the pad in hand's glyphs (A4), a Deck's as it's printed: L1, R2, L3, the back grips L4 to R5 (`sapphire_controls::remap`'s `a_glyph_follows_the_pads_labels`, M4 Z3b) | Met here; that SDL names a Deck's pad as Steam's under Steam Input is owed to a Deck (S4) |
 | 20 | Deck: every screen works with the controller alone, under its default configuration. | same | The pad walk at 1280×800: `every_menu_walks_fits_and_comes_from_the_tables_by_every_device_at_every_aspect` (`game_ui/tests/menus.rs`); a conversation by pad: `a_pad_finds_the_hidden_answer_and_the_branch_back` (`game_ui/tests/dialogue.rs`) | Met |
 | 21 | Deck: text entry by Steam's keyboard, or the game's own controller entry. | same | No screen takes text (S4) | Met |
 | 22 | Deck: runs at 1280×800 (preferred) or 1280×720. | same | Every screen's golden at 1280×800 in both languages, `game-*-deck-*` (22 scenes, S4), and the [Deck's screenshots](#screenshots) | Met |
@@ -40,7 +42,7 @@
 | 27 | No device warnings on the Deck. | same (summary) | | Met as far as known: the game shows none of its own; a Deck confirms it with rule 26 |
 | 28 | The Steamworks account, the app credit fee, tax and bank details, and the store page's review, at least 7 business days before release. | "Review process", 2026-11-10; "Onboarding", as the scouts' note gives it | | Owed: the maintainer's account |
 | 29 | The upload: `steamcmd +login <account> +run_app_build <app build> +quit`, then the client icon and launch options in Steamworks. | S4, 2026-11-10 | `steampipe` writes `depots.txt` with each depot's files and launch option | Owed: the maintainer's account |
-| 30 | The Windows package: per-monitor DPI, VERSIONINFO and icon read back from the executable. | S4 (Steam asks for none of it; Windows' own conventions) | `package --platform windows` reads them back (S4, `pe.rs`) | Owed: CI's first Windows package run |
+| 30 | The Windows package: per-monitor DPI, VERSIONINFO and icon read back from the executable. | S4 (Steam asks for none of it; Windows' own conventions) | `package --platform windows` reads them back (S4, `pe.rs`), and CI reads the version as Windows does (`packages.yml`'s Windows job, run 43002018202, 2026-11-11) | Met |
 
 ## Owed to the maintainer
 
@@ -150,10 +152,10 @@ Valve runs the compatibility review itself and offers no tool for developers ("S
 | Valve's criterion | Evidence here | Status |
 |---|---|---|
 | **Input:** the default controller configuration reaches every part of the game. | SDL reads Steam Input's gamepad; every menu is walked by pad at 1280×800 (`every_menu_walks_fits_and_comes_from_the_tables_by_every_device_at_every_aspect`), and a conversation (`a_pad_finds_the_hidden_answer_and_the_branch_back`) | Met here; SDL's controller type under Steam Input is owed to a Deck (S4) |
-| **Input:** glyphs match the Deck's controls. | `GamepadFamily::Steam` (S4) | Owed: A4 draws the glyphs |
+| **Input:** glyphs match the Deck's controls. | `GamepadFamily::Steam` (S4), drawn as the Deck's buttons are printed on the remap screens (A4, Z3b) | Met here; SDL's type under Steam Input owed to a Deck |
 | **Input:** text entry. | No screen takes text | Met |
 | **Display:** 1280×800. | The `game-*-deck-*` goldens: every screen, both languages (S4); `store-shots`' `deck` size draws the game in play there | Met |
 | **Display:** the smallest text at least 9 px at 800p, 12 recommended. | `every_screens_smallest_text_is_legible_on_a_deck_and_everywhere_else`: 14.0 px, 10.9 at the smallest setting | Met |
 | **Performance:** a playable frame rate by default, 30 fps at 800p. | None: no Deck | Owed |
 | **Seamlessness:** no launcher; no warnings. | The game opens on its title | Met as far as known |
-| **System:** runs as a native Linux build. | Steam Linux Runtime 3.0's bounds, checked by `package --platform linux` (S4) | Owed: CI's first run, and a Deck |
+| **System:** runs as a native Linux build. | Steam Linux Runtime 3.0's bounds, checked by `package --platform linux` (S4) and passed in CI's sniper SDK (2026-11-11) | Owed: a Deck |

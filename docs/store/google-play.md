@@ -5,7 +5,9 @@
 - **The app ID** `com.example.sapphire.game` and the name are S1's placeholders until the maintainer chooses them.
 - **Related:** [the privacy policy](privacy-policy.md), [the App Store](apple.md), [Steam](steam.md).
 
-**Count:** 29 rules: 19 met here (five of them as drafts the maintainer enters), 10 owed: 8 to the maintainer's account or Play's own checks (5, 6, 18, 23–27), 1 to a person (16) and 1 to a later package (8).
+**Count:** 29 rules: 20 met here (five of them as drafts the maintainer enters), 9 owed: 8 to the maintainer's account or Play's own checks (5, 6, 18, 23–27) and 1 to a person (16).
+
+**Reviewed (M4 Z3b, 2026-11-11):** every met rule's test or command was found and its claim read against the code at d8b621cc. Rule 8 is met by the settings' privacy page, and the data safety answer is rechecked against P4's patcher.
 
 ## Rules
 
@@ -18,12 +20,12 @@
 | 5 | Uploads are signed with an upload key; Play App Signing holds the app's key. | S3, 2026-11-10 | `SAPPHIRE_UPLOAD_KEYSTORE` and its passwords sign the release (S3); without them it's the debug key, which `package` warns Play refuses | Owed: the maintainer's key |
 | 6 | Every app posts a privacy policy URL in Play Console, even one that accesses no personal data. | "User Data" policy, support.google.com/googleplay/android-developer/answer/10144311, 2026-11-10 | [privacy-policy.md](privacy-policy.md), a draft naming the developer, a contact, what's collected (nothing), and retention and deletion | Owed: the maintainer hosts it at a public, non-PDF URL |
 | 7 | The policy names the developer or the app as the listing does. | same | The draft's `[developer name]` and `[Game name]` | Met (draft) |
-| 8 | A privacy policy link or text inside the app too. | same | Nothing yet | Owed: a later package (as [Apple's rule 7](apple.md#rules)) |
+| 8 | A privacy policy link or text inside the app too. | same | The settings' Privacy policy page shows what the game collects and the policy's address (M4 Z3b), as [Apple's rule 7](apple.md#rules) | Met; the address is the maintainer's (rule 6) |
 | 9 | The data safety form, completed even by an app that collects nothing, with the policy's link. | "Provide information for Google Play's Data safety section", answer/10787469, 2026-11-10 (the first half verbatim, the rest a summary) | [Data safety](#data-safety) below | Met (draft); the maintainer enters it |
 | 10 | A content rating from IARC's questionnaire; an app without one is removed. | "Content ratings", answer/9898843, and "Complete the content rating questionnaire", answer/9859655, 2026-11-10 | [Content rating](#content-rating) below | Met (draft); the maintainer enters it |
 | 11 | Target audience and content: the age groups the app is for. | "Target audience and content", answer/9867159, 2026-11-10 | [Target audience](#target-audience-and-content) below: 13 and over, not designed for children | Met (draft) |
 | 12 | The ads declaration and app access instructions. | "Prepare your app for review", answer/9859455, 2026-11-10 | No ads; nothing is behind a sign-in | Met (draft) |
-| 13 | A permissions declaration for high-risk or sensitive permissions. | same | The badging lists `VIBRATE` and `INTERNET` only, both normal permissions (S3's `checks/badging.txt`) | Met: none to declare |
+| 13 | A permissions declaration for high-risk or sensitive permissions. | same | The badging lists `VIBRATE` and `INTERNET` only, both normal permissions (S3's `checks/badging.txt`); the manifest says why it asks for `INTERNET`: the patcher | Met: none to declare |
 | 14 | Store listing: name 30 characters, short description 80, full description 4000, full- and half-width characters counting alike. | "Add preview assets to showcase your app" and "Create and set up your app", answer/9859152, 2026-11-10 | [Store text](#store-text), held to the limits by `store_shots::tests::each_stores_text_fits_its_limits` | Met |
 | 15 | Metadata: no ranking or award claims, prices or promotions, no unattributed testimonials, no emoji, no calls to action or words like "best", "#1", "top" or "new" in the short description. | "Metadata" policy, answer/9898842, 2026-11-10 | The drafts say what's built and claim nothing else | Met |
 | 16 | The drafts read well to a Japanese player. | m4-plan §7 | | Owed: a native reader |
@@ -45,7 +47,7 @@
 
 1. **The identity:** the app ID (permanent once uploaded), the name and the icon.
 2. **The account:** Play Console, the app record, Play App Signing and the upload key, which enters `package` through `SAPPHIRE_UPLOAD_KEYSTORE` (rules 5, 23).
-3. **The privacy policy's URL** (rule 6), from [privacy-policy.md](privacy-policy.md), once the patch host's logs are settled; a link inside the game needs a later package (rule 8).
+3. **The privacy policy's URL** (rule 6), from [privacy-policy.md](privacy-policy.md), once the patch host's logs are settled, and the same address as `privacy-url` in the game's strings (rule 8, [apple.md](apple.md#owed-to-the-maintainer) item 4).
 4. **Play Console's App content page:** the data safety form, the content rating questionnaire, target audience, ads and app access, from the drafts below (rules 9–12).
 5. **The listing:** the drafts below, the screenshots, and a feature graphic (rule 18).
 6. **Testing:** the internal track, then a closed test of 12 testers for 14 days on a new personal account, then Production (rules 24, 25).
@@ -144,7 +146,7 @@ Play Console's data safety form, from [the privacy policy's audit](privacy-polic
 | Do you provide a way for users to request that their data is deleted? | Not asked once the answer above is No | Uninstalling deletes everything the game keeps |
 | Privacy policy | [privacy-policy.md](privacy-policy.md), at the maintainer's URL | |
 
-**Recheck when P4 lands.** The patch download sends requests with no identifier, but Play's help says approximate location inferred from an IP address must be declared, and that data processed only to answer a request in real time is still entered in the form though not shown on the listing (the help's verbatim half; its summarized half reads otherwise, so read the live page then). If the patch host keeps no logs, the answer stays "No"; if it keeps them, "Approximate location" and "Device or other IDs" need weighing.
+**Rechecked after P4 (M4 Z3b, 2026-11-11).** A build checks for a patch only once `platform/patch.toml` names a host, and today none is named, so the answer is "No". With a host, the download sends requests with no identifier, but Play's help says approximate location inferred from an IP address must be declared, and that data processed only to answer a request in real time is still entered in the form though not shown on the listing (the help's verbatim half; its summarized half reads otherwise, so read the live page then). If the patch host keeps no logs, the answer stays "No"; if it keeps them, "Approximate location" and "Device or other IDs" need weighing.
 
 ## Content rating
 

@@ -11,6 +11,8 @@
     settings, crash reports and the pipeline cache read, and SDL's file streams (stat, fstat, fstatat).
   - System boot time, 35F9.1 (elapsed time between events in the app): frame and audio timing in SDL,
     Luau, wgpu and cpal (mach_absolute_time).
+  - Disk space, E174.1 (whether there is room to write files): a patch checks the free space before it
+    assembles its packs (M4 P4, sapphire_platform's disk.rs; statvfs).
 
   The game tracks nobody and collects nothing.
 -->
@@ -32,6 +34,14 @@
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>35F9.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>E174.1</string>
 			</array>
 		</dict>
 	</array>

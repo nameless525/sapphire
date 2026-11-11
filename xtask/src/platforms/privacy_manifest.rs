@@ -416,15 +416,22 @@ mod tests {
         assert!(format!("{unknown:#}").contains("unknown field `NSPrivacyTrackingDomain`"), "{unknown:#}");
     }
 
-    /// The committed manifest, read as `package` reads it: the categories S0 found the game linking, and
-    /// nothing tracked or collected, which the store's privacy answers (S5) say.
+    /// The committed manifest, read as `package` reads it: the categories S0 found the game linking and P4's
+    /// free-space check (disk space), and nothing tracked or collected, which the store's privacy answers
+    /// (S5) say.
     #[test]
     fn the_games_manifest_declares_what_it_links_and_collects_nothing() {
         if std::env::consts::OS != "macos" {
             return;
         }
         let manifest = Manifest::read(&workspace::root().join(MANIFEST_FILE)).unwrap();
-        assert_eq!(manifest, Manifest::parse(DECLARED).unwrap());
+        let committed = DECLARED.replace(
+            r#""NSPrivacyAccessedAPITypeReasons": ["35F9.1"] }"#,
+            r#""NSPrivacyAccessedAPITypeReasons": ["35F9.1"] },
+            { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
+              "NSPrivacyAccessedAPITypeReasons": ["E174.1"] }"#,
+        );
+        assert_eq!(manifest, Manifest::parse(&committed).unwrap());
         assert!(!manifest.tracking);
         assert!(manifest.tracking_domains.is_empty());
         assert_eq!(manifest.collected_data_types, 0);

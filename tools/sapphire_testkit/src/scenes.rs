@@ -242,7 +242,7 @@ macro_rules! gate_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 306] {
+pub fn scenes() -> [Scene; 307] {
     [
         Scene {
             name: "turntable-start",
@@ -4066,6 +4066,7 @@ pub fn scenes() -> [Scene; 306] {
         // The boot screen (M4 H2), a boot two fifths done, at the widest and narrowest aspects it ships at.
         game_scene!("game-boot-tablet-en", "boot", "1024x768", "en"),
         game_scene!("game-boot-ultrawide-ja", "boot", "1680x720", "ja"),
+        game_scene!("game-boot-update-wide-ja", "boot-update", "1280x720", "ja"),
         // The game's own show on its flow (M3 G1) in the Lantern Ward, through the sandbox's `--game`, which
         // stands the game as it ships, its look unpinned but for its tier, which a device would choose
         // (CI's Metal runner Desktop-Low, a Mac Desktop-High): its title over the run it would continue, and

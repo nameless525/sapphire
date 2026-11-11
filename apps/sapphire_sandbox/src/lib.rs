@@ -160,7 +160,8 @@
 //!   `lookdev-town-day`, `-hero`, `-golden`, `-blue` and `-night`, `lookdev-street-night` and
 //!   `lookdev-face` show it.
 //! - `--ui-game <stem>`: one of the game's screens (M3 U7, `content/ui/<stem>.ui.ron`: `title`, `pause`,
-//!   `settings`, `character`, `dialogue` or `hud`, and `boot`, the boot screen, M4 H2) on its sample model over
+//!   `settings`, `character`, `dialogue` or `hud`, `boot`, the boot screen, M4 H2, and `boot-update`, it
+//!   downloading an update, M4 P4) on its sample model over
 //!   whatever the scene draws, as the `game-*` goldens show them. Hot reload and live link's `push_document` take edits of its document.
 //!   `--ui-locale <tag>` picks its language (`en`, by default, or `ja`), `--ui-scale <scale>` its pixels per
 //!   point, and `--ui-pseudo` turns on pseudo-localization. It opens at the clock's start: `--ui-time

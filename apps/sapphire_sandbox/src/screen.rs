@@ -6,7 +6,7 @@
 //! conversation in place of its sample: `content/dialogue/<name>.dialogue.ron`, cooked, that many lines in
 //! (M3 Q2b), found by its name with no list in code (M3 Z5e), and the Lantern Ward guide's with no name.
 //! `boot`, the boot screen (M4 H2), isn't a menu, so it's found by name beside the menus document, on a
-//! sample of a boot under way.
+//! sample of a boot under way; `boot-update` is the same screen downloading an update (M4 P4).
 
 use bevy_reflect::PartialReflect;
 use game_ui::boot::{BOOT_SCREEN, BootModel};
@@ -125,6 +125,8 @@ const SETTLED: f32 = 60.0;
 
 /// The boot screen's name, which the menus document doesn't have: it shows before they load.
 pub const BOOT: &str = "boot";
+/// The boot screen downloading an update (M4 P4): its document is the boot screen's.
+pub const BOOT_UPDATE: &str = "boot-update";
 
 impl ScreenOptions {
     /// The screen named `screen` as it settles, in English.
@@ -132,7 +134,7 @@ impl ScreenOptions {
     pub fn of(screen: &str) -> Self {
         Self {
             screen: screen.to_owned(),
-            source: format!("content/ui/{screen}.ui.ron"),
+            source: format!("content/ui/{}.ui.ron", if screen == BOOT_UPDATE { BOOT } else { screen }),
             locale: "en".to_owned(),
             pseudo: false,
             scale: 1.0,
@@ -175,9 +177,10 @@ impl ScreenOptions {
         gpu: &GpuContext,
         atlas: Atlas,
     ) -> Result<(ScreenStack, bool), AppInitError> {
-        if self.screen == BOOT {
+        if self.screen == BOOT || self.screen == BOOT_UPDATE {
             let assets = content.load_screens(&[BOOT_SCREEN], renderer, gpu)?;
-            let sample = Box::new(BootModel::sample());
+            let sample =
+                Box::new(if self.screen == BOOT { BootModel::sample() } else { BootModel::update_sample() });
             let stack = self.stack_on(assets, atlas, sample).map_err(AppInitError::msg)?;
             return Ok((stack, false));
         }

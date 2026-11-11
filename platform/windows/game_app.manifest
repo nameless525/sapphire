@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
   The game's application manifest (M4 S4), linked into game_app.exe as resource 1 of RT_MANIFEST by
-  game_app's build script; `cargo xtask package --platform windows` reads it back from the executable.
+  game_app's build script; a Windows package (`cargo xtask package`) reads it back from the executable.
+  XML allows no double hyphen in a comment, and Windows refuses to start a program whose manifest has one.
   Per-monitor DPI v2 from process start, before SDL or the crash monitor makes a window; Windows 10 and 11;
   the UTF-8 code page; paths past MAX_PATH where the system allows them (std makes its own long paths, and
   SDL's buffers that stop at MAX_PATH fail rather than overflow); and no elevation.

@@ -20,9 +20,12 @@
 //! - **Tiles.** The 10° field is a third of the capture's height tall, with WCAG's 341:256 shape, so it's
 //!   341 × 256 at 1024 × 768, and on a wider screen it's sized by the height, as the eye's field is sized by
 //!   the viewing distance, not the screen's width: the smaller field there is the stricter. The capture is
-//!   cut into cells of a hundredth of the field's height, 0.1°, the finest pattern WCAG still counts, and a
-//!   cell's mean colour in linear light is what it shows: averaging is what lets a balanced pattern finer than
-//!   that through, as WCAG lets it. A capture under 300 pixels tall has a cell a pixel.
+//!   cut into cells of a hundredth of the field's height, and a cell's mean colour in linear light is what it
+//!   shows: averaging is what lets a balanced pattern finer than a cell through, as WCAG lets one finer than
+//!   0.1° through. A cell is finer than that: reading the field as 10° across its 341 pixels, its 256 are
+//!   7.5° and a cell 0.075°. That's the stricter side, kept because A3 measured the fights with it (M4 Z3c):
+//!   a balanced pattern between 0.075° and 0.1° counts here and not under WCAG. A capture under 300 pixels
+//!   tall has a cell a pixel.
 //! - **Transitions.** Each cell's relative luminance is followed through its peaks and valleys: a leg from
 //!   one to the next of at least 0.1, with its darker end under 0.8, is a general transition, brightening or
 //!   darkening, counted on the frame where it gets there. A cell's red transitions are its changes of more
@@ -63,7 +66,7 @@ pub const MOST_TRANSITIONS: u32 = 6;
 pub const MOST_AREA: f32 = 0.25;
 /// Relative luminance under which a cell is black, with no chromaticity of its own (our floor).
 pub const BLACK: f32 = 0.005;
-/// Cells to a field's height: 0.1° each.
+/// Cells to a field's height: 0.075° each, the field's 256 of 341 being 7.5° of its 10°.
 const FIELD_CELLS: u32 = 100;
 /// Fields to a capture's height.
 const FIELDS_HIGH: u32 = 3;

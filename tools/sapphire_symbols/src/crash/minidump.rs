@@ -18,7 +18,7 @@ pub(super) fn read(bytes: Vec<u8>, reader: &Reader<'_>) -> anyhow::Result<Crash>
     let modules: MinidumpModuleList = dump.get_stream().context("the minidump lists no modules")?;
     for module in modules.iter() {
         if let Some(id) = module.debug_identifier() {
-            reader.module(&id.breakpad().to_string())?;
+            reader.module(&module.code_file(), &id.breakpad().to_string())?;
         }
     }
     let provider = Named { symbolizer: &reader.symbolizer, packaged: reader.packaged };

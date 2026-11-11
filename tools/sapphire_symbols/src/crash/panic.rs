@@ -57,7 +57,7 @@ pub(super) fn read(text: &str, reader: &Reader<'_>) -> anyhow::Result<Crash> {
         // Every frame is a return address: the call is the byte before.
         let frame = match containing(&modules, address) {
             Some(loaded) => {
-                let module = reader.module(&loaded.id)?;
+                let module = reader.module(&loaded.name, &loaded.id)?;
                 let offset = address - loaded.base;
                 reader.frame(address, &loaded.name, module, offset, offset.saturating_sub(1))
             }

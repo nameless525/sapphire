@@ -16,6 +16,7 @@ mod minidump;
 mod panic;
 mod protobuf;
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -79,7 +80,9 @@ pub fn read(report: &Path, packaged: &[Packaged], store: &Store) -> anyhow::Resu
     } else {
         anyhow::bail!("{} isn't a minidump, a panic report, a signal record or a tombstone", report.display())
     };
-    crash.with_context(|| format!("in {}", report.display()))
+    let mut crash = crash.with_context(|| format!("in {}", report.display()))?;
+    crash.summary.extend(reader.other_builds.into_inner());
+    Ok(crash)
 }
 
 /// What every reader looks frames up with.
@@ -87,17 +90,38 @@ pub(crate) struct Reader<'a> {
     packaged: &'a [Packaged],
     store: &'a Store,
     symbolizer: Symbolizer,
+    /// A line for each module the crash names by a file a package shipped but by another build's ID.
+    other_builds: RefCell<Vec<String>>,
 }
 
 impl<'a> Reader<'a> {
     fn new(packaged: &'a [Packaged], store: &'a Store) -> Self {
         let symbolizer = Symbolizer::new(SimpleSymbolSupplier::new(vec![store.root.clone()]));
-        Self { packaged, store, symbolizer }
+        Self { packaged, store, symbolizer, other_builds: RefCell::default() }
     }
 
     /// The packaged module a crash names by `id` (its debug ID or build ID), with its `.sym` in the store.
-    fn module(&self, id: &str) -> anyhow::Result<Option<&'a Packaged>> {
+    /// `name` is the module's file as the crash names it: where a package shipped that file from another
+    /// build, the crash's summary says so, since that module's frames then go unread.
+    fn module(&self, name: &str, id: &str) -> anyhow::Result<Option<&'a Packaged>> {
         let Some(packaged) = self.packaged.iter().find(|packaged| packaged.is(id)) else {
+            let stem = |file: &str| leaf(file).split('.').next().unwrap_or_default().to_owned();
+            let shipped = self
+                .packaged
+                .iter()
+                .find(|packaged| !stem(name).is_empty() && stem(&packaged.module.debug_file) == stem(name));
+            if let Some(shipped) = shipped {
+                let line = format!(
+                    "{} is build {id}, and the packages kept {} from another build ({}): its frames aren't read",
+                    leaf(name),
+                    shipped.module.debug_file,
+                    shipped.module.debug_id
+                );
+                let mut lines = self.other_builds.borrow_mut();
+                if !lines.contains(&line) {
+                    lines.push(line);
+                }
+            }
             return Ok(None);
         };
         self.store.ensure(packaged)?;
@@ -259,6 +283,41 @@ mod tests {
         assert_eq!(local("/sapphirex/a.rs"), "/sapphirex/a.rs");
         assert_eq!(local("/rustc/abc/library/core/src/ptr.rs"), "/rustc/abc/library/core/src/ptr.rs");
         assert!(PathMap::parse("nothing").is_err());
+    }
+
+    /// A report from another build of a module a package shipped reads none of its frames with the
+    /// package's symbols, and says why.
+    #[test]
+    fn another_builds_report_says_so() {
+        let dir = std::env::temp_dir().join(format!("sapphire_symbols-other-build-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("0001794417504344-41.panic-0.txt");
+        std::fs::write(
+            &report,
+            "Sapphire panic report v2\napp: game\nrelease: 1\nrun: 0001794417504344-41\nthread: main\n\
+             location: a.rs:1:1\n\nmodules:\n0x0000000100000000 1B6B168B-1122-3344-5566-77889900AABB game_app\n\
+             0x0000000180000000 0A0B168B-0000-0000-0000-000000000000 libsystem_c.dylib\n\n\
+             frames:\n0x0000000100001234\n0x0000000180000010\n\nmessage:\nboom\n\nbacktrace:\n",
+        )
+        .unwrap();
+        let packaged = Packaged {
+            module: crate::Module {
+                format: crate::Format::MachO,
+                arch: "arm64",
+                debug_file: "game_app".into(),
+                debug_id: "0A6B168B11223344556677889900AABB0".parse().unwrap(),
+                code_id: "0A6B168B11223344556677889900AABB".into(),
+            },
+            symbols: dir.join("game_app.dSYM"),
+        };
+        let store = Store { root: dir.join("store") };
+        let crash = read(&report, &[packaged], &store).unwrap();
+        let other: Vec<&String> =
+            crash.summary.iter().filter(|line| line.contains("another build")).collect();
+        assert_eq!(other.len(), 1, "{:?}", crash.summary);
+        assert!(other[0].starts_with("game_app is build 1B6B168B-1122"), "{other:?}");
+        assert!(crash.threads[0].frames.iter().all(|frame| frame.location.function.is_none()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

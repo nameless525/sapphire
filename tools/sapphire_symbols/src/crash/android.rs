@@ -36,7 +36,7 @@ pub(super) fn read_signal_record(text: &str, reader: &Reader<'_>) -> anyhow::Res
             Some(loaded) => {
                 let offset = address - loaded.base;
                 let lookup = if return_address { offset.saturating_sub(1) } else { offset };
-                reader.frame(address, &loaded.name, reader.module(&loaded.id)?, offset, lookup)
+                reader.frame(address, &loaded.name, reader.module(&loaded.name, &loaded.id)?, offset, lookup)
             }
             None => Frame { address, ..Frame::default() },
         };
@@ -160,7 +160,7 @@ fn tombstone_frame(bytes: &[u8], reader: &Reader<'_>) -> anyhow::Result<Frame> {
     let rel_pc = get(FRAME_REL_PC).and_then(Value::varint).unwrap_or(0);
     let file = get(FRAME_FILE).and_then(Value::string).unwrap_or_default();
     let build_id = get(FRAME_BUILD_ID).and_then(Value::string).unwrap_or_default();
-    let module = if build_id.is_empty() { None } else { reader.module(&build_id)? };
+    let module = if build_id.is_empty() { None } else { reader.module(&file, &build_id)? };
     let mut frame = reader.frame(pc, &file, module, rel_pc, rel_pc);
     if frame.location.function.is_none() {
         frame.location.function = get(FRAME_FUNCTION).and_then(Value::string).filter(|name| !name.is_empty());

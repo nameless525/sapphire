@@ -928,11 +928,12 @@ impl GameMenus {
         if self.remap.is_some() {
             return;
         }
-        let Some(device) = RemapDevice::of_binding(&binding) else { return };
-        if sapphire_controls::source_of(&self.bindings, &binding).is_none() {
-            tracing::error!(target: crate::LOG_TARGET, %binding, "the bindings have no binding by that name to remap");
+        // A row a game's document adds for the pause's binding, or a stick's, remaps nothing: its file would
+        // drop it anyway (`sapphire_controls::layered`).
+        let Some(device) = sapphire_controls::remappable(&self.base, &binding) else {
+            tracing::error!(target: crate::LOG_TARGET, %binding, "the bindings have no binding by that name that a player remaps");
             return;
-        }
+        };
         let shown = &mut self.remap_model;
         shown.binding = action_key(&binding);
         shown.press = format!("remap-press-{}", device.name());

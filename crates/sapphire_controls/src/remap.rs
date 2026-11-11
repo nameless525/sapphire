@@ -12,6 +12,8 @@ use sapphire_input::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::COMBAT_CONTEXT;
+
 /// A device whose bindings a player remaps. A binding is the device's when its name ends in the device's
 /// [`suffix`](Self::suffix), as `light.gamepad` and `light.keyboard` do in `combat_bindings.ron`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -89,11 +91,25 @@ pub struct Remapped {
     pub source: Source,
 }
 
+/// The device of `name`, if a player may remap it in `base` (M4 Z3c): a binding of the combat context named
+/// for its device, which the document has reading a press that device's remaps take ([`RemapDevice::accepts`])
+/// and not the press that ends a remap ([`RemapDevice::cancel`]). So the pause's, the resume's and the way
+/// out's, and the sticks that move and look, are the document's alone, whatever a player's file says.
+#[must_use]
+pub fn remappable(base: &InputBindings, name: &str) -> Option<RemapDevice> {
+    let device = RemapDevice::of_binding(name)?;
+    let combat = base.contexts.iter().find(|context| context.name == COMBAT_CONTEXT)?;
+    let binding = combat.bindings.iter().find(|binding| binding.name.as_deref() == Some(name))?;
+    (device.accepts(&binding.source) && binding.source != device.cancel()).then_some(device)
+}
+
 /// `base` with the player's bindings over it: each of `remapped` reading its source, and each action in
 /// `toggled` toggling ([`Trigger::Toggle`]) where it read a level (`Down` or `DownFromPress`). A remap the
 /// document can't take is dropped with a log line, never an error, since a player's file is input from
-/// outside: a binding the document has no name for, or a source another device's or one a binding can't
-/// read (a stick). So is a toggle of an action that isn't a button.
+/// outside: a binding no player remaps ([`remappable`]), a source another device's or one a binding can't
+/// read (a stick), or one the remap screens refuse, a remap's cancel or a press a binding no player remaps
+/// keeps ([`Taken::Kept`]), so no file can take the pause from its buttons or share them. So is a toggle of
+/// an action that isn't a button.
 #[must_use]
 pub fn layered(base: &InputBindings, remapped: &[Remapped], toggled: &[&str]) -> InputBindings {
     let mut bindings = base.clone();
@@ -103,16 +119,22 @@ pub fn layered(base: &InputBindings, remapped: &[Remapped], toggled: &[&str]) ->
             .iter_mut()
             .flat_map(|context| &mut context.bindings)
             .find(|binding| binding.name.as_deref() == Some(remap.binding.as_str()));
-        let device = RemapDevice::of_binding(&remap.binding);
+        let device = remappable(base, &remap.binding);
+        let kept = |device: RemapDevice| {
+            remap.source == device.cancel()
+                || matches!(taken(base, &remap.binding, &remap.source), Some(Taken::Kept { .. }))
+        };
         match (found, device) {
-            (Some(binding), Some(device)) if device.accepts(&remap.source) => {
+            (Some(binding), Some(device)) if device.accepts(&remap.source) && !kept(device) => {
                 binding.source = remap.source.clone()
             }
-            (found, _) => {
-                let why = if found.is_none() {
-                    "the bindings have no binding by that name"
-                } else {
-                    "it can't read that"
+            (found, device) => {
+                let why = match (found, device) {
+                    (Some(_), Some(device)) if device.accepts(&remap.source) => {
+                        "the pause or the camera keeps that"
+                    }
+                    (Some(_), Some(_)) => "it can't read that",
+                    _ => "the bindings have no binding by that name that a player remaps",
                 };
                 tracing::warn!(
                     target: crate::LOG_TARGET,
@@ -192,7 +214,7 @@ pub fn taken<'a>(bindings: &'a InputBindings, binding: &str, source: &Source) ->
             continue;
         }
         match other.name.as_deref() {
-            Some(name) if device.is_some() && RemapDevice::of_binding(name) == device => {
+            Some(name) if device.is_some() && remappable(bindings, name) == device => {
                 found = found.or(Some(Taken::Swappable { binding: name, action: &other.action }));
             }
             _ => return Some(Taken::Kept { action: &other.action }),
@@ -398,6 +420,40 @@ mod tests {
         );
         assert_eq!(source_of(&layered, "dodge.gamepad"), source_of(&base, "dodge.gamepad"), "a stick");
         sapphire_input::InputMap::new(layered).expect("it compiles");
+    }
+
+    /// M4 Z3c: a player's file is input from outside, and none can move the pause, the resume or the way out,
+    /// turn a stick into a button, or give a verb a press a remap screen refuses: Start and Escape, or one the
+    /// pause or the camera keeps. Before, any binding named for a device took any of its presses.
+    #[test]
+    fn no_saved_remap_takes_the_pause_the_camera_or_a_stick() {
+        let base = default_bindings().expect("the default bindings");
+        let refused = [
+            remap("pause.gamepad", Source::Pad(PadButton::West)),
+            remap("pause.keyboard", Source::Key(Key::J)),
+            remap("resume.gamepad", Source::Pad(PadButton::North)),
+            remap("resume.keyboard", Source::Key(Key::K)),
+            remap("leave.gamepad", Source::Pad(PadButton::South)),
+            remap("leave.keyboard", Source::Key(Key::Return)),
+            remap("look.gamepad", Source::Pad(PadButton::DpadUp)),
+            remap("move.gamepad", Source::Pad(PadButton::DpadDown)),
+            remap("light.gamepad", Source::Pad(PadButton::Start)),
+            remap("light.keyboard", Source::Key(Key::Escape)),
+            remap("heavy.keyboard", Source::Key(Key::P)),
+            remap("dodge.gamepad", Source::Pad(PadButton::Back)),
+            remap("jump.keyboard", Source::Key(Key::Up)),
+        ];
+        for remap in &refused {
+            assert_eq!(layered(&base, std::slice::from_ref(remap), &[]), base, "{remap:?}");
+        }
+        assert_eq!(layered(&base, &refused, &[]), base);
+        let names = ["pause.gamepad", "pause.keyboard", "resume.gamepad", "leave.keyboard", "look.gamepad"];
+        for name in names.into_iter().chain(["move.gamepad"]) {
+            assert_eq!(remappable(&base, name), None, "{name}");
+        }
+        assert_eq!(remappable(&base, "light.gamepad"), Some(RemapDevice::Gamepad));
+        assert_eq!(remappable(&base, "ultimate.gamepad"), Some(RemapDevice::Gamepad), "a trigger");
+        assert_eq!(remappable(&base, "move_forward.keyboard"), Some(RemapDevice::Keyboard));
     }
 
     #[test]

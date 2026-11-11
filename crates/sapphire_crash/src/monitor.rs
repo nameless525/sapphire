@@ -499,10 +499,83 @@ impl DumpWriter {
     }
 
     fn finish(&self, dump: MinidumpBinary, final_name: &str) -> io::Result<()> {
+        // Only Linux's dumps carry the environment. `dump.file` only writes; this one reads the
+        // stream directory too. It's a second open of the partial, whose (advisory) lock stays with
+        // `dump.file`. A dump whose environment can't be cleared is still kept: it's still the only
+        // record of the crash.
+        #[cfg(target_os = "linux")]
+        {
+            let cleared = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&dump.path)
+                .and_then(|mut file| clear_environment(&mut file));
+            if let Err(err) = cleared {
+                eprintln!(
+                    "sapphire_crash monitor: the minidump keeps its environment, which couldn't be cleared: {err}"
+                );
+            }
+        }
         dump.file.sync_all()?;
         // The partial's lock goes with `dump.file`, after the rename.
         fs::rename(&dump.path, self.dump_dir.join(final_name))
     }
+}
+
+/// The minidump stream that holds the crashed process's environment (Breakpad's
+/// `MD_LINUX_ENVIRON`), which `minidump-writer` copies from `/proc/<pid>/environ` on Linux. The
+/// environment is the player's, not the game's: their user name and home, and whatever tokens their
+/// session exports, none of which reading a crash needs.
+#[cfg(any(target_os = "linux", test))]
+const LINUX_ENVIRON_STREAM: u32 = 0x4767_0007;
+
+/// A minidump's signature, `MDMP`, as its first four bytes read in little-endian order.
+#[cfg(any(target_os = "linux", test))]
+const MINIDUMP_SIGNATURE: u32 = 0x504d_444d;
+
+/// Zeroes every environment stream of the minidump in `file`, keeping its size and layout, and
+/// returns how many bytes it cleared. A file that isn't a minidump, or whose directory runs past
+/// its end, is an error, and nothing is written.
+#[cfg(any(target_os = "linux", test))]
+fn clear_environment(file: &mut (impl Read + io::Write + io::Seek)) -> io::Result<u64> {
+    use io::SeekFrom;
+    let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("a minidump {what}"));
+    let length = file.seek(SeekFrom::End(0))?;
+    if read_word(file, 0)? != MINIDUMP_SIGNATURE {
+        return Err(invalid("without its signature"));
+    }
+    let (count, directory) = (u64::from(read_word(file, 8)?), u64::from(read_word(file, 12)?));
+    if directory + count * 12 > length {
+        return Err(invalid("whose stream directory runs past its end"));
+    }
+    let mut environments = Vec::new();
+    for index in 0..count {
+        let entry = directory + index * 12;
+        if read_word(file, entry)? == LINUX_ENVIRON_STREAM {
+            let (size, at) = (u64::from(read_word(file, entry + 4)?), u64::from(read_word(file, entry + 8)?));
+            if at + size > length {
+                return Err(invalid("whose environment runs past its end"));
+            }
+            environments.push((at, size));
+        }
+    }
+    let mut cleared = 0;
+    for (at, size) in environments {
+        file.seek(SeekFrom::Start(at))?;
+        io::copy(&mut io::repeat(0).take(size), file)?;
+        cleared += size;
+    }
+    file.flush()?;
+    Ok(cleared)
+}
+
+/// The little-endian `u32` at `at` in `file`.
+#[cfg(any(target_os = "linux", test))]
+fn read_word(file: &mut (impl Read + io::Seek), at: u64) -> io::Result<u32> {
+    let mut word = [0u8; 4];
+    file.seek(io::SeekFrom::Start(at))?;
+    file.read_exact(&mut word)?;
+    Ok(u32::from_le_bytes(word))
 }
 
 impl ServerHandler for DumpWriter {
@@ -552,6 +625,34 @@ mod tests {
         assert!(backoff.sleep());
         assert!(backoff.sleep());
         assert_eq!(backoff.delay, MAX_POLL_DELAY, "capped");
+    }
+
+    /// A minidump as `minidump-writer` lays one out on Linux: the header, then a directory naming a
+    /// command line stream and the environment's.
+    #[test]
+    fn a_dump_keeps_no_environment() {
+        let environment = b"USER=you\0HOME=/home/you\0TOKEN=secret\0";
+        let command_line = b"game_app\0--crash\0fault\0";
+        let mut dump = Vec::new();
+        for word in [MINIDUMP_SIGNATURE, 0xa793, 2, 32, 0, 0, 0, 0] {
+            dump.extend_from_slice(&word.to_le_bytes());
+        }
+        let (environ_at, command_at) = (32 + 24, 32 + 24 + environment.len());
+        for word in [0x4767_0006, command_line.len(), command_at, 0x4767_0007, environment.len(), environ_at]
+        {
+            dump.extend_from_slice(&u32::try_from(word).unwrap().to_le_bytes());
+        }
+        dump.extend_from_slice(environment);
+        dump.extend_from_slice(command_line);
+        let mut file = io::Cursor::new(dump);
+        assert_eq!(clear_environment(&mut file).unwrap(), environment.len() as u64);
+        let dump = file.into_inner();
+        assert_eq!(dump[environ_at..command_at], vec![0; environment.len()][..]);
+        assert_eq!(&dump[command_at..], command_line);
+
+        assert!(clear_environment(&mut io::Cursor::new(b"PK\x03\x04 not a dump".to_vec())).is_err());
+        let mut cut = dump[..40].to_vec();
+        assert!(clear_environment(&mut io::Cursor::new(&mut cut)).is_err());
     }
 
     #[test]

@@ -55,6 +55,12 @@ mod desktop {
         println!("{}", crash::render(&dumped, &maps));
         // The fault's address, which Linux's dumps read as 0 before (`sapphire_crash`'s `siginfo`).
         assert!(dumped.summary[0].ends_with(" at 0x10"), "{:?}", dumped.summary);
+        if cfg!(target_os = "linux") {
+            // The player's environment stays out of the dump (`sapphire_crash`'s monitor clears it).
+            let raw = minidump::Minidump::read_path(&dump.1).expect("the minidump");
+            let environment = raw.get_raw_stream(0x4767_0007).expect("an environment stream");
+            assert!(environment.iter().all(|&byte| byte == 0), "the dump keeps its environment");
+        }
         let first = &dumped.threads[0].frames[0];
         assert_names(first, "forced_fault", "*address = ");
 

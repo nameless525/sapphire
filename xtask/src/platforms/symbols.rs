@@ -15,10 +15,13 @@
 //!
 //! **Paths (M4 C2).** A build records where its sources were: in panic locations in the binary and in every
 //! line of its symbols. A shipping build remaps this machine's directories to fixed names, rustc's paths
-//! with `--remap-path-prefix` and C and C++'s with `-ffile-prefix-map` (MSVC has none): the workspace to
+//! with `--remap-path-prefix` and C and C++'s with `-ffile-prefix-map`: the workspace to
 //! [`WORKSPACE_PREFIX`], Cargo's home (the registry's crates) to [`CARGO_HOME_PREFIX`], a target directory
-//! outside the workspace to `/target`, and Android's NDK to `/ndk`. [`scan`] proves that no package carries
-//! them or the builder's home directory, and `cargo xtask symbolicate` maps the names back ([`symbolicate`]).
+//! outside the workspace to `/target`, and Android's NDK to `/ndk`. MSVC has no map, so its `/d1trimfile`
+//! cuts the directories from the C and C++ `__FILE__`s the executable holds (Luau's asserts name theirs),
+//! and its PDB names this machine (no flag of link.exe's remaps the directory it ran in or its objects'
+//! paths): a Windows package's scan reads only what ships. [`scan`] proves that no package carries them or
+//! the builder's home directory, and `cargo xtask symbolicate` maps the names back ([`symbolicate`]).
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -106,6 +109,7 @@ pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String,
     };
     let mut rustflags = Vec::new();
     let mut cflags = Vec::new();
+    let msvc = target == Target::Windows;
     for remap in remaps {
         let local = remap.local.to_str().with_context(|| format!("{} isn't UTF-8", remap.local.display()))?;
         // Cargo and cc-rs split these variables at whitespace.
@@ -115,16 +119,18 @@ pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String,
              split at spaces"
         );
         rustflags.push(format!("--remap-path-prefix={local}={}", remap.shipped));
-        cflags.push(format!("-ffile-prefix-map={local}={}", remap.shipped));
+        cflags.push(if msvc {
+            format!("/d1trimfile:{local}")
+        } else {
+            format!("-ffile-prefix-map={local}={}", remap.shipped)
+        });
     }
     let triple = triple(target);
     let upper = triple.to_uppercase().replace('-', "_");
     env.push((format!("CARGO_TARGET_{upper}_RUSTFLAGS"), rustflags.join(" ").into()));
-    if target != Target::Windows {
-        let lower = triple.replace('-', "_");
-        env.push((format!("CFLAGS_{lower}"), cflags.join(" ").into()));
-        env.push((format!("CXXFLAGS_{lower}"), cflags.join(" ").into()));
-    }
+    let lower = triple.replace('-', "_");
+    env.push((format!("CFLAGS_{lower}"), cflags.join(" ").into()));
+    env.push((format!("CXXFLAGS_{lower}"), cflags.join(" ").into()));
     Ok(env)
 }
 
@@ -320,7 +326,7 @@ mod tests {
     }
 
     /// Each target's own variables carry the remaps, so `.cargo/config.toml`'s flags for it still apply.
-    /// MSVC gets no `-ffile-prefix-map`, which it doesn't know.
+    /// MSVC, which has no `-ffile-prefix-map`, trims the directories from `__FILE__` instead.
     #[test]
     fn shipping_builds_remap_local_paths() {
         let remaps = [
@@ -340,7 +346,13 @@ mod tests {
         let ios = link_env(Target::IosSim, &remaps).unwrap();
         assert!(ios.iter().any(|(name, _)| name == "CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUSTFLAGS"));
         let windows = link_env(Target::Windows, &remaps).unwrap();
-        assert!(!windows.iter().any(|(name, _)| name.starts_with("CFLAGS") || name.starts_with("CXXFLAGS")));
+        let windows_cxx = windows
+            .iter()
+            .find(|(name, _)| name.starts_with("CXXFLAGS_") && name.ends_with("_pc_windows_msvc"));
+        assert_eq!(
+            windows_cxx.and_then(|(_, value)| value.to_str()),
+            Some("/d1trimfile:/work/engine /d1trimfile:/u/ana/.cargo")
+        );
 
         let spaced = [Remap { local: PathBuf::from("/my work"), shipped: WORKSPACE_PREFIX }];
         assert!(link_env(Target::MacOs, &spaced).is_err());

@@ -233,7 +233,10 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     let (app_path, symbols_dir) = (stage.join(&made.app), stage.join("symbols"));
     let mut shipped = vec![app_path.as_path()];
     for dir in [&symbols_dir, &unpacked] {
-        if dir.exists() {
+        // MSVC's link writes into the PDB the directory it ran in and every object's path, which nothing
+        // remaps: a Windows package's PDB names this machine. No store takes one, so it stays the
+        // maintainer's, and the scan reads what ships.
+        if dir.exists() && !(target == Target::Windows && *dir == symbols_dir) {
             shipped.push(dir);
         }
     }

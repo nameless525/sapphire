@@ -315,10 +315,19 @@ impl Drop for ResetOnDrop {
 }
 
 /// Runs the crash event for the calling thread as if it had crashed.
+///
+/// On Linux, crash-handler holds its handler's lock while the event runs, outside any signal
+/// handler, so a fault on this thread meanwhile would enter its signal handler and wait on that lock
+/// forever. The fault signals are blocked on this thread for the request, and a blocked fault is
+/// delivered with its default action: the process ends in that signal. (A real crash's handler runs
+/// with them blocked already: crash-handler's `sa_mask`.) A signal sent from elsewhere waits until
+/// the request is done. An `abort` would still re-enter, as glibc unblocks `SIGABRT`; the event
+/// calls nothing that aborts.
 fn simulate_crash(handler: &CrashHandler) -> bool {
     #[cfg(target_os = "linux")]
     {
         use crash_handler::Signal;
+        let _blocked = FaultsBlocked::new();
         matches!(handler.simulate_signal(Signal::Abort as u32), CrashEventResult::Handled(true))
     }
     #[cfg(target_os = "macos")]
@@ -421,6 +430,38 @@ fn connected_to(fd: libc::c_int, name: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn socket_length<T>() -> libc::socklen_t {
     libc::socklen_t::try_from(size_of::<T>()).unwrap_or(libc::socklen_t::MAX)
+}
+
+/// The synchronous fault signals, blocked on the calling thread until this is dropped, which puts
+/// its earlier mask back.
+#[cfg(target_os = "linux")]
+struct FaultsBlocked(libc::sigset_t);
+
+#[cfg(target_os = "linux")]
+impl FaultsBlocked {
+    fn new() -> Self {
+        // SAFETY: both sets are plain storage that `sigemptyset` and `pthread_sigmask` fill in; the
+        // signals added are valid ones.
+        unsafe {
+            let mut faults: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&raw mut faults);
+            for signal in [libc::SIGILL, libc::SIGTRAP, libc::SIGBUS, libc::SIGFPE, libc::SIGSEGV] {
+                libc::sigaddset(&raw mut faults, signal);
+            }
+            let mut previous: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &raw const faults, &raw mut previous);
+            Self(previous)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for FaultsBlocked {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is the mask `pthread_sigmask` gave back in `new`, on this thread: the value
+        // lives in `simulate_crash`'s frame.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &raw const self.0, ptr::null_mut()) };
+    }
 }
 
 /// Connects to the monitor, retrying while it starts up.
@@ -756,6 +797,52 @@ mod tests {
         assert!(clear_environment(&mut io::Cursor::new(b"PK\x03\x04 not a dump".to_vec())).is_err());
         let mut cut = dump[..40].to_vec();
         assert!(clear_environment(&mut io::Cursor::new(&mut cut)).is_err());
+    }
+
+    /// A fault while a panic's dump is being asked for ends the process in its signal. Unblocked,
+    /// it entered crash-handler's signal handler, which waited forever on the lock that the request
+    /// held. The fault happens in a child: this test binary again, running only this test.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fault_during_a_panic_dump_ends_the_process() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+
+        const CHILD: &str = "SAPPHIRE_CRASH_TEST_FAULT_IN_DUMP";
+        const POLL: Duration = Duration::from_millis(20);
+        if std::env::var_os(CHILD).is_some() {
+            let fault = |_: &crash_handler::CrashContext| {
+                // SAFETY: none, by design: a write through a null pointer raises SIGSEGV.
+                unsafe { ptr::null_mut::<u32>().write_volatile(0xDEAD) };
+                CrashEventResult::Handled(true)
+            };
+            // SAFETY: none, by design: the event faults, which is what the test checks.
+            let event = unsafe { crash_handler::make_crash_event(fault) };
+            let handler = CrashHandler::attach(event).expect("attach the handler");
+            simulate_crash(&handler);
+            std::process::exit(0);
+        }
+        let mut child = Command::new(std::env::current_exe().expect("current exe"))
+            .args(["--exact", "monitor::tests::a_fault_during_a_panic_dump_ends_the_process", "--nocapture"])
+            .env(CHILD, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the child");
+        let mut waited = Duration::ZERO;
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll the child") {
+                break status;
+            }
+            if waited >= Duration::from_secs(30) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the fault waited on crash-handler's lock for {waited:?}");
+            }
+            thread::sleep(POLL);
+            waited += POLL;
+        };
+        assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}");
     }
 
     #[test]

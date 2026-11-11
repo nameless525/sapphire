@@ -56,10 +56,13 @@
 //!
 //! # Choosing a tier
 //!
-//! A [`DeviceProfile`] (the device class, the GPU's kind and API from [`GpuCaps`], and the RAM)
-//! is matched against each tier's `select_when` rules: a device gets the highest tier of its class
-//! whose rules it meets, and each class's lowest tier has none, so every device gets one. Never by
-//! OS (rule R7). Three sources override it, in this order:
+//! A [`DeviceProfile`] (the device class, the GPU's kind, API, vendor and name from [`GpuCaps`], and
+//! the RAM) is matched against each tier's `select_when` rules: a device gets the highest tier of its
+//! class whose rules it meets, and each class's lowest tier has none, so every device gets one. A
+//! desktop adapter the [`GpuTable`] knows (`gpus.ron`, M4 T4; [`gpus`]) takes no higher than its
+//! family's ceiling, so an old or low-end GPU with plenty of RAM isn't Desktop-High; a handheld PC
+//! takes its class's lowest. [`TierTable::select`] says which of these chose ([`SelectedBy`]), and
+//! [`Quality::new`] logs it. Never by OS (rule R7). Three sources override it, in this order:
 //!
 //! 1. the `r.tier` cvar, unless `auto` (development builds, from the overlay);
 //! 2. the player's setting ([`QualitySettings::tier`]; the sandbox's `--tier`);
@@ -80,10 +83,9 @@
 //!
 //! # Later milestones
 //!
-//! - **Selection by measurement:** the rules are a first heuristic (spec §3's numbers are all
-//!   Proposals). They can't see VRAM, so a GTX 1060 machine with 16 GB of RAM qualifies for
-//!   Desktop-High; a device database keyed by adapter, and a startup benchmark, refine them on
-//!   the reference devices (M2).
+//! - **Selection by measurement:** the rules and the GPU table are a first heuristic from specs
+//!   (spec §3's numbers are all Proposals); a startup benchmark, and measurements on the reference
+//!   devices, would refine them.
 //! - **Applying a tier in place:** a tier change makes a new renderer, to which the asset server
 //!   uploads every asset again, reading meshes and textures from their packs (M1 A4). Once
 //!   content is large enough for that to show, settings that don't rebuild pipelines (bloom
@@ -97,6 +99,7 @@
 //!   upscaler's input range (R7) in place of a fixed floor.
 
 pub mod dynamic;
+pub mod gpus;
 pub mod ladder;
 
 use std::num::NonZeroU32;
@@ -119,6 +122,7 @@ use crate::{
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
 };
+pub use gpus::{GpuFamily, GpuTable, GpuTableError, GpuVendor};
 pub use ladder::{Cause, Ladder, LadderState, LadderStats, LadderStep, Rung};
 
 /// The shipped table (see the module docs).
@@ -365,11 +369,17 @@ impl From<wgpu::Backend> for GpuBackend {
 }
 
 /// What tier selection knows about a device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceProfile {
     pub class: FormFactor,
     pub gpu: GpuKind,
     pub backend: GpuBackend,
+    /// The adapter's PCI vendor id (`wgpu::AdapterInfo::vendor`): 0 where the API reports none, as
+    /// Metal does.
+    pub vendor: u32,
+    /// The adapter's name as its driver reports it (`wgpu::AdapterInfo::name`), by which the
+    /// [`GpuTable`] knows its family.
+    pub adapter: String,
     /// Physical RAM in MiB (`sapphire_platform::SystemInfo::ram_mib`): shared with the GPU on
     /// Apple silicon and phones.
     pub ram_mib: u32,
@@ -389,6 +399,8 @@ impl DeviceProfile {
             class,
             gpu: caps.adapter.device_type.into(),
             backend: caps.backend().into(),
+            vendor: caps.adapter.vendor,
+            adapter: caps.adapter.name.clone(),
             ram_mib,
             timestamps: caps.timestamp_query,
             handheld: false,
@@ -595,17 +607,71 @@ impl TierTable {
         self.tiers.iter().find(|tier| tier.id == id).expect("a checked table holds every tier")
     }
 
-    /// The highest tier of `device`'s class that it qualifies for; a handheld's lowest.
-    pub fn select(&self, device: &DeviceProfile) -> TierId {
+    /// The highest tier of `device`'s class that it qualifies for, at most the ceiling `gpus` gives a
+    /// desktop adapter it knows; a handheld's lowest. Says which chose.
+    pub fn select(&self, gpus: &GpuTable, device: &DeviceProfile) -> Selection {
+        let lowest = TierId::lowest(device.class);
         if device.handheld {
-            return TierId::lowest(device.class);
+            return Selection { tier: lowest, by: SelectedBy::Handheld };
         }
-        self.tiers
+        let rules = self
+            .tiers
             .iter()
             .filter(|tier| tier.id.class() == device.class && tier.qualifies(device))
             .map(|tier| tier.id)
             .max()
-            .unwrap_or(TierId::lowest(device.class))
+            .unwrap_or(lowest);
+        let known = match device.class {
+            FormFactor::Desktop => gpus.find(device.vendor, &device.adapter),
+            FormFactor::Mobile => None,
+        };
+        match known {
+            Some(family) if family.ceiling < rules => Selection {
+                tier: family.ceiling,
+                by: SelectedBy::Gpu { family: family.family.clone(), rules },
+            },
+            _ => Selection {
+                tier: rules,
+                by: SelectedBy::Rules { gpu: known.map(|family| family.family.clone()) },
+            },
+        }
+    }
+}
+
+/// The tier [`TierTable::select`] gives a device, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub tier: TierId,
+    pub by: SelectedBy,
+}
+
+/// Which rule chose a device's tier, for the log and a bug report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectedBy {
+    /// A handheld PC, which starts on its class's lowest tier.
+    Handheld,
+    /// The tiers' `select_when` rules (the GPU's kind and API, and the RAM). `gpu` names the
+    /// [`GpuTable`]'s family where it knows the adapter, its ceiling no lower than the rules' tier.
+    Rules { gpu: Option<String> },
+    /// The [`GpuTable`]'s `family`, whose ceiling is below the tier the `rules` give.
+    Gpu { family: String, rules: TierId },
+}
+
+impl std::fmt::Display for SelectedBy {
+    /// `the GPU table's GeForce GTX row, under the rules' Desktop-High`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Handheld => f.write_str("a handheld PC's lowest tier"),
+            Self::Rules { gpu: None } => {
+                f.write_str("the rules (GPU kind and RAM), an adapter the GPU table doesn't know")
+            }
+            Self::Rules { gpu: Some(family) } => {
+                write!(f, "the rules (GPU kind and RAM), within the GPU table's {family} row")
+            }
+            Self::Gpu { family, rules } => {
+                write!(f, "the GPU table's {family} row, under the rules' {rules}")
+            }
+        }
     }
 }
 
@@ -971,6 +1037,8 @@ pub fn choose_tier(cvar: TierChoice, setting: Option<TierId>, device: TierId) ->
 pub struct Quality {
     table: TierTable,
     device: TierId,
+    /// Which rule chose the device's tier, for the log.
+    selected_by: SelectedBy,
     settings: QualitySettings,
     active: ActiveTier,
     /// `r.tier` when last read, so each change applies once.
@@ -1001,9 +1069,9 @@ pub struct QualityStats {
 }
 
 impl Quality {
-    /// Selects `device`'s tier in `table` and applies the overrides.
-    pub fn new(table: TierTable, device: &DeviceProfile, settings: QualitySettings) -> Self {
-        let device_tier = table.select(device);
+    /// Selects `device`'s tier in `table`, under `gpus`' ceilings, and applies the overrides.
+    pub fn new(table: TierTable, gpus: &GpuTable, device: &DeviceProfile, settings: QualitySettings) -> Self {
+        let Selection { tier: device_tier, by: selected_by } = table.select(gpus, device);
         let seen = TIER.get();
         let active = choose_tier(seen, settings.tier, device_tier);
         let dynamic = DynamicResolution::new(table.get(active.id).resolution_budget(), device.timestamps);
@@ -1013,12 +1081,14 @@ impl Quality {
             tier = active.id.name(),
             source = ?active.source,
             device_tier = device_tier.name(),
+            by = %selected_by,
             ?device,
             "quality tier"
         );
         Self {
             table,
             device: device_tier,
+            selected_by,
             settings,
             active,
             seen,
@@ -1173,7 +1243,14 @@ impl Quality {
         self.previous_ladder = Some(std::mem::replace(&mut self.ladder, ladder));
         self.active = ActiveTier { id, source };
         self.reset_dynamic();
-        tracing::info!(target: LOG_TARGET, tier = id.name(), from = previous.id.name(), ?source, "quality tier changed");
+        tracing::info!(
+            target: LOG_TARGET,
+            tier = id.name(),
+            from = previous.id.name(),
+            ?source,
+            device_by = %self.selected_by,
+            "quality tier changed"
+        );
         Some(previous)
     }
 
@@ -1229,7 +1306,14 @@ impl Quality {
         let ladder = Ladder::new(self.tier());
         self.previous_ladder = Some(std::mem::replace(&mut self.ladder, ladder));
         self.reset_dynamic();
-        tracing::info!(target: LOG_TARGET, tier = next.id.name(), from = previous.id.name(), "quality tier changed");
+        tracing::info!(
+            target: LOG_TARGET,
+            tier = next.id.name(),
+            from = previous.id.name(),
+            source = ?next.source,
+            device_by = %self.selected_by,
+            "quality tier changed"
+        );
         Some(previous)
     }
 
@@ -1298,8 +1382,23 @@ fn is_zero(value: &u32) -> bool {
 mod tests {
     use super::*;
 
+    /// A device whose adapter reports no vendor and no name, which the GPU table never knows.
     fn device(class: FormFactor, gpu: GpuKind, backend: GpuBackend, ram_gib: u32) -> DeviceProfile {
-        DeviceProfile { class, gpu, backend, ram_mib: ram_gib * 1024, timestamps: true, handheld: false }
+        DeviceProfile {
+            class,
+            gpu,
+            backend,
+            vendor: 0,
+            adapter: String::new(),
+            ram_mib: ram_gib * 1024,
+            timestamps: true,
+            handheld: false,
+        }
+    }
+
+    /// `profile` with its adapter named `name` by `vendor`.
+    fn named(profile: DeviceProfile, vendor: u32, name: &str) -> DeviceProfile {
+        DeviceProfile { vendor, adapter: name.into(), ..profile }
     }
 
     /// The shipped table with `edit` applied to `id`'s tier, unchecked.
@@ -1508,7 +1607,8 @@ mod tests {
         use GpuBackend::{Dx12, Metal, Vulkan};
         use GpuKind::{Cpu, Discrete, Integrated, Virtual};
         let table = TierTable::shipped();
-        let pick = |profile: DeviceProfile| table.select(&profile);
+        let gpus = GpuTable::shipped();
+        let pick = |profile: DeviceProfile| table.select(&gpus, &profile).tier;
         // Desktop-High: a discrete GPU, or Apple silicon, with 16 GB.
         assert_eq!(pick(device(Desktop, Discrete, Vulkan, 32)), TierId::DesktopHigh);
         assert_eq!(pick(device(Desktop, Discrete, Dx12, 16)), TierId::DesktopHigh);
@@ -1528,16 +1628,96 @@ mod tests {
         assert_eq!(pick(device(Mobile, Discrete, Vulkan, 64)).class(), Mobile);
     }
 
+    /// M4 T4: a desktop adapter the GPU table knows takes no higher than its family's ceiling, and the
+    /// selection says which rule chose.
+    #[test]
+    fn a_known_gpu_takes_no_higher_than_its_family() {
+        use FormFactor::{Desktop, Mobile};
+        use GpuKind::{Discrete, Integrated};
+        let table = TierTable::shipped();
+        let gpus = GpuTable::shipped();
+        let pick = |profile: DeviceProfile| table.select(&gpus, &profile);
+        let discrete = |ram_gib, vendor, name| {
+            named(device(Desktop, Discrete, GpuBackend::Vulkan, ram_gib), vendor, name)
+        };
+        let rules = |gpu: Option<&str>| SelectedBy::Rules { gpu: gpu.map(Into::into) };
+        // A GTX 1060 with 16 GB, which the RAM rule alone made Desktop-High.
+        let gtx_1060 = discrete(16, 0x10DE, "NVIDIA GeForce GTX 1060 6GB");
+        assert_eq!(
+            pick(gtx_1060.clone()),
+            Selection {
+                tier: TierId::DesktopLow,
+                by: SelectedBy::Gpu { family: "GeForce GTX".into(), rules: TierId::DesktopHigh },
+            }
+        );
+        // A known high-end card: Desktop-High, with the RAM rule still deciding under its ceiling.
+        let rtx_3070 = |ram_gib| discrete(ram_gib, 0x10DE, "NVIDIA GeForce RTX 3070");
+        assert_eq!(
+            pick(rtx_3070(32)),
+            Selection { tier: TierId::DesktopHigh, by: rules(Some("GeForce RTX")) }
+        );
+        assert_eq!(pick(rtx_3070(8)), Selection { tier: TierId::DesktopLow, by: rules(Some("GeForce RTX")) });
+        let rx_6700 = discrete(16, 0x1002, "AMD Radeon RX 6700 XT");
+        assert_eq!(pick(rx_6700).tier, TierId::DesktopHigh);
+        // An adapter the table doesn't know falls to the rules unchanged.
+        let unknown = discrete(16, 0x10DE, "NVIDIA GeForce RTX 6090");
+        assert_eq!(pick(unknown), Selection { tier: TierId::DesktopHigh, by: rules(None) });
+        // Apple silicon on Metal reports no vendor: the name alone. An M1 with 16 GB is Desktop-Low, an M2 Pro
+        // Desktop-High.
+        let apple = |ram_gib, name| named(device(Desktop, Integrated, GpuBackend::Metal, ram_gib), 0, name);
+        assert_eq!(pick(apple(16, "Apple M1")).tier, TierId::DesktopLow);
+        assert_eq!(pick(apple(16, "Apple M2 Pro")).tier, TierId::DesktopHigh);
+        // Phones never read the table, and a handheld keeps its own rule.
+        let phone = named(device(Mobile, Integrated, GpuBackend::Metal, 8), 0, "Apple M1");
+        assert_eq!(pick(phone), Selection { tier: TierId::MobileHigh, by: rules(None) });
+        let handheld = discrete(32, 0x10DE, "NVIDIA GeForce RTX 4090").handheld(true);
+        assert_eq!(pick(handheld), Selection { tier: TierId::DesktopLow, by: SelectedBy::Handheld });
+        // The player's tier, and `r.tier` over it (`overrides_take_precedence_in_order`), still win.
+        let chosen = QualitySettings { tier: Some(TierId::DesktopHigh), ..QualitySettings::default() };
+        let quality = Quality::new(table.clone(), &gpus, &gtx_1060, chosen);
+        assert_eq!(quality.active(), ActiveTier { id: TierId::DesktopHigh, source: TierSource::Setting });
+        assert_eq!(quality.stats().device_tier, TierId::DesktopLow);
+    }
+
+    /// M4 T4: the adapters goldens are drawn on select exactly what they did before the GPU table, at any RAM:
+    /// CI's lavapipe and WARP, macOS runners' paravirtual GPU, and the Apple M5 the Metal goldens come from.
+    #[test]
+    fn golden_adapters_select_as_before_the_gpu_table() {
+        use GpuBackend::{Dx12, Metal, Vulkan};
+        use GpuKind::{Cpu, Integrated, Virtual};
+        let table = TierTable::shipped();
+        let shipped = GpuTable::shipped();
+        let none = GpuTable::new(Vec::new()).unwrap();
+        let adapters = [
+            (Cpu, Vulkan, 0x10005, "llvmpipe (LLVM 15.0.7, 256 bits)", TierId::DesktopLow),
+            (Cpu, Dx12, 0x1414, "Microsoft Basic Render Driver", TierId::DesktopLow),
+            (Virtual, Metal, 0, "Apple Paravirtual device", TierId::DesktopLow),
+            (Integrated, Metal, 0, "Apple M5", TierId::DesktopHigh),
+        ];
+        for (gpu, backend, vendor, name, at_24_gib) in adapters {
+            for ram_gib in [4, 8, 16, 24, 64] {
+                let profile = named(device(FormFactor::Desktop, gpu, backend, ram_gib), vendor, name);
+                let selection = table.select(&shipped, &profile);
+                assert_eq!(selection, table.select(&none, &profile), "{name} with {ram_gib} GiB");
+                assert_eq!(selection.by, SelectedBy::Rules { gpu: None }, "{name}");
+            }
+            let profile = named(device(FormFactor::Desktop, gpu, backend, 24), vendor, name);
+            assert_eq!(table.select(&shipped, &profile).tier, at_24_gib, "{name}: this Mac's RAM");
+        }
+    }
+
     #[test]
     fn a_handheld_starts_on_its_class_s_lowest_tier() {
         let table = TierTable::shipped();
+        let gpus = GpuTable::shipped();
+        let pick = |profile: &DeviceProfile| table.select(&gpus, profile).tier;
         // A Steam Deck, as `sapphire_platform` names it: Desktop-Low, whatever a later handheld's GPU and RAM.
         let deck = device(FormFactor::Desktop, GpuKind::Integrated, GpuBackend::Vulkan, 16).handheld(true);
-        assert_eq!(table.select(&deck), TierId::DesktopLow);
+        assert_eq!(pick(&deck), TierId::DesktopLow);
         let stronger = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32).handheld(true);
-        assert_eq!(table.select(&stronger), TierId::DesktopLow);
-        assert_eq!(table.select(&stronger.handheld(false)), TierId::DesktopHigh);
-        let quality = Quality::new(table, &deck, QualitySettings::default());
+        assert_eq!(pick(&stronger), TierId::DesktopLow);
+        assert_eq!(pick(&stronger.handheld(false)), TierId::DesktopHigh);
+        let quality = Quality::new(table, &gpus, &deck, QualitySettings::default());
         assert_eq!(quality.active(), ActiveTier { id: TierId::DesktopLow, source: TierSource::Device });
     }
 
@@ -1594,7 +1774,7 @@ mod tests {
     /// A [`Quality`] for a desktop that selects Desktop-High, with `settings`.
     fn quality(settings: QualitySettings) -> Quality {
         let profile = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32);
-        Quality::new(TierTable::shipped(), &profile, settings)
+        Quality::new(TierTable::shipped(), &GpuTable::shipped(), &profile, settings)
     }
 
     /// At a low base scale the controller stops where the renderer's minimum does: its factor
@@ -1767,7 +1947,8 @@ mod tests {
     fn tier_changes_wait_for_the_game() {
         use sapphire_core::thermal::ThermalState;
         let device = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32);
-        let mut quality = Quality::new(TierTable::shipped(), &device, QualitySettings::default());
+        let mut quality =
+            Quality::new(TierTable::shipped(), &GpuTable::shipped(), &device, QualitySettings::default());
         assert_eq!(quality.wanted_tier(), None);
         assert_eq!(quality.change_tier(Duration::ZERO), None, "nothing to change");
         // Critical heat walks the ladder down to its tier rung: wanted, not taken.

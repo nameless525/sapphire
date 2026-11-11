@@ -18,7 +18,9 @@ use sapphire_platform::{AppInitError, Host};
 use sapphire_render::color_vision::ColorVision;
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
-use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierId, TierTable};
+use sapphire_render::quality::{
+    DeviceProfile, FrameTiming, GpuTable, Quality, QualitySettings, TierId, TierTable,
+};
 use sapphire_render::{MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 use sapphire_time::Stopwatch;
@@ -180,7 +182,7 @@ impl StageDesc {
         let device = host.system_info();
         let profile =
             DeviceProfile::new(device.device_class, gpu.caps(), device.ram_mib).handheld(device.handheld);
-        let quality = Quality::new(TierTable::shipped(), &profile, settings);
+        let quality = Quality::new(TierTable::shipped(), &GpuTable::shipped(), &profile, settings);
         let settings = quality.render_settings();
         Self {
             format,

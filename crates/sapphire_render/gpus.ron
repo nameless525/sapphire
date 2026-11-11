@@ -1,0 +1,160 @@
+// The desktop GPUs tier selection knows (M4 T4), compiled into the renderer:
+// `sapphire_render::quality::GpuTable::shipped`, whose module docs say how a name matches. Each family
+// names the highest desktop tier it may take; the tiers' rules (`tiers.ron`, `select_when`) still
+// decide under it, so a row only ever lowers a tier. An adapter no row knows selects by the rules alone.
+//
+// Seeded from the vendors' public specs, with nothing measured: every ceiling is a Proposal, as spec §3's
+// numbers are. A family takes Desktop-Low when its vendor's specs put it below Desktop-High's reference
+// class (RTX 3070, RX 6700 XT, M2 Pro; spec §3.1):
+//
+// - an architecture from before 2018: NVIDIA's GTX, GT and MX boards (Maxwell, Pascal, and Turing's GTX
+//   16 series), AMD's GCN boards (R7, R9, Polaris, Vega, Radeon VII);
+// - under 8 GB of memory on the vendor's standard board (RTX 2060 at 6 GB, the RTX 3060 Laptop GPU at
+//   6 GB, the RX 5600 XT at 6 GB, Arc A380 at 6 GB); Desktop-High's budget is 6 GB of VRAM, which
+//   leaves a 6 GB board no headroom for the driver and the OS;
+// - each generation's entry boards, whatever their memory: NVIDIA's x050, AMD's RX 5300, 5500, 6300,
+//   6400 and 6500, Intel's A310 to A380;
+// - Apple's base M1 and M2, the chips below the M2 Pro (spec §3.1 names "M1 8 GB" a Desktop-Low
+//   reference).
+//
+// The rest of each vendor's families are listed at Desktop-High, which leaves them to the rules, so the
+// log names them and a longer name can override a shorter one (`GeForce RTX 2060 SUPER`, 8 GB, over
+// `GeForce RTX 2060`). Integrated GPUs other than Apple's need no row: the rules never give them
+// Desktop-High. Apple's M3 and later are left to the rules: Apple publishes core counts but no figure a
+// line across generations could be drawn on, and the M5 is where every golden and bench here ran on
+// Desktop-High's settings. The software and paravirtual adapters CI draws goldens on (lavapipe, WARP,
+// Apple's paravirtual device) match no row.
+(
+    type: "sapphire::render::GpuTable",
+    version: 1,
+    data: (
+        families: [
+            (
+                family: "GeForce GTX",
+                vendor: Nvidia,
+                names: ["GeForce GTX"],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "GeForce GT and MX",
+                vendor: Nvidia,
+                names: ["GeForce GT", "GeForce MX"],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "GeForce RTX, under 8 GB or entry",
+                vendor: Nvidia,
+                names: [
+                    "GeForce RTX 2050",
+                    "GeForce RTX 2060",
+                    "GeForce RTX 3050",
+                    "GeForce RTX 3060 Laptop GPU",
+                    "GeForce RTX 4050",
+                    "GeForce RTX 5050",
+                ],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "GeForce RTX",
+                vendor: Nvidia,
+                names: [
+                    "GeForce RTX 2060 SUPER",
+                    "GeForce RTX 2070",
+                    "GeForce RTX 2080",
+                    "GeForce RTX 3060",
+                    "GeForce RTX 3070",
+                    "GeForce RTX 3080",
+                    "GeForce RTX 3090",
+                    "GeForce RTX 4060",
+                    "GeForce RTX 4070",
+                    "GeForce RTX 4080",
+                    "GeForce RTX 4090",
+                    "GeForce RTX 5060",
+                    "GeForce RTX 5070",
+                    "GeForce RTX 5080",
+                    "GeForce RTX 5090",
+                ],
+                ceiling: DesktopHigh,
+            ),
+            (
+                family: "Radeon GCN",
+                vendor: Amd,
+                names: [
+                    "Radeon R7",
+                    "Radeon R9",
+                    "Radeon RX 460",
+                    "Radeon RX 470",
+                    "Radeon RX 480",
+                    "Radeon RX 550",
+                    "Radeon RX 560",
+                    "Radeon RX 570",
+                    "Radeon RX 580",
+                    "Radeon RX 590",
+                    "Radeon RX Vega",
+                    "Radeon VII",
+                ],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "Radeon RDNA, under 8 GB or entry",
+                vendor: Amd,
+                names: [
+                    "Radeon RX 5300",
+                    "Radeon RX 5500",
+                    "Radeon RX 5600",
+                    "Radeon RX 6300",
+                    "Radeon RX 6400",
+                    "Radeon RX 6500",
+                ],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "Radeon RDNA",
+                vendor: Amd,
+                names: [
+                    "Radeon RX 5700",
+                    "Radeon RX 6600",
+                    "Radeon RX 6650",
+                    "Radeon RX 6700",
+                    "Radeon RX 6750",
+                    "Radeon RX 6800",
+                    "Radeon RX 6850",
+                    "Radeon RX 6900",
+                    "Radeon RX 6950",
+                    "Radeon RX 7600",
+                    "Radeon RX 7650",
+                    "Radeon RX 7700",
+                    "Radeon RX 7800",
+                    "Radeon RX 7900",
+                    "Radeon RX 9060",
+                    "Radeon RX 9070",
+                ],
+                ceiling: DesktopHigh,
+            ),
+            (
+                family: "Arc, under 8 GB or entry",
+                vendor: Intel,
+                names: ["Arc A310", "Arc A350", "Arc A370", "Arc A380"],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "Arc",
+                vendor: Intel,
+                names: ["Arc A570", "Arc A580", "Arc A730", "Arc A750", "Arc A770", "Arc B570", "Arc B580"],
+                ceiling: DesktopHigh,
+            ),
+            (
+                family: "Apple M1 and M2",
+                vendor: Apple,
+                names: ["Apple M1", "Apple M2"],
+                ceiling: DesktopLow,
+            ),
+            (
+                family: "Apple M1 and M2 Pro, Max and Ultra",
+                vendor: Apple,
+                names: ["Apple M1 Pro", "Apple M1 Max", "Apple M1 Ultra", "Apple M2 Pro", "Apple M2 Max", "Apple M2 Ultra"],
+                ceiling: DesktopHigh,
+            ),
+        ],
+    ),
+)

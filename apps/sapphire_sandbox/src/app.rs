@@ -13,7 +13,7 @@ use sapphire_platform::{
     SurfaceHandle, Window, WindowDesc, WindowEvent,
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
-use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
+use sapphire_render::quality::{DeviceProfile, FrameTiming, GpuTable, Quality, TierTable};
 use sapphire_render::{AmbientOcclusion, MaterialHandle, MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
@@ -148,7 +148,8 @@ impl App for SandboxApp {
         // The tier comes from the device the GPU stack runs on; the renderer is made for it.
         let profile =
             DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib).handheld(info.handheld);
-        let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
+        let quality =
+            Quality::new(TierTable::shipped(), &GpuTable::shipped(), &profile, options.quality_settings());
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it, and on Android its frame limiter holds it and the window asks for it.
         platform.set_frame_rate(quality.frame_rate());

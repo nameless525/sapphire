@@ -31,7 +31,7 @@ use std::process::Command;
 use anyhow::{Context as _, bail, ensure};
 
 use super::App;
-use super::apple::{self, BundleLayout};
+use super::apple::{self, BundleLayout, check_command, plist_json, verify_signature};
 use super::privacy_manifest::{self, Linked, Manifest};
 use crate::version::Build;
 use crate::workspace;
@@ -98,29 +98,7 @@ pub fn finish_app(layout: &BundleLayout, app: &App, device: bool, checks: &Path)
     let report = privacy_manifest::check(&Manifest::read(&manifest_path)?, &Linked::scan(&executable)?)?;
     write(&checks.join("required-reason-apis.txt"), &report)?;
 
-    let entitlements = workspace::root().join(ENTITLEMENTS_FILE);
-    workspace::run(
-        Command::new("codesign")
-            .args(["--force", "--sign", "-", "--timestamp=none", "--entitlements"])
-            .arg(&entitlements)
-            .arg(&layout.root),
-    )?;
-    verify_signature(&layout.root, checks)?;
-    let signed = checks.join("entitlements.plist");
-    let read_back = workspace::output(
-        Command::new("codesign").args(["--display", "--entitlements", "-", "--xml"]).arg(&layout.root),
-    )?;
-    write(&signed, &read_back)?;
-    let (wanted, signed) = (plist_json(&entitlements)?, plist_json(&signed)?);
-    ensure!(
-        signed == wanted,
-        "the app was signed with entitlements {signed}, not {ENTITLEMENTS_FILE}'s {wanted}"
-    );
-    ensure!(
-        signed.get("get-task-allow") != Some(&serde_json::Value::Bool(true)),
-        "{ENTITLEMENTS_FILE} makes the app debuggable (get-task-allow), which no store takes"
-    );
-    Ok(())
+    apple::sign_for_store(&layout.root, ENTITLEMENTS_FILE, apple::Runtime::Plain, checks)
 }
 
 /// Moves the device app `app_name` and its one dSYM (`dsyms`, paths in `stage`) from `stage` into
@@ -453,13 +431,6 @@ fn find_plists(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `codesign --verify --strict --deep` on the app, its output kept in `checks/codesign.txt`.
-fn verify_signature(app: &Path, checks: &Path) -> anyhow::Result<()> {
-    let mut verify = Command::new("codesign");
-    verify.args(["--verify", "--strict", "--deep", "--verbose=2"]).arg(app);
-    check_command(&mut verify, &checks.join("codesign.txt"))
-}
-
 /// Fails unless the executable's UUIDs (one per architecture) are its dSYM's: a dSYM from another link,
 /// even of the same source, symbolicates nothing.
 fn check_uuids(executable: &Path, dwarf: &Path, checks: &Path) -> anyhow::Result<()> {
@@ -536,28 +507,6 @@ fn has_line_in(atos: &str, file: &str) -> bool {
     location.rsplit_once(':').is_some_and(|(path, line)| {
         path.ends_with(file) && !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit())
     })
-}
-
-/// Runs a check, keeping the command and everything it printed in `out` (`checks/<name>.txt`), with paths
-/// relative to the package, and fails with that if it fails.
-fn check_command(command: &mut Command, out: &Path) -> anyhow::Result<()> {
-    let line = workspace::shell_line(command);
-    let output = command.output().with_context(|| format!("failed to start `{line}`"))?;
-    let printed = format!(
-        "$ {line}\n{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let package = out.parent().and_then(Path::parent).context("a check's output is in checks/")?;
-    write(out, &printed.replace(&format!("{}/", package.display()), ""))?;
-    ensure!(output.status.success(), "`{line}` failed ({}):\n{printed}", output.status);
-    Ok(())
-}
-
-/// A plist as JSON, through `plutil`.
-fn plist_json(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let json = workspace::output(Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(path))?;
-    serde_json::from_str(&json).with_context(|| format!("`plutil` read {} as {json}", path.display()))
 }
 
 /// A value of a plist this module writes.

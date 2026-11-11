@@ -1,5 +1,10 @@
 //! Desktop and iOS entry point. Android enters through the `SDL_main` exported by the library, which
 //! picks the windowed or the offscreen game the same way, by the launching intent's arguments.
+//!
+//! A package's build (`cargo xtask package`, which the build script sees) is a GUI program on Windows, so
+//! nothing opens a console beside the game; the attribute means nothing on other targets.
+
+#![cfg_attr(sapphire_packaged, windows_subsystem = "windows")]
 
 use std::process::ExitCode;
 

@@ -1,5 +1,7 @@
-//! Shared Apple bundling: Info.plist templates, `.app` assembly and ad-hoc signing.
+//! Shared Apple bundling: Info.plist templates, `.app` assembly and ad-hoc signing, and a store package's
+//! signature, checked: what iOS's archive (M4 S2) and macOS's Steam bundle (M4 S4) share.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,19 +127,19 @@ pub fn assemble(
 ) -> anyhow::Result<()> {
     workspace::remove_dir_if_exists(&layout.root)?;
     for dir in [&layout.executable_dir, &layout.resources_dir] {
-        std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     }
-    std::fs::write(&layout.info_plist, info_plist)
+    fs::write(&layout.info_plist, info_plist)
         .with_context(|| format!("failed to write {}", layout.info_plist.display()))?;
     for (language, name) in app.display_name.by_language() {
         let dir = layout.resources_dir.join(format!("{language}.lproj"));
-        std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
         let path = dir.join("InfoPlist.strings");
-        std::fs::write(&path, info_plist_strings(name))
+        fs::write(&path, info_plist_strings(name))
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
     let bundled_exe = layout.executable_dir.join(&app.package);
-    std::fs::copy(executable, &bundled_exe)
+    fs::copy(executable, &bundled_exe)
         .with_context(|| format!("failed to copy {} into the bundle", executable.display()))?;
     workspace::copy_dir(content, &layout.resources_dir.join("content"))
 }
@@ -146,6 +148,81 @@ pub fn assemble(
 /// on Apple Silicon; distribution signing and notarization come with `xtask package`.
 pub fn codesign_ad_hoc(bundle: &Path) -> anyhow::Result<()> {
     workspace::run(Command::new("codesign").args(["--force", "--sign", "-", "--timestamp=none"]).arg(bundle))
+}
+
+/// Whether a store signature asks for the hardened runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runtime {
+    /// iOS's: the platform imposes its own.
+    Plain,
+    /// macOS's `--options runtime`, which notarization requires.
+    Hardened,
+}
+
+/// Signs a store package's app ad hoc with the entitlements in `entitlements_file` (relative to the
+/// workspace), verifies it (`checks/codesign.txt`), and reads its entitlements back from the signature
+/// (`checks/entitlements.plist`): they must be the file's, and never make the app debuggable. A store's own
+/// identity replaces the ad hoc one later, with the same entitlements.
+pub fn sign_for_store(
+    root: &Path,
+    entitlements_file: &str,
+    runtime: Runtime,
+    checks: &Path,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(checks).with_context(|| format!("failed to create {}", checks.display()))?;
+    let entitlements = workspace::root().join(entitlements_file);
+    let mut sign = Command::new("codesign");
+    sign.args(["--force", "--sign", "-", "--timestamp=none"]);
+    if runtime == Runtime::Hardened {
+        sign.args(["--options", "runtime"]);
+    }
+    workspace::run(sign.arg("--entitlements").arg(&entitlements).arg(root))?;
+    verify_signature(root, checks)?;
+    let signed = checks.join("entitlements.plist");
+    let read_back = workspace::output(
+        Command::new("codesign").args(["--display", "--entitlements", "-", "--xml"]).arg(root),
+    )?;
+    fs::write(&signed, &read_back).with_context(|| format!("failed to write {}", signed.display()))?;
+    let (wanted, signed) = (plist_json(&entitlements)?, plist_json(&signed)?);
+    ensure!(
+        signed == wanted,
+        "the app was signed with entitlements {signed}, not {entitlements_file}'s {wanted}"
+    );
+    ensure!(
+        signed.get("get-task-allow") != Some(&serde_json::Value::Bool(true)),
+        "{entitlements_file} makes the app debuggable (get-task-allow), which no store takes"
+    );
+    Ok(())
+}
+
+/// `codesign --verify --strict --deep` on the app, its output kept in `checks/codesign.txt`.
+pub fn verify_signature(app: &Path, checks: &Path) -> anyhow::Result<()> {
+    let mut verify = Command::new("codesign");
+    verify.args(["--verify", "--strict", "--deep", "--verbose=2"]).arg(app);
+    check_command(&mut verify, &checks.join("codesign.txt"))
+}
+
+/// Runs a check, keeping the command and everything it printed in `out` (`checks/<name>.txt`), with paths
+/// relative to the package, and fails with that if it fails.
+pub fn check_command(command: &mut Command, out: &Path) -> anyhow::Result<()> {
+    let line = workspace::shell_line(command);
+    let output = command.output().with_context(|| format!("failed to start `{line}`"))?;
+    let printed = format!(
+        "$ {line}\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let package = out.parent().and_then(Path::parent).context("a check's output is in checks/")?;
+    let kept = printed.replace(&format!("{}/", package.display()), "");
+    fs::write(out, &kept).with_context(|| format!("failed to write {}", out.display()))?;
+    ensure!(output.status.success(), "`{line}` failed ({}):\n{printed}", output.status);
+    Ok(())
+}
+
+/// A plist as JSON, through `plutil`.
+pub fn plist_json(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let json = workspace::output(Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(path))?;
+    serde_json::from_str(&json).with_context(|| format!("`plutil` read {} as {json}", path.display()))
 }
 
 #[cfg(test)]
@@ -244,13 +321,13 @@ mod tests {
             return;
         }
         let scratch = std::env::temp_dir().join(format!("xtask-plist-{}", std::process::id()));
-        std::fs::create_dir_all(&scratch).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
         for (index, name) in
             ["Sword & Shield", "A < B > C", "Tom's \"Game\"", "$(NAME)"].into_iter().enumerate()
         {
             let app = named(name);
             let path = scratch.join(format!("{index}.plist"));
-            std::fs::write(&path, render_info_plist(&macos_template(), &app, 1).unwrap()).unwrap();
+            fs::write(&path, render_info_plist(&macos_template(), &app, 1).unwrap()).unwrap();
             workspace::run(Command::new("plutil").arg("-lint").arg(&path)).unwrap();
             let read = workspace::output(
                 Command::new("plutil").args(["-extract", "CFBundleDisplayName", "raw", "-o", "-"]).arg(&path),
@@ -261,7 +338,7 @@ mod tests {
             // Each language's strings file reads back as the same name too, Japanese as well.
             for name in [name, "サファイア"] {
                 let strings = scratch.join(format!("{index}.strings"));
-                std::fs::write(&strings, info_plist_strings(name)).unwrap();
+                fs::write(&strings, info_plist_strings(name)).unwrap();
                 workspace::run(Command::new("plutil").arg("-lint").arg(&strings)).unwrap();
                 let json = workspace::output(
                     Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(&strings),
@@ -307,18 +384,18 @@ mod tests {
     fn assembles_both_layouts() {
         let scratch = std::env::temp_dir().join(format!("xtask-bundle-{}", std::process::id()));
         let content = scratch.join("cooked");
-        std::fs::create_dir_all(&content).unwrap();
-        std::fs::write(content.join("shared.spack"), "pack").unwrap();
-        std::fs::write(content.join("NOTICES.txt"), "the fonts' licenses").unwrap();
+        fs::create_dir_all(&content).unwrap();
+        fs::write(content.join("shared.spack"), "pack").unwrap();
+        fs::write(content.join("NOTICES.txt"), "the fonts' licenses").unwrap();
         let exe = scratch.join("exe");
-        std::fs::write(&exe, "binary").unwrap();
+        fs::write(&exe, "binary").unwrap();
 
         let ios = BundleLayout::ios(scratch.join("ios/SapphireSandbox.app"));
         let macos = BundleLayout::macos(scratch.join("macos/SapphireSandbox.app"));
         for layout in [&ios, &macos] {
             // Assembling twice must not keep stale files from the first bundle.
-            std::fs::create_dir_all(&layout.root).unwrap();
-            std::fs::write(layout.root.join("stale"), "").unwrap();
+            fs::create_dir_all(&layout.root).unwrap();
+            fs::write(layout.root.join("stale"), "").unwrap();
             assemble(layout, &test_app(), "<plist/>", &exe, &content).unwrap();
             assert!(!layout.root.join("stale").exists());
         }

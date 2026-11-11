@@ -37,8 +37,9 @@ png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
 
-# The build script reads platform/identity.toml.
+# The build script reads platform/identity.toml, and compiles Windows' resources.
 [build-dependencies]
+embed-resource.workspace = true
 toml.workspace = true
 
 [dev-dependencies]

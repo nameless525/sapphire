@@ -1,0 +1,137 @@
+# Steam's desktop packages (M4 S4): `cargo xtask package` for Windows and Linux, on the hosts that build
+# them, with every check it runs offline, kept as artifacts. macOS's runs on a Mac (exit test 3's run). I2
+# grows this into the nightly packages of all five platforms (m4-plan §3, "CI"): shipping builds link with
+# fat LTO, so this runs nightly, on demand, and on pull requests that touch packaging, never on every one.
+#
+# Off `main` (a pull request's merge commit) a package is a dev build, `--dev`; on `main` it's a release's,
+# numbered by the commit count, which needs the whole history.
+
+name: Packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/packages.yml'
+      - 'xtask/src/platforms/**'
+      - 'xtask/src/version.rs'
+      - 'platform/**'
+      - 'game/game_app/build.rs'
+      - 'game/game_app/Cargo.toml'
+      - 'game/game_app/src/main.rs'
+  schedule:
+    - cron: '43 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+  # Packages of anything but main's commits are dev builds. The empty string comes last: it's falsy, so
+  # `cond && '' || x` would always be x.
+  PACKAGE_KIND: ${{ github.ref != 'refs/heads/main' && '--dev' || '' }}
+  RUST_CACHE_ENV_VARS: CARGO CC CFLAGS CXX CMAKE RUST ImageOS SDKROOT
+  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' }}
+
+jobs:
+  windows:
+    name: Package (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: package
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+      # The resources go in through the Windows SDK's rc.exe, which embed-resource finds; the package reads
+      # the manifest, VERSIONINFO, icon and subsystem back from the executable (checks/windows-resources.txt).
+      - name: Package
+        shell: bash
+        run: cargo --locked xtask --locked package --platform windows $PACKAGE_KIND
+      # Windows' own reading of the version, beside xtask's.
+      - name: Read the version as Windows does
+        shell: pwsh
+        run: |
+          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("$PWD/target/package/windows/SapphireGame/game_app.exe")
+          $info | Format-List FileVersion, ProductVersion, ProductName, FileDescription, OriginalFilename
+          if (-not $info.ProductVersion) { throw "no VERSIONINFO" }
+      # The packaged game, launched as Steam launches it: the loader reads the manifest at process creation
+      # and refuses a malformed one (ERROR_SXS_CANT_GEN_ACTCTX), so a frame of the title proves it. On WARP
+      # beside a copy, so nothing extra goes in the package.
+      - name: Draw the title from the package
+        shell: pwsh
+        env:
+          SAPPHIRE_GPU_BACKEND: dx12
+        run: |
+          $run = Join-Path $env:RUNNER_TEMP 'packaged'
+          Copy-Item -Recurse target/package/windows/SapphireGame $run
+          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
+          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
+          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
+          Copy-Item build/native/bin/x64/d3d10warp.dll $run
+          $capture = Join-Path $env:RUNNER_TEMP 'title.png'
+          $game = Start-Process -FilePath (Join-Path $run 'game_app.exe') -Wait -PassThru -NoNewWindow `
+            -ArgumentList '--capture', $capture, '--size', '640x360', '--ticks', '30'
+          if ($game.ExitCode -ne 0) { throw "the packaged game exited with $($game.ExitCode)" }
+          if (-not (Test-Path $capture)) { throw "the packaged game drew no title" }
+          Copy-Item $capture target/package/windows/checks/title.png
+      - name: Keep the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-windows
+          path: target/package/windows
+          if-no-files-found: error
+          retention-days: 7
+
+  # In Steam Linux Runtime 3.0's SDK (m4-plan §3, "Steam"), so the game links the runtime's glibc (2.31) and
+  # GCC 10's libstdc++; the package fails if it needs anything newer (checks/linux-needs.txt). The image is
+  # Valve's, pulled as CI pulls WARP. Its Python is 3.9 and it has no rustup, so Rust comes from rustup's
+  # installer at rust-toolchain.toml's version, and the hosted runners' setup action isn't used.
+  linux:
+    name: Package (Linux, Steam Linux Runtime 3.0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # The checkout belongs to the runner's user, and git refuses to read it as the container's.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install Rust (rust-toolchain.toml's version)
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$channel"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: package-sniper
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+      - name: Package
+        shell: bash
+        run: cargo --locked xtask --locked package --platform linux $PACKAGE_KIND
+      - name: Keep the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-linux
+          path: target/package/linux
+          if-no-files-found: error
+          retention-days: 7

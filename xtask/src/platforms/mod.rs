@@ -19,13 +19,17 @@ mod aab;
 mod android;
 mod apple;
 mod desktop;
+mod elf;
 mod host;
 mod ios;
 mod ios_sim;
 mod ios_store;
 mod macos;
 mod package;
+mod pe;
 mod privacy_manifest;
+mod steam;
+mod steampipe;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -42,6 +46,7 @@ use crate::workspace::{self, BuildProfile, CargoBuild};
 
 pub use host::HostExecutable;
 pub use package::{Target as PackageTarget, default_out as default_package_dir, package};
+pub use steampipe::steampipe;
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,0 +1,16 @@
+# The game's IDs on Steam (M4 S4), which `cargo xtask steampipe` writes into SteamPipe's build scripts: the
+# app, and a depot for each desktop's package. Steamworks assigns them when the maintainer creates the app
+# (docs/m4-plan.md §7), and only an account holder can upload to them.
+#
+# Until then they're placeholders: the app and depot IDs of Valve's own SteamPipe examples
+# (partner.steamgames.com/doc/sdk/uploading), marked `placeholder = true`, and every script written says so.
+# xtask refuses the mark on any other IDs, and those IDs without it, so no placeholder passes for the game's.
+# To choose, put in the IDs Steamworks shows and delete `placeholder = true`.
+
+placeholder = true
+app-id = 1000
+
+[depots]
+windows = 1001
+linux = 1002
+macos = 1003

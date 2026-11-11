@@ -10,15 +10,16 @@
 //! |---|---|
 //! | `ios` | `<Name>.xcarchive` ([`super::ios_store`]): the app and its dSYM, as Xcode's Organizer reads them, and `checks/` |
 //! | `ios-sim` | `<Name>.app`: the executable, the mobile cook, Info.plist, `en.lproj` and `ja.lproj`, and actool's `Assets.car` with the icon's keys merged into Info.plist; with the store's keys and privacy manifest, signed ad hoc with the game's entitlements |
-//! | `macos` | `<Name>.app`: as iOS's, nested under `Contents/`, with the desktop cook, and actool's `AppIcon.icns` too; signed ad hoc |
+//! | `macos` | `<Name>.app`: as iOS's, nested under `Contents/`, with the desktop cook, and actool's `AppIcon.icns` too; signed ad hoc with the hardened runtime and no entitlements, checked ([`super::steam`]) |
 //! | `android` | `<Name>.aab` from Gradle's `bundleRelease`, offline, checked ([`super::aab`]), and `icons/play_store_512.png`; in `checks/`, the APKs Play would make of it for local testing, their badging and release lint's report |
-//! | `windows`, `linux` | `<Name>/`: the executable and the desktop cook; Linux's icon beside them, and Windows' `.ico` in `icons/` |
+//! | `windows`, `linux` | `<Name>/`: the executable and the desktop cook; Linux's icon and `.desktop` file beside them, and Windows' `.ico` in `icons/` too; checked for Steam ([`super::steam`]) |
 //! | every one | `package.json`: the app, version, build number and kind, commit, identity and files; and `symbols/`, what the link split out: the dSYM (in the archive for `ios`), the unstripped Android library, the PDB or the `.dwp` |
 //!
 //! It makes what every store's package shares. What a store checks is its own package's: S2 wraps the
 //! iOS app in an `.xcarchive` with its store keys and privacy manifest, S3 signs the AAB (with the upload
-//! key only when the environment names it) and checks it, S4 makes Steam's depots, signs macOS with the
-//! hardened runtime and links Windows' resources, and C1 strips the binaries and writes the symbol store.
+//! key only when the environment names it) and checks it, S4 signs macOS with the hardened runtime, links
+//! Windows' resources and checks Linux's against Steam's runtime (`steampipe` makes the depots from those
+//! three), and C1 strips the binaries and writes the symbol store.
 //! Nothing here uploads or notarizes.
 //!
 //! Shipping builds link with fat LTO, so a package takes minutes and gigabytes: run it through the gate
@@ -35,7 +36,7 @@ use anyhow::{Context as _, anyhow, ensure};
 use serde_json::json;
 
 use super::apple::{self, BundleLayout};
-use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store};
+use super::{App, BundleClaim, GAME, aab, android, desktop, ios_store, steam};
 use crate::content::{self, Cook};
 use crate::release::{self, Release};
 use crate::version::{Build, Kind};
@@ -162,10 +163,11 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
             cooked.dir.clone()
         }
     };
-    let env: Vec<(&str, OsString)> =
+    let mut env: Vec<(&str, OsString)> =
         build.env(&app.version).into_iter().map(|(name, value)| (name, value.into())).collect();
+    env.extend(steam::build_env(target, &icons));
 
-    let made = match target {
+    let mut made = match target {
         Target::Ios | Target::IosSim | Target::MacOs => {
             apple_app(target, &app, &build, &env, &content, &icons, &stage)?
         }
@@ -196,6 +198,9 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
         }
         Target::Windows | Target::Linux => desktop_app(target, &app, &env, &content, &icons, &stage)?,
     };
+    if steam::ships_on_steam(target) {
+        made.checks = steam::finish(target, &app, &build, &stage)?;
+    }
     drop(cooked);
     workspace::remove_dir_if_exists(&icons)?;
     workspace::remove_dir_if_exists(&signed)?;
@@ -339,7 +344,7 @@ fn apple_app(
     let catalog = icons.join(if target == Target::MacOs { "macos" } else { "ios" }).join("Assets.xcassets");
     compile_icon(&catalog, &layout, actool_platform, minimum, &icons.join("actool"))?;
     match target {
-        Target::MacOs => apple::codesign_ad_hoc(&layout.root)?,
+        Target::MacOs => steam::sign_macos(&layout, &stage.join("checks"))?,
         _ => ios_store::finish_app(&layout, app, target == Target::Ios, &stage.join("checks"))?,
     }
 
@@ -402,9 +407,9 @@ fn desktop_app(
     workspace::copy_dir(content, &dir.join("content"))?;
     match target {
         Target::Linux => {
-            copy(&icons.join("linux/icon_512.png"), &dir.join(format!("{}.png", app.bundle_name)))?
+            copy(&icons.join("linux/icon_512.png"), &dir.join(format!("{}.png", app.bundle_id)))?
         }
-        // S4 links it into the executable, with the manifest and VERSIONINFO.
+        // The build links it into the executable (`steam::build_env`); this copy is Steamworks' client icon.
         Target::Windows => copy(&icons.join("windows/app.ico"), &stage.join("icons/app.ico"))?,
         _ => unreachable!("a desktop target"),
     }

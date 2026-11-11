@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The entitlements `xtask package` signs the macOS game with, under the hardened runtime
+  (M4 S4): only what the game needs, which is none. Luau interprets and nothing compiles code at run time
+  (no allow-jit or allow-unsigned-executable-memory); SDL and every C library are linked statically and
+  nothing is loaded at run time (no disable-library-validation); it reads no DYLD_ variable (no
+  allow-dyld-environment-variables); it records nothing (no audio-input) and isn't sandboxed, so needs no
+  network or file entitlement. A store build must not be debuggable, so there's no get-task-allow. If the
+  Steam overlay turns out to need a library validation exemption, that shows only under Steam, on a Mac
+  (docs/m4-plan.md, S4's row). A key added here needs its reason in xtask/src/platforms/steam.rs.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

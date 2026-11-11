@@ -85,14 +85,19 @@ Commands:
                   Info.plist keys, its privacy manifest and entitlements, signed ad hoc, and its
                   dSYM, checked offline (checks/)
         ios-sim   the same app for the Simulator, with no archive
-        macos     <Name>.app with Assets.car and AppIcon.icns, signed ad hoc
+        macos     <Name>.app with Assets.car and AppIcon.icns, signed ad hoc with the hardened
+                  runtime and no entitlements, verified, read back (checks/)
         android   <Name>.aab (Gradle's bundleRelease, offline), held to release lint and checked
                   with bundletool, aapt2 and zipalign; checks/ has the local-testing APKs.
                   Signed with the upload key if SAPPHIRE_UPLOAD_KEYSTORE names it (with
                   SAPPHIRE_UPLOAD_KEYSTORE_PASSWORD, SAPPHIRE_UPLOAD_KEY_ALIAS and
                   SAPPHIRE_UPLOAD_KEY_PASSWORD), else with the debug key, which Play refuses
-        windows   <Name>/ with the executable and content (a Windows host)
-        linux     <Name>/ with the executable, content and icon (a Linux host)
+        windows   <Name>/ with the executable and content (a Windows host): the executable a GUI
+                  program with platform/windows/game_app.manifest, the icon and VERSIONINFO
+                  linked in, read back (checks/)
+        linux     <Name>/ with the executable, content, icon and .desktop file (a Linux host,
+                  in the Steam Linux Runtime 3.0 SDK): fails if the executable needs a library
+                  or symbol version the runtime lacks (checks/)
       The build number is the count of commits on main at HEAD. Off main, with changes not
       committed or untracked files, it fails, unless --dev packages it anyway, marked dev in its
       build ID and package.json. A shallow clone always fails. Nothing is uploaded or notarized,
@@ -100,6 +105,12 @@ Commands:
       content's release is signed as `release` signs it (SAPPHIRE_RELEASE_KEY), laid out for its
       host in release/, and the app carries the signed manifest; without them the app keeps the
       cook's unsigned one, and package.json says so.
+  steampipe [--packages <dir>]
+      Write Steam's depots as SteamPipe scripts in <dir>/steam/ (default target/package/) from the
+      windows, linux and macos packages there, built from one commit: an app build, a depot build
+      for each package found, and depots.txt with each depot's files and launch option. The IDs
+      are platform/steam.toml's (placeholders until the maintainer's). Nothing is uploaded: the
+      maintainer runs `steamcmd +login <account> +run_app_build <app build> +quit`.
   editor [<file.moves.ron>] [--link <address:port>]
       Cook, build and open the combat timeline editor. It opens a window, for a person at the
       machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
@@ -239,6 +250,14 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             args.finish(false)?;
             let packaged = platforms::package(target, &out, dev, release.as_ref())?;
             eprintln!("packaged into {}", packaged.display());
+            Ok(())
+        }
+        "steampipe" => {
+            let packages =
+                args.value::<PathBuf>("--packages")?.unwrap_or_else(platforms::default_package_dir);
+            args.finish(false)?;
+            let written = platforms::steampipe(&packages)?;
+            eprintln!("wrote SteamPipe's scripts into {}", written.display());
             Ok(())
         }
         "link" => link::run(args.rest()),

@@ -151,6 +151,9 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
     let content = match release {
         Some(release) => {
             let manifest = release::publish(&cooked, &stage.join(RELEASE_DIR), release)?;
+            let signed_manifest =
+                fs::read(&manifest).with_context(|| format!("failed to read {}", manifest.display()))?;
+            crate::patch::refuse_test_key("the release's manifest", &signed_manifest)?;
             with_manifest(&cooked.dir, &manifest, &signed)?;
             signed.clone()
         }
@@ -184,6 +187,7 @@ pub fn package(target: Target, out: &Path, dev: bool, release: Option<&Release>)
         Target::Android => {
             let work = stage.with_extension("gradle");
             let packaged = android::package(&app, build.number, &env, &content, &work)?;
+            refuse_test_key_in(&packaged.library)?;
             let aab = format!("{}.aab", app.bundle_name);
             copy(&packaged.aab, &stage.join(&aab))?;
             let library = packaged.library.file_name().context("the library has a name")?;
@@ -341,7 +345,14 @@ fn shipping_executable(
         split = artifact.filenames.into_iter().filter(|file| *file != executable).collect();
         Some(executable)
     })?;
+    refuse_test_key_in(&executable)?;
     Ok((executable, split))
+}
+
+/// Fails if the game's `binary` trusts the test key (`patch::refuse_test_key`): `platform/patch.toml` listed it.
+fn refuse_test_key_in(binary: &Path) -> anyhow::Result<()> {
+    let bytes = fs::read(binary).with_context(|| format!("failed to read {}", binary.display()))?;
+    crate::patch::refuse_test_key(&format!("the game's binary, {},", binary.display()), &bytes)
 }
 
 fn apple_app(

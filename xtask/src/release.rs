@@ -74,6 +74,21 @@ pub fn publish(cooked: &Cooked, out: &Path, release: &Release) -> anyhow::Result
     Ok(out.join(MANIFEST))
 }
 
+/// [`publish`]es the cook in `packs` signed with `seeds`, in place of `SAPPHIRE_RELEASE_KEY`'s: only test seeds,
+/// which anyone may know, for `cargo xtask patch rehearse` (M4 P4).
+pub fn publish_with_test_seeds(
+    packs: &Path,
+    out: &Path,
+    release: &Release,
+    seeds: &str,
+) -> anyhow::Result<PathBuf> {
+    let pipeline = content::pipeline()?;
+    let mut command = Command::new(pipeline);
+    command.args(arguments(packs, out, release)).env(KEY_VAR, seeds);
+    workspace::run(&mut command)?;
+    Ok(out.join(MANIFEST))
+}
+
 /// The manifest's file name: `sapphire_assets::manifest::FILE_NAME`, which xtask doesn't link.
 pub const MANIFEST: &str = "release.smanifest";
 

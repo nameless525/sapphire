@@ -30,7 +30,7 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
@@ -138,15 +138,36 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         File::lock,
         &format!("to finish with the {cook} content"),
     )?;
-    let mut command = Command::new(&pipeline);
+    run_cook(&pipeline, &source, &loose_dir(cook), &out, cook)?;
+    // Another run may recook in the gap before the shared lock; its output is the same.
+    lock.unlock()?;
+    workspace::wait_for_lock(
+        &lock,
+        File::try_lock_shared,
+        File::lock_shared,
+        &format!("to finish with the {cook} content"),
+    )?;
+    Ok(Cooked { dir: out, _lock: lock })
+}
+
+/// Cooks `source`, a copy of `content/` with its generated sources, for `cook` into `loose` and `packs`, through
+/// the shared cache: what `cargo xtask patch rehearse` cooks its edited release from (M4 P4). Nothing else
+/// cooks into `packs`, so it takes no lock.
+pub fn cook_copy(source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyhow::Result<()> {
+    run_cook(&pipeline()?, source, loose, packs, cook)
+}
+
+/// Runs the pipeline's cook of `source` into `loose` and `packs`.
+fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyhow::Result<()> {
+    let mut command = Command::new(pipeline);
     command
         .arg("cook")
         .arg("--source")
-        .arg(&source)
+        .arg(source)
         .arg("--out")
-        .arg(loose_dir(cook))
+        .arg(loose)
         .arg("--packs")
-        .arg(&out)
+        .arg(packs)
         .arg("--code")
         .arg(workspace::root())
         .args(["--cook", cook.target()])
@@ -158,16 +179,7 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     if cook == Cook::Editor {
         command.arg("--editor");
     }
-    workspace::run(&mut command)?;
-    // Another run may recook in the gap before the shared lock; its output is the same.
-    lock.unlock()?;
-    workspace::wait_for_lock(
-        &lock,
-        File::try_lock_shared,
-        File::lock_shared,
-        &format!("to finish with the {cook} content"),
-    )?;
-    Ok(Cooked { dir: out, _lock: lock })
+    workspace::run(&mut command)
 }
 
 /// Builds the pipeline and returns its executable: optimized, without paying for cross-crate LTO after

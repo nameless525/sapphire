@@ -7,7 +7,8 @@
 //! as processes too. `package` builds the game for a store: the shipping profile, one version and build
 //! number, one identity and the project's icon, staged for each store's own package; `symbolicate` reads its
 //! crashes back with the symbols kept beside it, `symbols` writes their whole Breakpad store, and
-//! `store-shots` draws the stores' screenshots by the goldens' road.
+//! `store-shots` draws the stores' screenshots by the goldens' road. `patch` serves a release from this
+//! machine and runs Exit test 2's lane (M4 P4).
 
 mod cli;
 mod content;
@@ -15,6 +16,7 @@ mod editor;
 mod golden;
 mod layers;
 mod link;
+mod patch;
 mod platforms;
 mod release;
 mod replay;
@@ -53,6 +55,18 @@ Commands:
       With --patch-from, the release is a patch of the one that signed manifest is: refused,
       naming the file, if it changes anything the simulation reads, and unless an install of the
       earlier release would take it. Nothing is uploaded.
+  patch serve <dir> [--port <n>]
+      Serve a release directory laid out by `release` at http://127.0.0.1:<n>/ (default 8475):
+      GET with byte ranges, kept alive, each request and its bytes printed. The iOS Simulator
+      reaches it there, the Android emulator after `adb reverse tcp:<n> tcp:<n>`, and a dev
+      build of the game with `--update-host http://127.0.0.1:<n>/` (M4 P4).
+  patch rehearse [--out <dir>]
+      Exit test 2's lane (M4 P4): cook release 1 and, with one screen's edit, release 2 as its
+      patch, both signed with the test key's public seed; then the game (dev, no window) patches
+      from release 1 in its boot, stands on release 2 again at its next launch, refuses a release
+      signed by a key it doesn't trust, and resumes a download killed mid-block. Fails unless
+      each draws what it should; the bytes each fetched go to <dir>/report.txt (default
+      target/patch-rehearsal/).
   bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
       [--exe <path>] [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/, by the
@@ -313,6 +327,7 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             platforms::write_symbol_store(&packages, &store)
         }
         "link" => link::run(args.rest()),
+        "patch" => patch::run(args.rest()),
         "editor" => editor::run(args.rest()),
         "golden" => {
             let update = args.flag("--update");

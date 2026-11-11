@@ -757,6 +757,26 @@ impl Move {
         let time = SimDuration::from_ticks(u64::from(tick));
         self.hitboxes.iter().filter(move |hitbox| hitbox.span.contains(time))
     }
+
+    /// A perfect-dodge window held open up to `ticks` longer at its end (M4 A6's timing assist), but no
+    /// further than this move's i-frames run on unbroken past it: the document's check holds a window with a
+    /// volume to its i-frames, so a hit and a perfect dodge still can't land on one actor in one step. A
+    /// window the i-frames don't run on from gets no longer. Allocates nothing.
+    #[must_use]
+    pub fn widened_dodge(&self, window: &PerfectDodgeWindow, ticks: u32) -> Span {
+        let Span { from, to } = window.span;
+        let wanted = to.saturating_add(ticks);
+        let mut end = to;
+        // Each pass carries the end through an i-frame span holding its tick: the end only grows.
+        while end < wanted {
+            let holding = self.invulnerable.iter().filter(|span| span.from <= end && end < span.to);
+            match holding.map(|span| span.to).max() {
+                Some(next) => end = next.min(wanted),
+                None => break,
+            }
+        }
+        Span { from, to: end }
+    }
 }
 
 /// Parts of a [`Move`] that [`MoveSetDocument`](crate::MoveSetDocument) gathers, to build one.
@@ -1944,6 +1964,29 @@ mod tests {
             matches!(&refused, Some(MoveSetError::Damaged(text)) if text.contains("root")),
             "{refused:?}"
         );
+    }
+
+    /// The timing assist (M4 A6) holds a perfect-dodge window open longer only while the i-frames run on
+    /// past it, through spans that touch or overlap in any order, and never opens it earlier.
+    #[test]
+    fn a_widened_dodge_stops_where_its_i_frames_do() {
+        let mut set = whole();
+        let mv = dodge(&mut set);
+        assert_eq!(
+            (mv.perfect_dodge[0].span, mv.invulnerable.as_slice()),
+            (Span { from: 1, to: 7 }, &[Span { from: 1, to: 14 }][..])
+        );
+        let window = mv.perfect_dodge[0].clone();
+        assert_eq!(mv.widened_dodge(&window, 0), Span { from: 1, to: 7 });
+        assert_eq!(mv.widened_dodge(&window, 3), Span { from: 1, to: 10 });
+        assert_eq!(mv.widened_dodge(&window, 7), Span { from: 1, to: 14 });
+        assert_eq!(mv.widened_dodge(&window, 40), Span { from: 1, to: 14 }, "where the i-frames end");
+        mv.invulnerable = vec![Span { from: 12, to: 20 }, Span { from: 1, to: 9 }, Span { from: 9, to: 12 }];
+        assert_eq!(mv.widened_dodge(&window, 40), Span { from: 1, to: 20 }, "through touching spans");
+        mv.invulnerable = vec![Span { from: 1, to: 7 }, Span { from: 8, to: 20 }];
+        assert_eq!(mv.widened_dodge(&window, 40), Span { from: 1, to: 7 }, "a gap stops it");
+        mv.invulnerable.clear();
+        assert_eq!(mv.widened_dodge(&window, 40), Span { from: 1, to: 7 }, "no i-frames, no wider");
     }
 
     #[test]

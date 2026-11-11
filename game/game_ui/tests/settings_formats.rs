@@ -5,6 +5,7 @@
 
 use game_ui::menus::{FrameCap, HeldAction, HoldMode, PlayerSettings, QualityChoice, SubtitleSize, TextSize};
 use sapphire_controls::Remapped;
+use sapphire_gameplay::assist::TimingAssist;
 use sapphire_gameplay::targeting::AutoTarget;
 use sapphire_input::{Key, PadButton, Source};
 use sapphire_reflect::Versioned;
@@ -138,6 +139,7 @@ fn this_build_writes_version_4_and_reads_it_back() {
     let mut settings = PlayerSettings { language: "ja".to_owned(), ..PlayerSettings::default() };
     settings.mono = true;
     settings.auto_target = AutoTarget::Strong;
+    settings.timing_assist = TimingAssist::Wider;
     *settings.holds.mode_mut(HeldAction::Dodge) = HoldMode::Toggle;
     settings.quality = QualityChoice::Low;
     settings.frame_cap = FrameCap::Thirty;
@@ -154,4 +156,20 @@ fn this_build_writes_version_4_and_reads_it_back() {
         let rewritten = to_ron(&upgraded).expect("it writes");
         assert_eq!(from_ron::<PlayerSettings>(&rewritten).expect("it reads"), upgraded, "an upgrade sticks");
     }
+}
+
+/// The timing assist (M4 A6) joined version 4 with no bump, since a field a file lacks reads at its default: a
+/// version 4 file from before it, as A4's build wrote one, reads with the assist off, which is what every run
+/// before it played on.
+#[test]
+fn a_version_4_file_from_before_the_timing_assist_reads_it_as_off() {
+    let mut before = to_ron(&PlayerSettings { auto_target: AutoTarget::Weak, ..PlayerSettings::default() })
+        .expect("it writes");
+    let line = before.find("    timing_assist:").expect("this build writes it");
+    let end = line + before[line..].find('\n').expect("a line") + 1;
+    before.replace_range(line..end, "");
+    assert!(!before.contains("timing_assist") && before.contains("version: 4,"), "{before}");
+    let read: PlayerSettings = from_ron(&before).expect("it reads");
+    assert_eq!(read.timing_assist, TimingAssist::Off);
+    assert_eq!(read.auto_target, AutoTarget::Weak, "and keeps the rest");
 }

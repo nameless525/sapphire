@@ -7,6 +7,7 @@ use sapphire_serialize::AssetId;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
+use crate::assist::TimingAssist;
 use crate::checkpoint::{CheckpointId, ZoneStart};
 use crate::dialogue::DialogueEffect;
 use crate::flags::{Flags, MAX_FLAGS};
@@ -34,6 +35,9 @@ pub enum ReplayCommand {
     /// [`Simulation::set_auto_target`](crate::Simulation::set_auto_target) (M4 A1): the player's setting,
     /// changed or first applied.
     AutoTarget(AutoTarget),
+    /// [`Simulation::set_timing_assist`](crate::Simulation::set_timing_assist) (M4 A6): the player's setting,
+    /// changed or first applied.
+    TimingAssist(TimingAssist),
 }
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
@@ -82,6 +86,8 @@ const COMMAND_ENTER_ZONE: u8 = 3;
 const COMMAND_DIALOGUE: u8 = 4;
 /// M4 A1's: the player's auto-target strength, by [`AutoTarget::to_raw`].
 const COMMAND_AUTO_TARGET: u8 = 5;
+/// M4 A6's: the player's timing assist, by [`TimingAssist::to_raw`].
+const COMMAND_TIMING_ASSIST: u8 = 6;
 
 /// A starting flag in the file: its name's hash and its value.
 const FLAG_LEN: usize = 8 + 4;
@@ -246,6 +252,10 @@ fn read_commands(
             COMMAND_DIALOGUE => ReplayCommand::Dialogue(DialogueEffect::from_raw(argument)),
             COMMAND_AUTO_TARGET => match AutoTarget::from_raw(argument) {
                 Some(strength) => ReplayCommand::AutoTarget(strength),
+                None => return Err(ReplayError::BadArgument { index, kind, argument }),
+            },
+            COMMAND_TIMING_ASSIST => match TimingAssist::from_raw(argument) {
+                Some(step) => ReplayCommand::TimingAssist(step),
                 None => return Err(ReplayError::BadArgument { index, kind, argument }),
             },
             kind => return Err(ReplayError::BadCommand { index, kind }),
@@ -417,8 +427,9 @@ impl Cursor {
 /// A command's kind is 0 for a timeline played (its argument the timeline's ID), 1 for one skipped (how far
 /// in, in milliseconds), 2 for a return to a checkpoint (the checkpoint's place in its zone's list), 3 for
 /// entering a zone (the entry), 4 for a dialogue's effect (the dialogue's ID in the high 16 bits and the
-/// effect's in the low) and 5 for the player's auto-target strength (M4 A1: 0 weak, 1 normal, 2 strong). A
-/// kind this build doesn't know is refused by its index, and so is a strength it doesn't.
+/// effect's in the low), 5 for the player's auto-target strength (M4 A1: 0 weak, 1 normal, 2 strong) and 6
+/// for the player's timing assist (M4 A6: 0 off, 1 wide, 2 wider). A kind this build doesn't know is refused
+/// by its index, and so is a strength or a step it doesn't.
 /// | … | the body: runs of equal ticks, up to the digest |
 /// | 8 | XXH3-64 of every byte before it |
 ///
@@ -567,6 +578,7 @@ impl Replay {
                     ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
                     ReplayCommand::Dialogue(effect) => (COMMAND_DIALOGUE, effect.to_raw()),
                     ReplayCommand::AutoTarget(strength) => (COMMAND_AUTO_TARGET, strength.to_raw()),
+                    ReplayCommand::TimingAssist(step) => (COMMAND_TIMING_ASSIST, step.to_raw()),
                 };
                 out.extend_from_slice(&tick.to_le_bytes());
                 out.push(kind);
@@ -839,6 +851,36 @@ mod tests {
         let digest = xxh3_64(&spoiled);
         spoiled.extend_from_slice(&digest.to_le_bytes());
         let refused = ReplayError::BadArgument { index: 0, kind: COMMAND_AUTO_TARGET, argument: 3 };
+        assert_eq!(Replay::decode(&spoiled), Err(refused));
+    }
+
+    /// The player's timing assist (M4 A6) is a command of its own kind, beside auto-target's, and a step no
+    /// build knows is refused by its index. Neither widens the format: a file holding it is one with commands.
+    #[test]
+    fn a_timing_assist_reads_back_and_an_unknown_step_is_refused() {
+        let mut recorder = Recorder::new("s", SimConfig::default(), 0).unwrap();
+        recorder.command(ReplayCommand::TimingAssist(TimingAssist::Wider));
+        recorder.command(ReplayCommand::AutoTarget(AutoTarget::Weak));
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        recorder.command(ReplayCommand::TimingAssist(TimingAssist::Off));
+        recorder.push(&TickActions::NEUTRAL).unwrap();
+        let bytes = recorder.finish().encode();
+        let version = u32::from_le_bytes(bytes[MAGIC.len()..MAGIC.len() + 4].try_into().unwrap());
+        assert_eq!(version, COMMANDS_FORMAT_VERSION);
+        let read = Replay::decode(&bytes).unwrap();
+        let expected = [
+            (0, ReplayCommand::TimingAssist(TimingAssist::Wider)),
+            (0, ReplayCommand::AutoTarget(AutoTarget::Weak)),
+            (1, ReplayCommand::TimingAssist(TimingAssist::Off)),
+        ];
+        assert_eq!(read.commands(), expected);
+
+        let at = bytes.windows(5).position(|window| window == [COMMAND_TIMING_ASSIST, 2, 0, 0, 0]).unwrap();
+        let mut spoiled = bytes[..bytes.len() - DIGEST_LEN].to_vec();
+        spoiled[at + 1] = 3;
+        let digest = xxh3_64(&spoiled);
+        spoiled.extend_from_slice(&digest.to_le_bytes());
+        let refused = ReplayError::BadArgument { index: 0, kind: COMMAND_TIMING_ASSIST, argument: 3 };
         assert_eq!(Replay::decode(&spoiled), Err(refused));
     }
 

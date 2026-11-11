@@ -12,7 +12,8 @@ use std::f32::consts::PI;
 use std::path::Path;
 
 use sapphire_core::Name;
-use sapphire_gameplay::replay::{self, Player, Replay, SCENARIOS};
+use sapphire_gameplay::assist::{AssistWidths, TimingAssist, TimingAssistTuning};
+use sapphire_gameplay::replay::{self, Player, Replay, ReplayCommand, SCENARIOS};
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, Buttons, CueEvent, CurrentMove, PERFECT_DODGE, SimConfig, Simulation,
     Stick, TickActions, dodge_body,
@@ -1556,6 +1557,91 @@ fn the_replay_suites_dodge_counter_plays_what_it_says() {
     assert!(slowed_steps >= 3 * 20, "{slowed_steps}");
     assert!(at_speed_while_slowed, "the player ran at speed through every slowdown");
     assert_eq!(sim.slow_motion().refused(), 0);
+}
+
+/// The timing assist (M4 A6) holds `roll`'s window, 1..7, open 3 ticks longer at its wide step and 6 at its
+/// wider, inside its i-frames, 1..14, and opens nothing earlier. Where the i-frames stop sooner, so does the
+/// window, so a swing still never both lands and fires one.
+#[test]
+fn the_timing_assist_widens_a_window_as_far_as_its_i_frames() {
+    let tap = |set: MoveSet, step: TimingAssist, tick: u32| {
+        let (mut sim, attacker, dodger) = duel_of(set);
+        assert_eq!(sim.set_timing_assist(step), step != TimingAssist::Off);
+        let schedule = [(20, attacker, Buttons::LIGHT), (23 - tick, dodger, Buttons::DODGE)];
+        run(&mut sim, &schedule, 0, 24);
+        (perfect(&sim), health(&sim, dodger))
+    };
+    #[rustfmt::skip]
+    let table = [
+        (TimingAssist::Off,   0,  (0, 90)),
+        (TimingAssist::Off,   6,  (1, 100)),
+        (TimingAssist::Off,   7,  (0, 100)),
+        (TimingAssist::Wide,  0,  (0, 90)),  // Nothing opens earlier.
+        (TimingAssist::Wide,  7,  (1, 100)),
+        (TimingAssist::Wide,  9,  (1, 100)), // Its last tick, 7 + 3 − 1.
+        (TimingAssist::Wide,  10, (0, 100)), // One past: i-frames, and nothing else.
+        (TimingAssist::Wider, 12, (1, 100)),
+        (TimingAssist::Wider, 13, (0, 100)), // The last i-frame.
+        (TimingAssist::Wider, 14, (0, 90)),
+    ];
+    for (step, tick, expected) in table {
+        assert_eq!(tap(moves(), step, tick), expected, "{step:?}, a swing on tick {tick}");
+    }
+    let short = moves_with(
+        "invulnerable: [(from: 1, to: 14)],\n                perfect_dodge: [(",
+        "invulnerable: [(from: 1, to: 9)],\n                perfect_dodge: [(",
+    );
+    assert_eq!(tap(short.clone(), TimingAssist::Wider, 8), (1, 100), "the last i-frame");
+    assert_eq!(tap(short, TimingAssist::Wider, 9), (0, 90), "past the i-frames: it lands, and fires nothing");
+}
+
+/// The replay suite's `dodge-assisted` (M4 A6): `dodge-counter`'s presses with the timing assist at its wide
+/// step from the first tick. The answer a tick past its counter window is a counter now, and the dodge
+/// pressed too late still lands. Turned off again between steps, the tables' hash is what a run that never
+/// had it reaches.
+#[test]
+fn the_timing_assist_widens_the_windows_dodge_counter_missed() {
+    let scenario = replay::find_scenario(&SCENARIOS, "duel").expect("listed");
+    let script = replay::find_script("dodge-assisted").expect("listed");
+    assert_eq!(script.commands, [(0, ReplayCommand::TimingAssist(TimingAssist::Wide))]);
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let (player, opponent) = (cast[0], cast[1]);
+    let off = sim.tables_hash();
+    assert_eq!(sim.assist_widths(player), AssistWidths::NONE, "off until told");
+    assert!(sim.set_timing_assist(TimingAssist::Wide));
+    assert!(!sim.set_timing_assist(TimingAssist::Wide), "set already");
+    assert_ne!(sim.tables_hash(), off, "the step is in the run's tables");
+    let widths = TimingAssistTuning::shipped().widths(TimingAssist::Wide);
+    assert_eq!(sim.assist_widths(player), widths);
+
+    let (mut fired, mut counters, mut hits_on_player) = (Vec::new(), Vec::new(), Vec::new());
+    let mut started = 0;
+    for tick in 0..u64::from(script.ticks) {
+        sim.step(&script.actions(tick, &cast));
+        let view = sim.actor(player).expect("alive");
+        if view.moves.started != started {
+            started = view.moves.started;
+            if view.moves.current.expect("just started").name == name("dodge_counter") {
+                counters.push(tick);
+            }
+        }
+        for cue in sim.cues() {
+            if cue.cue == PERFECT_DODGE {
+                assert_eq!(cue.actor, player);
+                fired.push(tick);
+            }
+            if cue.hit.is_some_and(|hit| hit.target == player) {
+                hits_on_player.push(tick);
+            }
+        }
+    }
+    assert_eq!(fired, [56, 456, 656]);
+    assert_eq!(counters, [58, 501, 658], "the answer at 501 is inside a counter 15 ticks longer");
+    assert_eq!(hits_on_player, [256], "a dodge's tick 0 has no i-frames to widen into");
+    assert!(sim.actor(opponent).is_some());
+
+    assert!(sim.set_timing_assist(TimingAssist::Off));
+    assert_eq!(sim.tables_hash(), off, "off, the tables are what they were before there was a setting");
 }
 
 /// Pillar 4: every cancel window and perfect-dodge window the test content authors is covered by a

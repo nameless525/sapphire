@@ -810,6 +810,22 @@ impl Combat {
         }
     }
 
+    /// Makes `step` how far the player's timing assist widens, between steps (M4 A6): the player's setting,
+    /// which a game sets before every step, as it does auto-target's strength. A recording keeps it as a
+    /// command when it changes anything, so its replay widens as it did. A replay plays the step it recorded
+    /// and takes no other.
+    pub fn set_timing_assist(&mut self, step: sapphire_gameplay::assist::TimingAssist) {
+        match &mut self.mode {
+            Mode::Replaying { .. } => {}
+            Mode::Recording { recording, .. } => {
+                recording.set_timing_assist(step);
+            }
+            Mode::Fighting(fight) => {
+                fight.sim.set_timing_assist(step);
+            }
+        }
+    }
+
     /// Whether someone's playing this through the bindings, rather than a file or a script driving it.
     pub fn is_played(&self) -> bool {
         match &self.mode {
@@ -1605,6 +1621,9 @@ impl ScriptStarts {
                 }
                 ReplayCommand::AutoTarget(strength) => {
                     recording.set_auto_target(strength);
+                }
+                ReplayCommand::TimingAssist(step) => {
+                    recording.set_timing_assist(step);
                 }
                 ReplayCommand::SkipTimeline { .. } | ReplayCommand::EnterZone(_) => {}
             }

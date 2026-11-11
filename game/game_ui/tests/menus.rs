@@ -12,6 +12,7 @@ use game_ui::menus::{
     MenuSetup, OPENED_BY_CODE, PlayerSettings, RowAction, ScreenModel,
 };
 use sapphire_assets::ui::UiModel;
+use sapphire_gameplay::assist::TimingAssist;
 use sapphire_look::UiDrawList;
 use sapphire_math::Vec2;
 use sapphire_platform::Scancode;
@@ -33,7 +34,11 @@ const SIZES: [(u32, u32); 6] = [(1024, 768), (1280, 720), (1280, 800), (1680, 72
 /// walk steps them. The interface's size and the text's come round to where they started, so the rest walks
 /// at them, and the graphics page's rows come round too (M4 T3).
 const SETTINGS_PAGES: [(&str, MenuScreen, &[&str]); 5] = [
-    ("display", DISPLAY, &["size", "text", "shake", "flashes", "camera", "size", "size", "text", "text"]),
+    (
+        "display",
+        DISPLAY,
+        &["size", "text", "shake", "flashes", "camera", "timing", "size", "size", "text", "text"],
+    ),
     (
         "graphics",
         GRAPHICS,
@@ -256,6 +261,10 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     walk.choose(DISPLAY, "shake");
     assert_eq!(walk.menus.settings().shake, 0);
     assert!(string_of(&walk, DISPLAY, "shake-value").starts_with('0'));
+    assert_eq!(string_of(&walk, DISPLAY, "timing-value"), "Off");
+    walk.choose(DISPLAY, "timing");
+    assert_eq!(walk.menus.settings().timing_assist, TimingAssist::Wide);
+    assert_eq!(string_of(&walk, DISPLAY, "timing-value"), "Wide");
     walk.back(DISPLAY);
 
     walk.choose(SETTINGS, "subtitles");

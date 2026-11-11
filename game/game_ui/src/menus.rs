@@ -229,6 +229,8 @@ pub struct MenuModel {
     pub dynamic_resolution: String,
     pub battery_saver: String,
     pub remap: RemapModel,
+    /// The key of the timing assist's step (M4 A6).
+    pub timing_assist: String,
 }
 
 impl MenuModel {
@@ -283,6 +285,8 @@ impl MenuModel {
         self.frame_cap = format!("graphics-cap-{}", settings.frame_cap.on(FormFactor::CURRENT).name());
         self.dynamic_resolution = switch(settings.dynamic_resolution);
         self.battery_saver = switch(settings.battery_saver);
+        self.timing_assist =
+            format!("display-timing-{}", settings::timing_assist_name(settings.timing_assist));
     }
 }
 

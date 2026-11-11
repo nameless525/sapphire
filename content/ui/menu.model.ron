@@ -64,6 +64,7 @@
             (path: "subtitle_size", kind: Text),
             (path: "subtitles", kind: Text),
             (path: "text_size", kind: Text),
+            (path: "timing_assist", kind: Text),
             (path: "voice", kind: Number),
         ],
     ),

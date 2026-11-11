@@ -766,6 +766,12 @@ impl FightWorld {
         self.simulation.set_auto_target(strength)
     }
 
+    /// Makes `step` how far the timing assist widens, between steps: the player's setting. A restart keeps it.
+    /// Says whether that changed anything ([`Simulation::set_timing_assist`]).
+    pub fn set_timing_assist(&mut self, step: crate::assist::TimingAssist) -> bool {
+        self.simulation.set_timing_assist(step)
+    }
+
     /// Start again at revision zero of the current moves, allocating no new storage. A live edit
     /// that no longer supports this party is refused before changing any state, allowing recovery.
     pub fn restart(&mut self) -> Result<(), ScenarioError> {

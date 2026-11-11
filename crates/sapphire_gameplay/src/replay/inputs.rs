@@ -13,7 +13,8 @@
 //!   from 0 and over again every `x` and `y` ticks. A tick's buttons are every track's together; a member's
 //!   stick is the one track that gives it one.
 //! - `commands`, each before the step of its tick ([`ReplayCommand`]): a timeline, a skip, a zone entry, a
-//!   return to a checkpoint, a dialogue's effect or an auto-target strength. They name what a scenario loaded
+//!   return to a checkpoint, a dialogue's effect, an auto-target strength or a timing assist's step. They
+//!   name what a scenario loaded
 //!   by its number, as a replay's file does: its first timeline is 0.
 //! - `like`, another document's name, whose tracks and commands come first: `cinematic-watched` is
 //!   `melee-sweep`'s with a cinematic on top. A document named by `like` names no other.
@@ -36,6 +37,7 @@ use super::document::INPUTS_DOCUMENTS;
 use super::file::{MAX_TICKS, ReplayCommand};
 use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
+use crate::assist::TimingAssist;
 use crate::checkpoint::CheckpointId;
 use crate::dialogue::{DialogueEffect, DialogueId};
 use crate::targeting::AutoTarget;
@@ -198,6 +200,8 @@ pub enum Command {
     Dialogue { dialogue: u16, effect: u16 },
     /// The player's auto-target strength.
     AutoTarget(AutoTarget),
+    /// The player's timing assist (M4 A6).
+    TimingAssist(TimingAssist),
 }
 
 impl Command {
@@ -214,6 +218,7 @@ impl Command {
                 effect: EffectId(effect),
             }),
             Self::AutoTarget(strength) => ReplayCommand::AutoTarget(strength),
+            Self::TimingAssist(step) => ReplayCommand::TimingAssist(step),
         }
     }
 }
@@ -651,7 +656,7 @@ mod tests {
         .expect("reads");
         let top = document(
             "about: \"top\", ticks: 80, like: \"base\", tracks: [(presses: [(at: [(1, [Heavy])])])],
-             commands: [(5, SkipTimeline(at_ms: 9)), (10, AutoTarget(Weak))]",
+             commands: [(5, SkipTimeline(at_ms: 9)), (10, AutoTarget(Weak)), (10, TimingAssist(Wide))]",
         )
         .expect("reads");
         let script = Script::new("top", &top, Some(&base)).expect("a script");
@@ -662,6 +667,7 @@ mod tests {
                 (5, ReplayCommand::SkipTimeline { at_ms: 9 }),
                 (10, ReplayCommand::PlayTimeline(TimelineId::from_raw(0))),
                 (10, ReplayCommand::AutoTarget(AutoTarget::Weak)),
+                (10, ReplayCommand::TimingAssist(TimingAssist::Wide)),
             ]
         );
         assert_eq!(script.player(1).buttons, Buttons::LIGHT | Buttons::HEAVY);

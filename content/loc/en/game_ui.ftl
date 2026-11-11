@@ -65,6 +65,10 @@ display-flashes = Flashes
 display-flashes-normal = Normal
 display-flashes-reduced = Reduced
 display-camera = Camera motion
+display-timing = Timing assist
+display-timing-off = Off
+display-timing-wide = Wide
+display-timing-wider = Wider
 display-back = Back
 
 graphics-title = Graphics

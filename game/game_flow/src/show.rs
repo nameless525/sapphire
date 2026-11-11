@@ -931,11 +931,13 @@ fn is_press(event: &Event) -> bool {
     }
 }
 
-/// What of the player's settings a run reads (M4 A1), given before every step: auto-target's strength, and
-/// nothing else. A run stood or restarted since starts on the normal strength, and a recording keeps only a
-/// change, so every run on the normal strength records as before. Every other setting is presentation.
+/// What of the player's settings a run reads, given before every step: auto-target's strength (M4 A1) and the
+/// timing assist (M4 A6), and nothing else. A run stood or restarted since starts on the normal strength with
+/// the assist off, and a recording keeps only a change, so every run on those records as before. Every other
+/// setting is presentation.
 fn give_the_run(settings: &PlayerSettings, combat: &mut Combat) {
     combat.set_auto_target(settings.auto_target);
+    combat.set_timing_assist(settings.timing_assist);
 }
 
 impl SceneShow for GameShow {
@@ -1363,11 +1365,13 @@ mod tests {
         assert!(show.take_ended_runs().is_empty());
     }
 
-    /// Of everything a player chooses, auto-target's strength alone reaches a run (M4 A1): every other setting
-    /// changed leaves a fight's checksums and tables as they were, and the strength moves its tables' hash.
+    /// Of everything a player chooses, auto-target's strength (M4 A1) and the timing assist (M4 A6) alone reach
+    /// a run: every other setting changed leaves a fight's checksums and tables as they were, and each of those
+    /// two moves its tables' hash.
     #[test]
-    fn only_the_auto_target_strength_reaches_a_run() {
+    fn only_the_auto_target_strength_and_the_timing_assist_reach_a_run() {
         use game_ui::menus::{Flashes, HeldAction, HoldMode, SubtitleBackground, SubtitleSize, TextSize};
+        use sapphire_gameplay::assist::TimingAssist;
         use sapphire_gameplay::targeting::AutoTarget;
         use sapphire_gameplay::{ActorId, TickActions};
 
@@ -1408,6 +1412,9 @@ mod tests {
         assert_eq!(run(&other), normal, "presentation stays out of the run");
         let strong = run(&PlayerSettings { auto_target: AutoTarget::Strong, ..PlayerSettings::default() });
         assert_ne!(strong.0, normal.0, "the strength is in the run's tables");
+        let assisted =
+            run(&PlayerSettings { timing_assist: TimingAssist::Wide, ..PlayerSettings::default() });
+        assert_ne!(assisted.0, normal.0, "the assist is in the run's tables");
     }
 
     #[test]

@@ -132,7 +132,7 @@ pub fn named_phases(sim: &Simulation) -> impl Iterator<Item = ActorId> + '_ {
 /// perfect-dodge window, which is that window's end on the player's set (the latest of its moves').
 /// Once per strike, so a frozen or slowed foe isn't announced again.
 ///
-/// It reads the windows the simulation runs on, so a run whose tables widen them (A6's timing assist)
+/// It reads the windows the simulation runs on, so a run whose timing assist widens the player's (M4 A6)
 /// moves the cue with them, and a player with no perfect dodge gets none.
 #[derive(Clone, Debug, Default)]
 struct DodgeWindows {
@@ -157,7 +157,8 @@ impl DodgeWindows {
         self.told.retain(|&(actor, ..)| sim.actor(actor).is_some());
         let Some(player) = sim.actor(player) else { return };
         let library = sim.move_library();
-        let Some(lead) = player.moves.set.and_then(|set| perfect_reach(library.current(set)?)) else {
+        let widen = sim.assist_widths(player.id).dodge;
+        let Some(lead) = player.moves.set.and_then(|set| perfect_reach(library.current(set)?, widen)) else {
             return;
         };
         let faction = player.fighter.faction();
@@ -189,8 +190,10 @@ impl DodgeWindows {
 }
 
 /// How far ahead of a strike a dodge can start and still meet it in a perfect window, in sub-ticks: the
-/// latest end of any perfect-dodge window of `set` that can fire. `None` if none can.
-fn perfect_reach(set: &sapphire_moves::MoveSet) -> Option<u64> {
-    let windows = set.moves().iter().flat_map(|mv| &mv.perfect_dodge);
-    windows.filter(|window| window.volume.is_some()).map(|window| window.span.end().as_subticks()).max()
+/// latest end of any perfect-dodge window of `set` that can fire, as the timing assist widens it by `widen`
+/// ticks. `None` if none can.
+fn perfect_reach(set: &sapphire_moves::MoveSet, widen: u32) -> Option<u64> {
+    let windows = set.moves().iter().flat_map(|mv| mv.perfect_dodge.iter().map(move |window| (mv, window)));
+    let firing = windows.filter(|(_, window)| window.volume.is_some());
+    firing.map(|(mv, window)| mv.widened_dodge(window, widen).end().as_subticks()).max()
 }

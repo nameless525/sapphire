@@ -50,6 +50,10 @@ display-flashes = フラッシュ
 display-flashes-normal = 標準
 display-flashes-reduced = 軽減
 display-camera = カメラの動き
+display-timing = タイミングアシスト
+display-timing-off = オフ
+display-timing-wide = 広め
+display-timing-wider = さらに広め
 display-back = 戻る
 
 graphics-title = グラフィック

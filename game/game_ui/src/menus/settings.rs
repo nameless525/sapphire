@@ -3,8 +3,9 @@
 //!
 //! Version 2 (M4 A1) adds the accessibility settings spec §6.8 and m4-plan §3 list. Each is stored, shown,
 //! saved, migrated and stepped here; what each changes is A2's (the screen, the sound, the subtitles), A4's
-//! (hold or toggle) and the run's (auto-target, which a step reads, so the run records it). Every other
-//! setting is presentation and never reaches a checksum.
+//! (hold or toggle) and the run's (auto-target, and A6's timing assist, which a step reads, so the run records
+//! them). Every other setting is presentation and never reaches a checksum. A6's assist joined version 4
+//! with no bump: a file without it, of any version, reads it as off, as serde's defaults do.
 //!
 //! Version 3 (M4 T3) adds the graphics page's: the quality tier (automatic, or one the player holds), the frame
 //! cap, dynamic resolution and the battery saver, which the app gives its stage's quality and its platform's
@@ -22,6 +23,7 @@ use std::num::NonZeroU32;
 use bevy_reflect::TypePath;
 use sapphire_controls::Remapped;
 use sapphire_core::target::FormFactor;
+use sapphire_gameplay::assist::TimingAssist;
 use sapphire_gameplay::targeting::AutoTarget;
 use sapphire_input::InputBindings;
 use sapphire_loc::LocaleSettings;
@@ -314,8 +316,8 @@ impl Holds {
     }
 }
 
-/// What the player has chosen, which the app keeps between runs. Version 4 (M4 A4); version 3 (M4 T3) had all
-/// but the remapped bindings, version 2 (M4 A1) all but the graphics page's too, and version 1 (M3 U7) the
+/// What the player has chosen, which the app keeps between runs. Version 4 (M4 A4, and A6's timing assist); version 3 (M4 T3)
+/// had all but the remapped bindings and the assist, version 2 (M4 A1) all but the graphics page's too, and version 1 (M3 U7) the
 /// language, the size, one volume and the rumble. Each upgrades with everything it lacks at its default.
 #[derive(Clone, Debug, PartialEq, TypePath, Serialize, Deserialize)]
 #[type_path = "sapphire::game_ui"]
@@ -344,7 +346,7 @@ pub struct PlayerSettings {
     /// Whether a pad shakes.
     pub rumble: bool,
     pub subtitles: Subtitles,
-    /// How hard auto-target pulls on touch: the one setting a step reads, so a run records it.
+    /// How hard auto-target pulls on touch, which a step reads, so a run records it.
     pub auto_target: AutoTarget,
     pub holds: Holds,
     /// The quality tier: automatic, or one the player holds.
@@ -361,6 +363,8 @@ pub struct PlayerSettings {
     /// shows it over the title. The notice marks it ([`super::MenuCommand::FlashNoticeRead`]), and no step
     /// takes it back.
     pub flash_notice_read: bool,
+    /// How far the perfect-dodge and counter windows widen (M4 A6), which a step reads, so a run records it.
+    pub timing_assist: TimingAssist,
 }
 
 impl Versioned for PlayerSettings {
@@ -389,6 +393,7 @@ impl Versioned for PlayerSettings {
             dynamic_resolution: old.dynamic_resolution,
             battery_saver: old.battery_saver,
             remapped: Vec::new(),
+            timing_assist: TimingAssist::Off,
         })
     }
 }
@@ -573,6 +578,7 @@ impl Default for PlayerSettings {
             battery_saver: false,
             remapped: Vec::new(),
             flash_notice_read: false,
+            timing_assist: TimingAssist::default(),
         }
     }
 }
@@ -603,6 +609,7 @@ pub enum Setting {
     FrameCap,
     DynamicResolution,
     BatterySaver,
+    TimingAssist,
 }
 
 impl PlayerSettings {
@@ -693,6 +700,7 @@ impl PlayerSettings {
             Setting::FrameCap => self.frame_cap = self.frame_cap.next(),
             Setting::DynamicResolution => self.dynamic_resolution = !self.dynamic_resolution,
             Setting::BatterySaver => self.battery_saver = !self.battery_saver,
+            Setting::TimingAssist => self.timing_assist = next_of(&TimingAssist::ALL, self.timing_assist),
         }
     }
 
@@ -711,6 +719,15 @@ pub(super) const fn auto_target_name(strength: AutoTarget) -> &'static str {
         AutoTarget::Weak => "weak",
         AutoTarget::Normal => "normal",
         AutoTarget::Strong => "strong",
+    }
+}
+
+/// The end of the timing assist's key at `step`.
+pub(super) const fn timing_assist_name(step: TimingAssist) -> &'static str {
+    match step {
+        TimingAssist::Off => "off",
+        TimingAssist::Wide => "wide",
+        TimingAssist::Wider => "wider",
     }
 }
 
@@ -766,6 +783,7 @@ mod tests {
             Setting::FrameCap,
             Setting::DynamicResolution,
             Setting::BatterySaver,
+            Setting::TimingAssist,
         ];
         every.extend(HeldAction::ALL.iter().map(|action| Setting::Hold(*action)));
         let start = PlayerSettings::default();
@@ -805,6 +823,7 @@ mod tests {
                 again.dynamic_resolution != start.dynamic_resolution,
                 again.battery_saver != start.battery_saver,
                 again.flash_notice_read != start.flash_notice_read,
+                again.timing_assist != start.timing_assist,
             ];
             assert_eq!(changed.iter().filter(|changed| **changed).count(), 1, "{setting:?}");
         }

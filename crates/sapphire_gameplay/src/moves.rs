@@ -26,6 +26,10 @@
 //! that press. It stays open past the dodge's end, and starting any move closes it: a counter, what a
 //! press starts instead and what a hit forces all end the chance.
 //!
+//! The player's timing assist ([`crate::assist`], M4 A6) holds a perfect-dodge window open longer, as far as
+//! the move's i-frames run on ([`sapphire_moves::Move::widened_dodge`]), both where the dodge's volume is
+//! placed and in what [`MoveOutput::windows`] publishes; resolve widens the counter window it opens.
+//!
 //! # Order
 //!
 //! [`crate::CombatSet::Cancels`] ([`settle_cancels`]) walks everything that happens to an actor's
@@ -51,6 +55,8 @@ use sapphire_time::{SimDuration, SimTime};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actors::{ActorId, ActorTable};
+use crate::assist::{TimingAssist, TimingAssistTuning};
+use crate::brain::Brain;
 use crate::controller::ResolvedProfile;
 use crate::cues::{CueEvent, CueQueue};
 use crate::intents::{Intent, IntentRing};
@@ -723,6 +729,8 @@ struct Stage<'a> {
     /// The warp target's position when the step began.
     target: Option<Vec3>,
     output: &'a mut MoveOutput,
+    /// Ticks the timing assist holds this actor's perfect-dodge windows open past their end (M4 A6).
+    dodge_widen: u32,
 }
 
 fn target_position(
@@ -751,12 +759,14 @@ pub(crate) fn settle_cancels(
     mut cues: ResMut<'_, CueQueue>,
     mut stats: ResMut<'_, MoveStats>,
     party: Res<'_, Party>,
+    (assist, widths): (Res<'_, TimingAssist>, Res<'_, TimingAssistTuning>),
     mut actors: Query<
         '_,
         '_,
         (&EntityClock, &mut MoveRunner, &mut IntentRing, &mut MoveOutput, &WarpTarget, &mut Fighter),
     >,
     transforms: Query<'_, '_, &ActorTransform>,
+    brains: Query<'_, '_, &Brain>,
 ) {
     let tick = world_clock.0.ticks();
     for (id, entity) in table.iter() {
@@ -789,6 +799,7 @@ pub(crate) fn settle_cancels(
             origin: *origin,
             target,
             output: &mut output,
+            dodge_widen: widths.widths_for(*assist, brains.get(entity).ok()).dodge,
         };
         let frozen = clock.0.last_delta() == SimDuration::ZERO;
         settle(stage, set, &mut runner, &mut ring, &mut fighter, clock.0.now(), frozen);
@@ -1082,14 +1093,17 @@ fn start_move(stage: &mut Stage<'_>, runner: &mut MoveRunner, target: MoveRef, a
 
 /// [`crate::CombatSet::Moves`]: each move advances to this step's reading of its actor's clock.
 #[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
+#[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn advance_moves(
     table: Res<'_, ActorTable>,
     library: Res<'_, MoveLibrary>,
     world_clock: Res<'_, WorldClock>,
     mut cues: ResMut<'_, CueQueue>,
     mut stats: ResMut<'_, MoveStats>,
+    (assist, widths): (Res<'_, TimingAssist>, Res<'_, TimingAssistTuning>),
     mut actors: Query<'_, '_, (&EntityClock, &mut MoveRunner, &mut MoveOutput, &WarpTarget)>,
     transforms: Query<'_, '_, &ActorTransform>,
+    brains: Query<'_, '_, &Brain>,
 ) {
     let tick = world_clock.0.ticks();
     for (id, entity) in table.iter() {
@@ -1111,6 +1125,7 @@ pub(crate) fn advance_moves(
             origin: *origin,
             target,
             output: &mut output,
+            dodge_widen: widths.widths_for(*assist, brains.get(entity).ok()).dodge,
         };
         let previous = (!running.fresh).then(|| runner.cursor.since(running.started_at));
         let elapsed = now.since(running.started_at);
@@ -1122,7 +1137,10 @@ pub(crate) fn advance_moves(
             let stretch = Stretch::read(previous, elapsed);
             read_stretch(&mut stage, mv, &mut running, stretch);
             if !running.dodged && clock.0.last_delta() != SimDuration::ZERO {
-                let open = |window: &PerfectDodgeWindow| window.volume.is_some() && window.span.live(stretch);
+                let widen = stage.dodge_widen;
+                let open = |window: &PerfectDodgeWindow| {
+                    window.volume.is_some() && mv.widened_dodge(window, widen).live(stretch)
+                };
                 stage.output.perfect_window = mv.perfect_dodge.iter().position(open).map(|at| at as u32);
             }
             running.fresh = false;
@@ -1150,7 +1168,9 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
     let live = |spans: &[Span]| spans.iter().any(|span| span.live(stretch));
     let windows = &mut stage.output.windows;
     windows.invulnerable |= live(&mv.invulnerable);
-    windows.perfect_dodge |= mv.perfect_dodge.iter().any(|window| window.span.live(stretch));
+    let widen = stage.dodge_widen;
+    windows.perfect_dodge |=
+        mv.perfect_dodge.iter().any(|window| mv.widened_dodge(window, widen).live(stretch));
     windows.parry |= live(&mv.parry);
     windows.cancel |= mv.cancels.iter().any(|window| window.span.live(stretch));
     windows.warp |= mv.warps.iter().any(|window| window.span.live(stretch));

@@ -58,6 +58,7 @@
                     (node: "shake", does: Step(Shake)),
                     (node: "flashes", does: Step(Flashes)),
                     (node: "camera", does: Step(CameraMotion)),
+                    (node: "timing", does: Step(TimingAssist)),
                     (node: "back", does: Nothing),
                 ],
             ),

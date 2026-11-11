@@ -1,0 +1,17 @@
+// How much the player's timing assist widens (`sapphire_gameplay::assist`, M4 A6), compiled in as
+// `TimingAssistTuning::shipped`, in 60 Hz ticks. Each step holds a perfect-dodge window open `dodge` ticks
+// longer at its end, though never past the i-frames running on from it, and a perfect dodge's counter window
+// `counter` ticks longer. A run with the assist on records it and its tables' hash takes the chosen step's
+// numbers, so a replay of it refuses other numbers; a run with it off reads none of this. Nobody has judged
+// them in a fight yet: the player's dodge is perfect for 6 ticks (100 ms) of 13 invulnerable, and its counter
+// stays open 45 (750 ms).
+(
+    type: "sapphire::gameplay::TimingAssistTuning",
+    version: 1,
+    data: (
+        // Half again: 150 ms to dodge in, a second to answer.
+        wide: (dodge: 3, counter: 15),
+        // Twice the window, near all the i-frames the player's dodge has: 200 ms, and 1.25 s to answer.
+        wider: (dodge: 6, counter: 30),
+    ),
+)

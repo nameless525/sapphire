@@ -1,0 +1,14 @@
+// `dodge-counter`'s presses with the player's timing assist on at its wide step (M4 A6) from the first tick:
+// its perfect-dodge windows are 3 ticks longer at their end and its counters 15. So the answer a tick after
+// its counter closed (tick 501) is a counter now. The dodge pressed too late (tick 256) still has no i-frames,
+// and lands.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "dodge-counter's presses with the timing assist widening its windows: the late answer a counter",
+        ticks: 1000,
+        like: "dodge-counter",
+        commands: [(0, TimingAssist(Wide))],
+    ),
+)

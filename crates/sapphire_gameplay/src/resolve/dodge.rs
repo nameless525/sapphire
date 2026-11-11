@@ -7,13 +7,16 @@ use sapphire_time::ScaleSource;
 use super::time::counter_scale;
 use super::{ResolveStats, SlowMotion};
 use crate::actors::ActorTable;
+use crate::assist::{TimingAssist, TimingAssistTuning};
+use crate::brain::Brain;
 use crate::cues::{CueEvent, CueQueue, PERFECT_DODGE};
 use crate::hits::HitQuery;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, OpenCounter};
 
 /// [`crate::CombatSet::Resolve`], after hits: fires each dodge a swing went through this step. A volume
 /// is in the world only on a step its window can fire, so the swing's dodger has that window published,
-/// and firing marks the playing, so it can't fire again, and spends the swing on its dodger.
+/// and firing marks the playing, so it can't fire again, and spends the swing on its dodger. The counter
+/// window it opens stays open as long as the timing assist widens it for the dodger (M4 A6).
 #[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn fire_perfect_dodges(
     mut hits: ResMut<'_, HitQuery>,
@@ -23,12 +26,13 @@ pub(crate) fn fire_perfect_dodges(
     mut slow: ResMut<'_, SlowMotion>,
     mut cues: ResMut<'_, CueQueue>,
     mut stats: ResMut<'_, ResolveStats>,
-    mut actors: Query<'_, '_, (&mut EntityClock, &mut MoveRunner, &MoveOutput)>,
+    (assist, widths): (Res<'_, TimingAssist>, Res<'_, TimingAssistTuning>),
+    mut actors: Query<'_, '_, (&mut EntityClock, &mut MoveRunner, &MoveOutput, &Brain)>,
 ) {
     for index in 0..hits.dodged().len() {
         let swing = hits.dodged()[index];
         let Some(entity) = table.entity(swing.dodger) else { continue };
-        let Ok((mut clock, mut runner, output)) = actors.get_mut(entity) else { continue };
+        let Ok((mut clock, mut runner, output, brain)) = actors.get_mut(entity) else { continue };
         let (Some(index), Some(mut running)) = (output.perfect_window, runner.running) else { continue };
         let Some(window) = library.get(running.at).and_then(|mv| mv.perfect_dodge.get(index as usize)) else {
             continue;
@@ -39,11 +43,12 @@ pub(crate) fn fire_perfect_dodges(
         runner.running = Some(running);
         hits.spend_swing(&swing);
         if let Some(counter) = &window.counter {
+            let longer = widths.widths_for(*assist, Some(brain)).counter_duration();
             runner.counter = Some(OpenCounter {
                 at: running.at,
                 window: index,
                 opens: now,
-                closes: now + counter.duration(),
+                closes: now + counter.duration() + longer,
             });
         }
         if let Some(asked) = window.slow_motion {

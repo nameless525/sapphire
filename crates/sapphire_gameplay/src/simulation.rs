@@ -22,6 +22,7 @@ use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError, Teleports,
 };
+use crate::assist::{AssistWidths, TimingAssist, TimingAssistTuning};
 use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample, BodyTable, BodyTuning};
 use crate::brain::{self, Brain, BrainState};
 use crate::checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
@@ -192,6 +193,8 @@ impl Simulation {
         world.insert_resource(Flags::default());
         world.insert_resource(TargetingTuning::shipped());
         world.insert_resource(AutoTarget::Normal);
+        world.insert_resource(TimingAssistTuning::shipped());
+        world.insert_resource(TimingAssist::Off);
         world.insert_resource(BodyTable(*BodyTuning::shipped()));
         world.insert_resource(ZoneShelf::default());
         world.insert_resource(Patrols::default());
@@ -665,6 +668,36 @@ impl Simulation {
             *self.ecs.world_mut().resource_mut::<AutoTarget>() = strength;
         }
         changed
+    }
+
+    /// How far the timing assist widens in this simulation: the player's setting, [`TimingAssist::Off`] until
+    /// told otherwise. A restart keeps it.
+    #[must_use]
+    pub fn timing_assist(&self) -> TimingAssist {
+        *self.ecs.world().resource::<TimingAssist>()
+    }
+
+    /// Makes `step` how far the timing assist widens, between steps, as a player's setting does. Says whether
+    /// that changed anything: if it did, [`Self::tables_hash`] takes the step and its numbers, or, turned off,
+    /// none. A recording keeps it as a command ([`crate::replay::Recording::set_timing_assist`]), so a replay
+    /// widens as its run did.
+    pub fn set_timing_assist(&mut self, step: TimingAssist) -> bool {
+        let changed = *self.ecs.world().resource::<TimingAssist>() != step;
+        if changed {
+            *self.ecs.world_mut().resource_mut::<TimingAssist>() = step;
+        }
+        changed
+    }
+
+    /// What the timing assist adds to `actor`'s perfect-dodge and counter windows now: nothing with it off,
+    /// for an actor a brain plays, or for one that isn't there. Presentation reads it to show the windows a
+    /// step runs on.
+    #[must_use]
+    pub fn assist_widths(&self, actor: ActorId) -> AssistWidths {
+        let world = self.ecs.world();
+        let Some(entity) = world.resource::<ActorTable>().entity(actor) else { return AssistWidths::NONE };
+        let tuning = world.resource::<TimingAssistTuning>();
+        tuning.widths_for(*world.resource::<TimingAssist>(), world.get::<Brain>(entity))
     }
 
     /// Gives this simulation a zone, between steps and before any character has spawned: its colliders if it

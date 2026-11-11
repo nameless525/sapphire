@@ -32,7 +32,7 @@
 //!   ([`HitOutcome`]), the reactions and hitstop it asks for, and [`SlowMotion`], world-clock slow
 //!   motion. The `resolve` module's docs say how a hit lands.
 //! - Perfect dodges and counters (M2 G4), through [`HitQuery::dodged`], the `resolve` module and the
-//!   `moves` module's counter window.
+//!   `moves` module's counter window, and [`assist`] (M4 A6), the player's setting that widens both.
 //! - [`brain`] (M2 G6): what presses an enemy's intents and tilts its stick, on the same paths as a
 //!   player's, from a section of its move set's document.
 //! - The party (M2 G7): [`Party`], three slots with one on the field and the others off it and still
@@ -135,6 +135,7 @@ extern crate self as sapphire_gameplay;
 mod actions;
 mod actors;
 pub mod arena;
+pub mod assist;
 pub mod body;
 pub mod brain;
 pub mod checkpoint;

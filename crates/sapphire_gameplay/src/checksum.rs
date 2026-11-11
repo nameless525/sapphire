@@ -12,6 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorTable};
+use crate::assist::{TimingAssist, TimingAssistTuning};
 use crate::body::BodyTable;
 use crate::brain::{Brain, BrainState};
 use crate::controller::{
@@ -506,7 +507,8 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, any patrols,
-/// every loaded timeline's simulation half, if there are any, targeting's weights, every loaded
+/// every loaded timeline's simulation half, if there are any, targeting's weights, the timing assist's step
+/// and numbers if it's on (M4 A6), every loaded
 /// dialogue's effects if there are any, what a zone says if there's one, a script's bytecode and cadence,
 /// if there's one of those, every shelved zone's digest (M3 W4), and last each kind of enemy's mind, by
 /// its set, if there are any (M3 B3). Opted-in standing jump preparation contributes the policy and setup
@@ -554,6 +556,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
         }
     }
     hasher.u64(targeting.digest(*world.resource::<AutoTarget>()));
+    world.resource::<TimingAssistTuning>().write_tables(*world.resource::<TimingAssist>(), &mut hasher);
     world.resource::<BodyTable>().0.write_canonical(&mut |bytes| hasher.bytes(bytes));
     dialogues.write_digests(&mut hasher);
     if let Some(zone) = zone {

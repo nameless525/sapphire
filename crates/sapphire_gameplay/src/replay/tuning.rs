@@ -765,4 +765,42 @@ mod tests {
         assert_eq!(player.simulation().auto_target(), AutoTarget::Weak);
         assert_eq!(player.finish().trail, played.trail);
     }
+
+    /// The player's timing assist (M4 A6) is no edit either: a recording keeps each change as a command, and
+    /// its file plays back on the steps it ran on, from a start with it off. Setting what's set records
+    /// nothing, and the file's hash is the run's start's, so it's the same as a run without the setting.
+    #[test]
+    fn the_players_timing_assist_is_recorded_and_plays_back() {
+        use super::super::ReplayCommand;
+        use crate::assist::TimingAssist;
+
+        let mut source = find_script("dodge-counter").expect("listed");
+        let mut recording = Recording::new(duel(), duel().config).expect("sets up");
+        let start = recording.simulation().tables_hash();
+        assert!(!recording.set_timing_assist(TimingAssist::Off), "what it starts on");
+        assert!(recording.set_timing_assist(TimingAssist::Wider));
+        for _ in 0..20 {
+            recording.step(&mut source).expect("short");
+        }
+        assert!(!recording.set_timing_assist(TimingAssist::Wider), "set already");
+        assert!(recording.set_timing_assist(TimingAssist::Wide));
+        // Through the first perfect dodge, on tick 56, and its counter.
+        for _ in 0..60 {
+            recording.step(&mut source).expect("short");
+        }
+        assert_eq!(recording.edited_at(), None, "a setting isn't an edit");
+        let (replay, played) = recording.finish();
+        assert_eq!(replay.tables_hash(), start, "a run starts with it off");
+        let commands = [
+            (0, ReplayCommand::TimingAssist(TimingAssist::Wider)),
+            (20, ReplayCommand::TimingAssist(TimingAssist::Wide)),
+        ];
+        assert_eq!(replay.commands(), commands);
+
+        let replay = Replay::decode(&replay.encode()).expect("reads back");
+        let mut player = Player::new(replay, &SCENARIOS).expect("on the shipped tables");
+        player.run_to_end();
+        assert_eq!(player.simulation().timing_assist(), TimingAssist::Wide);
+        assert_eq!(player.finish().trail, played.trail);
+    }
 }

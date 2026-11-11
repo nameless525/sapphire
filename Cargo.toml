@@ -432,6 +432,11 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
+# sapphire_symbols' crash test reads its own link's symbols back, so it keeps line tables even where CI turns
+# debug information off (`CARGO_PROFILE_DEV_DEBUG=0`): with none, cargo strips them and MSVC writes no PDB.
+[profile.dev.package.sapphire_symbols]
+debug = "line-tables-only"
+
 # Internal profiling builds.
 [profile.release]
 lto = "thin"

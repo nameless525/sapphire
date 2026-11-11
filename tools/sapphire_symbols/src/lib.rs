@@ -141,12 +141,13 @@ pub fn check(shipped: &Path, symbols: &Path) -> anyhow::Result<Module> {
         }
         Binary::Elf(elf) => {
             let shipped_id = build_id(&elf, &bytes).with_context(|| format!("in {}", shipped.display()))?;
-            let sections = elf_sections(&elf);
-            ensure!(
-                !sections.iter().any(|name| *name == ".symtab" || is_dwarf_section(name)),
-                "{} isn't stripped: it has a symbol table or DWARF",
-                shipped.display()
-            );
+            // DWARF is never loaded. rustc's `.debug_gdb_scripts` is (SHF_ALLOC), so `strip` keeps it in every
+            // ELF linked with debug information, and it isn't DWARF.
+            let unstripped = elf.section_headers.iter().any(|header| {
+                let name = elf.shdr_strtab.get_at(header.sh_name).unwrap_or_default();
+                name == ".symtab" || (is_dwarf_section(name) && !header.is_alloc())
+            });
+            ensure!(!unstripped, "{} isn't stripped: it has a symbol table or DWARF", shipped.display());
             let debug_bytes = read(symbols)?;
             let Binary::Elf(debug) = Binary::parse(&debug_bytes, symbols)? else {
                 bail!("{} isn't ELF", symbols.display());

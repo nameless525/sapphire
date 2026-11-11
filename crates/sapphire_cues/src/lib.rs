@@ -18,8 +18,8 @@
 //! - **The dispatcher** ([`CueDispatcher`]): resolves those names once, at load and after a reload, then
 //!   fires rows with no allocation. [`CueStep`] is what a step fires into. At every setting (M4 A3) it
 //!   lets one full-screen flash (a preset with an inversion or a duotone) start in any second, two of WCAG
-//!   2.3.1's six transitions, and holds the rest's screen effect alone: the row's sound, shake and effects
-//!   still fire.
+//!   2.3.1's six transitions, more only as a run of ever longer ones (a finish after a heavy hit), and holds the rest's screen effect
+//!   alone: the row's sound, shake and effects still fire.
 //! - **Cue marks** (M4 A5, [`Stand`], [`CueMarks`]): a row's effect over a fighter's head
 //!   ([`EffectPlace::Crown`]), and the cues no document names: [`DODGE_WINDOW`], fired on a foe as its strike
 //!   comes within a perfect dodge's reach, read from the moves, and [`NAMED_PHASE`], on an enemy crossing a

@@ -1079,7 +1079,7 @@ impl FightShow {
         budget: VfxBudget,
         effects: Option<sapphire_vfx::EffectLibrary>,
     ) -> Result<(), String> {
-        let (mut show, variants) = scene.with_screen_effects(|_, presets| {
+        let (show, variants) = scene.with_screen_effects(|_, presets| {
             let show = match effects {
                 Some(effects) => CueShow::with_effects(effects, budget, presets),
                 None => CueShow::new(budget, presets),

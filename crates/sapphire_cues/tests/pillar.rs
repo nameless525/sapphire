@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_core::Name;
-use sapphire_cues::CueTable;
+use sapphire_cues::{CueStats, CueTable};
 use sapphire_moves::{HIT_LANDED, MoveSetDocument};
 use sapphire_render::PostEffects;
 use support::Fight;
@@ -50,15 +50,18 @@ fn one_hit_reaches_every_sink_in_one_frame() {
 }
 
 /// Not just the first: every frame of a whole fight with a hit in it fires all of them, and nothing fires
-/// a screen effect or the pad without one.
+/// a screen effect or the pad without one. A full-screen flash near another may be held (M4 A3), which
+/// counts it instead.
 #[test]
 fn every_hit_of_a_fight_reaches_every_sink_in_its_own_frame() {
     let mut fight = Fight::new("fight");
     let mut hits = 0;
+    let mut held = 0;
     while let Some(reached) = fight.frame(1) {
+        let was_held = std::mem::replace(&mut held, fight.cues.stats().flashes_held);
         if reached.hits > 0 {
             hits += reached.hits;
-            assert!(reached.screen_layers > 0, "{reached:?}");
+            assert!(reached.screen_layers > 0 || held > was_held, "{reached:?}");
             assert!(reached.shakes > 0, "{reached:?}");
             assert!(reached.voices > 0, "{reached:?}");
             assert!(reached.rumbles > 0, "{reached:?}");
@@ -92,8 +95,11 @@ fn a_frame_of_two_steps_loses_nothing() {
     }
     assert!(on_first_step > 0, "the fight has hits on a frame's first step");
 
-    assert_eq!(one.cues.stats(), two.cues.stats(), "every cue, whichever step it fell on");
-    assert_eq!(one.screen.stats().pushed, two.screen.stats().pushed);
+    // Which full-screen flashes are held goes by real time (M4 A3), and this harness's frames are as long
+    // at two steps as at one: what's pushed or held is the same either way.
+    let fired =
+        |stats: CueStats| CueStats { screens: stats.screens + stats.flashes_held, flashes_held: 0, ..stats };
+    assert_eq!(fired(one.cues.stats()), fired(two.cues.stats()), "every cue, whichever step it fell on");
     assert_eq!(one.voices_started(), two.voices_started());
     assert_eq!(one.cues.stats().sounds as usize, one.voices_started());
 }

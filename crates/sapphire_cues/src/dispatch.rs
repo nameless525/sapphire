@@ -367,8 +367,8 @@ impl CueDispatcher {
         if let Some((id, center)) = row.screen
             && let Some(preset) = step.presets.preset(id)
         {
-            // A second full-screen flash within a second shows nothing, at every setting; the rest of its row
-            // still fires.
+            // A full-screen flash within a second of another shows nothing, at every setting, unless it's the
+            // bigger; the rest of its row still fires.
             let held = row.flash.is_some_and(|length| !self.flashes.admit(self.seconds, length));
             if held {
                 self.stats.flashes_held += 1;
@@ -519,28 +519,48 @@ impl CueDispatcher {
     }
 }
 
-/// The last full-screen flash let through, by when it started and ended in real seconds (M4 A3). A flash is
-/// two transitions, its start and its end, and WCAG 2.3.1 allows six in any second. A flash is let through
-/// only when its start is a second or more after the last one's start, and its end a second or more after that
-/// one's end: one flash, two transitions, in any second, whatever their lengths, which leaves four of the six
-/// to the fight itself, its camera, its fighters and their effects. Measured on the stress fight, a camera
-/// passing a pillar takes four on its own; three flashes a second, as WCAG would allow alone, failed it.
+/// The last two full-screen flashes let through, oldest first, each by when it started and ended in real
+/// seconds and how long it changed the frame's light (M4 A3). A flash is two transitions, its start and its end,
+/// and WCAG 2.3.1 allows six in any second. One is near another when it starts within a second of the other's
+/// start, or ends within a second of its end. A flash near none is let through; so is one longer than every
+/// flash it's near, a guard break's after a heavy hit's or a finish's after both, so a fight's big moment is
+/// never lost to a smaller one before it, and so is one starting while the last still shows, which blends into
+/// it, a finish's on a perfect dodge's. Anything else near a flash is held: one flash a second, two
+/// transitions, leaving four of the six to the fight itself, its camera, its fighters and their effects, and
+/// more only as a rising run, which is short and rare. Measured on the stress fight, a camera passing a pillar takes four on its own; three flashes
+/// a second, as WCAG would allow alone, failed it.
 #[derive(Clone, Copy, Debug, Default)]
 struct FlashRate {
-    last: Option<(f64, f64)>,
+    last: [Option<Flash>; 2],
+}
+
+/// A flash [`FlashRate`] let through.
+#[derive(Clone, Copy, Debug)]
+struct Flash {
+    start: f64,
+    end: f64,
+    length: f32,
+}
+
+impl Flash {
+    fn is_near(&self, start: f64, end: f64) -> bool {
+        start - self.start < 1.0 || end - self.end < 1.0
+    }
 }
 
 impl FlashRate {
     /// Whether a flash `length` seconds long may start at `now`, which it then does.
     fn admit(&mut self, now: f64, length: f32) -> bool {
         let end = now + f64::from(length);
-        if let Some((start, ended)) = self.last
-            && (now - start < 1.0 || end - ended < 1.0)
-        {
-            return false;
+        let near = |flash: &Option<Flash>| flash.is_some_and(|flash| flash.is_near(now, end));
+        let longer = |flash: &Option<Flash>| !near(flash) || flash.is_some_and(|flash| length > flash.length);
+        // One starting while the last still shows blends into it, one longer change on screen.
+        let over = self.last[1].is_some_and(|last| now < last.end);
+        let admitted = over || self.last.iter().all(longer);
+        if admitted {
+            self.last = [self.last[1], Some(Flash { start: now, end, length })];
         }
-        self.last = Some((now, end));
-        true
+        admitted
     }
 }
 
@@ -1107,7 +1127,8 @@ mod tests {
     }
 
     /// A full-screen flash comes at most once a second at every setting (M4 A3), its start and its end a
-    /// second past the last one's, while what isn't a flash and the rest of a held flash's row fire as ever.
+    /// second past the last one's, unless it's longer than that one, while what isn't a flash and the rest
+    /// of a held flash's row fire as ever.
     #[test]
     fn a_full_screen_flash_a_second_comes_through() {
         let pushing = |cue: &str, preset: &str| CueRow {
@@ -1149,11 +1170,21 @@ mod tests {
 
         // A long flash's end counts too: a short one a second after a finish's start waits until it ends a second
         // after the finish's 0.7 s fall.
-        let mut busy = dispatcher(rows);
+        let mut busy = dispatcher(rows.clone());
         fire(&mut busy, "finish", &[0]);
         fire(&mut busy, "heavy", &[61, 100]);
         let stats = busy.stats();
         assert_eq!((stats.screens, stats.flashes_held), (2, 1), "the one at 61 ends 0.37 s past the finish");
+
+        // A finish after a heavy hit still shows, a longer flash than the one it's near, and one while it shows
+        // blends into it; one after it ends, within a second of it, doesn't.
+        let mut rising = dispatcher(rows);
+        fire(&mut rising, "heavy", &[0]);
+        fire(&mut rising, "finish", &[20]);
+        fire(&mut rising, "heavy", &[10]);
+        fire(&mut rising, "finish", &[35]);
+        let stats = rising.stats();
+        assert_eq!((stats.screens, stats.flashes_held), (3, 1), "all but the last finish");
     }
 
     /// The table's screen presets draw through these, and a preset nothing pushes adds nothing.

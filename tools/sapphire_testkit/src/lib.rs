@@ -4,7 +4,8 @@
 //! Today it holds golden images: [`golden`] compares images, and [`scenes`] renders the golden
 //! scenes with the sandbox and checks them (`cargo xtask golden`). [`look`] measures lines and
 //! two-tone edges in output pixels, for the renderer's GPU tests, which take this crate as a
-//! dev-dependency, and for captures (`sapphire_testkit measure`). The combat replay runner is a
+//! dev-dependency, and for captures (`sapphire_testkit measure`). [`store_shots`] draws golden scenes
+//! again at each store's screenshot sizes (`cargo xtask store-shots`). The combat replay runner is a
 //! tool of its own, `sapphire_replay`, so its job builds none of this.
 
 mod output_paths;
@@ -12,3 +13,4 @@ mod output_paths;
 pub mod golden;
 pub mod look;
 pub mod scenes;
+pub mod store_shots;

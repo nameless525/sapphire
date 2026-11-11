@@ -6,7 +6,8 @@
 //! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
 //! as processes too. `package` builds the game for a store: the shipping profile, one version and build
 //! number, one identity and the project's icon, staged for each store's own package; `symbolicate` reads its
-//! crashes back with the symbols kept beside it.
+//! crashes back with the symbols kept beside it, and `store-shots` draws the stores' screenshots by the
+//! goldens' road.
 
 mod cli;
 mod content;
@@ -18,6 +19,7 @@ mod platforms;
 mod release;
 mod replay;
 mod script_api;
+mod store_shots;
 mod version;
 mod workspace;
 
@@ -133,6 +135,12 @@ Commands:
       forces; CI splits the slow backends' scenes across runners with it. A scene still
       running after --scene-timeout (default 900) is stopped and fails. Each scene's
       output is in target/golden/<scene>.log, and their times in timings.json there.
+  store-shots [--scene-timeout <seconds>]
+      Draw the stores' screenshots into target/store-shots/<store>/<size>/<language>/, which is
+      never committed: golden scenes of the game in play, by the goldens' sandbox capture, at each
+      size docs/store/<store>.md's Screenshots table names (Apple's iPhones and 13-inch iPad, Play's
+      phone and tablet, Steam's desktop and the Deck's 1280x800), each as that screen shows the
+      menus and the HUD, in English and Japanese. Captures' logs are in target/store-shots/logs/.
   link <command> [options]
       Live link (spec §5.29): build the desktop tool and run it against a running dev build
       (`--features dev`), with this workspace's cooked content:
@@ -301,6 +309,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 shard: shard.as_deref(),
                 scene_timeout,
             })
+        }
+        "store-shots" => {
+            let scene_timeout = args.value::<u64>("--scene-timeout")?;
+            args.finish(false)?;
+            store_shots::run(scene_timeout)
         }
         "script-api" => {
             let check = args.flag("--check");

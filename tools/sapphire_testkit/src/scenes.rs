@@ -37,7 +37,7 @@ use self::costs::Family;
 use crate::golden::{self, Image, Thresholds, backend_key};
 
 /// The environment variable the sandbox reads its cooked content from.
-const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
+pub(crate) const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
 /// The environment variable that forces the sandbox's GPU backend (`sapphire_rhi`'s
 /// `BACKEND_OVERRIDE_ENV`), which CI's golden jobs set: it says whose costs `--shard` splits by.
 const BACKEND_ENV: &str = "SAPPHIRE_GPU_BACKEND";
@@ -5391,7 +5391,11 @@ fn run_scene(
 /// Linux). Only the sandbox is killed: its crash monitor exits when its lifeline, a pipe only the
 /// sandbox holds, closes (`sapphire_crash`). A kill is `SIGKILL` (`TerminateProcess` on Windows),
 /// so a hung sandbox leaves no minidump; std has no portable way to send `SIGABRT` first.
-fn run_with_deadline(command: &mut Command, log: &Path, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+pub(crate) fn run_with_deadline(
+    command: &mut Command,
+    log: &Path,
+    timeout: Duration,
+) -> io::Result<Option<ExitStatus>> {
     let stdout = File::create(log)?;
     let stderr = stdout.try_clone()?;
     let mut child = command.stdin(Stdio::null()).stdout(stdout).stderr(stderr).spawn()?;
@@ -5444,7 +5448,7 @@ fn frame_builds(log: &str, scene: &Scene) -> Option<String> {
     })
 }
 
-fn log_tail(path: &Path) -> String {
+pub(crate) fn log_tail(path: &Path) -> String {
     const MAX_BYTES: u64 = 16 * 1024;
     let read = || -> io::Result<String> {
         let mut file = File::open(path)?;

@@ -1,6 +1,7 @@
 //! `sapphire_testkit`: runs test suites that need a built app, as a process, because nothing may
 //! depend on a tool crate (rule R1). `cargo xtask golden` builds the sandbox and this binary,
-//! then runs `golden`. `measure` reads lines and edges from two captures of one shot.
+//! then runs `golden`, and `cargo xtask store-shots` runs `store-shots`. `measure` reads lines and edges from
+//! two captures of one shot.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use sapphire_testkit::golden::{self, Image, Thresholds};
 use sapphire_testkit::look::{Lines, Region, Spread};
 use sapphire_testkit::scenes::{self, DEFAULT_SCENE_TIMEOUT, Mode, Paths, Selection};
+use sapphire_testkit::store_shots;
 
 const USAGE: &str = "\
 Usage:
@@ -22,6 +24,10 @@ Usage:
       --scene-timeout stops a scene's sandbox after that long and fails the scene
       (default 900). Each scene's output is in <out>/<scene>.log, and every scene's time
       in <out>/timings.json.
+  sapphire_testkit store-shots --sandbox <exe> --content <dir> --tests <dir> --out <dir>
+                               [--scene-timeout <seconds>]
+      Draw the stores' screenshots (sapphire_testkit::store_shots) into <out>/<store>/<size>/
+      <language>/, emptied first, with each capture's log in <out>/logs/.
   sapphire_testkit measure <with lines.png> <without lines.png> [--region <x,y,width,height>]
       Measure two captures of one shot, drawn with lines and without (the sandbox's
       --outline-distance 0), over the region or the whole image, in output pixels: the
@@ -37,7 +43,7 @@ fn main() -> ExitCode {
     match run(args) {
         Ok(failures) if failures.is_empty() => ExitCode::SUCCESS,
         Ok(failures) => {
-            eprintln!("{} golden scene(s) failed:\n  {}", failures.len(), failures.join("\n  "));
+            eprintln!("{} scene(s) or shot(s) failed:\n  {}", failures.len(), failures.join("\n  "));
             ExitCode::FAILURE
         }
         Err(error) => {
@@ -49,12 +55,12 @@ fn main() -> ExitCode {
 
 fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
     match args.first().map(String::as_str) {
-        Some("golden") => {}
+        Some("golden" | "store-shots") => {}
         Some("measure") => return measure(&args[1..]).map(|()| Vec::new()),
         Some("compare") => return compare(&args[1..]).map(|()| Vec::new()),
-        _ => return Err("expected the `golden`, `measure` or `compare` command".into()),
+        _ => return Err("expected the `golden`, `store-shots`, `measure` or `compare` command".into()),
     }
-    args.remove(0);
+    let shots = args.remove(0) == "store-shots";
     let mut flag = |name: &str| args.iter().position(|arg| arg == name).map(|i| args.remove(i)).is_some();
     let mode = if flag("--update") { Mode::Update } else { Mode::Compare };
     let mut value = |name: &str| -> Result<Option<String>, String> {
@@ -63,6 +69,19 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         (i < args.len()).then(|| args.remove(i)).map(Some).ok_or_else(|| format!("{name} needs a value"))
     };
     let mut path = |name: &str| value(name)?.map(PathBuf::from).ok_or_else(|| format!("missing {name}"));
+    if shots {
+        let paths = store_shots::Paths {
+            sandbox: path("--sandbox")?,
+            content: path("--content")?,
+            tests: path("--tests")?,
+            out: path("--out")?,
+        };
+        let timeout = timeout(value("--scene-timeout")?)?;
+        if let Some(unexpected) = args.first() {
+            return Err(format!("unexpected argument `{unexpected}`"));
+        }
+        return store_shots::run(&paths, timeout);
+    }
     let paths = Paths {
         sandbox: path("--sandbox")?,
         content: path("--content")?,
@@ -71,13 +90,7 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
     };
     let scene = value("--scene")?;
     let shard = value("--shard")?.map(|text| text.parse()).transpose()?;
-    let timeout = match value("--scene-timeout")? {
-        Some(text) => match text.parse::<u64>() {
-            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
-            _ => return Err(format!("invalid --scene-timeout {text:?}: expected whole seconds from 1")),
-        },
-        None => DEFAULT_SCENE_TIMEOUT,
-    };
+    let timeout = timeout(value("--scene-timeout")?)?;
     if let Some(unexpected) = args.first() {
         return Err(format!("unexpected argument `{unexpected}`"));
     }
@@ -88,6 +101,17 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         (Some(_), Some(_)) => return Err("--scene and --shard can't be combined".into()),
     };
     scenes::run(&paths, mode, selection, timeout)
+}
+
+/// `--scene-timeout`'s value, or the default.
+fn timeout(text: Option<String>) -> Result<Duration, String> {
+    match text {
+        Some(text) => match text.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Ok(Duration::from_secs(seconds)),
+            _ => Err(format!("invalid --scene-timeout {text:?}: expected whole seconds from 1")),
+        },
+        None => Ok(DEFAULT_SCENE_TIMEOUT),
+    }
 }
 
 /// `measure`: prints one line of the two captures' lines and edges.

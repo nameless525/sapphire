@@ -21,20 +21,25 @@ MODES = ("off", "on")
 
 
 def fixtures(source: Path) -> list[dict]:
-    """Read the exact checked-out fixtures; fail if Rust's literal representation changes."""
+    """Read the exact checked-out fixtures from the golden scenes' document, as the runner's command line after
+    `--capture <png>`; fail if a fixture's layout changes."""
     text = source.read_text()
     found = {}
-    pattern = r'Scene\s*\{\s*name:\s*"([^"]+)",\s*args:\s*&\[([^]]*)\]'
-    for name, values in re.findall(pattern, text):
+    pattern = (r'\(\s*name:\s*"([^"]+)",\s*(?:size:\s*"([^"]+)",\s*)?ticks:\s*(\d+),\s*(base:\s*"[^"]*",\s*)?'
+               r'(?:args:\s*\[([^]]*)\],)?')
+    for name, size, ticks, base, values in re.findall(pattern, text):
         if name not in SCENES:
             continue
         if name in found:
             raise ValueError(f"Duplicate scene {name}")
-        # Current fixture arguments are JSON-compatible Rust string literals. Restrict the
-        # grammar so source comments/expressions cannot silently turn into different flags.
-        if not re.fullmatch(r'\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*', values):
+        if base:
+            raise ValueError(f"Scene {name} takes a base, which this reader doesn't resolve")
+        # Current fixture arguments are JSON-compatible RON strings. Restrict the grammar so
+        # comments cannot silently turn into different flags.
+        if not re.fullmatch(r'\s*(?:"(?:[^"\\]|\\.)*"\s*,?\s*)*', values):
             raise ValueError(f"Scene {name} no longer has literal string arguments")
-        found[name] = json.loads("[" + values.rstrip().rstrip(",") + "]")
+        args = json.loads("[" + values.rstrip().rstrip(",") + "]")
+        found[name] = ["--size", size or "640x360", "--capture-ticks", ticks, *args]
     if set(found) != set(SCENES):
         raise ValueError("Representative fixtures are missing from the checked-out scene registry")
     return [{"name": name, "args": found[name]} for name in SCENES]
@@ -114,13 +119,13 @@ def experiment(inputs: Path, output: Path, commit: str, rounds: int = 3, timeout
     if output.exists():
         raise ValueError("Experiment output must be fresh")
     manifest = verify_inputs(inputs, commit)
-    cohort = fixtures(Path("tools/sapphire_testkit/src/scenes.rs"))
+    cohort = fixtures(Path("tests/golden/scenes.ron"))
     output.mkdir(parents=True)
     binary = inputs / "bin/sapphire_sandbox"
     report = {
         "commit": commit, "input_manifest": manifest,
         "manifest_sha256": digest(inputs / "manifest.json"),
-        "source_fixtures_sha256": digest(Path("tools/sapphire_testkit/src/scenes.rs")),
+        "source_fixtures_sha256": digest(Path("tests/golden/scenes.ron")),
         "fixtures": cohort, "measured_rounds": rounds, "sequences": [],
         "method": "One physical runner and executable; fresh process per scene; one discarded 2-mode warmup round; alternating history-mode order; blocking child wait with an independent timeout watchdog; normal Mesa disk cache untouched; inherited experimental pipeline-cache path removed. PNG byte parity across every warmup and measured capture. No full-suite gain extrapolation.",
     }
@@ -139,7 +144,7 @@ def experiment(inputs: Path, output: Path, commit: str, rounds: int = 3, timeout
                 for scene in cohort:
                     png = folder / f"{scene['name']}.png"
                     log = folder / f"{scene['name']}.log"
-                    command = [str(binary), "--capture", str(png), "--size", "640x360", *scene["args"]]
+                    command = [str(binary), "--capture", str(png), *scene["args"]]
                     returncode, elapsed = timed_capture(command, env, log, timeout)
                     if returncode != 0 or not png.is_file():
                         raise RuntimeError(f"Capture failed ({returncode}): {log}")

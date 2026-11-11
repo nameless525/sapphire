@@ -12,8 +12,14 @@ name = "sapphire_testkit"
 path = "src/main.rs"
 
 [dependencies]
+# The golden scenes' document's stable name (M4 R1).
+bevy_reflect.workspace = true
 # Existing-prefix path identity shared with the replay runner.
 sapphire_core.workspace = true
+# The golden scenes' document: its schema version and its RON envelope (M4 R1).
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
 # Scene deadlines and wall times, read from the clock rule R2 allows.
 sapphire_time.workspace = true
 nv-flip.workspace = true

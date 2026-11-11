@@ -1,7 +1,7 @@
 //! The stores' screenshots (M4 S5), behind `cargo xtask store-shots`: golden scenes of the game in play, drawn
 //! again at each store's sizes, as a phone's or a desktop's screen shows them.
 //!
-//! A shot borrows a golden scene's command line ([`scenes::scenes`]), so it draws by the same sandbox
+//! A shot borrows a golden scene's command line ([`scenes::scenes`], `tests/golden/scenes.ron`), so it draws by the same sandbox
 //! `--capture` road and moves when its scene does. Each [`Size`] replaces the scene's size and tier and drops its
 //! `--ao off`, a golden's pin, so the frame is drawn as the tier draws it, and stands the menus and the HUD on
 //! the store's screen: its pixels per point, and on-screen controls only on a touch screen (the sandbox's
@@ -22,7 +22,7 @@ use std::time::Duration;
 use sapphire_time::Stopwatch;
 
 use crate::golden::Image;
-use crate::scenes::{self, log_tail, run_with_deadline};
+use crate::scenes::{self, Scene, log_tail, run_with_deadline};
 
 /// The languages a store's page is written in, as the game's own settings name them.
 pub const LANGUAGES: [&str; 2] = ["en", "ja"];
@@ -147,15 +147,21 @@ pub const SHOTS: [Shot; 6] = [
 /// `--ao off`, which pins occlusion off where the tier would draw it.
 const REPLACED: [&str; 4] = ["--size", "--tier", "--game-language", "--ao"];
 
-/// The sandbox's arguments for `shot` at `size` in `language`, after `--capture <png>`. A scene's path under
-/// `tests/` is found under `tests`.
-pub fn args(shot: &Shot, size: &Size, language: &str, tests: &Path) -> Result<Vec<String>, String> {
-    let scene = scenes::scenes().into_iter().find(|scene| scene.name == shot.scene).ok_or_else(|| {
+/// The sandbox's arguments for `shot` at `size` in `language`, after `--capture <png>`, from its golden among
+/// `scenes`. A scene's path under `tests/` is found under `tests`.
+pub fn args(
+    shot: &Shot,
+    size: &Size,
+    language: &str,
+    scenes: &[Scene],
+    tests: &Path,
+) -> Result<Vec<String>, String> {
+    let scene = scenes.iter().find(|scene| scene.name == shot.scene).ok_or_else(|| {
         format!("the shot {} draws the scene {}, which no golden has", shot.name, shot.scene)
     })?;
     let mut args = Vec::with_capacity(scene.args.len() + 8);
-    let mut given = scene.args.iter();
-    while let Some(&arg) = given.next() {
+    let mut given = scene.args.iter().map(String::as_str);
+    while let Some(arg) = given.next() {
         if REPLACED.contains(&arg) {
             given.next();
             continue;
@@ -167,12 +173,12 @@ pub fn args(shot: &Shot, size: &Size, language: &str, tests: &Path) -> Result<Ve
     }
     args.extend(["--size".to_owned(), format!("{}x{}", size.width, size.height)]);
     args.extend(["--tier".to_owned(), size.tier.to_owned()]);
-    let game = scene.args.contains(&"--game");
+    let game = scene.has("--game");
     if game {
         args.extend(["--game-language".to_owned(), language.to_owned()]);
     }
     // The flags draw a screen's menus or HUD, so only a shot that has one takes them.
-    if game || scene.args.contains(&"--hud") {
+    if game || scene.has("--hud") {
         args.extend(["--display-scale".to_owned(), size.scale.to_string()]);
         if !size.touch {
             args.push("--no-touch-controls".to_owned());
@@ -182,8 +188,8 @@ pub fn args(shot: &Shot, size: &Size, language: &str, tests: &Path) -> Result<Ve
 }
 
 /// Whether `shot` has words in it, so each language draws its own.
-pub fn worded(shot: &Shot) -> bool {
-    scenes::scenes().iter().any(|scene| scene.name == shot.scene && scene.args.contains(&"--game"))
+pub fn worded(shot: &Shot, scenes: &[Scene]) -> bool {
+    scenes.iter().any(|scene| scene.name == shot.scene && scene.has("--game"))
 }
 
 /// Where the shots are made from and go.
@@ -207,6 +213,7 @@ pub fn run(paths: &Paths, timeout: Duration) -> Result<Vec<String>, String> {
     }
     let logs = paths.out.join("logs");
     fs::create_dir_all(&logs).map_err(|e| format!("failed to create {}: {e}", logs.display()))?;
+    let scenes = scenes::scenes(&paths.tests.join("golden"))?;
 
     let clock = Stopwatch::start();
     let mut failures = Vec::new();
@@ -220,13 +227,14 @@ pub fn run(paths: &Paths, timeout: Duration) -> Result<Vec<String>, String> {
                 fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
                 let into = dir.join(&file);
                 match &drawn {
-                    Some(first) if !worded(shot) => {
+                    Some(first) if !worded(shot, &scenes) => {
                         fs::copy(first, &into)
                             .map_err(|e| format!("failed to write {}: {e}", into.display()))?;
                     }
                     _ => {
                         let label = format!("{}-{}-{language}-{}", size.store.name(), size.name, shot.name);
-                        match draw(shot, size, language, paths, (&logs, &label), timeout)? {
+                        let args = args(shot, size, language, &scenes, &paths.tests)?;
+                        match draw(args, paths, (&logs, &label), (size, timeout))? {
                             Ok(image) => write_rgb(&image, &into)?,
                             Err(why) => {
                                 eprintln!("failed   {label}: {why}");
@@ -258,22 +266,20 @@ pub fn run(paths: &Paths, timeout: Duration) -> Result<Vec<String>, String> {
     Ok(failures)
 }
 
-/// One capture, its PNG and log in `logs` named by `label`: the image, or why this shot failed. `Err` stops the
-/// run.
+/// One capture of `args` ([`args`]) at `size`, its PNG and log in `logs` named by `label`: the image, or why
+/// this shot failed. `Err` stops the run.
 fn draw(
-    shot: &Shot,
-    size: &Size,
-    language: &str,
+    args: Vec<String>,
     paths: &Paths,
     (logs, label): (&Path, &str),
-    timeout: Duration,
+    (size, timeout): (&Size, Duration),
 ) -> Result<Result<Image, String>, String> {
     // Not `with_extension`: a size's name may hold a dot (`iphone-6.9`).
     let capture = logs.join(format!("{label}.png"));
     let log = logs.join(format!("{label}.log"));
     let mut command = Command::new(&paths.sandbox);
     command.env(scenes::CONTENT_DIR_ENV, &paths.content).arg("--capture").arg(&capture);
-    command.args(args(shot, size, language, &paths.tests)?);
+    command.args(args);
     let exit = run_with_deadline(&mut command, &log, timeout)
         .map_err(|e| format!("failed to run the sandbox ({}): {e}", log.display()))?;
     let failed =
@@ -439,9 +445,12 @@ mod tests {
     #[test]
     fn every_shot_draws_a_golden_scene_at_the_size_and_on_the_screen_asked() {
         let tests = Path::new("tests-dir");
+        let scenes =
+            scenes::scenes(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden")).unwrap();
+        let worded = |shot: &Shot| worded(shot, &scenes);
         for shot in &SHOTS {
             for size in &SIZES {
-                let args = args(shot, size, "ja", tests).unwrap();
+                let args = args(shot, size, "ja", &scenes, tests).unwrap();
                 let after =
                     |flag: &str| args.iter().position(|arg| arg == flag).map(|i| args[i + 1].as_str());
                 let count = |flag: &str| args.iter().filter(|arg| *arg == flag).count();

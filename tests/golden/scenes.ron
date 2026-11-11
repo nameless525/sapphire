@@ -1,0 +1,3171 @@
+// The golden scenes (spec §9 gate 3; M4 R1): what `cargo xtask golden` captures with the sandbox and compares
+// with `<name>.<family>.png` beside this file. `sapphire_testkit`'s `scenes` module reads it, and its tests
+// hold it whole: it parses, names are unique, each scene has its Metal golden, every PNG here belongs to a
+// scene, and a scene with lavapipe's and WARP's goldens has their CI times.
+//
+// A scene is the sandbox's `--capture <png>` with:
+// - `name`: the goldens' file stem, lowercase letters and hyphens.
+// - `size`: the capture's size in pixels, `640x360` (small enough for lavapipe and WARP) unless it says
+//   another, as the HUD and screen scenes do for their aspect ratios.
+// - `ticks`: the simulation tick the capture is taken at (`--capture-ticks`).
+// - `base`: the name of one of `bases`, arguments several scenes share, which come before its own.
+// - `args`: the rest of the sandbox's command line: what the scene shows, and the pins that hold off what it
+//   doesn't. A path under `tests/` (a replay, a save) is found from this directory.
+// - `gates`: FLIP gates of its own, where the default (mean 0.01, p99 0.12, worst 16×16 tile 0.15;
+//   `golden.rs`) isn't the one: `mean`, `percentile`, `percentile_max`, `worst_tile`.
+// - `ci_seconds`: its median wall time in seconds in CI's golden jobs on lavapipe and WARP, which `--shard`
+//   splits their scenes by. A scene without it counts as the costliest on both, so a new one never lands on a
+//   full shard.
+//
+// A new golden is a row here and its Metal PNG (`cargo xtask golden --update --scene <name>`). Its first CI
+// run fails on the missing lavapipe and WARP goldens and uploads their captures with each shard's
+// `timings.json`: the commit that takes the captures takes the scene's `ci_seconds` from the same run. To
+// refresh every scene's times, take the medians of at least three recent runs on `main` (`gh run download
+// <run> -p 'golden-dx12-warp-*' -p 'golden-vulkan-lavapipe-*'`), since runners vary too much for one: I1's
+// three runs' lavapipe totals were 2835 to 4260 s and WARP's 5603 to 7386 s. The times here are the medians
+// of runs 42772431295, 42790087819 and 42799339433 (d684625, 4fe253e and 0755aaf; M4 I1). The 117 scenes
+// those runs didn't have (M4 R1) take the medians of runs 43060916318, 43001302260 and 42954179184 (d8b621cc
+// and d98cf1a9) where all three had them, and run 43060916318's own times for the 81 only it had.
+//
+// Keep one scene to a block, in the order they were added, each after the ones before it: a scene from before
+// a feature pins it off, so its golden stays byte-identical when the feature lands.
+//
+// Those from before the sky's layers (M1 W2) pin the sky's gradient alone, `--plain-sky` (no discs, glows,
+// stars or clouds): they are about the character, and the sky has scenes of its own. Those from before
+// temporal AA (M1 R7) pin 4× MSAA (`--aa msaa`), which the desktop tiers drew with until then. Those from
+// before post's compositing layers (M1 P2) pin post as it was, `--plain-post` (no diffusion glow, character
+// bloom, gradient layers, lens flare or vignette tint), which the post scenes show; the environment's (M1 W4)
+// among them, which draw the world as the desktop tiers do, under the whole sky and temporal AA. The outline
+// scenes (M1 C4) pin all three, so they show the lines alone. Those from before shadows (M1 R4), the post and
+// outline scenes included, pin them off (`--shadows off`, the player's quality setting). The shadow scenes
+// pin their tier, whose shadows they show (the golden runners select Desktop-Low by device), and plain post,
+// so they show shadows alone. The screen effect scenes (M1 P3) push the sample presets held on one frame
+// (`--post-effect <preset>@<seconds>`) over the full look; no earlier scene pushes any, and an empty effect
+// stack draws exactly what it drew before, so nothing earlier needs pinning. Every scene from before fog (M1
+// W3) pins it off (`--fog off`: no fog in any frame and no fog cards in the courtyard); the fog scenes pin
+// plain post and no shadows, so they show fog alone. The rim and hair scenes (M1 C5) pin the plain sky and
+// post, 4× MSAA, no shadows and no fog, so they show the character prepass's readers alone. The foliage
+// scenes (M1 W6) plant the foliage samples in the courtyard (`--foliage <view>`; no earlier scene plants any,
+// and the wind is calm without it) and pin plain post and no fog, so they show foliage alone, its shadows on.
+// Every scene from before ambient occlusion (M1 W5), the screen effect, fog, rim, hair and foliage scenes
+// included, pins it off (`--ao off`, the player's quality setting), and none of them loads a probe grid, so
+// the ambient hemisphere lights them all as before. The ambient scenes (W5) pin their tier, plain post and no
+// fog, so they show the probe grid and ambient occlusion with the tier's shadows; the grid is the desktop
+// cook's, which the runner loads on every backend. The night scenes with characters (`turntable-night`,
+// `sky-night`, `environment-night`, `fog-night`, `ambient-night` and `ambient-capsule`) changed with the
+// night character light fix, which retuned the default day's night character key; `night-character` draws a
+// character at night under the whole look, which no scene did before, with ambient occlusion off and no probe
+// grid like every scene but W5's.
+//
+// The look-dev scenes (M1 X1) pin Desktop-High, the tier whose look they judge, and ambient occlusion off, as
+// every scene but W5's: every other landed feature draws in them, as a game would. They run on the stage's
+// own day (`content/lookdev/lookdev_day.ron`, X1 part 2), which only `--look-dev` loads, and plant its
+// foliage, so no other scene sees either. The stylized GI scenes (M1 C2's follow-up) light the face rig by
+// the character light rig's GI alone, its key light off (`--face-layout gi` and `gi-clamped`), at hours whose
+// keys the night character light fix leaves as they were (17:30 and 10:00), and pin what the face scenes pin,
+// so they show the GI alone: each of its steps (the sphere and the camera bias on the GI's normals, the HSV
+// clamp's saturation and value, the skin tint, the occlusion) fails one of them when broken. The eye scenes
+// (M1 C6) pin what the rim and hair scenes pin, AO off among it, so they show the eye layers alone, but for
+// the highlight's, which draws post's glow and bloom over its glint. The debug view scenes (M1 F5) alone set
+// a view (`--debug-view <view>`; off, every other scene's, builds and draws nothing, so nothing earlier needs
+// pinning) and pin plain post, no shadows and AO off, so the frame they draw over changes only with what they
+// show; the wireframe and overdraw keep fog for its cards. The material layer scenes (M1 C7) place the layer
+// samples beside the character (`--materials`; no earlier scene places any, and every layer is off in every
+// earlier material) and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade
+// scenes fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post, AO off,
+// through temporal AA and through MSAA.
+//
+// The character shading follow-up scenes (M1 C8) turn one of its features on each, all off by default, so no
+// earlier scene draws any: the two-sided garments (`--two-sided`) pin what the material layer scenes pin; the
+// shadow hue scenes (`--shade-hue`) light the face rig at golden hour, with and without the hue, and pin what
+// the face scenes pin; the folded rim scenes light the rim scenes' figures from behind through the gameplay
+// rig's limits (`--rim-rig folded`), with and without a camera rim (`--camera-rim`), and pin what the rim
+// scenes pin; the soft bangs' shadow scene softens the face rig's faces (`--hair-shadow-softness`) under the
+// hair scene's keys and pins what it pins; the back-lit hair scenes light the face rig from behind
+// (`--face-layout backlit`), without and with light through the hair (`--hair-transmission`), and pin what
+// the hair scenes pin.
+//
+// The debug draw scene (M2 T1) alone turns debug draw on (`--debug-draw`; nothing else in these builds draws
+// any, so no earlier scene changes) and pins what the material layer scenes pin, with plain post and a plain
+// sky, so the frame under its lines changes only with what they show. Its view of a fight
+// (`debugdraw-volumes`) plays a committed replay, which the app checks against the checksums beside it before
+// it writes the picture.
+//
+// The effects scenes (M2 E2) play `--vfx`'s shows at fixed ticks, whose simulation is seeded: the sword arc
+// at noon and at night, a hit at sunset and a duel's worst moment, on the look-dev stage under temporal AA
+// and at Mobile-Low, then alone with everything else pinned off.
+//
+// The combat HUD scenes (M2 I2) alone draw the on-screen interface (`--hud fixed`, one frozen frame on a
+// made-up clock; no other scene has any, and a frame with no quads builds and draws nothing, so nothing
+// earlier needs pinning), over the look-dev stage, pinned as its scenes are but with 4× MSAA in place of
+// temporal AA, which needs no warm-up frames: the backdrop is a backdrop. Their `size` sets each one's aspect
+// ratio. `hud-energy-*` add the player's ultimate (`--hud-energy`, M3 Q3c), its meter empty and full, on the
+// wide frame and on the iPhone's.
+//
+// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier scene
+// plays one, and a character without a clip is never sampled) and pin what the look-dev scenes pin.
+//
+// The arena scenes (M2 O5) pin what the look-dev scenes pin: Desktop-High and ambient occlusion off, and the
+// plain camera (`--arena-shot follow`), so tuning the camera director moves none of them. They alone run
+// `--arena`, so no earlier scene sees its stage. `arena-replay` plays a replay on it, and
+// `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with the
+// enemy (M2 G6), side on, so the character isn't in front of what they're there to show. `arena-party-second`
+// and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`. `cutscene-gate-*` stand
+// the arena's stage in the Lantern Ward's court for a replay that watches its gate cutscene (M3 Q3), and only
+// they play a cutscene from a fight. `arena-ultimate-chop` plays the player's ultimate (M3 Q3b) on the
+// arena's own stage, the only scene in a move's cinematic. `arena-skirmish` plays eight fighters (M3 B1), on
+// the director. `arena-boss` plays a boss (M3 B3), just past the phase where it enrages, with its bar and
+// phase marks. `arena-captain` draws two kinds of enemy at once, each as itself (M3 B3b).
+// `color-vision-telegraph` alone shows the colour-vision view (`--color-vision`, M4 A5; off, every other
+// scene's, builds and draws nothing): an enemy's wind-up and its mark as a deuteranope sees them.
+//
+// The tier scenes (M4 T0) draw three shots as each tier ships, AO and all, at the tier's own scale and at its
+// dynamic floor: the face's close-up on every tier, and the ward's street and a hit's post on the low tiers.
+// The phone tiers' set a `size`, as the HUD scenes do, a phone's shape, and draw at the scales a 1170-row
+// phone draws, so their bilinear upscale is a phone's. They pin nothing else, and keep their frames few, for
+// the CPU rasterizers.
+//
+// The display text scenes (M3 U8) draw a title in the display face at four sizes over the HUD scenes' night
+// street, pinned as those are, the smaller two from the glyph pages and the larger two from the face's cooked
+// field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's capture is. They alone
+// run `--display-text`, and they draw the interface as the HUD scenes do.
+(
+    type: "sapphire::testkit::GoldenScenes",
+    version: 1,
+    data: (
+        bases: {
+            // A game screen's golden (M3 U7): on a flat color, so it stays cheap and moves only for what it
+            // shows, with its screen (`--ui-game`) and language (`--ui-locale`) after it.
+            "game-screen": ["--tier", "desktop-high", "--plain-sky", "--plain-post", "--aa", "msaa",
+                            "--ao", "off", "--shadows", "off", "--fog", "off", "--ui-plain"],
+            // The court gate's cutscene in the game as it ships (M3 Q4), with its language
+            // (`--game-language`) after it: a continue from `ward-gate.progress.ron` walks back through the
+            // gate, into the cutscene at frame 17, and tick 251, 3.9 s on, falls mid-way through the warden's
+            // line (2.9 to 4.9 s). The 160 frames before 161 are drawn a tenth as wide and high
+            // (`--game-draw-from 161`, after the language), so a software rasterizer draws 91 frames at full
+            // size, not 251. The cutscene's cut at 2.5 s, frame 166, drops TAA's history as the size changing
+            // does, so the last frame is byte for byte the one drawing them all would give; drawing full size
+            // from 167 on isn't.
+            "ward-gate": ["--tier", "desktop-high", "--game", "continue",
+                          "--progress", "tests/saves/ward-gate.progress.ron", "--game-forward"],
+        },
+        scenes: [
+            (
+                name: "turntable-start",
+                ticks: 0,
+                args: ["--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 5.0, warp: 1.7),
+            ),
+            (
+                name: "turntable",
+                ticks: 90,
+                args: ["--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.8),
+            ),
+            // Without MSAA or TAA every outline and terminator edge is a hard pixel step, the case
+            // most sensitive to precision differences.
+            (
+                name: "turntable-msaa-off",
+                ticks: 90,
+                args: ["--plain-post", "--aa", "off", "--plain-sky", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 3.6, warp: 1.7),
+            ),
+            // Three colored local lights through the clustered path (M1 R5): their splits on the
+            // head and arm, and a spot's pool on the pedestal.
+            (
+                name: "turntable-lights",
+                ticks: 90,
+                args: ["--plain-post", "--lights", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.6, warp: 1.5),
+            ),
+            // The scene at render scale 0.7 (448×252), upsampled by post's final pass (M1 R6).
+            (
+                name: "turntable-render-scale",
+                ticks: 90,
+                args: ["--plain-post", "--render-scale", "0.7", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.4),
+            ),
+            // The procedural stalk beside the character (M1 R2): compute skinning bends it and its
+            // two morph targets swell its top and narrow its middle, drawn from its skinning outputs
+            // with shading and outline.
+            (
+                name: "turntable-skinned",
+                ticks: 90,
+                args: ["--plain-post", "--skinned", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            // Sunset from the default day (M1 W1), between its golden-hour and sunset keys: a low
+            // orange key light from the right, the sky's horizon band, violet-tinted shade and
+            // post's two grading LUTs blended (80% toward sunset's).
+            (
+                name: "turntable-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--time-of-day", "18.5", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 2.0),
+            ),
+            // The anime character shader swatches beside the character (M1 C1): ramp mode over the
+            // cooked swatch ramp and control map (per-ID rows, a striped shadow bias, a painted
+            // shadow), the same with a subsurface mix, and three bands in per-ID colors from vertex
+            // material IDs.
+            (
+                name: "turntable-swatches",
+                ticks: 90,
+                args: ["--plain-post", "--swatches", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.5),
+            ),
+            // Night from the default day (M1 C2), halfway from dusk to midnight: the character lit by
+            // its light rig's key (time of day's character key, brighter than the world's moon, from
+            // the moon high on the camera's left) and stylized GI under a deep blue ambient, against
+            // the night sky and two blended grading LUTs.
+            (
+                name: "turntable-night",
+                ticks: 90,
+                args: ["--plain-post", "--time-of-day", "22", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.7),
+            ),
+            // The face look-dev rig (M1 C3): the cooked face test head in two rows, each lit by the
+            // key light from its own angle in head space. A yaw sweep from 135° on the heads' right
+            // round to 135° on their left (mirror-image SDF shadows, eyes and brows lit), then a top
+            // light, light from above and to the side, a blush, and a gloom with a blush.
+            (
+                name: "faces",
+                ticks: 90,
+                args: ["--plain-post", "--faces", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 7.8, warp: 4.5),
+            ),
+            // The sky by day (M1 W2), looking up past the character toward the morning sun: its
+            // white-hot disc and wide glow, cirrus streaks overhead, and the card clouds' band on the
+            // horizon, two-tone (white tops over lavender shade) with a rim, at 9:00's coverage.
+            (
+                name: "sky-day",
+                ticks: 90,
+                args: ["--plain-post", "--time-of-day", "9", "--view", "99,-22", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.0, warp: 1.8),
+            ),
+            // Sunset (M1 W2): the sun low in a gap of the card clouds, its glow spread along the
+            // horizon, gold-lit clouds over violet shade with bright rims toward the sun, and cirrus
+            // catching the color.
+            (
+                name: "sky-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.7, warp: 1.8),
+            ),
+            // Night (M1 W2): the moon's disc and halo, procedural stars and the Milky Way on the
+            // turning celestial sphere, and dark clouds with moonlit rims.
+            (
+                name: "sky-night",
+                ticks: 90,
+                args: ["--plain-post", "--time-of-day", "21", "--view", "112,-20", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.7, warp: 2.0),
+            ),
+            // Temporal AA (M1 R7), the desktop tiers' antialiasing: the turntable held still while
+            // 32 jittered frames converge, so outlines and light splits are antialiased as 4× MSAA
+            // draws them.
+            (
+                name: "turntable-taa",
+                ticks: 90,
+                args: ["--plain-post", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                // `turntable-taa` and `turntable-taa-upsampled` allow a mean of 0.0065, where the default
+                // allows 0.01 (review DV-2). They differ only in `--render-scale 0.667`, which the second
+                // exists to show, and read as each other they stay inside every default gate on every family:
+                // mean 0.0085 to 0.0095, p99 0.066, worst tile 0.063. Their own noise leaves room for this
+                // one gate: at most 0.0046 on lavapipe, 0.0005 on Metal and none on WARP. The mean separates
+                // them best: 0.0046 from 0.0085, where the p99 and the worst tile have 0.044 from 0.062.
+                gates: (mean: 0.0065),
+                ci_seconds: (lavapipe: 2.0, warp: 5.2),
+            ),
+            // The turntable spinning at 3 rad/s, about 8 times its usual speed, for the 32 frames up
+            // to the capture: outlines and two-tone edges must follow without ghost trails or smears.
+            (
+                name: "turntable-taa-motion",
+                ticks: 90,
+                args: ["--plain-post", "--aa", "taa", "--spin", "3", "--capture-frames", "32",
+                       "--capture-step", "1", "--plain-sky", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 1.4, warp: 6.3),
+            ),
+            // Temporal upsampling: the scene at two thirds of the output's size (427×240), resolved
+            // to 640×360 over 32 still frames.
+            (
+                name: "turntable-taa-upsampled",
+                ticks: 90,
+                args: ["--plain-post", "--aa", "taa", "--render-scale", "0.667", "--capture-frames", "32",
+                       "--plain-sky", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                gates: (mean: 0.0065),
+                ci_seconds: (lavapipe: 1.1, warp: 5.6),
+            ),
+            // The environment shader (M1 W4) by day: the character in the courtyard, under the morning
+            // sun from the front left. Painted ground, a colonnade receding into rolling hills, a
+            // plaster wall and boulders: soft wrapped light, lavender shadow sides with a warm band
+            // along the pillars' terminators, terminators softening and colors greying with
+            // distance, and the character reading on top.
+            (
+                name: "environment-day",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--aa", "taa", "--capture-frames", "32",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 6.3, warp: 12.1),
+            ),
+            // Sunset (18:30): the low orange sun from the right warms every lit face, the shadow
+            // sides keep time of day's violet tint, and the lanterns begin to glow.
+            (
+                name: "environment-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "18.5", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 4.6, warp: 10.5),
+            ),
+            // Night (22:00): the world under the moon and a deep blue ambient, the lanterns glowing
+            // orange, and the demo lights' pools on the ground and the pedestal (local lights through
+            // both families' shaders), the character lit by its own rig's brighter key.
+            (
+                name: "environment-night",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "22", "--lights", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 6.9, warp: 13.7),
+            ),
+            // Post's compositing layers by day (M1 P2), through temporal AA as the desktop tiers draw:
+            // the diffusion glow softening the clouds, the top of the frame deepened toward the sky's
+            // blue, the ground's shade toward the bottom, a soft pool of light on the character, whose
+            // own bloom is held back (the character mask).
+            (
+                name: "post-day",
+                ticks: 90,
+                args: ["--time-of-day", "10", "--aa", "taa", "--capture-frames", "32", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 4.4, warp: 9.7),
+            ),
+            // Sunset through Mobile-Low's fused pass (4× MSAA, four bloom levels): a warm, dreamy
+            // glow over the clouds and along the horizon, violet from above, the ground in a deep
+            // violet shade below, the character crisp in front of it.
+            (
+                name: "post-sunset",
+                ticks: 90,
+                args: ["--time-of-day", "18.5", "--tier", "mobile-low", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 1.4, warp: 2.4),
+            ),
+            // The lens flare: the sunset sun in view beside the character, its warm ring and streak,
+            // colored ghosts down the axis through the middle of the frame, and the diffusion glow
+            // around the sun.
+            (
+                name: "post-flare",
+                ticks: 90,
+                args: ["--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.2, warp: 2.5),
+            ),
+            // Outline width over distance (M1 C4): more of the character from 4 m to 90 m behind it,
+            // seen from nearly level. Their lines thin along the width's two-segment curve, hold
+            // their width in the world far away, and are gone on the last, past the LOD cutoff.
+            (
+                name: "outlines-distance",
+                ticks: 90,
+                args: ["--outline-row", "--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.5),
+            ),
+            // The same row through a 20° lens from farther away, the character framed as before:
+            // its lines keep their width, and the row's, nearer in effective distance, widen.
+            (
+                name: "outlines-telephoto",
+                ticks: 90,
+                args: ["--outline-row", "--fov", "20", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.5),
+            ),
+            // The hard-edged sample (M1 C4): flat-shaded shapes with every edge split, whose cooked
+            // smoothed outline normals keep each corner's hull closed.
+            (
+                name: "outlines-hard-edges",
+                ticks: 90,
+                args: ["--hard-edges", "--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.5),
+            ),
+            // A close-up of the character turning at 3 rad/s under temporal AA (M1 C4): its hulls
+            // write their line's velocity in the prepass, the silhouette's (M1 P1), and moving lines
+            // resolve from the current frame, so they stay as crisp as 4× MSAA draws them.
+            (
+                name: "outlines-turning-taa",
+                ticks: 90,
+                args: ["--zoom", "0.6", "--aa", "taa", "--spin", "3", "--capture-frames", "32",
+                       "--capture-step", "1", "--plain-post", "--plain-sky", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.3, warp: 7.7),
+            ),
+            // The same close-up upsampled (M1 P1): the scene at two thirds of the output's size
+            // (427×240 to 640×360), as Desktop-High draws 4K from 1440 rows. The turning lines keep
+            // their width in output pixels and their darkness.
+            (
+                name: "outlines-turning-taa-upsampled",
+                ticks: 90,
+                args: ["--zoom", "0.6", "--aa", "taa", "--render-scale", "0.667", "--spin", "3",
+                       "--capture-frames", "32", "--capture-step", "1", "--plain-post", "--plain-sky",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.9, warp: 6.1),
+            ),
+            // Shadows (M1 R4): the character on the stage's pedestal, split off as environment, on
+            // Desktop-High at 10:00. Its own map's contact shadow falls on the pedestal around its
+            // feet and its shadow runs on across the floor, the pedestal casts its own through the
+            // cascades, and the figure shades without a mark of its own shadow: characters never
+            // shadow themselves. Converged under temporal AA.
+            (
+                name: "shadows-contact",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "floor", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--plain-sky", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 2.2, warp: 11.4),
+            ),
+            // A pillar between the sun and the character: its shadow covers the pedestal and the
+            // character from the feet to the chest, a clean edge across the body in the character's
+            // authored shade tones, with no acne on the pillar, the floor or the figure.
+            (
+                name: "shadows-pillar",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "pillar", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--plain-sky", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 4.2, warp: 11.7),
+            ),
+            // The face rig (M1 C3) in a pillar's shadow: the faces it covers go into their authored
+            // shadow tones whole, eyes and brows with them, while the lit ones keep their face-map
+            // shadows; no shadow-map texels on any face.
+            (
+                name: "shadows-faces",
+                ticks: 90,
+                args: ["--plain-post", "--faces", "--stage", "pillar", "--time-of-day", "14",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 17.8, warp: 34.0),
+            ),
+            // The courtyard (W4) by day with shadows: the colonnade, the wall and the boulders cast
+            // through the cascades onto the ground and each other, the character's own map casts on
+            // the ground beyond its pedestal, and in every shadow the ground keeps time of day's
+            // tint of the sun through the environment shader's terminator.
+            (
+                name: "shadows-courtyard",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 7.1, warp: 13.5),
+            ),
+            // Toward sunset (18:00) in the courtyard: the low sun from the right draws the pillars' and
+            // the lanterns' shadows long across the ground into the far cascades, tinted, their edges
+            // clean and still. (By 18:30 the wall's shadow already covers the colonnade.)
+            (
+                name: "shadows-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "18", "--tier", "desktop-high",
+                       "--aa", "taa", "--capture-frames", "32", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 5.6, warp: 16.7),
+            ),
+            // Mobile-Low's shadows: two cascades, the 3 × 3 filter and 4× MSAA, and the character's
+            // capsule instead of a map of its own, a soft blob around its feet on the pedestal running
+            // on across the floor.
+            (
+                name: "shadows-capsule",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "floor", "--tier", "mobile-low", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.0, warp: 3.2),
+            ),
+            // A dash's screen effects (M1 P3): the radial blur streaking the frame toward its middle
+            // and white speed lines radiating from outside a clear middle, which the character stays
+            // in front of. Through temporal AA, still, on the default day.
+            (
+                name: "effects-blur-lines",
+                ticks: 90,
+                args: ["--post-effect", "radial_blur@0.05", "--post-effect", "speed_lines@0.3", "--aa", "taa",
+                       "--capture-frames", "32", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 3.7, warp: 12.6),
+            ),
+            // The impact frame (M1 P3): the world in a dark-and-cream duotone with black speed lines
+            // behind the character, which keeps its own colors through the character mask, under the
+            // radial blur and chromatic aberration.
+            (
+                name: "effects-impact-frame",
+                ticks: 90,
+                args: ["--post-effect", "impact_frame@0.03", "--aa", "taa", "--capture-frames", "32",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 4.7, warp: 12.4),
+            ),
+            // Chromatic aberration and the inversion through Mobile-Low's settings (M1 P3): red and
+            // blue fringes growing toward the corners of the inverted frame.
+            (
+                name: "effects-chromatic-inversion",
+                ticks: 90,
+                args: ["--post-effect", "chromatic_aberration@0.02", "--post-effect", "inversion@0.02",
+                       "--tier", "mobile-low", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 3.0, warp: 4.9),
+            ),
+            // Fog (M1 W3) in the courtyard by day: a light haze, the hills melting into the sky's
+            // horizon without a seam where they meet it, the zenith clear, and wisps of mist (fog
+            // cards) beyond the wall and among the far pillars, soft where they meet the ground.
+            (
+                name: "fog-day",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--aa", "taa", "--capture-frames", "32",
+                       "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 6.1, warp: 9.4),
+            ),
+            // At sunset: warm haze over violet near fog, the far layer taking the orange horizon, the
+            // mist lit by the hour's fog.
+            (
+                name: "fog-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "18.5", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 6.0, warp: 12.5),
+            ),
+            // At night, with the lanterns' lights: a deep blue haze along the horizon that leaves the
+            // stars and the clouds above it, the moon lighting it faintly.
+            (
+                name: "fog-night",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "22", "--lights", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 5.4, warp: 13.6),
+            ),
+            // Sunrise's morning mist, from higher and wider: height fog thickest on the ground,
+            // swallowing the hills' feet while their tops rise out of it.
+            (
+                name: "fog-valley",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "6.5", "--view", "20,14",
+                       "--fov", "60", "--aa", "taa", "--capture-frames", "32", "--shadows", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 4.2, warp: 12.0),
+            ),
+            // The fog cards' vista in the early morning: the mist sheets across the valley and the
+            // haze among the pillars, faded where they cut the ground (the desktop tiers' depth fade,
+            // under temporal AA).
+            (
+                name: "fog-cards",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "7.5", "--view", "15,4",
+                       "--aa", "taa", "--capture-frames", "32", "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 6.0, warp: 11.9),
+            ),
+            // The same on Mobile-Low (4× MSAA, no prepass): the cards without their depth fade, the
+            // map's soft edges and the camera fade carrying them, and the fog as on desktop.
+            (
+                name: "fog-cards-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--time-of-day", "7.5", "--view", "15,4",
+                       "--tier", "mobile-low", "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.2, warp: 2.4),
+            ),
+            // Characters standing in fog (the outline row, from 4 m to 90 m, on the stage's floor)
+            // in sunrise's mist: the floor melts into the horizon, while the characters, taking less
+            // of the fog than the world, still read as figures far out.
+            (
+                name: "fog-characters",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "floor", "--outline-row", "--time-of-day", "6.5",
+                       "--aa", "taa", "--capture-frames", "32", "--shadows", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 3.7, warp: 9.2),
+            ),
+            // The courtyard's arcade lit by its probe grid (M1 W5) in the morning: the gateway on the
+            // left, the loggia's roofed walk on the right, the character between. Sunlit grass
+            // bounces green onto the faces turned to it, the terracotta walls warm the loggia's floor
+            // and back wall in the roof's shade, and the sky seen past the roof and the arches lights
+            // what it reaches; GTAO darkens the creases at the walls' feet.
+            (
+                name: "ambient-day",
+                ticks: 90,
+                args: ["--plain-post", "--probes", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--fog", "off"],
+                ci_seconds: (lavapipe: 6.7, warp: 24.1),
+            ),
+            // Sunset (18:30): the bounce blends the grid's 17:30 and 18:45 keys, orange off the lit
+            // walls into the shade, and the sky's part follows the evening sky every frame.
+            (
+                name: "ambient-sunset",
+                ticks: 90,
+                args: ["--plain-post", "--probes", "--time-of-day", "18.5", "--tier", "desktop-high",
+                       "--aa", "taa", "--capture-frames", "32", "--fog", "off"],
+                ci_seconds: (lavapipe: 10.5, warp: 23.8),
+            ),
+            // Night (22:00): the moon's faint bounce, blended from the 20:00 and midnight keys, and
+            // the night sky's blue through the arches and under the roof.
+            (
+                name: "ambient-night",
+                ticks: 90,
+                args: ["--plain-post", "--probes", "--time-of-day", "22", "--tier", "desktop-high",
+                       "--aa", "taa", "--capture-frames", "32", "--fog", "off"],
+                ci_seconds: (lavapipe: 5.9, warp: 23.7),
+            ),
+            // GTAO close up, through a 12° lens in the afternoon (16:00): the corners where the
+            // gateway, the loggia's plinth and its pillars meet the ground and each other, under the
+            // arch and the roof, denoised and averaged by temporal AA into soft, still creases.
+            (
+                name: "ambient-gtao",
+                ticks: 90,
+                args: ["--plain-post", "--probes", "--time-of-day", "16", "--fov", "12",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--fog", "off"],
+                ci_seconds: (lavapipe: 5.8, warp: 24.6),
+            ),
+            // Capsule AO under the character, seen from above: on a stone plinth (an environment
+            // material) at night, where the ambient light is most of the light, the body's capsule
+            // darkens the stone around the feet, softly and only nearby. GTAO off, so the capsule's
+            // term shows alone.
+            (
+                name: "ambient-capsule",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "plinth", "--time-of-day", "22", "--view", "20,55",
+                       "--zoom", "0.7", "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32",
+                       "--plain-sky", "--ao", "capsule", "--fog", "off"],
+                ci_seconds: (lavapipe: 2.0, warp: 14.7),
+            ),
+            // Mobile-High's ambient: the arcade's grid with one GTAO slice, no temporal AA to average
+            // its pattern (the denoise alone smooths it), 4× MSAA and the approximate specular.
+            (
+                name: "ambient-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--probes", "--tier", "mobile-high", "--fog", "off"],
+                ci_seconds: (lavapipe: 1.4, warp: 5.5),
+            ),
+            // A zone's own look (M3 C1): the hub and the last room, as a walk would come on them, with its
+            // grid, its day and its rigs, and every feature on, as what a game would ship.
+            (
+                name: "zone-ward-hub",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 55.6, warp: 87.4),
+            ),
+            // The second enemy (M3 C2) in the Lantern Ward's Market Court, whose encounter has brought a
+            // warrior and a Lancer: the Lancer coming down out of its vault, spear first, each drawn from its
+            // own kind's look.
+            (
+                name: "fight-ward-market",
+                ticks: 228,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 31.9, warp: 73.6),
+            ),
+            // The ward's boss (M3 C2) on its terrace, a moment after its second wind's toll threw the
+            // character back, its bar past the mark at half. A replay of a scenario names it, so nothing in
+            // code does.
+            (
+                name: "fight-ward-terrace",
+                ticks: 1799,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/ward-terrace.sreplay",
+                       "--time-of-day", "17.5", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 40.9, warp: 62.4),
+            ),
+            (
+                name: "zone-ward-court",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:checkpoint_court", "--time-of-day", "17.5",
+                       "--tier", "desktop-high", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 36.6, warp: 79.9),
+            ),
+            // The depth-offset rim (M1 C5): figures before dark and light panels, keys from the front,
+            // the side, behind to the side and across, so the light gate shows on the shadow sides;
+            // the arms keep theirs off the torso (their region's overlap).
+            (
+                name: "rim-angles",
+                ticks: 90,
+                args: ["--rim-rig", "angles", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.8, warp: 1.9),
+            ),
+            // Back-lit, where ZZZ's back-light weighting strengthens the outfit's rim.
+            (
+                name: "rim-backlit",
+                ticks: 90,
+                args: ["--rim-rig", "backlit", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            // The cap's angel ring holding its height on screen as heads nod, and the bangs' painted
+            // band.
+            (
+                name: "hair-highlights",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "highlights", "--plain-post", "--plain-sky",
+                       "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 2.0, warp: 3.9),
+            ),
+            // The bangs' shadow on faces, moving away from keys round the front and above.
+            (
+                name: "hair-shadow",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "hair", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.3, warp: 4.1),
+            ),
+            // The same on Mobile-Low, whose character prepass is a render pass of its own before the
+            // main pass's tile-memory MSAA.
+            (
+                name: "hair-shadow-mobile",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "hair", "--tier", "mobile-low", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.9, warp: 4.3),
+            ),
+            // Eyes and brows through the bangs, front to three-quarter and past the fade, and nodding.
+            (
+                name: "eyes-through-hair",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "turn", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.6, warp: 4.3),
+            ),
+            // Foliage (M1 W6) by day: two trees, bushes and grass in the courtyard around the
+            // character, in a breeze held still. Canopies light as soft masses over their leaf cards,
+            // deep teal inside to yellow-green on top, under the same lavender shade as the world;
+            // the trees' shadows on the ground are leafy, their cards cut out; the grass lights like
+            // the ground it stands on, its patches fading out at their edges.
+            (
+                name: "foliage-day",
+                ticks: 90,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "grove",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 45.0, warp: 58.4),
+            ),
+            // Sunset (18:30) through the big tree's crown, from its far side: the low sun behind the
+            // canopy glows through its outer leaves (translucency), warm against the pink sky, while
+            // leaves in the canopy's own shadow stay dark.
+            (
+                name: "foliage-backlit",
+                ticks: 90,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "backlit",
+                       "--time-of-day", "18.5", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 15.3, warp: 22.6),
+            ),
+            // Low over the grass beside a bush, the character beyond: blades lighting like the ground,
+            // darker at their roots, bending at their two rows; the bush's cards a soft dome.
+            (
+                name: "foliage-ground",
+                ticks: 90,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "ground",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 99.3, warp: 122.8),
+            ),
+            // Mobile-Low's foliage: cards' edges through alpha-to-coverage under 4× MSAA, two wind
+            // levels (no leaf flutter) and no translucency, two shadow cascades.
+            (
+                name: "foliage-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "grove",
+                       "--tier", "mobile-low"],
+                ci_seconds: (lavapipe: 1.5, warp: 5.0),
+            ),
+            // A stiff wind (2.5 times the breeze) playing for the 32 frames up to tick 150: trunks
+            // leaning, branches swinging and leaves fluttering, the frame resolved by temporal AA from
+            // velocity that includes the wind, without ghosting or smears.
+            (
+                name: "foliage-wind",
+                ticks: 150,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "grove", "--wind", "2.5",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 60.8, warp: 73.8),
+            ),
+            // A character at night under the whole look (the night character light fix): the
+            // courtyard at 23:00, nearer the mannequin, with the moon's shadows, the fog and post's
+            // layers. Its key is time of day's character key, a little brighter than the moon (about
+            // 1.25 times in luminance at this hour), so the mannequin reads a step above the pillars
+            // and the wall in a cool, dim light, clearly at night, where a key set apart from the
+            // world's kept it at its noon brightness.
+            (
+                name: "night-character",
+                ticks: 90,
+                args: ["--environment", "--time-of-day", "23", "--ao", "off", "--zoom", "0.6",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 7.7, warp: 19.2),
+            ),
+            // The look-dev town (M1 X1) at midday, the wide shot across the square: the town in its
+            // environment materials and its plants under the whole sky, fog and fog cards, shadows,
+            // post's layers and the character's outlines, the VRM character standing in the square;
+            // the stage's own day's side-lit noon, cool shadows and blue-grey distance (X1 part 2).
+            (
+                name: "lookdev-town-day",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 53.4, warp: 99.8),
+            ),
+            // The hero shot at golden hour: the character in three-quarter view with the SDF face map and
+            // outlines, the pavilion behind the character with the low sun's glow round its roof, the gate
+            // wall and the lantern-lit street through its moon gate (X1 part 2b).
+            (
+                name: "lookdev-town-hero",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 33.1, warp: 75.3),
+            ),
+            // The wide shot at golden hour (X1 part 2): the low sun's huge glow over the rooftops on
+            // the left, warm cloud sides over purple undersides, warm streaks across the square
+            // between blue-violet shadows, the mountains in violet haze.
+            (
+                name: "lookdev-town-golden",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "18.5", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 76.4, warp: 93.6),
+            ),
+            // The wide shot at the blue hour (X1 part 2): the sun gone, a cyan-blue sky and haze over
+            // a blue town, the windows and lanterns coming on in amber, the character's skin warm.
+            (
+                name: "lookdev-town-blue",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 50.4, warp: 100.7),
+            ),
+            // The sky shot at night (X1 part 2): up past the character to a navy sky with stars, the
+            // teal Milky Way and moonlit lavender clouds over the rooftops, the windows and lanterns
+            // amber and blooming, the mid-tones kept readable.
+            (
+                name: "lookdev-town-night",
+                ticks: 90,
+                args: ["--look-dev", "sky", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 62.0, warp: 85.6),
+            ),
+            // The street out of the square at night (X1 part 2b): Jinzhou's white walls and charcoal
+            // tile roofs under a blue night, its parametric halls, gateway and tower, the paper
+            // lanterns strung across it and on posts glowing amber (the posts' lamps lighting the
+            // flagstones), the windows warm.
+            (
+                name: "lookdev-street-night",
+                ticks: 90,
+                args: ["--look-dev", "street", "--time-of-day", "21", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 67.2, warp: 103.1),
+            ),
+            // The default light rig preset's stylized GI alone (M1 C2) at golden hour, the key light
+            // off and the GI raised four-fold: the face rig turned and nodding every way under the
+            // amber sky's light above and the violet ground's below, through normals rounded toward
+            // the head's sphere (the jaw darkens with it) and bent toward the camera; the face in
+            // the skin tint; the bangs' roots and two heads' gloom occluded.
+            (
+                name: "gi-golden-hour",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "gi", "--time-of-day", "17.5", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.6, warp: 4.4),
+            ),
+            // The same heads by day, their GI clamped hard (saturation 0.2, value 0.3): the sky's
+            // blue and the ground's violet greyed, the sky sides flattened to one value, and the
+            // face warmed again by the skin tint.
+            (
+                name: "gi-clamped",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "gi-clamped", "--time-of-day", "10", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.6, warp: 5.2),
+            ),
+            // Anime eyes close up and front on (M1 C6): the eye, its shadow, the iris and the highlights,
+            // with the highlights at the low of their glint.
+            (
+                name: "eyes-front",
+                ticks: 180,
+                args: ["--faces", "--face-layout", "eyes", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.1, warp: 3.9),
+            ),
+            // The same turned three-quarter, the iris shifting behind the cornea.
+            (
+                name: "eyes-three-quarter",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "eyes-turned", "--plain-post", "--plain-sky",
+                       "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.8, warp: 3.9),
+            ),
+            // Gaze morphs left, ahead and right, then up and down, carrying the iris and highlights.
+            (
+                name: "eyes-gaze",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "gaze", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.1, warp: 4.3),
+            ),
+            // The highlights at the height of their glint, under post's glow and character bloom.
+            (
+                name: "eyes-highlight",
+                ticks: 105,
+                args: ["--faces", "--face-layout", "eyes", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.1, warp: 4.7),
+            ),
+            // Lids half and fully closed, the layers going with the eye under them.
+            (
+                name: "eyes-lids",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "blink", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.1, warp: 4.6),
+            ),
+            // The front close-up on Mobile-Low.
+            (
+                name: "eyes-mobile",
+                ticks: 180,
+                args: ["--faces", "--face-layout", "eyes", "--tier", "mobile-low", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.8, warp: 3.8),
+            ),
+            // The debug views (M1 F5), drawn over the frame after post. The wireframe low over the
+            // grass beside a bush, the character beyond, under temporal AA: every shading family's
+            // edges in its tone (the grass and bush green, the courtyard cyan, the character orange,
+            // the morning's fog cards among the pillars violet), hidden ones left out.
+            (
+                name: "debug-wireframe",
+                ticks: 90,
+                args: ["--plain-post", "--foliage", "ground", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--ao", "off",
+                       "--debug-view", "wireframe"],
+                ci_seconds: (lavapipe: 43.4, warp: 106.1),
+            ),
+            // Overdraw in the grove: fragments shaded per pixel, the sky and the ground one each, the
+            // trees' cards and the grass stacking up, the fog cards over the courtyard's back, and
+            // the character's outline one more around it.
+            (
+                name: "debug-overdraw",
+                ticks: 90,
+                args: ["--plain-post", "--foliage", "grove", "--tier", "desktop-high", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--ao", "off",
+                       "--debug-view", "overdraw"],
+                ci_seconds: (lavapipe: 18.2, warp: 30.9),
+            ),
+            // The light lists (the light-cluster heatmap) with the three colored local lights around
+            // the character in the courtyard: each pixel's cluster count, the clusters' tiles and
+            // depth slices showing where the lights' ranges reach the ground, the pedestal and the
+            // character.
+            (
+                name: "debug-lights",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--lights", "--aa", "taa", "--capture-frames", "32",
+                       "--shadows", "off", "--fog", "off", "--ao", "off", "--debug-view", "lights"],
+                ci_seconds: (lavapipe: 6.6, warp: 13.9),
+            ),
+            // The same on Mobile-Low (4× MSAA), whose per-object lists have no clusters: each
+            // instance's own list, 0 to 4 lights, over its pixels.
+            (
+                name: "debug-lights-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--environment", "--lights", "--tier", "mobile-low",
+                       "--shadows", "off", "--fog", "off", "--ao", "off", "--debug-view", "lights"],
+                ci_seconds: (lavapipe: 1.5, warp: 2.3),
+            ),
+            // The material IDs (F5's second phase) on the shader swatches: the regions each pixel
+            // shades with, the ramp spheres' four latitude bands from their control map and the band
+            // sphere's from its vertices, the mannequin's arms apart from the rest of it, and every
+            // outline in its region's color, darker.
+            (
+                name: "debug-material-ids",
+                ticks: 90,
+                args: ["--plain-post", "--swatches", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off", "--debug-view", "material-ids"],
+                ci_seconds: (lavapipe: 1.1, warp: 1.7),
+            ),
+            // The ramp rows on the same at 19:30 on Mobile-Low: the ramp spheres' day rows striped
+            // with their night rows, time of day's blend of the two, and the band sphere's three
+            // bands and the mannequin's two in their greys.
+            (
+                name: "debug-ramp-rows",
+                ticks: 90,
+                args: ["--plain-post", "--swatches", "--plain-sky", "--time-of-day", "19.5",
+                       "--tier", "mobile-low", "--shadows", "off", "--fog", "off", "--ao", "off",
+                       "--debug-view", "ramp-rows"],
+                ci_seconds: (lavapipe: 0.7, warp: 1.8),
+            ),
+            // The outline widths along the row of mannequins under temporal AA: in pixels on a
+            // 1080-row target, the nearest's widest, thinning with distance as the width curve says,
+            // its pedestal's wider still, the farthest gone past the cutoff.
+            (
+                name: "debug-outline-widths",
+                ticks: 90,
+                args: ["--outline-row", "--plain-post", "--plain-sky", "--aa", "taa",
+                       "--capture-frames", "32", "--shadows", "off", "--fog", "off", "--ao", "off",
+                       "--debug-view", "outline-widths"],
+                ci_seconds: (lavapipe: 2.6, warp: 12.4),
+            ),
+            // Debug draw through its whole path: one of each shape beside the mannequin, in its color;
+            // a blue line hidden behind it and a red one over it; a blue one through it on top, and a
+            // half-alpha red one; a magenta capsule inside its body, on top, where the green one
+            // depth-tested inside it stays hidden but where it pokes out; the violet box lasting from
+            // the first frame on the world's clock; the green arrow overhead held from the last fixed
+            // step. No labels: only `dev` builds' overlay paints them.
+            (
+                name: "debugdraw-shapes",
+                ticks: 90,
+                args: ["--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off",
+                       "--ao", "off", "--debug-draw", "shapes"],
+                ci_seconds: (lavapipe: 0.8, warp: 1.5),
+            ),
+            // The combat views (M2 T1) on `melee-sweep` at tick 10, over the plain scene, whose mannequin
+            // has nothing to do with the fight: the first actor, left, with its hurtbox in green and the
+            // red sweep of its first hit's blade, half a metre this tick, faint where it began; the second,
+            // nearest, mid-dodge and in its perfect window, magenta; the third, right, in its skill's parry
+            // window, yellow. Each arrow is which way its actor faces.
+            (
+                name: "debugdraw-volumes",
+                ticks: 10,
+                args: ["--replay", "tests/replays/melee-sweep.sreplay", "--zoom", "2.0", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off",
+                       "--debug-draw", "volumes"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.0),
+            ),
+            // A timeline with the camera and two post parameters (M3 Q1): the director's on a shot of the
+            // square and the picture's darkened, with the fight held.
+            (
+                name: "timeline-camera-post",
+                ticks: 120,
+                args: ["--arena", "--timeline", "455708fd-5c63-4cf4-98b6-1c0921bf8213", "--time-of-day", "13",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 16.0, warp: 47.0),
+            ),
+            // A zone trip's wipe (M3 W4), from `zone-trip`'s first entry, due after its 120th tick: 14 steps
+            // into the slats coming in from the right over the arena, which the fight holds still behind. The
+            // wipe's clock is the steps', so the frame is the same every run, and the load it covers comes
+            // later.
+            (
+                name: "trip-wipe-mid",
+                ticks: 135,
+                args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--time-of-day", "13",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 38.9, warp: 65.4),
+            ),
+            // The same wipe covering the screen: however soon the hub comes in behind it, no step's time
+            // passes over the frames drawn, so it can't uncover. Only the wipe draws.
+            (
+                name: "trip-wipe-covered",
+                ticks: 154,
+                args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--time-of-day", "13",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 10.8, warp: 32.6),
+            ),
+            // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
+            // the enemy's stand-in past the player's shoulder, the pavilion on the left and the market on the
+            // right, the street's moon gate between them. The frame the combat slice is judged in.
+            (
+                name: "arena-day",
+                ticks: 90,
+                args: ["--arena", "--arena-shot", "follow", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 53.7, warp: 85.4),
+            ),
+            // The same frame at golden hour, the low sun behind the pavilion's roof.
+            (
+                name: "arena-golden",
+                ticks: 90,
+                args: ["--arena", "--arena-shot", "follow", "--time-of-day", "18", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 48.2, warp: 105.6),
+            ),
+            // The arena part way through a recorded walk, at the morning hour benches use: the character's
+            // root and the camera both come from the replay's actor, on its run back from the lantern's
+            // post at tick 280 of `arena-walk`, and the app
+            // checks the replay reaches its checksums before this frame is written.
+            (
+                name: "arena-replay",
+                ticks: 280,
+                args: ["--arena", "--arena-shot", "follow", "--replay", "tests/replays/arena-walk.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 40.6, warp: 65.4),
+            ),
+            // The enemy's overhead, 38 ticks into its 48 of wind-up with its arm up and its blade over it,
+            // from `arena-fight-still`, whose player only stands there: what a dodge has to read.
+            (
+                name: "arena-fight-telegraph",
+                ticks: 112,
+                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 39.1, warp: 80.6),
+            ),
+            // The same fight as a deuteranope sees it (M4 A5, `--color-vision`, Machado et al. 2009), earlier
+            // in the overhead's wind-up: the ember chevron over the enemy, which says by shape what its
+            // colour alone might not.
+            (
+                name: "color-vision-telegraph",
+                ticks: 84,
+                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--color-vision", "deuteranopia"],
+                ci_seconds: (lavapipe: 52.4, warp: 74.2),
+            ),
+            // That overhead landed, three ticks on from its first contact: both clocks frozen, with the
+            // blade across the player, who has started to fall.
+            (
+                name: "arena-fight-hit",
+                ticks: 128,
+                args: ["--cues", "--hud", "live", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 39.8, warp: 85.6),
+            ),
+            // The player's first cut of `arena-fight-won`, its sword trail mid-arc: a strip that ends on the
+            // drawn blade, the crescent narrowing back along what the tip passed.
+            (
+                name: "arena-fight-slash",
+                ticks: 12,
+                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-won.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 53.1, warp: 71.6),
+            ),
+            // The player's turn, from `arena-fight-won`: a dash attack cutting across the warrior as it
+            // lands, on O3's clip with the sword in the graph's hand, which is what the blade's hit sweeps
+            // along.
+            (
+                name: "arena-fight-cut",
+                ticks: 104,
+                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-won.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 53.4, warp: 84.3),
+            ),
+            // A party's fight in the arena (M2 G7), by day: the second member on the field, in its recolor,
+            // in the recorded `party-swap`, against the warrior. The app checks the replay reaches its
+            // checksums before this frame is written.
+            (
+                name: "arena-party-second",
+                ticks: 110,
+                args: ["--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 40.4, warp: 83.6),
+            ),
+            // The same fight later on: the third member, in its own.
+            (
+                name: "arena-party-third",
+                ticks: 225,
+                args: ["--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 54.1, warp: 71.0),
+            ),
+            // The Lantern Ward's gate cutscene (M3 Q3), at fixed times of a replay that watches it, in the
+            // zone's court at its evening hour. A capture's tick is a frame, and the gate holds the fight
+            // from frame 30, so frame 30 + 60t is t seconds in. 3.5 s: the warden close, the exposure down,
+            // its overhead coming down, the vignette in.
+            (
+                name: "cutscene-gate-warden",
+                ticks: 240,
+                args: ["--arena", "--replay", "tests/replays/ward-court-watched.sreplay",
+                       "--time-of-day", "17.5", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 16.0, warp: 49.0),
+            ),
+            // 6.2 s: the character close, turning into guard, with the ward's street behind and the bloom up.
+            (
+                name: "cutscene-gate-guard",
+                ticks: 402,
+                args: ["--arena", "--replay", "tests/replays/ward-court-watched.sreplay",
+                       "--time-of-day", "17.5", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 27.0, warp: 58.2),
+            ),
+            // 8.6 s: the two of them down the court as the view blends back toward the fight's camera, the
+            // vignette going.
+            (
+                name: "cutscene-gate-return",
+                ticks: 546,
+                args: ["--arena", "--replay", "tests/replays/ward-court-watched.sreplay",
+                       "--time-of-day", "17.5", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 30.6, warp: 69.2),
+            ),
+            // The player's ultimate (M3 Q3b) on `arena-ultimate`, which presses it on frame 60: 1.1 s into
+            // its cinematic, the wide shot from the character's right as the chop lands on the warrior, the
+            // flash on the landing and the bloom up, the vignette closed in, and the warrior held at a fifth
+            // of its speed.
+            (
+                name: "arena-ultimate-chop",
+                ticks: 126,
+                args: ["--arena", "--replay", "tests/replays/arena-ultimate.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 50.5, warp: 81.4),
+            ),
+            // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with a crisp
+            // highlight; gold, its tinted matcap and highlight, the sky reflected on its metallic stripes;
+            // leather, darker toward its rim, with a soft GGX highlight; a dark suit with cyan light lines;
+            // and a leg in a thigh-high black stocking, sheer facing the camera, near black at its
+            // silhouette, bare above its top. Eight in one fight (M3 B1), in what a player sees: a warrior
+            // for each, and the HUD with the foe the player has and a small bar for each other one. The only
+            // arena scene on the director, since how it stands back for those near the player is what this is
+            // here to show.
+            (
+                name: "arena-skirmish",
+                ticks: 240,
+                args: ["--cues", "--hud", "live", "--arena",
+                       "--replay", "tests/replays/arena-skirmish.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 56.8, warp: 132.4),
+            ),
+            // A boss (M3 B3) a few steps past the hit that took it under half its health, at tick 652 of its
+            // replay: the HUD has its bar in the boss's place, wider than a foe's, with an inked mark at each
+            // of its phases, and it fights on with its fiercer brain.
+            (
+                name: "arena-boss",
+                ticks: 670,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-boss.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 45.3, warp: 64.1),
+            ),
+            // Two kinds of enemy in one fight (M3 B3b): the captain, a head over the warrior beside it, each
+            // drawn from its own kind's look, on the same moves and the same graph.
+            (
+                name: "arena-captain",
+                ticks: 90,
+                args: ["--cues", "--hud", "live", "--arena",
+                       "--replay", "tests/replays/arena-captain.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 45.2, warp: 90.4),
+            ),
+            (
+                name: "materials-day",
+                ticks: 90,
+                args: ["--materials", "--plain-post", "--aa", "msaa", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 1.1, warp: 3.1),
+            ),
+            // The same at 21:00 under the full post look: the light lines' glow blooming as the
+            // world's light, the gold reflecting the night sky, the highlights in the moonlit key.
+            (
+                name: "materials-night",
+                ticks: 90,
+                args: ["--materials", "--time-of-day", "21", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.2, warp: 3.5),
+            ),
+            // The character at half opacity in the courtyard (M1 C7), temporal AA resolving the
+            // proximity fade's dither, which turns through its 16-frame cycle, into a blend with what
+            // lies behind it; its outlines fade with it and it takes no rim.
+            (
+                name: "fade-taa",
+                ticks: 90,
+                args: ["--fade", "0.5", "--environment", "--plain-post", "--fog", "off",
+                       "--tier", "desktop-high", "--aa", "taa", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 9.5, warp: 19.1),
+            ),
+            // Mobile-Low's fade: 4× MSAA, each pixel covering half its samples, so the resolve blends.
+            (
+                name: "fade-mobile",
+                ticks: 90,
+                args: ["--fade", "0.5", "--environment", "--plain-post", "--fog", "off",
+                       "--tier", "mobile-low", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.3, warp: 4.6),
+            ),
+            // The look-dev character's face close-up (X1 part 2c) at midday, pinned as the other
+            // look-dev scenes are: the face's SDF shadow in its peach ramp with a light blush, the
+            // bangs' warm shadow on the forehead, the irises' gradient and sparkles under the
+            // glowing highlights, the darkened lash line, the hair's crisp band and thin brown
+            // outlines, the square behind the character.
+            (
+                name: "lookdev-face",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 35.4, warp: 77.9),
+            ),
+            // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
+            // hero shot's dusk, every landed feature on but spring bones, which came later, at fixed ticks
+            // through the swing, each drawn playing up to its tick so temporal AA's history is a player's.
+            // Here the anticipation's end: the character has sunk and drawn the right arm back, and turned
+            // at the spine.
+            (
+                name: "lookdev-strike-anticipation",
+                ticks: 14,
+                args: ["--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 16.5, warp: 42.5),
+            ),
+            // Three ticks into the strike, its fastest stretch: the arm crosses about 100 px a tick
+            // at 1080p and the root motion carries the character at the camera. Lines stay on the arm,
+            // nothing trails on the wall behind it, and the sleeve folds as its weights make it.
+            (
+                name: "lookdev-strike-fast",
+                ticks: 17,
+                args: ["--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 17.5, warp: 48.4),
+            ),
+            // The strike's mark, the arm at full reach past its target and the hips forward.
+            (
+                name: "lookdev-strike-mark",
+                ticks: 20,
+                args: ["--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 23.0, warp: 43.1),
+            ),
+            // Settling back to the first pose, a slow arm: lines and shading hold under long history.
+            (
+                name: "lookdev-strike-settle",
+                ticks: 40,
+                args: ["--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 17.5, warp: 40.1),
+            ),
+            // The face in place (`--clip-in-place`) at midday at the strike's mark, the head turned 22°:
+            // the face's SDF shadow, the bangs' shadow, the eye layers and the hair follow the head, as a
+            // stale `CharacterFace` wouldn't.
+            (
+                name: "lookdev-strike-face",
+                ticks: 20,
+                args: ["--look-dev", "face", "--clip", "strike", "--clip-in-place", "--springs", "off",
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 18.8, warp: 45.0),
+            ),
+            // IK (M2 N4) on a 30° slope across the character's stance, the clip's stance on flat ground
+            // under it: the soles lie on the slope with no gap under the round foot, the hips have come
+            // down for the lower foot and no bone stretches, and the head and eyes look over at a place
+            // up the slope to the camera's right.
+            (
+                name: "lookdev-ik-slope",
+                ticks: 14,
+                args: ["--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
+                       "--ik", "on", "--ik-ground", "slope", "--ik-look", "2,1.5,2.5", "--time-of-day", "13",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 14.2, warp: 45.2),
+            ),
+            // Standing with one foot on an 18 cm step and the other on the paving below it, looking down
+            // and away: that knee bends to take the height, the other leg keeps its pose.
+            (
+                name: "lookdev-ik-step",
+                ticks: 14,
+                args: ["--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
+                       "--ik", "on", "--ik-ground", "step", "--ik-look", "-2,1.2,2.5", "--time-of-day", "13",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 14.6, warp: 34.2),
+            ),
+            // A defeat (M2 N4) through the graph, after its move has ended: the character is on its back
+            // where `death_back` has left it, eyes shut, and nothing's breathing. Its whole body is past the
+            // cooked sphere, so this is posed bounds' frame: under a low sun its shadow is one piece on the
+            // paving and its outline is whole, by the pose's own bounds. The first frame is inside the move.
+            (
+                name: "lookdev-death-back",
+                ticks: 150,
+                args: ["--springs", "off", "--look-dev", "down", "--graph", "defeat", "--time-of-day", "17",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 10.5, warp: 29.7),
+            ),
+            // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
+            // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines
+            // stay on all of it, as hulls read the same palette.
+            (
+                name: "lookdev-strike-springs-mark",
+                ticks: 20,
+                args: ["--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 23.0, warp: 44.4),
+            ),
+            // Six ticks on, with the arm held, what the strike set moving is still going: the hair swinging
+            // past the shoulder and the hem coming back.
+            (
+                name: "lookdev-strike-springs-after",
+                ticks: 26,
+                args: ["--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 23.1, warp: 43.4),
+            ),
+            (
+                name: "lookdev-clip-idle",
+                ticks: 70,
+                args: ["--springs", "off", "--look-dev", "hero", "--clip", "idle", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 15.8, warp: 37.3),
+            ),
+            (
+                name: "lookdev-clip-run",
+                ticks: 31,
+                args: ["--springs", "off", "--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 15.9, warp: 38.1),
+            ),
+            (
+                name: "lookdev-clip-hit",
+                ticks: 15,
+                args: ["--springs", "off", "--look-dev", "hero", "--clip", "Hit_B", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 20.8, warp: 38.6),
+            ),
+            // The run with spring bones (M2 N5), the same frame as `lookdev-clip-run`: the hair lags the
+            // body's bob and keeps its shape, where VRM's step alone flings it out in ropes round the head.
+            (
+                name: "lookdev-clip-run-springs",
+                ticks: 31,
+                args: ["--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 21.0, warp: 37.7),
+            ),
+            // The animation graph (M2 N3) half a second into the controller's run, every frame drawn: the
+            // blend space past its walk and on its run with breathing added, the simulation placing the
+            // character, a treadmill keeping it in shot, and the hair lagging the run it still feels.
+            (
+                name: "lookdev-graph-run",
+                ticks: 30,
+                args: ["--look-dev", "hero", "--graph", "run", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "30",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 29.8, warp: 64.1),
+            ),
+            // The frame after a strike cancels into a dodge: its first frame back on the new move's clip
+            // and most of the way there, with the arm's swing carried into it rather than faded in.
+            (
+                name: "lookdev-graph-cancel",
+                ticks: 28,
+                args: ["--look-dev", "hero", "--graph", "cancel", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 21.9, warp: 40.1),
+            ),
+            // The enemy (M2 O4) squaring up to the character in the square at midday, pinned as the other
+            // look-dev scenes are: bone in its lavender shade, dark plate with a painted sheen, a wine
+            // mantle, a raised blade and red eyes that bloom.
+            (
+                name: "lookdev-enemy",
+                ticks: 90,
+                args: ["--look-dev", "enemy", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 46.5, warp: 92.0),
+            ),
+            // The same at night, where the threat is the glow: the eyes and the mantle's hem against the
+            // blue night, as the world's light.
+            (
+                name: "lookdev-enemy-night",
+                ticks: 90,
+                args: ["--look-dev", "enemy", "--time-of-day", "22", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 79.3, warp: 117.8),
+            ),
+            // The Lancer (M3 C2), the generated second enemy, standing where the warrior does by `--model`:
+            // its thrust's wind-up held at the tick it ends, the spear drawn back. Indigo robes and lacquer
+            // under a rain hat, a porcelain mask and jade glow lines on the hems, cuffs and hat band.
+            (
+                name: "lookdev-lancer",
+                ticks: 90,
+                args: ["--look-dev", "enemy",
+                       "--model", "41e229ad-28a3-41f9-aeb8-ba214e06be6a:99cd4c5a-fdc8-527b-81fb-dcbec9db71df@16",
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 61.3, warp: 90.9),
+            ),
+            // The player's moves (M2 O3), in place, each drawn playing up to its tick, sword in hand. The
+            // first cut coming through, seen as a fight sees it from behind the right shoulder: the hips
+            // ahead of the arm and the right foot about to land. Springs are pinned off while N5 tunes the
+            // hair.
+            (
+                name: "lookdev-move-cut",
+                ticks: 9,
+                args: ["--look-dev", "body", "--clip", "light_1", "--clip-in-place", "--springs", "off",
+                       "--view", "205,6", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "10", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 9.2, warp: 26.7),
+            ),
+            // The finisher's top, from the side: up on the back toes and arched, the blade back over the
+            // head.
+            (
+                name: "lookdev-move-windup",
+                ticks: 13,
+                args: ["--look-dev", "body", "--clip", "light_3", "--clip-in-place", "--springs", "off",
+                       "--view", "110,4", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "14", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 22.6, warp: 41.2),
+            ),
+            // The finisher's landing, past its mark: a deep lunge folded over the blade. The shorts come
+            // closest to the shirt's back here, and the back foot's toes bend on the ground.
+            (
+                name: "lookdev-move-landing",
+                ticks: 23,
+                args: ["--look-dev", "body", "--clip", "light_3", "--clip-in-place", "--springs", "off",
+                       "--view", "110,4", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "16", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 25.3, warp: 45.0),
+            ),
+            // The dash attack's cut starting, from behind: thrown forward low, the back foot trailing, the
+            // arm and blade flung out to the right.
+            (
+                name: "lookdev-move-dash",
+                ticks: 7,
+                args: ["--look-dev", "body", "--clip", "dash_attack", "--clip-in-place", "--springs", "off",
+                       "--view", "205,6", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "8", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 7.6, warp: 23.6),
+            ),
+            // The dodge in the air, from behind, as a player sees it: low and wide, the feet split and the
+            // arms and blade left out in front.
+            (
+                name: "lookdev-move-dodge",
+                ticks: 6,
+                args: ["--look-dev", "body", "--clip", "dodge", "--clip-in-place", "--springs", "off",
+                       "--view", "205,6", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "7", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 6.9, warp: 19.7),
+            ),
+            // The skill's coil, from the character's left: down and turned away, aiming along the left arm.
+            (
+                name: "lookdev-move-coil",
+                ticks: 8,
+                args: ["--look-dev", "body", "--clip", "skill", "--clip-in-place", "--springs", "off",
+                       "--view", "60,4", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "9", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 13.8, warp: 33.2),
+            ),
+            // The garment samples (M1 C8) left of the character: a navy collar, a crimson skirt and a
+            // gold ribbon given half a twist, each one-sided (outer column: the insides culled, the
+            // outline hull's inside showing through) beside two-sided (inner column: the insides
+            // shaded as the side the camera sees, the ribbon's back as lit as its front).
+            (
+                name: "two-sided",
+                ticks: 90,
+                args: ["--two-sided", "--plain-post", "--aa", "msaa", "--shadows", "off", "--fog", "off",
+                       "--ao", "off"],
+                ci_seconds: (lavapipe: 0.9, warp: 2.2),
+            ),
+            // The face rig's keys at 18:00 (M1 C8): the warm key lights the shadow sides' authored
+            // tone, so they turn orange; the reference for the next scene.
+            (
+                name: "shade-golden-hour",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "lights", "--time-of-day", "18", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.6, warp: 4.4),
+            ),
+            // The same with the shadow hue keyed (M1 C8): a cool near-white hue taking 80% of the
+            // shadow sides' light, which keep the skin's rosy shade tone at the key's luminance while
+            // the lit sides stay warm.
+            (
+                name: "shade-hue-golden-hour",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "lights", "--time-of-day", "18",
+                       "--shade-hue", "0.8,0.88,1,0.8", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.2, warp: 5.2),
+            ),
+            // The rim figures keyed from behind through the gameplay rig's limits (M1 C8), which fold
+            // each key round toward the camera's side: the rim follows the folded key, its back light
+            // gone; the reference for the next scene.
+            (
+                name: "rim-folded",
+                ticks: 90,
+                args: ["--rim-rig", "folded", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 2.0),
+            ),
+            // The same with the rig's camera rim taking all the rim's gating (M1 C8): held behind the
+            // figures on the camera's right and above, it keeps the rim on that silhouette and its
+            // back-light weighting, whatever the folded key does.
+            (
+                name: "rim-folded-camera",
+                ticks: 90,
+                args: ["--rim-rig", "folded", "--camera-rim", "1", "--plain-post", "--plain-sky",
+                       "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.7),
+            ),
+            // The bangs' shadow of `hair-shadow` with a soft edge as wide as its reach (M1 C8): it
+            // fades in along each key's direction below the strands instead of snapping to the face's
+            // light split.
+            (
+                name: "hair-shadow-soft",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "hair", "--hair-shadow-softness", "0.03", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.0, warp: 4.1),
+            ),
+            // The face rig lit from behind (M1 C8), round from the heads' right to their left and at
+            // several heights: the hair in its shadow tone, the faces in their SDF shadow; the
+            // reference for the next scene.
+            (
+                name: "hair-backlit",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "backlit", "--plain-post", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.9, warp: 4.1),
+            ),
+            // The same with light through the hair at strength 1 (M1 C8): the hair glows in its own
+            // color, most where the key lies straight behind it.
+            (
+                name: "hair-transmission",
+                ticks: 90,
+                args: ["--faces", "--face-layout", "backlit", "--hair-transmission", "1", "--plain-post",
+                       "--plain-sky", "--aa", "msaa", "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.3, warp: 4.0),
+            ),
+            // A sword arc down across the look-dev character (M2 E2), mid-swing: the crisp core and its
+            // soft glow over noon's bright walls, then over night's dark ones, where exposure lifts the
+            // world and must not wash the core out.
+            (
+                name: "vfx-arc-noon",
+                ticks: 66,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "arc"],
+                ci_seconds: (lavapipe: 21.9, warp: 38.6),
+            ),
+            (
+                name: "vfx-arc-night",
+                ticks: 66,
+                args: ["--look-dev", "hero", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "arc"],
+                ci_seconds: (lavapipe: 29.8, warp: 50.1),
+            ),
+            // The arc's blade landing: frozen on the character's clock by its hitstop two ticks in, its
+            // spark's flash at its height and its trail still whole, with the world's dust moving on.
+            (
+                name: "vfx-hit-sunset",
+                ticks: 74,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "hit"],
+                ci_seconds: (lavapipe: 17.4, warp: 46.0),
+            ),
+            // A duel's worst moment, the bench's load: two trails, sparks and dust, over the character.
+            (
+                name: "vfx-duel-noon",
+                ticks: 120,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "duel"],
+                ci_seconds: (lavapipe: 16.7, warp: 34.7),
+            ),
+            // The same on the phones' path, at night: drawn in the main pass, against its depth, without
+            // soft fades, and with fewer points to a trail.
+            (
+                name: "vfx-duel-mobile-low",
+                ticks: 120,
+                args: ["--look-dev", "hero", "--time-of-day", "23", "--tier", "mobile-low", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "duel"],
+                ci_seconds: (lavapipe: 18.2, warp: 36.4),
+            ),
+            // Effects with nothing else on, and neither post's bloom nor its tone curve over them.
+            (
+                name: "vfx-plain",
+                ticks: 120,
+                args: ["--vfx", "duel", "--plain-post", "--plain-sky", "--aa", "msaa", "--shadows", "off",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.7),
+            ),
+            // A fight's hits as the cue table fires them (M2 E3), from G3's recording, landing on the
+            // look-dev character until fighters are drawn: a medium hit two ticks in, which a spark and a
+            // little aberration carry; a guard breaking, in ink, with the ring opening round it; the last
+            // blow, seven ticks in, against the dusk.
+            (
+                name: "hit-medium-noon",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/fight.sreplay", "--cues"],
+                ci_seconds: (lavapipe: 22.9, warp: 39.9),
+            ),
+            (
+                name: "hit-break-noon",
+                ticks: 132,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/fight.sreplay", "--cues"],
+                ci_seconds: (lavapipe: 22.9, warp: 39.7),
+            ),
+            (
+                name: "hit-finish-dusk",
+                ticks: 1156,
+                args: ["--look-dev", "hero", "--time-of-day", "19", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/fight.sreplay", "--cues"],
+                ci_seconds: (lavapipe: 28.4, warp: 52.0),
+            ),
+            // The game's screens (M3 U7) at the aspect ratios spec §5.17 names, in both languages, on their
+            // sample models. The HUD's words stand over the HUD they belong to.
+            (
+                name: "game-title-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.0),
+            ),
+            (
+                name: "game-title-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.4, warp: 2.1),
+            ),
+            (
+                name: "game-title-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.7, warp: 2.0),
+            ),
+            (
+                name: "game-title-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.3, warp: 1.8),
+            ),
+            (
+                name: "game-title-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.3),
+            ),
+            (
+                name: "game-title-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.5, warp: 2.5),
+            ),
+            (
+                name: "game-pause-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-pause-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.1, warp: 1.9),
+            ),
+            (
+                name: "game-pause-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-pause-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.2, warp: 1.7),
+            ),
+            (
+                name: "game-pause-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.2),
+            ),
+            (
+                name: "game-pause-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 1.3, warp: 2.3),
+            ),
+            (
+                name: "game-settings-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-settings-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-settings-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-settings-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-settings-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.2),
+            ),
+            (
+                name: "game-settings-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.3),
+            ),
+            // The settings' pages (M4 A1), each on its sample model: every setting at what it starts at.
+            (
+                name: "game-display-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-display-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-display-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-display-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.8),
+            ),
+            (
+                name: "game-display-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.1),
+            ),
+            (
+                name: "game-display-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.7, warp: 2.1),
+            ),
+            // The graphics page (M4 T3): automatic, unlimited, dynamic resolution and the battery saver off.
+            (
+                name: "game-graphics-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.8),
+            ),
+            (
+                name: "game-graphics-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-graphics-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-graphics-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.8),
+            ),
+            (
+                name: "game-graphics-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.2),
+            ),
+            (
+                name: "game-graphics-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-sound-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-sound-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-sound-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-sound-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-sound-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-sound-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-subtitles-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-subtitles-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-subtitles-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-subtitles-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-subtitles-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-subtitles-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-controls-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-controls-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-controls-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-controls-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-controls-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.2),
+            ),
+            (
+                name: "game-controls-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            // Remapping (M4 A4): each device's tab with its glyphs, and a press another binding has, at a
+            // wide and a narrow size.
+            (
+                name: "game-remap-pad-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-remap-pad-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-remap-pad-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-remap-pad-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-remap-keys-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-remap-keys-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-remap-keys-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 2.0),
+            ),
+            (
+                name: "game-remap-keys-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-remap-taken-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.6),
+            ),
+            (
+                name: "game-remap-taken-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.8),
+            ),
+            (
+                name: "game-remap-taken-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-remap-taken-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-character-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 3.0),
+            ),
+            (
+                name: "game-character-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.7),
+            ),
+            (
+                name: "game-character-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.4),
+            ),
+            (
+                name: "game-character-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.5),
+            ),
+            (
+                name: "game-character-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.7),
+            ),
+            (
+                name: "game-character-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.7),
+            ),
+            // The boot screen (M4 H2), a boot two fifths done, at the widest and narrowest aspects it ships
+            // at.
+            (
+                name: "game-boot-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "boot", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.7),
+            ),
+            (
+                name: "game-boot-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "boot", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-boot-update-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "boot-update", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            // The game's own show on its flow (M3 G1) in the Lantern Ward, through the sandbox's `--game`,
+            // which stands the game as it ships, its look unpinned but for its tier, which a device would
+            // choose (CI's Metal runner Desktop-Low, a Mac Desktop-High): its title over the run it would
+            // continue, and a continue from a save at the court's checkpoint, a second and a half in.
+            (
+                name: "game-ward-title",
+                size: "640x360",
+                ticks: 30,
+                args: ["--tier", "desktop-high", "--game", "title"],
+                ci_seconds: (lavapipe: 52.6, warp: 116.9),
+            ),
+            (
+                name: "game-ward-checkpoint",
+                size: "640x360",
+                ticks: 90,
+                args: ["--tier", "desktop-high", "--game", "continue",
+                       "--progress", "tests/saves/ward-court.progress.ron"],
+                ci_seconds: (lavapipe: 114.0, warp: 193.7),
+            ),
+            // The court gate's cutscene with its subtitles (M3 Q4, exit test 3): a continue at the court's
+            // checkpoint walks back through the gate, which starts the court's encounter and the cutscene,
+            // and the frame is mid-line, the warden speaking, in both languages at 4:3, 16:9 and 21:9.
+            (
+                name: "game-ward-gate-tablet-en",
+                size: "640x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "en", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 209.8, warp: 353.9),
+            ),
+            (
+                name: "game-ward-gate-tablet-ja",
+                size: "640x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 187.1, warp: 257.9),
+            ),
+            (
+                name: "game-ward-gate-wide-en",
+                size: "854x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "en", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 236.3, warp: 339.8),
+            ),
+            (
+                name: "game-ward-gate-wide-ja",
+                size: "854x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 209.8, warp: 395.3),
+            ),
+            (
+                name: "game-ward-gate-ultrawide-en",
+                size: "1120x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "en", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 296.6, warp: 415.9),
+            ),
+            (
+                name: "game-ward-gate-ultrawide-ja",
+                size: "1120x480",
+                ticks: 251,
+                base: "ward-gate",
+                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                ci_seconds: (lavapipe: 263.2, warp: 453.4),
+            ),
+            // The character screen's inset (M3 U6) on a phone's 19.5:9 at twice the points, on Mobile-Low, a
+            // quarter turn round by a drag.
+            (
+                name: "game-character-phone-en",
+                size: "1688x780",
+                ticks: 2,
+                args: ["--tier", "mobile-low", "--plain-sky", "--plain-post", "--ao", "off",
+                       "--shadows", "off", "--fog", "off", "--ui-plain", "--ui-game", "character",
+                       "--ui-locale", "en", "--ui-scale", "2", "--ui-turn", "0.25"],
+                ci_seconds: (lavapipe: 1.3, warp: 2.8),
+            ),
+            (
+                name: "game-dialogue-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.6),
+            ),
+            (
+                name: "game-dialogue-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-dialogue-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-dialogue-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-dialogue-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-dialogue-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            // The dialogue panel on a real conversation (M3 Q2b): the Lantern Ward guide's question, cooked,
+            // its answers in the panel's slots and its hidden one hidden, at U7's aspects.
+            (
+                name: "game-guide-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.6),
+            ),
+            (
+                name: "game-guide-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-guide-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-guide-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-guide-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-guide-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-hud-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 1.1, warp: 1.6),
+            ),
+            (
+                name: "game-hud-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "ja", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-hud-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 1.2, warp: 2.0),
+            ),
+            (
+                name: "game-hud-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "ja", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-hud-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 1.3, warp: 2.1),
+            ),
+            (
+                name: "game-hud-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "ja", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            // Every screen on a Steam Deck's 1280×800 (M4 S4), in both languages: what Valve's Deck review
+            // reads at 16:10, its smallest text included.
+            (
+                name: "game-title-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.1),
+            ),
+            (
+                name: "game-title-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "title", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.1),
+            ),
+            (
+                name: "game-pause-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 2.0),
+            ),
+            (
+                name: "game-pause-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-settings-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-settings-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-display-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-display-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-graphics-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 2.0),
+            ),
+            (
+                name: "game-graphics-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "graphics", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-sound-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.7, warp: 1.7),
+            ),
+            (
+                name: "game-sound-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "sound", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-subtitles-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            (
+                name: "game-subtitles-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "subtitles", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-controls-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 2.1),
+            ),
+            (
+                name: "game-controls-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "controls", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-remap-pad-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.7, warp: 1.8),
+            ),
+            (
+                name: "game-remap-pad-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_pad", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-remap-keys-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.3),
+            ),
+            (
+                name: "game-remap-keys-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_keys", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.7, warp: 2.1),
+            ),
+            (
+                name: "game-remap-taken-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-remap-taken-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "remap_taken", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-character-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.8, warp: 2.1),
+            ),
+            (
+                name: "game-character-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "character", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.3),
+            ),
+            (
+                name: "game-dialogue-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-dialogue-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-guide-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "en", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.8),
+            ),
+            (
+                name: "game-guide-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "dialogue", "--ui-locale", "ja", "--ui-dialogue", "1"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-hud-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+            (
+                name: "game-hud-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "ja", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.8),
+            ),
+            // Motion on a game's screen (M3 C3, in place of U5's test menu): the pause screen a tenth of a
+            // second into its entrance, and the settings after a walk down their list, focus and its pulse
+            // moved with it.
+            (
+                name: "game-pause-entering-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "pause", "--ui-locale", "ja", "--ui-time", "0.1"],
+                ci_seconds: (lavapipe: 1.1, warp: 1.7),
+            ),
+            (
+                name: "game-settings-walked-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "settings", "--ui-locale", "ja", "--ui-walk", "down,down,down,down,down"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
+            ),
+            // The combat HUD's fixed frame (M2 I2) at the aspect ratios spec §5.17 names, each a phone-
+            // sized frame in points: bright midday behind it at 16:9 and with a notch, golden hour at
+            // 4:3 and the lantern-lit street at 21:9, so its inks and digits read over all three.
+            (
+                name: "hud-wide",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 14.2, warp: 14.1),
+            ),
+            (
+                name: "hud-tablet",
+                size: "480x360",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 4.4, warp: 13.3),
+            ),
+            (
+                name: "hud-ultrawide",
+                size: "840x360",
+                ticks: 90,
+                args: ["--look-dev", "street", "--time-of-day", "21", "--tier", "desktop-high",
+                       "--aa", "msaa", "--ao", "off", "--hud", "fixed"],
+                ci_seconds: (lavapipe: 5.8, warp: 14.2),
+            ),
+            // An iPhone's frame in points with its insets: the left and right notch bands and the home
+            // indicator's strip stay clear, the controls just inside them.
+            (
+                name: "hud-notch",
+                size: "874x402",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed", "--hud-insets", "62,0,62,21"],
+                ci_seconds: (lavapipe: 6.2, warp: 14.8),
+            ),
+            (
+                name: "display-text-latin",
+                ticks: 90,
+                args: ["--look-dev", "street", "--time-of-day", "21", "--tier", "desktop-high",
+                       "--aa", "msaa", "--ao", "off", "--display-text", "latin"],
+                ci_seconds: (lavapipe: 5.1, warp: 14.3),
+            ),
+            (
+                name: "display-text-japanese",
+                size: "1920x1080",
+                ticks: 90,
+                args: ["--look-dev", "street", "--time-of-day", "21", "--tier", "desktop-high",
+                       "--aa", "msaa", "--ao", "off", "--display-text", "japanese"],
+                ci_seconds: (lavapipe: 7.4, warp: 21.2),
+            ),
+            // The fixed frame with the player's ultimate (M3 Q3c): its energy meter empty and its button
+            // charging, then full with the button lit, on the wide frame and on the iPhone's.
+            (
+                name: "hud-energy-empty-wide",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed", "--hud-energy", "0"],
+                ci_seconds: (lavapipe: 5.3, warp: 13.9),
+            ),
+            (
+                name: "hud-energy-full-wide",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed", "--hud-energy", "1"],
+                ci_seconds: (lavapipe: 4.0, warp: 14.2),
+            ),
+            (
+                name: "hud-energy-empty-notch",
+                size: "874x402",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed", "--hud-insets", "62,0,62,21", "--hud-energy", "0"],
+                ci_seconds: (lavapipe: 5.7, warp: 12.6),
+            ),
+            (
+                name: "hud-energy-full-notch",
+                size: "874x402",
+                ticks: 90,
+                args: ["--look-dev", "wide", "--time-of-day", "13", "--tier", "desktop-high", "--aa", "msaa",
+                       "--ao", "off", "--hud", "fixed", "--hud-insets", "62,0,62,21", "--hud-energy", "1"],
+                ci_seconds: (lavapipe: 4.2, warp: 14.4),
+            ),
+            // The look at each tier and at its dynamic floor (M4 T0): the close-up of the character's face at
+            // noon, on each tier as it ships, AO and all. The desktop tiers draw 640×360 at scale 1 and at
+            // 0.7; the phones' draw 1280×592 at the scales a 1170-row phone draws, their own (740 or 590
+            // rows) and 0.75 of it, so the bilinear upscale is a phone's. The thermal ladder's rungs (M4 T2)
+            // compare against these.
+            (
+                name: "tier-face-desktop-high",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 20.1, warp: 31.6),
+            ),
+            (
+                name: "tier-face-desktop-high-floor",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--render-scale", "0.7", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 17.5, warp: 27.8),
+            ),
+            (
+                name: "tier-face-desktop-low",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-low",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 9.5, warp: 26.2),
+            ),
+            (
+                name: "tier-face-desktop-low-floor",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-low",
+                       "--render-scale", "0.7", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 9.7, warp: 24.9),
+            ),
+            (
+                name: "tier-face-mobile-high",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--render-scale", "0.632479"],
+                ci_seconds: (lavapipe: 5.8, warp: 12.7),
+            ),
+            (
+                name: "tier-face-mobile-high-floor",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--render-scale", "0.474359"],
+                ci_seconds: (lavapipe: 4.7, warp: 12.9),
+            ),
+            (
+                name: "tier-face-mobile-low",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.504274"],
+                ci_seconds: (lavapipe: 5.8, warp: 12.1),
+            ),
+            (
+                name: "tier-face-mobile-low-floor",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.378205"],
+                ci_seconds: (lavapipe: 3.8, warp: 12.2),
+            ),
+            // The Lantern Ward's street from where a game starts, and a medium hit's spark and aberration on
+            // the look-dev character, on the low tiers that the ladder's passes are measured on.
+            (
+                name: "tier-ward-desktop-low",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 10.3, warp: 30.4),
+            ),
+            (
+                name: "tier-ward-mobile-low",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
+                       "--render-scale", "0.504274"],
+                ci_seconds: (lavapipe: 4.4, warp: 13.3),
+            ),
+            (
+                name: "tier-hit-desktop-low",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-low", "--capture-frames", "12", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 13.2, warp: 31.6),
+            ),
+            (
+                name: "tier-hit-mobile-low",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-low", "--render-scale", "0.504274"],
+                ci_seconds: (lavapipe: 4.4, warp: 13.2),
+            ),
+            // The thermal ladder's rungs (M4 T2), held with `--rung`: the face on each tier at its first
+            // three rungs, a scale or a shed each (`tiers.ron`), and the ward and the hit on the low tiers at
+            // their deepest rung short of a tier, every pass they shed gone. A frame-rate cap draws as the
+            // rung before it, and a tier as that tier's scenes, so neither has a scene.
+            (
+                name: "tier-face-desktop-high-rung-one",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--rung", "1",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 18.0, warp: 33.9),
+            ),
+            (
+                name: "tier-face-desktop-high-rung-two",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--rung", "2",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 17.8, warp: 29.3),
+            ),
+            (
+                name: "tier-face-desktop-high-rung-three",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--rung", "3",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 12.5, warp: 27.6),
+            ),
+            (
+                name: "tier-face-desktop-low-rung-one",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-low", "--rung", "1",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 11.0, warp: 27.3),
+            ),
+            (
+                name: "tier-face-desktop-low-rung-two",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-low", "--rung", "2",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 10.8, warp: 23.8),
+            ),
+            (
+                name: "tier-face-desktop-low-rung-three",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-low", "--rung", "3",
+                       "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 7.0, warp: 24.1),
+            ),
+            (
+                name: "tier-face-mobile-high-rung-one",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "1"],
+                ci_seconds: (lavapipe: 5.0, warp: 13.0),
+            ),
+            (
+                name: "tier-face-mobile-high-rung-two",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "2"],
+                ci_seconds: (lavapipe: 3.7, warp: 12.4),
+            ),
+            (
+                name: "tier-face-mobile-high-rung-three",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "3"],
+                ci_seconds: (lavapipe: 2.5, warp: 12.2),
+            ),
+            (
+                name: "tier-face-mobile-low-rung-one",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "1"],
+                ci_seconds: (lavapipe: 3.2, warp: 12.2),
+            ),
+            (
+                name: "tier-face-mobile-low-rung-two",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "2"],
+                ci_seconds: (lavapipe: 3.1, warp: 10.4),
+            ),
+            (
+                name: "tier-face-mobile-low-rung-three",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "3"],
+                ci_seconds: (lavapipe: 2.2, warp: 12.0),
+            ),
+            (
+                name: "tier-ward-desktop-low-rung-three",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
+                       "--rung", "3", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 11.1, warp: 28.3),
+            ),
+            (
+                name: "tier-ward-mobile-low-rung-three",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "3"],
+                ci_seconds: (lavapipe: 4.7, warp: 12.9),
+            ),
+            (
+                name: "tier-hit-desktop-low-rung-three",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-low", "--rung", "3", "--capture-frames", "12",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 8.3, warp: 27.7),
+            ),
+            (
+                name: "tier-hit-mobile-low-rung-three",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "3"],
+                ci_seconds: (lavapipe: 5.5, warp: 20.8),
+            ),
+            // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera
+            // motion: its duotone and speed lines held within 0.08 of the frame's relative luminance, and
+            // none of its radial blur or chromatic aberration, against `effects-impact-frame`.
+            (
+                name: "effects-impact-frame-calmer",
+                ticks: 90,
+                args: ["--post-effect", "impact_frame@0.03", "--effect-scale", "reduced:0", "--aa", "taa",
+                       "--capture-frames", "32", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 5.2, warp: 17.0),
+            ),
+            // The display page at the largest text, its long labels taking a second line; the HUD's subtitles
+            // large on a solid band, in Japanese, and small with no band at all, in English.
+            (
+                name: "game-display-larger-text-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "display", "--ui-locale", "en", "--ui-text", "larger"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-subtitle-band-large-solid-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "ja", "--ui-subtitle", "large:solid"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
+            ),
+            (
+                name: "game-subtitle-band-small-off-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--ui-subtitle", "small:off"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            // The photosensitivity notice (M4 A3) at U7's aspects and the Deck's in both languages, and at
+            // the largest text in Japanese, its longest, where its words scroll.
+            (
+                name: "game-notice-tablet-en",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.9),
+            ),
+            (
+                name: "game-notice-tablet-ja",
+                size: "1024x768",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.8),
+            ),
+            (
+                name: "game-notice-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.6),
+            ),
+            (
+                name: "game-notice-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.5, warp: 1.9),
+            ),
+            (
+                name: "game-notice-ultrawide-en",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.3),
+            ),
+            (
+                name: "game-notice-ultrawide-ja",
+                size: "1680x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.7, warp: 2.1),
+            ),
+            (
+                name: "game-notice-deck-en",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 2.0),
+            ),
+            (
+                name: "game-notice-deck-ja",
+                size: "1280x800",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
+            ),
+            (
+                name: "game-notice-larger-text-wide-ja",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "notice", "--ui-locale", "ja", "--ui-text", "larger"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
+            ),
+        ],
+    ),
+)

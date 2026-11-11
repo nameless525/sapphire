@@ -18,7 +18,7 @@ import golden_bundle
 
 class CaptureExperimentTests(unittest.TestCase):
     def test_checked_out_fixture_registry_is_used_without_modified_flags(self):
-        fixtures = experiment.fixtures(Path("tools/sapphire_testkit/src/scenes.rs"))
+        fixtures = experiment.fixtures(Path("tests/golden/scenes.ron"))
         self.assertEqual([row["name"] for row in fixtures], list(experiment.SCENES))
         self.assertIn("--capture-frames", fixtures[0]["args"])
         self.assertIn("32", fixtures[0]["args"])

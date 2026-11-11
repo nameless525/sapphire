@@ -13,7 +13,7 @@
 //! The monitor inherits the child's stdout, so stdout reaching end-of-file also proves that the
 //! monitor exited once the child was gone.
 //!
-//! The native-crash scenario runs only on CI or with `SAPPHIRE_CRASH_TESTS=1`, since each run
+//! The native-crash scenarios run only on CI or with `SAPPHIRE_CRASH_TESTS=1`, since each run
 //! leaves an OS crash report behind (see `native_crash_enabled`).
 
 // The child's stdout is the channel back to the parent.
@@ -24,7 +24,7 @@ mod desktop {
     use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, ExitStatus, Stdio};
+    use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
     use std::{fs, panic, thread};
@@ -52,6 +52,8 @@ mod desktop {
                 Some("prune") => prune(&dir),
                 #[cfg(unix)]
                 Some("monitor-gone") => monitor_gone(&dir),
+                #[cfg(target_os = "linux")]
+                Some("monitor-stopped") => monitor_stopped(&dir),
                 other => panic!("unknown scenario {other:?}"),
             }
             return;
@@ -59,6 +61,8 @@ mod desktop {
 
         if native_crash_enabled() {
             two_recovered_panics_then_a_native_crash();
+            #[cfg(target_os = "linux")]
+            a_hung_monitor_still_ends_the_crash();
         } else {
             println!(
                 "monitor: skipping the native-crash scenario (it leaves an OS crash report behind); \
@@ -182,6 +186,53 @@ mod desktop {
         assert_eq!(kinds, [ReportKind::Panic], "the panic is reported, with no dump: {reports:#?}");
     }
 
+    /// A monitor that never answers (stopped here) costs a crash its dump, not its end: the request
+    /// gives up after the crate's bound (10 s) and the process dies of its signal.
+    #[cfg(target_os = "linux")]
+    fn a_hung_monitor_still_ends_the_crash() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const POLL: Duration = Duration::from_millis(50);
+        let dir = ScratchDir::new("monitor-stopped");
+        let mut child = spawn_child("monitor-stopped", dir.path());
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut waited = Duration::ZERO;
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll the scenario") {
+                break Some(status);
+            }
+            if waited >= CHILD_TIMEOUT {
+                let _ = child.kill();
+                break None;
+            }
+            thread::sleep(POLL);
+            waited += POLL;
+        };
+        // The stopped monitor still holds the pipe: end it, then read to the end.
+        let mut lines = Vec::new();
+        while let Ok(line) = receiver.recv_timeout(Duration::from_secs(1)) {
+            if let Some(monitor) = line.strip_prefix("monitor=") {
+                let _ = Command::new("kill").args(["-KILL", monitor]).status();
+            }
+            lines.push(line);
+        }
+        let context = format!("child exited with {status:?}; it reported:\n  {}", lines.join("\n  "));
+        let Some(status) = status else {
+            panic!("a crash waited on a hung monitor for {CHILD_TIMEOUT:?}\n{context}");
+        };
+        assert!(lines.iter().any(|line| line == "crashing=yes"), "{context}");
+        assert_eq!(status.signal(), Some(11), "the crash ends in its own signal, SIGSEGV\n{context}");
+        assert_no_partials(dir.path());
+    }
+
     struct ChildRun {
         status: ExitStatus,
         lines: Vec<String>,
@@ -194,13 +245,17 @@ mod desktop {
         }
     }
 
-    fn run_child(scenario: &str, dir: &Path) -> ChildRun {
-        let mut child = Command::new(std::env::current_exe().expect("current exe"))
+    fn spawn_child(scenario: &str, dir: &Path) -> Child {
+        Command::new(std::env::current_exe().expect("current exe"))
             .env(SCENARIO_ENV, scenario)
             .env(DIR_ENV, dir)
             .stdout(Stdio::piped())
             .spawn()
-            .expect("spawn the scenario");
+            .expect("spawn the scenario")
+    }
+
+    fn run_child(scenario: &str, dir: &Path) -> ChildRun {
+        let mut child = spawn_child(scenario, dir);
         let stdout = child.stdout.take().expect("piped stdout");
 
         // Read until end-of-file, which needs the child and the monitor it launched (which
@@ -331,17 +386,21 @@ mod desktop {
         drop(guard);
     }
 
+    /// The monitor's process ID: it is this process's only child.
+    #[cfg(unix)]
+    fn monitor_pid() -> String {
+        let pgrep =
+            Command::new("pgrep").args(["-P", &std::process::id().to_string()]).output().expect("run pgrep");
+        let monitor = String::from_utf8(pgrep.stdout).expect("pgrep output").trim().to_owned();
+        assert!(!monitor.is_empty() && !monitor.contains('\n'), "one monitor: {monitor:?}");
+        monitor
+    }
+
     #[cfg(unix)]
     fn monitor_gone(dir: &Path) {
         let guard = install(dir);
-
-        // The monitor is this process's only child.
-        let pgrep =
-            Command::new("pgrep").args(["-P", &std::process::id().to_string()]).output().expect("run pgrep");
-        let monitor = String::from_utf8(pgrep.stdout).expect("pgrep output");
-        let monitor = monitor.trim();
-        assert!(!monitor.is_empty() && !monitor.contains('\n'), "one monitor: {monitor:?}");
-        let killed = Command::new("kill").args(["-KILL", monitor]).status().expect("run kill");
+        let monitor = monitor_pid();
+        let killed = Command::new("kill").args(["-KILL", &monitor]).status().expect("run kill");
         assert!(killed.success());
         // The kill is asynchronous; give it up to five seconds to land.
         for _ in 0..500 {
@@ -355,6 +414,18 @@ mod desktop {
         recovered_panic(0);
         report("panic.capture", &format!("{:?}", guard.native_capture()));
         drop(guard);
+    }
+
+    /// Stops the monitor, so it never answers, then crashes. The parent ends the monitor afterwards.
+    #[cfg(target_os = "linux")]
+    fn monitor_stopped(dir: &Path) {
+        let _guard = install(dir);
+        let monitor = monitor_pid();
+        report("monitor", &monitor);
+        let stopped = Command::new("kill").args(["-STOP", &monitor]).status().expect("run kill");
+        assert!(stopped.success());
+        report("crashing", "yes");
+        crash_natively();
     }
 
     fn crash_natively() -> ! {

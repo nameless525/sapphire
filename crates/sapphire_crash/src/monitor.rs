@@ -4,7 +4,8 @@
 //! monitor is the app's own binary and nothing extra ships. That process lands in
 //! [`run_if_requested`] at the top of `main` and serves a `minidumper` socket. When the app
 //! crashes, `crash-handler` sends the crash context over the socket and blocks until the monitor
-//! has written `<run>.dmp`.
+//! has written `<run>.dmp`: on Linux and macOS for a bounded time, so a hung monitor costs the crash
+//! its dump but never holds the process (Windows' wait has no bound yet).
 //!
 //! A panic the app recovers from (an IO callback, a decode worker, an off-thread shader build)
 //! also asks for a dump, so the monitor outlives its dumps: it numbers them (`<run>.dmp`, then
@@ -40,6 +41,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long [`MonitorCapture`]'s drop waits for the monitor to exit before killing it.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a dump request may wait on the monitor, on Linux (see `bound_requests`). A dump takes
+/// well under a second; a monitor that hasn't answered by then is hung, and the game must still end.
+/// macOS's minidumper bounds its own requests (2 s to send, 5 s for the answer).
+#[cfg(target_os = "linux")]
+const DUMP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Waiting on the monitor polls with exponential backoff from [`FIRST_POLL_DELAY`] up to
 /// [`MAX_POLL_DELAY`]: the monitor is usually ready, or gone, within a few milliseconds, which a
@@ -171,6 +178,7 @@ impl MonitorCapture {
         let lifeline = monitor.stdin.take();
 
         let attached = connect(&socket, &mut monitor).and_then(|client| {
+            bound(&socket);
             let connection = Arc::new(Connection::new(client));
             let event_connection = Arc::clone(&connection);
             // SAFETY: the event runs in a crashed process (inside a signal handler on Linux), so
@@ -282,7 +290,10 @@ pub(crate) fn request_panic_dump() -> bool {
         return dumped;
     }
     match Client::with_name(link.socket.name()) {
-        Ok(client) => link.connection.replace(Some(client)),
+        Ok(client) => {
+            bound(&link.socket);
+            link.connection.replace(Some(client));
+        }
         Err(err) => {
             link.connection.replace(None);
             tracing::warn!(
@@ -318,6 +329,98 @@ fn simulate_crash(handler: &CrashHandler) -> bool {
     {
         matches!(handler.simulate_exception(None), CrashEventResult::Handled(true))
     }
+}
+
+/// Bounds how long this process's requests to the monitor at `socket` can wait, where minidumper
+/// doesn't: on Linux (see `bound_requests`). Windows' requests stay unbounded: its socket can't be
+/// found from outside minidumper. Failing is logged, and capture goes on unbounded.
+fn bound(socket: &SocketId) {
+    #[cfg(target_os = "linux")]
+    {
+        let unbounded = match bound_requests(socket, DUMP_TIMEOUT) {
+            Ok(0) => "no connection to it was found".to_owned(),
+            Ok(_) => return,
+            Err(err) => err.to_string(),
+        };
+        tracing::warn!(
+            target: "sapphire::crash",
+            "a hung crash monitor would hold a crash, as its requests can't be bounded: {unbounded}",
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = socket;
+}
+
+/// Bounds every send and receive on this process's connections to the monitor at `socket` by
+/// `timeout`, and returns how many it bounded. minidumper's client waits for the monitor's answer
+/// with a blocking `recv` that has no timeout, and its socket is private, so the connections are
+/// found among this process's descriptors by the name of the socket at their other end. A crash's
+/// request then fails once `timeout` has passed (`EAGAIN`), crash-handler puts the earlier signal
+/// handlers back, and the signal ends the process as it would have without capture.
+///
+/// It can't help with a monitor that hangs after it has stopped the process's threads to read them
+/// (`ptrace`): only the monitor's own exit lets them go.
+#[cfg(target_os = "linux")]
+fn bound_requests(socket: &SocketId, timeout: Duration) -> io::Result<usize> {
+    let timeval = libc::timeval {
+        tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
+        tv_usec: libc::suseconds_t::from(timeout.subsec_micros()),
+    };
+    let mut bounded = 0;
+    for entry in fs::read_dir("/proc/self/fd")? {
+        let Some(fd) = entry?.file_name().to_str().and_then(|name| name.parse::<libc::c_int>().ok()) else {
+            continue;
+        };
+        if !connected_to(fd, socket.as_str()) {
+            continue;
+        }
+        for option in [libc::SO_RCVTIMEO, libc::SO_SNDTIMEO] {
+            // SAFETY: `timeval` is a valid `timeval` for the call's duration, and the length given is its
+            // size. A descriptor closed since it was listed fails with `EBADF`, and nothing else is touched.
+            let set = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    option,
+                    (&raw const timeval).cast(),
+                    socket_length::<libc::timeval>(),
+                )
+            };
+            if set != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        bounded += 1;
+    }
+    Ok(bounded)
+}
+
+/// Whether `fd` is a Unix socket connected to the abstract socket `name`.
+#[cfg(target_os = "linux")]
+fn connected_to(fd: libc::c_int, name: &str) -> bool {
+    // SAFETY: an all-zero `sockaddr_un` is a valid value of it.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut length = socket_length::<libc::sockaddr_un>();
+    // SAFETY: `address` has room for `length` bytes, which `getpeername` writes at most, and it sets
+    // `length` to the address's own. Any descriptor may be asked: one that isn't a socket fails.
+    let got = unsafe { libc::getpeername(fd, (&raw mut address).cast(), &raw mut length) };
+    if got != 0 || address.sun_family != libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or(0) {
+        return false;
+    }
+    let path_length = usize::try_from(length)
+        .unwrap_or(0)
+        .saturating_sub(std::mem::offset_of!(libc::sockaddr_un, sun_path));
+    // An abstract name: a NUL, then the name, with no terminator.
+    let path = address.sun_path.get(..path_length).unwrap_or_default();
+    path.split_first().is_some_and(|(&first, rest)| {
+        first == 0 && rest.iter().map(|&c| u8::from_ne_bytes(c.to_ne_bytes())).eq(name.bytes())
+    })
+}
+
+/// The size of a `T` passed to a socket call.
+#[cfg(target_os = "linux")]
+fn socket_length<T>() -> libc::socklen_t {
+    libc::socklen_t::try_from(size_of::<T>()).unwrap_or(libc::socklen_t::MAX)
 }
 
 /// Connects to the monitor, retrying while it starts up.

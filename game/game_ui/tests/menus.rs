@@ -215,6 +215,34 @@ fn every_menu_walks_fits_and_comes_from_the_tables_by_every_device_at_every_aspe
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// A playtest build's pause (M4 F1, Z3c) has a sixth row, the mark, and still walks and fits by every device at
+/// every aspect, in both languages: its rows scroll under its title on a phone.
+#[test]
+fn a_playtests_pause_walks_and_fits_by_every_device_at_every_aspect() {
+    let mut wrong = Vec::new();
+    for locale in ["en", "ja"] {
+        for size in SIZES {
+            for device in [Device::Pad, Device::Keyboard, Device::Finger] {
+                let at = format!("{locale}, {size:?}, {device:?}");
+                let mut walk = Walk::playtest(assets(), locale, false, size, device);
+                walk.menus.open_under(MenuScreen::HUD);
+                walk.menus.open(MenuScreen::PAUSE);
+                walk.settle();
+                walk.check(MenuScreen::PAUSE, false);
+                // The last row first, so a list that scrolls has to.
+                walk.focus(MenuScreen::PAUSE, "leave");
+                walk.settle();
+                walk.check(MenuScreen::PAUSE, false);
+                walk.choose(MenuScreen::PAUSE, "mark");
+                assert!(walk.commands.contains(&MenuCommand::Mark), "{at}");
+                assert!(walk.menus.tree(MenuScreen::PAUSE).is_none(), "{at}");
+                wrong.extend(walk.wrong.into_iter().map(|line| format!("{locale}: {line}")));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 #[test]
 fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     let mut walk = Walk::new(assets(), "en", false, (1280, 720), Device::Keyboard);

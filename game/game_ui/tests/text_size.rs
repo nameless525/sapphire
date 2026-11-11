@@ -51,7 +51,8 @@ fn largest(language: &str) -> PlayerSettings {
     }
 }
 
-/// The game's menus as `settings` have them.
+/// The game's menus as `settings` have them, as a playtest build has them: its pause has every row a store
+/// build's has, and the mark (M4 F1).
 fn menus_with(settings: PlayerSettings) -> GameMenus {
     let support::Screens { assets, menus: screens } = assets();
     GameMenus::new(
@@ -62,7 +63,7 @@ fn menus_with(settings: PlayerSettings) -> GameMenus {
             settings,
             bindings: sapphire_controls::default_bindings().unwrap(),
             can_leave: true,
-            can_mark: false,
+            can_mark: true,
             pseudo: false,
         },
     )

@@ -244,13 +244,17 @@ mod tests {
         let maps =
             [PathMap::parse("/sapphire=/work/engine").unwrap(), PathMap::parse("/cargo=/u/.cargo").unwrap()];
         let local = |path: &str| local_path(path, &maps);
+        // The rest of the path takes this machine's separators.
+        let under = |root: &str, parts: &[&str]| {
+            parts.iter().fold(PathBuf::from(root), |path, part| path.join(part)).display().to_string()
+        };
         assert_eq!(
             local("/sapphire/crates/a/src/b.rs"),
-            Path::new("/work/engine").join("crates/a/src/b.rs").display().to_string()
+            under("/work/engine", &["crates", "a", "src", "b.rs"])
         );
         assert_eq!(
             local("/cargo/registry/src/x/y.rs"),
-            Path::new("/u/.cargo").join("registry/src/x/y.rs").display().to_string()
+            under("/u/.cargo", &["registry", "src", "x", "y.rs"])
         );
         assert_eq!(local("/sapphirex/a.rs"), "/sapphirex/a.rs");
         assert_eq!(local("/rustc/abc/library/core/src/ptr.rs"), "/rustc/abc/library/core/src/ptr.rs");
@@ -287,6 +291,9 @@ mod tests {
         let function = text.find("      game::f").expect("the function");
         assert!(ptr < function, "{text}");
         assert!(text.contains("game_app + 0x1234 (found by context)"), "{text}");
-        assert!(text.contains(&format!("at {}:3", Path::new("/w").join("game/f.rs").display())), "{text}");
+        assert!(
+            text.contains(&format!("at {}:3", Path::new("/w").join("game").join("f.rs").display())),
+            "{text}"
+        );
     }
 }

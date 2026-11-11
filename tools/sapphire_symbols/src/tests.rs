@@ -29,11 +29,17 @@ fn run(command: &mut Command) {
 /// Links `source` as `name` in `dir`, as a shipping package does on this host, stripped unless `strip`
 /// is false.
 fn link(dir: &Path, name: &str, source: &str, strip: bool) -> Linked {
+    link_with(dir, name, source, strip, "2")
+}
+
+/// [`link`], keeping `debuginfo` (rustc's `-C debuginfo`) rather than all of it.
+fn link_with(dir: &Path, name: &str, source: &str, strip: bool, debuginfo: &str) -> Linked {
     let source_path = dir.join(format!("{name}.rs"));
     fs::create_dir_all(dir).unwrap();
     fs::write(&source_path, source).unwrap();
     let mut rustc = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
-    rustc.arg(&source_path).args(["--edition", "2024", "-C", "debuginfo=2", "--crate-name", name]);
+    rustc.arg(&source_path).args(["--edition", "2024", "-C", &format!("debuginfo={debuginfo}")]);
+    rustc.args(["--crate-name", name]);
     // The workspace's cargo `[env]` sets it for every process cargo runs, tests too.
     rustc.env_remove("IPHONEOS_DEPLOYMENT_TARGET");
     match std::env::consts::OS {
@@ -136,6 +142,31 @@ fn an_unstripped_binary_is_refused() {
     let linked = link(&dir, "hello", HELLO, false);
     let error = check(&linked.shipped, &linked.symbols).unwrap_err();
     assert!(format!("{error:#}").contains("isn't stripped"), "{error:#}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A function nothing was inlined into, linked with line tables only (the dev profile's, which the crash
+/// test reads): LLVM gives it no DWARF entry outside Apple platforms, so on Linux it's read from the symbol
+/// table, and still names its line.
+#[test]
+fn a_leaf_with_line_tables_only_names_its_line() {
+    const LEAF: &str = "#[inline(never)]\nfn leaf(n: usize) -> usize {\n    n.wrapping_mul(31) ^ (n >> 3)\n}\n\n\
+                        fn main() { println!(\"{}\", leaf(std::env::args().count())); }\n";
+    let dir = scratch("leaf");
+    let linked = link_with(&dir, "leaf", LEAF, true, "line-tables-only");
+    let module = check(&linked.shipped, &linked.symbols).unwrap();
+    let mut out = Vec::new();
+    sym::write(&module, &linked.symbols, &mut out).unwrap();
+    let sym = String::from_utf8(out).unwrap();
+    let mut records =
+        sym.lines().skip_while(|line| !(line.starts_with("FUNC ") && line.ends_with(" leaf::leaf")));
+    assert!(records.next().is_some(), "no FUNC for leaf::leaf");
+    let lines: Vec<u64> = records
+        .take_while(|record| !record.starts_with("FUNC ") && !record.starts_with("PUBLIC "))
+        .filter(|record| !record.starts_with("INLINE "))
+        .filter_map(|record| record.split(' ').nth(2)?.parse().ok())
+        .collect();
+    assert!(lines.contains(&3), "leaf::leaf's lines are {lines:?}");
     fs::remove_dir_all(dir).unwrap();
 }
 

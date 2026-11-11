@@ -39,21 +39,25 @@ pub(super) fn read(bytes: &[u8], module: &Module, dump: &mut Dump) -> anyhow::Re
     ensure!(!headers.is_empty(), "no DWARF units");
     let names =
         Names { dwarf: &dwarf, headers: &headers, units: RefCell::default(), cache: RefCell::default() };
+    let mut uncovered = Vec::new();
     for header in &headers {
         let unit = dwarf.unit(*header)?;
-        read_unit(&dwarf, &unit, &names, object.base, dump)?;
+        uncovered.extend(read_unit(&dwarf, &unit, &names, object.base, dump)?);
     }
+    uncovered.sort_by_key(|line| line.address);
+    dump.add_symbol_functions(&object.sized, &uncovered);
     Ok(())
 }
 
 /// What a symbol file holds for this: its sections, the address the module loads at, its ID and its symbol
-/// table's code.
+/// table's code: every function's address, and, where the table says (ELF), each one's extent.
 struct Object<'a> {
     sections: HashMap<String, &'a [u8]>,
     format: Format,
     base: u64,
     id: DebugId,
     publics: Vec<(u64, String)>,
+    sized: Vec<(Range<u64>, String)>,
 }
 
 impl<'a> Object<'a> {
@@ -90,7 +94,8 @@ impl<'a> Object<'a> {
             }
         }
         let id = DebugId { guid: crate::mach_uuid(macho)?, age: 0 };
-        Ok(Self { sections, format: Format::MachO, base, id, publics })
+        // A Mach-O symbol has no size, and LLVM gives every function on Apple platforms an entry of its own.
+        Ok(Self { sections, format: Format::MachO, base, id, publics, sized: Vec::new() })
     }
 
     fn elf(elf: &Elf<'a>, bytes: &'a [u8]) -> anyhow::Result<Self> {
@@ -120,6 +125,7 @@ impl<'a> Object<'a> {
             .min()
             .context("no loaded segment")?;
         let mut publics = Vec::new();
+        let mut sized = Vec::new();
         for symbol in elf.syms.iter() {
             if symbol.st_type() == STT_FUNC
                 && symbol.st_shndx != 0
@@ -127,14 +133,18 @@ impl<'a> Object<'a> {
                 && symbol.st_value != 0
                 && let Some(name) = elf.strtab.get_at(symbol.st_name)
             {
-                publics.push((symbol.st_value - base, name.to_owned()));
+                let start = symbol.st_value - base;
+                publics.push((start, name.to_owned()));
+                if let Some(end) = start.checked_add(symbol.st_size).filter(|&end| end > start) {
+                    sized.push((start..end, name.to_owned()));
+                }
             }
         }
         let build_id = crate::build_id(elf, bytes)?;
         let mut first = [0; 16];
         first.copy_from_slice(&build_id[..16]);
         let id = DebugId::from_le_guid(first, 0);
-        Ok(Self { sections, format: Format::Elf, base, id, publics })
+        Ok(Self { sections, format: Format::Elf, base, id, publics, sized })
     }
 
     /// A DWARF section's bytes, empty if it's missing. Mach-O names `.debug_info` `__debug_info`, cut to 16
@@ -242,13 +252,15 @@ struct Pending {
     inlines: Vec<Inline>,
 }
 
+/// Adds `unit`'s functions to `dump`, and returns its lines that none of them covers: the code of
+/// functions its tree has no entry for.
 fn read_unit<'a>(
     dwarf: &gimli::Dwarf<Reader<'a>>,
     unit: &Unit<'a>,
     names: &Names<'_, 'a>,
     base: u64,
     dump: &mut Dump,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Line>> {
     let mut files = UnitFiles { ids: HashMap::new() };
     let lines = unit_lines(dwarf, unit, base, &mut files, dump)?;
     let mut functions = Vec::new();
@@ -256,12 +268,24 @@ fn read_unit<'a>(
     let mut walk =
         Walk { dwarf, unit, names, base, files: &mut files, dump: &mut *dump, functions: &mut functions };
     walk.node(tree.root()?, None, 0)?;
+    let mut covered = Vec::new();
     for function in functions {
         for range in &function.ranges {
             dump.add_function(range.clone(), &function.name, &lines, &function.inlines);
+            covered.push(range.clone());
         }
     }
-    Ok(())
+    let covered = super::merged(&covered);
+    let mut ranges = covered.iter().peekable();
+    Ok(lines
+        .into_iter()
+        .filter(|line| {
+            while ranges.next_if(|range| range.end <= line.address).is_some() {}
+            ranges
+                .peek()
+                .is_none_or(|range| range.start > line.address || range.end < line.address + line.size)
+        })
+        .collect())
 }
 
 /// A unit's files by their index in its line table, numbered in the dump.

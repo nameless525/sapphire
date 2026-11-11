@@ -154,6 +154,25 @@ impl Dump {
         );
     }
 
+    /// Adds a function for each of `symbols` (a symbol table's sized functions: their code and names) that
+    /// no function covers and that `lines` (sorted) has lines in. LLVM's line tables alone give a function
+    /// no entry of its own, except on Apple platforms, unless something was inlined into it, so on ELF a
+    /// leaf such as `forced_panic` would read as a `PUBLIC` with no line.
+    fn add_symbol_functions(&mut self, symbols: &[(Range<u64>, String)], lines: &[Line]) {
+        for (range, name) in symbols {
+            let covered = self
+                .functions
+                .range(..range.end)
+                .next_back()
+                .is_some_and(|(&start, func)| start + func.size > range.start);
+            let first = lines.partition_point(|line| line.address + line.size <= range.start);
+            let has_lines = lines.get(first).is_some_and(|line| line.address < range.end);
+            if !covered && has_lines {
+                self.add_function(range.clone(), &demangle(name), lines, &[]);
+            }
+        }
+    }
+
     fn add_public(&mut self, address: u64, name: &str) {
         if !name.is_empty() {
             self.publics.entry(address).or_insert_with(|| demangle(name));
@@ -373,5 +392,30 @@ FUNC 50 8 0 a::after
 PUBLIC 60 0 a::last
 ";
         assert_eq!(text, expected);
+    }
+
+    /// A function the DWARF has no entry for, as line tables alone leave a leaf on ELF, is read from the
+    /// symbol table with its lines; one the DWARF covers, or with no lines, isn't.
+    #[test]
+    fn functions_with_lines_but_no_entry_come_from_the_symbol_table() {
+        let mut dump = Dump::default();
+        let file = dump.files.id(Cow::Borrowed("/sapphire/a.rs"));
+        let lines = [
+            Line { address: 0x10, size: 0x8, line: 3, file },
+            Line { address: 0x40, size: 0x10, line: 85, file },
+            Line { address: 0x50, size: 0x5, line: 86, file },
+        ];
+        dump.add_function(0x10..0x20, "a::described", &lines, &[]);
+        let symbols = [
+            (0x18..0x30, "_ZN1a7overlap17h0123456789abcdefE".to_owned()),
+            (0x40..0x55, "_ZN1a12forced_panic17h0123456789abcdefE".to_owned()),
+            (0x60..0x70, "_ZN1a7nolines17h0123456789abcdefE".to_owned()),
+        ];
+        dump.add_symbol_functions(&symbols, &lines);
+        let names: Vec<&str> = dump.functions.values().map(|func| func.name.as_str()).collect();
+        assert_eq!(names, ["a::described", "a::forced_panic"]);
+        let leaf = &dump.functions[&0x40];
+        assert_eq!(leaf.size, 0x15);
+        assert_eq!(leaf.lines.iter().map(|line| line.line).collect::<Vec<_>>(), [85, 86]);
     }
 }

@@ -454,7 +454,7 @@ impl EffectScale {
     /// flashes a second through (`sapphire_cues`).
     #[must_use]
     pub fn limits_flashes(self) -> bool {
-        !(self.flash_swing >= 1.0)
+        self.flash_swing < 1.0 || self.flash_swing.is_nan()
     }
 }
 

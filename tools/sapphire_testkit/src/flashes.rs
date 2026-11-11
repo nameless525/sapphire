@@ -24,19 +24,27 @@
 //!   cell's mean colour in linear light is what it shows: averaging is what lets a balanced pattern finer than
 //!   that through, as WCAG lets it. A capture under 300 pixels tall has a cell a pixel.
 //! - **Transitions.** Each cell's relative luminance is followed through its peaks and valleys: a leg from
-//!   one to the next of at least 0.1, with its darker end under 0.8, is a general transition, counted on the
-//!   frame where it gets there. A cell's red transitions are its changes of more than 0.2 in u′v′ from the
-//!   state it last turned from, one end a saturated red (by its linear R, G and B). A cell darker than
-//!   [`BLACK`] has no chromaticity and reads as the white point: our floor, not WCAG's, so a dark cell's noise
-//!   doesn't read as red.
-//! - **A second and a quarter of a field.** A flash is two transitions, so more than three flashes in a second
-//!   is more than six transitions in any run of a second's frames. Something "flashes more than three times"
-//!   where a cell does, and the sequence fails where the cells doing so cover more than a quarter of any 10°
-//!   field, every place a field can stand, a cell apart.
+//!   one to the next of at least 0.1, with its darker end under 0.8, is a general transition, brightening or
+//!   darkening, counted on the frame where it gets there. A cell's red transitions are its changes of more
+//!   than 0.2 in u′v′ from the state it last turned from, one end a saturated red (by its linear R, G and B),
+//!   to a red or from one. A cell darker than [`BLACK`] has no chromaticity and reads as the white point: our
+//!   floor, not WCAG's, so a dark cell's noise doesn't read as red.
+//! - **Concurrent, over a quarter of a field.** Flashes "occurring concurrently" are the same transition at
+//!   the same time: cells whose newest transition was the same way, within [`CONCURRENT`] of a second, a frame
+//!   or two, so a flash whose cells cross the line a frame apart is still one. A field makes a transition when
+//!   those cells come to cover more than a quarter of it beyond the share changing the other way, at every
+//!   place a field can stand, a cell apart. So a pattern moving across a field, its cells brightening as
+//!   as many others darken (a pan over a lattice of windows), is no flash of the field's, as a fine balanced
+//!   pattern isn't. That's our reading, not WCAG's words: it also lets through a coarse balanced pattern
+//!   reversing in place, which can't be told from a pan over one cell by cell, and which WCAG's exemption for
+//!   fine patterns suggests it would count; and a flash over a field that's also changing the other way
+//!   elsewhere counts only by what it leads by.
+//! - **A second.** A flash is two transitions, so more than three flashes in a second is more than six of a
+//!   field's transitions in any run of a second's frames.
 //!
-//! The score is the most transitions in a second over more than a quarter of some field ([`Verdict::rate`]):
-//! 6 or fewer passes. [`Verdict::area`] is the largest share of a field over the limit, to read how near a
-//! passing sequence came.
+//! The score is the most transitions any field made in a second ([`Verdict::rate`]): 6 or fewer passes.
+//! [`Verdict::area`] is the largest share of a field that changed one way at once beyond the other, to read
+//! how near a sequence came to a field's flash.
 
 use crate::golden::Image;
 use crate::look::{Region, linear};
@@ -61,6 +69,8 @@ const FIELD_CELLS: u32 = 100;
 const FIELDS_HIGH: u32 = 3;
 /// The most frames a second it reads: a cell's transitions are a bit a frame in a `u128`.
 pub const MOST_FRAMES_A_SECOND: u32 = 128;
+/// How far apart, in seconds, two cells' transitions the same way still happen at once.
+pub const CONCURRENT: f32 = 1.0 / 30.0;
 /// The D65 white point in u′v′: black's chromaticity.
 const WHITE: [f32; 2] = [0.197_83, 0.468_32];
 
@@ -93,7 +103,7 @@ pub struct Tiles {
 impl Tiles {
     /// The cells of a `width` × `height` capture (see the module docs, "Tiles").
     pub fn new(width: u32, height: u32) -> Self {
-        let rows = height.min(FIELD_CELLS * FIELDS_HIGH).max(1);
+        let rows = height.clamp(1, FIELD_CELLS * FIELDS_HIGH);
         let cell = f64::from(height) / f64::from(rows);
         // A cell is as wide as it's tall, near enough to land on whole pixels.
         let columns = ((f64::from(width) / cell).round() as u32).clamp(1, width.max(1));
@@ -115,6 +125,15 @@ impl Tiles {
         (self.columns * self.rows) as usize
     }
 
+    /// The places a field can stand, a cell apart: across, and in all.
+    fn places_across(&self) -> u32 {
+        self.columns - self.field.0 + 1
+    }
+
+    fn places(&self) -> usize {
+        (self.places_across() * (self.rows - self.field.1 + 1)) as usize
+    }
+
     /// The pixels of the field whose top-left cell is (`column`, `row`).
     fn field_region(&self, column: u32, row: u32) -> Region {
         let (x, y) = (self.x_edges[column as usize], self.y_edges[row as usize]);
@@ -127,13 +146,13 @@ impl Tiles {
 /// How close a sequence came to one of the two thresholds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Verdict {
-    /// The most transitions in any second over more than a quarter of some 10° field: twice the flashes. More
-    /// than [`MOST_TRANSITIONS`] fails.
+    /// The most transitions any 10° field made in a second, each more than [`MOST_AREA`] of it changing the same
+    /// way at once: twice the flashes. More than [`MOST_TRANSITIONS`] fails.
     pub rate: u32,
     /// The frame that second ended on, and the field.
     pub rate_at: Option<(u32, Region)>,
-    /// The largest share of a 10° field whose cells made more than [`MOST_TRANSITIONS`] in a second, at once:
-    /// past [`MOST_AREA`] fails.
+    /// The largest share of a 10° field whose cells made a transition one way at once, less the share that made
+    /// one the other way: past [`MOST_AREA`], the field made one.
     pub area: f32,
     /// Where that was.
     pub area_at: Option<(u32, Region)>,
@@ -181,8 +200,9 @@ impl Swing {
         Self { leg: 0, turn: luminance, reach: luminance, counted: false }
     }
 
-    /// Follows the cell to `luminance`: whether a general transition got there on this frame.
-    fn step(&mut self, luminance: f32) -> bool {
+    /// Follows the cell to `luminance`: whether a general transition got there on this frame, brightening (+1)
+    /// or darkening (-1), or none (0).
+    fn step(&mut self, luminance: f32) -> i8 {
         let y = luminance;
         match self.leg {
             0 => {
@@ -193,7 +213,7 @@ impl Swing {
                     *self = Self { leg: -1, turn: most, reach: y, counted: false };
                 } else {
                     (self.turn, self.reach) = (least, most);
-                    return false;
+                    return 0;
                 }
             }
             leg => {
@@ -209,9 +229,9 @@ impl Swing {
         let (turn, now) = (self.turn, self.reach);
         if !self.counted && (now - turn).abs() >= GENERAL_SWING && turn.min(now) < DARKER_UNDER {
             self.counted = true;
-            return true;
+            return self.leg;
         }
-        false
+        0
     }
 }
 
@@ -246,9 +266,26 @@ struct Cell {
     swing: Swing,
     /// The state of its last red transition, or its first.
     turned: Hue,
-    /// A bit a frame, newest lowest, set where a transition got there.
-    general: u128,
-    red: u128,
+    /// A bit a frame, newest lowest, set where a transition got there: brightening and darkening, and to a
+    /// saturated red and from one.
+    general: [u128; 2],
+    red: [u128; 2],
+}
+
+/// One of the two tests over every place a field can stand, a cell apart, in rows.
+#[derive(Debug)]
+struct Fields {
+    /// Whether more than a quarter of the field was changing each way on the last frame.
+    above: Vec<[bool; 2]>,
+    /// A bit a frame, newest lowest, set where the field made a transition.
+    transitions: Vec<u128>,
+    verdict: Verdict,
+}
+
+impl Fields {
+    fn new(places: usize) -> Self {
+        Self { above: vec![[false; 2]; places], transitions: vec![0; places], verdict: Verdict::default() }
+    }
 }
 
 /// Reads a sequence a frame at a time (see the module docs).
@@ -262,12 +299,13 @@ pub struct FlashAnalyser {
     /// Each cell's pixels, and this frame's linear light summed over them.
     pixels: Vec<u32>,
     sums: Vec<[f32; 3]>,
-    /// A frame's transitions in its last second, by cell, and a summed-area table over the cells.
-    counts: Vec<u8>,
-    table: Vec<u64>,
+    /// Frames apart that two transitions still happen at once ([`CONCURRENT`]).
+    concurrent: u32,
+    /// Summed-area tables over the cells: of the pixels changing each way lately, and of all of them.
+    tables: [Vec<u64>; 2],
     area_table: Vec<u64>,
-    general: Verdict,
-    red: Verdict,
+    general: Fields,
+    red: Fields,
 }
 
 impl FlashAnalyser {
@@ -289,19 +327,20 @@ impl FlashAnalyser {
             }
         }
         let area_table = summed(&tiles, |cell| u64::from(pixels[cell]));
+        let places = tiles.places();
         Ok(Self {
             size: (width, height),
             second,
             frames: 0,
             cells: vec![Cell::default(); tiles.count()],
             sums: vec![[0.0; 3]; tiles.count()],
-            counts: vec![0; tiles.count()],
-            table: vec![0; area_table.len()],
+            concurrent: ((second as f32 * CONCURRENT).round() as u32).max(1),
+            tables: [vec![0; area_table.len()], vec![0; area_table.len()]],
             area_table,
             pixels,
             tiles,
-            general: Verdict::default(),
-            red: Verdict::default(),
+            general: Fields::new(places),
+            red: Fields::new(places),
         })
     }
 
@@ -330,7 +369,7 @@ impl FlashAnalyser {
                 for y in top..bottom {
                     let start = (y as usize * width as usize + left as usize) * 4;
                     let end = (y as usize * width as usize + right as usize) * 4;
-                    for texel in image.rgba[start..end].chunks_exact(4) {
+                    for texel in image.rgba[start..end].as_chunks::<4>().0 {
                         for channel in 0..3 {
                             sum[channel] += codes[usize::from(texel[channel])];
                         }
@@ -346,96 +385,99 @@ impl FlashAnalyser {
             let hue = Hue::of(rgb);
             let (general, red) = if first {
                 (cell.swing, cell.turned) = (Swing::start(luminance), hue);
-                (false, false)
+                (0, None)
             } else {
                 let red = (hue.red || cell.turned.red) && hue.distance(cell.turned) > RED_CHANGE;
-                if red {
+                // To a saturated red one way, from one the other.
+                let way = red.then(|| {
                     cell.turned = hue;
-                }
-                (cell.swing.step(luminance), red)
+                    usize::from(!hue.red)
+                });
+                (cell.swing.step(luminance), way)
             };
-            cell.general = cell.general << 1 | u128::from(general);
-            cell.red = cell.red << 1 | u128::from(red);
+            cell.general = cell.general.map(|bits| bits << 1);
+            cell.red = cell.red.map(|bits| bits << 1);
+            match general {
+                1 => cell.general[0] |= 1,
+                -1 => cell.general[1] |= 1,
+                _ => {}
+            }
+            if let Some(way) = red {
+                cell.red[way] |= 1;
+            }
         }
         let frame = self.frames;
         self.frames += 1;
-        self.judge(frame, |cell| cell.general, Kind::General);
-        self.judge(frame, |cell| cell.red, Kind::Red);
+        self.judge(frame, Kind::General);
+        self.judge(frame, Kind::Red);
         Ok(())
     }
 
     /// What it's found so far.
     pub fn report(&self) -> FlashReport {
-        FlashReport { frames: self.frames, general: self.general, red: self.red }
+        FlashReport { frames: self.frames, general: self.general.verdict, red: self.red.verdict }
     }
 
-    /// Updates a verdict with the second ending on `frame`.
-    fn judge(&mut self, frame: u32, bits: impl Fn(&Cell) -> u128, kind: Kind) {
-        let window = if self.second == 128 { u128::MAX } else { (1u128 << self.second) - 1 };
-        let mut most = 0;
-        for (count, cell) in self.counts.iter_mut().zip(&self.cells) {
-            *count = (bits(cell) & window).count_ones() as u8;
-            most = most.max(*count);
-        }
-        let verdict = match kind {
-            Kind::General => self.general,
-            Kind::Red => self.red,
+    /// Follows every field through `frame`, and updates its verdict with the second ending there.
+    fn judge(&mut self, frame: u32, kind: Kind) {
+        let Self { tiles, cells, pixels, tables, area_table, second, concurrent, .. } = self;
+        let fields = match kind {
+            Kind::General => &mut self.general,
+            Kind::Red => &mut self.red,
         };
-        let mut verdict = verdict;
-        let over = MOST_TRANSITIONS as u8 + 1;
-        if most >= over
-            && let Some((share, at)) = self.widest(over)
-            && share > verdict.area
-        {
-            (verdict.area, verdict.area_at) = (share, Some((frame, at)));
-        }
-        // The most transitions over more than a quarter of a field falls as the count asked for rises.
-        if u32::from(most) > verdict.rate {
-            let (mut low, mut high) = (verdict.rate as u8 + 1, most);
-            let mut found = None;
-            while low <= high {
-                let middle = low + (high - low) / 2;
-                match self.widest(middle) {
-                    Some((share, at)) if share > MOST_AREA => {
-                        found = Some((middle, at));
-                        low = middle + 1;
-                    }
-                    _ => high = middle - 1,
-                }
-            }
-            if let Some((rate, at)) = found {
-                (verdict.rate, verdict.rate_at) = (u32::from(rate), Some((frame, at)));
-            }
-        }
-        match kind {
-            Kind::General => self.general = verdict,
-            Kind::Red => self.red = verdict,
-        }
-    }
-
-    /// The largest share of any field covered by cells with `at_least` transitions in this second, and where.
-    fn widest(&mut self, at_least: u8) -> Option<(f32, Region)> {
-        let counts = &self.counts;
-        let pixels = &self.pixels;
-        let tiles = &self.tiles;
-        fill_summed(tiles, &mut self.table, |cell| {
-            if counts[cell] >= at_least { u64::from(pixels[cell]) } else { 0 }
-        });
+        let window = if *second == 128 { u128::MAX } else { (1u128 << *second) - 1 };
+        let across = tiles.places_across();
         let (wide, high) = tiles.field;
-        let mut best: Option<(f32, Region)> = None;
+        for transitions in &mut fields.transitions {
+            *transitions <<= 1;
+        }
+        for (way, table) in tables.iter_mut().enumerate() {
+            fill_summed(tiles, table, |cell| {
+                let bits = match kind {
+                    Kind::General => cells[cell].general,
+                    Kind::Red => cells[cell].red,
+                };
+                // Its newest transition, if it was this way and lately.
+                let newest = bits[way].trailing_zeros();
+                if newest < *concurrent && newest < bits[1 - way].trailing_zeros() {
+                    u64::from(pixels[cell])
+                } else {
+                    0
+                }
+            });
+        }
         for row in 0..=tiles.rows - high {
             for column in 0..=tiles.columns - wide {
-                let covered = rectangle(tiles, &self.table, column, row);
-                if covered == 0 {
+                let place = (row * across + column) as usize;
+                let changed = tables.each_ref().map(|table| rectangle(tiles, table, column, row));
+                if changed == [0, 0] && fields.above[place] == [false, false] {
                     continue;
                 }
-                let share = covered as f32 / rectangle(tiles, &self.area_table, column, row) as f32;
-                if best.is_none_or(|(most, _)| share > most) {
-                    best = Some((share, tiles.field_region(column, row)));
+                let area = rectangle(tiles, area_table, column, row) as f32;
+                for way in 0..2 {
+                    // The share changing this way, less the share changing the other.
+                    let share = (changed[way] as f32 - changed[1 - way] as f32) / area;
+                    let verdict = &mut fields.verdict;
+                    if share > verdict.area {
+                        (verdict.area, verdict.area_at) =
+                            (share, Some((frame, tiles.field_region(column, row))));
+                    }
+                    let above = share > MOST_AREA;
+                    if above && !fields.above[place][way] {
+                        fields.transitions[place] |= 1;
+                    }
+                    fields.above[place][way] = above;
                 }
             }
         }
-        best
+        for (place, transitions) in fields.transitions.iter().enumerate() {
+            let rate = (transitions & window).count_ones();
+            if rate > fields.verdict.rate {
+                let (column, row) = (place as u32 % across, place as u32 / across);
+                fields.verdict.rate = rate;
+                fields.verdict.rate_at = Some((frame, tiles.field_region(column, row)));
+            }
+        }
     }
 }
 
@@ -513,7 +555,7 @@ mod tests {
         let (off, on) = (frame(ground, ground, |_, _| false), frame(ground, patch, inside));
         let mut analyser = FlashAnalyser::new(SIZE.0, SIZE.1, RATE).unwrap();
         for at in 0..frames {
-            analyser.push(if (at / every) % 2 == 0 { &off } else { &on }).unwrap();
+            analyser.push(if (at / every).is_multiple_of(2) { &off } else { &on }).unwrap();
         }
         analyser.report()
     }
@@ -616,6 +658,21 @@ mod tests {
         // Red and a green of the same light: no general flash, every change a red one.
         let swap = flicker([200, 0, 0], [0, grey(linear(200) * 0.2126 / 0.7152), 0], 9, 120, whole);
         assert!(swap.general.passes() && !swap.red.passes(), "{swap:?}");
+    }
+
+    /// A whole frame changing every frame is a flash every two; a lattice moving across it, half its cells
+    /// brightening as the other half darken, is none, though every cell changes every frame.
+    #[test]
+    fn a_strobe_flashes_and_a_lattice_moving_across_a_field_does_not() {
+        let (dark, light) = ([grey(0.05); 3], [grey(0.6); 3]);
+        let strobe = flicker(dark, light, 1, 120, whole);
+        assert_eq!(strobe.general.rate, 60);
+        let mut analyser = FlashAnalyser::new(SIZE.0, SIZE.1, RATE).unwrap();
+        for at in 0..120 {
+            analyser.push(&frame(dark, light, |x, _| (x + at * 4) % 8 < 4)).unwrap();
+        }
+        let pan = analyser.report();
+        assert!(pan.passes() && pan.general.rate <= 2, "{pan:?}");
     }
 
     /// A slow fade from black to white and back is two transitions, and a fade's steps are one.

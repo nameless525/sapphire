@@ -57,8 +57,8 @@ fn edited(sources: &ShaderSources, file: ShaderFile, from: &str, to: &str) -> Sh
 
 /// Post with red and blue swapped.
 fn swapped_post(sources: &ShaderSources) -> ShaderSources {
-    let from = "return vec4<f32>(srgb_to_linear(display), 1.0);";
-    edited(sources, ShaderFile::Post, from, "return vec4<f32>(srgb_to_linear(display.bgr), 1.0);")
+    let from = "let light = srgb_to_linear(display);";
+    edited(sources, ShaderFile::Post, from, "let light = srgb_to_linear(display.bgr);")
 }
 
 /// A sky of one color, through post with red and blue swapped: two owners' programs.

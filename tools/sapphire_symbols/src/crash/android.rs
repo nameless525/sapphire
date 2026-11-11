@@ -32,10 +32,7 @@ pub(super) fn read_signal_record(text: &str, reader: &Reader<'_>) -> anyhow::Res
     // without unwinding (the tombstone has the rest).
     for (register, return_address) in [("pc", false), ("rip", false), ("lr", true)] {
         let Some(address) = field(register).and_then(hex) else { continue };
-        let module = mapped(maps, address)
-            .and_then(|path| modules.iter().find(|module| module.name == path))
-            .or_else(|| containing(&modules, address));
-        let frame = match module {
+        let frame = match holding(&modules, maps, address) {
             Some(loaded) => {
                 let offset = address - loaded.base;
                 let lookup = if return_address { offset.saturating_sub(1) } else { offset };
@@ -60,6 +57,18 @@ pub(super) fn read_signal_record(text: &str, reader: &Reader<'_>) -> anyhow::Res
         ),
     ];
     Ok(Crash { kind: "Android signal record", summary, threads: vec![thread] })
+}
+
+/// The module of `modules` that holds `address`: the nearest loaded below it, if `maps` says the address is
+/// in that module's file. A library loaded after the record's modules were listed (a GPU driver, a plugin)
+/// or code in no file has none: the module below it would name that module's symbols at an offset that
+/// isn't theirs. A library loaded from inside the APK is named `<apk>!/lib/<abi>/<name>.so`, and maps name
+/// the APK.
+fn holding<'m>(modules: &'m [Loaded], maps: &str, address: u64) -> Option<&'m Loaded> {
+    let path = mapped(maps, address)?;
+    containing(modules, address).filter(|module| {
+        module.name == path || module.name.strip_prefix(path).is_some_and(|rest| rest.starts_with("!/"))
+    })
 }
 
 /// The path of the file `/proc/self/maps` says holds `address`.
@@ -175,6 +184,28 @@ mod tests {
         assert_eq!(mapped(maps, 0x7a_0000_2000), Some("/data/app/x/lib/arm64/libgame_app.so"));
         assert_eq!(mapped(maps, 0x7b_0000_0010), None);
         assert_eq!(mapped(maps, 0x10), None);
+    }
+
+    /// Only the module whose file holds an address reads it: one loaded after the record listed its modules
+    /// names no module's symbols, and a library inside the APK is still its own.
+    #[test]
+    fn signal_records_read_addresses_only_in_their_modules_files() {
+        let record = |pc: u64| {
+            format!(
+                "Sapphire native crash record v2\napp: game\nrelease: 1\nrun: 1794417504344-42\n\
+                 module: 0x0000007a00000000 5fc134e7 /data/app/x/base.apk!/lib/arm64-v8a/libgame_app.so\n\
+                 signal: 11 (SIGSEGV)\ncode: 1\nfault_address: 0x0000000000000010\npid: 42\ntid: 43\n\
+                 pc: {pc:#018x}\n\nmaps:\n\
+                 7a00000000-7a00100000 r-xp 00001000 fd:00 123  /data/app/x/base.apk\n\
+                 7c00000000-7c00100000 r-xp 00000000 fd:00 456  /vendor/lib64/libgpu_driver.so\n"
+            )
+        };
+        let store = Store { root: std::env::temp_dir() };
+        let reader = Reader::new(&[], &store);
+        let ours = read_signal_record(&record(0x7a_0000_1234), &reader).unwrap();
+        assert_eq!(ours.threads[0].frames[0].module, Some(("libgame_app.so".to_owned(), 0x1234)));
+        let driver = read_signal_record(&record(0x7c_0000_1234), &reader).unwrap();
+        assert_eq!(driver.threads[0].frames[0].module, None, "{driver:?}");
     }
 
     /// A tombstone as `debuggerd` writes one: the crashing thread's frames are read, others skipped, and a

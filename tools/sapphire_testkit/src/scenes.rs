@@ -5729,12 +5729,21 @@ mod tests {
         assert!((size_of("game-title-ultrawide-ja") - 21.0 / 9.0).abs() < 0.01);
         // And the Steam Deck's 16:10 (M4 S4), every screen in each language.
         assert!((size_of("game-title-deck-ja") - 16.0 / 10.0).abs() < 0.01);
-        let deck = scenes().into_iter().filter(|scene| scene.name.contains("-deck-")).count();
-        let wide = scenes()
-            .into_iter()
-            .filter(|scene| scene.name.starts_with("game-") && scene.name.contains("-wide-"))
-            .count();
-        assert_eq!(deck, wide - 2, "a screen at 16:9 has its Deck scene (the ward's gate is a fight's)");
+        // Every screen at 16:9 has its Deck scene. The ward's gate is a fight's, and A2's option variants
+        // (larger text, subtitle bands) show screens the Deck already has.
+        let names: Vec<&str> = scenes().into_iter().map(|scene| scene.name).collect();
+        let missing: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("game-") && name.contains("-wide-"))
+            .filter(|name| {
+                !["game-ward-gate-", "game-display-larger-text-", "game-subtitle-band-"]
+                    .iter()
+                    .any(|variant| name.starts_with(variant))
+            })
+            .filter(|name| !names.contains(&name.replace("-wide-", "-deck-").as_str()))
+            .collect();
+        assert!(missing.is_empty(), "screens at 16:9 without a Deck scene: {missing:?}");
     }
 
     #[test]

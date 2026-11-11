@@ -34,6 +34,13 @@ impl Host {
         &self.content
     }
 
+    /// This device with `content` in place of its own: the same content with a patch's files placed over it
+    /// ([`ContentFs::with_files_over`], M4 P4).
+    #[must_use]
+    pub fn with_content(&self, content: ContentFs) -> Self {
+        Self { content, system_info: self.system_info }
+    }
+
     /// Static facts about the device.
     #[must_use]
     pub fn system_info(&self) -> &SystemInfo {

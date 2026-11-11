@@ -6,6 +6,8 @@
 //! - [`RealClock`]: unscaled wall time for UI, input timestamps and networking. It and
 //!   [`Stopwatch`] (for benchmarks and budgets) are the only code in the engine that reads the
 //!   OS monotonic clock (rule R2).
+//! - [`calendar_seconds`]: the calendar's time, seconds since the Unix epoch, for what a date bounds (a
+//!   patch release's expiry, M4 P4) and never for a frame or a step. The only read of the OS's wall clock.
 //! - [`ScaledClock`]: the world clock, slowed or stopped by a stack of [`TimeScale`]s (pause,
 //!   perfect dodge, cinematics, debug).
 //! - [`LocalClock`]: one entity's clock, with its own scales and hitstop on top of the world's.
@@ -37,7 +39,7 @@ mod timer;
 
 pub use fixed_step::{FixedStepConfig, FixedStepDriver, FixedSteps};
 pub use local::LocalClock;
-pub use real::{RealClock, Stopwatch};
+pub use real::{RealClock, Stopwatch, calendar_seconds};
 pub use scale::{ClockId, NORMAL_SPEED, ScaleHandle, ScaleSource, ScaleStackFull, TimeScale};
 pub use scaled::ScaledClock;
 pub use sim_time::{SimDuration, SimTime};

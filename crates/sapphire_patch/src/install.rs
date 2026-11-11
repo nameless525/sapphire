@@ -5,9 +5,9 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use sapphire_assets::manifest::{self, Manifest, ManifestError, ReleasedFile, ReleasedPack};
+use sapphire_assets::manifest::{self, Manifest, ManifestError, PublicKey, ReleasedFile, ReleasedPack};
 use sapphire_assets::pack::{self, HEADER_LEN, PackHeader, Toc};
-use sapphire_platform::{OsSteps, ReplaceSteps, durable_replace_with};
+use sapphire_platform::{ContentFs, OsSteps, ReplaceSteps, durable_replace_with};
 
 use crate::download::table;
 use crate::plan::{Installed, InstalledError};
@@ -25,6 +25,21 @@ pub trait Shipped {
     fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>>;
 }
 
+/// An app's own content, as the platform reads it: its bundle's directory, or its APK's assets.
+impl Shipped for ContentFs {
+    fn read(&self, path: &str) -> io::Result<Vec<u8>> {
+        ContentFs::read(self, path).map_err(io::Error::other)
+    }
+
+    fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let mut reader = self.open_reader(path).map_err(io::Error::other)?;
+        let len = len.min(usize::try_from(reader.len().saturating_sub(offset)).unwrap_or(usize::MAX));
+        let mut bytes = vec![0; len];
+        reader.read_exact_at(offset, &mut bytes)?;
+        Ok(bytes)
+    }
+}
+
 /// Where a pack or a file of the current release is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Location {
@@ -40,6 +55,11 @@ pub enum Location {
 pub trait InstallSteps: ReplaceSteps {
     fn remove(&mut self, path: &Path) -> io::Result<()> {
         fs::remove_file(path)
+    }
+
+    /// Bytes free on the volume holding `dir`, which exists ([`sapphire_platform::free_space`]).
+    fn free_space(&mut self, dir: &Path) -> io::Result<u64> {
+        sapphire_platform::free_space(dir)
     }
 }
 
@@ -87,6 +107,11 @@ pub enum InstallError {
     Unavailable { what: String },
     #[error("pack {pack} doesn't verify whole once assembled")]
     NotWhole { pack: String },
+    #[error(
+        "release {version} needs {needed} bytes more on the disk, and {free} are free with {} kept for the device",
+        DISK_RESERVE
+    )]
+    NoRoom { version: u64, needed: u64, free: u64 },
     #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,
@@ -104,6 +129,10 @@ pub struct Cleaned {
     pub left: usize,
 }
 
+/// Bytes an install leaves free on the disk it writes to, so a patch never fills a device: past this it's
+/// refused ([`InstallError::NoRoom`]) and the app goes on with what it has.
+pub const DISK_RESERVE: u64 = 64 << 20;
+
 const LOCK: &str = "lock";
 const PART: &str = "part";
 const PACKS: &str = "packs";
@@ -115,7 +144,9 @@ const FILES: &str = "files";
 pub struct Installation<S> {
     shipped: S,
     root: PathBuf,
-    /// The release the app shipped with.
+    /// The keys this build trusts, compiled into it (m4-plan §3 "What's signed").
+    root_keys: Vec<PublicKey>,
+    /// The release the app shipped with, taking `root_keys` as its successors' if it names none.
     shipped_release: Manifest,
     /// The installed patch's release, if it's the current one.
     patch: Option<Manifest>,
@@ -125,16 +156,32 @@ pub struct Installation<S> {
 }
 
 impl<S: Shipped> Installation<S> {
-    /// Opens the content `shipped` holds and the patches installed under `root`, which needn't exist yet. The
-    /// current release is the installed patch's, if `root` has one and it's whole and usable, else the shipped
-    /// one (see [`Self::current`]).
-    pub fn open(shipped: S, root: &Path) -> Result<Self, InstallError> {
+    /// Opens the content `shipped` holds and the patches installed under `root`, which needn't exist yet, in a
+    /// build that trusts `root_keys`. The current release is the installed patch's, if `root` has one and it's
+    /// whole, usable and signed by a key the build trusts, else the shipped one (see [`Self::current`]).
+    ///
+    /// **Keys** (M4 P4): a build compiles in the keys it trusts. A shipped release that names no keys for its
+    /// successor, a cook's own unsigned one, takes `root_keys` as those, so the build's keys may sign the first
+    /// patch of an unsigned package. A patch starts only if a key in `root_keys`, or one the shipped release
+    /// names, signed it (`verify_strict`): one signed only by a key a later patch rotated to starts nothing until
+    /// an app build trusts that key, so a release that rotates is signed by the old key and the new while builds
+    /// move ([`Manifest`]'s "Keys").
+    pub fn open(shipped: S, root: &Path, root_keys: &[PublicKey]) -> Result<Self, InstallError> {
         let bytes =
             shipped.read(manifest::FILE_NAME).map_err(|source| InstallError::ShippedUnreadable { source })?;
-        let shipped_release =
+        let mut shipped_release =
             Manifest::read(&bytes).map_err(|source| InstallError::ShippedManifest { source })?;
-        let mut installation =
-            Self { shipped, root: root.to_owned(), shipped_release, patch: None, opened: None };
+        if shipped_release.successor_keys.is_empty() {
+            shipped_release.successor_keys = root_keys.to_vec();
+        }
+        let mut installation = Self {
+            shipped,
+            root: root.to_owned(),
+            root_keys: root_keys.to_vec(),
+            shipped_release,
+            patch: None,
+            opened: None,
+        };
         installation.reload();
         installation.opened = installation.patch.clone();
         Ok(installation)
@@ -171,6 +218,39 @@ impl<S: Shipped> Installation<S> {
     /// Where the current release's file at `path` is, if it has one.
     pub fn file(&self, path: &str) -> Option<Location> {
         self.current().file(path).map(|file| self.file_location(file))
+    }
+
+    /// What the current release placed over the shipped content, by content path: each pack installed under
+    /// the root (`<name>.spack`), each file (its path), and the root's manifest (`release.smanifest`). None
+    /// when the current release is the shipped one. What `ContentFs::with_files_over` takes, so the patch's
+    /// packs mount over the shipped ones.
+    pub fn files_over(&self) -> Vec<(String, PathBuf)> {
+        let Some(patch) = &self.patch else { return Vec::new() };
+        let packs = patch.packs.iter().map(|pack| (pack::file_name(&pack.name), self.pack_location(pack)));
+        let files = patch.files.iter().map(|file| (file.path.clone(), self.file_location(file)));
+        let mut over: Vec<(String, PathBuf)> = packs
+            .chain(files)
+            .filter_map(|(path, location)| match location {
+                Location::Patched(file) => Some((path, file)),
+                Location::Shipped => None,
+            })
+            .collect();
+        over.push((manifest::FILE_NAME.to_owned(), self.root.join(manifest::FILE_NAME)));
+        over
+    }
+
+    /// Bytes an install of `next` would write beside the current release: each of its packs and files not
+    /// shipped and not under the root already.
+    pub fn bytes_to_install(&self, next: &Manifest) -> u64 {
+        let packs = next.packs.iter().map(|pack| (self.pack_location(pack), pack.size));
+        let files = next.files.iter().map(|file| (self.file_location(file), file.size));
+        packs
+            .chain(files)
+            .filter_map(|(location, size)| match location {
+                Location::Patched(path) if !path.exists() => Some(size),
+                _ => None,
+            })
+            .sum()
     }
 
     /// The current release as a download plans over it (`Request::installed`): every pack's tables, read
@@ -217,7 +297,14 @@ impl<S: Shipped> Installation<S> {
             return Err(InstallError::NotPatchable { version: next.version, path: path.to_owned() });
         }
         let installed = self.installed()?;
-        tracing::info!(target: "sapphire::patch", from, to = next.version, "installing a release");
+        // The packs dir exists: the lock made it.
+        let needed = self.bytes_to_install(&next);
+        let packs = self.root.join(PACKS);
+        let free = steps.free_space(&packs).map_err(|source| InstallError::Io { path: packs, source })?;
+        if needed.saturating_add(DISK_RESERVE) > free {
+            return Err(InstallError::NoRoom { version: next.version, needed, free });
+        }
+        tracing::info!(target: "sapphire::patch", from, to = next.version, needed, "installing a release");
 
         let mut assembler = Assembler {
             installation: self,
@@ -321,8 +408,10 @@ impl<S: Shipped> Installation<S> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("its manifest can't be read: {error}")),
         };
-        let patch = Manifest::read(&bytes).map_err(|error| format!("its manifest is broken: {error}"))?;
         let shipped = &self.shipped_release;
+        let trusted: Vec<PublicKey> = self.root_keys.iter().chain(&shipped.successor_keys).copied().collect();
+        let patch = Manifest::verify(&bytes, &trusted)
+            .map_err(|error| format!("its manifest isn't one this build takes: {error}"))?;
         if patch.version <= shipped.version {
             return Err(format!("it's release {}, and the app shipped {}", patch.version, shipped.version));
         }

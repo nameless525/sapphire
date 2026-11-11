@@ -97,6 +97,15 @@ fn os_now() -> Instant {
     Instant::now()
 }
 
+/// The calendar's time: whole seconds since the Unix epoch (UTC), from the OS's wall clock, which a person or
+/// the network may set back or forward. For what a date bounds, such as a patch release's expiry (M4 P4); never
+/// for a frame's time or a step's, which come from [`RealClock`]. 0 if the clock reads before 1970.
+#[must_use]
+#[allow(clippy::disallowed_methods, reason = "the engine's one read of the calendar's clock (rule R2)")]
+pub fn calendar_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

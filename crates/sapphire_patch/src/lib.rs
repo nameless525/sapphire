@@ -93,11 +93,27 @@
 //! launched well on the current one. A process still running on the old release may yet mount its packs, so
 //! only the next launch, on the new one, removes them, and with them whatever a killed install left.
 //!
+//! **Room:** an install asks the disk first ([`InstallSteps::free_space`]) and refuses, with
+//! [`InstallError::NoRoom`], a release whose new packs and files wouldn't fit with [`DISK_RESERVE`] left over.
+//!
+//! **What the game reads:** [`Installation::files_over`] lists the current release's patched packs and files,
+//! and its manifest, by content path, for `sapphire_platform::ContentFs::with_files_over` to place over what
+//! the app shipped.
+//!
+//! # Keys (M4 P4, m4-plan §3 "What's signed")
+//!
+//! A build trusts keys compiled in, its root keys, which [`Installation::open`] takes. The launch checks the
+//! installed patch's signature against them and against the keys the shipped release names for its
+//! successor, and starts on the shipped release if neither signed it. A shipped release with no signature
+//! (a cook's, version 0) takes the root keys as the keys its first patch is signed by. [`TEST_KEY`] is a
+//! key whose seed is public, which dev builds and tests trust; no shipping package may (`xtask package`
+//! refuses one that does).
+//!
 //! # Not here
 //!
 //! When to check for a patch, the clock, the app build, the host and where the root and the staging live
-//! are the game's (M4 P4). A power cut can't be tested here: `durable_replace`'s docs say where each OS's
-//! flush stops.
+//! are the game's (`game_flow::update`). A power cut can't be tested here: `durable_replace`'s docs say where
+//! each OS's flush stops.
 
 //!
 //! [`Manifest::accept_successor`]: sapphire_assets::manifest::Manifest::accept_successor
@@ -105,13 +121,17 @@
 mod download;
 mod http;
 mod install;
+mod keys;
 mod plan;
 mod staging;
 mod transport;
 
 pub use download::{Download, DownloadError, Outcome, Phase, Progress, Request, Retries, Staged};
 pub use http::{HttpError, HttpTransport, Roots, Timeouts};
-pub use install::{Cleaned, InstallError, InstallOutcome, InstallSteps, Installation, Location, Shipped};
+pub use install::{
+    Cleaned, DISK_RESERVE, InstallError, InstallOutcome, InstallSteps, Installation, Location, Shipped,
+};
+pub use keys::TEST_KEY;
 pub use plan::{Installed, InstalledBlock, InstalledError, Plan, PlanError, PlannedBlock};
 pub use staging::{Staging, StagingError};
 pub use transport::{Body, FetchError, Transport};

@@ -29,7 +29,7 @@ const ROUNDS: usize = 120;
 /// The helper: installs what's staged in `staging` over the app that shipped `shipped`, with its root at
 /// `root`, and exits 0 once it's installed.
 fn installer(shipped: &Path, root: &Path, staging: &Path) -> ExitCode {
-    let mut installation = Installation::open(ShippedDir(shipped.to_owned()), root).expect("opens");
+    let mut installation = Installation::open(ShippedDir(shipped.to_owned()), root, &[]).expect("opens");
     match installation.install(staging, NOW, APP_BUILD) {
         Ok(InstallOutcome::Installed { .. } | InstallOutcome::UpToDate { .. }) => ExitCode::SUCCESS,
         Err(error) => {
@@ -85,7 +85,7 @@ fn kill_loop(dir: &TestDir) {
         let status = helper.wait().expect("reaps the helper");
         assert!(killed || status.success(), "round {round}: the helper failed: {status}");
 
-        let mut installation = Installation::open(ShippedDir(shipped.clone()), &root).expect("opens");
+        let mut installation = Installation::open(ShippedDir(shipped.clone()), &root, &[]).expect("opens");
         if installation.version() == 2 {
             assert_starts_on(&installation, &shipped, &second, 2);
             if killed {

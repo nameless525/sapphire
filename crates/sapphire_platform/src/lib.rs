@@ -20,6 +20,10 @@
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
 //!   functions work before SDL starts. [`durable_replace`] writes a file so that a crash leaves
 //!   the old one or the new one whole (M3 V1).
+//! - **Patches' side of the disk** (M4 P4): [`ContentFs::with_files_over`] reads a patch's packs and
+//!   files in place of what the app shipped, [`free_space`] says how much room a disk has left, and
+//!   [`exclude_from_backup`] keeps a directory the game can fetch again out of iCloud and the
+//!   computer's backups on iOS.
 //! - **The IO thread** (M1 A4, [`IoThread`]): positioned reads of content files by priority,
 //!   with cancellation and completion callbacks (spec §4.3). The asset server reads packs
 //!   through it; decoding happens on the job system's workers, not here.
@@ -143,6 +147,7 @@ mod app;
 mod audio_session;
 mod content;
 mod dirs;
+mod disk;
 mod durable;
 mod event;
 mod frame_clock;
@@ -165,6 +170,7 @@ pub use app::__private;
 pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_with};
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
 pub use dirs::{cache_dir, user_dir};
+pub use disk::{exclude_from_backup, free_space};
 pub use durable::{OsSteps, ReplaceSteps, durable_replace, durable_replace_with};
 pub use event::{
     Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, GamepadType, KeyEvent, Keycode,

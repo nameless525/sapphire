@@ -134,15 +134,20 @@ fn read_exact_at(file: &File, mut offset: u64, mut buf: &mut [u8]) -> io::Result
 impl ContentFs {
     /// Opens a content file for positioned reads: a plain file where content is a directory
     /// (desktop, iOS), an SDL stream inside the APK (Android). Path rules are [`Self::open`]'s.
+    /// A file a patch placed over the content ([`Self::with_files_over`]) is a plain file everywhere.
     pub fn open_reader(&self, path: &str) -> Result<ContentReader, ContentError> {
         let read_error = |source| ContentError::Read { path: path.to_owned(), source };
+        crate::content::validate_path(path)?;
+        let opened = |result: io::Result<File>| {
+            result.map_err(|error| ContentError::Open { path: path.to_owned(), message: error.to_string() })
+        };
+        if let Some(file) = self.file_over(path) {
+            return ContentReader::file(opened(File::open(file))?).map_err(read_error);
+        }
         if cfg!(target_os = "android") {
             return ContentReader::stream(self.open(path)?).map_err(read_error);
         }
-        crate::content::validate_path(path)?;
-        let file = File::open(format!("{}{path}", self.root()))
-            .map_err(|error| ContentError::Open { path: path.to_owned(), message: error.to_string() })?;
-        ContentReader::file(file).map_err(read_error)
+        ContentReader::file(opened(File::open(format!("{}{path}", self.root())))?).map_err(read_error)
     }
 }
 

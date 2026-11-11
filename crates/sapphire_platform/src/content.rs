@@ -1,8 +1,11 @@
-//! Read-only access to packaged content.
+//! Read-only access to packaged content, and to the files a patch placed over it.
 
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use sdl3_sys::error::SDL_ClearError;
 use sdl3_sys::iostream::{
@@ -49,11 +52,18 @@ pub enum ContentError {
 ///   APK, so the engine must never create a `content/` directory in internal storage
 ///   unless it means to override packaged files.
 ///
+/// **Patches (M4 P4):** [`Self::with_files_over`] places files over the content by path: a patch's packs and
+/// documents, and its manifest, each a file in a writable directory of its own. A path placed over is read from
+/// its file, never from the root, by every reader of the content (the IO thread, a game's documents, the release
+/// manifest), so what a patch installed is what mounts.
+///
 /// Opening files is safe from any thread, so the IO thread can share a clone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentFs {
     /// SDL path prefix, always ending in a separator.
     root: String,
+    /// Files placed over the root's, by content path: absolute paths.
+    over: Arc<BTreeMap<String, PathBuf>>,
 }
 
 impl ContentFs {
@@ -61,7 +71,43 @@ impl ContentFs {
         if !root.ends_with(['/', '\\']) {
             root.push('/');
         }
-        Self { root }
+        Self { root, over: Arc::default() }
+    }
+
+    /// The same content with `files` placed over it: each content path (`shared.spack`, `release.smanifest`,
+    /// `documents/ui/menus.ron`) read from its file, an absolute path, instead of the root's. Only these: what
+    /// was placed over this content before isn't kept. A path content can't name ([`Self::open`]'s rules), such
+    /// as `NOTICES.txt`, is left out, since nothing reads it here; a file that isn't absolute is refused.
+    pub fn with_files_over(
+        &self,
+        files: impl IntoIterator<Item = (String, PathBuf)>,
+    ) -> Result<Self, ContentError> {
+        let mut over = BTreeMap::new();
+        for (path, file) in files {
+            if validate_path(&path).is_err() {
+                continue;
+            }
+            if !file.is_absolute() {
+                return Err(ContentError::InvalidPath {
+                    path,
+                    reason: "a file placed over content is absolute",
+                });
+            }
+            over.insert(path, file);
+        }
+        Ok(Self { root: self.root.clone(), over: Arc::new(over) })
+    }
+
+    /// The file placed over `path`, if one is.
+    #[must_use]
+    pub fn file_over(&self, path: &str) -> Option<&Path> {
+        self.over.get(path).map(PathBuf::as_path)
+    }
+
+    /// Whether any file is placed over the content.
+    #[must_use]
+    pub fn has_files_over(&self) -> bool {
+        !self.over.is_empty()
     }
 
     /// The root SDL resolves content paths against: a directory on desktop and iOS, an
@@ -73,7 +119,11 @@ impl ContentFs {
     /// Opens a content file for streaming reads.
     pub fn open(&self, path: &str) -> Result<ContentFile, ContentError> {
         validate_path(path)?;
-        let full = sdl::c_string_lossy(&format!("{}{path}", self.root));
+        let full = match self.file_over(path) {
+            // An absolute path, which SDL opens as a plain file everywhere, Android included.
+            Some(file) => sdl::c_string_lossy(&file.to_string_lossy()),
+            None => sdl::c_string_lossy(&format!("{}{path}", self.root)),
+        };
         // SAFETY: both arguments are valid C strings; SDL_IOFromFile is safe to call
         // from any thread.
         let stream = unsafe { SDL_IOFromFile(full.as_ptr(), c"rb".as_ptr()) };
@@ -342,5 +392,38 @@ mod tests {
         // Windows can't delete a directory holding an open file.
         drop(file);
         std::fs::remove_dir_all(&dir).expect("remove temp content dir");
+    }
+
+    /// A patch's file is what every reader gets for its path, and the root's file for every other path.
+    #[test]
+    fn files_placed_over_content_are_read_in_its_place() {
+        let dir = std::env::temp_dir().join(format!("sapphire_platform_over_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("root/documents")).expect("create temp content dir");
+        std::fs::create_dir_all(dir.join("patch")).expect("create temp patch dir");
+        std::fs::write(dir.join("root/shared.spack"), b"shipped pack").expect("write");
+        std::fs::write(dir.join("root/documents/menus.ron"), b"shipped menus").expect("write");
+        std::fs::write(dir.join("patch/0a1b"), b"patched pack").expect("write");
+
+        let shipped = ContentFs::new(dir.join("root").to_string_lossy().into_owned());
+        let patched = shipped
+            .with_files_over([("shared.spack".to_owned(), dir.join("patch/0a1b"))])
+            .expect("a pack placed over");
+        assert_eq!(patched.root(), shipped.root());
+        assert!(patched.has_files_over() && !shipped.has_files_over());
+        assert_eq!(patched.read("shared.spack").expect("read"), b"patched pack");
+        let mut reader = patched.open_reader("shared.spack").expect("open");
+        let mut bytes = [0; 7];
+        reader.read_exact_at(5, &mut bytes).expect("a positioned read");
+        assert_eq!(&bytes, b"ed pack");
+        assert_eq!(patched.read("documents/menus.ron").expect("read"), b"shipped menus");
+        assert_eq!(shipped.read("shared.spack").expect("read"), b"shipped pack");
+
+        let placed = |path: &str, file: PathBuf| shipped.with_files_over([(path.to_owned(), file)]);
+        let unnamed = placed("NOTICES.txt", dir.join("patch/0a1b")).expect("left out");
+        assert!(!unnamed.has_files_over(), "a path content can't name is nothing to read");
+        let relative = placed("shared.spack", PathBuf::from("0a1b"));
+        assert!(matches!(relative, Err(ContentError::InvalidPath { .. })));
+        drop(reader);
+        std::fs::remove_dir_all(&dir).expect("remove temp dirs");
     }
 }

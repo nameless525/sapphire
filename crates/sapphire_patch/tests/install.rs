@@ -39,7 +39,7 @@ impl App {
     }
 
     fn open(&self) -> Installation<ShippedDir> {
-        Installation::open(ShippedDir(self.shipped.clone()), &self.root).expect("opens")
+        Installation::open(ShippedDir(self.shipped.clone()), &self.root, &[]).expect("opens")
     }
 
     fn install(&self) -> Result<InstallOutcome, InstallError> {

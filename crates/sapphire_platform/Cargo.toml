@@ -45,16 +45,20 @@ sdl3-sys = { workspace = true, features = [
 # callbacks at the target frame rate, and the Objective-C class it calls.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2.workspace = true
-objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString", "NSNotification", "NSDictionary", "NSValue", "NSOperation", "NSError", "NSProcessInfo", "block2"] }
+# `NSURL`: keeping a patch's directory out of backups (M4 P4, `disk.rs`).
+objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString", "NSNotification", "NSDictionary", "NSValue", "NSOperation", "NSError", "NSProcessInfo", "NSURL", "block2"] }
 # The audio session (M2 E1, `audio_session.rs`), which cpal's iOS host expects an app to set up.
 objc2-avf-audio.workspace = true
 block2.workspace = true
 objc2-quartz-core = { workspace = true, features = ["objc2-core-foundation", "CADisplayLink", "CAFrameRateRange"] }
 
 # Android frame pacing (M1 F8, ADR 0004): `CLOCK_MONOTONIC`, the choreographer's clock, and
-# resolving the NDK functions newer than the app's minimum API level at run time.
-[target.'cfg(target_os = "android")'.dependencies]
+# resolving the NDK functions newer than the app's minimum API level at run time. A volume's free space
+# (M4 P4, `disk.rs`): `statvfs`.
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
 # What cpal's AAudio host reads the app's VM and activity through (M2 E1, `audio_session.rs`).
 jni-sys.workspace = true
 ndk-context.workspace = true
@@ -64,7 +68,7 @@ ndk-context.workspace = true
 mach2.workspace = true
 
 # A rename that reaches the disk (M3 V1, `durable.rs`): Windows has no directory to flush. The process's
-# working set (M3 Z5b, `memory.rs`).
+# working set (M3 Z5b, `memory.rs`). A volume's free space (M4 P4, `disk.rs`).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",

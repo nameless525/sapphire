@@ -109,12 +109,13 @@ impl<'a> Object<'a> {
                 continue;
             }
             ensure!(header.sh_flags & u64::from(SHF_COMPRESSED) == 0, "{name} is compressed");
-            let range =
-                usize::try_from(header.sh_offset)?..usize::try_from(header.sh_offset + header.sh_size)?;
-            sections.insert(
-                name.to_owned(),
-                bytes.get(range).with_context(|| format!("{name} runs past the file"))?,
-            );
+            let section = header
+                .sh_offset
+                .checked_add(header.sh_size)
+                .and_then(|end| Some(usize::try_from(header.sh_offset).ok()?..usize::try_from(end).ok()?))
+                .and_then(|range| bytes.get(range))
+                .with_context(|| format!("{name} runs past the file"))?;
+            sections.insert(name.to_owned(), section);
         }
         // Breakpad's addresses are relative to the lowest loaded address, 0 for a library or a PIE.
         let base = elf
@@ -353,7 +354,7 @@ fn unit_lines<'a>(
         if kept {
             for (index, &(address, line, file)) in sequence.iter().enumerate() {
                 let next = sequence.get(index + 1).map_or(end, |&(next, ..)| next);
-                if next > address && line != 0 {
+                if next > address && address >= base && line != 0 {
                     let file = files.id(dwarf, unit, file, dump)?;
                     lines.push(Line { address: address - base, size: next - address, line, file });
                 }
@@ -459,5 +460,51 @@ impl<'a> Walk<'_, 'a> {
             }
         }
         Ok(ranges)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A little-endian ELF64 with a `.shstrtab` and a `.debug_info` whose offset and size are given.
+    fn elf_with_debug_info(offset: u64, size: u64) -> Vec<u8> {
+        let names = b"\0.shstrtab\0.debug_info\0";
+        let (names_at, headers_at) = (64u64, 64 + names.len() as u64);
+        let mut elf = Vec::new();
+        elf.extend_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+        elf.extend_from_slice(&3u16.to_le_bytes()); // ET_DYN
+        elf.extend_from_slice(&62u16.to_le_bytes()); // x86-64
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&[0; 16]); // entry, program headers' offset
+        elf.extend_from_slice(&headers_at.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        for half in [64u16, 56, 0, 64, 3, 1] {
+            // header size, program header size and count, section header size and count, names' index
+            elf.extend_from_slice(&half.to_le_bytes());
+        }
+        elf.extend_from_slice(names);
+        let section = |elf: &mut Vec<u8>, name: u32, kind: u32, offset: u64, size: u64| {
+            elf.extend_from_slice(&name.to_le_bytes());
+            elf.extend_from_slice(&kind.to_le_bytes());
+            elf.extend_from_slice(&[0; 16]); // flags, address
+            elf.extend_from_slice(&offset.to_le_bytes());
+            elf.extend_from_slice(&size.to_le_bytes());
+            elf.extend_from_slice(&[0; 24]); // link, info, alignment, entry size
+        };
+        section(&mut elf, 0, 0, 0, 0);
+        section(&mut elf, 1, 3, names_at, names.len() as u64); // SHT_STRTAB
+        section(&mut elf, 11, 1, offset, size); // SHT_PROGBITS
+        elf
+    }
+
+    #[test]
+    fn a_section_past_the_address_space_is_an_error() {
+        let elf = elf_with_debug_info(u64::MAX - 8, 16);
+        let error = Object::parse(&elf, Format::Elf).err().expect("a section that wraps around");
+        assert!(error.to_string().contains(".debug_info runs past the file"), "{error:#}");
+
+        let elf = elf_with_debug_info(64, 4096);
+        assert!(Object::parse(&elf, Format::Elf).is_err(), "a section past the file's end");
     }
 }

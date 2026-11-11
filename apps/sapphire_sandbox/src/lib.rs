@@ -183,6 +183,10 @@
 //!   the window's safe area: to try a notch on a frame that has none.
 //! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
 //!   player's UI scale on top of the display's in a window. 1 without it.
+//! - `--display-scale <scale>` and `--no-touch-controls` (with `--game` or `--hud`): the screen an offscreen
+//!   frame stands for (M4 S5, `game_ui::hud::OffscreenDisplay`): its pixels per point, under the player's
+//!   and `--hud-scale`'s, for the game's menus and HUD alike, and a desktop's or a pad's HUD, which shows no
+//!   on-screen controls. `cargo xtask store-shots` draws each store's screenshots so.
 //! - `--hud-paused`: draws the pause's veil and mark, to look at them in a capture, which has no input
 //!   to pause it.
 //! - `--hud-energy <share>` (with `--hud fixed`): the fixed frame's player has an ultimate (M3 Q3c), its

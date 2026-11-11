@@ -62,6 +62,9 @@ pub struct ScreenStack {
     atlas: Atlas,
     loc: Localizer,
     scale: f32,
+    /// Pixels per point of the display a frame with no window stands for, under [`Self::scale`]
+    /// ([`Self::set_display_scale`]).
+    display_scale: f32,
     /// What every screen's text is multiplied by: the player's text size.
     text_scale: f32,
     /// A window's metrics, read this frame. Offscreen there's only a target's pixels.
@@ -106,6 +109,7 @@ impl ScreenStack {
             atlas,
             loc,
             scale,
+            display_scale: 1.0,
             text_scale: 1.0,
             metrics: None,
             pages: UiPageState::NO_RENDERER,
@@ -185,6 +189,12 @@ impl ScreenStack {
     /// Pixels per point where there's no window.
     pub fn set_scale(&mut self, scale: f32) {
         self.scale = scale;
+    }
+
+    /// Where there's no window, draws as a display of `scale` pixels per point would, under
+    /// [`Self::set_scale`]'s: a capture standing for a phone's frame (`game_ui::hud::OffscreenDisplay`).
+    pub fn set_display_scale(&mut self, scale: f32) {
+        self.display_scale = scale;
     }
 
     /// Draws every screen's text `scale` times its size from the next frame: the player's text size, over the
@@ -295,8 +305,9 @@ impl ScreenStack {
 
     /// Writes the screens into `list`, for a target of `size` pixels.
     pub fn draw(&mut self, size: (u32, u32), list: &mut UiDrawList) {
-        let metrics =
-            self.metrics.unwrap_or_else(|| UiMetrics::of_pixels(size, self.scale, Insets::default()));
+        let metrics = self.metrics.unwrap_or_else(|| {
+            UiMetrics::of_pixels(size, self.display_scale * self.scale, Insets::default())
+        });
         self.fonts.begin_frame(self.pages, &self.loc);
         let text_scale = if metrics.size.y < PHONE_HEIGHT {
             self.text_scale.min(PHONE_TEXT_SCALE)

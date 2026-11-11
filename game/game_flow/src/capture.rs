@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use game_combat::combat::CombatOption;
 use game_combat::fight::fight_stage;
+use game_ui::hud::OffscreenDisplay;
 use sapphire_platform::{
     AppInitError, Event, KeyEvent, Keycode, Modifiers, Platform, Scancode, Timestamp, WindowId,
 };
@@ -56,6 +57,9 @@ pub struct GameCapture {
     /// while the pipelines build off them, and says how it went ([`BootReport`]); else it stands the game at
     /// once and prewarms, as a golden needs nothing more.
     pub boot: bool,
+    /// The screen the frames stand for: a phone's pixels per point and touch controls, or a desktop's
+    /// (M4 S5's store screenshots). The default draws as captures always have.
+    pub display: OffscreenDisplay,
 }
 
 /// A capture's last frame.
@@ -78,6 +82,7 @@ pub fn capture(
     first: &CombatOption,
     capture: &GameCapture,
 ) -> Result<Captured, AppInitError> {
+    show.stand_for(capture.display);
     let gpu = headless_gpu()?;
     let (mut stage, boot) = if capture.boot {
         let boot = Boot::start(platform.host(), Arc::new(gpu), FORMAT, capture.quality, show, first)?;

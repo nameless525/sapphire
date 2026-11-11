@@ -82,7 +82,8 @@ impl App for OffscreenApp {
                     options.game_language.as_deref(),
                     options.game_draw_from,
                 );
-                crate::capture::game(platform, path, game, (*ticks, (width, height)), quality)?;
+                let frame = (*ticks, (width, height), options.display);
+                crate::capture::game(platform, path, game, frame, quality)?;
             }
             OffscreenMode::Capture { path, ticks, frames } => {
                 let mut stage = stage(platform, &options)?;
@@ -425,7 +426,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let fighting = options.arena.is_some() && options.combat.is_some();
         let mode = if fighting { hud.mode } else { game_ui::hud::HudMode::Fixed };
         let hud = game_ui::hud::HudOptions { mode, ..hud };
-        *shown_hud = Some(game_ui::hud::FightHud::new(hud));
+        let mut hud = game_ui::hud::FightHud::new(hud);
+        hud.stand_for(options.display);
+        *shown_hud = Some(hud);
     }
     if let Some(shown) = &options.ui_screen {
         let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;

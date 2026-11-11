@@ -261,6 +261,10 @@ pub(crate) struct Options {
     /// it are drawn a tenth as wide and high (`GameCapture::draw_from`), so a golden on a software rasterizer
     /// pays for few pixels until its last camera cut.
     pub game_draw_from: u32,
+    /// `--display-scale <pixels per point>` and `--no-touch-controls` (with `--game` or `--hud`): the screen an
+    /// offscreen frame stands for, a phone's or a desktop's, as the store screenshots draw them (M4 S5). The
+    /// default draws as captures always have: a point a pixel, on a touch screen.
+    pub display: game_ui::hud::OffscreenDisplay,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -863,6 +867,14 @@ impl Options {
                 "--game-draw-from" => {
                     options.game_draw_from = number(&value("--game-draw-from")?, "--game-draw-from")?;
                 }
+                "--display-scale" => {
+                    let scale: f32 = number(&value("--display-scale")?, "--display-scale")?;
+                    if !(scale.is_finite() && scale > 0.0) {
+                        return Err(format!("--display-scale expects a positive scale, got {scale}"));
+                    }
+                    options.display.scale = scale;
+                }
+                "--no-touch-controls" => options.display.touch = false,
                 "--display-text" => {
                     options.display_text =
                         Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
@@ -1426,6 +1438,16 @@ impl Options {
             return Err(
                 "--game-forward, --game-language and --game-draw-from play the game's own show: they \
                         need --game"
+                    .to_owned(),
+            );
+        }
+        if options.display != game_ui::hud::OffscreenDisplay::default()
+            && options.game.is_none()
+            && options.hud.is_none()
+        {
+            return Err(
+                "--display-scale and --no-touch-controls draw the game's or the HUD's frame: they need \
+                        --game or --hud"
                     .to_owned(),
             );
         }
@@ -2454,6 +2476,17 @@ mod tests {
         assert_eq!(game.game_draw_from, 161);
         refused(&["--game-draw-from", "161", "--capture", "x"], "--game-draw-from");
         refused(&["--game", "title", "--game-draw-from", "late", "--capture", "x"], "expects a number");
+        // A store's screen (M4 S5): a phone's three pixels a point, or a desktop's, with no touch controls.
+        assert_eq!(game.display, game_ui::hud::OffscreenDisplay::default(), "as captures always drew");
+        let (shot, _) =
+            parse(&["--game", "title", "--display-scale", "3", "--no-touch-controls", "--capture", "x"])
+                .unwrap();
+        assert_eq!(shot.display, game_ui::hud::OffscreenDisplay { scale: 3.0, touch: false });
+        let (shot, _) = parse(&["--hud", "live", "--no-touch-controls", "--capture", "x"]).unwrap();
+        assert!(!shot.display.touch);
+        refused(&["--display-scale", "2", "--capture", "x"], "need --game or --hud");
+        refused(&["--no-touch-controls", "--capture", "x"], "need --game or --hud");
+        refused(&["--game", "title", "--display-scale", "0", "--capture", "x"], "positive scale");
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

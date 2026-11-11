@@ -8,6 +8,7 @@ use game_flow::flow::FlowCommand;
 use game_flow::game::GameSetup;
 use game_flow::progress::progress_store;
 use game_flow::show::GameShow;
+use game_ui::hud::OffscreenDisplay;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform, durable_replace};
 use sapphire_render::quality::QualitySettings;
@@ -143,6 +144,7 @@ impl Options {
             forward: false,
             draw_from: 0,
             boot: true,
+            display: OffscreenDisplay::default(),
         }
     }
 }
@@ -179,6 +181,7 @@ mod tests {
                 forward: false,
                 draw_from: 0,
                 boot: true,
+                display: OffscreenDisplay::default(),
             }
         );
         assert!(!options.saves());

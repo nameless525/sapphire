@@ -49,6 +49,25 @@ pub enum HudMode {
     Live,
 }
 
+/// The screen a frame with no window stands for, as a capture's does: what a window would say of its display
+/// (M4 S5's store screenshots). The default is what a capture has always drawn, one pixel a point on a touch
+/// screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OffscreenDisplay {
+    /// Pixels per point, under the player's own scale: a phone's 3, so the interface covers as much of the
+    /// frame as it does of the phone.
+    pub scale: f32,
+    /// A touch screen shows the on-screen controls. A desktop's shows none until a finger lands, and a pad's
+    /// none at all, so a desktop's frame has none.
+    pub touch: bool,
+}
+
+impl Default for OffscreenDisplay {
+    fn default() -> Self {
+        Self { scale: 1.0, touch: true }
+    }
+}
+
 /// `--hud` and its companions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudOptions {
@@ -122,6 +141,8 @@ pub struct FightHud {
     fight: Option<HudValues>,
     /// The tick whose hits it last read, in this fight.
     hits_read: Option<u64>,
+    /// What an offscreen frame stands for ([`Self::stand_for`]).
+    offscreen: OffscreenDisplay,
     /// A window's metrics this frame, read by [`Self::update`]; offscreen frames have none.
     window_metrics: Option<UiMetrics>,
     /// The metrics the layout was made for.
@@ -168,6 +189,7 @@ impl FightHud {
             logged_at: Timestamp::default(),
             fight: None,
             hits_read: None,
+            offscreen: OffscreenDisplay::default(),
             window_metrics: None,
             metrics: None,
             touched: false,
@@ -185,6 +207,15 @@ impl FightHud {
     /// The same, over `atlas`: the screen's that preceded it, or the one it shares a frame with.
     pub fn for_fight_with_atlas(options: HudOptions, atlas: Atlas) -> Self {
         Self { stand_in: None, ..Self::with_atlas(options, atlas) }
+    }
+
+    /// Draws each frame with no window as `display` would show it: at its pixels per point, and with no
+    /// on-screen controls unless it's a touch screen.
+    pub fn stand_for(&mut self, display: OffscreenDisplay) {
+        self.offscreen = display;
+        if !display.touch {
+            self.follow_devices(true, false);
+        }
     }
 
     /// What it draws from, for what shares its frame.
@@ -354,7 +385,7 @@ impl FightHud {
         let stopwatch = Stopwatch::start();
         let metrics = self.window_metrics.unwrap_or_else(|| {
             let insets = self.options.insets.unwrap_or_default();
-            UiMetrics::of_pixels(target, self.options.scale, insets)
+            UiMetrics::of_pixels(target, self.offscreen.scale * self.options.scale, insets)
         });
         self.relayout(metrics);
         match self.options.mode {

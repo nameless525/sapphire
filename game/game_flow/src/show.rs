@@ -23,7 +23,7 @@ use game_combat::combat::{Combat, CombatOption, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::{FightDocuments, error_chain};
 use game_ui::dialogue::DialoguePanel;
-use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
+use game_ui::hud::{FightHud, HudMode, HudOptions, OffscreenDisplay, ShownFight};
 use game_ui::menus::{
     CharacterModel, GameMenus, HudModel, MenuCommand, MenuDocument, MenuScreen, MenuSetup, PLAYER_SPEAKER,
     PlayerSettings, ScreenModel,
@@ -104,6 +104,8 @@ pub struct GameShow {
     left: bool,
     /// The conversation a beat opened, until it ends.
     beat_dialogue: Option<DialogueId>,
+    /// What a frame with no window stands for ([`Self::stand_for`]).
+    offscreen: OffscreenDisplay,
 }
 
 impl GameShow {
@@ -140,7 +142,20 @@ impl GameShow {
             game: None,
             left: false,
             beat_dialogue: None,
+            offscreen: OffscreenDisplay::default(),
         })
+    }
+
+    /// Draws the menus and the HUD, in a frame with no window, as `display` would show them: a capture's
+    /// stand-in for a phone's or a desktop's screen (M4 S5). A window's frames follow the window instead.
+    pub fn stand_for(&mut self, display: OffscreenDisplay) {
+        self.offscreen = display;
+        if let Some(menus) = &mut self.menus {
+            menus.set_display_scale(display.scale);
+        }
+        if let Some(hud) = &mut self.shown.hud {
+            hud.stand_for(display);
+        }
     }
 
     /// The show a game's flow decides (M3 G1): see the [module docs](self).
@@ -477,6 +492,7 @@ impl GameShow {
         let mut menus = GameMenus::new(assets, self.atlas.clone(), self.setup.clone())
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
         menus.open(MenuScreen::TITLE);
+        menus.set_display_scale(self.offscreen.scale);
         self.menus = Some(menus);
         self.follow_presentation();
         // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
@@ -560,6 +576,7 @@ impl GameShow {
         let options = HudOptions { mode: HudMode::Live, scale, ..HudOptions::default() };
         let mut hud = FightHud::for_fight_with_atlas(options, self.atlas.clone());
         hud.set_design(self.shown.fight.documents.hud);
+        hud.stand_for(self.offscreen);
         self.shown.hud = Some(hud);
         self.follow_presentation();
         if let Some(menus) = &mut self.menus {

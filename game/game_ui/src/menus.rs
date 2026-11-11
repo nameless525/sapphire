@@ -658,6 +658,12 @@ impl GameMenus {
         self.stack.set_metrics(UiMetrics::of_window(window, self.settings.scale()));
     }
 
+    /// Draws, where there's no window, as a display of `scale` pixels per point would
+    /// ([`ScreenStack::set_display_scale`]).
+    pub fn set_display_scale(&mut self, scale: f32) {
+        self.stack.set_display_scale(scale);
+    }
+
     /// The frame's input as of `now`, and what it did. The asks it leaves are in [`Self::take_commands`].
     pub fn update(&mut self, now: Timestamp) {
         profiling::scope!("GameMenus::update");

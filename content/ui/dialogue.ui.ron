@@ -12,14 +12,21 @@
         nodes: [
             (
                 name: "root",
-                layout: (direction: Column, align: Center, justify: End, gap: 8, padding: (left: 16, right: 16, top: 8, bottom: 12), safe_area: true),
+                layout: (direction: Column, align: Center, justify: End, padding: (left: 14, right: 14, top: 8, bottom: 12), safe_area: true),
+            ),
+            // The answers over the line, as wide as it. The answers scroll (M4 Z3c), so the large interface still
+            // fits a phone held sideways: the line never gives way. Their list's 2 points all round keep a
+            // focused answer's edge inside its mask; the line's margin and the root's padding give them back,
+            // so everything stands where it did before the answers scrolled.
+            (
+                name: "stack",
+                parent: "root",
+                layout: (direction: Column, align: Stretch, gap: 6, width: Percent(100), max_width: Points(1044), shrink: 1),
             ),
             (
                 name: "choices",
-                parent: "root",
-                // The answers scroll over the line (M4 Z3c), so the large interface still fits a phone held
-                // sideways: the line never gives way.
-                layout: (direction: Column, align: End, gap: 6, width: Percent(100), max_width: Points(1040), shrink: 1, min_height: Points(40)),
+                parent: "stack",
+                layout: (direction: Column, align: End, gap: 6, shrink: 1, min_height: Points(44), padding: (left: 2, right: 2, top: 2, bottom: 2)),
                 mask: true,
                 scroll: Vertical,
             ),
@@ -169,8 +176,8 @@
             ),
             (
                 name: "panel",
-                parent: "root",
-                layout: (direction: Column, gap: 6, width: Percent(100), max_width: Points(1040), shrink: 0, padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                parent: "stack",
+                layout: (direction: Column, gap: 6, shrink: 0, margin: (left: 2, right: 2), padding: (left: 24, right: 24, top: 16, bottom: 16)),
                 look: (shape: Slice(sprite: Button, corner: 16),
                     fill: Color((20, 26, 60, 255)),
                     outline: (color: (120, 190, 255, 255), width: 1.5),),

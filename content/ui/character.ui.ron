@@ -75,10 +75,20 @@
                     color: (240, 246, 255, 255),
                 ),
             ),
+            // The stats and the skills scroll together (M4 Z3c), so the large interface still fits a phone held
+            // sideways. Where they fit, they stand as they did when only the skills scrolled: the stats' margin
+            // is the gap they had, and the skills' margins the room for a focused row's outline.
+            (
+                name: "skills",
+                parent: "side",
+                layout: (direction: Column, gap: 6, grow: 1, shrink: 1, min_height: Points(44), padding: (bottom: 2)),
+                mask: true,
+                scroll: Vertical,
+            ),
             (
                 name: "stats",
-                parent: "side",
-                layout: (direction: Column, gap: 2, shrink: 0),
+                parent: "skills",
+                layout: (direction: Column, gap: 2, shrink: 0, margin: (bottom: 4)),
             ),
             (
                 name: "hp",
@@ -177,17 +187,11 @@
                 ),
             ),
             (
-                name: "skills",
-                parent: "side",
-                layout: (direction: Column, gap: 6, grow: 1, shrink: 1, min_height: Points(44), padding: (left: 2, right: 2, top: 2, bottom: 2)),
-                mask: true,
-                scroll: Vertical,
-            ),
-            (
                 name: "skill-attack",
                 parent: "skills",
                 layout: (
                     direction: Row,
+                    margin: (left: 2, right: 2),
                     align: Center,
                     justify: SpaceBetween,
                     gap: 16,
@@ -224,6 +228,7 @@
                 parent: "skills",
                 layout: (
                     direction: Row,
+                    margin: (left: 2, right: 2),
                     align: Center,
                     justify: SpaceBetween,
                     gap: 16,
@@ -260,6 +265,7 @@
                 parent: "skills",
                 layout: (
                     direction: Row,
+                    margin: (left: 2, right: 2),
                     align: Center,
                     justify: SpaceBetween,
                     gap: 16,

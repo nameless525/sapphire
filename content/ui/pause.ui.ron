@@ -17,7 +17,10 @@
             (
                 name: "panel",
                 parent: "root",
-                layout: (direction: Column, gap: 8, width: Points(420), max_width: Percent(92), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                // The rows scroll under the title (M4 Z3c), so the large interface and a playtest's mark still fit
+                // a phone held sideways. The list's padding is the panel's, moved in, so nothing moves where
+                // they fit: room for a focused row's outline, which the list's mask would clip.
+                layout: (direction: Column, gap: 4, width: Points(420), max_width: Percent(92), max_height: Percent(96), padding: (left: 20, right: 20, top: 16, bottom: 12)),
                 look: (shape: Slice(sprite: Button, corner: 16),
                     fill: Color((20, 26, 60, 255)),
                     outline: (color: (120, 190, 255, 255), width: 1.5),),
@@ -25,6 +28,7 @@
             (
                 name: "title",
                 parent: "panel",
+                layout: (margin: (left: 4, right: 4)),
                 text: (
                     key: "pause-title",
                     style: "title",
@@ -33,8 +37,15 @@
                 ),
             ),
             (
-                name: "resume",
+                name: "list",
                 parent: "panel",
+                layout: (direction: Column, gap: 8, shrink: 1, min_height: Points(112), padding: (left: 4, right: 4, top: 4, bottom: 4)),
+                mask: true,
+                scroll: Vertical,
+            ),
+            (
+                name: "resume",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,
@@ -70,7 +81,7 @@
             ),
             (
                 name: "mark",
-                parent: "panel",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,
@@ -107,7 +118,7 @@
             ),
             (
                 name: "character",
-                parent: "panel",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,
@@ -141,7 +152,7 @@
             ),
             (
                 name: "settings",
-                parent: "panel",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,
@@ -175,7 +186,7 @@
             ),
             (
                 name: "to-title",
-                parent: "panel",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,
@@ -210,7 +221,7 @@
             ),
             (
                 name: "leave",
-                parent: "panel",
+                parent: "list",
                 layout: (
                     direction: Row,
                     align: Center,

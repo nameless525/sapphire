@@ -50,17 +50,32 @@ pub struct Walk {
 }
 
 impl Walk {
+    /// The menus a store build ships, with no playtest's mark on the pause.
     pub fn new(screens: Screens, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
+        Self::of_build(screens, locale, pseudo, size, device, false)
+    }
+
+    /// A playtest build's (M4 F1), whose pause has a sixth row, the mark.
+    pub fn playtest(screens: Screens, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
+        Self::of_build(screens, locale, pseudo, size, device, true)
+    }
+
+    fn of_build(
+        screens: Screens,
+        locale: &str,
+        pseudo: bool,
+        size: (u32, u32),
+        device: Device,
+        can_mark: bool,
+    ) -> Self {
         let settings = PlayerSettings { language: locale.to_owned(), ..PlayerSettings::default() };
         let Screens { assets, menus: screens } = screens;
-        // The pause a store build ships, with no playtest's mark (M4 F1): at 667×375 the mark's sixth row
-        // pushes the pause's title out, which waits on the title's layout (A3).
         let setup = MenuSetup {
             screens,
             settings,
             bindings: sapphire_controls::default_bindings().unwrap(),
             can_leave: true,
-            can_mark: false,
+            can_mark,
             pseudo,
         };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
@@ -212,9 +227,11 @@ impl Walk {
     /// a long list doesn't fling past it.
     pub fn drag_to(&mut self, screen: MenuScreen, node: &str) {
         let list = match node {
-            "back" | "reset" | "tab-gamepad" | "tab-keyboard" => return,
+            "back" | "reset" | "tab-gamepad" | "tab-keyboard" | "continue" => return,
             _ if SETTINGS_SCREENS.contains(&screen) => "list",
+            _ if screen == MenuScreen::PAUSE || screen == MenuScreen::NOTICE => "list",
             "skill-attack" | "skill-dodge" | "skill-art" if screen == CHARACTER => "skills",
+            "first" | "second" | "third" | "fourth" if screen == MenuScreen::DIALOGUE => "choices",
             _ => return,
         };
         let scale = self.menus.settings().scale();

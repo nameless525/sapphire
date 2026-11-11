@@ -17,7 +17,11 @@
             (
                 name: "choices",
                 parent: "root",
-                layout: (direction: Column, align: End, gap: 6, width: Percent(100), max_width: Points(1040)),
+                // The answers scroll over the line (M4 Z3c), so the large interface still fits a phone held
+                // sideways: the line never gives way.
+                layout: (direction: Column, align: End, gap: 6, width: Percent(100), max_width: Points(1040), shrink: 1, min_height: Points(40)),
+                mask: true,
+                scroll: Vertical,
             ),
             (
                 name: "first",
@@ -166,7 +170,7 @@
             (
                 name: "panel",
                 parent: "root",
-                layout: (direction: Column, gap: 6, width: Percent(100), max_width: Points(1040), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                layout: (direction: Column, gap: 6, width: Percent(100), max_width: Points(1040), shrink: 0, padding: (left: 24, right: 24, top: 16, bottom: 16)),
                 look: (shape: Slice(sprite: Button, corner: 16),
                     fill: Color((20, 26, 60, 255)),
                     outline: (color: (120, 190, 255, 255), width: 1.5),),

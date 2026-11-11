@@ -192,12 +192,12 @@ fn every_screen_fits_at_the_largest_sizes_at_every_aspect() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// The interface's largest size fits every screen at every aspect too, at the text's own size. It doesn't yet
-/// (M4 A3): on a phone 375 or 390 points tall, the pause's rows push its title off the top, the character
-/// screen's column runs past its back, and the dialogue's answers past the top. Each is out of height, not
-/// width, so each wants a scroll or a cap on the interface's size on a phone, as the text's has: a design call.
+/// The interface's largest size fits every screen at every aspect too, at the text's own size (M4 Z3c). On a
+/// phone 375 or 390 points tall the pause's rows pushed its title off the top and the character screen's
+/// column ran past its back and the dialogue's answers past the top, until each scrolled under what stays:
+/// the pause's rows under its title, the character's stats with its skills, over the line that says what one
+/// does and the way back, and the dialogue's answers over its line.
 #[test]
-#[ignore = "the pause, the character screen and the dialogue are out of height on a phone at the large size"]
 fn every_screen_fits_at_the_largest_interface_size_at_every_aspect() {
     let mut wrong = Vec::new();
     for language in ["en", "ja"] {

@@ -393,6 +393,8 @@ impl Versioned for PlayerSettings {
             dynamic_resolution: old.dynamic_resolution,
             battery_saver: old.battery_saver,
             remapped: Vec::new(),
+            // Nobody had read a notice there was none of.
+            flash_notice_read: false,
             timing_assist: TimingAssist::Off,
         })
     }

@@ -45,8 +45,8 @@ pub use self::document::{
     MenuDocument, MenuScreen, REMAP_SCREENS, RowAction, ScreenEntry, ScreenModel, ScreenRow,
 };
 pub use self::settings::{
-    Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice,
-    REDUCED_FLASHES, SIZES, Setting, SubtitleBackground, SubtitleSize, Subtitles, TextSize,
+    Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice, SIZES, Setting,
+    SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use crate::screen::{ScreenStack, StackSetup};
 

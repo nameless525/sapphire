@@ -178,8 +178,8 @@ impl<S: Store> Kept<S> {
 mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
 
     use serde::Deserialize;
 
@@ -221,21 +221,42 @@ mod tests {
         }
     }
 
+    /// Writes nothing until the test opens the gate, so what is in flight is the test's choice and not the job
+    /// pool's timing: a quick pool used to finish each write before the next was asked for.
+    fn held(
+        writes: &Arc<AtomicU32>,
+        gate: &Arc<(Mutex<bool>, Condvar)>,
+    ) -> impl Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync + 'static {
+        let writes = Arc::clone(writes);
+        let gate = Arc::clone(gate);
+        move |path, bytes| {
+            let (open, opened) = &*gate;
+            let open = open.lock().expect("the gate's lock");
+            drop(opened.wait_while(open, |open| !*open).expect("the gate's lock"));
+            writes.fetch_add(1, Ordering::Relaxed);
+            std::fs::write(path, bytes)
+        }
+    }
+
     /// The newest stays and an older can't follow it: a value asked for during a write waits for it, and one
     /// overtaken before its turn isn't written at all.
     #[test]
     fn what_is_asked_for_last_is_what_stays_in_settings_and_saves_alike() {
         let dir = Dir::new("newest");
         let writes = Arc::new(AtomicU32::new(0));
-        let mut settings = Kept::new(SettingsFile::<Kept1>::new(&dir.0, "settings", counted(&writes)));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut settings = Kept::new(SettingsFile::<Kept1>::new(&dir.0, "settings", held(&writes, &gate)));
+        // 10 goes to a job and is held there; 20 waits for it, and 30 overtakes 20.
         for value in [10, 20, 30] {
             settings.keep(&Kept1 { value });
         }
+        assert!(settings.busy());
+        *gate.0.lock().expect("the gate's lock") = true;
+        gate.1.notify_all();
         settings.finish();
         let stats = settings.stats();
-        assert_eq!((stats.asked, stats.failed), (3, 0));
-        assert_eq!(stats.written + stats.overtaken, 3, "{stats:?}");
-        assert!(writes.load(Ordering::Relaxed) <= 2, "what was overtaken isn't written");
+        assert_eq!((stats.asked, stats.written, stats.overtaken, stats.failed), (3, 2, 1, 0), "{stats:?}");
+        assert_eq!(writes.load(Ordering::Relaxed), 2, "what was overtaken isn't written");
         assert!(!settings.busy());
         assert_eq!(settings.store().load().value, Kept1 { value: 30 });
 

@@ -556,6 +556,7 @@ jobs:
           tests --package game_app --features dev --test plays_the_ward
           tests --package game_app --features dev --test wins_the_ward
           tests --package game_app --features dev --test comes_back
+          tests --package game_app --features dev --test declares_every_setting
           tests --package sapphire_sandbox --features dev --test replays
           tests --package sapphire_sandbox --features dev --test live_tuning
           tests --package sapphire_editor --test preview --test sandbox_push --test viewport_stage
@@ -622,6 +623,21 @@ jobs:
           SAPPHIRE_WALK_STEPS_PER_FRAME: "8"
           SAPPHIRE_WALK_TIERS: mobile-low
         run: python3 .github/scripts/app_tests_bundle.py run wins_the_ward -- --ignored
+      # Every setting a player can step, at each rung of the tier's ladder held in place, from the pause over
+      # the gate's line with the fight's screen effects held: no pipeline built past the load (M4 H3). The
+      # walk's two tiers, a lane each; a Mac walks all four in about 20 s.
+      - name: Every setting declared (Desktop-Low)
+        if: matrix.lane == 'walk-desktop-low'
+        timeout-minutes: 15
+        env:
+          SAPPHIRE_REACH_TIERS: desktop-low
+        run: python3 .github/scripts/app_tests_bundle.py run declares_every_setting -- --ignored
+      - name: Every setting declared (Mobile-Low)
+        if: matrix.lane == 'walk-mobile-low'
+        timeout-minutes: 15
+        env:
+          SAPPHIRE_REACH_TIERS: mobile-low
+        run: python3 .github/scripts/app_tests_bundle.py run declares_every_setting -- --ignored
       # A wave comes on in a bench of the arena with no heap in its steps, every frame drawn.
       - name: A wave's bench in the app (dev sandbox, offscreen)
         if: matrix.lane == 'wave-bench'

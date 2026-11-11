@@ -332,6 +332,13 @@ impl Ladder {
         &self.rungs
     }
 
+    /// Its deepest depth in place: the rungs before a lower tier, which only a new renderer takes. Every
+    /// depth from the top to here sheds on the renderer it has (`Renderer::set_shed`), which is what a walk
+    /// of its rungs holds (M4 H3's).
+    pub fn in_place_depth(&self) -> usize {
+        self.soft
+    }
+
     /// The tier the ladder asks for: its lower tier at its deepest rung, or, lowered and calm at its top
     /// for [`TIER_HOLD`], the tier it came from. The game takes it at a pause or a wipe.
     pub fn tier_request(&self) -> Option<TierId> {

@@ -79,5 +79,11 @@ harness = false
 name = "comes_back"
 harness = false
 
+# Every tier at each rung of its ladder held in place, and every setting a player can step there, draw through
+# no pipeline the load didn't declare (M4 H3).
+[[test]]
+name = "declares_every_setting"
+harness = false
+
 [lints]
 workspace = true

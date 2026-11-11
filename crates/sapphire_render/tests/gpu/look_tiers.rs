@@ -21,7 +21,7 @@ use sapphire_assets::mesh::{
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
-use sapphire_render::quality::{LadderState, OptionalPass, QualityTier, Rung, TierId, TierTable};
+use sapphire_render::quality::{Ladder, LadderState, OptionalPass, QualityTier, TierId, TierTable};
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId,
     MeshHandle, MeshInstance, PostParams, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
@@ -413,7 +413,7 @@ fn the_ladder_walks_down_and_back_without_building_on_the_frame() {
         let base = tier.resolution.base_scale(output(tier.id).1);
         let frames = if tier.antialiasing.temporal { 3 } else { 2 };
         shot.render(&gpu, base, frames);
-        let soft = tier.ladder.iter().take_while(|rung| !matches!(rung, Rung::Tier(_))).count();
+        let soft = Ladder::new(tier).in_place_depth();
         for depth in (0..=soft).chain((0..soft).rev()) {
             let state = LadderState::of(&tier.ladder[..depth]);
             shot.renderer.set_shed(state.shed).expect("every shipped rung sheds in place");

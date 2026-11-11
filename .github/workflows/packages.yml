@@ -315,19 +315,13 @@ jobs:
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$channel"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      # The cooker's texture encoders (C3) need GCC 11's AVX2 intrinsics, and the SDK's default is GCC 10: the
-      # cooker alone builds and links with the newest GCC the SDK has (`SAPPHIRE_COOKER_CXX` and `_CC`, whose
-      # libstdc++ its C++ needs), the game with the default.
+      # The cooker's texture encoders (C3) call an AVX2 intrinsic GCC 11 added, and the SDK compiles with GCC
+      # 10: the cooker's C++ takes a header that defines it (`SAPPHIRE_COOKER_CXXFLAGS`). The SDK's newer GCCs
+      # can't link here (gcc-14 finds no libgcc_s), and the game needs neither.
       - name: Package
         shell: bash
         run: |
-          for version in 14 13 12 11; do
-            if command -v "g++-$version" >/dev/null && command -v "gcc-$version" >/dev/null; then
-              export SAPPHIRE_COOKER_CXX="g++-$version" SAPPHIRE_COOKER_CC="gcc-$version"
-              break
-            fi
-          done
-          echo "The cooker's compilers: ${SAPPHIRE_COOKER_CXX:-the default} and ${SAPPHIRE_COOKER_CC:-the default}"
+          export SAPPHIRE_COOKER_CXXFLAGS="-include $PWD/tools/sapphire_pipeline/compat/gcc10_avx2.h"
           cargo --locked xtask --locked package --platform linux $PACKAGE_KIND
       - name: Write the symbol store
         shell: bash

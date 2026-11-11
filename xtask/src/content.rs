@@ -185,25 +185,13 @@ fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Co
 /// Builds the pipeline and returns its executable: optimized, without paying for cross-crate LTO after
 /// each cooker edit. Cargo reports the path, including custom target directories and suffixes.
 ///
-/// `SAPPHIRE_COOKER_CXX` and `SAPPHIRE_COOKER_CC` name the cooker's own C++ and C compilers, for a host
-/// whose default is too old for the texture encoders' AVX2 kernels (M4 C3): Steam Linux Runtime 3.0's GCC 10
-/// has no `_mm256_cvtsi256_si32`. On Linux the C compiler links the cooker too, so the C++ it links (the
-/// encoders' and Luau's) finds the libstdc++ it was compiled against. Only the cooker takes them, in its own
-/// build; the game builds and links with the runtime's compilers, so it needs no newer libstdc++ than the
-/// runtime's.
+/// `SAPPHIRE_COOKER_CXXFLAGS` is the cooker's own C++ flags, for a host whose compiler lacks what the
+/// texture encoders' AVX2 kernels call (M4 C3): Steam Linux Runtime 3.0's GCC 10 has no
+/// `_mm256_cvtsi256_si32`, which `tools/sapphire_pipeline/compat/gcc10_avx2.h` defines when forced in with
+/// `-include`. Only the cooker takes them; the game builds with the runtime's compiler and flags as before.
 pub fn pipeline() -> anyhow::Result<PathBuf> {
-    let named = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    let linker = format!("CARGO_TARGET_{}_UNKNOWN_LINUX_GNU_LINKER", std::env::consts::ARCH.to_uppercase());
-    let mut env: Vec<(&str, std::ffi::OsString)> = Vec::new();
-    if let Some(cxx) = named("SAPPHIRE_COOKER_CXX") {
-        env.push(("CXX", cxx));
-    }
-    if let Some(cc) = named("SAPPHIRE_COOKER_CC") {
-        if std::env::consts::OS == "linux" {
-            env.push((linker.as_str(), cc.clone()));
-        }
-        env.push(("CC", cc));
-    }
+    let flags = std::env::var_os("SAPPHIRE_COOKER_CXXFLAGS").filter(|flags| !flags.is_empty());
+    let env: Vec<(&str, std::ffi::OsString)> = flags.into_iter().map(|flags| ("CXXFLAGS", flags)).collect();
     workspace::build_binary(
         &CargoBuild {
             package: "sapphire_pipeline",

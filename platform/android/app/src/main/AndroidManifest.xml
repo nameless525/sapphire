@@ -33,8 +33,11 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
-      Any socket, loopback included: development builds' live link listens on one (spec §5.29).
-      A normal permission, granted at install. Store builds (M4) will need it for online services.
+      Any socket, loopback included. A store build's one use is the patcher (M4 P4, sapphire_patch): at boot
+      it asks platform/patch.toml's host over HTTPS for a newer release and downloads its changed blocks,
+      sending no identifier (docs/store/privacy-policy.md). With that host empty, as until the maintainer
+      chooses one, the game opens no socket. Development builds' live link also listens on one (spec §5.29).
+      A normal permission, granted at install, so Play's permissions declaration asks nothing of it.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 

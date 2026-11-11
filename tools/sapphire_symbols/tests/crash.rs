@@ -51,9 +51,9 @@ mod desktop {
         let fault = crash_a_copy(&dir.join("fault"), ForcedCrash::Fault);
         let dump =
             fault.iter().find(|(kind, _)| *kind == ReportKind::Minidump).expect("the fault's minidump");
-        let read = crash::read(&dump.1, &packaged, &store).expect("the minidump reads");
-        println!("{}", crash::render(&read, &maps));
-        let first = &read.threads[0].frames[0];
+        let dumped = crash::read(&dump.1, &packaged, &store).expect("the minidump reads");
+        println!("{}", crash::render(&dumped, &maps));
+        let first = &dumped.threads[0].frames[0];
         assert_names(first, "forced_fault", "*address = ");
 
         let panicked = crash_a_copy(&dir.join("panic"), ForcedCrash::Panic);
@@ -71,9 +71,30 @@ mod desktop {
                 })
                 .unwrap_or_else(|| panic!("no frame is the forced panic's: {read:#?}"));
             assert_names(frame, "forced_panic", "panic!(");
+            assert_inlined_alike(&dumped, &read);
         }
         fs::remove_dir_all(&dir).expect("the test's directory goes");
         println!("crash: ok");
+    }
+
+    /// Fails unless the callers both crashes' stacks share list their inlined calls in one order, innermost
+    /// first, as `Frame` says: the minidump's walk and the panic report's frames are read by different code.
+    fn assert_inlined_alike(dumped: &crash::Crash, reported: &crash::Crash) {
+        let names = |frame: &Frame| -> Vec<String> {
+            frame.inlined.iter().map(|inline| inline.function.clone().unwrap_or_default()).collect()
+        };
+        let mut compared = 0;
+        for frame in dumped.threads[0].frames.iter().filter(|frame| !frame.inlined.is_empty()) {
+            let same = reported.threads[0]
+                .frames
+                .iter()
+                .find(|other| other.location == frame.location && !other.inlined.is_empty());
+            if let Some(same) = same {
+                assert_eq!(names(frame), names(same), "{:?}", frame.location);
+                compared += 1;
+            }
+        }
+        assert!(compared > 0, "no caller with inlined calls is in both stacks");
     }
 
     /// Fails unless `frame` is `function` in `sapphire_crash`'s `forced.rs`, at the line that holds `code`.

@@ -52,10 +52,10 @@ pub(super) fn read(bytes: Vec<u8>, reader: &Reader<'_>) -> anyhow::Result<Crash>
                         let name = named.unwrap_or_else(|| leaf(&code_file).to_owned());
                         (name, frame.instruction.wrapping_sub(module.base_address()))
                     }),
+                    // `minidump-unwind` lists them innermost first already, as `Frame` does.
                     inlined: frame
                         .inlines
                         .iter()
-                        .rev()
                         .map(|inline| Location {
                             function: Some(inline.function_name.clone()),
                             file: inline.source_file_name.clone(),

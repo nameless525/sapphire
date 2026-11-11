@@ -48,7 +48,9 @@ impl Walk {
     pub fn new(screens: Screens, locale: &str, pseudo: bool, size: (u32, u32), device: Device) -> Self {
         let settings = PlayerSettings { language: locale.to_owned(), ..PlayerSettings::default() };
         let Screens { assets, menus: screens } = screens;
-        let setup = MenuSetup { screens, settings, can_leave: true, can_mark: true, pseudo };
+        // The pause a store build ships, with no playtest's mark (M4 F1): at 667×375 the mark's sixth row
+        // pushes the pause's title out, which waits on the title's layout (A3).
+        let setup = MenuSetup { screens, settings, can_leave: true, can_mark: false, pseudo };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
         let at = Timestamp::from_nanos(1);
         menus.controls_mut().push(at, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });

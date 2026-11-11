@@ -1269,9 +1269,7 @@ mod tests {
         };
         let mut combat = Combat::new(&option).expect("the run stands");
         for _ in 0..3 {
-            combat.step(&mut |_: u64, _: &[sapphire_gameplay::ActorId]| {
-                sapphire_gameplay::TickActions::default()
-            });
+            combat.step(&mut |_: u64, _: &[ActorId]| sapphire_gameplay::TickActions::default());
         }
         show.shown.fight.combat = Some(combat);
         assert!(show.take_ended_runs().is_empty(), "the run goes on");

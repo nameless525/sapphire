@@ -57,7 +57,14 @@ fn menus_with(settings: PlayerSettings) -> GameMenus {
     GameMenus::new(
         assets,
         Atlas::paint(),
-        MenuSetup { screens, settings, can_leave: true, can_mark: false, pseudo: false },
+        MenuSetup {
+            screens,
+            settings,
+            bindings: sapphire_controls::default_bindings().unwrap(),
+            can_leave: true,
+            can_mark: false,
+            pseudo: false,
+        },
     )
     .unwrap()
 }

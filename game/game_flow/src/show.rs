@@ -34,10 +34,10 @@ use game_ui::menus::{
     PlayerSettings, ScreenModel,
 };
 use game_ui::wipe::ZoneWipe;
-use sapphire_controls::{CombatControls, ControlsError};
+use sapphire_controls::{CombatControls, ControlsError, default_bindings};
 use sapphire_ecs::prelude::Entity;
 use sapphire_gameplay::{ActorId, DialogueId};
-use sapphire_input::InputMap;
+use sapphire_input::{InputBindings, InputMap};
 use sapphire_platform::{AppInitError, ContentFs, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
@@ -55,6 +55,18 @@ use crate::LOG_TARGET;
 use crate::flow::{After, FlowAction, FlowCommand, FlowState};
 use crate::game::{FlowContent, Game, GameSetup};
 use crate::menus::{flow_command, show_hud, show_title};
+
+/// `bindings`, a game's document, with the player's remaps and toggles over it, compiled; or the document as it
+/// is, with a log line, if those don't compile, so a player's file can't stop the game.
+fn players_map(settings: &PlayerSettings, bindings: &InputBindings) -> Result<InputMap, ControlsError> {
+    match InputMap::new(settings.bindings_over(bindings)) {
+        Ok(map) => Ok(map),
+        Err(error) => {
+            tracing::error!(target: LOG_TARGET, %error, "the player's bindings don't compile: the game's play");
+            Ok(InputMap::new(bindings.clone())?)
+        }
+    }
+}
 
 /// Who a step with no fight on it asks the bindings for: see `read_bindings`.
 const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
@@ -93,6 +105,8 @@ pub struct GameShow {
     commands: Vec<MenuCommand>,
     settings_changed: bool,
     pub controls: CombatControls,
+    /// The game's bindings document, which the player's remaps and toggles lie over (M4 A4).
+    bindings: InputBindings,
     /// Where the camera looked as this frame's steps began: what a tick's stick means by forward.
     camera_yaw: f32,
     /// How long since the fight last said how it's going.
@@ -126,16 +140,18 @@ impl GameShow {
         screens: MenuDocument,
         settings: PlayerSettings,
     ) -> Result<Self, ControlsError> {
-        let controls = match &documents.bindings {
-            Some(bindings) => CombatControls::new(InputMap::new(bindings.clone())?)?,
-            None => CombatControls::with_default_bindings()?,
+        let bindings = match &documents.bindings {
+            Some(bindings) => bindings.clone(),
+            None => default_bindings()?,
         };
+        let controls = CombatControls::new(players_map(&settings, &bindings)?)?;
         let mut shown = ShownFight::default();
         shown.fight.documents = documents;
         // iOS's guidelines leave leaving to the home gesture.
         let setup = MenuSetup {
             screens,
             settings,
+            bindings: bindings.clone(),
             can_leave: Os::CURRENT != Os::Ios,
             can_mark: false,
             pseudo: false,
@@ -150,6 +166,7 @@ impl GameShow {
             commands: Vec::with_capacity(8),
             settings_changed: false,
             controls,
+            bindings,
             showcase: None,
             panel: DialoguePanel::default(),
             camera_yaw: 0.0,
@@ -697,6 +714,24 @@ impl GameShow {
     fn follow_settings(&mut self) {
         self.settings_changed = true;
         self.follow_presentation();
+        self.follow_bindings();
+    }
+
+    /// The fight's bindings follow the player's (M4 A4): what they remapped, and the held actions they toggle.
+    /// Only a change replaces them, since every binding starts afresh then. None of it reaches a run: a step
+    /// reads the same `TickActions` whichever way they came.
+    fn follow_bindings(&mut self) {
+        let Some(menus) = &self.menus else { return };
+        let wanted = menus.settings().bindings_over(&self.bindings);
+        if *self.controls.input().bindings() == wanted {
+            return;
+        }
+        let replaced = InputMap::new(wanted)
+            .map_err(ControlsError::from)
+            .and_then(|map| self.controls.replace_bindings(map));
+        if let Err(error) = replaced {
+            tracing::error!(target: LOG_TARGET, %error, "the player's bindings can't play: the fight's stay as they were");
+        }
     }
 
     /// What of the player's settings the fight's presentation follows (M4 A2): its shakes and rumble, its
@@ -1425,7 +1460,7 @@ mod tests {
         assert!(!light(&mut show, Scancode::J, 1), "the shipped key does nothing");
         assert!(light(&mut show, Scancode::U, 2), "its own does");
 
-        let mut lacking: sapphire_input::InputBindings =
+        let mut lacking: InputBindings =
             sapphire_serialize::from_ron(sapphire_controls::DEFAULT_BINDINGS).expect("reads");
         lacking.contexts.retain(|context| context.name != sapphire_controls::PAUSE_CONTEXT);
         let documents = FightDocuments { bindings: Some(lacking), ..FightDocuments::shipped() };

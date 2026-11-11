@@ -10,14 +10,20 @@
 //! cap, dynamic resolution and the battery saver, which the app gives its stage's quality and its platform's
 //! pacing. A phone's cap is 30 or 60: what a desktop's file says past that reads as 60 there.
 //!
+//! Version 4 (M4 A4) adds the bindings the player remapped, by name, over the game's document
+//! ([`PlayerSettings::bindings_over`]): only what differs from it, so a game's change to a default reaches
+//! every player who never moved that binding.
+//!
 //! A value that parses but makes no sense, a volume of 900, is read as the nearest that does. A name this
 //! build doesn't have fails its field alone, which the settings file's repair gives its default.
 
 use std::num::NonZeroU32;
 
 use bevy_reflect::TypePath;
+use sapphire_controls::Remapped;
 use sapphire_core::target::FormFactor;
 use sapphire_gameplay::targeting::AutoTarget;
+use sapphire_input::InputBindings;
 use sapphire_loc::LocaleSettings;
 use sapphire_look::EffectScale;
 use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
@@ -299,9 +305,21 @@ impl Holds {
     }
 }
 
-/// What the player has chosen, which the app keeps between runs. Version 3 (M4 T3); version 2 (M4 A1) had all
-/// but the graphics page's, and version 1 (M3 U7) the language, the size, one volume and the rumble, and each
-/// upgrades with everything else at its default.
+impl Holds {
+    /// The actions set to toggle, by their names in the combat bindings.
+    #[must_use]
+    pub fn toggled(&self) -> Vec<&'static str> {
+        HeldAction::ALL
+            .iter()
+            .filter(|action| self.mode(**action) == HoldMode::Toggle)
+            .map(|action| action.action())
+            .collect()
+    }
+}
+
+/// What the player has chosen, which the app keeps between runs. Version 4 (M4 A4); version 3 (M4 T3) had all
+/// but the remapped bindings, version 2 (M4 A1) all but the graphics page's too, and version 1 (M3 U7) the
+/// language, the size, one volume and the rumble. Each upgrades with everything it lacks at its default.
 #[derive(Clone, Debug, PartialEq, TypePath, Serialize, Deserialize)]
 #[type_path = "sapphire::game_ui"]
 #[serde(default)]
@@ -339,10 +357,94 @@ pub struct PlayerSettings {
     pub dynamic_resolution: bool,
     /// Draws at 30 frames a second, a step down the thermal ladder, to last longer on a battery.
     pub battery_saver: bool,
+    /// The bindings the player remapped, each by its name in the game's document and only where it differs
+    /// from the document (`sapphire_controls::set`).
+    pub remapped: Vec<Remapped>,
 }
 
 impl Versioned for PlayerSettings {
-    /// 1: M3 U7. 2: M4 A1's accessibility settings. 3: M4 T3's graphics page.
+    /// 1: M3 U7. 2: M4 A1's accessibility settings. 3: M4 T3's graphics page. 4: M4 A4's remapped bindings.
+    const VERSION: u32 = 4;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        decode_versioned::<PlayerSettingsV3, D>(version, data).map(|old| Self {
+            language: old.language,
+            size: old.size,
+            text_size: old.text_size,
+            shake: old.shake,
+            flashes: old.flashes,
+            camera_motion: old.camera_motion,
+            sound: old.sound,
+            music: old.music,
+            effects: old.effects,
+            voice: old.voice,
+            mono: old.mono,
+            rumble: old.rumble,
+            subtitles: old.subtitles,
+            auto_target: old.auto_target,
+            holds: old.holds,
+            quality: old.quality,
+            frame_cap: old.frame_cap,
+            dynamic_resolution: old.dynamic_resolution,
+            battery_saver: old.battery_saver,
+            remapped: Vec::new(),
+        })
+    }
+}
+
+/// [`PlayerSettings`] version 3 (M4 T3), frozen: what a player's file from before M4 A4 holds.
+#[derive(Deserialize)]
+#[serde(default)]
+struct PlayerSettingsV3 {
+    language: String,
+    size: String,
+    text_size: TextSize,
+    shake: u8,
+    flashes: Flashes,
+    camera_motion: u8,
+    sound: u8,
+    music: u8,
+    effects: u8,
+    voice: u8,
+    mono: bool,
+    rumble: bool,
+    subtitles: Subtitles,
+    auto_target: AutoTarget,
+    holds: Holds,
+    quality: QualityChoice,
+    frame_cap: FrameCap,
+    dynamic_resolution: bool,
+    battery_saver: bool,
+}
+
+impl Default for PlayerSettingsV3 {
+    fn default() -> Self {
+        let now = PlayerSettings::default();
+        Self {
+            language: now.language,
+            size: now.size,
+            text_size: now.text_size,
+            shake: now.shake,
+            flashes: now.flashes,
+            camera_motion: now.camera_motion,
+            sound: now.sound,
+            music: now.music,
+            effects: now.effects,
+            voice: now.voice,
+            mono: now.mono,
+            rumble: now.rumble,
+            subtitles: now.subtitles,
+            auto_target: now.auto_target,
+            holds: now.holds,
+            quality: now.quality,
+            frame_cap: now.frame_cap,
+            dynamic_resolution: now.dynamic_resolution,
+            battery_saver: now.battery_saver,
+        }
+    }
+}
+
+impl Versioned for PlayerSettingsV3 {
     const VERSION: u32 = 3;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
@@ -468,6 +570,7 @@ impl Default for PlayerSettings {
             frame_cap: FrameCap::default(),
             dynamic_resolution: false,
             battery_saver: false,
+            remapped: Vec::new(),
         }
     }
 }
@@ -511,6 +614,13 @@ impl PlayerSettings {
     #[must_use]
     pub fn known_language(&self) -> &str {
         if LANGUAGES.contains(&self.language.as_str()) { &self.language } else { LANGUAGES[0] }
+    }
+
+    /// `base`, a game's bindings document, with the player's over it: what they remapped, and the held actions
+    /// they toggle. What the document can't take is dropped with a log line (`sapphire_controls::layered`).
+    #[must_use]
+    pub fn bindings_over(&self, base: &InputBindings) -> InputBindings {
+        sapphire_controls::layered(base, &self.remapped, &self.holds.toggled())
     }
 
     /// A percent as a share, 0 to 1, read as 100 past it.

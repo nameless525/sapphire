@@ -17,7 +17,9 @@ use sapphire_math::Vec2;
 use sapphire_platform::Scancode;
 use sapphire_strings::Pattern;
 use sapphire_ui::{Atlas, BossBar, FighterValues, HudValues};
-use support::walk::{CHARACTER, CONTROLS, DISPLAY, Device, GRAPHICS, SETTINGS, SOUND, SUBTITLES, Walk};
+use support::walk::{
+    CHARACTER, CONTROLS, DISPLAY, Device, GRAPHICS, REMAP_KEYS, REMAP_PAD, SETTINGS, SOUND, SUBTITLES, Walk,
+};
 use support::{
     Screens, assets, content, document_in, kind_names, menus, screens_of, subtitles, table, testdata,
     with_help,
@@ -65,11 +67,50 @@ fn walk_the_settings(walk: &mut Walk, pseudo: bool) {
             walk.choose(page, row);
             walk.check(page, pseudo);
         }
+        if page == CONTROLS {
+            walk_the_remap_screens(walk, pseudo);
+        }
         walk.back(page);
         assert!(walk.menus.tree(page).is_none(), "{page:?} went, by {:?} at {:?}", walk.device, walk.size);
         assert!(walk.menus.is_open(SETTINGS), "back to the hub");
     }
     walk.back(SETTINGS);
+}
+
+/// The remap screens (M4 A4): each device's tab, a remap's wait, a press another binding has and the choice it
+/// asks for, and back to the controls page. Nothing remapped stays remapped.
+fn walk_the_remap_screens(walk: &mut Walk, pseudo: bool) {
+    let at = format!("by {:?} at {:?}", walk.device, walk.size);
+    walk.choose(CONTROLS, "remap");
+    assert!(walk.menus.is_open(REMAP_PAD), "the controls page opens the remap screens, {at}");
+    walk.check(REMAP_PAD, pseudo);
+    walk.choose(REMAP_PAD, "tab-keyboard");
+    assert!(walk.menus.is_open(REMAP_KEYS), "a tab opens its screen, {at}");
+    assert!(walk.menus.tree(REMAP_PAD).is_none(), "in place of the other, {at}");
+    walk.check(REMAP_KEYS, pseudo);
+
+    // The attack's key, remapped to the heavy attack's: the wait, then what to do about it.
+    walk.choose(REMAP_KEYS, "light");
+    assert!(
+        walk.menus.is_remapping() && walk.menus.is_open(MenuScreen::REMAP_LISTEN),
+        "{at}: {:?}",
+        walk.wrong
+    );
+    walk.check(MenuScreen::REMAP_LISTEN, pseudo);
+    walk.key(Scancode::K);
+    walk.settle();
+    assert!(walk.menus.is_open(MenuScreen::REMAP_TAKEN), "K is the heavy attack's, {at}");
+    walk.check(MenuScreen::REMAP_TAKEN, pseudo);
+    walk.choose(MenuScreen::REMAP_TAKEN, "keep");
+    assert!(!walk.menus.is_remapping(), "{at}");
+    assert!(walk.menus.tree(MenuScreen::REMAP_TAKEN).is_none(), "{at}");
+    assert_eq!(walk.menus.settings().remapped, [], "kept as it was, {at}");
+
+    walk.choose(REMAP_KEYS, "tab-gamepad");
+    assert!(walk.menus.is_open(REMAP_PAD), "{at}");
+    walk.back(REMAP_PAD);
+    assert!(walk.menus.tree(REMAP_PAD).is_none(), "{at}");
+    assert!(walk.menus.is_open(CONTROLS), "back to the controls page, {at}");
 }
 
 /// Every menu, by one device.
@@ -442,7 +483,14 @@ fn back_means_what_each_screen_says() {
 fn a_platform_with_no_way_out_offers_none() {
     let settings = PlayerSettings::default();
     let Screens { assets, menus: screens } = assets();
-    let setup = MenuSetup { screens, settings, can_leave: false, can_mark: false, pseudo: false };
+    let setup = MenuSetup {
+        screens,
+        settings,
+        bindings: sapphire_controls::default_bindings().unwrap(),
+        can_leave: false,
+        can_mark: false,
+        pseudo: false,
+    };
     let menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
     let mut walk = Walk {
         menus,

@@ -15,6 +15,14 @@
 //! Every press a menu takes is one a fight mustn't: [`GameMenus::is_modal`] says when that's so, and its
 //! holder keeps those presses from the fight's bindings. The HUD's document isn't modal, and takes only what
 //! lands on its pause.
+//!
+//! **Remapping (M4 A4):** a row that remaps a binding ([`RowAction::Remap`]) arms the menus' own input's
+//! capture for that binding's device and opens [`MenuScreen::REMAP_LISTEN`]; the device's next press is the
+//! binding's, unless it's Start or Escape, which end it, or another binding's. A press another remappable
+//! binding has opens [`MenuScreen::REMAP_TAKEN`], to swap the two or keep them; one a binding no player
+//! remaps has (the pause's, the camera's) is shown as kept for it, and the capture waits on. What the player
+//! remapped goes into [`PlayerSettings::remapped`], and the glyphs every menu shows follow at once
+//! ([`RemapModel`]), in the labels of the pad last used.
 
 mod document;
 mod settings;
@@ -23,8 +31,9 @@ use std::fmt::Write as _;
 
 use bevy_reflect::{PartialReflect, Reflect, TypeInfo, Typed};
 use sapphire_assets::ui::UiDocument;
-use sapphire_controls::{MenuControls, MenuError};
+use sapphire_controls::{MenuControls, MenuError, RemapDevice, Taken};
 use sapphire_core::target::FormFactor;
+use sapphire_input::{DeviceKind, GamepadFamily, InputBindings, Source};
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
@@ -32,7 +41,9 @@ use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, HudValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
 use serde::{Deserialize, Serialize};
 
-pub use self::document::{MenuDocument, MenuScreen, RowAction, ScreenEntry, ScreenModel, ScreenRow};
+pub use self::document::{
+    MenuDocument, MenuScreen, REMAP_SCREENS, RowAction, ScreenEntry, ScreenModel, ScreenRow,
+};
 pub use self::settings::{
     Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice,
     REDUCED_FLASHES, SIZES, Setting, SubtitleBackground, SubtitleSize, Subtitles, TextSize,
@@ -79,9 +90,97 @@ impl ScreenModel {
     }
 }
 
+/// What a binding shows for each remappable action of one device (M4 A4): the glyph of what it reads, by its
+/// binding's name before the device's suffix (`light` is `light.gamepad`'s on the pad), or nothing for one
+/// the bindings don't have. A game that lets a player remap another binding adds its field here.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct BindingGlyphs {
+    pub move_forward: String,
+    pub move_back: String,
+    pub move_left: String,
+    pub move_right: String,
+    pub light: String,
+    pub heavy: String,
+    pub dodge: String,
+    pub skill: String,
+    pub ultimate: String,
+    pub swap: String,
+    pub lock_on: String,
+    pub jump: String,
+}
+
+impl BindingGlyphs {
+    /// Each field's glyph, from what its binding of `device` reads in `bindings`, as `family` labels a pad.
+    fn show(&mut self, bindings: &InputBindings, device: RemapDevice, family: GamepadFamily) {
+        use bevy_reflect::structs::Struct as _;
+
+        let mut name = String::new();
+        for index in 0..self.field_len() {
+            let Some(stem) = self.name_at(index) else { continue };
+            name.clear();
+            name.push_str(stem);
+            name.push_str(device.suffix());
+            let glyph = sapphire_controls::source_of(bindings, &name)
+                .map(|source| sapphire_controls::glyph(source, family))
+                .unwrap_or_default();
+            if let Some(held) = self.field_at_mut(index).and_then(|field| field.try_downcast_mut::<String>())
+                && *held != glyph
+            {
+                held.clear();
+                held.push_str(&glyph);
+            }
+        }
+    }
+}
+
+/// What the remap screens read (M4 A4): each binding's glyph, and the remap in progress. Until a remap
+/// starts it holds a sample, light attack's press on the pad taken by heavy attack, which is what a golden
+/// of the screens shows.
+#[derive(Clone, Debug, Reflect)]
+pub struct RemapModel {
+    pub gamepad: BindingGlyphs,
+    pub keyboard: BindingGlyphs,
+    /// The key of the binding being remapped, under `remap-action-`.
+    pub binding: String,
+    /// The key of what to press, `remap-press-gamepad` or `remap-press-keyboard`.
+    pub press: String,
+    /// The glyph of the press that ends the remap: Start, or Escape.
+    pub cancel: String,
+    /// The glyph of the press the player made, which another binding has.
+    pub pressed: String,
+    /// The key of the action it's taken by, under `remap-action-`.
+    pub taken_by: String,
+    /// The press is a binding's no player remaps, so it's kept, and the remap waits on.
+    pub kept: bool,
+}
+
+impl Default for RemapModel {
+    fn default() -> Self {
+        Self {
+            gamepad: BindingGlyphs::default(),
+            keyboard: BindingGlyphs::default(),
+            binding: "remap-action-light".to_owned(),
+            press: "remap-press-gamepad".to_owned(),
+            cancel: sapphire_controls::glyph(&RemapDevice::Gamepad.cancel(), GamepadFamily::Xbox)
+                .into_owned(),
+            pressed: "B".to_owned(),
+            taken_by: "remap-action-heavy".to_owned(),
+            kept: false,
+        }
+    }
+}
+
+/// The key under `remap-action-` that names a binding or an action: its name before the device's suffix,
+/// with words joined by hyphens, as keys are.
+fn action_key(name: &str) -> String {
+    let stem =
+        RemapDevice::of_binding(name).map_or(name, |device| &name[..name.len() - device.suffix().len()]);
+    format!("remap-action-{}", stem.replace('_', "-"))
+}
+
 /// What any menu's paths can read (M3 U9): whether there's a way out and a run to go on with, and the
-/// player's settings (M4 A1 adds the settings' pages' own), each a key of what it's set to or a percent. The
-/// title, the pause and the settings read it, and so can any screen content adds.
+/// player's settings (M4 A1 adds the settings' pages' own, A4 the bindings' glyphs), each a key of what it's
+/// set to or a percent. The title, the pause and the settings read it, and so can any screen content adds.
 #[derive(Clone, Debug, Default, Reflect)]
 pub struct MenuModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
@@ -129,16 +228,29 @@ pub struct MenuModel {
     pub frame_cap: String,
     pub dynamic_resolution: String,
     pub battery_saver: String,
+    pub remap: RemapModel,
 }
 
 impl MenuModel {
     /// What a menu shows of `settings`, with a way out if `can_leave`, the pause's mark if `can_mark` (a playtest
-    /// build's, M4 F1) and a run to go on with if `can_continue`.
+    /// build's, M4 F1), a run to go on with if `can_continue`, and the glyphs of the compiled-in bindings with the
+    /// player's remaps over them, on an Xbox pad.
     #[must_use]
     pub fn of(settings: &PlayerSettings, can_leave: bool, can_mark: bool, can_continue: bool) -> Self {
         let mut model = Self { can_leave, can_mark, can_continue, ..Self::default() };
         model.show_settings(settings);
+        // The compiled-in document is in the build, so it reads; a failure would show empty glyphs.
+        if let Ok(base) = sapphire_controls::default_bindings() {
+            let bindings = sapphire_controls::layered(&base, &settings.remapped, &[]);
+            model.show_bindings(&bindings, GamepadFamily::Xbox);
+        }
         model
+    }
+
+    /// The glyph of each remappable binding in `bindings`, a pad's as `family` labels them.
+    pub fn show_bindings(&mut self, bindings: &InputBindings, family: GamepadFamily) {
+        self.remap.gamepad.show(bindings, RemapDevice::Gamepad, family);
+        self.remap.keyboard.show(bindings, RemapDevice::Keyboard, family);
     }
 
     fn show_settings(&mut self, settings: &PlayerSettings) {
@@ -367,6 +479,9 @@ pub struct MenuSetup {
     /// The game's screens.
     pub screens: MenuDocument,
     pub settings: PlayerSettings,
+    /// The game's bindings document, which the player's remaps lie over (M4 A4): the compiled-in one, or the
+    /// game's own.
+    pub bindings: InputBindings,
     /// Whether this platform has a way out to offer.
     pub can_leave: bool,
     /// Whether the pause offers a mark, which only a playtest build keeps (M4 F1).
@@ -403,14 +518,31 @@ pub enum MenuCommand {
     Mark,
 }
 
-/// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate.
-#[derive(Clone, Copy, Debug)]
+/// What a row does, with the screen it opens found: what [`GameMenus`] acts on with nothing to allocate but a
+/// remap's binding.
+#[derive(Clone, Debug)]
 enum Chosen {
     Command(MenuCommand),
     /// The screen at this place in the document.
     Open(usize),
+    /// The screen at this place in the document, in place of the top one.
+    Switch(usize),
     Step(Setting),
+    Remap(String),
+    Swap,
+    Keep,
+    Reset(RemapDevice),
     Nothing,
+}
+
+/// A remap on its way (M4 A4).
+#[derive(Clone, Debug, PartialEq)]
+enum Remapping {
+    /// Waiting for `device`'s next press for `binding`, on [`MenuScreen::REMAP_LISTEN`].
+    Listening { binding: String, device: RemapDevice },
+    /// The press, `source`, is `other`'s: on [`MenuScreen::REMAP_TAKEN`], a swap gives `other` what `binding`
+    /// read.
+    Taken { binding: String, source: Source, other: String },
 }
 
 /// See this module.
@@ -425,6 +557,14 @@ pub struct GameMenus {
     documents: Vec<UiDocument>,
     controls: MenuControls,
     settings: PlayerSettings,
+    /// The game's bindings document, and the player's remaps over it: what glyphs and conflicts read.
+    base: InputBindings,
+    bindings: InputBindings,
+    /// Whose labels a pad's glyphs show: the pad last used's, an Xbox pad's until one is.
+    family: GamepadFamily,
+    remap: Option<Remapping>,
+    /// What every menu shows of the bindings and the remap, kept here for the screens that open later.
+    remap_model: RemapModel,
     can_leave: bool,
     can_mark: bool,
     can_continue: bool,
@@ -440,7 +580,7 @@ impl GameMenus {
     /// HUD. Nothing shows until something [`Self::open`]s. The screens have to have those that are
     /// [`OPENED_BY_CODE`].
     pub fn new(assets: ScreenAssets, atlas: Atlas, setup: MenuSetup) -> Result<Self, String> {
-        let MenuSetup { screens, settings, can_leave, can_mark, pseudo } = setup;
+        let MenuSetup { screens, settings, bindings: base, can_leave, can_mark, pseudo } = setup;
         screens.require(&OPENED_BY_CODE)?;
         if assets.documents.len() != screens.screens.len() {
             return Err(format!(
@@ -458,6 +598,9 @@ impl GameMenus {
         stack.set_text_scale(settings.text_size.scale());
         let mut controls = MenuControls::with_defaults().map_err(|error: MenuError| error.to_string())?;
         controls.set_player_scale(settings.scale());
+        let bindings = sapphire_controls::layered(&base, &settings.remapped, &[]);
+        let mut shown = MenuModel::default();
+        shown.show_bindings(&bindings, GamepadFamily::Xbox);
         Ok(Self {
             stack,
             shown: Vec::with_capacity(screens.screens.len()),
@@ -465,6 +608,11 @@ impl GameMenus {
             documents: assets.documents,
             controls,
             settings,
+            base,
+            bindings,
+            family: GamepadFamily::Xbox,
+            remap: None,
+            remap_model: shown.remap,
             can_leave,
             can_mark,
             can_continue: false,
@@ -500,7 +648,16 @@ impl GameMenus {
     fn model_of(&self, kind: ScreenModel) -> Box<dyn PartialReflect> {
         match kind {
             ScreenModel::Menu => {
-                Box::new(MenuModel::of(&self.settings, self.can_leave, self.can_mark, self.can_continue))
+                let (can_leave, can_mark, can_continue) = (self.can_leave, self.can_mark, self.can_continue);
+                let mut model = MenuModel {
+                    can_leave,
+                    can_mark,
+                    can_continue,
+                    remap: self.remap_model.clone(),
+                    ..MenuModel::default()
+                };
+                model.show_settings(&self.settings);
+                Box::new(model)
             }
             ScreenModel::Hud => Box::new(HudModel { touch: true, ..HudModel::default() }),
             other => other.sample(),
@@ -692,7 +849,127 @@ impl GameMenus {
         } else {
             self.stack.input(&UiInput { pointers: input.pointers, ..UiInput::default() });
         }
+        self.follow_family();
+        self.follow_capture();
         self.read_events();
+    }
+
+    /// Whether a remap is waiting for a press.
+    #[must_use]
+    pub fn is_remapping(&self) -> bool {
+        self.remap.is_some()
+    }
+
+    /// The glyphs follow the labels of the pad last used.
+    fn follow_family(&mut self) {
+        if let Some(DeviceKind::Gamepad(family)) = self.controls.input().last_device()
+            && family != self.family
+        {
+            self.family = family;
+            self.show_bindings();
+        }
+    }
+
+    /// Every menu shows the remap as it stands.
+    fn show_remap(&mut self) {
+        let shown = std::mem::take(&mut self.remap_model);
+        self.visit_models(|model: &mut MenuModel| model.remap.clone_from(&shown));
+        self.remap_model = shown;
+    }
+
+    /// Takes the press a remap waits for, if it came this update.
+    fn follow_capture(&mut self) {
+        let Some(Remapping::Listening { binding, device }) = &self.remap else { return };
+        let (binding, device) = (binding.clone(), *device);
+        let Some(source) = self.controls.input_mut().take_captured() else { return };
+        if source == device.cancel() {
+            self.keep();
+            return;
+        }
+        if !device.accepts(&source) {
+            // A stick: not a button, so the remap waits on.
+            self.controls.input_mut().capture_next(device.capture());
+            return;
+        }
+        self.remap_model.pressed = sapphire_controls::glyph(&source, self.family).into_owned();
+        match sapphire_controls::taken(&self.bindings, &binding, &source) {
+            None => {
+                sapphire_controls::set(&mut self.settings.remapped, &self.base, &binding, source);
+                self.remap = None;
+                self.close(MenuScreen::REMAP_LISTEN);
+                self.bindings_changed();
+            }
+            Some(Taken::Kept { action }) => {
+                self.remap_model.taken_by = action_key(action);
+                self.remap_model.kept = true;
+                self.show_remap();
+                self.controls.input_mut().capture_next(device.capture());
+            }
+            Some(Taken::Swappable { binding: other, .. }) => {
+                self.remap_model.taken_by = action_key(other);
+                self.remap_model.kept = false;
+                self.remap = Some(Remapping::Taken { binding, source, other: other.to_owned() });
+                self.show_remap();
+                self.close(MenuScreen::REMAP_LISTEN);
+                self.open(MenuScreen::REMAP_TAKEN);
+            }
+        }
+    }
+
+    /// Starts remapping `binding`: its device's next press is what it reads.
+    fn start_remap(&mut self, binding: String) {
+        if self.remap.is_some() {
+            return;
+        }
+        let Some(device) = RemapDevice::of_binding(&binding) else { return };
+        if sapphire_controls::source_of(&self.bindings, &binding).is_none() {
+            tracing::error!(target: crate::LOG_TARGET, %binding, "the bindings have no binding by that name to remap");
+            return;
+        }
+        let shown = &mut self.remap_model;
+        shown.binding = action_key(&binding);
+        shown.press = format!("remap-press-{}", device.name());
+        shown.cancel = sapphire_controls::glyph(&device.cancel(), self.family).into_owned();
+        shown.kept = false;
+        self.show_remap();
+        self.controls.input_mut().capture_next(device.capture());
+        self.remap = Some(Remapping::Listening { binding, device });
+        self.open(MenuScreen::REMAP_LISTEN);
+    }
+
+    /// The remap that found its press taken goes ahead, and the other binding takes what this one read.
+    fn swap(&mut self) {
+        let Some(Remapping::Taken { binding, source, other }) = self.remap.take() else { return };
+        let was = sapphire_controls::source_of(&self.bindings, &binding).cloned();
+        let remapped = &mut self.settings.remapped;
+        sapphire_controls::set(remapped, &self.base, &binding, source);
+        if let Some(was) = was {
+            sapphire_controls::set(remapped, &self.base, &other, was);
+        }
+        self.close(MenuScreen::REMAP_TAKEN);
+        self.bindings_changed();
+    }
+
+    /// The remap ends, with nothing changed.
+    fn keep(&mut self) {
+        self.remap = None;
+        self.controls.input_mut().cancel_capture();
+        self.close(MenuScreen::REMAP_LISTEN);
+        self.close(MenuScreen::REMAP_TAKEN);
+    }
+
+    /// The player's bindings moved: every menu's glyphs follow, and it's time to keep them.
+    fn bindings_changed(&mut self) {
+        self.bindings = sapphire_controls::layered(&self.base, &self.settings.remapped, &[]);
+        self.show_bindings();
+        self.commands.push(MenuCommand::SettingsChanged);
+    }
+
+    fn show_bindings(&mut self) {
+        let mut shown = MenuModel { remap: std::mem::take(&mut self.remap_model), ..MenuModel::default() };
+        shown.show_bindings(&self.bindings, self.family);
+        self.remap_model = shown.remap;
+        self.show_remap();
     }
 
     /// What `action` does, with the screen it opens found.
@@ -706,7 +983,17 @@ impl GameMenus {
                 .iter()
                 .position(|screen| screen.name == *name)
                 .map_or(Chosen::Nothing, Chosen::Open),
+            Some(RowAction::Switch(name)) => self
+                .screens
+                .screens
+                .iter()
+                .position(|screen| screen.name == *name)
+                .map_or(Chosen::Nothing, Chosen::Switch),
             Some(RowAction::Step(setting)) => Chosen::Step(*setting),
+            Some(RowAction::Remap(binding)) => Chosen::Remap(binding.clone()),
+            Some(RowAction::Swap) => Chosen::Swap,
+            Some(RowAction::Keep) => Chosen::Keep,
+            Some(RowAction::Reset(device)) => Chosen::Reset(*device),
             Some(RowAction::Nothing) | None => Chosen::Nothing,
         }
     }
@@ -737,7 +1024,20 @@ impl GameMenus {
         match chosen {
             Chosen::Command(command) => self.commands.push(command),
             Chosen::Open(place) => self.place(place, self.shown.len()),
+            Chosen::Switch(place) => {
+                if let Some(top) = self.shown.len().checked_sub(1) {
+                    self.stack.tree_mut(top).fire("close", self.now);
+                }
+                self.place(place, self.shown.len());
+            }
             Chosen::Step(setting) => self.step(setting),
+            Chosen::Remap(binding) => self.start_remap(binding),
+            Chosen::Swap => self.swap(),
+            Chosen::Keep => self.keep(),
+            Chosen::Reset(device) => {
+                sapphire_controls::reset(&mut self.settings.remapped, device);
+                self.bindings_changed();
+            }
             Chosen::Nothing => {}
         }
     }

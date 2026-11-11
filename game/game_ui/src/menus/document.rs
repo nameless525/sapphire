@@ -6,6 +6,7 @@ use bevy_reflect::TypePath;
 use game_combat::documents::error_chain;
 use sapphire_assets::AssetId;
 use sapphire_assets::documents::{GameDocuments, MANIFEST_FILE, SHIPPED_DIR, shipped_path};
+use sapphire_controls::RemapDevice;
 use sapphire_core::Name;
 use sapphire_platform::ContentFs;
 use sapphire_reflect::Versioned;
@@ -27,6 +28,10 @@ impl MenuScreen {
     pub const HUD: Self = Self::named("hud");
     /// The panel a conversation opens.
     pub const DIALOGUE: Self = Self::named("dialogue");
+    /// What a remap shows while it waits for the press (M4 A4), over the screen whose row began it.
+    pub const REMAP_LISTEN: Self = Self::named("remap_listen");
+    /// What a remap shows when the press is another binding's: swap the two, or keep them as they were.
+    pub const REMAP_TAKEN: Self = Self::named("remap_taken");
 
     /// The screen named `name`.
     #[must_use]
@@ -90,7 +95,21 @@ pub enum RowAction {
     Step(Setting),
     /// The document's machine does all there is, by what the row fires: a way back, say.
     Nothing,
+    /// Puts the screen of this name in this one's place: a tab.
+    Switch(String),
+    /// Remaps the binding of this name in the game's bindings document (M4 A4), which ends in its device's
+    /// suffix (`light.gamepad`): the device's next press is what it reads, through [`REMAP_SCREENS`].
+    Remap(String),
+    /// The remap whose press another binding has goes ahead, and that one takes what this one read.
+    Swap,
+    /// The remap ends, with the bindings as they were.
+    Keep,
+    /// Every binding of the device goes back to the document.
+    Reset(RemapDevice),
 }
+
+/// The screens a remap opens itself (M4 A4): a game whose rows remap anything has to have them.
+pub const REMAP_SCREENS: [&str; 2] = ["remap_listen", "remap_taken"];
 
 /// What a row of a screen does: the focusable node `node`, chosen, does `does`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,13 +217,22 @@ impl MenuDocument {
                 }
             }
             for action in screen.rows.iter().map(|row| &row.does).chain(&screen.back) {
-                if let RowAction::Open(opened) = action
+                if let RowAction::Open(opened) | RowAction::Switch(opened) = action
                     && !self.screens.iter().any(|other| other.name == *opened)
                 {
                     return Err(format!(
                         "`{}` opens `{opened}`, which isn't one of the screens",
                         screen.name
                     ));
+                }
+                if let RowAction::Remap(binding) = action {
+                    if RemapDevice::of_binding(binding).is_none() {
+                        return Err(format!(
+                            "`{}` remaps `{binding}`, whose name ends in no device's suffix",
+                            screen.name
+                        ));
+                    }
+                    self.require(&REMAP_SCREENS)?;
                 }
             }
         }
@@ -301,6 +329,9 @@ mod tests {
             (TWO.replacen("name: \"help\"", "name: \"\"", 1), "no name"),
             (TWO.replacen("(node: \"new\"", "(node: \"help\"", 1), "twice"),
             (TWO.replacen("rows:", "rowz:", 1), "rowz"),
+            (TWO.replacen("Command(NewGame)", "Remap(\"light.gamepad\")", 1), "`remap_listen`"),
+            (TWO.replacen("Command(NewGame)", "Remap(\"light\")", 1), "suffix"),
+            (TWO.replacen("Open(\"help\")", "Switch(\"credits\")", 1), "`credits`"),
         ];
         for (text, said) in cases {
             let refused = MenuDocument::from_ron(&document(&text)).expect_err(said);

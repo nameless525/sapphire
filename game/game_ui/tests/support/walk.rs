@@ -21,8 +21,12 @@ pub const GRAPHICS: MenuScreen = MenuScreen::named("graphics");
 pub const SOUND: MenuScreen = MenuScreen::named("sound");
 pub const SUBTITLES: MenuScreen = MenuScreen::named("subtitles");
 pub const CONTROLS: MenuScreen = MenuScreen::named("controls");
+/// The remap screens' tabs (M4 A4), which the controls page opens.
+pub const REMAP_PAD: MenuScreen = MenuScreen::named("remap_pad");
+pub const REMAP_KEYS: MenuScreen = MenuScreen::named("remap_keys");
 /// The settings' hub and its pages, each a scrolling list of rows over a way back.
-pub const SETTINGS_SCREENS: [MenuScreen; 6] = [SETTINGS, DISPLAY, GRAPHICS, SOUND, SUBTITLES, CONTROLS];
+pub const SETTINGS_SCREENS: [MenuScreen; 8] =
+    [SETTINGS, DISPLAY, GRAPHICS, SOUND, SUBTITLES, CONTROLS, REMAP_PAD, REMAP_KEYS];
 
 /// How a walk presses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,7 +54,14 @@ impl Walk {
         let Screens { assets, menus: screens } = screens;
         // The pause a store build ships, with no playtest's mark (M4 F1): at 667×375 the mark's sixth row
         // pushes the pause's title out, which waits on the title's layout (A3).
-        let setup = MenuSetup { screens, settings, can_leave: true, can_mark: false, pseudo };
+        let setup = MenuSetup {
+            screens,
+            settings,
+            bindings: sapphire_controls::default_bindings().unwrap(),
+            can_leave: true,
+            can_mark: false,
+            pseudo,
+        };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
         let at = Timestamp::from_nanos(1);
         menus.controls_mut().push(at, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
@@ -116,7 +127,7 @@ impl Walk {
         if self.device == Device::Finger {
             return;
         }
-        for _ in 0..12 {
+        for _ in 0..20 {
             if self.tree(screen).focus_name() == Some(node) {
                 return;
             }
@@ -137,6 +148,10 @@ impl Walk {
                 self.right();
             } else {
                 self.left();
+            }
+            // A long list scrolls to what took focus over a few frames: judge the next step once it has.
+            for _ in 0..12 {
+                self.frame();
             }
         }
         panic!("{node} can't be reached on {screen:?} by {:?}", self.device);
@@ -192,10 +207,11 @@ impl Walk {
         self.settle();
     }
 
-    /// A finger on a short list drags what it wants to where it can land on it.
+    /// A finger on a list drags what it wants to where it can land on it, and holds still before it lifts, so
+    /// a long list doesn't fling past it.
     pub fn drag_to(&mut self, screen: MenuScreen, node: &str) {
         let list = match node {
-            "back" => return,
+            "back" | "reset" | "tab-gamepad" | "tab-keyboard" => return,
             _ if SETTINGS_SCREENS.contains(&screen) => "list",
             "skill-attack" | "skill-dodge" | "skill-art" if screen == CHARACTER => "skills",
             _ => return,
@@ -210,7 +226,19 @@ impl Walk {
         let from = shown.center();
         let to = from - Vec2::new(0.0, row.center().y - from.y);
         let touch = |phase, point: Vec2| RawInput::Touch { finger: 1, phase, position: point * scale };
-        self.press(touch(TouchPhase::Down, from), touch(TouchPhase::Moved, to));
+        let at = self.now();
+        self.menus.controls_mut().push(at, touch(TouchPhase::Down, from));
+        self.frame();
+        const STEPS: u16 = 8;
+        for step in 1..=STEPS {
+            let at = self.now();
+            let point = from.lerp(to, f32::from(step) / f32::from(STEPS));
+            self.menus.controls_mut().push(at, touch(TouchPhase::Moved, point));
+            self.frame();
+        }
+        for _ in 0..10 {
+            self.frame();
+        }
         let at = self.now();
         self.menus.controls_mut().push(at, touch(TouchPhase::Up, to));
         self.settle();

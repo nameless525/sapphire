@@ -385,7 +385,15 @@ impl Walk {
                         menus.tree(MenuScreen::named(&opened)).is_none() && walk.is_open(screen)
                     })?;
                 }
-                RowAction::Command(_) | RowAction::Nothing => {}
+                // A tab and remapping (M4 A4) change bindings, not what a frame declares: `game_ui`'s remap
+                // tests walk them.
+                RowAction::Switch(_)
+                | RowAction::Remap(_)
+                | RowAction::Swap
+                | RowAction::Keep
+                | RowAction::Reset(_)
+                | RowAction::Command(_)
+                | RowAction::Nothing => {}
             }
         }
         Ok(())
@@ -541,7 +549,13 @@ impl App for OutsideCaller {
                                 "{screen}, from {}, was never opened on {tier} at {rung}",
                                 entry.name
                             ),
-                            RowAction::Command(_) | RowAction::Nothing => {}
+                            RowAction::Switch(_)
+                            | RowAction::Remap(_)
+                            | RowAction::Swap
+                            | RowAction::Keep
+                            | RowAction::Reset(_)
+                            | RowAction::Command(_)
+                            | RowAction::Nothing => {}
                         }
                     }
                 }

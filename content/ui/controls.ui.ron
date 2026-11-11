@@ -1,5 +1,6 @@
 // The settings' controls page (M4 A1): how hard auto-target pulls on touch, which a run records, and
-// whether each button a move can read held is held or toggled. Each row steps what it shows on a press.
+// whether each button a move can read held is held or toggled. Each row steps what it shows on a press,
+// but the last, which opens the remap screens (M4 A4).
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -296,7 +297,7 @@
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
                     up: "hold-skill",
-                    down: "back",
+                    down: "remap",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
                         fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
@@ -328,6 +329,51 @@
                 ),
             ),
             (
+                name: "remap",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "hold-lock-on",
+                    down: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "remap-text",
+                parent: "remap",
+                text: (
+                    key: "controls-remap",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "remap-value",
+                parent: "remap",
+                text: (
+                    key: "settings-more",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                ),
+            ),
+            (
                 name: "foot",
                 parent: "panel",
                 layout: (direction: Column, shrink: 0, padding: (left: 4, right: 4)),
@@ -346,7 +392,7 @@
                 ),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
-                    up: "hold-lock-on",
+                    up: "remap",
                     fires: "back",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
@@ -407,6 +453,10 @@
             (
                 name: "focus-hold-lock-on",
                 tracks: [(node: "hold-lock-on", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-remap",
+                tracks: [(node: "remap", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
                 name: "focus-back",

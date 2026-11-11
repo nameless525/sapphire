@@ -18,6 +18,8 @@ sapphire_controls.workspace = true
 sapphire_core.workspace = true
 sapphire_dialogue.workspace = true
 sapphire_gameplay.workspace = true
+# The bindings a player remaps, and the capture that takes their press (M4 A4).
+sapphire_input.workspace = true
 sapphire_loc.workspace = true
 sapphire_look.workspace = true
 sapphire_math.workspace = true
@@ -39,7 +41,6 @@ sapphire_colliders.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_cues.workspace = true
-sapphire_input.workspace = true
 # Real string tables from the real sources, for what the menus' tests hold.
 sapphire_pipeline.workspace = true
 # The Lantern Ward guide's dialogue, and a VM to ask its conditions, for the panel's tests (M3 Q2b).

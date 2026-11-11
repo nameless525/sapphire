@@ -52,6 +52,11 @@ Nothing here has been run, for want of a device or a person. [m3-exit-run.md](m3
 
 **M1's, carried** ([m2-handoff.md](m2-handoff.md), "Device checks still owed", has each; none was settled in M2 or M3): exit tests on an iPhone and an Android phone, and a phone's cold start; ProMotion and 90/120 Hz pacing (F7, F8); on-tile MSAA (R7, Q5), and post on an A14-class phone; the performance hunt's numbers on phones, and a phone driver's shader compile time; Q14 (Android pre-rotation), Q9 (device floors) and tier selection; Windows and Linux hardware, Q3 (the Steam Deck) and Q4 (Windows' default backend); Android crash capture.
 
+**M4's, owed to the maintainer:**
+
+- **Export compliance with TLS linked (M4 P4).** The game now links `rustls` on `ring` for its patch downloads, and `ITSAppUsesNonExemptEncryption` stays false, as S2 set it, on the reading that HTTPS to the game's own host is exempt. That reading is a legal call, not the run's: the maintainer confirms it, or answers App Store Connect's export compliance questions, before an upload.
+- **A patch on a phone and on a real host (M4 P4).** The desktop, the Simulator and the emulator patched from a server on this Mac over plain HTTP. A phone, `https://`, a CDN and a real key are owed (m4-plan §7).
+
 ## What M3 settled from its handoff
 
 These items in [m3-handoff.md](m3-handoff.md) are closed and don't carry:
@@ -268,6 +273,16 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 3. **Voice lines:** each line is a `Cue` document on the `Voice` bus with its `.ogg`. Each language's `VoiceLines` document lists `(key, cue)`, and `voices:` in `default_cues.ron` names each language's document. A cue-table row speaks a line with `line: Some("<key>")` when the simulation publishes that row's cue. The voice language follows the player's language setting.
 4. **A placeholder sound,** until a recording replaces it, is a spec, `tools/sounds/<name>.sound.ron`, which takes no Rust: a stem of the score's tempo, beats and bars playing one of the generator's instruments (a pad's chords, a pulse's notes, a drum pattern, a bell tune or a toll), or a line's syllables at a speaker's pitch (`tools/sapphire_soundgen`'s docs). `cargo run -p sapphire_soundgen` from the workspace root writes each missing `.ogg` to the `path` its spec names; add its row to the `SOURCE.md` beside it, which the generator's tests hold, and name it from the score or the line's cue. A recorded `.ogg` needs no spec.
 5. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred").
+
+### A patch
+
+A patch is a release of the content that changes only what the simulation doesn't read: screens, strings, textures, meshes, sounds, effects, the HUD and the bindings (m4-plan §3, "What a patch may carry"). The flow, the flags, the targeting and body tuning and `game.documents.ron` ship only with an app build. M4 P4 is the reference; `cargo xtask patch rehearse` walks the whole road on this machine.
+
+1. **The keys and the host,** once (the maintainer's, m4-plan §7): the public half of each signing seed goes in `platform/patch.toml`'s `release-keys`, and the URL the release is served from in its `host`, `https://` and ending in `/`. Every build after that trusts those keys and checks that host. A build made before has neither, and starts on what it shipped. `cargo xtask package` refuses a binary or a manifest holding the test key.
+2. **The first release:** the build that ships carries a signed manifest, `cargo xtask package --platform <platform> --release-version 1 --expires <YYYY-MM-DD> --min-build <n>`, with the seeds in `SAPPHIRE_RELEASE_KEY`. Copy the package's `release/` to the host, `release.smanifest` last.
+3. **The patch:** edit `content/`, then `cargo xtask release --cook <desktop|mobile> --out <host directory> --release-version <n+1> --expires <YYYY-MM-DD> --min-build <n> --patch-from <host directory>/manifests/<n>.smanifest`, again with the seeds in `SAPPHIRE_RELEASE_KEY`. It refuses, naming the file, a change the simulation reads, and a release the installed one wouldn't take. One release a cook: desktop and mobile each have their own host directory.
+4. **Try it before it ships:** serve the directory with `cargo xtask patch serve <dir> --port <port>`, and start a `dev` build installed with the release before, with `--update-host http://127.0.0.1:<port>/` (the emulator after `adb reverse tcp:<port> tcp:<port>`). Its boot screen fetches, installs and stands on the patch, and the server prints the bytes each request moved. A release signed by a seed of the maintainer's needs a build that trusts it, so try a dev build signed with the test seed first (`patch rehearse` does).
+5. **Ship it:** copy `packs/`, `files/` and `manifests/` to the host first, and `release.smanifest` last. A game that starts before the last copy finds the release before, and the next launch finds this one.
 
 ## Rules the reviews made
 

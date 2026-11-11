@@ -42,11 +42,18 @@
 //! which takes at most `MAX_TICKS`, and the clock steps at most 60 ticks a second, so a session's runs take at
 //! most [`MAX_SECONDS`] of ticks between them.
 //!
-//! **Not here:** what a session says per encounter, which `xtask playtest report` reads out of it (F2), and
-//! putting a playtest build on a device or bringing its sessions back (`xtask playtest`).
+//! # What a session says (M4 F2)
+//!
+//! [`Report::read`] replays each run of a session here and reads it out per encounter: its time, the damage
+//! the player took and their falls, dodges, perfect dodges and counters, presses a second and idle time, frame
+//! times and heat, and each mark with what draws its moment. `cargo xtask playtest report <session>` prints it
+//! and writes it beside the session as [`REPORT_FILE`]; the `report` module's docs say how each is counted.
+//!
+//! **Not here:** putting a playtest build on a device or bringing its sessions back (`xtask playtest`).
 
 mod document;
 mod frames;
+mod report;
 mod session;
 mod writer;
 
@@ -54,6 +61,10 @@ use std::time::Duration;
 
 pub use document::{Build, Device, Dropped, Ending, KeptRun, Mark, SessionDocument, SettingsKept};
 pub use frames::{FRAMES_HEADER, FrameRow, FramesError};
+pub use report::{
+    Check, Counts, Frames, IDLE_AFTER, MarkReport, Met, MetEnd, Part, REPORT_FILE, Report, ReportError,
+    RunReport,
+};
 /// A run's file and its checksums, as a session takes them.
 pub use sapphire_gameplay::replay::{Replay, Trail};
 pub use session::{About, Replace, Session, session_name};

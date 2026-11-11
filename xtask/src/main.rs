@@ -190,6 +190,11 @@ Commands:
         android         ANDROID_SERIAL's device or the one connected, or --device <serial>,
                         through `run-as` (a playtest build is debuggable)
         ios             --device <name or UDID>, through devicectl
+  playtest report <session dir>
+      Replay a session's runs here and read them out per encounter: time, damage taken and falls,
+      dodges, perfect dodges and counters, presses a second and idle time, frame times and heat,
+      and each mark with the command that draws its moment. Prints it, and writes report.ron
+      beside the session.
   replay [--update] [--replay <name>]
       Run the recorded combat replays in tests/replays/ with no window or GPU (spec §9, gates 2
       and 4): each must reach this architecture's checksums (checksums.<arch>.txt) with no heap

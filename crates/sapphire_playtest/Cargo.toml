@@ -18,9 +18,15 @@ sapphire_gameplay.workspace = true
 sapphire_jobs.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
+# The tick's length, for a report's seconds.
+sapphire_time.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The game's scenarios, those whose kinds of enemy bind a script among them, for the reports' tests.
+sapphire_script.workspace = true
 
 [lints]
 workspace = true

@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use anyhow::{Context as _, bail};
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_gameplay::replay::{ARCHITECTURE, Scenario};
+use sapphire_playtest::{REPORT_FILE, Report};
 use sapphire_replay::{Record, Suite, check, list, record, values_help};
 use sapphire_script::scenarios::ALL;
 
@@ -19,7 +20,8 @@ Usage:
   sapphire_replay check --dir <replays> --out <dir> [--update] [--replay <name>]
   sapphire_replay record <name> --dir <replays> --out <dir> --scenario <name> --script <name>
                          [--ticks <n>] [--seed <n>]
-  sapphire_replay list --dir <replays> --out <dir>";
+  sapphire_replay list --dir <replays> --out <dir>
+  sapphire_replay report --session <dir>";
 
 /// `--name value` pairs and bare flags, with anything else an error when they're all taken.
 struct Args(Vec<String>);
@@ -71,6 +73,12 @@ fn run() -> anyhow::Result<ExitCode> {
     // Gameplay's list can't name a script, which stands above it.
     let scenarios: &[Scenario] = &ALL;
     let command = args.0.remove(0);
+    if command == "report" {
+        let session = PathBuf::from(args.required("--session")?);
+        args.finish()?;
+        report(&session, scenarios)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let name = (command == "record" && !args.0.is_empty()).then(|| args.0.remove(0));
     let dir = PathBuf::from(args.required("--dir")?);
     let out = PathBuf::from(args.required("--out")?);
@@ -124,4 +132,16 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         other => bail!("unknown command `{other}`\n\n{USAGE}"),
     }
+}
+
+/// A playtest's session, replayed and read out (M4 F2): the text on stdout, and the document beside the session.
+fn report(session: &std::path::Path, scenarios: &[Scenario]) -> anyhow::Result<()> {
+    let report = Report::read(session, scenarios)?;
+    let path = session.join(REPORT_FILE);
+    std::fs::write(&path, report.to_ron()?).with_context(|| format!("writing {}", path.display()))?;
+    // The text is the command's output, for a pipe or a file: the rest of the tool talks on stderr.
+    std::io::Write::write_all(&mut std::io::stdout().lock(), report.to_text().as_bytes())
+        .context("writing the report")?;
+    eprintln!("wrote {}", path.display());
+    Ok(())
 }

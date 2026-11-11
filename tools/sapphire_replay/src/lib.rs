@@ -4,6 +4,8 @@
 //! Owns the suite's files on disk: it plays every `<name>.sreplay` in a directory against that
 //! directory's `checksums.<architecture>.txt`, fails a run that differs or allocates in a step,
 //! rewrites this architecture's file on `--update`, and records new replays from scripts.
+//! Its binary's `report` reads a playtest's session out, replaying each run on the game's scenarios
+//! (`sapphire_playtest`'s `Report`, M4 F2), which is what `cargo xtask playtest report` runs.
 //!
 //! Doesn't own what a replay is or how one runs: that's `sapphire_gameplay::replay`, which the sandbox
 //! steps beside its renderer through the same code. Its dependency tree holds no SDL, wgpu or platform

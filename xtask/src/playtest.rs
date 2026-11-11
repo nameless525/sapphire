@@ -5,7 +5,8 @@
 //! in `sessions/`. `playtest --platform <p>` builds, installs and launches it as `run` does. `playtest pull`
 //! copies every session on the device to `target/playtest/<platform>/sessions/`, whole, and replays each run
 //! in it with `sapphire_replay`, which names the first tick where this machine's simulation differs from the
-//! device's.
+//! device's. `playtest report <session>` replays a session's runs and reads them out per encounter (M4 F2,
+//! `sapphire_playtest`'s `report` module): text here, and `report.ron` beside the session.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,9 @@ const SESSIONS: &str = "sessions";
 /// A session's runs, each in a directory of its own (`sapphire_playtest::RUNS_DIR`).
 const RUNS: &str = "runs";
 
+/// A session's document (`sapphire_playtest::DOCUMENT_FILE`).
+const DOCUMENT: &str = "session.ron";
+
 /// What `cargo xtask playtest` was asked to do.
 #[derive(Debug)]
 pub enum Command {
@@ -41,6 +45,8 @@ pub enum Command {
     Install { platform: Platform, options: Options, args: Vec<String> },
     /// Bring every session back, and replay each run unless `replay` is false.
     Pull(Pull),
+    /// Read a session out: the directory holding its `session.ron`.
+    Report { session: PathBuf },
 }
 
 /// Where `playtest pull` takes sessions from.
@@ -57,6 +63,11 @@ pub struct Pull {
 
 impl Command {
     pub fn parse(mut args: Args) -> anyhow::Result<Self> {
+        if args.flag("report") {
+            let session = args.command().context("playtest report needs a session's directory")?;
+            args.finish(false)?;
+            return Ok(Self::Report { session: PathBuf::from(session) });
+        }
         let pull = args.flag("pull");
         let platform = args.required::<Platform>("--platform")?;
         if pull {
@@ -107,6 +118,15 @@ pub fn run(command: &Command) -> anyhow::Result<()> {
                 return Ok(());
             }
             if pull.replay { replay_all(&pulled, &dest.join("checks")) } else { Ok(()) }
+        }
+        Command::Report { session } => {
+            ensure!(
+                session.join(DOCUMENT).is_file(),
+                "{} holds no {DOCUMENT}: name a session's directory, as `playtest pull` leaves them under \
+                 target/playtest/<platform>/sessions/",
+                session.display()
+            );
+            workspace::run(Process::new(replay::runner()?).arg("report").arg("--session").arg(session))
         }
     }
 }
@@ -341,7 +361,7 @@ mod tests {
     fn pull(line: &str) -> anyhow::Result<Pull> {
         match parse(line)? {
             Command::Pull(pull) => Ok(pull),
-            Command::Install { .. } => anyhow::bail!("not a pull"),
+            Command::Install { .. } | Command::Report { .. } => anyhow::bail!("not a pull"),
         }
     }
 
@@ -363,6 +383,16 @@ mod tests {
         assert!(parse("pull --platform android --from saves").is_err());
         assert!(parse("pull --platform desktop --device x").is_err());
         assert!(parse("pull --platform android -- --new-game").is_err());
+    }
+
+    #[test]
+    fn it_reports_a_session() {
+        let Command::Report { session } = parse("report target/playtest/desktop/sessions/s").unwrap() else {
+            panic!("not a report");
+        };
+        assert_eq!(session, Path::new("target/playtest/desktop/sessions/s"));
+        assert!(parse("report").is_err(), "which session?");
+        assert!(parse("report a b").is_err());
     }
 
     #[test]
@@ -398,5 +428,6 @@ mod tests {
         let lib = fs::read_to_string(workspace::root().join("crates/sapphire_playtest/src/lib.rs")).unwrap();
         assert!(lib.contains(&format!("SESSIONS_DIR: &str = \"{SESSIONS}\"")));
         assert!(lib.contains(&format!("RUNS_DIR: &str = \"{RUNS}\"")));
+        assert!(lib.contains(&format!("DOCUMENT_FILE: &str = \"{DOCUMENT}\"")));
     }
 }

@@ -4858,7 +4858,9 @@ dependencies = [
  "sapphire_gameplay",
  "sapphire_jobs",
  "sapphire_reflect",
+ "sapphire_script",
  "sapphire_serialize",
+ "sapphire_time",
  "serde",
  "thiserror 2.0.21",
  "tracing",
@@ -4913,6 +4915,7 @@ dependencies = [
  "sapphire_core",
  "sapphire_ecs",
  "sapphire_gameplay",
+ "sapphire_playtest",
  "sapphire_script",
 ]
 

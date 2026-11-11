@@ -101,13 +101,19 @@ fn forced_fault() -> ! {
 /// The value of `debug.sapphire.crash`, if it's set and not empty.
 #[cfg(target_os = "android")]
 fn android_property() -> Option<String> {
-    let mut value = [0 as libc::c_char; libc::PROP_VALUE_MAX as usize];
+    // Bytes, handed over as `c_char`, which is signed on x86-64 and unsigned on Arm.
+    let mut value = [0u8; libc::PROP_VALUE_MAX as usize];
     // SAFETY: the name is a NUL-terminated string, and `value` has the PROP_VALUE_MAX bytes bionic writes
     // at most, the NUL included.
-    let len = unsafe { libc::__system_property_get(c"debug.sapphire.crash".as_ptr(), value.as_mut_ptr()) };
+    let len = unsafe {
+        libc::__system_property_get(
+            c"debug.sapphire.crash".as_ptr(),
+            value.as_mut_ptr().cast::<libc::c_char>(),
+        )
+    };
     let len = usize::try_from(len).ok().filter(|&len| len > 0)?;
-    let bytes: Vec<u8> = value[..len.min(value.len())].iter().map(|&c| c as u8).collect();
-    Some(String::from_utf8_lossy(&bytes).trim().to_owned()).filter(|name| !name.is_empty())
+    let bytes = &value[..len.min(value.len())];
+    Some(String::from_utf8_lossy(bytes).trim().to_owned()).filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]

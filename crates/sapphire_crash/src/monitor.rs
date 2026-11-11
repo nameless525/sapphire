@@ -178,8 +178,24 @@ impl MonitorCapture {
             // current connection atomically and calls `Client::request_dump`, which sends a
             // fixed-size message over the already-connected socket (a Mach message on macOS) and
             // blocks on the monitor's acknowledgement.
+            // On Linux the context is first copied (on the signal stack, about 1.6 KB on x86-64) with the
+            // fault's address put back where the minidump writer reads it (see `siginfo`).
             let event = unsafe {
                 crash_handler::make_crash_event(move |context| {
+                    #[cfg(target_os = "linux")]
+                    let corrected;
+                    #[cfg(target_os = "linux")]
+                    let context = match crate::siginfo::fault_address_of(context) {
+                        Some(address) => {
+                            corrected = {
+                                let mut copy = context.clone();
+                                copy.siginfo.ssi_addr = address;
+                                copy
+                            };
+                            &corrected
+                        }
+                        None => context,
+                    };
                     CrashEventResult::Handled(event_connection.request_dump(context))
                 })
             };

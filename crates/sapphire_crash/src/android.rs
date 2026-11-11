@@ -73,7 +73,8 @@ fn write_record(partial: &CStr, final_path: &CStr, header: &[u8], context: &Cras
     let info = SignalInfo {
         signal: context.siginfo.ssi_signo,
         code: context.siginfo.ssi_code,
-        fault_address: context.siginfo.ssi_addr,
+        // Not `ssi_addr`, which `crash-handler` leaves 0 (see `siginfo`).
+        fault_address: crate::siginfo::fault_address_of(context).unwrap_or(0),
         pid: context.pid,
         tid: context.tid,
         registers: &registers,

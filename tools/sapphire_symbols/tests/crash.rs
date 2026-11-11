@@ -53,6 +53,8 @@ mod desktop {
             fault.iter().find(|(kind, _)| *kind == ReportKind::Minidump).expect("the fault's minidump");
         let dumped = crash::read(&dump.1, &packaged, &store).expect("the minidump reads");
         println!("{}", crash::render(&dumped, &maps));
+        // The fault's address, which Linux's dumps read as 0 before (`sapphire_crash`'s `siginfo`).
+        assert!(dumped.summary[0].ends_with(" at 0x10"), "{:?}", dumped.summary);
         let first = &dumped.threads[0].frames[0];
         assert_names(first, "forced_fault", "*address = ");
 

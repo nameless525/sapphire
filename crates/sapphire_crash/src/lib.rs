@@ -139,6 +139,9 @@ mod android;
 #[cfg(any(target_os = "android", test))]
 mod signal_record;
 
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+mod siginfo;
+
 #[cfg(test)]
 mod test_support;
 

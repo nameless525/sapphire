@@ -236,7 +236,7 @@ The test (§1): each item of §3's accessibility list is a setting, saved and mi
 - **What each changes:** A1's test that every presentation setting leaves a fight's checksums and tables equal; A2's scales (`EffectScale`, the mixer's `Volumes` and mono in `sapphire_audio`'s `tests/offline.rs`, text scale); `sapphire_controls/tests/toggle.rs` for hold or toggle; A6's `dodge-assisted` replay and `tests/dodges.rs` for the timing assist.
 - **Text:** `game_ui/tests/text_size.rs`: 14.0 px at 1280×800 by default and 10.9 at the smallest sizes, in both languages, against 12 and 9.
 - **Colour:** `sapphire_cues/tests/marks.rs` holds every pair of marks apart under the three dichromacies (Machado et al. 2009), and a GPU test holds `r.color_vision` to the CPU simulation.
-- **Flashes:** `sapphire_testkit::flashes`' unit tests stand just under and over each line. `sapphire_sandbox`'s `flashes` lane (Z3c) captures every frame of the scripted fight at 60 fps and judges it at both settings; CI runs it nightly on lavapipe (X5). The stress fight is a command: the sandbox writes every frame of a replay's capture (`SAPPHIRE_CAPTURE_SEQUENCE`), and `sapphire_testkit flashes` scores them, refusing a sequence shorter than a second or than `--frames` (X5).
+- **Flashes:** `sapphire_testkit::flashes`' unit tests stand just under and over each line. `sapphire_sandbox`'s `flashes` lane (Z3c) captures every frame of the scripted fight at 60 fps and judges it at both settings; CI runs it nightly on lavapipe (X5). The stress fight is a command: the sandbox writes every frame of a replay's capture (`SAPPHIRE_CAPTURE_SEQUENCE`), and `sapphire_testkit flashes` scores them, refusing a sequence shorter than a second or than `--frames` (X5). Since A7 every fight the game ships is judged at both settings: `sapphire_sandbox`'s `flashes` takes the scripted fight, the ultimate and the stress fight, and `game_app`'s `flashes_in_the_ward` plays the ward's whole walk through the game's flow (`SAPPHIRE_FLASHES`, and `SAPPHIRE_FLASH_PART=i/n` for a part). The ultimate's cinematic is one shot with no cut.
 
 ```bash
 cargo test -p game_ui --locked --test text_size --test menus --test remap --test strings --test settings_formats
@@ -250,12 +250,13 @@ SAPPHIRE_CAPTURE_SEQUENCE=<abs>/flash-reduced cargo xtask run --platform desktop
   --capture <abs>/flash-reduced.png --size 480x270 --tier desktop-high --arena --cues --hud live \
   --replay tests/replays/arena-scripted.sreplay --effect-scale reduced:1 --capture-frames 1700 --capture-step 1
 cargo run -p sapphire_testkit --profile tools --locked -- flashes <abs>/flash-reduced --frames 1700
-cargo test -p sapphire_sandbox --features dev --locked --test flashes -- --ignored   # the scripted fight, both settings
+cargo test -p sapphire_sandbox --features dev --locked --test flashes -- --ignored --nocapture --test-threads=1   # the three arena fights, both settings
+cargo test -p game_app --features dev --locked --test flashes_in_the_ward -- --ignored --nocapture   # the ward's walk, both settings
 ```
 
-**Passing:** every test passes; the analysis prints `frames=` the fight's length and `wcag_2_3_1=pass` for each fight at both settings, with `red_rate=0`. Without `--capture-frames` the sequence is the captured frame alone, which the analyser refuses. A3 scored the scripted fight 5 transitions a second at default and 4 reduced, the stress fight 6 and 5, against a limit of 6.
+**Passing:** every test passes; the analysis prints `frames=` the fight's length and `wcag_2_3_1=pass` for each fight at both settings, with `red_rate=0`. Without `--capture-frames` the sequence is the captured frame alone, which the analyser refuses. A3 scored the scripted fight 5 transitions a second at default and 4 reduced, the stress fight 6 and 5, against a limit of 6. A7, on Metal: the ward's walk 5 and 4 (it was 10 and 9, all inside the ultimate's cuts), the scripted fight 5 and 3, the ultimate 2 and 2, the stress fight still 6 and 3. Red is 0 in the arena and 1 a second in the ward, at two camera passes beside red props (triage C-7), which `flashes_in_the_ward`'s `MOST_RED` holds.
 
-**CI:** every test above in `Test` on all three OSes, the goldens of the settings pages and the notice on all three backends. The scripted fight's flashes in the nightly `App tests (vulkan-lavapipe, flashes …)` jobs, one per setting; the stress fight's here only.
+**CI:** every test above in `Test` on all three OSes, the goldens of the settings pages and the notice on all three backends. The nightly `App tests (vulkan-lavapipe, flashes …)` jobs (A7, 13 runners): the scripted fight with the ultimate and the stress fight, a runner a setting each, and the ward's walk in 9 parts (4 at default, 5 reduced), each estimated under 110 minutes.
 
 **Owed:** players who need these settings, and a reader of Japanese.
 

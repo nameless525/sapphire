@@ -111,6 +111,12 @@ impl Sound {
         })
     }
 
+    /// Decodes the stream as [`ArchivedSound::decode`] does, for a sound copied out of its pack
+    /// ([`ArchivedSound::to_sound`]): what a worker decodes while the pack's bytes stay where they are.
+    pub fn decode(&self) -> Result<DecodedSound, SoundError> {
+        checked(decode_vorbis(&self.vorbis)?, self.sample_rate, self.channels, self.frames)
+    }
+
     pub fn to_cooked(&self) -> Result<AlignedVec, CookedError> {
         sapphire_serialize::to_cooked(self)
     }
@@ -135,21 +141,40 @@ impl ArchivedSound {
     /// Decodes the stream, checking its format and length against what the cook found.
     /// Load-time work: see the [module docs](self).
     pub fn decode(&self) -> Result<DecodedSound, SoundError> {
-        let decoded = decode_vorbis(&self.vorbis)?;
-        let expected = self.sample_rate.to_native();
-        if decoded.sample_rate != expected {
-            return Err(SoundError::SampleRateMismatch { expected, found: decoded.sample_rate });
-        }
-        let expected = self.channels.to_native();
-        if decoded.channels != expected {
-            return Err(SoundError::ChannelsMismatch { expected, found: decoded.channels });
-        }
-        let expected = self.frames.to_native();
-        if decoded.frames() as u64 != u64::from(expected) {
-            return Err(SoundError::Length { expected, found: decoded.frames() as u64 });
-        }
-        Ok(decoded)
+        let (sample_rate, channels, frames) =
+            (self.sample_rate.to_native(), self.channels.to_native(), self.frames.to_native());
+        checked(decode_vorbis(&self.vorbis)?, sample_rate, channels, frames)
     }
+
+    /// The sound, out of its pack: a copy of its stream to decode elsewhere ([`Sound::decode`]).
+    #[must_use]
+    pub fn to_sound(&self) -> Sound {
+        Sound {
+            sample_rate: self.sample_rate.to_native(),
+            channels: self.channels.to_native(),
+            frames: self.frames.to_native(),
+            vorbis: self.vorbis.to_vec(),
+        }
+    }
+}
+
+/// `decoded`, if its format and length are what the cook found.
+fn checked(
+    decoded: DecodedSound,
+    sample_rate: u32,
+    channels: u32,
+    frames: u32,
+) -> Result<DecodedSound, SoundError> {
+    if decoded.sample_rate != sample_rate {
+        return Err(SoundError::SampleRateMismatch { expected: sample_rate, found: decoded.sample_rate });
+    }
+    if decoded.channels != channels {
+        return Err(SoundError::ChannelsMismatch { expected: channels, found: decoded.channels });
+    }
+    if decoded.frames() as u64 != u64::from(frames) {
+        return Err(SoundError::Length { expected: frames, found: decoded.frames() as u64 });
+    }
+    Ok(decoded)
 }
 
 /// Decodes a whole Ogg Vorbis file.

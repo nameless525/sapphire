@@ -22,12 +22,13 @@
 //! player's to change, apart from the text's.
 
 use std::collections::HashSet;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::score::Score;
-use sapphire_assets::sound::DecodedSound;
+use sapphire_assets::sound::{DecodedSound, Sound};
 use sapphire_assets::voice::VoiceLines;
 pub use sapphire_audio::Volumes;
 use sapphire_audio::{
@@ -176,7 +177,7 @@ impl DeviceAudio {
     }
 
     /// Loads `sounds` and opens the device, with nothing due to play. `None`, logged, if the OS won't
-    /// set up audio.
+    /// set up audio. A window's game loads them off the frame instead ([`SoundsLoad`]).
     pub fn for_show(
         sounds: &ShowSounds,
         platform: &mut Platform,
@@ -185,6 +186,13 @@ impl DeviceAudio {
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
         let loaded = load(sounds, content, renderer, gpu)?;
+        Self::open(ReadySounds { loaded, score: sounds.score }, platform)
+    }
+
+    /// Opens the device for sounds a [`SoundsLoad`] has made ready, with nothing due to play. `None`, logged,
+    /// if the OS won't set up audio.
+    pub fn open(ready: ReadySounds, platform: &mut Platform) -> Result<Option<Self>, AppInitError> {
+        let ReadySounds { loaded, score } = ready;
         if let Err(error) = platform.prepare_audio() {
             tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
             return Ok(None);
@@ -195,7 +203,7 @@ impl DeviceAudio {
         Ok(Some(Self {
             system,
             random: CueRng::new(CUE_SEED),
-            score: sounds.score,
+            score,
             repeating: None,
             emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
@@ -317,6 +325,55 @@ fn music<'a>(score: Option<AssetId>, fight: &CueSounds<'a>) -> Option<MusicReque
     Some(MusicRequest { score: score?, phase, instead })
 }
 
+/// A show's sounds on their way to a [`DeviceAudio`] (M4 H4): read out of their pack on the frame that asks,
+/// a few milliseconds, and decoded on the warm-up pool, the 50 ms that was once the window's first title frame.
+pub struct SoundsLoad {
+    score: Option<AssetId>,
+    decoding: mpsc::Receiver<Result<Loaded, String>>,
+}
+
+impl SoundsLoad {
+    /// Reads `sounds`, the voice lines' cues with the table's, and starts decoding them off the frame.
+    pub fn begin(
+        sounds: &ShowSounds,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Self, AppInitError> {
+        let read = read(sounds, content, renderer, gpu)?;
+        let (sender, decoding) = mpsc::channel();
+        sapphire_jobs::spawn_warm_up(move || {
+            let _ = sender.send(read.decode());
+        });
+        Ok(Self { score: sounds.score, decoding })
+    }
+
+    /// The sounds once they're decoded, without waiting: `None` while they aren't, and then once.
+    pub fn take(&mut self) -> Option<Result<ReadySounds, AppInitError>> {
+        let loaded = match self.decoding.try_recv() {
+            Ok(loaded) => loaded.map_err(AppInitError::msg),
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => Err(AppInitError::msg("decoding the sounds panicked")),
+        };
+        Some(loaded.map(|loaded| ReadySounds { loaded, score: self.score }))
+    }
+}
+
+/// A show's sounds, decoded, for [`DeviceAudio::open`].
+pub struct ReadySounds {
+    loaded: Loaded,
+    score: Option<AssetId>,
+}
+
+impl ReadySounds {
+    /// How many sounds there are, decoded.
+    #[must_use]
+    pub fn sounds(&self) -> usize {
+        let cues = self.loaded.cues.iter().map(|(_, _, sounds)| sounds.len());
+        cues.sum::<usize>() + self.loaded.score.as_ref().map_or(0, |(_, _, stems)| stems.len())
+    }
+}
+
 /// Loads `sounds` and decodes theirs, the voice lines' cues with the table's: what a mixer holds from
 /// then on.
 fn load(
@@ -325,8 +382,18 @@ fn load(
     renderer: &mut Renderer,
     gpu: &GpuContext,
 ) -> Result<Loaded, AppInitError> {
+    read(sounds, content, renderer, gpu)?.decode().map_err(AppInitError::msg)
+}
+
+/// [`load`]'s first half: `sounds` read, and a copy of each of theirs to decode.
+fn read(
+    sounds: &ShowSounds,
+    content: &mut Content,
+    renderer: &mut Renderer,
+    gpu: &GpuContext,
+) -> Result<Read, AppInitError> {
     let stopwatch = Stopwatch::start();
-    let mut decoded = HashSet::new();
+    let mut read = HashSet::new();
     let voices = sounds
         .voices
         .iter()
@@ -338,30 +405,66 @@ fn load(
     cues.dedup();
     let cues = cues
         .iter()
-        .map(|&id| content.load_cue(id, &mut decoded, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
+        .map(|&id| content.load_cue(id, &mut read, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
         .collect::<Result<Vec<_>, _>>()?;
     let score = match sounds.score {
-        Some(id) => Some(
-            content.load_score(id, &mut decoded, renderer, gpu).map(|(score, stems)| (id, score, stems))?,
-        ),
+        Some(id) => {
+            Some(content.load_score(id, &mut read, renderer, gpu).map(|(score, stems)| (id, score, stems))?)
+        }
         None => None,
     };
-    let all =
-        cues.iter().flat_map(|(_, _, sounds)| sounds).chain(score.iter().flat_map(|(_, _, stems)| stems));
-    let (count, frames) =
-        all.fold((0, 0), |(count, frames), (_, sound)| (count + 1, frames + sound.frames()));
-    let load_and_decode = stopwatch.elapsed();
-    tracing::info!(
-        target: LOG_TARGET,
-        cues = cues.len(),
-        score = score.is_some(),
-        languages = voices.len(),
-        sounds = count,
-        frames,
-        ?load_and_decode,
-        "sounds ready"
-    );
-    Ok(Loaded { cues, score, voices })
+    Ok(Read { cues, score, voices, took: stopwatch.elapsed() })
+}
+
+/// What [`read`] read: the cues, the score and the voice lines, each sound still to decode.
+struct Read {
+    cues: Vec<ReadCue>,
+    score: Option<ReadScore>,
+    voices: Vec<VoiceLines>,
+    /// How long reading them took.
+    took: Duration,
+}
+
+impl Read {
+    /// Each sound decoded: [`load`]'s second half, wherever it runs.
+    fn decode(self) -> Result<Loaded, String> {
+        let stopwatch = Stopwatch::start();
+        let decode = |sounds: Vec<(AssetId, Sound)>| {
+            sounds
+                .into_iter()
+                .map(|(id, sound)| {
+                    sound
+                        .decode()
+                        .map(|decoded| (id, decoded))
+                        .map_err(|error| format!("the sound {id}: {error}"))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        };
+        let cues = self
+            .cues
+            .into_iter()
+            .map(|(id, cue, sounds)| Ok((id, cue, decode(sounds)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        let score =
+            self.score.map(|(id, score, stems)| Ok::<_, String>((id, score, decode(stems)?))).transpose()?;
+        let all =
+            cues.iter().flat_map(|(_, _, sounds)| sounds).chain(score.iter().flat_map(|(_, _, stems)| stems));
+        let (count, frames) =
+            all.fold((0, 0), |(count, frames), (_, sound)| (count + 1, frames + sound.frames()));
+        let (read, decode) = (self.took, stopwatch.elapsed());
+        tracing::info!(
+            target: LOG_TARGET,
+            cues = cues.len(),
+            score = score.is_some(),
+            languages = self.voices.len(),
+            sounds = count,
+            frames,
+            ?read,
+            ?decode,
+            "sounds ready"
+        );
+        Ok(Loaded { cues, score, voices: self.voices })
+    }
 }
 
 /// Gives `system` what [`load`] loaded.
@@ -397,6 +500,12 @@ type LoadedCue = (AssetId, Cue, Vec<(AssetId, DecodedSound)>);
 
 /// A score and its stems, decoded.
 type LoadedScore = (AssetId, Score, Vec<(AssetId, DecodedSound)>);
+
+/// A cue and those of its sounds no cue before it brought, read to decode.
+type ReadCue = (AssetId, Cue, Vec<(AssetId, Sound)>);
+
+/// A score and its stems, read to decode.
+type ReadScore = (AssetId, Score, Vec<(AssetId, Sound)>);
 
 /// The rate [`OfflineAudio`] mixes at: a phone's and most devices' own.
 const OFFLINE_RATE: u32 = 48_000;

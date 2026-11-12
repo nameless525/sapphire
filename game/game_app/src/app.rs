@@ -37,7 +37,7 @@ use sapphire_rhi::{
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
 use sapphire_stage::Stage;
-use sapphire_stage::audio::{DeviceAudio, Volumes};
+use sapphire_stage::audio::{DeviceAudio, SoundsLoad, Volumes};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
@@ -63,7 +63,11 @@ pub struct GameApp {
     /// Made once the first boot has stood the game. Outlives a lost device: what it plays was read from the
     /// content, and nothing of it is on the GPU.
     audio: Option<DeviceAudio>,
-    /// Whether the first boot has stood the game, so the audio's made and the title's been passed or shown.
+    /// The show's sounds, decoding on the warm-up pool from the frame the first boot stood the game until
+    /// the audio's made of them (M4 H4): no title frame waits on them.
+    sounds: Option<SoundsLoad>,
+    /// Whether the first boot has stood the game, so the audio's on its way and the title's been passed or
+    /// shown.
     heard: bool,
     /// The release the game stands on, and the means to look for the next. None where the options say a run
     /// patches nothing.
@@ -145,6 +149,7 @@ impl App for GameApp {
             reload: None,
             losses: Losses::default(),
             audio: None,
+            sounds: None,
             heard: false,
             patches,
             launched: false,
@@ -267,7 +272,7 @@ impl App for GameApp {
                     }
                 }
                 if matches!(game, Game::Stood(_))
-                    && let Err(error) = self.stood(platform)
+                    && let Err(error) = self.stood()
                 {
                     tracing::error!(target: LOG_TARGET, %error, "the game didn't boot");
                     return AppControl::Fail;
@@ -289,6 +294,16 @@ impl App for GameApp {
         stage.hand_frame_time(dt);
         let view_dt = stage.show.drive_view(dt);
         let dt = dt.as_secs_f32();
+        if let Some(ready) = self.sounds.as_mut().and_then(SoundsLoad::take) {
+            self.sounds = None;
+            match ready.and_then(|ready| DeviceAudio::open(ready, platform)) {
+                Ok(audio) => self.audio = audio.map(|audio| heard_as(audio, &self.chosen)),
+                Err(error) => {
+                    tracing::error!(target: LOG_TARGET, %error, "the game's sounds didn't load");
+                    return AppControl::Fail;
+                }
+            }
+        }
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, stage.scene.sound(), stage.show.cue_sounds());
         }
@@ -385,7 +400,7 @@ impl GameApp {
     /// The game a boot has just stood, in the window that booted it: sized to the window and named in its
     /// language, then, the first time, heard and on its title or past it as the arguments say; after a lost
     /// device, back where the save has it.
-    fn stood(&mut self, platform: &mut Platform) -> Result<(), AppInitError> {
+    fn stood(&mut self) -> Result<(), AppInitError> {
         let Some(OnDevice { game: Game::Stood(stage), .. }) = &mut self.on_device else {
             unreachable!("a boot has just stood the game");
         };
@@ -397,17 +412,10 @@ impl GameApp {
         let Stage { show, content, renderer, gpu, .. } = &mut **stage;
         if !self.heard {
             self.heard = true;
-            self.audio = match show.shown.fight.show.cue_show() {
-                Some(cues) => {
-                    DeviceAudio::for_show(&cues.sounds_to_load(), platform, content, renderer, gpu)?
-                }
+            self.sounds = match show.shown.fight.show.cue_show() {
+                Some(cues) => Some(SoundsLoad::begin(&cues.sounds_to_load(), content, renderer, gpu)?),
                 None => None,
             };
-            if let Some(audio) = &mut self.audio {
-                audio.set_volumes(volumes_of(&self.chosen));
-                audio.set_mono(self.chosen.mono);
-                speak_in(audio, &self.chosen.locale().voice);
-            }
         }
         if let Some(reload) = self.reload.take() {
             show.reload_from(&reload);
@@ -876,6 +884,14 @@ fn volumes_of(chosen: &PlayerSettings) -> Volumes {
 
 /// Speaks the fight's lines in `language`, the player's: a language the fight has no lines in speaks none,
 /// and says so once here.
+/// `audio`, made: at the volumes, the mix and in the voice language the player has chosen.
+fn heard_as(mut audio: DeviceAudio, chosen: &PlayerSettings) -> DeviceAudio {
+    audio.set_volumes(volumes_of(chosen));
+    audio.set_mono(chosen.mono);
+    speak_in(&mut audio, &chosen.locale().voice);
+    audio
+}
+
 fn speak_in(audio: &mut DeviceAudio, language: &str) {
     if !audio.set_voice_language(language) {
         tracing::info!(target: LOG_TARGET, language, "the fight has no voice lines in the chosen language");

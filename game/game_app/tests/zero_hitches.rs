@@ -51,6 +51,7 @@ use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platf
 use sapphire_render::quality::{QualitySettings, TierId, TierTable};
 use sapphire_render::{PipelineStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
+use sapphire_stage::audio::SoundsLoad;
 use sapphire_stage::{Stage, headless_gpu};
 use sapphire_time::Stopwatch;
 
@@ -67,6 +68,8 @@ const HOT_FRAMES: u32 = 60;
 const MOST_CLIMB_FRAMES: u32 = 4 * 60 * 60;
 /// Longer than a tier's renderer takes to build off the frame, even on lavapipe.
 const MOST_CHANGE: Duration = Duration::from_secs(600);
+/// Longer than the show's sounds take to decode off the frame, even on CI's runners.
+const MOST_SOUND_FRAMES: u32 = 30 * 60;
 /// Longer than a win takes to go back to the title under its wipe.
 const MOST_RETURN_FRAMES: u32 = 30 * 60;
 /// Frames a second where a tier has no rate of its own.
@@ -378,9 +381,36 @@ fn walk_the_ward(
     held: (FormFactor, QualityChoice),
 ) -> Result<Walked, AppInitError> {
     walk.what = "the title".to_owned();
-    for _ in 0..TITLE_FRAMES {
+    // The window's game reads its sounds on its first title frame and decodes them off the frame, as here.
+    let stopwatch = Stopwatch::start();
+    let Stage { show, content, renderer, gpu, .. } = &mut walk.stage;
+    let mut sounds = show
+        .shown
+        .fight
+        .show
+        .cue_show()
+        .map(|cues| SoundsLoad::begin(&cues.sounds_to_load(), content, renderer, gpu))
+        .transpose()?
+        .expect("the game's fight has sounds");
+    let read = stopwatch.elapsed();
+    let mut frame = 0;
+    let mut decoded = None;
+    while frame < TITLE_FRAMES || decoded.is_none() {
+        assert!(frame < MOST_SOUND_FRAMES, "the sounds never decoded");
         walk.play()?;
+        frame += 1;
+        if decoded.is_none()
+            && let Some(ready) = sounds.take()
+        {
+            decoded = Some((frame, ready?.sounds()));
+        }
     }
+    let (frame, count) = decoded.expect("decoded");
+    eprintln!(
+        "zero_hitches: the title's sounds read in {:.1} ms on its first frame, {count} decoded off the frame by its \
+         frame {frame}",
+        read.as_secs_f64() * 1e3
+    );
     assert!(matches!(state(walk), FlowState::Title { .. }), "{:?}", state(walk));
     // The title's first row is the new game, and has the focus.
     walk.what = "the title's new game".to_owned();

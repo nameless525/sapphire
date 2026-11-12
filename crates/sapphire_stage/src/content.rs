@@ -99,7 +99,7 @@ use sapphire_assets::pack;
 use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::score::Score;
-use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
+use sapphire_assets::sound::{AUDIO_PACK, Sound};
 use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::voice::VoiceLines;
 use sapphire_assets::{
@@ -1825,16 +1825,16 @@ impl Content {
     }
 
     /// Mounts the audio pack, which nothing else reads, and loads the cue `id` with its sounds until
-    /// they are resident, then hands back the cue and each sound decoded, but for those already in
-    /// `decoded`, as cues sharing a sound would be, which it adds the rest to. Neither stays loaded: a
+    /// they are resident, then hands back the cue and a copy of each sound to decode, but for those already
+    /// in `read`, as cues sharing a sound would be, which it adds the rest to. Neither stays loaded: a
     /// mixer holds the decoded sound from then on.
     pub(crate) fn load_cue(
         &mut self,
         id: AssetId,
-        decoded: &mut HashSet<AssetId>,
+        read: &mut HashSet<AssetId>,
         renderer: &mut Renderer,
         gpu: &GpuContext,
-    ) -> Result<(Cue, Vec<(AssetId, DecodedSound)>), AppInitError> {
+    ) -> Result<(Cue, Vec<(AssetId, Sound)>), AppInitError> {
         let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the cue {id}: {error}"));
         self.mount_audio().map_err(|error| failed(&error))?;
         let assets = &mut self.gpu;
@@ -1844,20 +1844,19 @@ impl Content {
             .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| failed(&error))?;
         let cue = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_owned_cue();
-        let sounds =
-            self.decode_sounds(&cue.sounds, decoded, renderer, gpu).map_err(|error| failed(&error))?;
+        let sounds = self.read_sounds(&cue.sounds, read, renderer, gpu).map_err(|error| failed(&error))?;
         Ok((cue, sounds))
     }
 
-    /// Loads the score `id` (M3 A1) as [`Self::load_cue`] does a cue: the score, and each of its stems
-    /// decoded but for those in `decoded`.
+    /// Loads the score `id` (M3 A1) as [`Self::load_cue`] does a cue: the score, and a copy of each of its
+    /// stems but for those in `read`.
     pub(crate) fn load_score(
         &mut self,
         id: AssetId,
-        decoded: &mut HashSet<AssetId>,
+        read: &mut HashSet<AssetId>,
         renderer: &mut Renderer,
         gpu: &GpuContext,
-    ) -> Result<(Score, Vec<(AssetId, DecodedSound)>), AppInitError> {
+    ) -> Result<(Score, Vec<(AssetId, Sound)>), AppInitError> {
         let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the score {id}: {error}"));
         self.mount_audio().map_err(|error| failed(&error))?;
         let assets = &mut self.gpu;
@@ -1868,7 +1867,7 @@ impl Content {
             .map_err(|error| failed(&error))?;
         let score = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_owned_score();
         let stems: Vec<AssetId> = score.stems.iter().map(|stem| stem.sound).collect();
-        let sounds = self.decode_sounds(&stems, decoded, renderer, gpu).map_err(|error| failed(&error))?;
+        let sounds = self.read_sounds(&stems, read, renderer, gpu).map_err(|error| failed(&error))?;
         Ok((score, sounds))
     }
 
@@ -1900,17 +1899,17 @@ impl Content {
         Ok(())
     }
 
-    /// Each of `sounds` not in `decoded` yet, resident and then decoded, added to `decoded`.
-    fn decode_sounds(
+    /// Each of `sounds` not in `read` yet, resident and then copied out to decode, added to `read`.
+    fn read_sounds(
         &mut self,
         sounds: &[AssetId],
-        decoded: &mut HashSet<AssetId>,
+        read: &mut HashSet<AssetId>,
         renderer: &mut Renderer,
         gpu: &GpuContext,
-    ) -> Result<Vec<(AssetId, DecodedSound)>, String> {
+    ) -> Result<Vec<(AssetId, Sound)>, String> {
         let assets = &mut self.gpu;
         let mut out = Vec::with_capacity(sounds.len());
-        for &sound in sounds.iter().filter(|&&sound| decoded.insert(sound)) {
+        for &sound in sounds.iter().filter(|&&sound| read.insert(sound)) {
             let handle = self
                 .server
                 .load_with::<Sound>(sound, LoadPriority::Critical)
@@ -1919,7 +1918,7 @@ impl Content {
                 .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
                 .map_err(|error| error.to_string())?;
             let cooked = self.server.get(&handle).ok_or("a sound isn't loaded")?;
-            out.push((sound, cooked.decode().map_err(|error| error.to_string())?));
+            out.push((sound, cooked.to_sound()));
         }
         Ok(out)
     }

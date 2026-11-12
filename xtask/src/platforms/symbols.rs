@@ -98,6 +98,11 @@ fn triple(target: Target) -> String {
 /// since a profile can't differ by target, and the flags that remap `remaps` in every path rustc and the C
 /// and C++ compilers record. The flags go in the target's own variables, which Cargo and cc-rs add to
 /// `.cargo/config.toml`'s and the plain `CFLAGS` rather than replace.
+///
+/// Windows' links the C runtime statically (M4 X4), so the package needs no Visual C++ redistributable on
+/// the player's machine: `+crt-static` for rustc, which cc-rs follows with `/MT`, and
+/// [`STATIC_CRT_TOOLCHAIN`] for CMake's builds (SDL's), whose runtime CMake chooses by its own variable.
+/// Only shipping builds do: a dev build, the tools and CI's tests keep the DLL's runtime.
 pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String, OsString)>> {
     let mut env: Vec<(String, OsString)> = match target {
         Target::Ios | Target::IosSim | Target::MacOs => {
@@ -111,6 +116,9 @@ pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String,
     let mut rustflags = Vec::new();
     let mut cflags = Vec::new();
     let msvc = target == Target::Windows;
+    if msvc {
+        rustflags.push("-Ctarget-feature=+crt-static".to_owned());
+    }
     for remap in remaps {
         let local = remap.local.to_str().with_context(|| format!("{} isn't UTF-8", remap.local.display()))?;
         // Cargo and cc-rs split these variables at whitespace.
@@ -136,8 +144,18 @@ pub fn link_env(target: Target, remaps: &[Remap]) -> anyhow::Result<Vec<(String,
     let lower = triple.replace('-', "_");
     env.push((format!("CFLAGS_{lower}"), cflags.join(" ").into()));
     env.push((format!("CXXFLAGS_{lower}"), cflags.join(" ").into()));
+    if msvc {
+        // cmake-rs reads the target's own toolchain variable before the plain one.
+        env.push((
+            format!("CMAKE_TOOLCHAIN_FILE_{lower}"),
+            workspace::root().join(STATIC_CRT_TOOLCHAIN).into(),
+        ));
+    }
     Ok(env)
 }
+
+/// The CMake toolchain file that has CMake's builds link the C runtime statically in a shipping Windows build.
+pub const STATIC_CRT_TOOLCHAIN: &str = "platform/windows/static_crt.cmake";
 
 /// Fails if any file in `paths` (files, or directories read whole) holds one of the `local` directories of
 /// `remaps` or the builder's home directory, with either kind of slash: what no shipping build may carry.
@@ -361,6 +379,24 @@ mod tests {
             windows_cxx.and_then(|(_, value)| value.to_str()),
             Some("/d1trimfile:/work/engine /d1trimfile:/u/ana/.cargo")
         );
+
+        let windows_rust = windows.iter().find(|(name, _)| name.ends_with("_PC_WINDOWS_MSVC_RUSTFLAGS"));
+        assert_eq!(
+            windows_rust.and_then(|(_, value)| value.to_str()),
+            Some(
+                "-Ctarget-feature=+crt-static --remap-path-prefix=/work/engine=/sapphire \
+                 --remap-path-prefix=/u/ana/.cargo=/cargo"
+            ),
+            "the C runtime linked in, so no redistributable"
+        );
+        let toolchain = windows.iter().find(|(name, _)| name.starts_with("CMAKE_TOOLCHAIN_FILE_"));
+        let toolchain =
+            toolchain.map(|(_, value)| PathBuf::from(value)).expect("CMake's builds are told too");
+        assert_eq!(toolchain, workspace::root().join(STATIC_CRT_TOOLCHAIN));
+        let text = fs::read_to_string(&toolchain).unwrap();
+        assert!(text.contains(r#"set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")"#));
+        assert!(env.iter().all(|(name, _)| !name.starts_with("CMAKE_")), "only Windows'");
+        assert!(!get("CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS").unwrap().contains("crt-static"));
 
         let spaced = [Remap { local: PathBuf::from("/my work"), shipped: WORKSPACE_PREFIX }];
         assert!(link_env(Target::MacOs, &spaced).is_err());

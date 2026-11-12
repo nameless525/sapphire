@@ -4,7 +4,7 @@
 //!
 //! | Platform | Added | Checked (`checks/`) |
 //! |---|---|---|
-//! | `windows` | the manifest, VERSIONINFO and the icon, linked by `game_app`'s build script; a GUI program | the resources and subsystem read back from the executable ([`super::pe`]): `windows-resources.txt` |
+//! | `windows` | the manifest, VERSIONINFO and the icon, linked by `game_app`'s build script; a GUI program; the C runtime linked in ([`super::symbols::link_env`]) | the resources and subsystem read back from the executable ([`super::pe`]), and no C runtime DLL among its imports, so a player needs no Visual C++ redistributable: `windows-resources.txt` |
 //! | `linux` | `<bundle id>.desktop` beside the executable and its icon | every library and symbol version it needs is one Steam Linux Runtime 3.0 has ([`super::elf`]): `linux-needs.txt` |
 //! | `macos` | an ad hoc signature with the hardened runtime and [`MACOS_ENTITLEMENTS`] (none) | `codesign --verify --strict --deep`, the runtime flag, the entitlements read back, and `AppIcon.icns` named by Info.plist: `codesign.txt`, `entitlements.plist`, `signature.txt` |
 //!
@@ -64,6 +64,10 @@ const RUNTIME_LIBRARIES: [&str; 9] = [
     "libstdc++.so.6",
     "libasound.so.2",
 ];
+
+/// The C runtime's DLLs, by how their names start, lowercased: what a Windows package never imports, since
+/// its build links the runtime statically (M4 X4), so the depot needs no Visual C++ redistributable.
+const C_RUNTIME_DLLS: [&str; 6] = ["vcruntime", "msvcp", "ucrtbase", "api-ms-win-crt-", "concrt", "vccorlib"];
 
 /// Whether a package is one of Steam's.
 pub fn ships_on_steam(target: Target) -> bool {
@@ -127,6 +131,7 @@ pub fn finish(target: Target, app: &App, build: &Build, stage: &Path) -> anyhow:
                 .context("failed to write checks/windows-resources.txt")?;
             Ok(json!({
                 "subsystem": "gui",
+                "c_runtime": "static",
                 "manifest": WINDOWS_MANIFEST,
                 "file_version": found.file_version,
                 "product_version": build.id(&app.version),
@@ -197,14 +202,29 @@ struct WindowsFound {
     icon_images: usize,
 }
 
-/// Fails unless the executable is a GUI program, its one manifest (resource 1) is [`WINDOWS_MANIFEST`], its
-/// VERSIONINFO has the version and build number, and its icon 1 has every image its group names.
+/// Fails unless the executable is a GUI program that imports no C runtime DLL, its one manifest (resource 1)
+/// is [`WINDOWS_MANIFEST`], its VERSIONINFO has the version and build number, and its icon 1 has every image
+/// its group names.
 fn check_windows(exe: &Executable, expected: &WindowsExpected<'_>) -> anyhow::Result<WindowsFound> {
     ensure!(
         exe.subsystem == pe::SUBSYSTEM_GUI,
         "the executable's subsystem is {}, not a GUI program's ({}): Steam would open a console beside it",
         exe.subsystem,
         pe::SUBSYSTEM_GUI
+    );
+    let runtime: Vec<&str> = exe
+        .imports
+        .iter()
+        .filter(|dll| C_RUNTIME_DLLS.iter().any(|start| dll.to_ascii_lowercase().starts_with(start)))
+        .map(String::as_str)
+        .collect();
+    ensure!(
+        runtime.is_empty(),
+        "the executable imports the C runtime's {}, which a player without the Visual C++ redistributable \
+         lacks: a shipping build links the runtime statically (`+crt-static`, and {} for CMake's builds), so \
+         something linked was built against the DLL's",
+        runtime.join(", "),
+        super::symbols::STATIC_CRT_TOOLCHAIN
     );
     let manifests: Vec<_> = exe.of_kind(pe::RT_MANIFEST).collect();
     ensure!(
@@ -252,8 +272,9 @@ fn check_windows(exe: &Executable, expected: &WindowsExpected<'_>) -> anyhow::Re
 
     let sizes: Vec<String> = images.iter().map(|image| image.size.to_string()).collect();
     let mut report = format!(
-        "subsystem: {} (GUI)\nmanifest: resource 1, {} bytes, as {WINDOWS_MANIFEST}\n",
+        "subsystem: {} (GUI)\nimports: {} (no C runtime DLL)\nmanifest: resource 1, {} bytes, as {WINDOWS_MANIFEST}\n",
         exe.subsystem,
+        exe.imports.join(", "),
         manifests[0].data.len()
     );
     report.push_str(&format!("VERSIONINFO: file {dotted}, product {dotted}, table {}\n", info.table));
@@ -436,6 +457,24 @@ mod tests {
         // rc.exe embeds the file's bytes: a checkout with CRLF makes the same manifest.
         let crlf = String::from_utf8(MANIFEST.to_vec()).unwrap().replace('\n', "\r\n");
         check(pe::SUBSYSTEM_GUI, &resources(crlf.as_bytes(), [0, 1, 0, 1188], "0.1.0+1188")).unwrap();
+    }
+
+    /// M4 X4: the package carries its C runtime, so a DLL of the runtime among its imports fails it.
+    #[test]
+    fn a_windows_package_needs_no_c_runtime_dll() {
+        let good = resources(MANIFEST, [0, 1, 0, 1188], "0.1.0+1188");
+        let read = |imports: &[&str]| {
+            Executable::read(&build::importing(pe::SUBSYSTEM_GUI, &good, imports)).unwrap()
+        };
+        let found = check_windows(&read(&["KERNEL32.dll", "USER32.dll", "d3d12.dll"]), &expected()).unwrap();
+        assert!(found.report.contains("imports: KERNEL32.dll, USER32.dll, d3d12.dll"), "{}", found.report);
+        for runtime in
+            ["VCRUNTIME140.dll", "vcruntime140_1.dll", "MSVCP140.dll", "api-ms-win-crt-heap-l1-1-0.dll"]
+        {
+            let error =
+                check_windows(&read(&["KERNEL32.dll", runtime]), &expected()).unwrap_err().to_string();
+            assert!(error.contains(runtime) && error.contains("redistributable"), "{error}");
+        }
     }
 
     #[test]

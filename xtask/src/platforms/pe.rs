@@ -1,10 +1,12 @@
 //! A Windows executable's resources, read from its bytes (M4 S4): the application manifest, VERSIONINFO and
-//! the icons, as `cargo xtask package --platform windows` checks them, with the subsystem it runs under.
+//! the icons, as `cargo xtask package --platform windows` checks them, with the subsystem it runs under and
+//! the DLLs it imports (M4 X4).
 //!
 //! The PE format is Microsoft's ("PE Format", learn.microsoft.com), and VERSIONINFO's nodes are
 //! `VS_VERSIONINFO`'s ("VS_VERSIONINFO structure", the same site). Only what the check reads is read: the
-//! headers' resource directory and sections, the resource tree's three levels (type, name, language), and
-//! VERSIONINFO's fixed numbers and string table. Anything malformed is an error, never a panic.
+//! headers' import and resource directories and sections, the import table's DLL names, the resource
+//! tree's three levels (type, name, language), and VERSIONINFO's fixed numbers and string table. Anything
+//! malformed is an error, never a panic.
 
 use std::collections::BTreeMap;
 
@@ -30,11 +32,16 @@ pub struct Resource {
     pub data: Vec<u8>,
 }
 
+/// More DLLs than any executable imports: a table that runs on past it is malformed.
+const MAX_IMPORTS: usize = 4096;
+
 /// What an executable says about itself.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Executable {
     /// `IMAGE_SUBSYSTEM_*` from the optional header.
     pub subsystem: u16,
+    /// The DLLs the loader maps for it, by the names the import table gives, in its order.
+    pub imports: Vec<String>,
     pub resources: Vec<Resource>,
 }
 
@@ -67,20 +74,28 @@ impl Executable {
                 raw_offset: file.u32(header + 20)?,
             });
         }
-        // The resource table is the third data directory.
-        let (rva, size) = if directories > 2 {
-            (file.u32(directories_at + 16)?, file.u32(directories_at + 20)?)
-        } else {
-            (0, 0)
+        let directory = |index: u32| -> anyhow::Result<Option<u32>> {
+            if directories <= index {
+                return Ok(None);
+            }
+            let at = directories_at + 8 * usize::try_from(index)?;
+            let (rva, size) = (file.u32(at)?, file.u32(at + 4)?);
+            Ok((rva != 0 && size != 0).then_some(rva))
         };
-        let resources = if rva == 0 || size == 0 {
-            Vec::new()
-        } else {
-            let image = Image { file, sections: sections_list };
-            let root = image.offset(rva).context("the resource table's address is in no section")?;
-            image.resources(root)?
+        let image = Image { file, sections: sections_list };
+        // The import table is the second data directory, and the resource table the third.
+        let imports = match directory(1)? {
+            Some(rva) => {
+                image.imports(image.offset(rva).context("the import table's address is in no section")?)?
+            }
+            None => Vec::new(),
         };
-        Ok(Self { subsystem, resources })
+        let resources = match directory(2)? {
+            Some(rva) => image
+                .resources(image.offset(rva).context("the resource table's address is in no section")?)?,
+            None => Vec::new(),
+        };
+        Ok(Self { subsystem, imports, resources })
     }
 
     /// Every resource of `kind`.
@@ -111,6 +126,21 @@ impl Image<'_> {
                 .then(|| usize::try_from(section.raw_offset.checked_add(within)?).ok())
                 .flatten()
         })
+    }
+
+    /// The DLL names of the import table at file offset `at`: 20-byte descriptors, each naming its DLL at
+    /// offset 12, to one of zeros.
+    fn imports(&self, at: usize) -> anyhow::Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut descriptor = at;
+        while self.file.slice(descriptor, 20)?.iter().any(|&byte| byte != 0) {
+            ensure!(names.len() < MAX_IMPORTS, "the import table runs past {MAX_IMPORTS} DLLs");
+            let name_rva = self.file.u32(descriptor + 12)?;
+            let name_at = self.offset(name_rva).context("an imported DLL's name is in no section")?;
+            names.push(self.file.ascii_z(name_at).context("an imported DLL's name")?);
+            descriptor += 20;
+        }
+        Ok(names)
     }
 
     /// The resource tree under the directory at file offset `root`: types, then names, then languages, each
@@ -284,6 +314,15 @@ impl<'a> Bytes<'a> {
         Ok(u32::from_le_bytes(self.slice(at, 4)?.try_into()?))
     }
 
+    /// A NUL-terminated ASCII string from `at`, of at most 256 bytes.
+    fn ascii_z(self, at: usize) -> anyhow::Result<String> {
+        let rest = self.0.get(at..).context("the file is cut short")?;
+        let end = rest.iter().take(257).position(|&byte| byte == 0).context("no NUL in 256 bytes")?;
+        let text = &rest[..end];
+        ensure!(text.is_ascii(), "not ASCII");
+        Ok(String::from_utf8_lossy(text).into_owned())
+    }
+
     /// A NUL-terminated UTF-16 string from `at`, before `end`, and where its NUL ends.
     fn utf16_z(self, at: usize, end: usize) -> anyhow::Result<(String, usize)> {
         let mut units = Vec::new();
@@ -309,9 +348,24 @@ pub mod build {
 
     /// A PE32+ executable for x86-64 with the given subsystem and, in one `.rsrc` section, the resources.
     pub fn executable(subsystem: u16, resources: &[Resource]) -> Vec<u8> {
+        importing(subsystem, resources, &[])
+    }
+
+    /// [`executable`], with an import table naming `imports` after the resources in the same section.
+    pub fn importing(subsystem: u16, resources: &[Resource], imports: &[&str]) -> Vec<u8> {
         const RSRC_RVA: u32 = 0x1000;
         const FILE_ALIGN: usize = 0x200;
-        let rsrc = resource_section(resources, RSRC_RVA);
+        let mut rsrc = resource_section(resources, RSRC_RVA);
+        let import_at = rsrc.len().next_multiple_of(4);
+        if !imports.is_empty() {
+            rsrc.resize(import_at + (imports.len() + 1) * 20, 0);
+            for (index, name) in imports.iter().enumerate() {
+                let name_at = rsrc.len();
+                rsrc.extend_from_slice(name.as_bytes());
+                rsrc.push(0);
+                put32(&mut rsrc, import_at + index * 20 + 12, RSRC_RVA + name_at as u32);
+            }
+        }
 
         let pe: usize = 0x80;
         let optional_size: usize = 240;
@@ -330,8 +384,12 @@ pub mod build {
         put16(&mut out, optional, 0x20b);
         put16(&mut out, optional + 68, subsystem);
         put32(&mut out, optional + 108, 16);
+        if !imports.is_empty() {
+            put32(&mut out, optional + 112 + 8, RSRC_RVA + import_at as u32);
+            put32(&mut out, optional + 112 + 12, ((imports.len() + 1) * 20) as u32);
+        }
         put32(&mut out, optional + 112 + 16, RSRC_RVA);
-        put32(&mut out, optional + 112 + 20, rsrc.len() as u32);
+        put32(&mut out, optional + 112 + 20, import_at as u32);
         let section = optional + optional_size;
         out[section..section + 5].copy_from_slice(b".rsrc");
         put32(&mut out, section + 8, rsrc.len() as u32);
@@ -470,8 +528,29 @@ mod tests {
         assert_eq!(read.of_kind(RT_ICON).count(), 2);
         assert_eq!(read.of_kind(RT_MANIFEST).next().unwrap().data, manifest);
 
+        assert!(read.imports.is_empty());
+
         let none = Executable::read(&build::executable(3, &[])).unwrap();
         assert_eq!((none.subsystem, none.resources.len()), (3, 0));
+    }
+
+    #[test]
+    fn reads_the_dlls_it_imports() {
+        let dlls = ["KERNEL32.dll", "VCRUNTIME140.dll", "api-ms-win-crt-runtime-l1-1-0.dll"];
+        let exe = build::importing(SUBSYSTEM_GUI, &[resource(RT_MANIFEST, 1, b"<assembly/>")], &dlls);
+        let read = Executable::read(&exe).unwrap();
+        assert_eq!(read.imports, dlls);
+        assert_eq!(read.resources.len(), 1, "the resources are still found beside them");
+
+        // A name that runs on, or points nowhere, is an error.
+        let name = exe.windows(12).position(|window| window == b"KERNEL32.dll").unwrap();
+        let mut endless = exe.clone();
+        endless.truncate(name + 12);
+        assert!(Executable::read(&endless).is_err());
+        let descriptor = name - 4 * 20 + 12;
+        let mut nowhere = exe;
+        nowhere[descriptor..descriptor + 4].copy_from_slice(&0x7fff_0000_u32.to_le_bytes());
+        assert!(Executable::read(&nowhere).unwrap_err().to_string().contains("in no section"));
     }
 
     #[test]

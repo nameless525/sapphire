@@ -524,7 +524,7 @@ impl<'a> Plan<'a> {
     }
 
     fn to_roof(&self, slope: &Slope, local: Vec3) -> Vec3 {
-        self.origin + slope.turn * local
+        self.origin + det::quat_rotate(slope.turn, local)
     }
 
     /// The smooth surface's upward normal at (c, s), the tiles' slope along the eave added.
@@ -535,7 +535,7 @@ impl<'a> Plan<'a> {
         let dy_ds = (y(c, s + h) - y(c, s - h)) / (2.0 * h);
         let along = Vec3::new(1.0, dy_dc + tile_slope, 0.0);
         let up = Vec3::new(0.0, dy_ds, -self.run);
-        slope.turn * along.cross(up).normalize()
+        det::quat_rotate(slope.turn, along.cross(up).normalize())
     }
 
     /// Positions of tile rows' corners along the eave, from `from` to `to`, with both ends.
@@ -712,7 +712,7 @@ impl<'a> Plan<'a> {
         // edge. Neither run of the board bends, so the strip between them never folds.
         let board_top: Vec<(f32, Vec3)> = top_points.iter().map(|&p| at(p, board)).collect();
         let bottom: Vec<(f32, Vec3)> = low_points.iter().map(|&p| at(p, 0.0)).collect();
-        let out = slope.turn * out;
+        let out = det::quat_rotate(slope.turn, out);
         mesh.zipper(Part::Tiles, &top, &board_top, out, [1.0, 0.9]);
         mesh.zipper(Part::Eaves, &board_top, &bottom, out, [0.95, 0.8]);
     }
@@ -796,7 +796,7 @@ impl<'a> Plan<'a> {
                     _ => 1.0,
                 };
                 let hip = |s: f32| self.to_roof(slope, self.smooth_local(slope, self.corner(slope, s), s));
-                let out = slope.turn * Vec3::new(1.0, 0.0, 1.0).normalize();
+                let out = det::quat_rotate(slope.turn, Vec3::new(1.0, 0.0, 1.0).normalize());
                 let tip_rise = 0.25 * ridge.height + 0.25 * self.roof.sweep;
                 let mut path: Vec<Vec3> =
                     (0..=samples).map(|k| hip(to * (1.0 - k as f32 / samples as f32))).collect();

@@ -19,7 +19,8 @@
 //!   (including APK assets), [`user_dir`] for settings and saves, and [`cache_dir`] for
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
 //!   functions work before SDL starts. [`durable_replace`] writes a file so that a crash leaves
-//!   the old one or the new one whole (M3 V1).
+//!   the old one or the new one whole (M3 V1), and [`durable_append`] grows one a reader cuts to its
+//!   known length (M4 F3).
 //! - **Patches' side of the disk** (M4 P4): [`ContentFs::with_files_over`] reads a patch's packs and
 //!   files in place of what the app shipped, [`free_space`] says how much room a disk has left, and
 //!   [`exclude_from_backup`] keeps a directory the game can fetch again out of iCloud and the
@@ -33,7 +34,8 @@
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
 //! - **Frame pacing** (M1 F7, F8): when [`App::iterate`] runs, at the rate the app sets with
 //!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below. On
-//!   Android it also reports each frame's work to an ADPF hint session for the frame thread (M4 T1).
+//!   Android it also reports each frame's work to an ADPF hint session for the frame thread (M4 T1),
+//!   less its swapchain waits (M4 T7, [`FrameWork`]).
 //! - **Heat and power** (M4 T1): [`Platform::thermal`]'s [`ThermalReading`] a frame, from each
 //!   source the OS has (Android's thermal status, headroom and hint session, iOS's thermal state
 //!   and Low Power Mode), and the [`CVARS`] that force one.
@@ -171,13 +173,13 @@ pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_w
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
 pub use dirs::{cache_dir, user_dir};
 pub use disk::{exclude_from_backup, free_space};
-pub use durable::{OsSteps, ReplaceSteps, durable_replace, durable_replace_with};
+pub use durable::{OsSteps, ReplaceSteps, durable_append, durable_replace, durable_replace_with};
 pub use event::{
     Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, GamepadType, KeyEvent, Keycode,
     LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,
     TextEvent, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
-pub use frame_clock::FramePacing;
+pub use frame_clock::{FramePacing, FrameWork};
 pub use host::Host;
 pub use io::{ContentReader, IoFile, IoPriority, IoThread, IoTicket, ReadCallback, ReadError};
 pub use log::{PlatformLogSink, sdl_log};

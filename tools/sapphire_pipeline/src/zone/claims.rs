@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use glam::{Mat4, Quat, Vec3};
 use sapphire_colliders::{ColliderSet, CookedShape};
+use sapphire_math::det;
 
 use super::{ZoneCookError, ZonePlan, placement_transform};
 
@@ -34,7 +35,7 @@ struct Volume {
 
 impl Volume {
     fn local(&self, point: Vec3) -> Vec3 {
-        self.rotation.inverse() * (point - self.center)
+        det::quat_rotate(det::quat_conjugate(self.rotation), point - self.center)
     }
 }
 

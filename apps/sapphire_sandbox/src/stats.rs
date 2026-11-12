@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use sapphire_platform::{FramePacing, PacingStats, ThermalReading};
+use sapphire_platform::{FramePacing, FrameWork, PacingStats, ThermalReading};
 use sapphire_rhi::SkipReason;
 
 use crate::LOG_TARGET;
@@ -60,6 +60,8 @@ pub(crate) struct FrameStats {
     allocations_at_start: u64,
     /// The platform's pacing counters at the start of the window.
     pacing_at_start: PacingStats,
+    /// The frame clock's work and display waits at the start of the window.
+    work_at_start: FrameWork,
 }
 
 impl FrameStats {
@@ -106,6 +108,11 @@ impl FrameStats {
         let average_ms = seconds * 1e3 / f64::from(frames);
         let stage_ms = |total: Duration| format!("{:.3}", total.as_secs_f64() * 1e3 / f64::from(frames));
         let (now, start) = (pacing.stats, self.pacing_at_start);
+        // What ADPF's hint session heard a frame and what it didn't: the swapchain's waits (M4 T7).
+        let (work, work_start) = (pacing.work, self.work_at_start);
+        let measured = u32::try_from(work.frames - work_start.frames).unwrap_or(u32::MAX).max(1);
+        let per_measured =
+            |total: Duration| format!("{:.2}", total.as_secs_f64() * 1e3 / f64::from(measured));
         tracing::info!(
             target: LOG_TARGET,
             fps = format_args!("{:.1}", f64::from(self.presented) / seconds),
@@ -129,6 +136,8 @@ impl FrameStats {
             extract_ms = stage_ms(self.stages.extract),
             springs_ms = stage_ms(self.stages.secondary_motion),
             render_ms = stage_ms(self.stages.render),
+            work_ms = per_measured(work.work.saturating_sub(work_start.work)),
+            display_wait_ms = per_measured(work.waited.saturating_sub(work_start.waited)),
             skipped = self.skipped,
             sim_dropped_ms = self.dropped.as_millis(),
             allocs_per_frame = (allocations - self.allocations_at_start) / u64::from(frames),
@@ -141,6 +150,7 @@ impl FrameStats {
         *self = Self {
             allocations_at_start: sapphire_core::alloc::stats().total_allocations,
             pacing_at_start: pacing.stats,
+            work_at_start: pacing.work,
             last_skip: self.last_skip,
             ..Self::default()
         };

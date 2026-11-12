@@ -1,6 +1,8 @@
 //! What a session says (M4 F2): sessions kept as a playtest build keeps them, around runs of the replay suite
 //! whose scripts say what they do, read back by [`Report::read`] and held to what the scripts do.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,12 +10,14 @@ use std::time::Duration;
 
 use sapphire_core::thermal::{ThermalReading, ThermalState};
 use sapphire_gameplay::replay::{ARCHITECTURE, Player, Replay};
-use sapphire_playtest::{
-    About, Build, Check, DOCUMENT_FILE, Device, MetEnd, Replace, Report, SESSIONS_DIR, Session,
-};
+use sapphire_playtest::{About, Build, Check, DOCUMENT_FILE, Device, MetEnd, Report, SESSIONS_DIR, Session};
 use sapphire_script::scenarios::ALL;
 
 const FRAME: Duration = Duration::from_micros(16_667);
+
+/// What `dodge-counter`'s player lands, by its script: see `a_scripted_fight_reports_what_its_script_does`.
+const HITS_LANDED: u32 = 2;
+const DAMAGE_DEALT: u64 = 48;
 
 /// A directory of its own, gone with the test.
 struct Scratch(PathBuf);
@@ -31,14 +35,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-fn replace() -> Replace {
-    Arc::new(|path: &Path, bytes: &[u8]| {
-        let temp = path.with_added_extension("tmp");
-        fs::write(&temp, bytes)?;
-        fs::rename(&temp, path)
-    })
 }
 
 fn about() -> About {
@@ -65,7 +61,8 @@ fn committed(name: &str) -> Replay {
 /// A session of one run, the suite's `name` played a frame a step: every tenth frame late, the phone warming to
 /// `Severe` from tick 600, and a mark at each of `marks`. Gives the session's directory.
 fn session_of(scratch: &Scratch, name: &str, marks: &[u64]) -> PathBuf {
-    let mut session = Session::begin(&scratch.0.join(SESSIONS_DIR), about(), replace()).unwrap();
+    let mut session =
+        Session::begin(&scratch.0.join(SESSIONS_DIR), about(), Arc::new(common::Plain)).unwrap();
     let dir = session.dir().to_owned();
     let replay = committed(name);
     let mut player = Player::new(replay.clone(), &ALL).unwrap();
@@ -104,6 +101,10 @@ fn a_scripted_fight_reports_what_its_script_does() {
     assert_eq!((counts.dodges, counts.perfect_dodges, counts.counters), (5, 3, 2));
     assert_eq!((counts.hits_taken, counts.falls), (1, 0));
     assert!(counts.damage_taken > 0);
+    // Its two counters land, on ticks 61 and 661, as gameplay's dodges tests hold; the plain answer at 501 and
+    // the swing at 651, dodge-cancelled before its blade was live, land nothing.
+    assert_eq!(counts.hits_landed, HITS_LANDED, "{counts:?}");
+    assert_eq!(counts.damage_dealt, DAMAGE_DEALT, "{counts:?}");
     assert_eq!(counts.presses, 9);
     assert!((counts.presses_a_second - 9.0 / (1000.0 / 60.0)).abs() < 1e-9);
     // Each round of 200 ticks walks for 46, then rests for 154 but for its presses: 141, 143, 98, 141 and 151
@@ -130,6 +131,7 @@ fn a_scripted_fight_reports_what_its_script_does() {
     assert_eq!(Report::from_ron(&text).unwrap(), report);
     let text = report.to_text();
     assert!(text.contains("5 dodges, 3 perfect, 2 counters"), "{text}");
+    assert!(text.contains(&format!("dealt {DAMAGE_DEALT} in {HITS_LANDED} hits")), "{text}");
     assert!(text.contains("--at-tick 256"), "{text}");
 }
 
@@ -167,8 +169,36 @@ fn a_run_that_differs_from_the_device_says_so() {
     .unwrap();
     assert_eq!(Report::read(&dir, &ALL).unwrap().runs[0].check, Check::OtherArchitecture);
 
-    fs::remove_file(dir.join(&kept.file)).unwrap();
+    fs::remove_file(dir.join(kept.file.replace(".sreplay", ".journal"))).unwrap();
     assert!(matches!(Report::read(&dir, &ALL).unwrap().runs[0].check, Check::Unread { .. }));
+}
+
+/// A report written before M4 F3 (version 1) reads, counting no hits landed: it didn't count them.
+#[test]
+fn a_version_1_report_upgrades() {
+    let scratch = Scratch::new("upgrade");
+    let dir = session_of(&scratch, "dodge-counter", &[256]);
+    let report = Report::read(&dir, &ALL).unwrap();
+    let text = report.to_ron().unwrap();
+    assert!(text.contains("version: 2,"), "{text}");
+    let old: String = text
+        .replace("version: 2,", "version: 1,")
+        .lines()
+        .filter(|line| !line.contains("damage_dealt:") && !line.contains("hits_landed:"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let upgraded = Report::from_ron(&old).unwrap();
+    assert_eq!(upgraded.runs[0].whole.hits_landed, 0);
+    assert_eq!(upgraded.runs[0].whole.damage_dealt, 0);
+    let mut expected = report.clone();
+    for run in &mut expected.runs {
+        for counts in std::iter::once(&mut run.whole).chain(run.parts.iter_mut().map(|part| &mut part.counts))
+        {
+            counts.hits_landed = 0;
+            counts.damage_dealt = 0;
+        }
+    }
+    assert_eq!(upgraded, expected);
 }
 
 /// `ward-market` runs through the Market Court's gate, whose trigger starts its encounter, and fights there: the

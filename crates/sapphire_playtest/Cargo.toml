@@ -23,10 +23,17 @@ sapphire_time.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# A run journal's records' digests, as a replay file's.
+xxhash-rust.workspace = true
 
 [dev-dependencies]
 # The game's scenarios, those whose kinds of enemy bind a script among them, for the reports' tests.
 sapphire_script.workspace = true
+
+# A session's keeps killed for real (M4 F3): the test that kills, and the player it kills.
+[[test]]
+name = "keep_kill"
+harness = false
 
 [lints]
 workspace = true

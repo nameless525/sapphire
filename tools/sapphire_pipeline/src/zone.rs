@@ -909,12 +909,13 @@ pub fn placed_bounds(bounds: Bounds, at: [f32; 3], turn: f32, scale: [f32; 3]) -
         let pick = |axis: usize| if index & (1 << axis) == 0 { bounds.min[axis] } else { bounds.max[axis] };
         transform.transform_point3(Vec3::new(pick(0), pick(1), pick(2)))
     };
-    let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for index in 0..8 {
-        min = min.min(corner(index));
-        max = max.max(corner(index));
+        let corner = corner(index).to_array();
+        min = std::array::from_fn(|axis| det::min(min[axis], corner[axis]));
+        max = std::array::from_fn(|axis| det::max(max[axis], corner[axis]));
     }
-    Bounds { min: min.to_array(), max: max.to_array() }
+    Bounds { min, max }
 }
 
 /// A zone's navmesh, as cooked bytes, from the `.scol` its document names.

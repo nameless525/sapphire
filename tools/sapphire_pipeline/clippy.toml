@@ -1,8 +1,9 @@
 # The cooker's and generators' bans (spec §5.27, "Reproducible cooks"): what they write must be the same
-# bytes on every machine of an architecture, and std's transcendentals round by each platform's C library.
+# bytes on every machine, textures on every machine of an architecture, and std's transcendentals round by
+# each platform's C library.
 # A crate's clippy.toml replaces the workspace's, so this holds the workspace's bans too (`cargo xtask
 # check-layers` holds it to them). The bans below are the simulation crates' (sapphire_navmesh's clippy.toml)
-# but for glam's SIMD types, whose rounding differs only between architectures, which differ anyway.
+# and glam's SIMD arithmetic, whose rounding differs between architectures (M4 C6).
 #
 # A call that must stay, such as a test comparing against std, carries `#[allow(clippy::disallowed_methods)]`
 # and says why.
@@ -168,6 +169,54 @@ disallowed-methods = [
     { path = "glam::Vec4::log2", reason = "calls std's math per component: use sapphire_math::det on each" },
     { path = "glam::Vec4::powf", reason = "calls std's math per component: use sapphire_math::det on each" },
 
+
+    # glam's SIMD types round differently per architecture (M4 C6): NEON sums a dot product's terms in another
+    # order than SSE2, multiplies by a length's reciprocal where SSE2 divides, and fuses the multiply and subtract
+    # in `Vec3A::cross` (so in `Quat * Vec3`) and the multiply-adds in `Quat * Quat`. A mesh cooked with them
+    # differs between x86-64 and AArch64. Operators such as `quat * vec` can't be banned by path, nor `f32::min`
+    # and `max` where a zero's sign could count (NEON takes −0 from 0 and −0, SSE2 its second operand): CI's
+    # Cooks agree (Linux, macOS) job is the real guard.
+    { path = "glam::Quat::normalize", reason = "its last bit differs by architecture: use sapphire_math::det::quat_normalize" },
+    { path = "glam::Quat::lerp", reason = "its last bit differs by architecture: use sapphire_math::det::quat_nlerp" },
+    { path = "glam::Quat::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::mul_vec3", reason = "its last bit differs by architecture: use sapphire_math::det::quat_rotate" },
+    { path = "glam::Quat::mul_vec3a", reason = "its last bit differs by architecture: use sapphire_math::det::quat_rotate" },
+    { path = "glam::Quat::mul_quat", reason = "its last bit differs by architecture: use sapphire_math::det::quat_mul" },
+    { path = "glam::Vec4::normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::try_normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_or", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_or_zero", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_and_length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::lerp", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::distance", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::distance_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::mul_add", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::try_normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_or", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_or_zero", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_and_length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::lerp", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::distance", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::distance_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::mul_add", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::cross", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Mat4::inverse", reason = "its last bit differs by architecture: use sapphire_math::det::mat4_inverse" },
+    { path = "glam::Mat4::determinant", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Mat3A::inverse", reason = "its last bit differs by architecture: use Mat3" },
+    { path = "glam::Mat3A::determinant", reason = "its last bit differs by architecture: use Mat3" },
+    { path = "glam::Affine3A::inverse", reason = "its last bit differs by architecture: use Affine3" },
 
     # The engine's own helpers that reach them.
     { path = "sapphire_math::Transform::lerp", reason = "uses glam's slerp: blend with sapphire_math::det::quat_slerp" },

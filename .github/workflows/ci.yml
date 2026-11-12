@@ -340,6 +340,30 @@ jobs:
           python3 .github/scripts/cooks_agree.py "$RUNNER_TEMP/linux/golden-bundle.tar.gz" \
             "$RUNNER_TEMP/windows/golden-bundle.tar.gz"
 
+  # Linux's cook (x86-64) against the Metal job's (AArch64): every asset but the block-compressed
+  # textures, which each architecture's own kernels encode, must be the same bytes (M4 C6). A mesh
+  # that differs names a cook step whose arithmetic rounds by architecture: glam's SIMD types, or C++
+  # built with contraction.
+  cooks-agree-architectures:
+    name: Cooks agree (Linux, macOS)
+    needs: [golden-build-linux, golden-metal]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: golden-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cooked-desktop-metal
+          path: ${{ runner.temp }}/macos
+      - name: Compare the cooks
+        run: |
+          python3 .github/scripts/cooks_agree.py "$RUNNER_TEMP/linux/golden-bundle.tar.gz" \
+            "$RUNNER_TEMP/macos" --across-architectures
+
   golden-linux:
     name: Golden images (vulkan-lavapipe ${{ matrix.shard }}/3)
     needs: golden-build-linux
@@ -488,6 +512,16 @@ jobs:
           path: target/golden/
           if-no-files-found: ignore
           retention-days: 7
+      # AArch64's desktop cook, which the golden run made, for Cooks agree (Linux, macOS).
+      - name: Upload the cook
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cooked-desktop-metal
+          path: target/content/desktop/*.spack
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 1
 
   # The GPU tests, `#[ignore]`d in the Test job because it has no GPU: the renderer's invariants
   # that the goldens' final frames don't show, such as the pipelines a shader edit rebuilds,

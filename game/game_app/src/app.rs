@@ -37,7 +37,7 @@ use sapphire_rhi::{
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
 use sapphire_stage::Stage;
-use sapphire_stage::audio::{DeviceAudio, SoundsLoad, Volumes};
+use sapphire_stage::audio::{AudioPrepared, DeviceAudio, DeviceOpening, Volumes};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
@@ -63,9 +63,12 @@ pub struct GameApp {
     /// Made once the first boot has stood the game. Outlives a lost device: what it plays was read from the
     /// content, and nothing of it is on the GPU.
     audio: Option<DeviceAudio>,
-    /// The show's sounds, decoding on the warm-up pool from the frame the first boot stood the game until
-    /// the audio's made of them (M4 H4): no title frame waits on them.
-    sounds: Option<SoundsLoad>,
+    /// The show's sounds, decoding and the device opening for them on the warm-up pool from the frame the first
+    /// boot stood the game (M4 H4, H8): no title frame waits on them.
+    sounds: Option<DeviceOpening>,
+    /// Whether the OS took the app's word that it plays sound, told in `init`, before the boot screen's first
+    /// frame (M4 H8). `None` plays none.
+    audio_prepared: Option<AudioPrepared>,
     /// Whether the first boot has stood the game, so the audio's on its way and the title's been passed or
     /// shown.
     heard: bool,
@@ -131,6 +134,9 @@ impl App for GameApp {
         let info = *platform.system_info();
         tracing::info!(target: LOG_TARGET, build = build_info::BUILD_ID, ?info, ?options, "starting");
         let window = platform.create_window(&window_desc(Self::METADATA.name, &info))?;
+        // The audio session (iOS) or cpal's context (Android) is set up on this thread, before any frame, and the
+        // device is opened on the warm-up pool once the sounds are decoded (M4 H8).
+        let audio_prepared = DeviceAudio::prepare(platform);
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let tiers = TierFollower::new(&chosen, info.device_class);
         #[cfg(feature = "playtest")]
@@ -153,6 +159,7 @@ impl App for GameApp {
             losses: Losses::default(),
             audio: None,
             sounds: None,
+            audio_prepared,
             heard: false,
             patches,
             launched: false,
@@ -297,10 +304,10 @@ impl App for GameApp {
         stage.hand_frame_time(dt);
         let view_dt = stage.show.drive_view(dt);
         let dt = dt.as_secs_f32();
-        if let Some(ready) = self.sounds.as_mut().and_then(SoundsLoad::take) {
+        if let Some(opened) = self.sounds.as_mut().and_then(DeviceOpening::take) {
             self.sounds = None;
-            match ready.and_then(|ready| DeviceAudio::open(ready, platform)) {
-                Ok(audio) => self.audio = audio.map(|audio| heard_as(audio, &self.chosen)),
+            match opened {
+                Ok(audio) => self.audio = Some(heard_as(audio, &self.chosen)),
                 Err(error) => {
                     tracing::error!(target: LOG_TARGET, %error, "the game's sounds didn't load");
                     return AppControl::Fail;
@@ -415,9 +422,11 @@ impl GameApp {
         let Stage { show, content, renderer, gpu, .. } = &mut **stage;
         if !self.heard {
             self.heard = true;
-            self.sounds = match show.shown.fight.show.cue_show() {
-                Some(cues) => Some(SoundsLoad::begin(&cues.sounds_to_load(), content, renderer, gpu)?),
-                None => None,
+            self.sounds = match (show.shown.fight.show.cue_show(), self.audio_prepared) {
+                (Some(cues), Some(prepared)) => {
+                    Some(DeviceOpening::begin(&cues.sounds_to_load(), prepared, content, renderer, gpu)?)
+                }
+                _ => None,
             };
         }
         if let Some(reload) = self.reload.take() {

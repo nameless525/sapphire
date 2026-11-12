@@ -4807,6 +4807,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -4870,6 +4871,8 @@ dependencies = [
  "pollster",
  "profiling",
  "raw-window-handle",
+ "sapphire_core",
+ "sapphire_time",
  "thiserror 2.0.21",
  "tracing",
  "wgpu",

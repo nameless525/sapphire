@@ -28,9 +28,7 @@
 //! ([`Report::to_text`]). A run that doesn't replay here says why, and the rest of the session reports.
 
 use std::fmt::Write as _;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bevy_reflect::TypePath;
 use sapphire_core::thermal::ThermalState;
@@ -39,14 +37,14 @@ use sapphire_gameplay::{
     ActorActions, ActorId, Buttons, DEFEATED, EncounterPhase, HitCue, PERFECT_DODGE, POISE_BROKEN,
     Simulation, Stick,
 };
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::AssetId;
 use sapphire_time::TICK_HZ;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{Build, Device, Ending, KeptRun, SessionDocument};
-use crate::frames::{FrameRow, FramesError};
-use crate::{DOCUMENT_FILE, FRAMES_FILE};
+use crate::document::{Build, Device, Ending, KeptRun};
+use crate::frames::FrameRow;
+use crate::kept::{Kept, ReadError, RunFiles};
 
 /// The report, beside the session's document.
 pub const REPORT_FILE: &str = "report.ron";
@@ -55,16 +53,9 @@ pub const REPORT_FILE: &str = "report.ron";
 /// presses, not away from them.
 pub const IDLE_AFTER: u32 = TICK_HZ;
 
-/// A session that can't be reported at all. A run that doesn't replay is reported as such instead.
-#[derive(Debug, thiserror::Error)]
-pub enum ReportError {
-    #[error("reading {path}: {source}")]
-    Read { path: PathBuf, source: io::Error },
-    #[error("{path}: {source}")]
-    Document { path: PathBuf, source: Box<sapphire_serialize::DocumentError> },
-    #[error("{path}: {source}")]
-    Frames { path: PathBuf, source: FramesError },
-}
+/// A session that can't be reported at all: one that can't be read. A run that doesn't replay is reported as
+/// such instead.
+pub type ReportError = ReadError;
 
 /// What a session says, as `report.ron` holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
@@ -91,8 +82,16 @@ pub struct Report {
 }
 
 impl Versioned for Report {
-    /// 1: M4 F2.
-    const VERSION: u32 = 1;
+    /// 1: M4 F2. 2: M4 F3, the hits the player's side landed and the damage it dealt (`Counts`).
+    const VERSION: u32 = 2;
+
+    /// Version 1 is version 2 counting no hits landed: it didn't count them.
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode().map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 /// One run, replayed.
@@ -172,6 +171,11 @@ pub enum MetEnd {
 pub struct Counts {
     pub damage_taken: u64,
     pub hits_taken: u32,
+    /// What the player's side dealt: each hit it landed on anyone else, and the damage the attack says.
+    #[serde(default)]
+    pub damage_dealt: u64,
+    #[serde(default)]
+    pub hits_landed: u32,
     pub falls: u32,
     pub dodges: u32,
     pub perfect_dodges: u32,
@@ -185,6 +189,8 @@ impl Counts {
     fn add(&mut self, other: &Self) {
         self.damage_taken += other.damage_taken;
         self.hits_taken += other.hits_taken;
+        self.damage_dealt += other.damage_dealt;
+        self.hits_landed += other.hits_landed;
         self.falls += other.falls;
         self.dodges += other.dodges;
         self.perfect_dodges += other.perfect_dodges;
@@ -279,22 +285,19 @@ impl Report {
     /// Reads the session in `dir` and replays each of its runs on `scenarios`, which must be the game's: a
     /// runner's, with the scripts a scenario's kinds of enemy bind.
     pub fn read(dir: &Path, scenarios: &[Scenario]) -> Result<Self, ReportError> {
-        let path = dir.join(DOCUMENT_FILE);
-        let text = read_text(&path)?;
-        let document = SessionDocument::from_ron(&text)
-            .map_err(|source| ReportError::Document { path, source: Box::new(source) })?;
-        let path = dir.join(FRAMES_FILE);
-        let rows = match fs::read_to_string(&path) {
-            Ok(text) => FrameRow::read_all(&text).map_err(|source| ReportError::Frames { path, source })?,
-            // A session killed before its first keep.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(source) => return Err(ReportError::Read { path, source }),
-        };
+        Ok(Self::of(dir, Kept::read(dir)?, scenarios))
+    }
+
+    /// [`Self::read`], of a session already read from `dir`.
+    #[must_use]
+    pub fn of(dir: &Path, kept: Kept, scenarios: &[Scenario]) -> Self {
+        let Kept { document, frames: rows, runs: files } = kept;
         let same_architecture = document.device.architecture == ARCHITECTURE;
         let runs: Vec<RunReport> = document
             .runs
             .iter()
-            .map(|run| report_run(dir, run, scenarios, same_architecture, &rows))
+            .zip(files)
+            .map(|(run, files)| report_run(run, files, scenarios, same_architecture, &rows))
             .collect();
         let marks = document
             .marks
@@ -319,7 +322,7 @@ impl Report {
                 }
             })
             .collect();
-        Ok(Self {
+        Self {
             session: dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
             build: document.build,
             device: document.device,
@@ -331,7 +334,7 @@ impl Report {
             runs,
             marks,
             frames: Frames::of(&rows),
-        })
+        }
     }
 
     /// `report.ron`'s text.
@@ -464,10 +467,13 @@ impl RunReport {
 impl Counts {
     fn line(&self) -> String {
         format!(
-            "{} damage in {} hits, {} falls; {} dodges, {} perfect, {} counters; {:.2} presses a second, idle {:.1} s",
+            "{} damage in {} hits, {} falls; dealt {} in {} hits; {} dodges, {} perfect, {} counters; {:.2} presses a \
+             second, idle {:.1} s",
             self.damage_taken,
             self.hits_taken,
             self.falls,
+            self.damage_dealt,
+            self.hits_landed,
             self.dodges,
             self.perfect_dodges,
             self.counters,
@@ -511,18 +517,14 @@ fn view_command(dir: &Path, file: &str, tick: u64, number: u32) -> String {
     )
 }
 
-fn read_text(path: &Path) -> Result<String, ReportError> {
-    fs::read_to_string(path).map_err(|source| ReportError::Read { path: path.to_owned(), source })
-}
-
 fn seconds(ticks: u64) -> f64 {
     ticks as f64 / f64::from(TICK_HZ)
 }
 
 /// Replays one run and reports it, or says why it couldn't.
 fn report_run(
-    dir: &Path,
     run: &KeptRun,
+    files: Result<RunFiles, String>,
     scenarios: &[Scenario],
     same_architecture: bool,
     rows: &[FrameRow],
@@ -537,10 +539,7 @@ fn report_run(
         whole: Counts::default(),
         parts: Vec::new(),
     };
-    let counted = fs::read(dir.join(&run.file))
-        .map_err(|error| format!("reading it: {error}"))
-        .and_then(|bytes| Replay::decode(&bytes).map_err(|error| error.to_string()))
-        .and_then(|replay| count(replay, scenarios));
+    let counted = files.and_then(|files| count(files.replay, scenarios));
     let (parts, end, ticks) = match counted {
         Ok(counted) => counted,
         Err(reason) => {
@@ -751,6 +750,12 @@ fn count(replay: Replay, scenarios: &[Scenario]) -> Result<(Vec<Part>, u64, u32)
                         counts.hits_taken += 1;
                         counts.damage_taken += u64::from(damage);
                     }
+                }
+                Some(HitCue { damage, .. })
+                    if members.contains(&cue.actor) && cue.cue != DEFEATED && cue.cue != POISE_BROKEN =>
+                {
+                    counts.hits_landed += 1;
+                    counts.damage_dealt += u64::from(damage);
                 }
                 None if cue.cue == PERFECT_DODGE && members.contains(&cue.actor) => {
                     counts.perfect_dodges += 1

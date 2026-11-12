@@ -55,7 +55,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Mat3, Quat, Vec2, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 
 /// Sine of `x` radians.
 #[inline]
@@ -322,6 +322,97 @@ pub fn quat_rotate(q: Quat, v: Vec3) -> Vec3 {
     v * (w * w - axis.length_squared()) + axis * (v.dot(axis) * 2.0) + axis.cross(v) * (w * 2.0)
 }
 
+/// The inverse of `m`, with the bits glam's `Mat4::inverse` has on x86-64 on every architecture.
+///
+/// glam inverts by cofactors in the same order on both backends but sums the determinant's four
+/// products `(first + third) + (second + fourth)` on SSE2 and `(first + second) + (third + fourth)` on
+/// NEON, so its last bits differ by architecture. This is the cofactor expansion in scalars with SSE2's
+/// sum: cooks written on x86-64 keep their bytes and AArch64's now match them (M4 C6). A singular `m`
+/// gives non-finite values, as glam's does.
+#[must_use]
+pub fn mat4_inverse(m: &Mat4) -> Mat4 {
+    let [[m00, m01, m02, m03], [m10, m11, m12, m13], [m20, m21, m22, m23], [m30, m31, m32, m33]] =
+        m.to_cols_array_2d();
+    let coef = |a: f32, b: f32, c: f32, d: f32| a * b - c * d;
+    let fac0 = [
+        coef(m22, m33, m32, m23),
+        coef(m22, m33, m32, m23),
+        coef(m12, m33, m32, m13),
+        coef(m12, m23, m22, m13),
+    ];
+    let fac1 = [
+        coef(m21, m33, m31, m23),
+        coef(m21, m33, m31, m23),
+        coef(m11, m33, m31, m13),
+        coef(m11, m23, m21, m13),
+    ];
+    let fac2 = [
+        coef(m21, m32, m31, m22),
+        coef(m21, m32, m31, m22),
+        coef(m11, m32, m31, m12),
+        coef(m11, m22, m21, m12),
+    ];
+    let fac3 = [
+        coef(m20, m33, m30, m23),
+        coef(m20, m33, m30, m23),
+        coef(m10, m33, m30, m13),
+        coef(m10, m23, m20, m13),
+    ];
+    let fac4 = [
+        coef(m20, m32, m30, m22),
+        coef(m20, m32, m30, m22),
+        coef(m10, m32, m30, m12),
+        coef(m10, m22, m20, m12),
+    ];
+    let fac5 = [
+        coef(m20, m31, m30, m21),
+        coef(m20, m31, m30, m21),
+        coef(m10, m31, m30, m11),
+        coef(m10, m21, m20, m11),
+    ];
+    let vec0 = [m10, m00, m00, m00];
+    let vec1 = [m11, m01, m01, m01];
+    let vec2 = [m12, m02, m02, m02];
+    let vec3 = [m13, m03, m03, m03];
+    // Each column lane by lane: `(a·p − b·q) + c·r`, then the cofactors' alternating signs.
+    let column = |[a, b, c]: [[f32; 4]; 3], [p, q, r]: [[f32; 4]; 3], first_sign: f32| -> [f32; 4] {
+        std::array::from_fn(|lane| {
+            let sign = if lane % 2 == 0 { first_sign } else { -first_sign };
+            ((a[lane] * p[lane] - b[lane] * q[lane]) + c[lane] * r[lane]) * sign
+        })
+    };
+    let inverse = [
+        column([vec1, vec2, vec3], [fac0, fac1, fac2], 1.0),
+        column([vec0, vec2, vec3], [fac0, fac3, fac4], -1.0),
+        column([vec0, vec1, vec3], [fac1, fac3, fac5], 1.0),
+        column([vec0, vec1, vec2], [fac2, fac4, fac5], -1.0),
+    ];
+    let products: [f32; 4] = std::array::from_fn(|k| [m00, m01, m02, m03][k] * inverse[k][0]);
+    let scale = 1.0 / ((products[0] + products[2]) + (products[1] + products[3]));
+    Mat4::from_cols_array_2d(&inverse.map(|column| column.map(|value| value * scale)))
+}
+
+/// The lesser of `a` and `b`, −0 counting as less than 0, and a NaN ignored (IEEE 754-2019's
+/// `minimumNumber`): AArch64's `f32::min` on every architecture.
+///
+/// `f32::min` may return either zero when given 0 and −0. AArch64's `fminnm` returns −0; x86-64's
+/// `minss` returns its second operand, and which that is hangs on how LLVM orders them. A cook that
+/// keeps a zero's sign (a texture coordinate a weld keys on, a bound written out) differed by
+/// architecture through it (M4 C6).
+#[inline]
+#[must_use]
+pub fn min(a: f32, b: f32) -> f32 {
+    if a < b || (a == b && a.is_sign_negative()) || b.is_nan() { a } else { b }
+}
+
+/// The greater of `a` and `b`, 0 counting as greater than −0, and a NaN ignored (IEEE 754-2019's
+/// `maximumNumber`): AArch64's `f32::max` on every architecture. See [`min`].
+#[inline]
+#[must_use]
+pub fn max(a: f32, b: f32) -> f32 {
+    if a > b || (a == b && a.is_sign_positive()) || b.is_nan() { a } else { b }
+}
+
 /// `from` and `to` as arrays, with `to` flipped into `from`'s hemisphere, so a blend takes the
 /// shortest arc, and their dot product, which is then at least 0.
 #[inline]
@@ -562,6 +653,94 @@ mod tests {
             } else if cfg!(target_arch = "x86_64") {
                 assert_eq!(glam, sse2_normalize(q), "{q:?}");
             }
+        }
+    }
+
+    /// Matrices a cook inverts: a skinned model's bind transforms (turned, scaled, moved) and a
+    /// general one. The first is one whose determinant's sum NEON and SSE2 order apart.
+    fn inverted() -> [Mat4; 3] {
+        let turn = Quat::from_xyzw(-0.583_606_36, 0.624_370_2, 0.337_267_28, 0.394_735_66);
+        [
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(1.061_920_5, 1.079_167_6, 0.995_608),
+                turn,
+                Vec3::new(0.367_365_12, 0.382_244_35, 0.071_820_26),
+            ),
+            Mat4::from_rotation_translation(quat_from_axis_angle(Vec3::Y, 0.4), Vec3::new(-0.3, 0.9, 0.05)),
+            Mat4::from_cols_array(&[
+                0.9, 0.1, -0.2, 0.01, 0.05, 1.1, 0.3, -0.02, 0.2, -0.25, 0.8, 0.03, 0.4, -1.2, 2.5, 1.05,
+            ]),
+        ]
+    }
+
+    /// [`mat4_inverse`]'s bits, the same on every target: glam's own on x86-64.
+    const GOLDEN_INVERSE: [u32; 16] = [
+        0xbbdd_6502,
+        0xbf6c_0ad1,
+        0x3dcc_2e43,
+        0x8000_0000,
+        0xbede_ff3e,
+        0x3dad_4839,
+        0x3f62_c327,
+        0x0000_0000,
+        0xbf55_bb3e,
+        0xbd16_3b34,
+        0xbeed_0184,
+        0x0000_0000,
+        0x3e6a_6bde,
+        0x3e9e_3791,
+        0xbeaf_166d,
+        0x3f80_0001,
+    ];
+
+    /// [`quat_rotate`]'s bits for `quat_rotate_is_glams_on_x86_64`'s rotation.
+    #[test]
+    fn min_and_max_order_the_zeros_and_skip_nan() {
+        let bits = |x: f32| x.to_bits();
+        for (a, b) in [(0.0, -0.0), (-0.0, 0.0)] {
+            assert_eq!(bits(min(a, b)), bits(-0.0));
+            assert_eq!(bits(max(a, b)), bits(0.0));
+        }
+        assert_eq!((min(f32::NAN, 2.0), min(2.0, f32::NAN), max(f32::NAN, -1.0)), (2.0, 2.0, -1.0));
+        assert_eq!((min(-3.0, 1.5), max(-3.0, 1.5), min(f32::INFINITY, 4.0)), (-3.0, 1.5, 4.0));
+        // AArch64's own `min` and `max` are the reference.
+        #[cfg(target_arch = "aarch64")]
+        for (a, b) in [(0.0, -0.0), (-0.0, 0.0), (1.0, 1.0), (-2.5, 7.0), (f32::NAN, 1.0), (1.0, f32::NAN)] {
+            assert_eq!((bits(min(a, b)), bits(max(a, b))), (bits(a.min(b)), bits(a.max(b))), "{a} {b}");
+        }
+    }
+
+    const GOLDEN_GLAM_TURN: [u32; 3] = [0x3fcc_e05e, 0xbfc5_acba, 0x3dcc_7e36];
+
+    #[test]
+    fn mat4_inverse_has_x86_64s_bits_on_every_architecture() {
+        let bits = |m: Mat4| m.to_cols_array().map(f32::to_bits);
+        let ours = bits(mat4_inverse(&inverted()[0]));
+        assert_eq!(ours, GOLDEN_INVERSE, "{ours:#010x?}");
+        for m in inverted() {
+            assert!((mat4_inverse(&m) * m).abs_diff_eq(Mat4::IDENTITY, 1e-5), "{m}");
+            if cfg!(target_arch = "x86_64") {
+                assert_eq!(bits(mat4_inverse(&m)), bits(m.inverse()), "{m}");
+            }
+        }
+        if cfg!(target_arch = "aarch64") {
+            assert_ne!(ours, bits(inverted()[0].inverse()), "this matrix can't tell NEON from SSE2");
+        }
+    }
+
+    /// [`quat_rotate`] is glam's `quat * vec` on x86-64, and not on AArch64, whose `Vec3A::cross` fuses
+    /// its multiply and subtract (`vfmsq_f32`) where SSE2 rounds each.
+    #[test]
+    fn quat_rotate_is_glams_on_x86_64() {
+        let q = Quat::from_xyzw(-0.143_297_18, -0.321_592_27, 0.803_283_04, -0.480_396_42);
+        let v = Vec3::new(0.199_634_31, 1.857_096_9, 1.211_686_8);
+        let ours = quat_rotate(q, v).to_array().map(f32::to_bits);
+        assert_eq!(ours, GOLDEN_GLAM_TURN, "{ours:#010x?}");
+        let glam = (q * v).to_array().map(f32::to_bits);
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(glam, ours);
+        } else if cfg!(target_arch = "aarch64") {
+            assert_ne!(glam, ours, "this rotation can't tell NEON from SSE2");
         }
     }
 

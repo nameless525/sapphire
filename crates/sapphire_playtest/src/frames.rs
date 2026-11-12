@@ -115,24 +115,29 @@ impl FrameRow {
 /// The second a session is in the middle of: frames add to it until it's a second long, then it's a row.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OpenSecond {
+    /// On the session's clock.
     length: Duration,
+    /// The frames' own times, summed.
+    took: Duration,
     frames: u32,
     longest: Duration,
     late: u32,
 }
 
 impl OpenSecond {
-    /// Adds a frame that took `frame` against `budget`. Returns the row it closes, if it does: at `at`, with
-    /// `run`, `tick` and `heat` as they stand.
+    /// Adds a frame that stood for `stands` of the session's clock and took `frame` against `budget`: the same,
+    /// but in a capture, which stands for a tick a frame however long it takes to draw. Returns the row it
+    /// closes, if it does: at `at`, with `run`, `tick` and `heat` as they stand.
     pub(crate) fn add(
         &mut self,
-        frame: Duration,
+        (stands, frame): (Duration, Duration),
         budget: Duration,
         heat: ThermalReading,
         at: f64,
         (run, tick): (u32, u64),
     ) -> Option<FrameRow> {
-        self.length += frame;
+        self.length += stands;
+        self.took += frame;
         self.frames += 1;
         self.longest = self.longest.max(frame);
         if frame.as_secs_f64() > budget.as_secs_f64() * 1.5 {
@@ -147,7 +152,7 @@ impl OpenSecond {
             run,
             tick,
             frames: self.frames,
-            mean_ms: ms(self.length) / self.frames as f32,
+            mean_ms: ms(self.took) / self.frames as f32,
             max_ms: ms(self.longest),
             late: self.late,
             budget_ms: ms(budget),
@@ -179,7 +184,7 @@ mod tests {
         for frame in 0..60 {
             // Every tenth frame misses a vsync.
             let time = if frame % 10 == 9 { budget * 2 } else { budget };
-            closed = closed.or(second.add(time, budget, heat(), 1.0, (2, 300 + frame)));
+            closed = closed.or(second.add((time, time), budget, heat(), 1.0, (2, 300 + frame)));
         }
         let row = closed.expect("past a second");
         assert_eq!((row.frames, row.late, row.run), (55, 5, 2), "the row closes on the frame past a second");

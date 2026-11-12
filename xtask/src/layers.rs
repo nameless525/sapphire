@@ -559,9 +559,10 @@ fn check_cooker_clippy_files(config: &Config, root: &Path) -> anyhow::Result<Vec
 }
 
 /// What a content tool's clippy.toml must ban besides the workspace's bans: std's transcendentals,
-/// which round by each platform's C library, so a cook's bytes would depend on the OS (spec §5.27,
-/// "Reproducible cooks").
-const COOKER_BANS: [&str; 10] = [
+/// which round by each platform's C library, so a cook's bytes would depend on the OS, and glam's SIMD
+/// arithmetic that rounds differently on NEON and SSE2, so they'd depend on the architecture (spec
+/// §5.27, "Reproducible cooks"; M4 C6).
+const COOKER_BANS: [&str; 15] = [
     "f32::sin",
     "f32::cos",
     "f32::sin_cos",
@@ -572,6 +573,11 @@ const COOKER_BANS: [&str; 10] = [
     "f32::powi",
     "f32::hypot",
     "f32::cbrt",
+    "glam::Mat4::inverse",
+    "glam::Quat::mul_vec3",
+    "glam::Quat::normalize",
+    "glam::Vec3A::cross",
+    "glam::Vec4::dot",
 ];
 
 /// Each content tool must have a clippy.toml (`None` if not), holding every ban in the workspace's

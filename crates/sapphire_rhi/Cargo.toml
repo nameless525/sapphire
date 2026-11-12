@@ -11,6 +11,10 @@ license.workspace = true
 pollster.workspace = true
 profiling.workspace = true
 raw-window-handle.workspace = true
+# The surface times its swapchain waits (`sapphire_time`'s stopwatch) into the frame thread's ledger
+# (`sapphire_core::frame_waits`), which the frame clock leaves out of the work ADPF hears (M4 T7).
+sapphire_core.workspace = true
+sapphire_time.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true

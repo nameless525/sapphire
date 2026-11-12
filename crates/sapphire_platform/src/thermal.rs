@@ -1,16 +1,21 @@
 //! What the OS says about heat and power (spec §6.3, M4 T1): one [`ThermalReading`] a frame, from
 //! whichever sources the OS has, each resolved at run time and absent where it's missing.
 //!
-//! - **Android:** the thermal status (`AThermal_getCurrentThermalStatus`, API 30) and the headroom
-//!   forecast (`AThermal_getThermalHeadroom`, API 31), both through the thermal manager, resolved with
-//!   `dlsym` since the app's minimum is API 29. The frame thread's ADPF hint session (`hint.rs`, API
-//!   33) belongs to the frame clock, which reports its frames; the reading says whether it's live.
+//! - **Android:** the thermal status and the headroom forecast (`AThermal_getThermalHeadroom`, API
+//!   31), both through the thermal manager, resolved with `dlsym` since the app's minimum is API 29.
+//!   The status is heard, not asked (M4 T7): a listener (`AThermal_registerThermalStatusListener`,
+//!   API 30) registered once for the process stores each change in an atomic on the binder thread the
+//!   OS calls it on, and the frame reads the atomic. Asking (`AThermal_getCurrentThermalStatus`) is a
+//!   binder call of 0.1 to 0.4 ms on the emulator (M4 T1); it's made once, to seed the listener's
+//!   value, or once a second where registering failed. The frame thread's ADPF hint session
+//!   (`hint.rs`, API 33) belongs to the frame clock, which reports its frames; the reading says
+//!   whether it's live.
 //! - **iOS:** `NSProcessInfo`'s `thermalState` and Low Power Mode (`isLowPowerModeEnabled`).
 //! - **Desktops:** none; the state reads [`ThermalState::Unknown`].
 //!
-//! The OS is asked on the frame thread, no more often than it wants: the state (a binder call on
-//! Android) and Low Power Mode once a second, and headroom once every ten seconds, forecasting ten
-//! seconds ahead. Android's header says calling headroom much more often than once a second may
+//! The OS is asked on the frame thread, no more often than it wants: a state the OS doesn't tell (iOS's,
+//! or Android's without its listener) and Low Power Mode once a second, a state it tells every frame
+//! (an atomic load), and headroom once every ten seconds, forecasting ten seconds ahead. Android's header says calling headroom much more often than once a second may
 //! return NaN; Google's game guide is stricter, at most once every ten seconds on older devices, and
 //! from one thread (both read 2026-11-10). Between polls a frame gets the last reading, so reading it
 //! every frame costs a clock read and a few atomic loads.
@@ -41,6 +46,11 @@ const HEADROOM_FORECAST_SECONDS: i32 = 10;
 pub(crate) trait Source {
     /// The OS's thermal state, `Unknown` if it has none or the read failed.
     fn state(&mut self) -> ThermalState;
+    /// Whether the OS tells the state as it changes, so [`Self::state`] costs no call into it and can
+    /// be read every frame.
+    fn hears_state(&self) -> bool {
+        false
+    }
     /// Whether the OS has a headroom forecast at all.
     fn has_headroom(&self) -> bool;
     /// The headroom forecast `forecast_seconds` ahead, as the OS gave it (NaN included).
@@ -96,14 +106,17 @@ impl<S: Source> Thermal<S> {
     /// The reading at `now` (nanoseconds on any steady clock), asking the OS for what's due, with
     /// `hint_session` (the frame clock's) and the cvars' overrides.
     pub fn read(&mut self, now: u64, hint_session: Option<bool>) -> ThermalReading {
-        if self.state_due.is_none_or(|due| now >= due) {
+        let due = self.state_due.is_none_or(|due| now >= due);
+        if due {
             self.state_due = Some(now.saturating_add(STATE_POLL_NS));
+            self.os.low_power = self.source.low_power();
+        }
+        if due || self.source.hears_state() {
             let state = self.source.state();
             if state != self.os.state {
                 tracing::info!(target: LOG_TARGET, from = ?self.os.state, to = ?state, "thermal state changed");
             }
             self.os.state = state;
-            self.os.low_power = self.source.low_power();
         }
         if self.headroom != Headroom::Unsupported && self.headroom_due.is_none_or(|due| now >= due) {
             self.headroom_due = Some(now.saturating_add(HEADROOM_POLL_NS));
@@ -346,6 +359,7 @@ mod imp {
     use std::mem;
     use std::ptr::NonNull;
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
     use super::{Source, ThermalState, from_android_status};
     use crate::LOG_TARGET;
@@ -353,6 +367,18 @@ mod imp {
     type AcquireManager = unsafe extern "C" fn() -> *mut c_void;
     type CurrentStatus = unsafe extern "C" fn(*mut c_void) -> c_int;
     type Headroom = unsafe extern "C" fn(*mut c_void, c_int) -> f32;
+    type StatusCallback = unsafe extern "C" fn(data: *mut c_void, status: c_int);
+    type RegisterListener =
+        unsafe extern "C" fn(manager: *mut c_void, callback: StatusCallback, data: *mut c_void) -> c_int;
+
+    /// The status the listener last heard (`AThermalStatus`), or [`UNHEARD`].
+    static HEARD: AtomicI32 = AtomicI32::new(UNHEARD);
+    /// Past every `AThermalStatus`: nothing heard or seeded yet.
+    const UNHEARD: i32 = i32::MIN;
+    /// How many times the status was asked for (`AThermal_getCurrentThermalStatus`, a binder call), in
+    /// the process: once with a listener, for the seed. The listener's log says it, so a run shows that
+    /// no frame asks.
+    static ASKED: AtomicU32 = AtomicU32::new(0);
 
     /// The thermal manager and its readers, newer than the app's minimum (API 30 and 31 against 29),
     /// so resolved at run time.
@@ -361,6 +387,54 @@ mod imp {
         current_status: CurrentStatus,
         /// API 31.
         headroom: Option<Headroom>,
+        /// The status listener is registered, so [`HEARD`] holds the status.
+        listening: bool,
+    }
+
+    impl Api {
+        /// Asks the OS for the status: a binder call.
+        fn ask(&self) -> c_int {
+            ASKED.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: the manager came from `AThermal_acquireManager` and is never released.
+            unsafe { (self.current_status)(self.manager.as_ptr()) }
+        }
+    }
+
+    /// The listener: the OS calls it on one of the process's binder threads with each new status, and
+    /// once on registering. It stores the status, and logs which thread heard it and how often the
+    /// status was ever asked for.
+    unsafe extern "C" fn heard(_data: *mut c_void, status: c_int) {
+        HEARD.store(status, Ordering::Release);
+        // SAFETY: no preconditions.
+        let thread = unsafe { libc::gettid() };
+        tracing::info!(
+            target: LOG_TARGET,
+            status,
+            thread,
+            asked = ASKED.load(Ordering::Relaxed),
+            "thermal status heard"
+        );
+    }
+
+    /// Registers [`heard`] with `manager`, once for the process, and seeds [`HEARD`] with one ask, unless
+    /// the listener has spoken first. Whether it's listening.
+    fn listen(manager: NonNull<c_void>, register: RegisterListener, ask: impl FnOnce() -> c_int) -> bool {
+        // SAFETY: the manager is live and never released; `heard` is a plain function that touches only
+        // atomics and the log, and its data pointer is never read. Registered once (from `api`'s
+        // `OnceLock`), so the OS never refuses the pair as already added; it stays registered for the
+        // process.
+        let status = unsafe { register(manager.as_ptr(), heard, std::ptr::null_mut()) };
+        if status != 0 {
+            tracing::warn!(target: LOG_TARGET, status, "the OS refused a thermal status listener; asking once a second");
+            return false;
+        }
+        let seed = ask();
+        // A status heard meanwhile is newer than the seed.
+        let _ = HEARD.compare_exchange(UNHEARD, seed, Ordering::AcqRel, Ordering::Acquire);
+        // SAFETY: no preconditions.
+        let thread = unsafe { libc::gettid() };
+        tracing::info!(target: LOG_TARGET, thread, seed, "thermal status listener registered");
+        true
     }
 
     // SAFETY: the manager is never released, and only the platform's thermal monitor, on the thread
@@ -380,18 +454,22 @@ mod imp {
             let acquire = symbol(c"AThermal_acquireManager")?;
             let current_status = symbol(c"AThermal_getCurrentThermalStatus")?;
             let headroom = symbol(c"AThermal_getThermalHeadroom");
-            // SAFETY: a function symbol's address is the function, and the NDK declares these three
-            // with exactly these signatures (`thermal.h`).
-            let (acquire, current_status, headroom) = unsafe {
+            let register = symbol(c"AThermal_registerThermalStatusListener");
+            // SAFETY: a function symbol's address is the function, and the NDK declares these four
+            // with exactly these signatures (`thermal.h`; `AThermalStatus` is an `int` enum).
+            let (acquire, current_status, headroom, register) = unsafe {
                 (
                     mem::transmute::<*mut c_void, AcquireManager>(acquire.as_ptr()),
                     mem::transmute::<*mut c_void, CurrentStatus>(current_status.as_ptr()),
                     headroom.map(|f| mem::transmute::<*mut c_void, Headroom>(f.as_ptr())),
+                    register.map(|f| mem::transmute::<*mut c_void, RegisterListener>(f.as_ptr())),
                 )
             };
             // SAFETY: no arguments and no preconditions; it returns null on failure.
             let manager = NonNull::new(unsafe { acquire() })?;
-            Some(Api { manager, current_status, headroom })
+            let mut api = Api { manager, current_status, headroom, listening: false };
+            api.listening = register.is_some_and(|register| listen(manager, register, || api.ask()));
+            Some(api)
         })
         .as_ref()
     }
@@ -411,8 +489,10 @@ mod imp {
     impl Source for Os {
         fn state(&mut self) -> ThermalState {
             let Some(api) = api() else { return ThermalState::Unknown };
-            // SAFETY: the manager came from `AThermal_acquireManager` and is never released.
-            let status = unsafe { (api.current_status)(api.manager.as_ptr()) };
+            let status = if api.listening { HEARD.load(Ordering::Acquire) } else { api.ask() };
+            if status == UNHEARD {
+                return ThermalState::Unknown;
+            }
             from_android_status(status).unwrap_or_else(|| {
                 // ATHERMAL_STATUS_ERROR is a failed read, said by the OS; anything else is out of range.
                 if status != -1 && !mem::replace(&mut self.warned, true) {
@@ -420,6 +500,10 @@ mod imp {
                 }
                 ThermalState::Unknown
             })
+        }
+
+        fn hears_state(&self) -> bool {
+            api().is_some_and(|api| api.listening)
         }
 
         fn has_headroom(&self) -> bool {
@@ -490,7 +574,10 @@ mod tests {
         state: ThermalState,
         headroom: Option<Vec<f32>>,
         low_power: Option<bool>,
+        /// The OS tells the state as it changes.
+        hears: bool,
         state_reads: u32,
+        low_power_reads: u32,
         headroom_reads: u32,
     }
 
@@ -498,6 +585,10 @@ mod tests {
         fn state(&mut self) -> ThermalState {
             self.state_reads += 1;
             self.state
+        }
+
+        fn hears_state(&self) -> bool {
+            self.hears
         }
 
         fn has_headroom(&self) -> bool {
@@ -512,6 +603,7 @@ mod tests {
         }
 
         fn low_power(&mut self) -> Option<bool> {
+            self.low_power_reads += 1;
             self.low_power
         }
     }
@@ -548,6 +640,25 @@ mod tests {
             thermal.read(frame * SECOND / 60, None);
         }
         assert_eq!(thermal.source.state_reads, 11, "once a second");
+        assert_eq!(thermal.source.low_power_reads, 11, "once a second");
+        assert_eq!(thermal.source.headroom_reads, 2, "once every ten seconds");
+    }
+
+    /// Android's listener (M4 T7): the state the OS tells is read every frame, which costs an atomic load
+    /// and answers a change on the next frame; Low Power Mode and headroom keep their polls.
+    #[test]
+    fn a_state_the_os_tells_is_read_every_frame() {
+        let _cvars = CVAR_LOCK.lock().unwrap();
+        let mut thermal = monitor(Script { headroom: Some(vec![0.5]), hears: true, ..Script::default() });
+        for frame in 0..=600 {
+            if frame == 301 {
+                thermal.source.state = ThermalState::Severe;
+            }
+            let state = thermal.read(frame * SECOND / 60, None).state;
+            assert_eq!(state == ThermalState::Severe, frame >= 301, "frame {frame}");
+        }
+        assert_eq!(thermal.source.state_reads, 601, "every frame");
+        assert_eq!(thermal.source.low_power_reads, 11, "once a second");
         assert_eq!(thermal.source.headroom_reads, 2, "once every ten seconds");
     }
 

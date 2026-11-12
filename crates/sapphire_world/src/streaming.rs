@@ -356,12 +356,16 @@ impl<P> Streamer<P> {
             return;
         }
         self.rescan([focus[0], focus[2]], [None; AHEAD]);
+        // Every place asked for before any is waited for, so their reads and decodes run together on the
+        // workers rather than one place after another on the caller's thread (M4 H8).
+        for place in &mut self.places {
+            if place.want == Want::Active && matches!(place.meshes, Meshes::None) {
+                ask(place, server, LoadPriority::Critical);
+            }
+        }
         for place in &mut self.places {
             if place.want != Want::Active {
                 continue;
-            }
-            if matches!(place.meshes, Meshes::None) {
-                ask(place, server, LoadPriority::Critical);
             }
             if let Meshes::Loading(handles) = &place.meshes {
                 let finished: Result<(), _> =

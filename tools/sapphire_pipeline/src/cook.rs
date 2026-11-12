@@ -264,7 +264,10 @@ pub struct Recipe {
 /// 5: reject non-finite UV components and overflowing UV extents before quantization.
 /// 6: the LOD test poses and the foliage bake turn through `sapphire_math::det`, and generated
 /// materials pack through its cosines (M4 C3).
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 6 };
+/// 7: meshoptimizer builds without floating-point contraction, the test poses' pivots invert through
+/// `sapphire_math::det::mat4_inverse`, and bounds take their zeros' signs from `det::min` and `max`, so a
+/// mesh cooks to the same bytes on x86-64 and AArch64 (M4 C6).
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 7 };
 
 /// What a source's skeleton's ID is derived from.
 pub const SKELETON: &str = sapphire_assets::skeleton::SKELETON_SUB_ASSET;

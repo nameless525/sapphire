@@ -7,11 +7,15 @@
 //! asks the [`FramePacer`] whether the tick becomes a frame, and keeps the display's refresh
 //! current: from the choreographer's reports on Android 11 and later, else from SDL's display
 //! events. After the app's iteration it reports the frame's work to Android's ADPF hint session
-//! (`hint.rs`), against the frame's budget.
+//! (`hint.rs`), against the frame's budget: the frame thread's wall time from the tick to the end of
+//! the iteration, less what it waited on the display meanwhile (the swapchain's acquire and present,
+//! which `sapphire_rhi` adds to `sapphire_core::frame_waits`), so a frame bound by the GPU doesn't
+//! read long and raise the CPU's clocks for nothing (M4 T7). [`FramePacing::work`] sums both.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use sapphire_core::frame_waits;
 use sdl3_sys::events::{SDL_Event, SDL_EventType};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_WasInit};
 use sdl3_sys::video::{SDL_DisplayID, SDL_GetCurrentDisplayMode, SDL_GetPrimaryDisplay};
@@ -34,6 +38,51 @@ pub struct FramePacing {
     /// This frame's interval since the frame before: whole refreshes where vsyncs start frames.
     pub interval: Duration,
     pub stats: PacingStats,
+    /// The frames' work and their waits on the display, summed since the start (M4 T7).
+    pub work: FrameWork,
+}
+
+/// Frames' work as the hint session hears it, and what was left out of it, summed (rule R9): a stats
+/// line shows the difference across its window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameWork {
+    /// Frames measured: every frame the pacer let through and the app iterated.
+    pub frames: u64,
+    /// Their work: the frame thread's wall time from the tick to the end of the app's iteration, less
+    /// `waited`.
+    pub work: Duration,
+    /// What they waited on the display: the swapchain's acquire (every image in flight, as when the GPU
+    /// is behind) and its present.
+    pub waited: Duration,
+}
+
+/// Measures each frame's work: its wall time on the frame thread less its waits on the display.
+#[derive(Debug, Default)]
+struct WorkMeter {
+    /// When the frame being iterated started its work, in nanoseconds on SDL's clock.
+    started: Option<u64>,
+    totals: FrameWork,
+}
+
+impl WorkMeter {
+    /// A frame starts its work at `now`: waits from before it (a skipped frame's, a loading screen's)
+    /// aren't its.
+    fn start(&mut self, now: u64) {
+        frame_waits::take();
+        self.started = Some(now);
+    }
+
+    /// The frame started last ends at `now`: its work, less what the thread waited on the display since
+    /// it started. `None` if no frame started.
+    fn end(&mut self, now: u64) -> Option<Duration> {
+        let started = self.started.take()?;
+        let waited = frame_waits::take();
+        let work = Duration::from_nanos(now.saturating_sub(started)).saturating_sub(waited);
+        self.totals.frames += 1;
+        self.totals.work = self.totals.work.saturating_add(work);
+        self.totals.waited = self.totals.waited.saturating_add(waited);
+        Some(work)
+    }
 }
 
 #[derive(Debug)]
@@ -55,9 +104,8 @@ pub(crate) struct FrameClock {
     interval: Duration,
     /// The frame thread's hint session, where the OS has them.
     hint: HintSession,
-    /// When the frame being iterated started its work, in SDL's nanoseconds, where a hint session
-    /// wants it.
-    work_started: Option<u64>,
+    /// Each frame's work, for the hint session and the stats.
+    work: WorkMeter,
 }
 
 impl FrameClock {
@@ -79,7 +127,7 @@ impl FrameClock {
             refresh_hz: None,
             interval: Duration::ZERO,
             hint: HintSession::new(),
-            work_started: None,
+            work: WorkMeter::default(),
         }
     }
 
@@ -112,6 +160,7 @@ impl FrameClock {
             refresh_hz: self.refresh_hz,
             interval: self.interval,
             stats: self.pacer.stats(),
+            work: self.work.totals,
         }
     }
 
@@ -154,10 +203,8 @@ impl FrameClock {
         match self.pacer.tick(vsync) {
             Some(interval) => {
                 self.interval = interval;
-                if self.hint.live().is_some() {
-                    // SAFETY: SDL_GetTicksNS has no preconditions.
-                    self.work_started = Some(unsafe { sdl3_sys::timer::SDL_GetTicksNS() });
-                }
+                // SAFETY: SDL_GetTicksNS has no preconditions.
+                self.work.start(unsafe { sdl3_sys::timer::SDL_GetTicksNS() });
                 true
             }
             None => false,
@@ -165,14 +212,13 @@ impl FrameClock {
     }
 
     /// Runs after the app's iteration of a frame [`Self::begin_frame`] let through: reports the
-    /// frame's work, from then to now, to the hint session against the frame's budget, once there is
-    /// one (a target rate or a known refresh).
+    /// frame's work, from then to now less its waits on the display, to the hint session against the
+    /// frame's budget, once there is one (a target rate or a known refresh).
     pub fn end_frame(&mut self) {
-        let Some(started) = self.work_started.take() else { return };
-        let Some(budget) = self.pacer.frame_budget() else { return };
         // SAFETY: SDL_GetTicksNS has no preconditions.
-        let now = unsafe { sdl3_sys::timer::SDL_GetTicksNS() };
-        self.hint.report(budget, Duration::from_nanos(now.saturating_sub(started)));
+        let Some(work) = self.work.end(unsafe { sdl3_sys::timer::SDL_GetTicksNS() }) else { return };
+        let Some(budget) = self.pacer.frame_budget() else { return };
+        self.hint.report(budget, work);
     }
 
     /// Whether the frame thread's hint session is live: `None` where the OS has none.
@@ -301,4 +347,48 @@ fn display_refresh(display: Option<u32>) -> Option<(f32, Duration)> {
         _ => Duration::from_secs_f64(1.0 / f64::from(hz)),
     };
     Some((hz, period))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// A frame bound by the GPU: 16 ms on the frame thread, of which 9 ms waited for a swapchain image and
+    /// 1 ms in present. ADPF hears the 6 ms of work.
+    #[test]
+    fn the_work_reported_leaves_out_the_swapchains_waits() {
+        let mut meter = WorkMeter::default();
+        frame_waits::add(Duration::from_millis(40));
+        meter.start(100 * MS);
+        frame_waits::add(Duration::from_millis(9));
+        frame_waits::add(Duration::from_millis(1));
+        assert_eq!(
+            meter.end(116 * MS),
+            Some(Duration::from_millis(6)),
+            "the wait before the frame isn't its"
+        );
+        assert_eq!(
+            meter.totals,
+            FrameWork { frames: 1, work: Duration::from_millis(6), waited: Duration::from_millis(10) }
+        );
+
+        // A frame that waited on nothing reports its whole wall time.
+        meter.start(116 * MS);
+        assert_eq!(meter.end(120 * MS), Some(Duration::from_millis(4)));
+
+        // Waits can't take a frame's work below nothing (two clocks, read apart); the session then hears
+        // its least, 1 ns.
+        meter.start(120 * MS);
+        frame_waits::add(Duration::from_millis(5));
+        assert_eq!(meter.end(124 * MS), Some(Duration::ZERO));
+        assert_eq!(
+            meter.totals,
+            FrameWork { frames: 3, work: Duration::from_millis(10), waited: Duration::from_millis(15) }
+        );
+
+        assert_eq!(meter.end(130 * MS), None, "no frame started");
+        assert_eq!(meter.totals.frames, 3);
+    }
 }

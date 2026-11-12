@@ -50,9 +50,10 @@
 //! `sapphire_math::det` rather than the platform's `powf`, the encoders run serially, and the
 //! KTX2 writer writes no timestamps. The block encoders are SIMD kernels that pick an
 //! instruction set at run time, so the `kernels` module calls one fixed set by name: AVX2 on
-//! x86-64, NEON on Arm. An x86 cook and an Arm cook still differ in their block bits, because
-//! the kernels round differently per instruction set; the test
-//! `cooks_the_same_bytes_on_every_machine_of_an_architecture` pins both.
+//! x86-64, NEON on Arm. None of the x86-64 kernels it calls uses a reciprocal estimate, whose low
+//! bits differ between Intel's and AMD's CPUs, so BC7 there is Intel's kernel rather than `bc7e`.
+//! An x86 cook and an Arm cook still differ in their block bits, because the kernels differ per
+//! architecture; the test `cooks_the_same_bytes_on_every_machine_of_an_architecture` pins both.
 //!
 //! # Later milestones
 //!
@@ -93,8 +94,10 @@ use crate::import::image::{
 /// they change output for the same image. The name carries the versions of the crates whose
 /// output the cook embeds, and a test keeps it in step with `Cargo.lock`: every `ctt*` crate
 /// (the encoders are separate crates on caret ranges, so `cargo update` can move them alone)
-/// and `ktx2`, whose generated descriptors the reader compares byte for byte.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 3 };
+/// and `ktx2`, whose generated descriptors the reader compares byte for byte. 4: x86-64 encodes BC7
+/// with Intel's kernel (M4 C4). 5: astcenc builds without floating-point contraction on AArch64, as
+/// every C++ dependency there does (M4 C6), which moved AArch64's ASTC blocks and nothing on x86-64.
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 5 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;
@@ -951,10 +954,12 @@ mod tests {
 
     /// Committed sources' cooked bytes, pinned per architecture (spec §5.27, "Reproducible cooks"):
     /// on every OS and every CPU of one, a texture cooks the same as on CI's Linux runners, the one
-    /// way to catch an encoder that picks its kernels by the CPU, as the BC7 kernels did when the
-    /// same commit cooked two ways on two runners. The block encoders round differently on x86-64
-    /// and AArch64, so each has its own hashes; x86-64's mobile cook has none yet, since CI's packs
-    /// are desktop cooks. The sources are `gen-combat`'s, whose bytes are themselves pinned.
+    /// way to catch an encoder whose output depends on the CPU, as BC7's did twice: by the widest
+    /// instruction set (C3), then by the CPU's maker through `bc7e`'s reciprocal estimates (C4).
+    /// CI's x86-64 runners are AMD's and Intel's, so x86-64's hashes hold across makers. The block
+    /// encoders differ between x86-64 and AArch64, so each has its own hashes (a four-channel
+    /// mask's ASTC happens to agree). The sources are `gen-combat`'s, whose bytes are themselves
+    /// pinned. A failure prints every hash this machine cooked.
     ///
     /// On a deliberate change (an encoder upgrade, a new quantization), the cooker's version
     /// moves too: take the new hashes from this test's failure on each architecture.
@@ -962,49 +967,37 @@ mod tests {
     fn cooks_the_same_bytes_on_every_machine_of_an_architecture() {
         // (source, cook, blake3 of the cooked KTX2 on x86-64, the same on AArch64).
         //
-        // One Windows runner cooked the two desktop textures to other bytes, and a later one to the pinned
-        // ones: some x86-64 machine still takes another path through the encoders (untraced, and owed). Its
-        // bytes are known below; a third cook still fails.
-        let other: [(&str, &str); 2] = [
-            (
-                "combat/player/sword_layers.png",
-                "edc916f982b373a27dc8ea2d7f8d1492da50acef03ecedc749024849bb5a9116",
-            ),
-            (
-                "combat/lancer/lancer_matcap.png",
-                "147d0088f203200c2789c8a2f89c136bd7281f3082644d7304f143a98fb7d134",
-            ),
-        ];
-        let pinned: [(&str, Cook, Option<&str>, &str); 4] = [
+        // x86-64's are from M4 C4's BC7 probe (run 43212873352), the same on AMD's and Intel's runners.
+        let pinned: [(&str, Cook, &str, &str); 4] = [
             (
                 // Mask, four channels: BC7 without perceptual weighting, and ASTC 4×4 data.
                 "combat/player/sword_layers.png",
                 Cook::Desktop,
-                Some("6211b10d5a7fa3ecc08b73b3320c99e6427faa3b3a84881af3c6b3eeb0d171e4"),
+                "23966c5990be5c8734a84b4e83e058f2dc4bff2419a32ef4577ffae3148b813f",
                 "56842cf141f64a36e96493a873703f94e2317264944bc1fcc1844ca65d3090d1",
             ),
             (
                 "combat/player/sword_layers.png",
                 Cook::Mobile,
-                None,
+                "9e2e3a5140e79fcce2c6ce26ed4e82db9a91ea915d691abcdc08578bfe532a3c",
                 "9e2e3a5140e79fcce2c6ce26ed4e82db9a91ea915d691abcdc08578bfe532a3c",
             ),
             (
                 // Color: sRGB decoding, then BC7 sRGB perceptual and ASTC sRGB.
                 "combat/lancer/lancer_matcap.png",
                 Cook::Desktop,
-                Some("10396c7251eaaa335647fc90a4bc1f312a9a515af5d186a59c465c90de4b15dc"),
+                "a292bd0f3e693b41c862ce13608f1979d6b930cc38f4cd1553bb54435d6a6b0a",
                 "3c3a7bd918af8df5ed73aef492e9e666b1643f74063eef731666e9867b946ba1",
             ),
             (
                 "combat/lancer/lancer_matcap.png",
                 Cook::Mobile,
-                None,
-                "ea7140502b95050dc62ee177fba07195689dc7b94b86636a3eb152b14a4d28ad",
+                "8a29b99acbbc608ffb90cb9fc746c7d1481edfb055f4356aab11b15c44ec0417",
+                "42e60f3ea0e807f67c4152c5342bfdf2d5747f77d65d03ddc58707e43424dabe",
             ),
         ];
         let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let mut wrong = Vec::new();
+        let (mut wrong, mut cooked) = (Vec::new(), Vec::new());
         for (source, cook, x86_64, aarch64) in pinned {
             let path = content.join(source);
             let ImportSettings::Texture(settings) = meta::read(&sidecar_path(&path)).unwrap().importer else {
@@ -1013,17 +1006,19 @@ mod tests {
             let bytes = fs::read(&path).unwrap();
             let hash =
                 blake3::hash(&cook_source(&path, &bytes, &settings, cook).unwrap()).to_hex().to_string();
-            let known_other = cfg!(target_arch = "x86_64")
-                && cook == Cook::Desktop
-                && other
-                    .iter()
-                    .any(|&(other_source, other_hash)| other_source == source && other_hash == hash);
-            let expected = if cfg!(target_arch = "x86_64") { x86_64 } else { Some(aarch64) };
-            if !known_other && expected.is_some_and(|expected| expected != hash) {
-                wrong.push(format!("{source} ({cook:?}): {hash}, pinned {expected:?}"));
+            let expected = if cfg!(target_arch = "x86_64") { x86_64 } else { aarch64 };
+            if expected != hash {
+                wrong.push(format!("{source} ({cook:?}): {hash}, pinned {expected}"));
             }
+            cooked.push(format!("{source} ({cook:?}): {hash}"));
         }
-        assert!(wrong.is_empty(), "cooked bytes moved on {}:\n{}", std::env::consts::ARCH, wrong.join("\n"));
+        assert!(
+            wrong.is_empty(),
+            "cooked bytes moved on {}:\n{}\nall of this machine's cooks:\n{}",
+            std::env::consts::ARCH,
+            wrong.join("\n"),
+            cooked.join("\n")
+        );
     }
 
     /// Writes `image` to `path` in `format`, creating directories.

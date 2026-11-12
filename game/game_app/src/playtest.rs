@@ -6,6 +6,7 @@
 //! for the pause's mark and each run as it ends ([`asked`]); the window tells the session each frame's time
 //! and heat, the player's settings, and when the OS moves the app; a quit ends it.
 
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,10 +17,11 @@ use game_flow::capture::{Captured, GameCapture};
 use game_flow::show::GameShow;
 use game_ui::menus::PlayerSettings;
 use sapphire_core::thermal::ThermalReading;
-use sapphire_platform::{App, AppInitError, AppMetadata, Host, Platform, durable_replace};
-use sapphire_playtest::{About, Build, Device, Replay, SESSIONS_DIR, Session, Trail};
+use sapphire_platform::{App, AppInitError, AppMetadata, Host, Platform, durable_append, durable_replace};
+use sapphire_playtest::{About, Build, Device, Disk, Replay, SESSIONS_DIR, Session, Trail};
 use sapphire_render::quality::Quality;
 use sapphire_stage::Stage;
+use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
 use crate::app::GameApp;
@@ -27,9 +29,26 @@ use crate::app::GameApp;
 /// The frame's interval where the tier sets none.
 const UNPACED: Duration = Duration::from_micros(16_667);
 
+/// What a capture's frame stands for: a tick, as `game_flow::capture` steps one a frame.
+const CAPTURED_FRAME: Duration = Duration::from_nanos(1_000_000_000 / TICK_HZ as u64);
+
 /// See this module.
 pub(crate) struct Playtest {
     session: Session,
+}
+
+/// The disk as a session writes it: whole files replaced, and a run's journal and its frames grown, each so a
+/// kill at any moment leaves what the session's document names.
+struct Durable;
+
+impl Disk for Durable {
+    fn replace(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        durable_replace(path, bytes)
+    }
+
+    fn append(&self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+        durable_append(path, at, bytes)
+    }
 }
 
 /// `show`, asked for what a session keeps: the pause's mark, and each run as it ends. Before it stands.
@@ -40,7 +59,8 @@ pub(crate) fn asked(mut show: GameShow) -> GameShow {
 }
 
 /// A capture (`game_flow::capture`) with a session kept where it keeps a save: only under `save_dir`, which
-/// `--save-dir` gives it. Its frames take as long as drawing them does, and it has no heat to read.
+/// `--save-dir` gives it. Each frame stands for a tick of play, as the capture steps it, so the session's clock
+/// keeps to the run's ticks; `frames.csv` holds how long each took to draw. It has no heat to read.
 pub(crate) fn capture(
     platform: &Platform,
     host: &Host,
@@ -57,7 +77,7 @@ pub(crate) fn capture(
         let frame = now.saturating_duration_since(last);
         last = now;
         if let Some(playtest) = &mut playtest {
-            playtest.frame(stage, frame, ThermalReading::default());
+            playtest.frame_standing_for(stage, CAPTURED_FRAME, frame, ThermalReading::default());
         }
     })?;
     if let Some(playtest) = playtest {
@@ -98,7 +118,7 @@ impl Playtest {
             // 0 is a clock set before 1970: no calendar to name the session by.
             began: Some(sapphire_time::calendar_seconds()).filter(|&seconds| seconds > 0),
         };
-        match Session::begin(&dir.join(SESSIONS_DIR), about, Arc::new(durable_replace)) {
+        match Session::begin(&dir.join(SESSIONS_DIR), about, Arc::new(Durable)) {
             Ok(mut session) => {
                 session.settings(settings);
                 Some(Self { session })
@@ -113,9 +133,20 @@ impl Playtest {
     /// After a frame of `stage`'s that took `frame`, with the OS's `heat`: the runs that ended, a mark the pause
     /// set, the frame, and a keep if one's due.
     pub(crate) fn frame(&mut self, stage: &mut Stage<GameShow>, frame: Duration, heat: ThermalReading) {
+        self.frame_standing_for(stage, frame, frame, heat);
+    }
+
+    /// [`Self::frame`], for a frame that stands for `stands` of play however long it took: a capture's.
+    fn frame_standing_for(
+        &mut self,
+        stage: &mut Stage<GameShow>,
+        stands: Duration,
+        frame: Duration,
+        heat: ThermalReading,
+    ) {
         self.hear(&mut stage.show);
         let tick = stage.show.shown.fight.combat.as_ref().map_or(0, |combat| combat.simulation().tick());
-        self.session.frame(frame, budget(&stage.quality), heat, tick);
+        self.session.frame_standing_for(stands, frame, budget(&stage.quality), heat, tick);
         if self.session.wants_keep() {
             self.session.keep(standing(&stage.show));
         }

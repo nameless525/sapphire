@@ -10,6 +10,8 @@
 //! - [`target`]: [`target::FormFactor`], the one definition of desktop versus mobile.
 //! - [`thermal`]: [`thermal::ThermalReading`], what the OS says about heat and power, as plain data
 //!   that `sapphire_platform` fills and the quality ladder reads.
+//! - [`frame_waits`]: how long the frame thread waited on the display (a swapchain's acquire and
+//!   present), which `sapphire_rhi` adds and the frame clock leaves out of the frame's work (M4 T7).
 //! - [`cvar`]: console variables, typed statics that runtime crates declare and dev tools set by
 //!   name (the facade of spec §5.20: only development builds link a console).
 //! - [`debug_draw`]: lines, shapes and labels from any thread, as plain data for the frame packet;
@@ -22,6 +24,7 @@
 pub mod alloc;
 pub mod cvar;
 pub mod debug_draw;
+pub mod frame_waits;
 pub mod guid;
 pub mod log;
 pub mod name;

@@ -12,7 +12,8 @@
 //! it goes back where the save has it, waiting at the pause if someone was playing. A boot whose device is lost
 //! starts again on a new one, from where the last lost stage left the game, or from the title. A device lost
 //! again before the next stage presents a frame counts toward [`Losses`]' limit; the audio, the settings and
-//! the window go on through it.
+//! the window go on through it. A boot lost as its renderer built boots again a tier lower, and none after
+//! goes above it (M4 H9, `Boot::ceiling_after_loss`): on Vulkan that loss is how a driver refuses a pipeline.
 //!
 //! **Patches (M4 P4)** are the first boot's to fetch and install (`game_flow::update`): it checks the build's
 //! host before anything else, and stands the game on what it installs. Every later boot, after a lost device,
@@ -33,6 +34,7 @@ use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Host, LifecycleEvent, Os, Platform, Size,
     SurfaceHandle, SystemInfo, Window, WindowDesc, WindowEvent, durable_replace,
 };
+use sapphire_render::quality::{QualitySettings, TierId};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
@@ -61,6 +63,9 @@ pub struct GameApp {
     /// Where the game goes back to once a boot on the next device has stood it.
     reload: Option<Reload>,
     losses: Losses,
+    /// The highest tier the next boot may build (M4 H9): below one a lost boot was building, or one a boot fell
+    /// back from. None until either.
+    ceiling: Option<TierId>,
     /// Made once the first boot has stood the game. Outlives a lost device: what it plays was read from the
     /// content, and nothing of it is on the GPU.
     audio: Option<DeviceAudio>,
@@ -152,12 +157,13 @@ impl App for GameApp {
             .as_ref()
             .and_then(Patches::check)
             .map(|update| BootUpdate { update, remake: options.make_show(platform, chosen.clone()) });
-        let on_device = boot_on_device(platform, &host, &window, &options, chosen.clone(), update)
+        let on_device = boot_on_device(platform, &host, &window, &options, chosen.clone(), update, None)
             .map_err(|failed| failed.error)?;
         Ok(Self {
             on_device: Some(on_device),
             reload: None,
             losses: Losses::default(),
+            ceiling: None,
             audio: None,
             sounds: None,
             audio_prepared,
@@ -561,6 +567,7 @@ impl GameApp {
             match &mut lost.game {
                 Game::Stood(stage) => {
                     tracing::warn!(target: LOG_TARGET, "the GPU device was lost; the game boots again on a new one");
+                    self.ceiling = stage.quality.settings().ceiling;
                     self.reload = Some(stage.show.end_for_reload());
                     #[cfg(feature = "playtest")]
                     if let Some(playtest) = &mut self.playtest {
@@ -568,8 +575,16 @@ impl GameApp {
                     }
                 }
                 // Where an earlier loss left the game is still where the next boot takes it.
-                Game::Booting(_) => {
-                    tracing::warn!(target: LOG_TARGET, "the GPU device was lost booting; the game boots again on a new one");
+                Game::Booting(boot) => {
+                    // Lost building its renderer, the next boot builds the tier below (M4 H9).
+                    self.ceiling = boot.ceiling_after_loss();
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        step = boot.step().name(),
+                        tier = boot.tier().name(),
+                        ceiling = self.ceiling.map(TierId::name),
+                        "the GPU device was lost booting; the game boots again on a new one"
+                    );
                 }
             }
             // Everything on the old device, the surface first, before a new surface is made for the window.
@@ -583,7 +598,7 @@ impl GameApp {
         self.retry_due = self.real.elapsed() + RETRY;
         let settings = self.reload.as_ref().map_or(&self.chosen, |reload| &reload.settings).clone();
         let host = host_of(platform, self.patches.as_ref());
-        match boot_on_device(platform, &host, &self.window, &self.options, settings, None) {
+        match boot_on_device(platform, &host, &self.window, &self.options, settings, None, self.ceiling) {
             Ok(on_device) => {
                 self.on_device = Some(on_device);
                 tracing::info!(target: LOG_TARGET, "the game boots on a new GPU device");
@@ -778,7 +793,7 @@ fn host_of(platform: &Platform, patches: Option<&Patches>) -> Host {
 
 /// The game on a new device for `window`: the device, the window's surface sized to it, and the show `options`
 /// make with `settings` on `host`'s content booting on it, its screen's pipeline built and the rest building
-/// (`game_flow::boot`), the update first if given. At startup and after a lost one.
+/// (`game_flow::boot`), the update first if given, at no tier above `ceiling`. At startup and after a lost one.
 fn boot_on_device(
     platform: &mut Platform,
     host: &Host,
@@ -786,6 +801,7 @@ fn boot_on_device(
     options: &Options,
     settings: PlayerSettings,
     update: Option<BootUpdate>,
+    ceiling: Option<TierId>,
 ) -> Result<OnDevice, Failed> {
     let info = *platform.system_info();
     let failed = |error: AppInitError| Failed { error, lost: false };
@@ -826,6 +842,7 @@ fn boot_on_device(
     let (show, first) = options.show(platform, host.content(), settings).map_err(failed)?;
     // The player's tier and dynamic resolution from the start, so a held tier's renderer is the first made.
     let quality = crate::tiers::starting_quality(&show, info.device_class);
+    let quality = QualitySettings { ceiling, ..quality };
     let mut boot = Boot::start(host, Arc::new(gpu), format, quality, show, &first).map_err(&lost)?;
     if let Some(update) = update {
         boot = boot.with_update(update);

@@ -657,6 +657,7 @@ impl Options {
             shadows: self.shadows.unwrap_or_default(),
             ambient_occlusion: self.ambient_occlusion.unwrap_or_default(),
             shed: self.shed,
+            ceiling: None,
         }
     }
 
@@ -1872,6 +1873,7 @@ mod tests {
                 shadows: Switch::Auto,
                 ambient_occlusion: OcclusionSetting::Auto,
                 shed: OptionalPasses::NONE,
+                ceiling: None,
             }
         );
         let (shedding, _) = parse(&["--shed", "cirrus", "--shed=bloom-level"]).unwrap();

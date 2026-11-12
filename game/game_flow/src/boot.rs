@@ -15,7 +15,13 @@
 //!    The
 //!    renderer builds beside it all along. Nothing that goes wrong stops the boot: it goes on with what it has.
 //! 1. **The renderer** ([`Step::Renderer`]): `Renderer::new` on the warm-up pool (`sapphire_jobs::spawn_warm_up`),
-//!    whose scopes stay on its threads, so its builds never land on a frame. It starts in [`Boot::start`].
+//!    whose scopes stay on its threads, so its builds never land on a frame. It starts in [`Boot::start`]. If it
+//!    can't be built at the boot's tier, here or as the packs' pipelines warm (the renderer refuses, or the
+//!    device reports an error: a pipeline its driver wouldn't link, memory it couldn't give), the boot falls back
+//!    to the next lower tier of its class and builds it again (M4 H9, [`Quality::fall_back`]); only the lowest's
+//!    failure ends the boot. A device lost meanwhile can't be built on again: the window boots on a new one, under
+//!    the ceiling [`Boot::ceiling_after_loss`] gives it, since on Vulkan wgpu loses the device when a driver
+//!    refuses a pipeline.
 //! 2. **The packs' pipelines** ([`Step::Packs`]): what the mounted packs' meshes and the first zone's draw
 //!    through, with its probe grid's constants (`Content::zone_pipelines`), skinning, effects and the interface,
 //!    asked of the new renderer ([`Renderer::warm`]) and taken in between frames
@@ -52,9 +58,10 @@ use game_combat::fight::{FightStand, PreparedRun, StandPlan, fight_stage};
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
 use sapphire_platform::{AppInitError, ContentFs, Host};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
-use sapphire_render::quality::QualitySettings;
+use sapphire_render::quality::{Quality, QualitySettings, TierId};
 use sapphire_render::{
-    InterfaceScreen, PipelineInventory, PipelineStats, RenderError, Renderer, UiDrawList, WarmUpRequest,
+    InterfaceScreen, PipelineInventory, PipelineStats, RenderError, RenderSettings, Renderer, UiDrawList,
+    WarmUpRequest,
 };
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_stage::{Content, Stage, StageDesc};
@@ -184,7 +191,18 @@ pub struct BootReport {
     pub pipelines: PipelineStats,
     /// The boot screen's own: its one pipeline, built before its first frame.
     pub screen_pipelines: u32,
+    /// The tiers whose renderer couldn't be built, each fallen back from to the next lower (M4 H9): none, on a
+    /// device that builds the tier it chose.
+    pub fell_back_from: Vec<TierId>,
 }
+
+/// What makes a boot's renderer on the warm-up pool, for a tier: `Renderer::new`, or a test's that refuses one
+/// (M4 H9, [`Boot::start_making`]).
+pub type MakeRenderer = Arc<
+    dyn Fn(&GpuContext, wgpu::TextureFormat, TierId, RenderSettings) -> Result<Renderer, RenderError>
+        + Send
+        + Sync,
+>;
 
 /// What a boot makes its show from: the content it stands on, read again when an update installs a release.
 pub type MakeShow = Box<dyn FnMut(&ContentFs) -> Result<(GameShow, CombatOption), AppInitError>>;
@@ -206,6 +224,10 @@ pub struct Boot {
     step: Step,
     /// The renderer, building on the warm-up pool until [`Step::Renderer`] takes it.
     built: mpsc::Receiver<Result<Renderer, RenderError>>,
+    make: MakeRenderer,
+    /// The device's errors when the renderer's build started ([`GpuContext::errors`]): one since, and what it
+    /// built can't be trusted.
+    errors_at_build: u32,
     update: Option<BootUpdate>,
     /// A release the update installed, made again a part a frame until it's stood on.
     remaking: Option<Box<Remaking>>,
@@ -250,17 +272,28 @@ impl Boot {
         gpu: Arc<GpuContext>,
         format: wgpu::TextureFormat,
         quality: QualitySettings,
+        show: GameShow,
+        first: &CombatOption,
+    ) -> Result<Self, AppInitError> {
+        let make: MakeRenderer = Arc::new(|gpu, format, _, settings| Renderer::new(gpu, format, settings));
+        Self::start_making(host, gpu, format, quality, show, first, make)
+    }
+
+    /// [`Self::start`], with its renderer made by `make` for each tier it tries: a test's, which refuses one to
+    /// see the boot fall back (M4 H9).
+    pub fn start_making(
+        host: &Host,
+        gpu: Arc<GpuContext>,
+        format: wgpu::TextureFormat,
+        quality: QualitySettings,
         mut show: GameShow,
         first: &CombatOption,
+        make: MakeRenderer,
     ) -> Result<Self, AppInitError> {
         let started = Stopwatch::start();
         let desc = fight_stage(StageDesc::new(host, &gpu, format, quality));
-        let (sender, built) = mpsc::channel();
-        let (renderer_gpu, settings) = (gpu.clone(), desc.settings);
-        sapphire_jobs::spawn_warm_up(move || {
-            // Nobody's waiting if the boot ended first.
-            let _ = sender.send(Renderer::new(&renderer_gpu, format, settings));
-        });
+        let errors_at_build = gpu.errors();
+        let built = build_renderer(&gpu, format, &desc.quality, desc.settings, &make);
         let mut content = Content::new(host, desc.character, desc.sky)?;
         let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
         // Read beside the renderer's build: its documents are tens of milliseconds of a frame (M4 H4).
@@ -291,6 +324,8 @@ impl Boot {
             host: host.clone(),
             step: Step::Renderer,
             built,
+            make,
+            errors_at_build,
             update: None,
             remaking: None,
             update_share: 0.0,
@@ -353,6 +388,29 @@ impl Boot {
     #[must_use]
     pub fn report(&self) -> &BootReport {
         &self.report
+    }
+
+    /// The tier it boots at: the one it chose, or the one it fell back to (M4 H9).
+    #[must_use]
+    pub fn tier(&self) -> TierId {
+        self.desc.as_ref().map_or_else(
+            || self.stage.as_ref().expect("a stage once the desc is used").quality.active().id,
+            |desc| desc.quality.active().id,
+        )
+    }
+
+    /// The ceiling a boot on a new device takes ([`QualitySettings::ceiling`]) once this one's device is lost
+    /// (M4 H9). Lost while the renderer built, its own pipelines or the packs', it's the next lower tier: on Vulkan
+    /// wgpu loses the device when the driver refuses a pipeline or has no memory for one, so building the same
+    /// tier on a new device would lose that too. Lost later, it's the ceiling this boot had, if any. At its
+    /// class's lowest it can go no lower, and the window's limit on losses in a row ends the game.
+    #[must_use]
+    pub fn ceiling_after_loss(&self) -> Option<TierId> {
+        let building = matches!(self.step, Step::Update(_) | Step::Renderer | Step::Packs(_));
+        let quality = self.desc.as_ref().map(|desc| &desc.quality);
+        let quality = quality.or_else(|| self.stage.as_ref().map(|stage| &stage.quality))?;
+        let lower = building.then(|| quality.active().id.lower()).flatten();
+        lower.or(quality.settings().ceiling)
     }
 
     /// The renderer, once it's built and until the stage is handed back: its ledger says what a frame built or
@@ -512,8 +570,14 @@ impl Boot {
             }
             Step::Renderer => match self.take_plan()?.then(|| self.built.try_recv()) {
                 None => {}
-                Some(Ok(renderer)) => {
-                    let mut renderer = renderer?;
+                Some(Ok(built)) => {
+                    let mut renderer = match (built, self.errors_since_build()) {
+                        (Ok(renderer), 0) => renderer,
+                        (Ok(_), errors) => {
+                            return self.fall_back(&format!("the device reported {errors} errors"));
+                        }
+                        (Err(error), _) => return self.fall_back(&error.to_string()),
+                    };
                     renderer.count_hitches_from_now();
                     self.report.renderer = self.started.elapsed();
                     let content = self.content.as_mut().expect("content until the stage stands");
@@ -538,6 +602,12 @@ impl Boot {
                 let renderer = self.renderer.as_mut().expect("a renderer warms");
                 renderer.take_in_warm_up();
                 if renderer.is_warm(request) {
+                    // Its pipelines are the tier's: one the device refused, and the tier is no good.
+                    let errors = self.errors_since_build();
+                    if errors > 0 {
+                        return self
+                            .fall_back(&format!("the device reported {errors} errors warming the packs"));
+                    }
                     self.report.packs = self.started.elapsed();
                     // Made on the next frame, so the screen says it's loading while it does.
                     self.step = Step::Stage;
@@ -569,6 +639,46 @@ impl Boot {
             }
             Step::Done => {}
         }
+        Ok(())
+    }
+
+    /// Errors the device has reported since the renderer's build started ([`GpuContext::errors`]).
+    fn errors_since_build(&self) -> u32 {
+        self.gpu.errors().saturating_sub(self.errors_at_build)
+    }
+
+    /// The renderer couldn't be built at the boot's tier, for `why` (M4 H9): on a live device, the boot falls back
+    /// to the next lower tier of its class and builds its renderer again, from [`Step::Renderer`], letting go of
+    /// what it had built; at the class's lowest it fails. A lost device fails it either way, for the window to
+    /// boot again on a new one ([`Self::ceiling_after_loss`]).
+    fn fall_back(&mut self, why: &str) -> Result<(), AppInitError> {
+        if self.gpu.is_lost() {
+            return Err(AppInitError::msg(format!("the GPU device was lost while the game booted: {why}")));
+        }
+        let desc = self.desc.as_mut().expect("a desc until the stage is made");
+        let from = desc.quality.active().id;
+        let Some(tier) = desc.quality.fall_back() else {
+            return Err(AppInitError::msg(format!(
+                "the renderer can't be built at {from}, the lowest tier of its class: {why}"
+            )));
+        };
+        tracing::warn!(
+            target: LOG_TARGET,
+            tier = tier.name(),
+            from = from.name(),
+            why,
+            "the renderer can't be built at the boot's tier: it builds again at the next lower"
+        );
+        desc.settings = desc.quality.render_settings();
+        self.frame_rate = desc.quality.frame_rate();
+        let rate = self.frame_rate.map_or(DEFAULT_RATE, NonZeroU32::get);
+        self.report.interval_limit = Duration::from_secs(2) / rate;
+        self.report.fell_back_from.push(from);
+        // Its warm-up, if any, goes on to its end with nobody waiting.
+        self.renderer = None;
+        self.errors_at_build = self.gpu.errors();
+        self.built = build_renderer(&self.gpu, self.format, &desc.quality, desc.settings, &self.make);
+        self.step = Step::Renderer;
         Ok(())
     }
 
@@ -819,6 +929,23 @@ impl Remade {
             Self::Planned(..) => "plan",
         }
     }
+}
+
+/// Starts making the renderer `quality`'s active tier is made with, `settings`, on the warm-up pool, with `make`.
+fn build_renderer(
+    gpu: &Arc<GpuContext>,
+    format: wgpu::TextureFormat,
+    quality: &Quality,
+    settings: RenderSettings,
+    make: &MakeRenderer,
+) -> mpsc::Receiver<Result<Renderer, RenderError>> {
+    let (sender, built) = mpsc::channel();
+    let (gpu, tier, make) = (gpu.clone(), quality.active().id, make.clone());
+    sapphire_jobs::spawn_warm_up(move || {
+        // Nobody's waiting if the boot ended first.
+        let _ = sender.send(make(&gpu, format, tier, settings));
+    });
+    built
 }
 
 /// A display-encoded sRGB code in linear light, for the clear under the boot screen.

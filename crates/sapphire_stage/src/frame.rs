@@ -422,6 +422,9 @@ impl Stage {
 struct TierChange {
     build: Option<(TierId, TierBuild)>,
     failed: Option<TierId>,
+    /// The device's errors when the build started ([`GpuContext::errors`]): one since, a pipeline its driver
+    /// refused or memory it couldn't give, and the build isn't taken (M4 H9).
+    errors_at_build: u32,
 }
 
 impl<S: SceneShow> Stage<S> {
@@ -532,8 +535,12 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         if change.build.is_some() || change.failed == Some(id) {
             return;
         }
+        let errors = self.gpu.errors();
         match self.renderer.build_tier(&self.gpu, self.quality.render_settings_of(id)) {
-            Ok(build) => change.build = Some((id, build)),
+            Ok(build) => {
+                change.build = Some((id, build));
+                change.errors_at_build = errors;
+            }
             Err(error) => {
                 tracing::warn!(target: LOG_TARGET, tier = id.name(), %error, "a tier's renderer can't be built");
                 change.failed = Some(id);
@@ -551,13 +558,21 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// every mesh, material and instance, and builds nothing on the frame; the show hears of it
     /// ([`SceneShow::tier_changed`]). Returns the tier it changed to. The cap may have changed with it
     /// ([`Quality::frame_rate`]), which is the caller's to pace. If the renderer can't be taken, quality goes
-    /// back to the tier it had, and the live renderer goes on.
+    /// back to the tier it had, and the live renderer goes on; a build that failed, or that the device reported
+    /// an error during (M4 H9), isn't tried again until another tier is wanted.
     pub fn take_tier_change(&mut self) -> Option<TierId> {
         if !self.tier_change_ready() || self.renderer.is_warming() {
             return None;
         }
         let (id, build) = self.tier_change.build.take().expect("ready");
         if self.quality.wanted_tier() != Some(id) {
+            return None;
+        }
+        let errors = self.gpu.errors().saturating_sub(self.tier_change.errors_at_build);
+        if errors > 0 {
+            // What it built may be what the device refused: the live renderer is the one it has.
+            tracing::warn!(target: LOG_TARGET, tier = id.name(), errors, "the device reported errors as a tier's renderer built; the tier stays");
+            self.tier_change.failed = Some(id);
             return None;
         }
         let previous = self.quality.change_tier(self.ladder_clock.now)?;

@@ -11,7 +11,11 @@
 //!   the device destroyed and one more boot frame drawn on it, as a window may before wgpu reports the loss;
 //!   the boot is let go of with its warm-up's builds still running, and a boot on a new device reaches the
 //!   title with nothing built or waited for on a frame. The window boots again so (`GameApp`'s `recover`), and
-//!   `--lose-device` counts the boot screen's frames, so a device or a simulator can lose one mid-boot too.
+//!   `--lose-device` counts the boot screen's frames, so a device or a simulator can lose one mid-boot too. Lost
+//!   as the renderer builds (its own pipelines or the packs'), the next boot's ceiling is the tier below (M4 H9).
+//! - **A tier the device can't build (M4 H9):** a boot at Mobile-High whose renderer is refused, or whose build
+//!   the device reports an error in, falls back to Mobile-Low and stands the game there, with nothing built on a
+//!   frame; Mobile-High isn't asked for again. Refused at Mobile-Low too, the boot fails, naming the lowest tier.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -24,7 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow, stand_game};
-use game_flow::boot::Boot;
+use game_flow::boot::{Boot, MakeRenderer};
 use game_flow::flow::{FlowCommand, FlowState};
 use game_flow::game::GameSetup;
 use game_flow::progress::{self, Progress, progress_store};
@@ -35,6 +39,8 @@ use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, KeyEvent, Keycode, Modifiers, Platform, RunOptions,
     Scancode, Timestamp, WindowId, run_with,
 };
+use sapphire_render::quality::{QualitySettings, TierId};
+use sapphire_render::{RenderError, Renderer};
 use sapphire_rhi::wgpu;
 use sapphire_serialize::AssetId;
 use sapphire_stage::{Readback, Stage, headless_gpu};
@@ -284,6 +290,10 @@ fn lost_while_booting(platform: &Platform) -> Result<(), AppInitError> {
         let dead = boot.frame(Some(&target), dt).map(|stage| stage.is_some());
         let error = dead.as_ref().expect_err("a boot on a lost device goes no further").to_string();
         assert!(error.contains("lost"), "{error}");
+        // Lost as its renderer built, the next boot builds the tier below; lost later, the same tier (M4 H9).
+        let building = matches!(step, "renderer" | "packs");
+        let ceiling = building.then(|| boot.tier().lower()).flatten();
+        assert_eq!(boot.ceiling_after_loss(), ceiling, "lost in the {step} step at {}", boot.tier());
         let let_go = platform.now();
         drop((boot, target));
         let waited = platform.now().saturating_duration_since(let_go);
@@ -302,6 +312,71 @@ fn lost_while_booting(platform: &Platform) -> Result<(), AppInitError> {
     let booted = report.pipelines;
     let hitches = (booted.first_use_builds, booted.frame_thread_builds, booted.frame_waits);
     assert_eq!(hitches, (0, 0, 0), "{report:?}");
+    Ok(())
+}
+
+/// How a test's renderer is refused at a tier (M4 H9).
+#[derive(Clone, Copy, Debug)]
+enum Refusal {
+    /// `Renderer::new` returns an error, as for a shadow map past the device's limit.
+    Error,
+    /// The device reports an error as it builds, as for a pipeline its driver won't link, and the build goes on.
+    DeviceError,
+}
+
+/// `Renderer::new`, refused `how` at each of `refused`.
+fn refusing(refused: &'static [TierId], how: Refusal) -> MakeRenderer {
+    Arc::new(move |gpu, format, tier, settings| {
+        if !refused.contains(&tier) {
+            return Renderer::new(gpu, format, settings);
+        }
+        tracing::info!(%tier, ?how, "the test refuses the tier's renderer");
+        match how {
+            Refusal::Error => {
+                Err(RenderError::InvalidSettings { field: "tier", problem: "is refused by the test" })
+            }
+            Refusal::DeviceError => {
+                // Mapped for reading and writing at once: an error the device reports, uncaptured.
+                let _ = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+                    mapped_at_creation: false,
+                });
+                Renderer::new(gpu, format, settings)
+            }
+        }
+    })
+}
+
+/// A boot at Mobile-High, as a player holding it starts one, with its renderer made by `make`.
+fn boot_mobile_high(platform: &Platform, make: MakeRenderer) -> Result<Boot, AppInitError> {
+    let (show, first) =
+        GameShow::from_content(platform.content(), PlayerSettings::default(), GameSetup::default())?;
+    let held = QualitySettings { tier: Some(TierId::MobileHigh), ..QualitySettings::default() };
+    Boot::start_making(platform.host(), Arc::new(headless_gpu()?), FORMAT, held, show, &first, make)
+}
+
+/// A tier the device can't build steps down, and only the lowest's failure ends the boot (M4 H9).
+fn falls_back_a_tier(platform: &Platform) -> Result<(), AppInitError> {
+    for how in [Refusal::Error, Refusal::DeviceError] {
+        let boot = boot_mobile_high(platform, refusing(&[TierId::MobileHigh], how))?;
+        let (stage, report) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+        assert_eq!(report.fell_back_from, [TierId::MobileHigh], "{how:?}: {report:?}");
+        assert_eq!(stage.quality.active().id, TierId::MobileLow, "{how:?}");
+        assert_eq!(stage.quality.settings().ceiling, Some(TierId::MobileLow));
+        assert_eq!(stage.quality.wanted_tier(), None, "{how:?}: Mobile-High isn't asked for again");
+        assert!(stage.show.on_title(), "{how:?}: the title, at Mobile-Low");
+        let booted = report.pipelines;
+        let hitches = (booted.first_use_builds, booted.frame_thread_builds, booted.frame_waits);
+        assert_eq!(hitches, (0, 0, 0), "{how:?}: {report:?}");
+        tracing::info!(?how, frames = report.frames, "a boot refused Mobile-High stood at Mobile-Low");
+    }
+    let boot =
+        boot_mobile_high(platform, refusing(&[TierId::MobileHigh, TierId::MobileLow], Refusal::Error))?;
+    let error =
+        boot.run_offscreen((WIDTH, HEIGHT), false).err().expect("no tier left to boot at").to_string();
+    assert!(error.contains("Mobile-Low, the lowest tier of its class"), "{error}");
     Ok(())
 }
 
@@ -392,6 +467,7 @@ impl App for OutsideCaller {
         std::fs::remove_dir_all(&dir)?;
 
         lost_while_booting(platform)?;
+        falls_back_a_tier(platform)?;
         Ok(Self)
     }
 

@@ -162,6 +162,25 @@ impl TierId {
         }
     }
 
+    /// The tier a boot falls back to when a renderer can't be built at this one (M4 H9): the next lower of its
+    /// class, Desktop-High to Desktop-Low and Mobile-High to Mobile-Low. None below a class's lowest.
+    pub fn lower(self) -> Option<Self> {
+        match self {
+            Self::DesktopHigh => Some(Self::DesktopLow),
+            Self::MobileHigh => Some(Self::MobileLow),
+            Self::DesktopLow | Self::MobileLow => None,
+        }
+    }
+
+    /// This tier, or `ceiling` where that's a lower tier of its class: what a device that couldn't build a
+    /// tier gets in its place ([`QualitySettings::ceiling`]).
+    pub fn under(self, ceiling: Option<Self>) -> Self {
+        match ceiling {
+            Some(ceiling) if ceiling.class() == self.class() && ceiling < self => ceiling,
+            _ => self,
+        }
+    }
+
     /// The spec's name: `Desktop-High`.
     pub fn name(self) -> &'static str {
         match self {
@@ -846,6 +865,10 @@ pub struct QualitySettings {
     /// Optional passes to go without, after the settings above, with the renderer: the sandbox's
     /// `--shed` for captures and benches (M4 T0). The ladder sheds in place on top of them.
     pub shed: OptionalPasses,
+    /// The highest tier of its class this device is given, whoever chose: below one whose renderer couldn't be
+    /// built (M4 H9, [`Quality::fall_back`]), so it's never built again in this run. `None`, no limit. It only
+    /// lowers: [`Quality::set_settings`] keeps the lower of the two.
+    pub ceiling: Option<TierId>,
 }
 
 /// A pass a tier can go without and keep the look (M4 plan §3, "The ladder"): shedding one never
@@ -1079,6 +1102,7 @@ impl Quality {
         let Selection { tier: device_tier, by: selected_by } = table.select(gpus, device);
         let seen = TIER.get();
         let active = choose_tier(seen, settings.tier, device_tier);
+        let active = ActiveTier { id: active.id.under(settings.ceiling), ..active };
         let dynamic = DynamicResolution::new(table.get(active.id).resolution_budget(), device.timestamps);
         let ladder = Ladder::new(table.get(active.id));
         tracing::info!(
@@ -1172,7 +1196,8 @@ impl Quality {
     /// [`Self::update_tier`], or calls [`Self::restore`] with what this returns if that fails. The new
     /// tier's ladder starts at its deepest rung short of a tier and climbs back as its holds allow.
     pub fn take_tier_request(&mut self, now: Duration) -> Option<ActiveTier> {
-        let id = self.ladder.tier_request().filter(|&id| id != self.active.id)?;
+        let ceiling = self.settings.ceiling;
+        let id = self.ladder.tier_request().map(|id| id.under(ceiling)).filter(|&id| id != self.active.id)?;
         let previous = self.active;
         let lowered_from = (id < previous.id).then_some(previous.id);
         let ladder = Ladder::entered(self.table.get(id), &self.ladder, lowered_from, now);
@@ -1197,6 +1222,11 @@ impl Quality {
     /// frame. A tier they choose, or automatic in place of one, waits for [`Self::wanted_tier`] and
     /// [`Self::change_tier`]; so do shadows and ambient occlusion, which only a new renderer changes.
     pub fn set_settings(&mut self, settings: QualitySettings) {
+        let ceiling = match (self.settings.ceiling, settings.ceiling) {
+            (Some(kept), Some(new)) if kept.class() == new.class() => Some(kept.min(new)),
+            (kept, new) => kept.or(new),
+        };
+        let settings = QualitySettings { ceiling, ..settings };
         if settings != self.settings {
             tracing::info!(target: LOG_TARGET, ?settings, "quality settings");
         }
@@ -1222,6 +1252,7 @@ impl Quality {
                 TierSource::Device | TierSource::Ladder => self.ladder.tier_request()?,
             },
         };
+        let wanted = wanted.under(self.settings.ceiling);
         (wanted != self.active.id).then_some(wanted)
     }
 
@@ -1304,6 +1335,7 @@ impl Quality {
         }
         self.seen = choice;
         let next = choose_tier(choice, self.settings.tier, self.device);
+        let next = ActiveTier { id: next.id.under(self.settings.ceiling), ..next };
         let previous = std::mem::replace(&mut self.active, next);
         if previous.id == next.id {
             return None;
@@ -1320,6 +1352,27 @@ impl Quality {
             "quality tier changed"
         );
         Some(previous)
+    }
+
+    /// Makes the next lower tier of the active one's class active, for good: a renderer for the active tier
+    /// couldn't be built (M4 H9, a boot's). It becomes [`QualitySettings::ceiling`], so neither the player's
+    /// choice, `r.tier` nor the ladder's climb asks for the tier it fell from again. Its ladder starts at the top.
+    /// Returns the tier it fell back to, or `None` at its class's lowest, where nothing is left to fall back to.
+    pub fn fall_back(&mut self) -> Option<TierId> {
+        let from = self.active.id;
+        let to = from.lower()?;
+        self.settings.ceiling = Some(to);
+        self.active.id = to;
+        self.ladder = Ladder::new(self.table.get(to));
+        self.previous_ladder = None;
+        self.reset_dynamic();
+        tracing::warn!(
+            target: LOG_TARGET,
+            tier = to.name(),
+            from = from.name(),
+            "a renderer couldn't be built at the quality tier: it falls back to the next lower"
+        );
+        Some(to)
     }
 
     /// Makes `previous` (from [`Self::update_tier`] or [`Self::take_tier_request`]) active again,
@@ -1892,6 +1945,7 @@ mod tests {
             dynamic_resolution: false,
             shadows: Switch::Auto,
             ambient_occlusion: OcclusionSetting::Auto,
+            ceiling: None,
             shed: OptionalPasses::NONE,
         });
         assert_eq!(player.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
@@ -1945,6 +1999,54 @@ mod tests {
         );
         // Here rather than a test of its own: both read `r.tier`, which this one sets.
         tier_changes_wait_for_the_game();
+        a_tier_that_cant_be_built_falls_back_for_good();
+    }
+
+    /// M4 H9: a tier whose renderer couldn't be built falls to the next lower of its class, and nothing asks for
+    /// it again: not the player's choice, not `r.tier`, not the ladder's climb. A class's lowest has nowhere to go.
+    fn a_tier_that_cant_be_built_falls_back_for_good() {
+        use sapphire_core::thermal::ThermalState;
+        assert_eq!(TierId::DesktopHigh.lower(), Some(TierId::DesktopLow));
+        assert_eq!(TierId::MobileHigh.lower(), Some(TierId::MobileLow));
+        assert_eq!((TierId::DesktopLow.lower(), TierId::MobileLow.lower()), (None, None));
+        let low = Some(TierId::MobileLow);
+        assert_eq!(TierId::MobileHigh.under(low), TierId::MobileLow);
+        assert_eq!(TierId::DesktopHigh.under(low), TierId::DesktopHigh, "a ceiling holds its class alone");
+
+        // A phone holding Mobile-High, as the player chose it.
+        let phone = device(FormFactor::Mobile, GpuKind::Integrated, GpuBackend::Vulkan, 8);
+        let held = QualitySettings { tier: Some(TierId::MobileHigh), ..QualitySettings::default() };
+        let mut quality = Quality::new(TierTable::shipped(), &GpuTable::shipped(), &phone, held);
+        assert_eq!(quality.active().id, TierId::MobileHigh);
+        assert_eq!(quality.fall_back(), Some(TierId::MobileLow));
+        assert_eq!(quality.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
+        assert_eq!(quality.settings().ceiling, low);
+        assert_eq!(quality.render_settings(), quality.render_settings_of(TierId::MobileLow));
+        assert_eq!(quality.wanted_tier(), None, "the player's Mobile-High isn't asked for again");
+        assert_eq!(quality.fall_back(), None, "Mobile-Low is the class's lowest");
+        assert_eq!(quality.active().id, TierId::MobileLow);
+        // The player's next settings keep the ceiling, whatever they say of it.
+        quality.set_settings(QualitySettings { ceiling: None, ..held });
+        assert_eq!((quality.settings().ceiling, quality.wanted_tier()), (low, None));
+        TIER.set(TierChoice::Tier(TierId::MobileHigh)).unwrap();
+        assert_eq!(quality.update_tier(), None, "r.tier gets the ceiling too");
+        TIER.reset();
+        quality.update_tier();
+        // Automatic and calm: the ladder never climbs back to Mobile-High.
+        quality.set_settings(QualitySettings { tier: None, ..quality.settings() });
+        let calm = ThermalReading { state: ThermalState::Nominal, ..ThermalReading::default() };
+        let mut now = Duration::ZERO;
+        for _ in 0..3000 {
+            now += Duration::from_millis(100);
+            quality.follow_heat(now, &calm);
+            assert_eq!(quality.wanted_tier(), None, "at {now:?}");
+        }
+
+        // A boot told of the ceiling before it starts (a device lost building Mobile-High) never makes it.
+        let told = QualitySettings { ceiling: low, ..held };
+        let quality = Quality::new(TierTable::shipped(), &GpuTable::shipped(), &phone, told);
+        assert_eq!(quality.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
+        assert_eq!(quality.wanted_tier(), None);
     }
 
     /// M4 T3: a tier the ladder, the player or `r.tier` asks for is only wanted until the game changes it, at a

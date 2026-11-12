@@ -1,6 +1,6 @@
 //! Adapter selection and device creation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use wgpu::{Adapter, Backend, Device, DeviceType, Queue, TextureFormat};
@@ -56,6 +56,8 @@ pub struct GpuContext {
     pipeline_cache: Option<PersistentPipelineCache>,
     lost: Arc<AtomicBool>,
     first_error: Arc<OnceLock<String>>,
+    /// Uncaptured errors on the live device so far ([`Self::errors`]).
+    errors: Arc<AtomicU32>,
 }
 
 impl GpuContext {
@@ -81,7 +83,8 @@ impl GpuContext {
             let lost = Arc::new(AtomicBool::new(false));
             let first_error = Arc::new(OnceLock::new());
             let held = desc.hold_errors.then(|| Arc::clone(&first_error));
-            install_error_handlers(&device, Arc::clone(&lost), held);
+            let errors = Arc::new(AtomicU32::new(0));
+            install_error_handlers(&device, Arc::clone(&lost), held, Arc::clone(&errors));
             let pipeline_cache = match (&desc.pipeline_cache, caps.pipeline_cache) {
                 (Some(cache), true) => PersistentPipelineCache::open(&device, &caps.adapter, cache),
                 _ => None,
@@ -95,6 +98,7 @@ impl GpuContext {
                 pipeline_cache,
                 lost,
                 first_error,
+                errors,
             });
         }
         Err(RhiError::NoUsableAdapter { tried: instance.backends().to_vec() })
@@ -151,6 +155,14 @@ impl GpuContext {
     /// errors as the call that made them runs, so after a frame's submit its errors are here.
     pub fn first_error(&self) -> Option<&str> {
         self.first_error.get().map(String::as_str)
+    }
+
+    /// How many uncaptured errors the live device has reported, in every build: a pipeline the driver refused to
+    /// link, or memory it couldn't give a texture or a buffer, which wgpu reports this way rather than as a lost
+    /// device (M4 H9). A load counts them before and after, to know whether what it made can be trusted. Errors
+    /// after a loss, which follow from it, aren't counted.
+    pub fn errors(&self) -> u32 {
+        self.errors.load(Ordering::Acquire)
     }
 
     /// The cache to pass as `cache` in pipeline descriptors, when persistence is enabled.
@@ -242,8 +254,14 @@ fn performance_rank(device_type: DeviceType) -> u8 {
     }
 }
 
-/// `held`: where the first error on a live device goes, rather than stopping a development build.
-fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>, held: Option<Arc<OnceLock<String>>>) {
+/// `held`: where the first error on a live device goes, rather than stopping a development build. `errors` counts
+/// every error on a live device.
+fn install_error_handlers(
+    device: &Device,
+    lost: Arc<AtomicBool>,
+    held: Option<Arc<OnceLock<String>>>,
+    errors: Arc<AtomicU32>,
+) {
     let is_lost = Arc::clone(&lost);
     let warned = AtomicBool::new(false);
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
@@ -258,6 +276,7 @@ fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>, held: Option<A
             }
             return;
         }
+        errors.fetch_add(1, Ordering::AcqRel);
         tracing::error!(target: LOG_TARGET, %error, "uncaptured GPU error");
         // A run with no one watching fails by it when it asks. Otherwise development builds stop at
         // the first error, like wgpu's default handler; shipping builds log and keep running.
@@ -305,6 +324,25 @@ mod tests {
         assert!(gpu.device().limits().max_storage_buffers_per_shader_stage >= 4);
         let rgba = gpu.format_support(TextureFormat::Rgba8UnormSrgb);
         assert!(rgba.renderable && rgba.supports_samples(4));
+    }
+
+    /// An error the device reports and nobody's scope caught is counted, whoever holds it (M4 H9). Needs a GPU.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn counts_uncaptured_errors() {
+        let instance = GpuInstance::new(&crate::GpuInstanceDesc::default()).expect("instance");
+        let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
+        let gpu = GpuContext::new(&instance, &desc, None).expect("device");
+        assert_eq!(gpu.errors(), 0);
+        // Mapped for reading and writing at once: a validation error.
+        let _ = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+            mapped_at_creation: false,
+        });
+        assert_eq!(gpu.errors(), 1);
+        assert!(gpu.first_error().is_some(), "and held, as before");
     }
 
     /// Needs a GPU. Run with `cargo test -p sapphire_rhi -- --ignored`.

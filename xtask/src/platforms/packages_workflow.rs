@@ -2,7 +2,8 @@
 //! `.github/workflows/packages.yml` when it touches a file that `cargo xtask package` reads or that builds
 //! the game for a package, and only then, since five shipping builds with fat LTO cost an hour of runners.
 //!
-//! Its `paths` filters must cover every repository file the package code names, every xtask module
+//! Its `paths` filters must cover every repository file the package code names, every local action and
+//! script the workflow's steps run (M4 S7: the title's check, lavapipe, Rust's setup), every xtask module
 //! `package` reaches from `platforms/` and the command line, and no other xtask module, so a change to
 //! the goldens' runner alone builds no packages. Every filter must name something that exists.
 
@@ -16,7 +17,8 @@ const WORKFLOW: &str = ".github/workflows/packages.yml";
 
 /// Repository files packaging reads, or that build or link the game only for a package: the package
 /// code's own constants, the templates and projects it fills, and what compiles in the build number,
-/// Windows' resources and the symbols' checker.
+/// Windows' resources and the symbols' checker. The repository's own actions and scripts the workflow
+/// runs are found in it ([`run_by_the_workflow`]).
 const READ: [&str; 18] = [
     WORKFLOW,
     IDENTITY_FILE,
@@ -49,6 +51,14 @@ fn the_packages_workflow_runs_on_what_packaging_reads() {
     for path in READ {
         assert!(root.join(path).is_file(), "{path} is gone: update this list");
         assert!(runs(path), "{WORKFLOW} doesn't run on {path}, which packaging reads");
+    }
+    let own = run_by_the_workflow(&root, &text);
+    for wanted in [".github/scripts/title_drawn.py", ".github/actions/lavapipe/action.yml"] {
+        assert!(own.iter().any(|path| path == wanted), "the workflow's {wanted} wasn't found: {own:?}");
+    }
+    for path in &own {
+        assert!(root.join(path).is_file(), "{WORKFLOW} runs {path}, which isn't there");
+        assert!(runs(path), "{WORKFLOW} runs {path}, so its filters should name it");
     }
 
     let src = root.join("xtask/src");
@@ -100,6 +110,35 @@ fn filters_match_as_github_reads_them() {
         crate_modules("use crate::{content::{self, Cook}, release};\nuse crate::workspace;"),
         ["content", "release", "workspace"]
     );
+}
+
+/// The repository's own files `workflow` runs: each local action it uses (`./.github/actions/<name>`, as its
+/// `action.yml`), each script it names under `.github/scripts/`, and each script those actions run
+/// (`$GITHUB_ACTION_PATH/../../scripts/<name>`). A change to any of them changes what the jobs do.
+fn run_by_the_workflow(root: &Path, workflow: &str) -> Vec<String> {
+    let name = |text: &str| -> String {
+        text.chars().take_while(|&c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')).collect()
+    };
+    let mut found = Vec::new();
+    let mut add = |path: String| {
+        if !found.contains(&path) {
+            found.push(path);
+        }
+    };
+    for (at, _) in workflow.match_indices("./.github/actions/") {
+        let action =
+            format!(".github/actions/{}/action.yml", name(&workflow[at + "./.github/actions/".len()..]));
+        let text = fs::read_to_string(root.join(&action)).unwrap_or_default();
+        for (at, _) in text.match_indices("../../scripts/") {
+            add(format!(".github/scripts/{}", name(&text[at + "../../scripts/".len()..])));
+        }
+        add(action);
+    }
+    for (at, _) in workflow.match_indices(".github/scripts/") {
+        add(format!(".github/scripts/{}", name(&workflow[at + ".github/scripts/".len()..])));
+    }
+    found.sort();
+    found
 }
 
 /// The `on.pull_request.paths` list of a workflow, written as this repository writes its workflows.

@@ -15,6 +15,11 @@
 //! downloads one platform's depot only. IDs come from [`IDS_FILE`]; until the maintainer chooses them
 //! they're Valve's examples, and every script says so. Nothing uploads: that's
 //! `steamcmd +login <account> +run_app_build <app build> +quit`, the maintainer's (m4-plan §7).
+//!
+//! **Read back** (M4 S7): once written, the scripts are read as SteamPipe reads them ([`check`]): the app
+//! build's ID, content root and depots, each depot's ID and mapping, the mapped folder's files against
+//! `depots.txt`, and each launch option's executable in its depot. `--all` also fails unless all three
+//! desktops are there, as `packages.yml`'s `steampipe` job runs it on the three jobs' artifacts.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -160,8 +165,9 @@ impl Package {
     }
 }
 
-/// Writes `<packages>/steam/` from the desktop packages there, and returns its path.
-pub fn steampipe(packages: &Path) -> anyhow::Result<PathBuf> {
+/// Writes `<packages>/steam/` from the desktop packages there, reads it back ([`check`]) and returns its path
+/// and what the check found. With `all`, a missing desktop is an error rather than a warning.
+pub fn steampipe(packages: &Path, all: bool) -> anyhow::Result<(PathBuf, String)> {
     let ids = Ids::load()?;
     let mut found = Vec::new();
     for platform in PLATFORMS {
@@ -171,6 +177,11 @@ pub fn steampipe(packages: &Path) -> anyhow::Result<PathBuf> {
             let files = files_of(&dir, &package)?;
             found.push((package, files));
         } else {
+            ensure!(
+                !all,
+                "no {platform} package in {}, and --all needs all three desktops",
+                packages.display()
+            );
             eprintln!(
                 "warning: no {platform} package in {}: the app build has no {platform} depot",
                 packages.display()
@@ -217,7 +228,167 @@ pub fn steampipe(packages: &Path) -> anyhow::Result<PathBuf> {
     for (name, text) in written {
         fs::write(out.join(&name), text).with_context(|| format!("failed to write {name}"))?;
     }
-    Ok(out)
+    let checked = check(&out, &ids, &found).context("the SteamPipe scripts don't read back as written")?;
+    Ok((out, checked))
+}
+
+/// Reads the scripts in `out` back as SteamPipe reads them, against the packages they were written from: the
+/// app build names the app, a content root and one depot script per package; each depot script names its
+/// depot and maps its package's app folder, recursively, to the depot's path; that folder, found from the
+/// content root, holds the files `depots.txt` lists; and each launch option's executable is in its depot.
+/// Returns two lines per depot.
+fn check(out: &Path, ids: &Ids, found: &[(Package, Vec<(String, u64)>)]) -> anyhow::Result<String> {
+    let read = |name: &str| -> anyhow::Result<Vdf> {
+        let text = fs::read_to_string(out.join(name)).with_context(|| format!("failed to read {name}"))?;
+        Vdf::parse(&text).with_context(|| format!("{name} isn't VDF"))
+    };
+    let app_name = format!("app_build_{}.vdf", ids.app_id);
+    let app_file = read(&app_name)?;
+    let app = app_file.get("AppBuild").with_context(|| format!("{app_name} has no AppBuild"))?;
+    ensure!(app.text("AppID")? == ids.app_id.to_string(), "{app_name} names app {}", app.text("AppID")?);
+    let root = out.join(app.text("ContentRoot")?);
+    let depots = app.get("Depots").with_context(|| format!("{app_name} has no Depots"))?;
+    let wanted: Vec<String> =
+        found.iter().map(|(package, _)| ids.depot(&package.platform).to_string()).collect();
+    let named: Vec<&str> = depots.keys().collect();
+    ensure!(named == wanted, "{app_name} names depots {named:?}, not the packages' {wanted:?}");
+
+    let listed = fs::read_to_string(out.join("depots.txt")).context("failed to read depots.txt")?;
+    let mut report = String::new();
+    for (package, files) in found {
+        let depot = ids.depot(&package.platform).to_string();
+        let script_name = depots.text(&depot)?;
+        let script = read(script_name)?;
+        let build = script.get("DepotBuild").with_context(|| format!("{script_name} has no DepotBuild"))?;
+        ensure!(build.text("DepotID")? == depot, "{script_name} names depot {}", build.text("DepotID")?);
+        let mapping =
+            build.get("FileMapping").with_context(|| format!("{script_name} has no FileMapping"))?;
+        ensure!(mapping.text("Recursive")? == "1", "{script_name} doesn't map recursively");
+        ensure!(
+            mapping.text("DepotPath")? == package.depot_path(),
+            "{script_name} puts the app at {}",
+            mapping.text("DepotPath")?
+        );
+        let local = mapping.text("LocalPath")?;
+        let folder = local
+            .strip_suffix("/*")
+            .with_context(|| format!("{script_name} maps {local}, not a folder's files"))?;
+        ensure!(
+            folder == format!("{}/{}", package.platform, package.app_path),
+            "{script_name} maps {folder}, not the {} package's app",
+            package.platform
+        );
+        let mut mapped = Vec::new();
+        walk(&root.join(folder), &package.app_path, &mut mapped)
+            .with_context(|| format!("{script_name} maps {folder}, which its content root doesn't hold"))?;
+        mapped.sort();
+        ensure!(mapped == *files, "{folder} changed while the scripts were written");
+        let total: u64 = files.iter().map(|(_, size)| size).sum();
+        let line = format!(
+            "Depot {depot} ({}): {folder} as {}, {} files, {total} bytes\n",
+            package.platform,
+            package.depot_path(),
+            files.len()
+        );
+        ensure!(listed.contains(&line), "depots.txt doesn't list {line:?}");
+        let executable = match package.platform.as_str() {
+            "macos" => format!("{}/Contents/MacOS/{}", package.app_path, package.executable),
+            _ => format!("{}/{}", package.app_path, package.launch()),
+        };
+        ensure!(
+            files.iter().any(|(name, _)| *name == executable),
+            "the {} depot's launch option needs {executable}, which the depot doesn't hold",
+            package.platform
+        );
+        let _ = writeln!(report, "{script_name}: {}", line.trim_end());
+        let _ = writeln!(report, "  launches {executable}");
+    }
+    Ok(report)
+}
+
+/// A VDF document as SteamPipe's scripts are written: quoted keys, each with a quoted value or a block in
+/// braces, and `//` comments. Keys keep their order.
+#[derive(Debug, PartialEq, Eq)]
+enum Vdf {
+    Text(String),
+    Block(Vec<(String, Vdf)>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Token {
+    Open,
+    Close,
+    Text(String),
+}
+
+impl Vdf {
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let mut tokens = Vec::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '{' => tokens.push(Token::Open),
+                '}' => tokens.push(Token::Close),
+                '"' => {
+                    let mut value = String::new();
+                    loop {
+                        match chars.next() {
+                            Some('"') => break,
+                            Some('\\') => value.push(chars.next().context("a string ends in a backslash")?),
+                            Some(c) => value.push(c),
+                            None => bail!("a string isn't closed"),
+                        }
+                    }
+                    tokens.push(Token::Text(value));
+                }
+                '/' if chars.peek() == Some(&'/') => while chars.next_if(|&c| c != '\n').is_some() {},
+                c if c.is_whitespace() => {}
+                c => bail!("{c:?} outside a string"),
+            }
+        }
+        let mut tokens = tokens.into_iter();
+        Self::block(&mut tokens, false)
+    }
+
+    fn block(tokens: &mut impl Iterator<Item = Token>, nested: bool) -> anyhow::Result<Self> {
+        let mut entries = Vec::new();
+        loop {
+            let key = match tokens.next() {
+                Some(Token::Text(key)) => key,
+                Some(Token::Close) if nested => return Ok(Self::Block(entries)),
+                None if !nested => return Ok(Self::Block(entries)),
+                other => bail!("expected a key, found {other:?}"),
+            };
+            let value = match tokens.next() {
+                Some(Token::Text(value)) => Self::Text(value),
+                Some(Token::Open) => Self::block(tokens, true)?,
+                other => bail!("{key} has no value, but {other:?}"),
+            };
+            entries.push((key, value));
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Block(entries) => entries.iter().find(|(name, _)| name == key).map(|(_, value)| value),
+            Self::Text(_) => None,
+        }
+    }
+
+    fn text(&self, key: &str) -> anyhow::Result<&str> {
+        match self.get(key) {
+            Some(Self::Text(text)) => Ok(text),
+            _ => bail!("no {key} value"),
+        }
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        let entries = match self {
+            Self::Block(entries) => entries.as_slice(),
+            Self::Text(_) => &[],
+        };
+        entries.iter().map(|(name, _)| name.as_str())
+    }
 }
 
 /// The note every script starts with: what it is, what it's for, and whether its IDs are placeholders.
@@ -379,7 +550,12 @@ mod tests {
             let app = package.join(app_path);
             fs::create_dir_all(app.join("content")).unwrap();
             fs::write(app.join("content/shared.spack"), [0u8; 10]).unwrap();
-            let exe = if *platform == "windows" { "game_app.exe" } else { "game_app" };
+            let exe = match *platform {
+                "windows" => "game_app.exe",
+                "macos" => "Contents/MacOS/game_app",
+                _ => "game_app",
+            };
+            fs::create_dir_all(app.join(exe).parent().unwrap()).unwrap();
             fs::write(app.join(exe), [0u8; 4]).unwrap();
             fs::create_dir_all(package.join("symbols")).unwrap();
             fs::write(package.join("symbols/game_app.pdb"), [0u8; 7]).unwrap();
@@ -397,7 +573,16 @@ mod tests {
     #[test]
     fn writes_an_app_build_and_a_depot_for_each_package() {
         let dir = packages("all", &PLATFORMS, "1a2b3c4d5e6f7a8b");
-        let out = steampipe(&dir).unwrap();
+        let (out, checked) = steampipe(&dir, true).unwrap();
+        assert_eq!(
+            checked,
+            "depot_build_1001.vdf: Depot 1001 (windows): windows/SapphireGame as ., 2 files, 14 bytes\n  \
+             launches SapphireGame/game_app.exe\n\
+             depot_build_1002.vdf: Depot 1002 (linux): linux/SapphireGame as ., 2 files, 14 bytes\n  \
+             launches SapphireGame/game_app\n\
+             depot_build_1003.vdf: Depot 1003 (macos): macos/SapphireGame.app as SapphireGame.app, 2 files, 14 bytes\n  \
+             launches SapphireGame.app/Contents/MacOS/game_app\n"
+        );
         let app = fs::read_to_string(out.join("app_build_1000.vdf")).unwrap();
         assert!(app.contains("// PLACEHOLDER IDs"), "{app}");
         assert!(app.contains("\t\"AppID\" \"1000\" // PLACEHOLDER\n"), "{app}");
@@ -429,18 +614,70 @@ mod tests {
         let mac = dir.join("macos/package.json");
         let text = fs::read_to_string(&mac).unwrap().replace("1a2b3c4d5e6f7a8b", "ffffffffffffffff");
         fs::write(&mac, text).unwrap();
-        assert!(steampipe(&dir).unwrap_err().to_string().contains("one build"));
+        assert!(steampipe(&dir, false).unwrap_err().to_string().contains("one build"));
         workspace::remove_dir_if_exists(&dir).unwrap();
 
-        // A missing desktop is left out, with a warning; none at all is an error.
+        // A missing desktop is left out, with a warning, unless all are wanted; none at all is an error.
         let dir = packages("some", &["windows", "macos"], "1a2b3c4d5e6f7a8b");
-        let app = fs::read_to_string(steampipe(&dir).unwrap().join("app_build_1000.vdf")).unwrap();
+        let app = fs::read_to_string(steampipe(&dir, false).unwrap().0.join("app_build_1000.vdf")).unwrap();
         assert!(app.contains("\"1001\"") && app.contains("\"1003\"") && !app.contains("\"1002\""), "{app}");
+        let error = steampipe(&dir, true).unwrap_err().to_string();
+        assert!(error.starts_with("no linux package in") && error.contains("--all"), "{error}");
         workspace::remove_dir_if_exists(&dir).unwrap();
         let empty = packages("none", &[], "x");
         fs::create_dir_all(&empty).unwrap();
-        assert!(steampipe(&empty).unwrap_err().to_string().contains("no desktop package"));
+        assert!(steampipe(&empty, false).unwrap_err().to_string().contains("no desktop package"));
         workspace::remove_dir_if_exists(&empty).unwrap();
+    }
+
+    /// What the read-back refuses: a script that doesn't say what was written, or a depot whose launch
+    /// option's executable isn't in it.
+    #[test]
+    fn the_scripts_are_read_back_as_steampipe_reads_them() {
+        let dir = packages("check", &PLATFORMS, "1a2b3c4d5e6f7a8b");
+        let (out, _) = steampipe(&dir, true).unwrap();
+        let ids = Ids::load().unwrap();
+        let found: Vec<_> = PLATFORMS
+            .iter()
+            .map(|platform| {
+                let package = Package::read(&dir.join(platform), platform).unwrap();
+                let files = files_of(&dir.join(platform), &package).unwrap();
+                (package, files)
+            })
+            .collect();
+        check(&out, &ids, &found).unwrap();
+
+        let script = out.join("depot_build_1002.vdf");
+        let text = fs::read_to_string(&script).unwrap();
+        fs::write(&script, text.replace("linux/SapphireGame/*", "linux/SapphireGame/content/*")).unwrap();
+        assert!(
+            format!("{:#}", check(&out, &ids, &found).unwrap_err()).contains("not the linux package's app")
+        );
+        fs::write(&script, text.replace("\"DepotID\" \"1002\"", "\"DepotID\" \"1003\"")).unwrap();
+        assert!(format!("{:#}", check(&out, &ids, &found).unwrap_err()).contains("names depot 1003"));
+        fs::write(&script, text.replace("\"Recursive\" \"1\"\n\t}", "\"Recursive\" \"1\"\n")).unwrap();
+        assert!(format!("{:#}", check(&out, &ids, &found).unwrap_err()).contains("isn't VDF"));
+        fs::write(&script, &text).unwrap();
+
+        let app = out.join("app_build_1000.vdf");
+        let text = fs::read_to_string(&app).unwrap();
+        fs::write(&app, text.replace("\"ContentRoot\" \"../\"", "\"ContentRoot\" \"./\"")).unwrap();
+        assert!(
+            format!("{:#}", check(&out, &ids, &found).unwrap_err()).contains("content root doesn't hold")
+        );
+        fs::write(&app, &text).unwrap();
+
+        fs::remove_file(dir.join("linux/SapphireGame/game_app")).unwrap();
+        let error = format!("{:#}", steampipe(&dir, true).unwrap_err());
+        assert!(error.contains("needs SapphireGame/game_app, which the depot doesn't hold"), "{error}");
+        workspace::remove_dir_if_exists(&dir).unwrap();
+
+        let parsed =
+            Vdf::parse("// a note\n\"A\" { \"b\" \"c \\\"d\\\"\" // trailing\n \"E\" {} }\n").unwrap();
+        let a = parsed.get("A").unwrap();
+        assert_eq!(a.text("b").unwrap(), "c \"d\"");
+        assert_eq!(a.keys().collect::<Vec<_>>(), ["b", "E"]);
+        assert!(Vdf::parse("\"A\" {").is_err() && Vdf::parse("A").is_err() && Vdf::parse("\"A\"").is_err());
     }
 
     #[test]

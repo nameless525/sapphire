@@ -2,6 +2,9 @@
 # every check it runs offline (S2's archive, S3's bundle, S4's Steam builds), and each package's Breakpad
 # symbol store (C1, C2), all kept as artifacts. Shipping builds link with fat LTO, so this runs nightly, on
 # demand, and on pull requests that touch what packaging reads, never on every one (m4-plan §3, "CI").
+# Each desktop package draws the title (macOS on Metal, Windows on WARP, Linux on lavapipe on the Ubuntu
+# host), checked drawn by `title_drawn.py`, and the three together write and read back Steam's SteamPipe
+# scripts (M4 S7).
 #
 # Off `main` (a pull request's merge commit, or a dispatch on another branch) a package is a dev build,
 # `--dev`; on `main` it's a release's, numbered by the commit count, which needs the whole history
@@ -23,6 +26,10 @@ on:
     paths:
       - '.github/workflows/packages.yml'
       - '.cargo/config.toml'
+      - '.github/actions/lavapipe/**'
+      - '.github/actions/setup-rust/**'
+      - '.github/scripts/setup_rust.py'
+      - '.github/scripts/title_drawn.py'
       - 'rust-toolchain.toml'
       - 'platform/**'
       - 'game/game_app/build.rs'
@@ -98,7 +105,7 @@ jobs:
           mkdir -p "$run"
           cp -R "target/package/macos/$app" "$run/"
           "$run/$app/Contents/MacOS/game_app" --capture "$RUNNER_TEMP/title.png" --size 640x360 --ticks 30
-          test -s "$RUNNER_TEMP/title.png"
+          python3 -I .github/scripts/title_drawn.py "$RUNNER_TEMP/title.png"
           cp "$RUNNER_TEMP/title.png" target/package/macos/checks/title.png
       - name: Keep the package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -270,6 +277,8 @@ jobs:
             -ArgumentList '--capture', $capture, '--size', '640x360', '--ticks', '30'
           if ($game.ExitCode -ne 0) { throw "the packaged game exited with $($game.ExitCode)" }
           if (-not (Test-Path $capture)) { throw "the packaged game drew no title" }
+          python -I .github/scripts/title_drawn.py $capture
+          if ($LASTEXITCODE -ne 0) { throw "the packaged game's title isn't drawn" }
           Copy-Item $capture target/package/windows/checks/title.png
       - name: Keep the package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -343,3 +352,85 @@ jobs:
       - name: Disk left
         if: always()
         run: df -h .
+
+  # The Linux package draws the title as Windows' and macOS's do, where a GPU can be had: the sniper SDK
+  # container has none, so the stripped game from its artifact runs on the Ubuntu host on lavapipe, installed
+  # as the golden jobs install it (Mesa, the Vulkan loader, ALSA's library). The runtime's glibc is older than
+  # the host's, so what the runtime runs, the host runs. Steam Linux Runtime 3.0 itself is a Steam client's.
+  linux-title:
+    name: Draw the title (Linux package, lavapipe)
+    needs: linux
+    runs-on: ubuntu-24.04
+    # Mostly lavapipe compiling the title's pipelines; nothing is built.
+    timeout-minutes: 30
+    env:
+      SAPPHIRE_GPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the Vulkan runtime loader and ALSA's library
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 libasound2t64
+      - name: Install lavapipe (Mesa 26.1.3)
+        uses: ./.github/actions/lavapipe
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-linux
+          path: ${{ runner.temp }}/package-linux
+      # An artifact's zip may not keep the executable bit; the package itself had it.
+      - name: Draw the title from the package
+        run: |
+          app=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["app_path"])' "$RUNNER_TEMP/package-linux/package.json")
+          game="$RUNNER_TEMP/package-linux/$app/game_app"
+          chmod +x "$game"
+          mkdir -p target/title
+          "$game" --capture target/title/title.png --size 640x360 --ticks 30
+          python3 -I .github/scripts/title_drawn.py target/title/title.png
+      - name: Keep the title
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: title-linux
+          path: target/title
+          if-no-files-found: ignore
+          retention-days: ${{ env.KEEP_DAYS }}
+
+  # Steam's build scripts from the three desktop packages of one commit, as the maintainer's upload takes
+  # them: `cargo xtask steampipe --all` writes the app build, a depot build each and depots.txt, then reads
+  # them back (each depot maps its package's app and holds its launch option's executable). Nothing runs
+  # steamcmd or uploads, and no secret is read.
+  steampipe:
+    name: SteamPipe scripts (desktop packages)
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    # xtask alone, built warm from CI's cache.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: golden
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          save-if: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-windows
+          path: target/package/windows
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-linux
+          path: target/package/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-macos
+          path: target/package/macos
+      - name: Write and read back the SteamPipe scripts
+        run: cargo --locked xtask --locked steampipe --packages target/package --all
+      - name: Keep the scripts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: steampipe
+          path: target/package/steam
+          if-no-files-found: error
+          retention-days: ${{ env.KEEP_DAYS }}

@@ -51,11 +51,14 @@ Commands:
       --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
       Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte
       ed25519 seed in hex, comma-separated; only the maintainer has them) and lay it out in <dir>
-      for a static host: packs/ and files/ by hash, manifests/<n>.smanifest, and release.smanifest,
-      written last and copied to a host last. <n> must be higher than <dir>'s current release's.
-      With --patch-from, the release is a patch of the one that signed manifest is: refused,
-      naming the file, if it changes anything the simulation reads, and unless an install of the
-      earlier release would take it. Nothing is uploaded.
+      for a static host: packs/ and files/ by hash, manifests/<n>.smanifest and .arch (the
+      architecture it was cooked on), and release.smanifest, written last and copied to a host
+      last. <n> must be higher than <dir>'s current release's. With --patch-from, the release is
+      a patch of the one that signed manifest is: refused, naming the file, if it changes anything
+      the simulation reads, and unless an install of the earlier release would take it. It prints
+      what an install of the earlier release would fetch, by asset kind with each one's share of
+      the cook, and warns when that's over 5% of the cook or the two releases were cooked on
+      different architectures. Nothing is uploaded.
   release-key new <file>
       Write a new release key to <file>, which mustn't be there: an ed25519 seed from the OS's
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
@@ -137,11 +140,13 @@ Commands:
       content's release is signed as `release` signs it (SAPPHIRE_RELEASE_KEY), laid out for its
       host in release/, and the app carries the signed manifest; without them the app keeps the
       cook's unsigned one, and package.json says so.
-  steampipe [--packages <dir>]
+  steampipe [--packages <dir>] [--all]
       Write Steam's depots as SteamPipe scripts in <dir>/steam/ (default target/package/) from the
       windows, linux and macos packages there, built from one commit: an app build, a depot build
       for each package found, and depots.txt with each depot's files and launch option. The IDs
-      are platform/steam.toml's (placeholders until the maintainer's). Nothing is uploaded: the
+      are platform/steam.toml's (placeholders until the maintainer's). The scripts are read back
+      as SteamPipe reads them: each depot maps its package's app, and holds its launch option's
+      executable. --all fails unless all three desktops are there. Nothing is uploaded: the
       maintainer runs `steamcmd +login <account> +run_app_build <app build> +quit`.
   symbolicate [--package <dir>]... [--store <dir>] <report>...
       Read crash reports offline with the symbols kept beside each package (every package under
@@ -331,9 +336,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         "steampipe" => {
             let packages =
                 args.value::<PathBuf>("--packages")?.unwrap_or_else(platforms::default_package_dir);
+            let all = args.flag("--all");
             args.finish(false)?;
-            let written = platforms::steampipe(&packages)?;
-            eprintln!("wrote SteamPipe's scripts into {}", written.display());
+            let (written, checked) = platforms::steampipe(&packages, all)?;
+            eprint!("{checked}");
+            eprintln!("wrote SteamPipe's scripts into {} and read them back", written.display());
             Ok(())
         }
         "symbolicate" => {

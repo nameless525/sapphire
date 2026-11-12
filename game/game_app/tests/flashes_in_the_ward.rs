@@ -1,7 +1,7 @@
 //! Exit test 6's flashes in the game that ships (M4 A7): the Lantern Ward's whole walk on the game's stage, as
 //! `wins_the_ward` plays it (`tests/replays/ward-whole-walk.sreplay`: a new game, the market's, the garden's and
 //! the court's fights, the court's gate cutscene, the player's ultimates whenever the meter's full, and the
-//! Knell Colossus on the terrace, to the victory), every frame at 60 fps judged by WCAG 2.3.1's general and red
+//! boss on the terrace, to the victory), every frame at 60 fps judged by WCAG 2.3.1's general and red
 //! flash tests as `sapphire_testkit::flashes` reads them, at the flashes setting a player can choose. It prints
 //! the worst second of each fight, the gate's cutscene and each ultimate's cinematic, and of the walk as a whole,
 //! and fails on more than six transitions in any second (WCAG's three flashes), or on more red transitions in a
@@ -69,7 +69,7 @@ fn fight_at([x, _, z]: [f32; 3]) -> &'static str {
     } else if z > -80.0 {
         "the court's fight"
     } else {
-        "the Knell Colossus on the terrace"
+        "the boss on the terrace"
     }
 }
 
@@ -99,7 +99,7 @@ const LEAD: u32 = 2 * RATE;
 /// which WCAG's three red flashes a second leave room for. The walk holds one until the camera keeps off near
 /// props (M4 A7, triage C-7): as the view goes back from an ultimate in the court to the fight's camera, the
 /// eye passes a red-hung post right beside it (frames 11,829 to 11,832), and the terrace's last ultimate draws
-/// back past the Knell Colossus's red cloth (frame 14,476). Lower it to 0 with that.
+/// back past the terrace's boss's red cloth (frame 14,476). Lower it to 0 with that.
 const MOST_RED: u32 = 1;
 
 /// The frames `SAPPHIRE_FLASH_PART` judges the seconds ending on, `from..to` (`to` past the walk for the last

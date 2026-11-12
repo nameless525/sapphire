@@ -489,6 +489,9 @@ impl Scene {
                 && matches!(&next.coming, Coming::Near(streamer) if streamer.near_is_loaded())
         })?;
         let arriving = self.next_zones.remove(at);
+        if let Coming::Near(streamer) = &arriving.coming {
+            content.arrive_in_zone(streamer.zone());
+        }
         let left = self.close_zone(content);
         self.leave_town();
         for next in std::mem::take(&mut self.next_zones) {

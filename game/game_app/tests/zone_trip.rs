@@ -30,7 +30,7 @@ use game_flow::game::{FlowContent, Game, GameSetup};
 use game_ui::menus::{MenuDocument, PlayerSettings};
 use sapphire_gameplay::replay::RunStart;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
-use sapphire_render::quality::QualitySettings;
+use sapphire_render::quality::{QualitySettings, TierId};
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::Stopwatch;
@@ -48,6 +48,8 @@ const FLOW: &str = r#"(type: "sapphire::game::FlowDocument", version: 1, data: (
     music: (title: "waiting", victory: "cleared", defeat: "waiting"),
     holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
 ))"#;
+/// Longer than a tier's renderer takes to build off the frame, even on lavapipe.
+const MOST_CHANGE: Duration = Duration::from_secs(600);
 /// More frames than a trip and a restart's wipe take.
 const MOST_FRAMES: u32 = 2_000;
 
@@ -83,6 +85,37 @@ struct Seen {
     /// The real time its frames took, and the longest of them (M4 H2's measure of a trip's hold).
     took: Duration,
     longest: Duration,
+}
+
+/// The tier changed to the other desktop one at a pause after the trips (M4 H4): its renderer is built for the
+/// zone they brought, with no probe grid of the zone they left, so nothing it draws is built on the frame.
+fn tier_change_after_the_trips(stage: &mut Stage<GameShow>) -> Result<(), AppInitError> {
+    let to = match stage.quality.active().id {
+        TierId::DesktopHigh => TierId::DesktopLow,
+        _ => TierId::DesktopHigh,
+    };
+    assert!(stage.content.zone_probe_grid().is_none(), "the trips' zones have no probe grid");
+    stage.quality.set_settings(QualitySettings { tier: Some(to), ..stage.quality.settings() });
+    stage.show.controls.set_paused(true);
+    let waited = Stopwatch::start();
+    while stage.quality.active().id != to {
+        assert!(waited.elapsed() < MOST_CHANGE, "{to}'s renderer never came");
+        stage.prepare_tier_change();
+        if stage.show.holds_still() {
+            let _ = stage.take_tier_change();
+        }
+        frame(stage)?;
+    }
+    let changed = waited.elapsed();
+    for _ in 0..4 {
+        frame(stage)?;
+    }
+    stage.show.controls.set_paused(false);
+    let pipelines = stage.renderer.stats().pipelines;
+    let on_frame = (pipelines.first_use_builds, pipelines.frame_thread_builds, pipelines.frame_waits);
+    assert_eq!(on_frame, (0, 0, 0), "the change after the trips: {}", stage.renderer.first_use_report());
+    println!("zone_trip: the change to {to} after the trips came in {:.0} ms", changed.as_secs_f64() * 1e3);
+    Ok(())
 }
 
 /// Does it all in `init`, and the first frame exits.
@@ -186,6 +219,7 @@ impl App for OutsideCaller {
             trips.iter().map(|seen| seen.took.as_millis()).collect::<Vec<_>>(),
             trips.iter().map(|seen| format!("{:.1}", seen.longest.as_secs_f64() * 1e3)).collect::<Vec<_>>(),
         );
+        tier_change_after_the_trips(&mut stage)?;
         to_the_title_mid_trip(platform)?;
         restart_after_a_trip(platform)?;
         Ok(Self)

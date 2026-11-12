@@ -1446,6 +1446,17 @@ impl Content {
         Ok(zone)
     }
 
+    /// The zone a trip is bringing on stage, `zone` (M4 H4): the last zone's probe grid goes, with its pack, so
+    /// a tier's renderer built from here on takes no grid of a zone that's gone ([`Self::zone_probe_grid`]). A
+    /// trip brings no probe grid of its own, nor warms what one draws through ([`Self::queue_zone_prewarm`]): a
+    /// zone with one is lit without it there, which it says.
+    pub(crate) fn arrive_in_zone(&mut self, zone: &Handle<Zone>) {
+        self.zone_probes = None;
+        if self.server.get(zone).is_some_and(|zone| zone.presentation.probes.is_some()) {
+            tracing::warn!(target: LOG_TARGET, zone = %zone.id(), "a trip brings no zone's probe grid");
+        }
+    }
+
     /// [`Self::open_zone`]'s second half, after [`Self::begin_zone`]: everything near `focus`, in the zone's
     /// space, loaded and on `renderer`, and the streamer that has it from there.
     pub fn preload_zone<P>(

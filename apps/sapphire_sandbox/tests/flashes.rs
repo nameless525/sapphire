@@ -13,9 +13,9 @@ use std::process::Command;
 use sapphire_testkit::flashes::{FlashAnalyser, FlashReport};
 use sapphire_testkit::golden::Image;
 
-/// The scripted fight's replay, and its length in ticks (`tests/replays/checksums.*.txt`).
+/// The scripted fight's replay, and its length in ticks (`tests/replays/checksums.*.txt`): a frame each.
 const REPLAY: &str = "tests/replays/arena-scripted.sreplay";
-const TICKS: &str = "1700";
+const TICKS: u32 = 1700;
 /// The capture's rate: a frame a step.
 const RATE: u32 = 60;
 
@@ -48,6 +48,7 @@ fn the_fight_at(flashes: &str) -> FlashReport {
     fs::create_dir_all(&frames).expect("the frames' directory");
     let capture = temp.0.join("last.png");
     let workspace = workspace();
+    let ticks = TICKS.to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_sapphire_sandbox"))
         .current_dir(&workspace)
         .args([
@@ -56,9 +57,9 @@ fn the_fight_at(flashes: &str) -> FlashReport {
             "--size",
             "480x270",
             "--capture-ticks",
-            TICKS,
+            &ticks,
             "--capture-frames",
-            TICKS,
+            &ticks,
             "--capture-step",
             "1",
             "--arena",
@@ -94,13 +95,12 @@ fn the_fight_at(flashes: &str) -> FlashReport {
         .filter(|path| path.extension().is_some_and(|extension| extension == "png"))
         .collect();
     paths.sort();
-    assert!(paths.len() >= 1600, "{} frames of the fight's {TICKS}", paths.len());
-    let first = Image::read_png(&paths[0]).expect("a PNG");
+    let first = Image::read_png(paths.first().expect("a frame")).expect("a PNG");
     let mut analyser = FlashAnalyser::new(first.width, first.height, RATE).expect("a size and rate it reads");
     for path in &paths {
         analyser.push(&Image::read_png(path).expect("a PNG")).expect("the sequence's size");
     }
-    analyser.report()
+    analyser.report(Some(TICKS)).expect("every frame of the fight")
 }
 
 #[test]

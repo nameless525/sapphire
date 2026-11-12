@@ -88,6 +88,8 @@ pub enum FlashError {
     Empty((u32, u32)),
     #[error("a {width}x{height} frame with {bytes} bytes")]
     Bytes { width: u32, height: u32, bytes: usize },
+    #[error("{frames} frames, too short to judge: expected at least {least}")]
+    Short { frames: u32, least: u32 },
 }
 
 /// How a capture is cut into cells, and how large a 10° field is in them.
@@ -433,9 +435,15 @@ impl FlashAnalyser {
         Ok(())
     }
 
-    /// What it's found so far.
-    pub fn report(&self) -> FlashReport {
-        FlashReport { frames: self.frames, general: self.general.verdict, red: self.red.verdict }
+    /// What it found, once it's read enough to judge: at least a second's frames at its rate, and at least
+    /// `length`, the sequence's own length where the caller knows it. A shorter sequence is refused, so a
+    /// capture that wrote one frame (without `--capture-frames` and `--capture-step 1`) can't pass.
+    pub fn report(&self, length: Option<u32>) -> Result<FlashReport, FlashError> {
+        let least = self.second.max(length.unwrap_or(0));
+        if self.frames < least {
+            return Err(FlashError::Short { frames: self.frames, least });
+        }
+        Ok(FlashReport { frames: self.frames, general: self.general.verdict, red: self.red.verdict })
     }
 
     /// Each frame so far, for the general test and the red: to find what made a sequence's transitions.
@@ -587,7 +595,7 @@ mod tests {
         for at in 0..frames {
             analyser.push(if (at / every).is_multiple_of(2) { &off } else { &on }).unwrap();
         }
-        analyser.report()
+        analyser.report(None).unwrap()
     }
 
     fn whole(_: u32, _: u32) -> bool {
@@ -701,7 +709,7 @@ mod tests {
         for at in 0..120 {
             analyser.push(&frame(dark, light, |x, _| (x + at * 4) % 8 < 4)).unwrap();
         }
-        let pan = analyser.report();
+        let pan = analyser.report(None).unwrap();
         assert!(pan.passes() && pan.general.rate <= 2, "{pan:?}");
     }
 
@@ -713,7 +721,7 @@ mod tests {
         for code in ramp {
             analyser.push(&frame([code; 3], [code; 3], whole)).unwrap();
         }
-        assert_eq!(analyser.report().general.rate, 2);
+        assert_eq!(analyser.report(None).unwrap().general.rate, 2);
     }
 
     #[test]
@@ -725,5 +733,26 @@ mod tests {
         assert!(matches!(analyser.push(&other), Err(FlashError::Size { .. })));
         let short = Image { width: 10, height: 10, rgba: vec![0; 12] };
         assert!(matches!(analyser.push(&short), Err(FlashError::Bytes { .. })));
+    }
+
+    /// A sequence shorter than a second, or than the length its caller expects, is refused rather than passed:
+    /// one frame of a fight has no flashes to find.
+    #[test]
+    fn a_sequence_too_short_to_judge_is_refused() {
+        let still = frame([grey(0.2); 3], [grey(0.2); 3], whole);
+        let mut analyser = FlashAnalyser::new(SIZE.0, SIZE.1, RATE).unwrap();
+        assert_eq!(analyser.report(None), Err(FlashError::Short { frames: 0, least: RATE }));
+        analyser.push(&still).unwrap();
+        assert_eq!(analyser.report(None), Err(FlashError::Short { frames: 1, least: RATE }));
+        assert_eq!(
+            analyser.report(Some(1)),
+            Err(FlashError::Short { frames: 1, least: RATE }),
+            "a second at least"
+        );
+        for _ in 1..RATE {
+            analyser.push(&still).unwrap();
+        }
+        assert!(analyser.report(None).unwrap().passes());
+        assert_eq!(analyser.report(Some(1700)), Err(FlashError::Short { frames: RATE, least: 1700 }));
     }
 }

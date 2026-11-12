@@ -163,7 +163,7 @@ These items in [m4-handoff.md](m4-handoff.md) are closed and don't carry:
 - **The phone's missing Back, nothing pausing on return, and a lost device ending the run** (S6).
 - **Windows' save retry,** a device check: its test (`a_rename_waits_out_a_file_held_for_a_moment`) runs in CI's Windows job on every pull request.
 - **Store and signing** (track S), up to the accounts; **patching** (track P), from M3's "Not in M3".
-- **Secondary motion's worst frame,** in part (H5): p99 fell to 0.72 ms on Desktop-Low, still over its 0.5 (see "Warm-up, tiers and frames").
+- **Secondary motion's worst frame** (H5, H7): Desktop-Low's p99 is 0.35 ms against its 0.5, and Mobile-Low's 0.43 against its 1.0 (see "Warm-up, tiers and frames").
 
 ## What M5 builds on
 
@@ -500,7 +500,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **The thermal status comes from a listener on API 30+** (T7); headroom is still polled every 10 s on the frame thread, its cost unmeasured on a phone.
 - **ADPF hears a frame's work less its swapchain waits** (T7). Owed: a phone's real clocks under ADPF, and a GPU-bound frame on a phone's own GPU (the emulator shares the host's). `APerformanceHint_reportActualWorkDuration2` (API 35, separate CPU and GPU durations) is unused.
 - **The emulator's constant headroom of 0.90 reads `Light`** (T2, Z1), so the ladder sits on rung 1 there from 0.03 s after the title, for good, and a phone between 0.85 and 0.95 will too. Only a phone's falling forecast shows the climb to the top. Once heat took the emulator down to Mobile-Low, a calm one never climbs back to Mobile-High (H9).
-- **Secondary motion on Desktop-Low:** p99 0.72 ms against its 0.5 (H5). Only a cheaper solve, which moves poses and goldens, gets under it.
+- **Secondary motion fits §3.2 on both budgeted tiers since M4 H7.** Desktop-Low solves clearance every fourth tick, as the phones, with no forecast ahead, so its hair and shirt react at 15 Hz near the camera. Desktop-High keeps every-frame solves at about 0.83 ms mean, with no budget set for it. `Spread`'s weights are still H5's on purpose, because re-weighting moves poses on every tier that solves at an interval. Owed: how the interval looks in motion on a real Desktop-Low machine, which no golden can show. To undo it, set `ClearanceQuality::DESKTOP_LOW` back to interval 3.
 - **T4's table is unmeasured:** names a driver reports otherwise (old RADV, NVK) fall to the rules, and Apple's M3 and later and integrated PC GPUs have no rows.
 
 **Packages and stores** (S0–S5, I2, Z3b):

@@ -478,6 +478,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **A power cut** during an install is untested (P3): fault injection covers every step, but not the disk's own behaviour.
 - **`--patch-from` doesn't compare packed assets of the simulation's kinds** (P3). The game runs on its compiled-in copies, so a pack's copy can't move a checksum.
 - **Cooks differ across architectures** (C3, Z3a, Z1): textures by their kernels and 78 meshes differ between x86-64 and AArch64, untraced, and CI's x86-64 desktop cook is 38,740,637 bytes to this Mac's 38,736,717. A patch from another architecture's cook would carry far more than its edit. Cook releases on one fixed runner image; `release --patch-from` printing the new blocks' bytes would catch a mistake.
+- **`release --patch-from` prints what a patch moves,** by kind, and warns over 5% of the cook or across architectures, which each release records in `manifests/<n>.arch` (S7). From 83dc6273's x86-64 cook to its AArch64 one, a patch moved 45% of the cook (17,419,389 bytes).
 - **`fdsm`'s font fields use `std`'s `f64` maths** (C3): third-party, outside the cooker's ban.
 - **Android's TLS roots are `webpki-roots`** (decided at P0): no user-installed CAs, and roots age until an app update. The platform verifier's Kotlin half needs a download.
 
@@ -509,8 +510,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **Windows' static C runtime is proved only by `packages.yml`'s Windows job** (X4): it was written on macOS, and no clean Windows has launched it.
 - **Larger Text, VoiceOver and Sufficient Contrast aren't claimed** (S5): text reaches 125% on a phone where Apple asks 200%, there's no screen reader, and nothing measures the menus' contrast. The game doesn't read iOS's own Reduce Motion.
 - **`UIRequiresFullScreen` may be deprecated on iPadOS 26** (Z3b, unverified).
-- **`steampipe` isn't run in CI** (I2): no job holds all three desktop packages.
-- **Linux's packaged game hasn't drawn:** CI's Linux job has no GPU (steam.md rule 16).
+- **Linux's packaged game draws only on lavapipe on CI's Ubuntu host,** not inside Steam Linux Runtime 3.0, so a launch in the runtime and from Steam stays owed (S7, steam.md rule 16).
 - **macOS is arm64 only** (S4); a universal binary if Intel Macs are wanted.
 - **The `macos-26` runner has 7 GB of RAM** for a fat-LTO link (I2).
 

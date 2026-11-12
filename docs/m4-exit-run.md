@@ -155,7 +155,7 @@ The test (§1): a shipping package for each store (iOS's `.xcarchive`, Android's
   - **Steam's desktops** (S4): macOS's hardened runtime and empty entitlements read back and its `.icns`; Windows' subsystem, manifest, VERSIONINFO and icon read back from the PE, and its imports holding no C runtime DLL (X4 links it statically); Linux's library and symbol versions held to Steam Linux Runtime 3.0's.
   - Every package (C1, C2): every shipped binary stripped, its ID equal to its symbols', and no file holding the builder's paths.
 - **The checklists:** [docs/store/apple.md](store/apple.md), [google-play.md](store/google-play.md) and [steam.md](store/steam.md) (S5), each rule with its source and date and the test or command that meets it, or "owed".
-- **The nightly packages** (I2, `.github/workflows/packages.yml`): one job per platform runs the same `package`, then `cargo xtask symbols`, and keeps the package and its symbol store as artifacts. On `main` (the schedule) a package is a release's and fails on a changed checkout; anything else is `--dev`.
+- **The nightly packages** (I2, `.github/workflows/packages.yml`): one job per platform runs the same `package`, then `cargo xtask symbols`, and keeps the package and its symbol store as artifacts. On `main` (the schedule) a package is a release's and fails on a changed checkout; anything else is `--dev`. Since S7 every desktop package draws its title, each checked drawn by `.github/scripts/title_drawn.py` (Linux's stripped game on lavapipe on the Ubuntu host, in `linux-title`), and a `steampipe` job writes Steam's scripts from the three artifacts of one commit and reads them back (`xtask steampipe --all`).
 
 ```bash
 cargo xtask package --platform macos --dev          # each takes a plain gate slot: q -t 3600 cargo xtask package …
@@ -165,7 +165,7 @@ cargo xtask steampipe                               # SteamPipe's scripts from t
 gh run list --workflow packages.yml                 # then gh run view <id> for the five jobs
 ```
 
-`--dev` is for a checkout off `main` or with any change; on a clean `main` drop it. Windows and Linux package only on their hosts, so they're the nightly job's. **Passing:** each `package` exits 0 and writes `package.json`; the nightly run's five jobs are green.
+`--dev` is for a checkout off `main` or with any change; on a clean `main` drop it. Windows and Linux package only on their hosts, so they're the nightly job's. **Passing:** each `package` exits 0 and writes `package.json`; the nightly run's jobs are green, `linux-title` and `steampipe` with them.
 
 **Owed:** distribution signing, the uploads, notarization, and each store's server-side checks and review, all needing the maintainer's accounts (§7, and each checklist's "Owed to the maintainer"). Apple's `xcodebuild -exportArchive` stops at signing (S2).
 

@@ -44,7 +44,7 @@ pub fn this_architecture() -> &'static str {
     std::env::consts::ARCH
 }
 
-/// What a patch moves over the release it patches (see the [module docs](self)).
+/// What a patch moves over the release it patches. The `patch_size` module's docs say how it's counted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatchSize {
     /// The release it patches.
@@ -153,7 +153,7 @@ impl PatchSize {
         Ok(size)
     }
 
-    /// Every byte the patch moves (see the [module docs](self) for what isn't counted).
+    /// Every byte the patch moves. The `patch_size` module's docs say what isn't counted.
     #[must_use]
     pub fn total(&self) -> u64 {
         self.manifest + self.tables + self.files + self.kinds.values().map(|kind| kind.new).sum::<u64>()

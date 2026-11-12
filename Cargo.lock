@@ -1564,6 +1564,7 @@ dependencies = [
  "sapphire_save",
  "sapphire_serialize",
  "sapphire_stage",
+ "sapphire_testkit",
  "sapphire_time",
  "toml",
  "tracing",

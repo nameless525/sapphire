@@ -620,6 +620,7 @@ jobs:
           tests --package game_app --features dev --test follows_the_ladder
           tests --package game_app --features dev --test draws_a_marked_tick
           tests --package game_app --features dev --test zero_hitches
+          tests --package game_app --features dev --test flashes_in_the_ward
           tests --package sapphire_sandbox --features dev --test replays
           tests --package sapphire_sandbox --features dev --test live_tuning
           tests --package sapphire_sandbox --features dev --test flashes
@@ -872,15 +873,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Exit test 6's flashes (M4 A3, Z3c): every frame of the scripted fight, 1,700 of them at 480 × 270 on
-  # Desktop-High with its cues, judged by WCAG 2.3.1's general and red flash tests, with flashes reduced and
-  # at the default, a runner each. Both took 135 s on an M5's Metal (2026-11-11); the wave's bench, the
-  # nearest lane that draws every frame, takes 43 times as long here as there, and this one draws 56 times
-  # its pixels on a richer tier, so a setting should take an hour or more: no pull request's lane fits it.
-  # So it runs on CI's nightly run and on a dispatch, from the same producer's build and cook; a change to
-  # the screen effects or the cues proves it locally on Metal, or by a dispatch on its branch.
+  # Exit test 6's flashes (M4 A3, Z3c, A7): every frame at 480 × 270 on Desktop-High with the fights' cues,
+  # judged by WCAG 2.3.1's general and red flash tests, with flashes reduced and at the default. The arena's
+  # fights are the sandbox's `flashes`: the scripted fight (1,700 frames) with the ultimate (450) on one runner
+  # and the stress fight (2,400) on another. The game that ships is `game_app`'s `flashes_in_the_ward`: the
+  # Lantern Ward's whole walk, 14,823 frames, its four fights, the gate's cutscene and every ultimate, in parts
+  # whose seconds together are the walk's, each drawing two seconds before its own. The nightly run's first
+  # lavapipe timings (run 43198623554) were 34 minutes for the scripted fight at default and 56 reduced, about
+  # 1.2 and 2.0 s a frame, so a part is about 3,800 frames at default and 3,100 reduced: an estimated 80 and
+  # 105 minutes, under the job's 180 with room for a ward frame dearer than the arena's. Rebalance the parts by
+  # the runs' own times. No pull request's lane fits it, so it runs on CI's nightly run and on a dispatch, from
+  # the same producer's build and cook; a change to the screen effects, the cues or a cinematic proves it
+  # locally on Metal (about 3 minutes a setting for the walk), or by a dispatch on its branch.
   app-tests-flashes:
-    name: App tests (vulkan-lavapipe, flashes ${{ matrix.flashes }})
+    name: App tests (vulkan-lavapipe, flashes ${{ matrix.flashes }}, ${{ matrix.fights }})
     needs: app-tests-build
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
@@ -888,9 +894,30 @@ jobs:
       matrix:
         include:
           - flashes: reduced
-            test: the_scripted_fight_passes_wcag_2_3_1_with_flashes_reduced
+            fights: the scripted fight and the ultimate
+            test: flashes
+            filter: the_scripted_fight_passes_wcag_2_3_1_with_flashes_reduced the_ultimate_passes_wcag_2_3_1_with_flashes_reduced
           - flashes: default
-            test: the_scripted_fight_passes_wcag_2_3_1_by_default
+            fights: the scripted fight and the ultimate
+            test: flashes
+            filter: the_scripted_fight_passes_wcag_2_3_1_by_default the_ultimate_passes_wcag_2_3_1_by_default
+          - flashes: reduced
+            fights: the stress fight
+            test: flashes
+            filter: the_stress_fight_passes_wcag_2_3_1_with_flashes_reduced
+          - flashes: default
+            fights: the stress fight
+            test: flashes
+            filter: the_stress_fight_passes_wcag_2_3_1_by_default
+          - { flashes: default, fights: the ward 1/4, test: flashes_in_the_ward, part: 1/4 }
+          - { flashes: default, fights: the ward 2/4, test: flashes_in_the_ward, part: 2/4 }
+          - { flashes: default, fights: the ward 3/4, test: flashes_in_the_ward, part: 3/4 }
+          - { flashes: default, fights: the ward 4/4, test: flashes_in_the_ward, part: 4/4 }
+          - { flashes: reduced, fights: the ward 1/5, test: flashes_in_the_ward, part: 1/5 }
+          - { flashes: reduced, fights: the ward 2/5, test: flashes_in_the_ward, part: 2/5 }
+          - { flashes: reduced, fights: the ward 3/5, test: flashes_in_the_ward, part: 3/5 }
+          - { flashes: reduced, fights: the ward 4/5, test: flashes_in_the_ward, part: 4/5 }
+          - { flashes: reduced, fights: the ward 5/5, test: flashes_in_the_ward, part: 5/5 }
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -911,8 +938,21 @@ jobs:
         run: |
           python3 .github/scripts/app_tests_bundle.py unpack \
             --archive "$RUNNER_TEMP/app-tests-download/app-tests.tar.gz" --commit "$GITHUB_SHA"
-      - name: The scripted fight's flashes (WCAG 2.3.1)
-        run: python3 .github/scripts/app_tests_bundle.py run flashes -- --ignored --nocapture --exact "${{ matrix.test }}"
+      - name: The fights' flashes (WCAG 2.3.1)
+        env:
+          FLASH_TEST: ${{ matrix.test }}
+          FLASH_FILTER: ${{ matrix.filter }}
+          FLASH_SETTING: ${{ matrix.flashes }}
+          FLASH_PART: ${{ matrix.part }}
+        run: |
+          if [ "$FLASH_TEST" = flashes ]; then
+            # The filter is the tests' names, a word each, run one after another on the one GPU.
+            # shellcheck disable=SC2086
+            python3 .github/scripts/app_tests_bundle.py run flashes -- --ignored --nocapture --exact --test-threads=1 $FLASH_FILTER
+          else
+            SAPPHIRE_FLASHES="$FLASH_SETTING" SAPPHIRE_FLASH_PART="$FLASH_PART" \
+              python3 .github/scripts/app_tests_bundle.py run flashes_in_the_ward -- --ignored --nocapture
+          fi
 
   mobile-build-ios:
     name: Mobile build (iOS)

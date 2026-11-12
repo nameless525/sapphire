@@ -53,6 +53,8 @@ sapphire_gameplay.workspace = true
 sapphire_math.workspace = true
 # The ward's documents' IDs, for `plays_the_ward`.
 sapphire_serialize.workspace = true
+# WCAG 2.3.1's flash analyser, for `flashes_in_the_ward`.
+sapphire_testkit.workspace = true
 
 [features]
 # What the crates under it have for development builds. The game adds no tools of its own.
@@ -86,6 +88,11 @@ harness = false
 
 [[test]]
 name = "wins_the_ward"
+harness = false
+
+# Exit test 6's flashes in the game that ships: the ward's whole walk judged by WCAG 2.3.1, every frame (M4 A7).
+[[test]]
+name = "flashes_in_the_ward"
 harness = false
 
 # A trip to the background and a lost device, in the game at the ward's court (M4 S6).

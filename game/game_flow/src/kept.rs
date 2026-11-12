@@ -8,11 +8,13 @@
 //! caller says what each means.
 
 use std::fmt;
+use std::io;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
-use sapphire_save::{ProgressStore, SettingsFile, Snapshot};
+use sapphire_save::{ProgressStore, SettingsFile, SettingsOutcome, Snapshot};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -54,6 +56,29 @@ impl<T: Versioned + Serialize + DeserializeOwned + TypePath + 'static> Store for
 
     fn write(&self, snapshot: &Snapshot<T>) -> Result<(), String> {
         ProgressStore::write(self, snapshot).map(drop).map_err(|error| error.to_string())
+    }
+}
+
+/// The player's settings file's name, in their directory.
+pub const PLAYER_SETTINGS: &str = "settings";
+
+impl<T: Versioned + Serialize + DeserializeOwned + TypePath + Default + 'static> Kept<SettingsFile<T>> {
+    /// The settings file `name` in `dir`, kept from now on, and what it holds: a load always gives settings,
+    /// the defaults for a missing file, or what of a damaged one could be read, which is logged. `replace`
+    /// writes a file whole. The game keeps the player's settings this way (M4 A8), with the save's one rule
+    /// of one write in flight.
+    pub fn load_settings(
+        dir: &Path,
+        name: &str,
+        replace: impl Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync + 'static,
+    ) -> (Self, T) {
+        let file = SettingsFile::new(dir, name, replace);
+        let loaded = file.load();
+        match &loaded.outcome {
+            SettingsOutcome::Missing | SettingsOutcome::Read => {}
+            outcome => tracing::warn!(target: LOG_TARGET, name, ?outcome, "the settings file wasn't whole"),
+        }
+        (Self::new(file), loaded.value)
     }
 }
 
@@ -268,6 +293,33 @@ mod tests {
         progress.finish();
         let loaded = progress.store().load().expect("loads").expect("a save");
         assert_eq!(loaded.value, Kept1 { value: 4 });
+    }
+
+    /// The player's settings as the game keeps them (moved from `game_app`'s own copy of this rule, M4 A8): a
+    /// first launch loads the defaults, and of three asked for one after another, the last is what the next
+    /// launch loads, with what was overtaken never written. `finish` is what a quit calls.
+    #[test]
+    fn the_players_settings_load_and_what_is_asked_for_last_is_what_stays() {
+        use game_ui::menus::PlayerSettings;
+
+        let dir = Dir::new("player");
+        let writes = Arc::new(AtomicU32::new(0));
+        let (mut kept, loaded) =
+            Kept::<SettingsFile<PlayerSettings>>::load_settings(&dir.0, "settings", counted(&writes));
+        assert_eq!(loaded, PlayerSettings::default(), "nothing there yet");
+
+        let settings = |sound| PlayerSettings { sound, ..PlayerSettings::default() };
+        for sound in [10, 20, 30] {
+            kept.keep(&settings(sound));
+        }
+        kept.finish();
+        assert!(writes.load(Ordering::Relaxed) <= 2, "what was overtaken isn't written");
+
+        let (_, loaded) =
+            Kept::<SettingsFile<PlayerSettings>>::load_settings(&dir.0, "settings", |_: &Path, _: &[u8]| {
+                Ok(())
+            });
+        assert_eq!(loaded, settings(30));
     }
 
     /// A write that fails is logged and counted, and the next one is still tried.

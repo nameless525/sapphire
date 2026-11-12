@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use game_combat::cues::PadRumble;
 use game_flow::boot::{Boot, BootUpdate};
+use game_flow::kept::{Kept, PLAYER_SETTINGS};
 use game_flow::show::{GameShow, Reload};
 use game_flow::update::Patches;
 use game_ui::menus::PlayerSettings;
@@ -36,12 +37,12 @@ use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
+use sapphire_save::SettingsFile;
 use sapphire_stage::Stage;
 use sapphire_stage::audio::{AudioPrepared, DeviceAudio, DeviceOpening, Volumes};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
-use crate::settings::KeptSettings;
 use crate::tiers::{Pacing, TierFollower};
 use crate::{LOG_TARGET, build_info};
 
@@ -79,7 +80,7 @@ pub struct GameApp {
     launched: bool,
     /// What the player had chosen as the app started: what a boot stands the first show with.
     chosen: PlayerSettings,
-    settings: KeptSettings,
+    settings: Kept<SettingsFile<PlayerSettings>>,
     /// The quality tier, the heat and the frame cap, frame by frame (M4 T3).
     tiers: TierFollower,
     /// Whether a pad may shake.
@@ -137,7 +138,7 @@ impl App for GameApp {
         // The audio session (iOS) or cpal's context (Android) is set up on this thread, before any frame, and the
         // device is opened on the warm-up pool once the sounds are decoded (M4 H8).
         let audio_prepared = DeviceAudio::prepare(platform);
-        let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
+        let (settings, chosen) = Kept::load_settings(platform.user_dir(), PLAYER_SETTINGS, durable_replace);
         let tiers = TierFollower::new(&chosen, info.device_class);
         #[cfg(feature = "playtest")]
         let playtest = {

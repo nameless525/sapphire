@@ -81,7 +81,6 @@ mod offscreen;
 mod options;
 #[cfg(feature = "playtest")]
 mod playtest;
-mod settings;
 pub mod tiers;
 
 /// What this build of the game is, compiled in by the build script: the bundle ID from

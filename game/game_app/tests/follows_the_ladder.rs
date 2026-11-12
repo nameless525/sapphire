@@ -4,7 +4,9 @@
 //! keeping every mesh and the run, with no frame building a pipeline.
 //!
 //! It starts on Desktop-High, held as a player's choice, and goes to automatic, so the ladder's tier rung is
-//! there whatever the device (lavapipe's own tier is Desktop-Low, which has none).
+//! there whatever the device (lavapipe's own tier is Desktop-Low, which has none). Then it does the same from
+//! Mobile-High down to Mobile-Low (M4 H9), on a phone's class of device over this one's GPU, where the 30 fps
+//! rung is the rate the display paces to rather than a desktop's cap.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -18,7 +20,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use game_app::tiers::TierFollower;
+use game_app::tiers::{Pacing, TierFollower};
 use game_app::{GameApp, GameShow};
 use game_combat::combat::CombatOption;
 use game_combat::documents::FightDocuments;
@@ -26,7 +28,9 @@ use game_flow::boot::Boot;
 use game_ui::menus::{MenuDocument, PlayerSettings};
 use sapphire_core::target::FormFactor;
 use sapphire_core::thermal::{ThermalReading, ThermalState};
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
+use sapphire_platform::{
+    App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, SystemInfo, run_with,
+};
 use sapphire_render::quality::{QualitySettings, TierId, TierSource};
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Readback, Stage, headless_gpu};
@@ -63,64 +67,8 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let gpu = Arc::new(headless_gpu()?);
-        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
-        let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
-        let show = GameShow::new(documents, screens, PlayerSettings::default())?;
-        let replay = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/zone-trip.sreplay");
-        let option = CombatOption::Replay { path: replay, to_end: false };
-        // Booted as the game's window boots it (M4 H2), on Desktop-High as a player's choice.
-        let high = QualitySettings { tier: Some(TierId::DesktopHigh), ..QualitySettings::default() };
-        let boot = Boot::start(platform.host(), gpu, FORMAT, high, show, &option)?;
-        let (mut stage, _) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
-        stage.show.open_fight();
-        assert_eq!(stage.quality.active().id, TierId::DesktopHigh);
-        let character = stage.character;
-
-        // Automatic from here, and the device as hot as it gets.
-        let mut tiers = TierFollower::new(&PlayerSettings::default(), FormFactor::Desktop);
-        tiers.follow_settings(&PlayerSettings::default(), &mut stage);
-        let critical = ThermalReading { state: ThermalState::Critical, ..ThermalReading::default() };
-        let mut caps = Vec::new();
-        let mut changed_at = None;
-        let mut frames = 0u32;
-        while tick(&stage) < TICKS {
-            stage.step();
-            stage.show.drive_view(Duration::from_millis(16));
-            let still = stage.show.holds_still();
-            if let Some(pacing) = tiers.frame(&mut stage, critical) {
-                caps.push(pacing.cap);
-            }
-            if changed_at.is_none() && !tiers.changes().is_empty() {
-                assert!(still, "the tier changed on a frame the wipe didn't cover");
-                changed_at = Some((frames, tick(&stage)));
-            }
-            frame(&mut stage)?;
-            frames += 1;
-            assert!(frames < 20_000, "it never got to tick {TICKS}");
-            if frames == 1 {
-                let state = stage.quality.ladder().state();
-                assert!(state.depth > 0, "critical heat steps the ladder down at once");
-                assert!(!state.shed.is_empty(), "and sheds its optional passes");
-                assert_eq!(stage.renderer.shed(), state.shed, "in place, on the renderer");
-            }
-        }
-
-        let thirty = NonZeroU32::new(30);
-        assert!(caps.contains(&thirty), "the ladder's 30 fps cap reached the pacing: {caps:?}");
-        let (at_frame, at_tick) = changed_at.expect("the ladder's tier changed by the second trip");
-        assert_eq!(tiers.changes(), [TierId::DesktopLow]);
-        assert_eq!(stage.quality.active().id, TierId::DesktopLow);
-        assert_eq!(stage.quality.active().source, TierSource::Ladder);
-        assert_eq!(stage.character, character, "the character's mesh stayed on the renderer");
-        stage.show.shown.fight.check().map_err(AppInitError::msg)?;
-        // Exit test 1 (M4 H1, H2): the new tier's renderer was built off the frame, with all the old one had, and
-        // no frame waited for it.
-        let pipelines = stage.renderer.stats().pipelines;
-        let on_frame = (pipelines.frame_thread_builds, pipelines.frame_waits);
-        assert_eq!(on_frame, (0, 0), "a frame built or waited: {}", stage.renderer.first_use_report());
-        assert_eq!(pipelines.first_use_builds, 0, "a frame built: {}", stage.renderer.first_use_report());
-        println!("follows_the_ladder: {frames} frames; Desktop-Low from frame {at_frame}, tick {at_tick}");
+        walk(platform, TierId::DesktopHigh)?;
+        walk(platform, TierId::MobileHigh)?;
         Ok(Self)
     }
 
@@ -131,6 +79,79 @@ impl App for OutsideCaller {
     fn iterate(&mut self, _: &mut Platform) -> AppControl {
         AppControl::Exit
     }
+}
+
+/// Boots on `high`, held as a player's choice, goes to automatic under critical heat, and follows the ladder to
+/// the tier below at the second trip's wipe.
+fn walk(platform: &Platform, high: TierId) -> Result<(), AppInitError> {
+    let class = high.class();
+    let low = high.lower().expect("a class's higher tier");
+    // A phone's class of device, where the tier's a phone's, on this one's GPU.
+    let host = platform.host().as_device(SystemInfo { device_class: class, ..*platform.system_info() });
+    let gpu = Arc::new(headless_gpu()?);
+    let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
+    let screens = MenuDocument::read(platform.content()).map_err(AppInitError::msg)?;
+    let show = GameShow::new(documents, screens, PlayerSettings::default())?;
+    let replay = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/zone-trip.sreplay");
+    let option = CombatOption::Replay { path: replay, to_end: false };
+    // Booted as the game's window boots it (M4 H2), on the higher tier as a player's choice.
+    let held = QualitySettings { tier: Some(high), ..QualitySettings::default() };
+    let boot = Boot::start(&host, gpu, FORMAT, held, show, &option)?;
+    let (mut stage, _) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+    stage.show.open_fight();
+    assert_eq!(stage.quality.active().id, high);
+    let character = stage.character;
+
+    // Automatic from here, and the device as hot as it gets.
+    let mut tiers = TierFollower::new(&PlayerSettings::default(), class);
+    tiers.follow_settings(&PlayerSettings::default(), &mut stage);
+    let critical = ThermalReading { state: ThermalState::Critical, ..ThermalReading::default() };
+    let mut caps = Vec::new();
+    let mut changed_at = None;
+    let mut frames = 0u32;
+    while tick(&stage) < TICKS {
+        stage.step();
+        stage.show.drive_view(Duration::from_millis(16));
+        let still = stage.show.holds_still();
+        if let Some(pacing) = tiers.frame(&mut stage, critical) {
+            caps.push(pacing);
+        }
+        if changed_at.is_none() && !tiers.changes().is_empty() {
+            assert!(still, "the tier changed on a frame the wipe didn't cover");
+            changed_at = Some((frames, tick(&stage)));
+        }
+        frame(&mut stage)?;
+        frames += 1;
+        assert!(frames < 20_000, "{high}: it never got to tick {TICKS}");
+        if frames == 1 {
+            let state = stage.quality.ladder().state();
+            assert!(state.depth > 0, "{high}: critical heat steps the ladder down at once");
+            assert!(!state.shed.is_empty(), "and sheds its optional passes");
+            assert_eq!(stage.renderer.shed(), state.shed, "in place, on the renderer");
+        }
+    }
+
+    // A desktop gates its frames at the cap; a phone's display paces to the rate.
+    let thirty = NonZeroU32::new(30);
+    let capped = |pacing: &Pacing| match class {
+        FormFactor::Desktop => pacing.cap == thirty,
+        FormFactor::Mobile => pacing.rate == thirty && pacing.cap.is_none(),
+    };
+    assert!(caps.iter().any(capped), "{high}: the ladder's 30 fps rung reached the pacing: {caps:?}");
+    let (at_frame, at_tick) = changed_at.expect("the ladder's tier changed by the second trip");
+    assert_eq!(tiers.changes(), [low]);
+    assert_eq!(stage.quality.active().id, low);
+    assert_eq!(stage.quality.active().source, TierSource::Ladder);
+    assert_eq!(stage.character, character, "the character's mesh stayed on the renderer");
+    stage.show.shown.fight.check().map_err(AppInitError::msg)?;
+    // Exit test 1 (M4 H1, H2): the new tier's renderer was built off the frame, with all the old one had, and
+    // no frame waited for it.
+    let pipelines = stage.renderer.stats().pipelines;
+    let on_frame = (pipelines.frame_thread_builds, pipelines.frame_waits);
+    assert_eq!(on_frame, (0, 0), "a frame built or waited: {}", stage.renderer.first_use_report());
+    assert_eq!(pipelines.first_use_builds, 0, "a frame built: {}", stage.renderer.first_use_report());
+    println!("follows_the_ladder: {frames} frames from {high}; {low} from frame {at_frame}, tick {at_tick}");
+    Ok(())
 }
 
 fn main() -> ExitCode {

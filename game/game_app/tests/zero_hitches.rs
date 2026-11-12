@@ -21,7 +21,8 @@
 //! the pause, a load screen and the title again (spec §3.7, M4 Z1).
 //!
 //! - `SAPPHIRE_HITCH_TIER=<key>`: the tier the player holds (default `desktop-high`), the class's other tier the
-//!   one the pause changes to and back.
+//!   one the pause changes to and back. A phone's tier is walked on a phone's class of device over this one's GPU
+//!   (M4 H9), so the graphics row's automatic is the tier a phone's rules choose, never this machine's own.
 //! - `SAPPHIRE_HITCH_SIZE=<w>x<h>`: what's drawn into (default 480x270). The pause's pages draw into at least
 //!   480x270, so that every page's rows lay out as a player's do.
 //! - `SAPPHIRE_HITCH_DRAW_EVERY=<n>`: one frame in `n` drawn (default 1). The rest are prepared and recorded but
@@ -53,7 +54,7 @@ use sapphire_core::thermal::{ThermalReading, ThermalState};
 use sapphire_gameplay::{EncounterPhase, Simulation};
 use sapphire_math::Vec3;
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, Event, Platform, Scancode, process_memory,
+    App, AppControl, AppInitError, AppMetadata, Event, Platform, Scancode, SystemInfo, process_memory,
 };
 use sapphire_render::quality::{QualitySettings, TierId, TierTable};
 use sapphire_render::{PipelineStats, Renderer};
@@ -620,7 +621,9 @@ impl App for OutsideCaller {
         let gpu = Arc::new(headless_gpu()?);
         // The player's tier from the start, as the window's boot makes it.
         let quality = Graphics::of(&settings, held.0).quality_settings(QualitySettings::default());
-        let mut booting = Boot::start(platform.host(), gpu.clone(), FORMAT, quality, show, &first)?;
+        // A phone's tier on a phone's class of device, whose automatic is a phone's tier (M4 H9).
+        let host = platform.host().as_device(SystemInfo { device_class: held.0, ..*platform.system_info() });
+        let mut booting = Boot::start(&host, gpu.clone(), FORMAT, quality, show, &first)?;
         let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: gpu.label("zero_hitches boot target"),
             size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },

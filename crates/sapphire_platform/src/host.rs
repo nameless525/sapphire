@@ -41,6 +41,13 @@ impl Host {
         Self { content, system_info: self.system_info }
     }
 
+    /// This content on a device described by `system_info` in place of this one: a test's phone on a desktop's
+    /// GPU, whose class chooses a phone's tiers (M4 H9's ladder from Mobile-High).
+    #[must_use]
+    pub fn as_device(&self, system_info: SystemInfo) -> Self {
+        Self { content: self.content.clone(), system_info }
+    }
+
     /// Static facts about the device.
     #[must_use]
     pub fn system_info(&self) -> &SystemInfo {

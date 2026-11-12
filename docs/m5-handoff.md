@@ -509,7 +509,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **The Android bundle doubled to 108.5 MB** since C1 put the unstripped library's whole DWARF in its `.dbg` (Z1). No player downloads it (36.6 MB to a device) and Play takes symbols up to 1.6 GB, so it costs only the upload; S3's `.dbg`, line tables alone, was 72.2 MB.
 - **Windows' static C runtime is proved only by `packages.yml`'s Windows job** (X4): it was written on macOS, and no clean Windows has launched it.
 - **Larger Text, VoiceOver and Sufficient Contrast aren't claimed** (S5): text reaches 125% on a phone where Apple asks 200%, there's no screen reader, and nothing measures the menus' contrast. The game doesn't read iOS's own Reduce Motion.
-- **`UIRequiresFullScreen` may be deprecated on iPadOS 26** (Z3b, unverified).
+- **`UIRequiresFullScreen` is deprecated since iPadOS 26** (S8, apple.md rule 34): honoured on the iOS 26 SDK, not on the iOS 27 SDK. Before an upload built with Xcode 27, prove the screens in an iPad window narrower than 4:3, or set a minimum scene size, then remove the key or add `UIRequiresFullScreenIgnoredStartingWithVersion`.
 - **Linux's packaged game draws only on lavapipe on CI's Ubuntu host,** not inside Steam Linux Runtime 3.0, so a launch in the runtime and from Steam stays owed (S7, steam.md rule 16).
 - **macOS is arm64 only** (S4); a universal binary if Intel Macs are wanted.
 - **The `macos-26` runner has 7 GB of RAM** for a fat-LTO link (I2).

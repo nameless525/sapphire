@@ -911,11 +911,9 @@ fn bind_quads(
         usage: wgpu::BufferUsages::VERTEX,
         mapped_at_creation: true,
     });
-    {
-        let mut words = indices
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("made mapped, whole and in words, and viewed once");
+    // A lost device makes the buffer invalid, and it can't be mapped: what's made on that device is thrown away
+    // with it, so its words needn't be written (M4 H4).
+    if let Ok(mut words) = indices.slice(..).get_mapped_range_mut() {
         for index in 0..count as u32 {
             let at = index as usize * INDEX_BYTES as usize;
             words.slice(at..at + INDEX_BYTES as usize).copy_from_slice(&index.to_le_bytes());

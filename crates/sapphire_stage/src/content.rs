@@ -760,8 +760,9 @@ pub struct Content {
     town: Vec<Handle<Mesh>>,
     /// The entry an opening zone's inventory leaves out ([`Self::leave_out_of_zones`]).
     left_out_of_zones: Option<String>,
-    /// The open zone's probe grid, which the renderer holds one of.
-    zone_probes: Option<Handle<ProbeGrid>>,
+    /// The open zone's probe grid, which the renderer holds one of, and its bytes: a grid's go once it's uploaded,
+    /// and a tier's renderer takes them again (M4 H4).
+    zone_probes: Option<(Handle<ProbeGrid>, CpuResident<ProbeGrid>)>,
     /// The pipelines of zones coming next, warming up off the frame: see [`Self::queue_zone_prewarm`].
     zone_prewarms: Vec<ZonePrewarm>,
     /// What asking for them took this frame: [`Self::zone_prewarm_time`].
@@ -1401,6 +1402,19 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Streamer<P>, AppInitError> {
+        let zone = self.begin_zone(id, pack, renderer, gpu)?;
+        Ok(self.preload_zone(zone, focus, settings, renderer, gpu))
+    }
+
+    /// [`Self::open_zone`]'s first half, which a boot stands on a frame of its own (M4 H4): the pack mounted and
+    /// what its meshes draw through built, and the zone and its probe grid loaded and on `renderer`.
+    pub fn begin_zone(
+        &mut self,
+        id: AssetId,
+        pack: &str,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Handle<Zone>, AppInitError> {
         if !self.server.is_mounted(pack) {
             self.server.mount_now(pack).map_err(AppInitError::msg)?;
         }
@@ -1415,16 +1429,37 @@ impl Content {
         let assets = &mut self.gpu;
         self.zone_probes = probes
             .map(|grid| {
+                let failed = |error: &dyn std::fmt::Display| {
+                    AppInitError::msg(format!("zone {id}'s probe grid didn't load: {error}"))
+                };
                 let grid = self.server.load_with(grid, LoadPriority::Critical).map_err(AppInitError::msg)?;
-                self.server.finish(&grid, |upload| assets.upload(upload, renderer, gpu)).map_err(
-                    |error| AppInitError::msg(format!("zone {id}'s probe grid didn't load: {error}")),
-                )?;
-                Ok::<_, AppInitError>(grid)
+                // Kept before the upload lets the bytes go, for the next tier's renderer.
+                let stopwatch = Stopwatch::start();
+                let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
+                let kept = self.server.finish_cpu(&grid, &remaining).map_err(|error| failed(&error))?;
+                self.server
+                    .finish(&grid, |upload| assets.upload(upload, renderer, gpu))
+                    .map_err(|error| failed(&error))?;
+                Ok::<_, AppInitError>((grid, kept))
             })
             .transpose()?;
+        Ok(zone)
+    }
+
+    /// [`Self::open_zone`]'s second half, after [`Self::begin_zone`]: everything near `focus`, in the zone's
+    /// space, loaded and on `renderer`, and the streamer that has it from there.
+    pub fn preload_zone<P>(
+        &mut self,
+        zone: Handle<Zone>,
+        focus: [f32; 3],
+        settings: StreamSettings,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Streamer<P> {
+        let assets = &mut self.gpu;
         let mut streamer = Streamer::new(zone, settings);
         streamer.preload(focus, &mut self.server, |upload| assets.upload(upload, renderer, gpu));
-        Ok(streamer)
+        streamer
     }
 
     /// Warms up what zone pack `pack` draws through, off the frame (M4 H1, `Renderer::warm`): a zone that may
@@ -1515,7 +1550,7 @@ impl Content {
         gpu: &GpuContext,
     ) {
         let assets = &mut self.gpu;
-        if let Some(grid) = &self.zone_probes
+        if let Some((grid, _)) = &self.zone_probes
             && let Err(error) = self.server.finish(grid, |upload| assets.upload(upload, renderer, gpu))
         {
             tracing::warn!(target: LOG_TARGET, %error, "a zone's probe grid didn't reach the new renderer");
@@ -2325,6 +2360,16 @@ impl Content {
         self.skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton))
     }
 
+    /// The rig [`Self::load_rig`] loaded, shared, for a worker to read.
+    pub(crate) fn rig_resident(&self) -> Option<CpuResident<CharacterRig>> {
+        self.rig.as_ref().and_then(|rig| self.server.cpu_resident(rig))
+    }
+
+    /// The skeleton [`Self::load_rig`] loaded, shared, for a worker to read.
+    pub(crate) fn skeleton_resident(&self) -> Option<CpuResident<Skeleton>> {
+        self.skeleton.as_ref().and_then(|skeleton| self.server.cpu_resident(skeleton))
+    }
+
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
     /// handle: the sky's part of the load screen. It stays loaded from then on.
     pub fn sky_material(
@@ -2344,10 +2389,10 @@ impl Content {
         Ok(self.gpu.materials.get(&self.sky_id).expect("a ready material was uploaded here").object)
     }
 
-    /// The open zone's probe grid, if it's resident: what a tier's renderer takes in place of the one the
-    /// renderer it replaces holds (M4 T3).
+    /// The open zone's probe grid: what a tier's renderer takes in place of the one the renderer it replaces
+    /// holds (M4 T3). Its bytes are kept from the zone's open, since the upload lets the server's go (M4 H4).
     pub fn zone_probe_grid(&self) -> Option<&ArchivedProbeGrid> {
-        self.server.get(self.zone_probes.as_ref()?)
+        self.zone_probes.as_ref().map(|(_, kept)| kept.view())
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

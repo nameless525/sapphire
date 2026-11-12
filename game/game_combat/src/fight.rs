@@ -68,7 +68,7 @@ use crate::documents::FightDocuments;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::TimelineShow;
 use sapphire_stage::scene::{
-    DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, ZoneTarget, stream_settings,
+    DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, ZoneStanding, ZoneTarget, stream_settings,
 };
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
@@ -94,6 +94,89 @@ pub struct Arena {
 /// there to load and be placed on a phone's budget, which a 64 m cell's few hundred entities take a few
 /// frames of (M3 Q3).
 const CUT_LOOKAHEAD: f32 = 1.5;
+
+/// What a fight's stand needs of its scenario, and nothing of its run: the scenario checked, where it stands,
+/// and its kinds of enemy. Reading the documents they come from is a third of a stand on the frame's thread, so a
+/// boot reads them on a worker while its renderer builds (M4 H4).
+pub struct StandPlan {
+    place: FightPlace,
+    kinds: Vec<KindOfEnemy>,
+}
+
+impl StandPlan {
+    /// The plan for the scenario named `scenario`, with a party if `party`.
+    ///
+    /// # Errors
+    ///
+    /// If the scenario can't stand here ([`crate::arena::check_scenario`]), or its documents don't read.
+    pub fn of(scenario: &str, party: bool) -> Result<Self, String> {
+        crate::arena::check_scenario_named(scenario, party)?;
+        let place = FightPlace::of(scenario).map_err(|error| error.to_string())?;
+        let kinds = crate::combat::kinds_of_enemy_in(scenario)?;
+        Ok(Self { place, kinds })
+    }
+
+    /// The plan for `combat`'s scenario.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::of`].
+    pub fn of_combat(combat: &Combat) -> Result<Self, String> {
+        Self::of(combat.scenario(), combat.simulation().party().is_formed())
+    }
+
+    /// The zone it stands in, by its stem: the town's for a fight on the arena's colliders.
+    #[must_use]
+    pub fn zone_stem(&self) -> &'static str {
+        self.place.zone.map_or(lookdev::TOWN_STEM, |(stem, _)| stem)
+    }
+}
+
+/// A fight standing a part a frame ([`Fight::stand_part`], M4 H4): the ground and the enemy's meshes; the
+/// zone's day, light rigs and probe grid; its cells; the timelines, the dialogue and the graphs; and the
+/// fighters, once the character's clearance is fitted on the warm-up pool. No part is more than a frame of a boot's screen can hold.
+pub struct FightStand {
+    combat: Option<Combat>,
+    plan: StandPlan,
+    tier: TierId,
+    /// Whether the clearance is fitted off the frame, as a boot's is: a stand in one go fits it in place.
+    off_frame: bool,
+    world: Option<Arc<PhysicsWorld>>,
+    fit: Option<lookdev::ClearanceFit>,
+    part: StandPart,
+}
+
+impl FightStand {
+    /// `combat`, prepared, to stand as `plan` says on `tier`, in one go.
+    fn new(combat: Combat, plan: StandPlan, tier: TierId) -> Self {
+        Self {
+            combat: Some(combat),
+            plan,
+            tier,
+            off_frame: false,
+            world: None,
+            fit: None,
+            part: StandPart::Place,
+        }
+    }
+
+    /// `combat`, prepared, to stand as `plan` says on `tier`, a part a frame, its fit off the frame.
+    #[must_use]
+    pub fn over_frames(combat: Combat, plan: StandPlan, tier: TierId) -> Self {
+        Self { off_frame: true, ..Self::new(combat, plan, tier) }
+    }
+}
+
+/// The part of a [`FightStand`] that's next.
+enum StandPart {
+    Place,
+    InZone(RenderPose, Figure, ZoneArena),
+    Zone(ZoneStanding, ZoneArena),
+    Timelines,
+    Fighters,
+    /// While a part's taken on.
+    Taken,
+}
 
 /// What [`FightShow::spawn_zone_arena`] stands in a zone: the arena's, but the town.
 pub struct ZoneArena {
@@ -2198,67 +2281,121 @@ impl Fight {
         gpu: &GpuContext,
         tier: TierId,
     ) -> Result<Followed, AppInitError> {
-        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())
-            .map_err(AppInitError::msg)?;
-        content.set_character_motion(self.documents.motion);
-        content.set_body_tuning(self.documents.body);
-        let show = &mut self.show;
-        let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
-        let (pose, figure) = lookdev::hold(content, renderer, gpu)?;
-        let ground = show.load_fight_ground(&place, content, renderer, gpu)?;
-        let world = ground.share();
-        let enemy = show.load_enemy(content, renderer, gpu)?;
-        let held = show.held_enemy(content)?;
-        let shot = ArenaShot::Director;
-        if let Some((stem, at)) = place.zone {
-            let settings = stream_settings(tier);
-            let zone = ZoneShow { stem, at, walk: None, settings, pose, figure };
-            scene.stand_in_zone(zone, content, renderer, gpu)?;
-            show.spawn_zone_arena(scene, ZoneArena { shot, ground, enemy, held });
-            show.trips.home = scene.zone_on_stage().map(|zone| {
-                let (pack, arrive) = (sapphire_zone::pack_name(stem), sapphire_core::Name::new(at).as_u64());
-                trip::Home::Zone(ZoneTarget { zone, pack, arrive })
-            });
-        } else {
-            let town = content.town(renderer, gpu)?;
-            let fog_cards = Some(content.fog_cards(renderer, gpu)?);
-            let look = LookDev { town, fog_cards, pose, figure };
-            show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
-            scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
-            show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
+        let plan = StandPlan::of_combat(&combat).map_err(AppInitError::msg)?;
+        let mut stand = FightStand::new(combat, plan, tier);
+        loop {
+            if let Some(followed) = self.stand_part(&mut stand, scene, content, renderer, gpu)? {
+                return Ok(followed);
+            }
         }
-        show.hold_timelines(combat.simulation(), place.zone.map(|(stem, _)| stem), content, renderer, gpu)?;
-        self.dialogue = DialogueRunner::hold(
-            combat.simulation(),
-            place.zone.map(|(stem, _)| stem),
-            content,
-            renderer,
-            gpu,
-        )?;
-        self.dialogue.bind(&combat);
-        show.set_zone_streaming(stream_settings(tier));
+    }
 
-        content.load_graph(lookdev::GRAPH, renderer, gpu)?;
-        show.load_enemy_graph(content, renderer, gpu)?;
-        let player = lookdev::graph_driver(content).map_err(AppInitError::msg)?;
-        let solver =
-            scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
-        let enemy = show.enemy_driver(content, world)?;
-        show.play_fighters(scene, player.with_ik(solver), enemy);
-        let kinds = combat.kinds_of_enemy().map_err(AppInitError::msg)?;
-        show.load_kinds(&kinds, content, renderer, gpu)?;
-        scene.set_spring_quality(animate::spring_quality(tier));
+    /// Takes `stand` its next part on: [`Self::stand_prepared`] over frames (M4 H4). Returns what the show
+    /// follows once it's stood, and `None` until then, when it may be waiting for its fit off the frame.
+    pub fn stand_part(
+        &mut self,
+        stand: &mut FightStand,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Option<Followed>, AppInitError> {
+        let tier = stand.tier;
+        match std::mem::replace(&mut stand.part, StandPart::Taken) {
+            StandPart::Place => {
+                content.set_character_motion(self.documents.motion);
+                content.set_body_tuning(self.documents.body);
+                let show = &mut self.show;
+                let place = &stand.plan.place;
+                let (pose, figure) = lookdev::hold(content, renderer, gpu)?;
+                if stand.off_frame {
+                    stand.fit = Some(lookdev::ClearanceFit::start(content).map_err(AppInitError::msg)?);
+                }
+                let ground = show.load_fight_ground(place, content, renderer, gpu)?;
+                stand.world = Some(ground.share());
+                let enemy = show.load_enemy(content, renderer, gpu)?;
+                let held = show.held_enemy(content)?;
+                let shot = ArenaShot::Director;
+                if place.zone.is_some() {
+                    stand.part = StandPart::InZone(pose, figure, ZoneArena { shot, ground, enemy, held });
+                } else {
+                    let town = content.town(renderer, gpu)?;
+                    let fog_cards = Some(content.fog_cards(renderer, gpu)?);
+                    let look = LookDev { town, fog_cards, pose, figure };
+                    show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+                    scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
+                    show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
+                    stand.part = StandPart::Timelines;
+                }
+                Ok(None)
+            }
+            StandPart::InZone(pose, figure, arena) => {
+                let (stem, at) = stand.plan.place.zone.expect("a zone's part stands in a zone");
+                let settings = stream_settings(tier);
+                let zone = ZoneShow { stem, at, walk: None, settings, pose, figure };
+                let standing = scene.begin_stand_in_zone(zone, content, renderer, gpu)?;
+                stand.part = StandPart::Zone(standing, arena);
+                Ok(None)
+            }
+            StandPart::Zone(standing, arena) => {
+                let (stem, at) = stand.plan.place.zone.expect("a zone's part stands in a zone");
+                scene.finish_stand_in_zone(standing, content, renderer, gpu)?;
+                let show = &mut self.show;
+                show.spawn_zone_arena(scene, arena);
+                show.trips.home = scene.zone_on_stage().map(|zone| {
+                    let (pack, arrive) =
+                        (sapphire_zone::pack_name(stem), sapphire_core::Name::new(at).as_u64());
+                    trip::Home::Zone(ZoneTarget { zone, pack, arrive })
+                });
+                stand.part = StandPart::Timelines;
+                Ok(None)
+            }
+            StandPart::Timelines => {
+                let combat = stand.combat.as_ref().expect("a stand has its combat until it's attached");
+                let stem = stand.plan.place.zone.map(|(stem, _)| stem);
+                let show = &mut self.show;
+                show.hold_timelines(combat.simulation(), stem, content, renderer, gpu)?;
+                self.dialogue = DialogueRunner::hold(combat.simulation(), stem, content, renderer, gpu)?;
+                self.dialogue.bind(combat);
+                let show = &mut self.show;
+                show.set_zone_streaming(stream_settings(tier));
+                content.load_graph(lookdev::GRAPH, renderer, gpu)?;
+                show.load_enemy_graph(content, renderer, gpu)?;
+                stand.part = StandPart::Fighters;
+                Ok(None)
+            }
+            StandPart::Fighters => {
+                // The fit takes a few frames on the warm-up pool: this frame waits for none of it.
+                if stand.fit.as_mut().is_some_and(|fit| !fit.is_fitted()) {
+                    stand.part = StandPart::Fighters;
+                    return Ok(None);
+                }
+                let combat = stand.combat.take().expect("a stand has its combat until it's attached");
+                let world = stand.world.take().expect("the ground stood in the first part");
+                let show = &mut self.show;
+                let player =
+                    lookdev::graph_driver_fitted(content, stand.fit.take()).map_err(AppInitError::msg)?;
+                let solver = scene
+                    .ik_on(world.clone(), None, content, player.player.pose())
+                    .map_err(AppInitError::msg)?;
+                let enemy = show.enemy_driver(content, world)?;
+                show.play_fighters(scene, player.with_ik(solver), enemy);
+                show.load_kinds(&stand.plan.kinds, content, renderer, gpu)?;
+                scene.set_spring_quality(animate::spring_quality(tier));
 
-        let sword = show.load_sword(content, renderer, gpu)?;
-        let hand = lookdev::held_hand(content).map_err(AppInitError::msg)?;
-        show.spawn_blade(scene, sword, hand);
-        scene.set_day(DEFAULT_TIME_OF_DAY, None);
-        show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
-            .map_err(AppInitError::msg)?;
-        let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
-        self.attach_prepared_combat(combat, scene, content)?;
-        scene.warm_fixed_step();
-        Ok(followed)
+                let sword = show.load_sword(content, renderer, gpu)?;
+                let hand = lookdev::held_hand(content).map_err(AppInitError::msg)?;
+                show.spawn_blade(scene, sword, hand);
+                scene.set_day(DEFAULT_TIME_OF_DAY, None);
+                show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
+                    .map_err(AppInitError::msg)?;
+                let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
+                self.attach_prepared_combat(combat, scene, content)?;
+                scene.warm_fixed_step();
+                Ok(Some(followed))
+            }
+            StandPart::Taken => unreachable!("a stand that's stood isn't taken on"),
+        }
     }
 
     /// Starts what's stood over, as `option`'s fight from `moves`, with nothing uploaded: see

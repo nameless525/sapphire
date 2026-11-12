@@ -21,10 +21,12 @@
 //!    thread counts as a hitch ([`Renderer::count_hitches_from_now`]): exit test 1 counts from the boot screen's
 //!    first frame, which this renderer never drew.
 //! 3. **Loading** ([`Step::Stage`], [`Step::Stand`], [`Step::Screens`]): the stage made on that renderer, the
-//!    character and the sky uploaded (`Stage::new_with_renderer`); on the next frame the fight stood on it, in
-//!    the zone around where the run starts ([`GameShow::stand_fight`]); and on the next its screens
-//!    ([`GameShow::stand_screens`]). Their uploads and prewarms find everything built. They're three frames of
-//!    reading and uploading, the longest of a boot, with the screen saying so from the frame before.
+//!    character and the sky uploaded (`Stage::new_with_renderer`); on the frames after, the fight stood on it, in
+//!    the zone around where the run starts, a part a frame ([`GameShow::stand_fight_part`], `FightStand`, M4
+//!    H4), what it reads of its scenario read on the warm-up pool beside the renderer (`StandPlan`); and on the
+//!    next its screens ([`GameShow::stand_screens`]). Their uploads and prewarms find everything built. They're
+//!    the frames of reading and uploading, each within twice the tier's interval on an M5, with the screen saying
+//!    so from the frame before.
 //! 4. **What the show declares** ([`Step::Declared`]): its screen effects' post variants, its sky, its fades and
 //!    insets (`Scene::declared_pipelines`), warmed the same way.
 //!
@@ -43,9 +45,8 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use game_combat::arena::FightPlace;
 use game_combat::combat::{Combat, CombatOption};
-use game_combat::fight::fight_stage;
+use game_combat::fight::{FightStand, StandPlan, fight_stage};
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
 use sapphire_platform::{AppInitError, ContentFs, Host};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
@@ -54,7 +55,6 @@ use sapphire_render::{
     InterfaceScreen, PipelineInventory, PipelineStats, RenderError, Renderer, UiDrawList, WarmUpRequest,
 };
 use sapphire_rhi::{GpuContext, wgpu};
-use sapphire_stage::lookdev;
 use sapphire_stage::{Content, Stage, StageDesc};
 use sapphire_time::Stopwatch;
 
@@ -210,8 +210,11 @@ pub struct Boot {
     content: Option<Content>,
     show: Option<GameShow>,
     combat: Option<Combat>,
-    /// The first zone, by its stem.
-    zone: &'static str,
+    /// What the first run's stand reads of its scenario: on the warm-up pool, then here (M4 H4).
+    planned: Option<mpsc::Receiver<Result<StandPlan, String>>>,
+    plan: Option<StandPlan>,
+    /// The first run, standing a part a frame.
+    stand: Option<FightStand>,
     /// What frames draw into.
     format: wgpu::TextureFormat,
     frame_rate: Option<NonZeroU32>,
@@ -252,8 +255,12 @@ impl Boot {
         });
         let mut content = Content::new(host, desc.character, desc.sky)?;
         let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
-        let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
-        let zone = place.zone.map_or(lookdev::TOWN_STEM, |(stem, _)| stem);
+        // Read beside the renderer's build: its documents are tens of milliseconds of a frame (M4 H4).
+        let (scenario, party) = (combat.scenario().to_owned(), combat.simulation().party().is_formed());
+        let (plan_sender, planned) = mpsc::channel();
+        sapphire_jobs::spawn_warm_up(move || {
+            let _ = plan_sender.send(StandPlan::of(&scenario, party));
+        });
         let assets = content.load_screens_alone(&[BOOT_SCREEN])?;
         let screen = BootScreen::new(assets, show.language()).map_err(AppInitError::msg)?;
         let mut interface = InterfaceScreen::new(&gpu, format);
@@ -269,7 +276,6 @@ impl Boot {
         tracing::info!(
             target: LOG_TARGET,
             elapsed_ms = format_args!("{:.1}", started.elapsed().as_secs_f64() * 1e3),
-            zone,
             "the boot screen is up; the renderer builds off the frame"
         );
         Ok(Self {
@@ -284,7 +290,9 @@ impl Boot {
             content: Some(content),
             show: Some(show),
             combat: Some(combat),
-            zone,
+            planned: Some(planned),
+            plan: None,
+            stand: None,
             format,
             frame_rate,
             renderer: None,
@@ -338,6 +346,13 @@ impl Boot {
         &self.report
     }
 
+    /// The renderer, once it's built and until the stage is handed back: its ledger says what a frame built or
+    /// waited for (exit test 1's counts), so a lane can name the step a hitch came in.
+    #[must_use]
+    pub fn renderer(&self) -> Option<&Renderer> {
+        self.renderer.as_ref().or(self.stage.as_ref().map(|stage| &stage.renderer))
+    }
+
     /// A frame of the boot, `dt` real seconds after the last: moves it on, then draws its screen into `view`,
     /// if there's one to draw into. Hands the stage back on the frame it's ready, stood and warm, after which the
     /// title draws; `None` until then.
@@ -350,6 +365,11 @@ impl Boot {
         if let Some(interval) = self.since_frame.replace(stopwatch).map(|since| since.elapsed()) {
             self.report.longest_interval = self.report.longest_interval.max(interval);
             self.report.intervals_over += u32::from(interval > self.report.interval_limit);
+        }
+        // Nothing more goes to a lost device (M4 H4): what's made or written on it fails, and a staging write
+        // panics. The app boots again on a new one.
+        if self.gpu.is_lost() {
+            return Err(AppInitError::msg("the GPU device was lost while the game booted"));
         }
         let step = self.step.name();
         self.advance()?;
@@ -466,14 +486,16 @@ impl Boot {
                     }
                 }
             }
-            Step::Renderer => match self.built.try_recv() {
-                Ok(renderer) => {
+            Step::Renderer => match self.take_plan()?.then(|| self.built.try_recv()) {
+                None => {}
+                Some(Ok(renderer)) => {
                     let mut renderer = renderer?;
                     renderer.count_hitches_from_now();
                     self.report.renderer = self.started.elapsed();
                     let content = self.content.as_mut().expect("content until the stage stands");
                     // The first zone's pack, mounted, so the packs' keys are its too.
-                    let mut inventory = content.zone_pipelines(self.zone)?;
+                    let zone = self.plan.as_ref().expect("taken above").zone_stem();
+                    let mut inventory = content.zone_pipelines(zone)?;
                     inventory.add(&PipelineInventory {
                         skinning: true,
                         effects: true,
@@ -483,8 +505,8 @@ impl Boot {
                     self.step = Step::Packs(renderer.warm(&inventory));
                     self.renderer = Some(renderer);
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(mpsc::TryRecvError::Empty)) => {}
+                Some(Err(mpsc::TryRecvError::Disconnected)) => {
                     return Err(AppInitError::msg("the renderer's build on the warm-up pool panicked"));
                 }
             },
@@ -502,8 +524,9 @@ impl Boot {
                 self.step = Step::Stand;
             }
             Step::Stand => {
-                self.stand()?;
-                self.step = Step::Screens;
+                if self.stand()? {
+                    self.step = Step::Screens;
+                }
             }
             Step::Screens => {
                 self.stand_screens()?;
@@ -537,14 +560,14 @@ impl Boot {
             let (mut show, first) = remake(host.content())?;
             let mut content = Content::new(&host, character, sky)?;
             let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
-            let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
-            let zone = place.zone.map_or(lookdev::TOWN_STEM, |(stem, _)| stem);
-            Ok((show, content, combat, zone))
+            let plan = StandPlan::of_combat(&combat).map_err(AppInitError::msg)?;
+            Ok((show, content, combat, plan))
         })();
         match made {
-            Ok((show, content, combat, zone)) => {
-                (self.show, self.content, self.combat, self.zone) =
-                    (Some(show), Some(content), Some(combat), zone);
+            Ok((show, content, combat, plan)) => {
+                let zone = plan.zone_stem();
+                (self.show, self.content, self.combat) = (Some(show), Some(content), Some(combat));
+                (self.planned, self.plan) = (None, Some(plan));
                 self.host = host;
                 self.report.updated = true;
                 tracing::info!(
@@ -578,19 +601,48 @@ impl Boot {
         Ok(())
     }
 
-    /// Stands the fight on the stage, in the zone around where it starts.
-    fn stand(&mut self) -> Result<(), AppInitError> {
+    /// Takes the stand's plan from the warm-up pool once it's read, without waiting. True once it's here.
+    fn take_plan(&mut self) -> Result<bool, AppInitError> {
+        let Some(planned) = &self.planned else { return Ok(true) };
+        match planned.try_recv() {
+            Ok(plan) => {
+                self.plan = Some(plan.map_err(AppInitError::msg)?);
+                self.planned = None;
+                Ok(true)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(false),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(AppInitError::msg("the stand's plan on the warm-up pool panicked"))
+            }
+        }
+    }
+
+    /// Stands a part of the fight on the stage, in the zone around where it starts ([`FightStand`]): a part a
+    /// frame, so no frame of the screen holds all of it (M4 H4). True once it's stood.
+    fn stand(&mut self) -> Result<bool, AppInitError> {
         let stopwatch = Stopwatch::start();
-        let combat = self.combat.take().expect("a boot stands once, with the run it was started with");
         let stage = self.stage.as_mut().expect("a stage to stand on");
         let Stage { show, scene, content, renderer, gpu, quality, .. } = stage;
-        show.stand_fight(combat, scene, content, renderer, gpu, quality.active().id)?;
+        let stand = match &mut self.stand {
+            Some(stand) => stand,
+            None => {
+                let combat =
+                    self.combat.take().expect("a boot stands once, with the run it was started with");
+                let plan = self.plan.take().expect("the plan's taken before the renderer");
+                self.stand.insert(FightStand::over_frames(combat, plan, quality.active().id))
+            }
+        };
+        let stood = show.stand_fight_part(stand, scene, content, renderer, gpu)?;
         tracing::info!(
             target: LOG_TARGET,
             elapsed_ms = format_args!("{:.1}", stopwatch.elapsed().as_secs_f64() * 1e3),
-            "the game's fight is stood under the boot screen"
+            stood,
+            "a part of the game's fight is stood under the boot screen"
         );
-        Ok(())
+        if stood {
+            self.stand = None;
+        }
+        Ok(stood)
     }
 
     /// Loads the show's screens, on the title.

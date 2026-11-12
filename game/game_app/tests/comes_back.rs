@@ -7,6 +7,11 @@
 //!   for tick, under the same presses: the pause stops steps and scales no clock.
 //! - **A lost device:** the show ends for a reload, a new stage stands on a new device, and the game is back at
 //!   the save, at the pause, drawing, with nothing built that the load didn't build.
+//! - **A device lost while the game boots (M4 H4):** at each of the boot's steps that holds something on it,
+//!   the device destroyed and one more boot frame drawn on it, as a window may before wgpu reports the loss;
+//!   the boot is let go of with its warm-up's builds still running, and a boot on a new device reaches the
+//!   title with nothing built or waited for on a frame. The window boots again so (`GameApp`'s `recover`), and
+//!   `--lose-device` counts the boot screen's frames, so a device or a simulator can lose one mid-boot too.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -15,9 +20,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow, stand_game};
+use game_flow::boot::Boot;
 use game_flow::flow::{FlowCommand, FlowState};
 use game_flow::game::GameSetup;
 use game_flow::progress::{self, Progress, progress_store};
@@ -49,6 +56,11 @@ const TICKS: u64 = 240;
 const SWINGS: [u64; 4] = [20, 60, 140, 200];
 /// Where the run goes to the background.
 const AWAY_AT: u64 = 100;
+/// The boot's steps a device is lost in: as the renderer builds, as the packs start to warm, as the fight
+/// stands on the stage, and as the show's declared pipelines warm.
+const LOST_IN: [&str; 4] = ["renderer", "packs", "stand", "declared"];
+/// More frames than a boot takes on lavapipe to reach any step.
+const MOST_BOOT_FRAMES: u32 = 100_000;
 
 fn id(raw: &str) -> AssetId {
     raw.parse().expect("an ID")
@@ -229,6 +241,70 @@ fn shows_something(pixels: &[u8]) -> bool {
     texels.iter().any(|texel| texel != &texels[0])
 }
 
+/// A boot of the game on `gpu`, as the window starts one: a new game's, at the player's tier.
+fn boot_on(platform: &Platform, gpu: sapphire_rhi::GpuContext) -> Result<Boot, AppInitError> {
+    let (show, first) =
+        GameShow::from_content(platform.content(), PlayerSettings::default(), GameSetup::default())?;
+    let quality = game_app::tiers::starting_quality(&show, platform.system_info().device_class);
+    Boot::start(platform.host(), Arc::new(gpu), FORMAT, quality, show, &first)
+}
+
+/// A target on `boot`'s device for its screen to draw into.
+fn boot_target(boot: &Boot) -> wgpu::TextureView {
+    let texture = boot.gpu().device().create_texture(&wgpu::TextureDescriptor {
+        label: boot.gpu().label("boot screen"),
+        size: wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// A device lost while the game boots, at each of [`LOST_IN`] (the module's docs), then a boot on a new one.
+fn lost_while_booting(platform: &Platform) -> Result<(), AppInitError> {
+    let dt = FRAME.as_secs_f32();
+    for step in LOST_IN {
+        let mut boot = boot_on(platform, headless_gpu()?)?;
+        let target = boot_target(&boot);
+        let mut frames = 0;
+        while boot.step().name() != step {
+            assert!(frames < MOST_BOOT_FRAMES, "the boot never reached its {step} step");
+            assert!(boot.frame(Some(&target), dt)?.is_none(), "the boot ended before its {step} step");
+            frames += 1;
+        }
+        let gpu = boot.gpu().clone();
+        gpu.device().destroy();
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        assert!(gpu.is_lost(), "the device lost in the boot's {step} step says so");
+        // The next frame touches nothing on the dead device, and says why, for the app to boot again.
+        let dead = boot.frame(Some(&target), dt).map(|stage| stage.is_some());
+        let error = dead.as_ref().expect_err("a boot on a lost device goes no further").to_string();
+        assert!(error.contains("lost"), "{error}");
+        let let_go = platform.now();
+        drop((boot, target));
+        let waited = platform.now().saturating_duration_since(let_go);
+        tracing::info!(
+            step,
+            frames,
+            ?dead,
+            ?waited,
+            "a device lost while the game booted, and the boot let go"
+        );
+    }
+    // And on a new device, the game boots as if nothing had been lost.
+    let boot = boot_on(platform, headless_gpu()?)?;
+    let (stage, report) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+    assert!(stage.show.on_title(), "the title");
+    let booted = report.pipelines;
+    let hitches = (booted.first_use_builds, booted.frame_thread_builds, booted.frame_waits);
+    assert_eq!(hitches, (0, 0, 0), "{report:?}");
+    Ok(())
+}
+
 /// Does it all in `init`, and the first frame exits.
 struct OutsideCaller;
 
@@ -314,6 +390,8 @@ impl App for OutsideCaller {
         run.stage.show.finish().map_err(AppInitError::msg)?;
         drop(run);
         std::fs::remove_dir_all(&dir)?;
+
+        lost_while_booting(platform)?;
         Ok(Self)
     }
 

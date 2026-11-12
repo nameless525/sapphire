@@ -2384,7 +2384,9 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 mod layout;
 pub use layout::{LaidOut, Layout};
 mod zone;
-pub use zone::{ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneTarget, stream_settings};
+pub use zone::{
+    ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneStanding, ZoneTarget, stream_settings,
+};
 
 #[cfg(test)]
 mod spring_tests;

@@ -88,7 +88,7 @@ pub struct GameApp {
     pointer_held: bool,
     /// When a missing surface or device is next tried for.
     retry_due: Duration,
-    /// Frames presented, for `--lose-device`.
+    /// Frames presented, the boot screen's among them, for `--lose-device`.
     #[cfg(feature = "dev")]
     presented: u64,
     /// A playtest build's session (M4 F1): what's kept of this play.
@@ -237,7 +237,16 @@ impl App for GameApp {
         let stage = match game {
             Game::Booting(boot) => {
                 let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
-                match boot_frame(surface, boot, dt) {
+                let booted = boot_frame(surface, boot, dt).map(|(stage, presented)| {
+                    #[cfg(feature = "dev")]
+                    {
+                        self.presented += u64::from(presented);
+                    }
+                    #[cfg(not(feature = "dev"))]
+                    let _ = presented;
+                    stage
+                });
+                match booted {
                     Ok(Some(stage)) => {
                         // A boot that installed a release stood on it: so does every boot after.
                         if boot.report().updated
@@ -600,12 +609,12 @@ impl OnDevice {
 }
 
 /// A boot frame: moved on, and its screen drawn and presented if the surface gave an image. Returns the stage
-/// once it's stood and warm.
+/// once it's stood and warm, and whether the frame was presented.
 fn boot_frame(
     surface: &mut Option<RenderSurface>,
     boot: &mut Boot,
     dt: f32,
-) -> Result<Option<Stage<GameShow>>, AppInitError> {
+) -> Result<(Option<Stage<GameShow>>, bool), AppInitError> {
     // The image, if any, goes with this statement, before a lost surface is let go of.
     let (stage, presented, lost) = match surface.as_mut().map(RenderSurface::acquire) {
         Some(SurfaceAcquire::Frame(frame)) => {
@@ -624,7 +633,7 @@ fn boot_frame(
         // Nothing blocked on vsync this frame, so pace the loop here instead of spinning a core.
         std::thread::sleep(IDLE_FRAME);
     }
-    Ok(stage)
+    Ok((stage, presented))
 }
 
 /// Draws and presents the stage's frame if the surface gave an image. Every frame is prepared, drawn or not, so

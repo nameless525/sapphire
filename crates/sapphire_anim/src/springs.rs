@@ -688,6 +688,19 @@ pub struct SpringBones {
     clearance_interval: Option<u32>,
 }
 
+/// Presentation contact fitted to the heroine's cooked strands and shirt ([`SpringBones::with_clearance`]):
+/// tens of milliseconds of work over the character's mesh, which a boot does on a worker, off the frame
+/// (M4 H4). It reads only the mesh, the skeleton and the rig.
+pub struct HeroineClearance(Box<clearance::Clearance>);
+
+impl HeroineClearance {
+    /// The fit for `mesh`, `skeleton` and `rig`, or `None` for a character it doesn't fit.
+    #[must_use]
+    pub fn new(mesh: &Mesh, skeleton: &ArchivedSkeleton, rig: &ArchivedCharacterRig) -> Option<Self> {
+        clearance::Clearance::new(mesh, skeleton, rig).map(|clearance| Self(Box::new(clearance)))
+    }
+}
+
 impl SpringBones {
     /// Springs for `pose` from `rig`, or `None` if it has none, or was made for another skeleton: a
     /// character with no springs holds nothing and costs nothing. They settle at the first update.
@@ -932,12 +945,18 @@ impl SpringBones {
     /// Fits presentation contact to the heroine's cooked strands and shirt.
     #[must_use]
     pub fn with_heroine_clearance(
-        mut self,
+        self,
         mesh: &Mesh,
         skeleton: &ArchivedSkeleton,
         rig: &ArchivedCharacterRig,
     ) -> Self {
-        self.clearance = clearance::Clearance::new(mesh, skeleton, rig).map(Box::new);
+        self.with_clearance(HeroineClearance::new(mesh, skeleton, rig))
+    }
+
+    /// [`Self::with_heroine_clearance`], with a fit made beforehand: off the frame, as a boot makes it (M4 H4).
+    #[must_use]
+    pub fn with_clearance(mut self, clearance: Option<HeroineClearance>) -> Self {
+        self.clearance = clearance.map(|clearance| clearance.0);
         self
     }
 

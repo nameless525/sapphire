@@ -129,7 +129,7 @@ From the bottom up, on M2's ([m3-handoff.md](m3-handoff.md)). Spec §5.19 and §
 - **Benches and lanes:**
   - `--bench` for a fight or a zone walk (`--arena --replay tests/replays/walk-the-ward.sreplay`, with `--stream <entities>:<radius>`), logging memory and each trip's time (spec §3.6);
   - the sandbox's `--ignored` replay lane;
-  - `game_app`'s lanes `reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_the_ward` and `wins_the_ward`, each `cargo test -p game_app --features dev --test <name> -- --ignored`;
+  - `game_app`'s lanes `reaches_the_fight`, `zone_trip`, `opens_the_guide`, `plays_the_ward`, `wins_the_ward`, `declares_every_setting` and `zero_hitches` (exit test 1's playthrough, M4 H4; `SAPPHIRE_HITCH_TIMED=1` for a run alone on the machine), each `cargo test -p game_app --features dev --test <name> -- --ignored`;
   - the whole walk's recorder, `cargo test -p game_flow --test ward_walk -- --ignored`, with `SAPPHIRE_WALK_OUT=<file>` to write the replay again when the fight changes under it.
 - **Look-dev for a new figure:** `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]`. **Generators:** `sapphire_pipeline gen-figures --specs tools/figures --out content` for figures from specs, `tools/motion/` for key poses in plain Python, and `sapphire_soundgen --specs tools/sounds --out content` for placeholder sounds from specs.
 

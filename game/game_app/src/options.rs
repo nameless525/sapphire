@@ -47,7 +47,7 @@ pub(crate) struct Options {
     pub update_host: Option<String>,
     /// `--lose-device <frames>` (dev builds): the window's GPU device is destroyed once, after that many frames
     /// were presented, so the game's rebuild runs where no device is lost when asked (M4 S6), as the sandbox's
-    /// `debug.lose_device` does.
+    /// `debug.lose_device` does. The boot screen's frames count, so a small count loses it mid-boot (M4 H4).
     #[cfg(feature = "dev")]
     pub lose_device: Option<u64>,
 }

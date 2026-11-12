@@ -838,9 +838,7 @@ impl Combat {
     /// The scenario's kinds of enemy, and the sets their fighters play: what the stage draws each as
     /// ([`crate::fight::FightShow::load_kinds`]).
     pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, String> {
-        let scenario = find_scenario(&SCENARIOS, self.scenario());
-        let scenario = scenario.ok_or_else(|| format!("no scenario `{}`", self.scenario()))?;
-        scenario.kinds_of_enemy().map_err(|error| error.to_string())
+        kinds_of_enemy_in(self.scenario())
     }
 
     /// The actors the scenario's input drives, the player first.
@@ -1670,6 +1668,13 @@ fn recorded_trail(path: &Path, name: &str) -> Result<Option<RecordedTrail>, Stri
     };
     let checksums = ChecksumFile::parse(&text).map_err(|error| format!("{}: {error}", file.display()))?;
     Ok(checksums.get(name).cloned())
+}
+
+/// The kinds of enemy in the scenario named `scenario`, and the sets their fighters play: what
+/// [`Combat::kinds_of_enemy`] says of a run, read with no run (M4 H4).
+pub fn kinds_of_enemy_in(scenario: &str) -> Result<Vec<KindOfEnemy>, String> {
+    let found = find_scenario(&SCENARIOS, scenario).ok_or_else(|| format!("no scenario `{scenario}`"))?;
+    found.kinds_of_enemy().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

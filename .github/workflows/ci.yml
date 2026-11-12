@@ -582,6 +582,7 @@ jobs:
           tests --package game_app --features dev --test declares_every_setting
           tests --package game_app --features dev --test follows_the_ladder
           tests --package game_app --features dev --test draws_a_marked_tick
+          tests --package game_app --features dev --test zero_hitches
           tests --package sapphire_sandbox --features dev --test replays
           tests --package sapphire_sandbox --features dev --test live_tuning
           tests --package sapphire_sandbox --features dev --test flashes
@@ -634,16 +635,24 @@ jobs:
         run: |
           python3 .github/scripts/app_tests_bundle.py unpack \
             --archive "$RUNNER_TEMP/app-tests-download/app-tests.tar.gz" --commit "$GITHUB_SHA"
-      # The whole walk through the game's flow, from a new game to the boss's defeat, on Desktop-Low's and
-      # Mobile-Low's settings, a lane each: no pipeline built after load, no step allocating, and the replay's
-      # checksums reached (M3 G1c, exit tests 1 and 7). Its 14,320 steps a tier are every step stepped but one
-      # frame drawn in eight here, as lavapipe can't draw them all in the job's time; a Mac draws every one.
-      - name: The whole walk in the game (Desktop-Low)
+      # Exit test 1's playthrough (M4 H4) on Desktop-Low: the game booted as its window boots it, the title, the
+      # whole walk through the flow to the boss's defeat, and at the gate's line a pause where the thermal ladder
+      # goes down and back up, every setting is pressed round and the tier changes to Desktop-High and back; then
+      # back to the title under the wipe. A pipeline built or waited for on any frame from the boot screen's first
+      # fails it. It plays the whole walk `wins_the_ward` plays and holds all that holds (checksums, no step
+      # allocating, every encounter cleared), so it takes that lane's Desktop-Low step. One frame in eight drawn,
+      # the rest prepared and recorded, so their first uses count; load screens and the pause's pages drawn whole.
+      - name: Exit test 1's playthrough (Desktop-Low)
         if: matrix.lane == 'walk-desktop-low'
         env:
-          SAPPHIRE_WALK_STEPS_PER_FRAME: "8"
-          SAPPHIRE_WALK_TIERS: desktop-low
-        run: python3 .github/scripts/app_tests_bundle.py run wins_the_ward -- --ignored
+          SAPPHIRE_HITCH_DRAW_EVERY: "8"
+          SAPPHIRE_HITCH_SIZE: 160x90
+          SAPPHIRE_HITCH_TIER: desktop-low
+        run: python3 .github/scripts/app_tests_bundle.py run zero_hitches -- --ignored
+      # The whole walk through the game's flow, from a new game to the boss's defeat, on Mobile-Low's settings: no
+      # pipeline built after load, no step allocating, and the replay's checksums reached (M3 G1c, exit tests 1 and
+      # 7). Its 14,320 steps are every step stepped but one frame drawn in eight here, as lavapipe can't draw them
+      # all in the job's time; a Mac draws every one. Desktop-Low's walk is the playthrough's, above.
       - name: The whole walk in the game (Mobile-Low)
         if: matrix.lane == 'walk-mobile-low'
         env:

@@ -36,7 +36,8 @@
 //!   `cargo xtask patch serve`, in place of the build's host (`platform/patch.toml`, empty until the
 //!   maintainer names one).
 //! - `--lose-device <frames>` (dev builds): destroys the GPU device once, after that many frames presented, so
-//!   the rebuild below runs where nothing loses a device when asked.
+//!   the rebuild below runs where nothing loses a device when asked. The boot screen's frames count, so a count
+//!   smaller than the boot's frames loses it mid-boot.
 //! - `--crash panic|fault` (every build, the store's too): crashes as soon as crash capture is installed, so
 //!   `cargo xtask symbolicate` can show the crash read back (M4 C2). On Android, where a store build takes no
 //!   launch arguments, `adb shell setprop debug.sapphire.crash panic|fault` asks instead.

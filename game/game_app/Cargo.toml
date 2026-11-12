@@ -49,6 +49,8 @@ toml.workspace = true
 [dev-dependencies]
 # The conversation's IDs, for `opens_the_guide`, and a save's place for `plays_the_ward`.
 sapphire_gameplay.workspace = true
+# A debug line's ends, for `zero_hitches` to draw one nothing declares.
+sapphire_math.workspace = true
 # The ward's documents' IDs, for `plays_the_ward`.
 sapphire_serialize.workspace = true
 
@@ -95,6 +97,12 @@ harness = false
 # no pipeline the load didn't declare (M4 H3).
 [[test]]
 name = "declares_every_setting"
+harness = false
+
+# Exit test 1's playthrough: the boot, the whole walk, every setting, a tier change, the thermal ladder and back to
+# the title, with no pipeline built or waited for on a frame, and every load screen's frames timed (M4 H4).
+[[test]]
+name = "zero_hitches"
 harness = false
 
 # A playtest's mark, drawn: a run's file played to the tick it names (M4 F2).

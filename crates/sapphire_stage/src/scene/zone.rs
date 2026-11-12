@@ -234,6 +234,14 @@ impl ZoneStage {
     }
 }
 
+/// A zone half stood ([`Scene::begin_stand_in_zone`]): the zone, by its stem, and where the character stands.
+pub struct ZoneStanding {
+    zone: Handle<Zone>,
+    stem: String,
+    position: Vec3,
+    settings: StreamSettings,
+}
+
 /// How the zone stage stands and moves its character (`--zone`, M3 C1).
 pub struct ZoneShow<'a> {
     /// The zone, by its source's stem.
@@ -314,6 +322,19 @@ impl Scene {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
+        let standing = self.begin_stand_in_zone(show, content, renderer, gpu)?;
+        self.finish_stand_in_zone(standing, content, renderer, gpu)
+    }
+
+    /// [`Self::stand_in_zone`]'s first half, which a boot stands on a frame of its own (M4 H4): the character and
+    /// the camera placed, the zone's day and light rigs read, and the zone and its probe grid on `renderer`.
+    pub fn begin_stand_in_zone(
+        &mut self,
+        show: ZoneShow<'_>,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<ZoneStanding, AppInitError> {
         let ZoneShow { stem, at, walk, settings, pose, figure } = show;
         let handle = content.find_zone(stem)?;
         let id = handle.id();
@@ -367,7 +388,24 @@ impl Scene {
             ZONE_CAMERA_DISTANCE,
             ZONE_CAMERA_FOV.to_radians(),
         ));
-        let opened = ZoneStage::open_in_place(content, id, stem, position, settings, renderer, gpu)?;
+        let zone = content.begin_zone(id, &sapphire_zone::pack_name(stem), renderer, gpu)?;
+        Ok(ZoneStanding { zone, stem: stem.to_owned(), position, settings })
+    }
+
+    /// [`Self::stand_in_zone`]'s second half, after [`Self::begin_stand_in_zone`]: the cells near where it
+    /// stands, loaded and on `renderer`, and the zone on stage.
+    pub fn finish_stand_in_zone(
+        &mut self,
+        standing: ZoneStanding,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        profiling::scope!("ZoneStage::open");
+        let ZoneStanding { zone, stem, position, settings } = standing;
+        let streamer = content.preload_zone(zone, position.to_array(), settings, renderer, gpu);
+        let pack = sapphire_zone::pack_name(&stem);
+        let opened = ZoneStage { streamer, pack, stand: Vec3::ZERO, held_focus: None };
         self.open_zone(opened, content).map_err(AppInitError::msg)
     }
 

@@ -201,7 +201,12 @@ pub const ZONE_TRIP_SCENARIO: &str = "zone-trip";
 /// `party` a party's on the arena's colliders: its actors aren't standing here, or there aren't three looks to
 /// draw them in. Without `party` a party has only the one look. A new scenario here takes no Rust.
 pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
-    let scenario = combat.scenario();
+    check_scenario_named(combat.scenario(), party)
+}
+
+/// [`check_scenario`] for the scenario named `scenario`, which reads nothing of a run: what a boot checks on a
+/// worker (M4 H4, `fight::StandPlan`).
+pub fn check_scenario_named(scenario: &str, party: bool) -> Result<(), String> {
     let document = sapphire_script::scenarios::document_of(scenario);
     let on_the_stage =
         document.filter(|document| document.colliders == sapphire_gameplay::arena::COLLIDERS_PATH);

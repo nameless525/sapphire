@@ -27,6 +27,7 @@ use std::time::Duration;
 use game_combat::combat::{Combat, CombatOption, RunSoFar, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::{FightDocuments, error_chain};
+use game_combat::fight::FightStand;
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, OffscreenDisplay, ShownFight};
 use game_ui::menus::{
@@ -552,6 +553,23 @@ impl GameShow {
         let followed = self.shown.fight.stand_prepared(combat, scene, content, renderer, gpu, tier)?;
         self.shown.hear(followed);
         Ok(())
+    }
+
+    /// [`Self::stand_fight`] a part a frame, as a boot stands it, so that no frame of its screen holds all of it
+    /// (M4 H4, [`FightStand`]). True once it's stood.
+    pub fn stand_fight_part(
+        &mut self,
+        stand: &mut FightStand,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<bool, AppInitError> {
+        let Some(followed) = self.shown.fight.stand_part(stand, scene, content, renderer, gpu)? else {
+            return Ok(false);
+        };
+        self.shown.hear(followed);
+        Ok(true)
     }
 
     /// [`Self::stand_unwarmed`]'s second half, after [`Self::stand_fight`]: the menus, on the title, and the

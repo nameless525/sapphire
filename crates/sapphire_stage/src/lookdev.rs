@@ -56,10 +56,11 @@
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use sapphire_anim::{
-    AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones,
+    AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, HeroineClearance, IkRig,
+    SpringBones,
 };
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -684,14 +685,67 @@ pub(crate) fn graph_binding_of(content: &Content, graph: &AnimGraph) -> Result<G
 /// A graph driver for the character as `content` has it now, over its rest pose and its soft
 /// expression. Fails where [`graph_binding`] does.
 pub fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
+    graph_driver_fitted(content, None)
+}
+
+/// [`graph_driver`], with the hair and shirt's clearance `fit` fitted beforehand, off the frame
+/// ([`ClearanceFit`]), rather than on this one: it's most of the driver's making (M4 H4).
+pub fn graph_driver_fitted(content: &Content, fit: Option<ClearanceFit>) -> Result<GraphDriver, String> {
     let binding = graph_binding(content)?;
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
-    let springs =
-        springs_of(content, rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
+    let springs = springs_of(content, rig, &pose).map(|springs| match fit {
+        Some(fit) => springs.with_clearance(fit.take()),
+        None => springs.with_heroine_clearance(mesh, skeleton, rig),
+    });
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
+}
+
+/// The character's hair and shirt clearance ([`HeroineClearance`]), fitting on the warm-up pool, for
+/// [`graph_driver_fitted`]: a boot starts it once the character's rig is in, and makes the driver a few frames
+/// later, once [`Self::is_fitted`] says so (M4 H4).
+pub struct ClearanceFit {
+    fitted: mpsc::Receiver<Option<HeroineClearance>>,
+    taken: Option<Option<HeroineClearance>>,
+}
+
+impl ClearanceFit {
+    /// Starts fitting the character `content` has now: its mesh copied, its skeleton and rig shared.
+    ///
+    /// # Errors
+    ///
+    /// If the character, its skeleton or its rig isn't in.
+    pub fn start(content: &Content) -> Result<Self, String> {
+        let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?.clone();
+        let rig = content.rig_resident().ok_or("the look-dev character's rig isn't loaded")?;
+        let skeleton = content.skeleton_resident().ok_or("the look-dev character's skeleton isn't loaded")?;
+        let (sender, fitted) = mpsc::channel();
+        sapphire_jobs::spawn_warm_up(move || {
+            // Nobody's waiting if the stand ended first.
+            let _ = sender.send(HeroineClearance::new(&mesh, skeleton.view(), rig.view()));
+        });
+        Ok(Self { fitted, taken: None })
+    }
+
+    /// Whether it's fitted, so taking it waits for nothing. Never waits.
+    pub fn is_fitted(&mut self) -> bool {
+        if self.taken.is_none() {
+            match self.fitted.try_recv() {
+                Ok(fit) => self.taken = Some(fit),
+                Err(mpsc::TryRecvError::Empty) => return false,
+                // The worker panicked: the springs go without, as for a character it doesn't fit.
+                Err(mpsc::TryRecvError::Disconnected) => self.taken = Some(None),
+            }
+        }
+        true
+    }
+
+    /// The fit, waiting for it if it isn't done.
+    fn take(mut self) -> Option<HeroineClearance> {
+        self.taken.take().unwrap_or_else(|| self.fitted.recv().ok().flatten())
+    }
 }
 
 /// The character's hair and cloth, if it has any, by what `content` says a character's motion is.

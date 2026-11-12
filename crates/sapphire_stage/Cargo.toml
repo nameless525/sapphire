@@ -17,6 +17,8 @@ sapphire_ecs.workspace = true
 # bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
 bevy_ecs.workspace = true
 sapphire_gameplay.workspace = true
+# The warm-up pool, where a boot fits the character's clearance off the frame (M4 H4).
+sapphire_jobs.workspace = true
 sapphire_loc.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true

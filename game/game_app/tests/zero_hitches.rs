@@ -592,7 +592,7 @@ impl App for OutsideCaller {
         let seconds = platform.now().saturating_duration_since(started).as_secs_f32();
         let ms = |duration: Duration| duration.as_secs_f64() * 1e3;
         eprintln!(
-            "zero_hitches: {tier} at {}x{}: booted in {:.0} ms ({} frames, longest {:.1} ms in its {} step); won at \
+            "zero_hitches: {tier} at {}x{}: booted in {:.0} ms ({} frames, longest {:.1} ms in its {} step, {:.1} of it drawing); won at \
              tick {} after {} steps; the ladder climbed back in {climb} frames; {} frames, {} drawn, in \
              {seconds:.1} s; warmed off the frame {}, first use 0, on the frame's thread 0, waited for 0",
             size.0,
@@ -601,6 +601,7 @@ impl App for OutsideCaller {
             report.frames,
             ms(report.longest_frame),
             report.longest_in,
+            ms(report.longest_drawing),
             walked.tick,
             walked.steps,
             walk.draw.frames,

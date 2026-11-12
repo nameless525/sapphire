@@ -168,6 +168,10 @@ pub struct BootReport {
     /// The longest a [`Boot::frame`] took, and in which step: its own work, short of what presenting waits.
     pub longest_frame: Duration,
     pub longest_in: &'static str,
+    /// How much of that frame drew the screen (its uploads, recording and submit) rather than moved the boot on.
+    /// A frame whose driver holds its calls behind the warm-up's compiles is nearly all drawing: the Android
+    /// emulator's, whose GPU calls queue behind its host's (M4 H6).
+    pub longest_drawing: Duration,
     /// The longest from one frame's start to the next's, from the second frame: what the player sees, with
     /// whatever presenting waited for.
     pub longest_interval: Duration,
@@ -378,14 +382,17 @@ impl Boot {
         }
         let step = self.step.name();
         self.advance()?;
+        let drawing = Stopwatch::start();
         if let Some(view) = view {
             self.draw(view, dt)?;
         }
+        let drawing = drawing.elapsed();
         self.report.frames += 1;
         let took = stopwatch.elapsed();
         if took > self.report.longest_frame {
             self.report.longest_frame = took;
             self.report.longest_in = step;
+            self.report.longest_drawing = drawing;
         }
         if !matches!(self.step, Step::Done) {
             return Ok(None);
@@ -410,6 +417,7 @@ impl Boot {
             warm_ms = ms(report.warm),
             longest_frame_ms = ms(report.longest_frame),
             longest_in = report.longest_in,
+            longest_drawing_ms = ms(report.longest_drawing),
             longest_interval_ms = ms(report.longest_interval),
             intervals_over = report.intervals_over,
             interval_limit_ms = ms(report.interval_limit),

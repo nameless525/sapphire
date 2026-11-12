@@ -28,10 +28,15 @@
 //! signed by a key the earlier names, and unless it carries only what a patch may: every file the simulation
 //! reads as the earlier release has it, the first one that isn't named (m4-plan §3 "What a patch may carry").
 //! What the simulation reads otherwise is compiled into the app, so no pack can change it.
+//!
+//! **Key files** (M4 X4): the maintainer keeps the release key offline as a file holding its seed in hex, as
+//! [`KEY_VAR`] takes it. [`new_key_file`] writes a new one, never over a file that's there, and
+//! [`public_key_of_file`] reads its public half back, which `platform/patch.toml`'s `release-keys` and
+//! `--next-keys` take. Neither prints, logs or echoes the seed, even when the file is wrong.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -95,6 +100,12 @@ pub enum ReleaseError {
     NoKey,
     #[error("{KEY_VAR}'s key {index} isn't 64 hex digits")]
     BadKey { index: usize },
+    #[error("{} is there already: a release key is never written over", path.display())]
+    KeyFileExists { path: PathBuf },
+    #[error("{} doesn't hold a release key: one 32-byte seed in 64 hex digits", path.display())]
+    BadKeyFile { path: PathBuf },
+    #[error("the OS gave no randomness for a new key")]
+    Entropy(#[source] getrandom::Error),
     #[error("successor key {index} isn't an ed25519 public key in 64 hex digits")]
     BadSuccessorKey { index: usize },
     #[error("a release names at least one key for its successor, and at most {}", manifest::MAX_KEYS)]
@@ -348,6 +359,72 @@ pub fn keys_from_env(value: Option<&str>) -> Result<Vec<SigningKey>, ReleaseErro
             unhex(seed.trim()).map(|seed| SigningKey::from_bytes(&seed)).ok_or(ReleaseError::BadKey { index })
         })
         .collect()
+}
+
+/// Writes a new release key to `path`, a file that mustn't be there yet: a seed from the OS's generator, in
+/// hex, readable only by its owner where the OS has owners. Returns its public half. The file is made before
+/// the seed, so a path that's taken refuses with no key made.
+pub fn new_key_file(path: &Path) -> Result<PublicKey, ReleaseError> {
+    let file = create_key_file(path)?;
+    let mut seed = [0; 32];
+    if let Err(error) = getrandom::fill(&mut seed) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(ReleaseError::Entropy(error));
+    }
+    // The key wipes its copy when it's dropped.
+    let key = SigningKey::from_bytes(&seed);
+    seed.fill(0);
+    fill_key_file(file, path, &key)
+}
+
+/// Writes `key` to `path` as [`new_key_file`] does, refusing a file that's there.
+pub fn write_key_file(path: &Path, key: &SigningKey) -> Result<PublicKey, ReleaseError> {
+    fill_key_file(create_key_file(path)?, path, key)
+}
+
+/// A new file at `path`, readable only by its owner, or an error if one's there.
+fn create_key_file(path: &Path) -> Result<fs::File, ReleaseError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path).map_err(|source| match source.kind() {
+        io::ErrorKind::AlreadyExists => ReleaseError::KeyFileExists { path: path.to_owned() },
+        _ => ReleaseError::Io { path: path.to_owned(), source },
+    })
+}
+
+/// Writes `key`'s seed in hex into `file`, just made at `path`. A write that fails part way takes the file out
+/// again, so trying again doesn't meet it.
+fn fill_key_file(mut file: fs::File, path: &Path, key: &SigningKey) -> Result<PublicKey, ReleaseError> {
+    let mut text = hex(key.as_bytes());
+    text.push('\n');
+    let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(source) = written {
+        let _ = fs::remove_file(path);
+        return Err(ReleaseError::Io { path: path.to_owned(), source });
+    }
+    Ok(key.verifying_key().to_bytes())
+}
+
+/// The public half of the release key in the file at `path`, which [`new_key_file`] wrote or which holds a
+/// seed as [`KEY_VAR`] takes one.
+pub fn public_key_of_file(path: &Path) -> Result<PublicKey, ReleaseError> {
+    let text = fs::read_to_string(path).map_err(|source| match source.kind() {
+        // Not text: not a key file, and nothing of it is said.
+        io::ErrorKind::InvalidData => ReleaseError::BadKeyFile { path: path.to_owned() },
+        _ => ReleaseError::Io { path: path.to_owned(), source },
+    })?;
+    let seed = unhex(text.trim()).ok_or_else(|| ReleaseError::BadKeyFile { path: path.to_owned() })?;
+    Ok(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
+}
+
+/// `key` as `platform/patch.toml`'s `release-keys` and `--next-keys` take it: 64 hex digits.
+#[must_use]
+pub fn public_key_hex(key: &PublicKey) -> String {
+    hex(key)
 }
 
 /// Public keys, as `--next-keys` gives them: 64 hex digits each, separated by commas.

@@ -11,7 +11,7 @@
 # (release.smanifest, packs/, files/). Empty: no update is checked.
 host = ""
 # The ed25519 public keys a build trusts, each 64 hex digits: the public half of each seed the maintainer signs
-# releases with (SAPPHIRE_RELEASE_KEY). A patch starts only if one of these, or a key the shipped release names,
+# releases with (SAPPHIRE_RELEASE_KEY), as `cargo xtask release-key public <key file>` prints it. A patch starts only if one of these, or a key the shipped release names,
 # signed it, and an unsigned shipped release takes these as the keys its first patch is signed by
 # (sapphire_patch's `Installation::open`).
 release-keys = []

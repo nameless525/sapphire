@@ -282,6 +282,40 @@ fn keys_come_from_the_environment_and_are_never_echoed() {
     assert!(matches!(public_keys("00"), Err(ReleaseError::BadSuccessorKey { index: 0 })));
 }
 
+/// M4 X4: keys from fixed seeds only, in a directory of the test's own.
+#[test]
+fn a_key_file_is_written_once_and_read_back_as_its_public_half() {
+    let dir = TempDir::new("release_key_file");
+    let path = dir.path().join("release.key");
+    assert_eq!(write_key_file(&path, &key(9)).unwrap(), public(9));
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(text, format!("{}\n", "09".repeat(32)), "the seed as SAPPHIRE_RELEASE_KEY takes it");
+    assert_eq!(keys_from_env(Some(&text)).unwrap()[0].verifying_key().to_bytes(), public(9));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "its owner's alone");
+    }
+    assert_eq!(public_key_of_file(&path).unwrap(), public(9));
+    assert_eq!(public_key_hex(&public(9)), hex(&public(9)));
+    assert_eq!(public_keys(&public_key_hex(&public(9))).unwrap(), [public(9)], "what --next-keys takes");
+
+    // Never over a key that's there, a new one's or another; a new one refuses before it makes a seed.
+    assert!(matches!(write_key_file(&path, &key(10)), Err(ReleaseError::KeyFileExists { .. })));
+    assert!(matches!(new_key_file(&path), Err(ReleaseError::KeyFileExists { .. })));
+    assert_eq!(public_key_of_file(&path).unwrap(), public(9), "the file is as it was");
+
+    // A file that isn't a key says nothing of what it holds.
+    let wrong = dir.path().join("wrong.key");
+    fs::write(&wrong, format!("{}zz\n", "cd".repeat(31))).unwrap();
+    let refused = public_key_of_file(&wrong).unwrap_err();
+    assert!(matches!(refused, ReleaseError::BadKeyFile { .. }));
+    assert!(!refused.to_string().contains("cdcd"), "{refused}");
+    fs::write(&wrong, [0xff, 0xfe, 0x00]).unwrap();
+    assert!(matches!(public_key_of_file(&wrong), Err(ReleaseError::BadKeyFile { .. })));
+    assert!(matches!(public_key_of_file(&dir.path().join("none.key")), Err(ReleaseError::Io { .. })));
+}
+
 #[test]
 fn dates_are_utc_midnights() {
     assert_eq!(date("1970-01-01").unwrap(), 0);

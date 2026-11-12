@@ -966,6 +966,7 @@ Each module below follows the same template:
   - **Hostile input** is an error, never a panic: tests flip every byte of a signed manifest and cut it at every length. Names can't name a path or a hidden file, and sizes are capped (manifest 1 MiB, pack 16 GiB, file 64 MiB).
   - **The shipping mount:** a server held to a release mounts or remounts only the packs it names, at the length and header hash it names (`MountError::NotReleased`, `NotAsReleased`). Every build without `dev` holds its server to its content's manifest (`sapphire_stage::Content::new`), without checking its signature.
   - **Signing** is the pipeline's alone (`sapphire_pipeline release`, `cargo xtask release`), with keys from `SAPPHIRE_RELEASE_KEY`; the layout it writes for a static host is in `sapphire_pipeline::release`'s docs.
+  - **As built (M4 X4, key files):** `cargo xtask release-key new <file>` writes a new key, a seed from the OS's generator in 64 hex digits, to a file the maintainer names, refusing one that's there, readable only by its owner on macOS and Linux; `release-key public <file>` prints a key file's public half as `platform/patch.toml`'s `release-keys` takes it (`release-keys = ["<64 hex digits>"]`; `--next-keys` takes the digits). Both run the pipeline's `release-key`, so xtask still never reads a key, and neither prints the seed, even from a file that's wrong. The file is what `SAPPHIRE_RELEASE_KEY` takes: `SAPPHIRE_RELEASE_KEY=$(cat <file>)`. Tested only with seeds fixed in code, in a directory of the test's own.
 
 **Tests**
 

@@ -15,6 +15,10 @@
 //!
 //! The command itself is a thin entry, cooking and then publishing; `package` calls [`publish`] on the cook it
 //! made, when it's given a release's options ([`Release::from_args`]).
+//!
+//! `cargo xtask release-key` ([`key`], M4 X4) is the pipeline's `release-key`: `new <file>` writes a new
+//! release key to a file the maintainer names, refusing one that's there, and `public <file>` prints a key
+//! file's public half as `platform/patch.toml` takes it. Here too the seed stays in the pipeline.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -89,6 +93,43 @@ pub fn publish_with_test_seeds(
     Ok(out.join(MANIFEST))
 }
 
+/// What `release-key` does with its key file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    /// Writes a new key to a file that mustn't be there, and prints its public half.
+    New,
+    /// Prints the public half of the key in the file.
+    Public,
+}
+
+impl std::str::FromStr for KeyAction {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> anyhow::Result<Self> {
+        match text {
+            "new" => Ok(Self::New),
+            "public" => Ok(Self::Public),
+            other => bail!("release-key takes `new` or `public`, not `{other}`"),
+        }
+    }
+}
+
+/// Runs the pipeline's `release-key` on `file`: a new key written there, or the public half of the one there,
+/// printed as `platform/patch.toml`'s `release-keys` takes it.
+pub fn key(action: KeyAction, file: &Path) -> anyhow::Result<()> {
+    let pipeline = content::pipeline()?;
+    workspace::run(Command::new(pipeline).args(key_arguments(action, file)))
+}
+
+/// The pipeline's command line for `release-key`.
+fn key_arguments(action: KeyAction, file: &Path) -> [OsString; 3] {
+    let action = match action {
+        KeyAction::New => "new",
+        KeyAction::Public => "public",
+    };
+    ["release-key".into(), action.into(), file.into()]
+}
+
 /// The manifest's file name: `sapphire_assets::manifest::FILE_NAME`, which xtask doesn't link.
 pub const MANIFEST: &str = "release.smanifest";
 
@@ -118,6 +159,19 @@ fn arguments(packs: &Path, out: &Path, release: &Release) -> Vec<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_key_runs_the_pipelines_command_on_its_file() {
+        let line = |action: &str| -> Vec<String> {
+            key_arguments(action.parse().unwrap(), Path::new("offline/release.key"))
+                .into_iter()
+                .map(|argument| argument.into_string().unwrap())
+                .collect()
+        };
+        assert_eq!(line("new"), ["release-key", "new", "offline/release.key"]);
+        assert_eq!(line("public"), ["release-key", "public", "offline/release.key"]);
+        assert!("print".parse::<KeyAction>().is_err());
+    }
 
     #[test]
     fn a_release_runs_the_pipelines_command_with_its_options() {

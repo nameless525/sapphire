@@ -56,6 +56,15 @@ Commands:
       With --patch-from, the release is a patch of the one that signed manifest is: refused,
       naming the file, if it changes anything the simulation reads, and unless an install of the
       earlier release would take it. Nothing is uploaded.
+  release-key new <file>
+      Write a new release key to <file>, which mustn't be there: an ed25519 seed from the OS's
+      generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
+      (SAPPHIRE_RELEASE_KEY=$(cat <file>)). Prints its public half as platform/patch.toml's
+      release-keys takes it. The key is the maintainer's: keep <file> offline, never in the
+      repository.
+  release-key public <file>
+      Print the public half of the release key in <file>, as platform/patch.toml's release-keys
+      takes it (--next-keys takes the quoted digits). The seed is never printed.
   patch serve <dir> [--port <n>]
       Serve a release directory laid out by `release` at http://127.0.0.1:<n>/ (default 8475):
       GET with byte ranges, kept alive, each request and its bytes printed. The iOS Simulator
@@ -282,6 +291,13 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             let manifest = release::publish(&cooked, &out, &release)?;
             eprintln!("released {cook} content as {}", manifest.display());
             Ok(())
+        }
+        "release-key" => {
+            let rest = args.rest();
+            let [action, file] = rest.as_slice() else {
+                bail!("release-key takes `new <file>` or `public <file>`");
+            };
+            release::key(action.parse()?, std::path::Path::new(file))
         }
         "bundle" => {
             let package = app_package(&mut args)?;

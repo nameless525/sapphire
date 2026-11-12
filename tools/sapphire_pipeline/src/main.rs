@@ -90,6 +90,14 @@ Usage:
       one: the signing keys, unless --next-keys says. With --patch-from, it's a patch of that
       earlier release: refused, naming the file, if it changes anything the simulation reads, and
       unless an install of the earlier one would take it (same cook, newer, a key it names).
+  sapphire_pipeline release-key new <FILE>
+      Write a new release key to FILE, which mustn't be there: an ed25519 seed from the OS's
+      generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
+      (SAPPHIRE_RELEASE_KEY=$(cat FILE)). Prints its public half as platform/patch.toml's
+      release-keys takes it. Keep FILE offline, and never in the repository.
+  sapphire_pipeline release-key public <FILE>
+      Print the public half of the release key in FILE, as platform/patch.toml's release-keys
+      takes it; --next-keys takes the quoted digits. The seed is never printed.
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
@@ -168,6 +176,11 @@ enum Command {
         cache: Option<PathBuf>,
         locked: bool,
         editor: bool,
+    },
+    /// `release-key new` (`new: true`) or `release-key public`, on a key file.
+    ReleaseKey {
+        file: PathBuf,
+        new: bool,
     },
     Release {
         packs: PathBuf,
@@ -320,6 +333,18 @@ fn run(command: Command) -> anyhow::Result<()> {
                 published.written,
                 published.kept
             );
+        }
+        Command::ReleaseKey { file, new } => {
+            let public =
+                if new { release::new_key_file(&file)? } else { release::public_key_of_file(&file)? };
+            if new {
+                eprintln!(
+                    "wrote a new release key to {}: keep it offline and out of the repository; \
+                     SAPPHIRE_RELEASE_KEY=$(cat <it>) signs with it",
+                    file.display()
+                );
+            }
+            println!("release-keys = [\"{}\"]", release::public_key_hex(&public));
         }
         Command::Help => println!("{USAGE}"),
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
@@ -525,6 +550,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
                 patch_from: options.value("--patch-from")?,
             },
         },
+        "release-key" => {
+            let [action, file] = options.positional()?;
+            let new = match action.as_str() {
+                "new" => true,
+                "public" => false,
+                other => bail!("release-key takes `new` or `public`, not `{other}`"),
+            };
+            Command::ReleaseKey { file: file.into(), new }
+        }
         other => bail!("unknown command `{other}`"),
     };
     options.finish()?;
@@ -748,5 +782,19 @@ mod tests {
         .unwrap();
         let options = ReleaseOptions { patch_from: Some("host/manifests/2.smanifest".into()), ..options };
         assert_eq!(patch, Command::Release { packs: "p".into(), out: "o".into(), options });
+    }
+
+    #[test]
+    fn a_release_key_is_made_or_read_by_its_file() {
+        assert_eq!(
+            parse(&["release-key", "new", "keys/release.key"]).unwrap(),
+            Command::ReleaseKey { file: "keys/release.key".into(), new: true }
+        );
+        assert_eq!(
+            parse(&["release-key", "public", "keys/release.key"]).unwrap(),
+            Command::ReleaseKey { file: "keys/release.key".into(), new: false }
+        );
+        assert!(parse(&["release-key", "print", "keys/release.key"]).is_err());
+        assert!(parse(&["release-key", "new"]).is_err(), "a file is named");
     }
 }

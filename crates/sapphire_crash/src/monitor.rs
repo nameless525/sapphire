@@ -634,6 +634,9 @@ struct DumpWriter {
     /// The executable's file name, which macOS's dumps leave out (`minidump_edit`). The monitor is the
     /// app's own executable.
     executable: Option<String>,
+    /// The player's home directory, whose name dumps mask (`minidump_edit`). The monitor runs with the
+    /// app's environment.
+    home: Option<String>,
 }
 
 impl DumpWriter {
@@ -642,7 +645,8 @@ impl DumpWriter {
             .then(std::env::current_exe)
             .and_then(Result::ok)
             .and_then(|path| path.file_name()?.to_str().map(str::to_owned));
-        Self { dump_dir, run_id, started: AtomicU32::new(0), writing: Mutex::new(None), executable }
+        let home = std::env::home_dir().and_then(|home| home.into_os_string().into_string().ok());
+        Self { dump_dir, run_id, started: AtomicU32::new(0), writing: Mutex::new(None), executable, home }
     }
 
     fn lock_writing(&self) -> MutexGuard<'_, Option<String>> {
@@ -655,6 +659,7 @@ impl DumpWriter {
         // still the only record of the crash.
         let edits = minidump_edit::Edits {
             environment: cfg!(target_os = "linux"),
+            home: self.home.as_deref(),
             executable: self.executable.as_deref(),
         };
         if let Err(err) = minidump_edit::apply(&mut dump.file, &edits) {

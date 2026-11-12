@@ -127,7 +127,8 @@ telephone number or address, OCR screenshots, recursively decode all compressed
 assets, or recognize every credential format. A company address inside a binary
 file passes, and a signature's base64 is not decoded. They do not audit GitHub PR
 bodies, issue comments, Actions artifacts or account settings. Review screenshots and
-logs before attaching them. Local analysis packages may contain machine-specific paths.
+logs before attaching them. A player's crash report masks their home directory's name, but a
+minidump's memory can still hold other personal text: read it before attaching it. Local analysis packages may contain machine-specific paths.
 
 If something escapes, stop propagating it and handle the evidence privately.
 Rotate an exposed credential. Removing a file or reverting a commit does not erase

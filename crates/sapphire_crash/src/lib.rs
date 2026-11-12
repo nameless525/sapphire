@@ -47,6 +47,23 @@
 //!   once there is a project to send reports to.
 //! - Symbol upload. CI does that for shipping builds (spec §5.2, M4).
 //!
+//! # What a report holds
+//!
+//! Reports stay in the dump directory on the device: nothing sends them. They hold what reading a
+//! crash needs (frames, registers, the loaded modules and their IDs, and in a minidump the stacks'
+//! memory), and keep out what is the player's where the crate writes or edits them:
+//!
+//! - Panic reports name modules by their file alone, and write the player's home directory `~` in
+//!   the message, the location and the backtrace.
+//! - Minidumps (the monitor edits each one before keeping it): Linux's copy of the environment is
+//!   zeroed, and wherever a path under the home directory appears, memory included, its last part,
+//!   the user name, is masked with `*`s. Symbols are still found, by each module's ID and file name.
+//! - Android's signal record lists `/proc/self/maps`, whose paths are the app's install and the
+//!   system's libraries: they name the package, not the player.
+//!
+//! What stays: paths outside the home directory (a game installed under `/Applications` or
+//! `Program Files`), and anything in a minidump's memory that names the player some other way.
+//!
 //! # Wiring it into an app
 //!
 //! `main` must do these in order:

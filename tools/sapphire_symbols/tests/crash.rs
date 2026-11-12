@@ -55,6 +55,9 @@ mod desktop {
         println!("{}", crash::render(&dumped, &maps));
         // The fault's address, which Linux's dumps read as 0 before (`sapphire_crash`'s `siginfo`).
         assert!(dumped.summary[0].ends_with(" at 0x10"), "{:?}", dumped.summary);
+        // The test runs from this checkout, under the home directory on macOS and on CI's Linux runners: the
+        // module list and Linux's maps and command line name it, and the monitor masks it.
+        assert_no_home(&fs::read(&dump.1).expect("the minidump"), "the minidump");
         let raw = minidump::Minidump::read_path(&dump.1).expect("the minidump");
         if cfg!(target_os = "linux") {
             // The player's environment stays out of the dump (`sapphire_crash`'s monitor clears it).

@@ -4,11 +4,19 @@
 //!
 //! - **The environment** (Linux's copy of `/proc/<pid>/environ`): the player's, not the game's, with their
 //!   user name, their home and whatever tokens their session exports. Zeroed.
+//! - **The player's user name in paths:** wherever a path under their home directory appears (the module
+//!   list, Linux's maps, command line and loader list, the stacks' memory), the directory's last part is
+//!   overwritten with `*`s, as UTF-8 and as UTF-16. Symbols are found by each module's ID and file name,
+//!   which stay as they were.
 //! - **The executable's name** (macOS): the writer can't read the main image's path, so it names the
 //!   module `<Unknown>` and gives it no file. Both become the executable's file name.
 //!
 //! Every edit keeps the offsets and sizes the dump already has; a name that's added goes at the end of the
 //! file, where only the module record points.
+//!
+//! What stays: paths outside the home directory (system libraries, a game installed under
+//! `/Applications` or `Program Files`), and whatever the game's memory holds that names the player some
+//! other way. The reports stay on the device; nothing sends them.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -17,6 +25,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 pub(crate) struct Edits<'a> {
     /// Zero the environment's stream.
     pub environment: bool,
+    /// The player's home directory, whose last part is masked wherever it appears.
+    pub home: Option<&'a str>,
     /// The executable's file name, for a first module the writer left unnamed.
     pub executable: Option<&'a str>,
 }
@@ -62,10 +72,50 @@ fn edit(dump: &mut Vec<u8>, edits: &Edits<'_>) -> io::Result<()> {
             dump[stream.at..stream.at + stream.size].fill(0);
         }
     }
+    if let Some(home) = edits.home {
+        mask_home(dump, home);
+    }
     if let Some(executable) = edits.executable {
         name_executable(dump, &streams, executable)?;
     }
     Ok(())
+}
+
+/// Overwrites the last part of `home`, the player's user name, with `*`s wherever `home` begins a path
+/// in `dump`, as UTF-8 and as UTF-16, and returns how many it masked. A home of `/` or a drive's root
+/// names nobody, and a longer name that `home` begins (`/home/runner` in `/home/runneradmin`) is another's.
+fn mask_home(dump: &mut [u8], home: &str) -> usize {
+    let home = home.trim_end_matches(['/', '\\']);
+    let Some(cut) = home.rfind(['/', '\\']) else { return 0 };
+    let wide = |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    mask(dump, home.as_bytes(), cut + 1, 1) + mask(dump, &wide(home), wide(&home[..=cut]).len(), 2)
+}
+
+/// Overwrites `found[from..]` with `*`s, in characters `width` bytes wide, wherever `found` appears in
+/// `dump` not followed by a character that carries a name on. Returns how many it masked.
+fn mask(dump: &mut [u8], found: &[u8], from: usize, width: usize) -> usize {
+    let star: &[u8] = if width == 2 { b"*\0" } else { b"*" };
+    let mut masked = 0;
+    let mut at = 0;
+    while let Some(offset) =
+        dump.get(at..).and_then(|rest| rest.windows(found.len()).position(|window| window == found))
+    {
+        let start = at + offset;
+        let end = start + found.len();
+        let next = dump
+            .get(end..end + width)
+            .map(|next| if width == 2 { u16::from_le_bytes([next[0], next[1]]) } else { u16::from(next[0]) });
+        let carries_on =
+            next.and_then(|next| char::from_u32(u32::from(next))).is_some_and(crate::report::continues_name);
+        if !carries_on {
+            for character in dump[start + from..end].chunks_mut(width) {
+                character.copy_from_slice(star);
+            }
+            masked += 1;
+        }
+        at = end;
+    }
+    masked
 }
 
 /// One entry of a minidump's stream directory, checked to lie inside the file.
@@ -231,6 +281,40 @@ mod tests {
         assert_eq!(other.into_inner(), b"PK\x03\x04 not a dump", "nothing is written");
         let mut cut = dump[..40].to_vec();
         assert!(apply(&mut io::Cursor::new(&mut cut), &Edits::default()).is_err());
+    }
+
+    fn contains(bytes: &[u8], found: &[u8]) -> bool {
+        bytes.windows(found.len()).any(|window| window == found)
+    }
+
+    fn wide(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn the_home_directory_names_nobody() {
+        let mut memory = b"open /Users/runner/Games/x.ron\0".to_vec();
+        memory.extend(wide("/Users/runner/Games/game_app\0"));
+        memory.extend(b" /Users/runneradmin/a /Users/runner\0");
+        let (mut dump, starts) = dump_of(&[(5, &memory)]);
+        let length = dump.len();
+        edit(&mut dump, &Edits { home: Some("/Users/runner/"), ..Edits::default() }).unwrap();
+        assert_eq!(dump.len(), length, "nothing moves");
+        let memory = &dump[starts[0]..];
+        assert!(contains(memory, b"open /Users/******/Games/x.ron"));
+        assert!(contains(memory, &wide("/Users/******/Games/game_app")));
+        assert!(contains(memory, b" /Users/runneradmin/a /Users/******\0"), "another player's stays");
+
+        let mut windows = wide(r"C:\Users\you\AppData\Local\Sapphire\game_app.exe");
+        let (mut dump, starts) = dump_of(&[(4, &windows)]);
+        edit(&mut dump, &Edits { home: Some(r"C:\Users\you"), ..Edits::default() }).unwrap();
+        windows = wide(r"C:\Users\***\AppData\Local\Sapphire\game_app.exe");
+        assert_eq!(&dump[starts[0]..], &windows[..]);
+
+        let (mut dump, _) = dump_of(&[(5, b"/x/y")]);
+        let before = dump.clone();
+        edit(&mut dump, &Edits { home: Some("/"), ..Edits::default() }).unwrap();
+        assert_eq!(dump, before, "a root names nobody");
     }
 
     /// The first module as macOS's writer leaves the executable: no file name, and a PDB name of `<Unknown>`.

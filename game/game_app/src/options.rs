@@ -191,10 +191,7 @@ impl Options {
         if !self.patches() {
             return None;
         }
-        let dir = match &self.patch_dir {
-            Some(dir) => writable(dir.clone(), platform),
-            None => platform.user_dir().join("patch"),
-        };
+        let dir = self.patch_dir.clone().unwrap_or_else(|| platform.user_dir().join("patch"));
         let host = Some(build_info::PATCH_HOST).filter(|host| !host.is_empty()).map(str::to_owned);
         #[cfg(feature = "dev")]
         let host = self.update_host.clone().or(host);
@@ -253,30 +250,69 @@ impl Options {
     }
 }
 
-/// Where a path the command line names is written: a relative one on a phone goes under the app's cache, since
-/// its app runs from nowhere it can write, and `adb shell run-as` and `devicectl` reach the cache (M3 Z2b):
-/// `--capture`'s, and `--patch-dir`'s, which a phone's check skipped as read-only before (M4 H4).
-pub(crate) fn writable(path: PathBuf, platform: &Platform) -> PathBuf {
-    placed(path, platform.system_info().device_class, platform.cache_dir())
-}
+impl Options {
+    /// The same options, with every path the command line names made absolute where this device can reach it: a
+    /// relative one on a phone goes under the app's cache, since its app runs from nowhere it can write, and
+    /// `adb shell run-as` and `devicectl` reach the cache (M3 Z2b); on a desktop, under the directory it was
+    /// started in. `--capture`'s, `--patch-dir`'s (M4 H4), `--save-dir`'s and `--record`'s are written there, and
+    /// `--replay`'s is read from beside them (M4 Z3e). Each `init` places what it parsed before it reads a path,
+    /// so no use of one can miss it: a relative `--save-dir` once wrote to a phone's root, and a desktop's relative
+    /// `--patch-dir` installed files the content refuses to place over its own, which must be absolute.
+    #[must_use]
+    pub(crate) fn placed(self, platform: &Platform) -> Self {
+        let device = platform.system_info().device_class;
+        let base = match device {
+            DeviceClass::Desktop => std::env::current_dir().unwrap_or_default(),
+            _ => platform.cache_dir().to_owned(),
+        };
+        self.placed_under(&base)
+    }
 
-fn placed(path: PathBuf, device: DeviceClass, cache: &Path) -> PathBuf {
-    if path.is_relative() && device != DeviceClass::Desktop { cache.join(path) } else { path }
+    fn placed_under(self, base: &Path) -> Self {
+        let place = |path: Option<PathBuf>| path.map(|path| base.join(path));
+        Self {
+            save_dir: place(self.save_dir),
+            record: place(self.record),
+            replay: place(self.replay),
+            capture: place(self.capture),
+            patch_dir: place(self.patch_dir),
+            ..self
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `--capture`'s and `--patch-dir`'s relative paths go under a phone's cache, as nothing else there is
-    /// writable; absolute ones, and a desktop's, stay as they're given.
+    /// Every path the command line names, relative, goes under a phone's cache, as nothing else there is
+    /// writable, or a desktop's directory: `--save-dir` and `--record` once went to a phone's root, where nothing
+    /// could be written, and a desktop's relative `--patch-dir` installed nothing it could stand on (M4 Z3e).
+    /// Absolute ones stay as they're given.
     #[test]
-    fn a_phone_writes_relative_paths_under_its_cache() {
+    fn every_relative_path_is_placed_under_the_devices_directory() {
         let cache = Path::new("/data/user/0/com.example.sapphire.game/cache");
-        let phone = |path: &str, device| placed(PathBuf::from(path), device, cache);
-        assert_eq!(phone("patch", DeviceClass::Mobile), cache.join("patch"));
-        assert_eq!(phone("/sdcard/patch", DeviceClass::Mobile), PathBuf::from("/sdcard/patch"));
-        assert_eq!(phone("patch", DeviceClass::Desktop), PathBuf::from("patch"));
+        let args = [
+            "--capture",
+            "shot.png",
+            "--save-dir",
+            "saves",
+            "--record",
+            "runs",
+            "--patch-dir",
+            "/sdcard/patch",
+            "--continue",
+        ];
+        let phone = parse(&args).unwrap().placed_under(cache);
+        assert_eq!(phone.capture, Some(cache.join("shot.png")));
+        assert_eq!(phone.save_dir, Some(cache.join("saves")));
+        assert_eq!(phone.record, Some(cache.join("runs")));
+        assert_eq!(phone.patch_dir, Some(PathBuf::from("/sdcard/patch")));
+        let replay = parse(&["--replay", "walk.sreplay"]).unwrap().placed_under(cache);
+        assert_eq!(replay.replay, Some(cache.join("walk.sreplay")));
+        let desktop = parse(&args).unwrap().placed_under(Path::new("/opt/games"));
+        assert_eq!(desktop.capture, Some(PathBuf::from("/opt/games/shot.png")));
+        assert_eq!(desktop.patch_dir, Some(PathBuf::from("/sdcard/patch")));
     }
 
     fn parse(args: &[&str]) -> Result<Options, String> {

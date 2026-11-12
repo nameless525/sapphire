@@ -26,9 +26,8 @@ impl App for OffscreenGame {
     const METADATA: AppMetadata = GameApp::METADATA;
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        let options = Options::parse(platform.args()).map_err(AppInitError::msg)?.placed(platform);
         let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
-        let path = crate::options::writable(path, platform);
         let mut patches = options.patch_setup(platform).map(|setup| Patches::open(platform.host(), setup));
         let host = patches.as_ref().map_or(platform.host(), Patches::host).clone();
         // A run nobody's playing shows the defaults, whatever whoever's machine this is has chosen.

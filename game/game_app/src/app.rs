@@ -127,7 +127,7 @@ impl App for GameApp {
 
     /// The window, the device and the boot screen with its one pipeline: everything else builds while it draws.
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        let options = Options::parse(platform.args()).map_err(AppInitError::msg)?.placed(platform);
         let info = *platform.system_info();
         tracing::info!(target: LOG_TARGET, build = build_info::BUILD_ID, ?info, ?options, "starting");
         let window = platform.create_window(&window_desc(Self::METADATA.name, &info))?;

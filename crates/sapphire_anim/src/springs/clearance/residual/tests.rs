@@ -174,3 +174,49 @@ fn combined_projection_preserves_global_extent_and_root_supplement_after_rate_li
         }
     }
 }
+
+/// The search passes over nodes and triangles it can tell are no nearer than the best so far, and must
+/// still find what a scan of every triangle does: the nearest within reach, the lowest index of equals.
+#[test]
+fn the_search_finds_what_a_scan_of_every_triangle_does() {
+    let mut seed = 0x2545_f491_u32;
+    let mut random = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32
+    };
+    let positions: Vec<_> =
+        (0..600).map(|_| Vec3::new(random(), random(), random() * 0.3) * 0.12 - Vec3::splat(0.06)).collect();
+    let mut patches: Vec<_> = (0..200)
+        .map(|i| Patch {
+            vertices: [3 * i, 3 * i + 1, 3 * i + 2].map(SurfaceVertex::Tee),
+            rest_center: (positions[3 * i] + positions[3 * i + 1] + positions[3 * i + 2]) / 3.0,
+            source: [3 * i, 3 * i + 1, 3 * i + 2].map(|v| v as u32),
+            zone: Zone::Tee,
+        })
+        .collect();
+    let mut nodes = Vec::new();
+    layout(&mut patches, 0, &mut nodes);
+    let mut field = Field::new(patches.len(), nodes.len());
+    field.refit(&nodes, &patches, |v| match v {
+        SurfaceVertex::Tee(i) => positions[i],
+        SurfaceVertex::Skin(_) => unreachable!(),
+    });
+    let mut found = 0;
+    for _ in 0..4000 {
+        let point = Vec3::new(random(), random(), random()) * 0.16 - Vec3::splat(0.08);
+        let mut best = (FIND_RADIUS * FIND_RADIUS, None);
+        field.search(&nodes, 0, point, &mut best);
+        let mut scan = (FIND_RADIUS * FIND_RADIUS, None);
+        for (i, triangle) in field.triangles.iter().enumerate() {
+            let distance = triangle.distance(point).0;
+            if distance < scan.0 {
+                scan = (distance, Some(i));
+            }
+        }
+        assert_eq!(best, scan, "at {point}");
+        found += usize::from(scan.1.is_some());
+    }
+    assert!(found > 1000, "{found} points had a triangle within reach");
+}

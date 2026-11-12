@@ -120,6 +120,14 @@ impl Triangle {
         Bounds::EMPTY.with_point(self.a).with_point(self.a + self.e).with_point(self.a + self.f)
     }
 
+    /// Whether `point` is farther from the triangle's plane than `limit`, a squared distance, by more
+    /// than rounding could make up. A triangle is no nearer than its plane, so then [`Self::distance`]
+    /// is past `limit` too, and the triangle can be passed over without changing which is nearest.
+    fn beyond(self, point: Vec3, limit: f32) -> bool {
+        let plane = (point - self.a).dot(self.normal);
+        plane * plane > limit + limit * 1.0e-4 + 1.0e-9
+    }
+
     fn distance(self, point: Vec3) -> (f32, f32) {
         let delta = point - self.a;
         let plane = delta.dot(self.normal);
@@ -176,22 +184,41 @@ impl Field {
     }
 
     fn search(&self, nodes: &[Node], i: usize, point: Vec3, best: &mut (f32, Option<usize>)) {
-        if self.bounds[i].distance_squared(point) > best.0 {
+        self.search_within(nodes, i, self.bounds[i].distance_squared(point), point, best);
+    }
+
+    /// [`Self::search`] from node `i`, whose bounds are `reach` (squared) from `point`: each node's
+    /// bounds are measured once, by its parent, which orders its children by them.
+    fn search_within(
+        &self,
+        nodes: &[Node],
+        i: usize,
+        reach: f32,
+        point: Vec3,
+        best: &mut (f32, Option<usize>),
+    ) {
+        if reach > best.0 {
             return;
         }
         let node = nodes[i];
         if let Some(right) = node.right {
             let left = i + 1;
-            if self.bounds[left].distance_squared(point) <= self.bounds[right].distance_squared(point) {
-                self.search(nodes, left, point, best);
-                self.search(nodes, right, point, best);
+            let (near_left, near_right) =
+                (self.bounds[left].distance_squared(point), self.bounds[right].distance_squared(point));
+            if near_left <= near_right {
+                self.search_within(nodes, left, near_left, point, best);
+                self.search_within(nodes, right, near_right, point, best);
             } else {
-                self.search(nodes, right, point, best);
-                self.search(nodes, left, point, best);
+                self.search_within(nodes, right, near_right, point, best);
+                self.search_within(nodes, left, near_left, point, best);
             }
         } else {
             for index in node.start..node.end {
-                let distance = self.triangles[index].distance(point).0;
+                let triangle = self.triangles[index];
+                if triangle.beyond(point, best.0) {
+                    continue;
+                }
+                let distance = triangle.distance(point).0;
                 if distance < best.0 || (distance == best.0 && best.1.is_some_and(|old| index < old)) {
                     *best = (distance, Some(index));
                 }
@@ -209,22 +236,21 @@ impl Field {
         let mut best = (FIND_RADIUS * FIND_RADIUS, None);
         // Starting from the remembered triangle finds the same one: a node is passed over only when
         // every triangle in it is farther, and among equals the lowest index still wins.
-        if let Some(i) = remembered {
-            let distance = self.triangles[i].distance(point).0;
-            if distance < best.0 {
-                best = (distance, Some(i));
-            }
+        let remembered = remembered.map(|i| (i, self.triangles[i].distance(point)));
+        if let Some((i, (distance, _))) = remembered
+            && distance < best.0
+        {
+            best = (distance, Some(i));
         }
         self.search(nodes, 0, point, &mut best);
         if let Some(root) = leg_root {
             self.search(nodes, root, point, &mut best);
         }
         let nearest = remembered
-            .filter(|&i| self.triangles[i].distance(point).0.sqrt() <= best.0.sqrt() + HYSTERESIS)
-            .or(best.1);
-        let Some(i) = nearest else { return (Contact::default(), None) };
+            .filter(|&(_, (distance, _))| distance.sqrt() <= best.0.sqrt() + HYSTERESIS)
+            .or_else(|| best.1.map(|i| (i, self.triangles[i].distance(point))));
+        let Some((i, (distance, signed))) = nearest else { return (Contact::default(), None) };
         let triangle = self.triangles[i];
-        let (distance, signed) = triangle.distance(point);
         let distance = distance.sqrt();
         if distance >= FIND_RADIUS || distance - signed.abs() >= 0.004 || triangle.normal == Vec3::ZERO {
             return (Contact::default(), None);

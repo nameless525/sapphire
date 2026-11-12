@@ -28,8 +28,23 @@ pub(super) struct Underarm {
     cloth: Vec<(u32, u32)>,
     /// A garment triangle and a skin triangle, by index into `cloth_triangles` and `skin_triangles`.
     arm: Vec<(u32, u32)>,
-    active_cloth: Vec<usize>,
-    active_arm: Vec<usize>,
+    /// The garment triangles the relief moves, which every pair in `cloth` and `arm` has one of, and
+    /// per garment triangle its place among them if it's one.
+    moving: Vec<u32>,
+    moving_rank: Vec<Option<u32>>,
+    /// Per moving triangle, a row of bits over `cloth_triangles`: those it comes first in a pair of
+    /// `cloth` with, and those it comes second with; and one over `skin_triangles`, those it's paired
+    /// with in `arm`.
+    cloth_first: Bits,
+    cloth_second: Bits,
+    arm_partners: Bits,
+    /// Trees over `cloth_triangles` and `skin_triangles`, grouped as they lie at rest, which find the
+    /// triangles whose bounds meet a moving triangle's.
+    cloth_tree: BoxTree,
+    skin_tree: BoxTree,
+    /// The pairs of `cloth` and `arm` whose bounds meet as the garment sweeps to the pose's limit.
+    active_cloth: Vec<(u32, u32)>,
+    active_arm: Vec<(u32, u32)>,
     skin: Vec<Point>,
     posed_skin: Vec<Vec3>,
     candidate: Vec<Vec3>,
@@ -114,6 +129,7 @@ impl Underarm {
             }
         }
         let mut skin = Vec::new();
+        let mut skin_rest = Vec::new();
         let mut skin_welds = Vec::new();
         let mut skin_slots = vec![None; mesh.streams.len()];
         let mut skin_triangles = Vec::new();
@@ -134,6 +150,7 @@ impl Underarm {
                     *skin_slots[face[k] as usize].get_or_insert_with(|| {
                         let i = skin.len();
                         skin.push([a, b, c][k]);
+                        skin_rest.push([pa, pb, pc][k]);
                         skin_welds.push(weld([pa, pb, pc][k]));
                         i
                     })
@@ -152,6 +169,40 @@ impl Underarm {
                 }
             }
         }
+        let moving: Vec<u32> = (0..cloth_triangles.len() as u32)
+            .filter(|&slot| cloth_triangles[slot as usize].iter().any(|&v| changed[v]))
+            .collect();
+        let mut moving_rank = vec![None; cloth_triangles.len()];
+        for (rank, &slot) in moving.iter().enumerate() {
+            moving_rank[slot as usize] = Some(rank as u32);
+        }
+        let mut cloth_first = Bits::new(moving.len(), cloth_triangles.len());
+        let mut cloth_second = Bits::new(moving.len(), cloth_triangles.len());
+        for &(a, b) in &cloth {
+            if let Some(rank) = moving_rank[a as usize] {
+                cloth_first.set(rank, b);
+            }
+            if let Some(rank) = moving_rank[b as usize] {
+                cloth_second.set(rank, a);
+            }
+            debug_assert!(
+                moving_rank[a as usize].is_some() || moving_rank[b as usize].is_some(),
+                "a pair has a moving triangle"
+            );
+        }
+        let mut arm_partners = Bits::new(moving.len(), skin_triangles.len());
+        for &(a, b) in &arm {
+            let rank = moving_rank[a as usize];
+            debug_assert!(rank.is_some(), "an arm pair's garment triangle moves");
+            if let Some(rank) = rank {
+                arm_partners.set(rank, b);
+            }
+        }
+        let centre =
+            |points: &[Vec3], triangle: &[usize; 3]| triangle.map(|i| points[i]).iter().sum::<Vec3>() / 3.0;
+        let cloth_tree = BoxTree::new(&cloth_triangles.iter().map(|t| centre(&rest, t)).collect::<Vec<_>>());
+        let skin_tree =
+            BoxTree::new(&skin_triangles.iter().map(|t| centre(&skin_rest, t)).collect::<Vec<_>>());
         Some(Self {
             target,
             authored,
@@ -162,6 +213,13 @@ impl Underarm {
             offsets: vec![Vec3::ZERO; shape.len()],
             candidate: vec![Vec3::ZERO; shirt_count],
             shape,
+            moving,
+            moving_rank,
+            cloth_first,
+            cloth_second,
+            arm_partners,
+            cloth_tree,
+            skin_tree,
             active_cloth: Vec::with_capacity(cloth.len()),
             active_arm: Vec::with_capacity(arm.len()),
             stock_bounds: Vec::with_capacity(cloth_triangles.len()),
@@ -287,22 +345,36 @@ impl Underarm {
         let posed_skin = &self.posed_skin;
         self.skin_bounds.clear();
         self.skin_bounds.extend(self.skin_triangles.iter().map(|tri| bounds(tri.map(|i| posed_skin[i]))));
-        let swept = &self.swept_bounds;
-        let skin = &self.skin_bounds;
+        self.cloth_tree.refit(&self.swept_bounds);
+        self.skin_tree.refit(&self.skin_bounds);
         self.active_cloth.clear();
-        self.active_cloth.extend(
-            self.cloth
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &(a, b))| overlap(swept[a as usize], swept[b as usize]).then_some(i)),
-        );
         self.active_arm.clear();
-        self.active_arm.extend(
-            self.arm
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &(a, b))| overlap(swept[a as usize], skin[b as usize]).then_some(i)),
-        );
+        // Every pair has a moving triangle, so the pairs whose bounds meet are found from those: a pair
+        // of two moving triangles from the one that comes first in it.
+        for (rank, &slot) in self.moving.iter().enumerate() {
+            let rank = rank as u32;
+            let bounds = self.swept_bounds[slot as usize];
+            let (swept, moving_rank, active) =
+                (&self.swept_bounds, &self.moving_rank, &mut self.active_cloth);
+            let (first, second) = (&self.cloth_first, &self.cloth_second);
+            self.cloth_tree.meeting(bounds, |other| {
+                if !overlap(bounds, swept[other as usize]) {
+                    return;
+                }
+                if first.get(rank, other) {
+                    active.push((slot, other));
+                }
+                if second.get(rank, other) && moving_rank[other as usize].is_none() {
+                    active.push((other, slot));
+                }
+            });
+            let (skin, partners, active) = (&self.skin_bounds, &self.arm_partners, &mut self.active_arm);
+            self.skin_tree.meeting(bounds, |other| {
+                if overlap(bounds, skin[other as usize]) && partners.get(rank, other) {
+                    active.push((slot, other));
+                }
+            });
+        }
         let mut chosen = 0.0;
         let mut previous = 0.0;
         for step in 1..=6 {
@@ -332,18 +404,123 @@ impl Underarm {
         }
         let cloth = |triangle: u32| self.cloth_triangles[triangle as usize];
         let moved = |triangle: u32| cloth(triangle).map(|i| self.candidate[i]);
-        if self.active_cloth.iter().any(|&i| {
-            let (a, b) = self.cloth[i];
-            cut(moved(a), moved(b)) >= FOLD
-        }) {
+        if self.active_cloth.iter().any(|&(a, b)| cut(moved(a), moved(b)) >= FOLD) {
             return false;
         }
-        self.active_arm.iter().all(|&i| {
-            let (a, b) = self.arm[i];
+        self.active_arm.iter().all(|&(a, b)| {
             let skin = self.skin_triangles[b as usize].map(|i| self.posed_skin[i]);
             let new = cut(moved(a), skin);
             new < FOLD || new <= cut(cloth(a).map(|i| stock[i]), skin)
         })
+    }
+}
+
+/// A row of bits for each of some items, over others.
+#[derive(Clone, Debug, PartialEq)]
+struct Bits {
+    words: usize,
+    bits: Vec<u64>,
+}
+
+impl Bits {
+    fn new(rows: usize, columns: usize) -> Self {
+        let words = columns.div_ceil(64);
+        Self { words, bits: vec![0; rows * words] }
+    }
+
+    fn set(&mut self, row: u32, column: u32) {
+        self.bits[row as usize * self.words + column as usize / 64] |= 1 << (column % 64);
+    }
+
+    fn get(&self, row: u32, column: u32) -> bool {
+        self.bits[row as usize * self.words + column as usize / 64] & 1 << (column % 64) != 0
+    }
+}
+
+/// A tree over items grouped by where they lie at rest, refit to their bounds as they're posed: each
+/// node's left child follows it.
+#[derive(Clone, Debug, PartialEq)]
+struct BoxTree {
+    /// The items, in the order of the leaves.
+    items: Vec<u32>,
+    /// Per node, its items and its right child if it has children.
+    nodes: Vec<(usize, usize, Option<usize>)>,
+    bounds: Vec<(Vec3, Vec3)>,
+}
+
+impl BoxTree {
+    fn new(centres: &[Vec3]) -> Self {
+        let mut items: Vec<_> = (0..centres.len() as u32).collect();
+        let mut nodes = Vec::new();
+        Self::layout(centres, &mut items, 0, &mut nodes);
+        Self { items, bounds: vec![(Vec3::ZERO, Vec3::ZERO); nodes.len()], nodes }
+    }
+
+    /// Splits `items` at the middle of their centres' widest axis until a leaf holds 8 or fewer.
+    fn layout(
+        centres: &[Vec3],
+        items: &mut [u32],
+        start: usize,
+        nodes: &mut Vec<(usize, usize, Option<usize>)>,
+    ) {
+        let at = nodes.len();
+        nodes.push((start, start + items.len(), None));
+        if items.len() <= 8 {
+            return;
+        }
+        let (lo, hi) = items
+            .iter()
+            .fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), &item| {
+                (lo.min(centres[item as usize]), hi.max(centres[item as usize]))
+            });
+        let axis = (hi - lo).max_position();
+        items.sort_unstable_by(|&a, &b| {
+            centres[a as usize][axis].total_cmp(&centres[b as usize][axis]).then(a.cmp(&b))
+        });
+        let middle = items.len() / 2;
+        let (left, right) = items.split_at_mut(middle);
+        Self::layout(centres, left, start, nodes);
+        nodes[at].2 = Some(nodes.len());
+        Self::layout(centres, right, start + middle, nodes);
+    }
+
+    /// Bounds each node by its items' `bounds`.
+    fn refit(&mut self, bounds: &[(Vec3, Vec3)]) {
+        for (i, &(start, end, right)) in self.nodes.iter().enumerate().rev() {
+            self.bounds[i] = match right {
+                Some(right) => {
+                    let (a, b) = (self.bounds[i + 1], self.bounds[right]);
+                    (a.0.min(b.0), a.1.max(b.1))
+                }
+                None => self.items[start..end]
+                    .iter()
+                    .fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), &item| {
+                        (lo.min(bounds[item as usize].0), hi.max(bounds[item as usize].1))
+                    }),
+            };
+        }
+    }
+
+    /// Calls `found` with each item of every leaf whose bounds meet `bounds`: so with every item whose
+    /// own bounds do, and some whose don't.
+    fn meeting(&self, bounds: (Vec3, Vec3), mut found: impl FnMut(u32)) {
+        let mut stack = [0; 64];
+        let mut depth = 1;
+        while depth > 0 {
+            depth -= 1;
+            let i = stack[depth];
+            if !overlap(self.bounds[i], bounds) {
+                continue;
+            }
+            match self.nodes[i] {
+                (_, _, Some(right)) => {
+                    stack[depth] = right;
+                    stack[depth + 1] = i + 1;
+                    depth += 2;
+                }
+                (start, end, None) => self.items[start..end].iter().for_each(|&item| found(item)),
+            }
+        }
     }
 }
 
@@ -417,7 +594,7 @@ fn cut(a: [Vec3; 3], b: [Vec3; 3]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cut, pose_limit, settled_weight};
+    use super::{BoxTree, cut, overlap, pose_limit, settled_weight};
     use sapphire_math::Vec3;
 
     #[test]
@@ -458,5 +635,40 @@ mod tests {
         assert_eq!(settled_weight(0.0, 0.8, 0.0, Some(1.0)), 0.0, "nor where the pose allows none");
         assert_eq!(settled_weight(0.2, 0.8, limit, None), 0.2, "a cut starts over");
         assert!(settled_weight(0.5, 0.8, limit, Some(1.0)) > 0.5);
+    }
+
+    /// The trees find the pairs whose bounds meet, so they must reach every item whose bounds meet the
+    /// ones asked about, however far the items have moved from where the tree grouped them.
+    #[test]
+    fn a_box_tree_finds_every_item_whose_bounds_meet() {
+        let mut seed = 0x1234_5678_u32;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let mut point = || Vec3::new(random(), random(), random()) - Vec3::splat(0.5);
+        let centres: Vec<_> = (0..500).map(|_| point()).collect();
+        let mut tree = BoxTree::new(&centres);
+        for _ in 0..3 {
+            let bounds: Vec<_> = centres
+                .iter()
+                .map(|&c| {
+                    let (c, extent) = (c + point() * 0.3, point().abs() * 0.1);
+                    (c - extent, c + extent)
+                })
+                .collect();
+            tree.refit(&bounds);
+            for _ in 0..200 {
+                let (c, extent) = (point(), point().abs() * 0.2);
+                let asked = (c - extent, c + extent);
+                let mut found = vec![false; bounds.len()];
+                tree.meeting(asked, |item| found[item as usize] = true);
+                for (item, &own) in bounds.iter().enumerate() {
+                    assert!(found[item] || !overlap(asked, own), "item {item} missed");
+                }
+            }
+        }
     }
 }

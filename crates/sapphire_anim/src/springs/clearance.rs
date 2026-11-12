@@ -30,7 +30,10 @@ const AHEAD_AXES: usize = 4;
 const STRANDS: usize = 7;
 /// What each part of a solve costs, in µs (H5's probe of the walk on Desktop-Low, release, on the M5):
 /// what [`Spread`] balances, by their ratios. Posing the garment is mostly the underarm's relief; a face
-/// lock's includes its share of the face's field.
+/// lock's includes its share of the face's field. M4 H7 made most parts cheaper (posing about 74, an
+/// axis 62 to 100, a strand 20, the residual 174, a face lock 84) but left these as they are: which
+/// tick a part falls on decides what it reads, so weighing them again would move the poses of every
+/// tier with an interval.
 const POSE_COST: u32 = 212;
 const AXIS_COST: u32 = 111;
 const AHEAD_AXIS_COST: u32 = 105;
@@ -139,91 +142,256 @@ impl Interval {
 
 /// Orthographic depth ranges along the chest's local axes. A point must lie inside all
 /// three projections to belong to the garment envelope.
+///
+/// An axis's cells are kept by tiles, each rastered for the refit it was last rastered for. Where the
+/// strands read an axis in the same update it refits in, it rasters as it refits the tiles read since
+/// it last did, and any other when one of its cells is first read, from the triangles whose bounds
+/// reach it, so only the tiles read are rastered. Where they read it on a later tick of the interval,
+/// it rasters every triangle at once as it refits, so the work stays on the axis's own tick. A cell's
+/// range is the least and greatest depth its triangles give, which no order changes, so either way it
+/// comes out as a raster of the whole grid would leave it.
 #[derive(Clone, Debug, PartialEq)]
 struct Garment {
+    /// The garment's triangles, in the order of `nodes`' leaves.
+    triangles: Vec<[usize; 3]>,
+    /// A tree over `triangles`, grouped as they lie at rest: each node's left child follows it.
+    nodes: Vec<RasterNode>,
+    /// Per node, the bounds of its triangles where the garment was last posed.
+    bounds: Vec<(Vec3, Vec3)>,
+    /// Where the garment was last posed, which its axes raster.
+    vertices: Vec<Vec3>,
+    /// Per axis, each cell's depth range.
     grids: [Vec<Interval>; 3],
-    /// Per grid, the rows and columns the last refit wrote in, `None` if none: every other cell is
-    /// empty, so a refit clears only these.
-    written: [Option<Cells>; 3],
+    /// Per axis, the refit each tile of [`TILE`] by [`TILE`] cells was last rastered for, and read for.
+    tiles: [Vec<u32>; 3],
+    read: [Vec<u32>; 3],
+    /// Per axis, the tiles read since it last refit, which it rasters as it next does.
+    reading: [Vec<usize>; 3],
+    /// Per axis, how many times it has refit: a cell rastered for an earlier refit is stale.
+    refits: [u32; 3],
     min: Vec3,
     max: Vec3,
 }
 
-/// Columns `x` and rows `y` of a grid, inclusive.
+/// A node of [`Garment::nodes`]: its triangles, and its right child if it has children.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Cells {
-    x: (usize, usize),
-    y: (usize, usize),
+struct RasterNode {
+    start: usize,
+    end: usize,
+    right: Option<usize>,
 }
 
-impl Cells {
-    fn with(cells: Option<Self>, x: (usize, usize), y: (usize, usize)) -> Self {
-        cells.map_or(Self { x, y }, |cells| Self {
-            x: (cells.x.0.min(x.0), cells.x.1.max(x.1)),
-            y: (cells.y.0.min(y.0), cells.y.1.max(y.1)),
-        })
+/// The side of a tile of a garment's grid, in cells, which rasters as one.
+const TILE: usize = 8;
+const TILES: usize = GRID / TILE;
+
+/// The cell along a grid's axis that `x` falls in, clamped to the grid.
+fn cell_index(x: f32) -> usize {
+    (((x + HALF) / CELL).floor() as isize).clamp(0, GRID as isize - 1) as usize
+}
+
+/// Adds to `grid`, across `axis`, the depth of the triangle `a`, `b`, `c` at the centre of each cell
+/// of `cells` (its columns, then its rows, inclusive) that it covers.
+fn cover(
+    grid: &mut [Interval],
+    axis: usize,
+    [a, b, c]: [Vec3; 3],
+    (xs, ys): ((usize, usize), (usize, usize)),
+) {
+    let u = (axis + 1) % 3;
+    let v = (axis + 2) % 3;
+    let coordinate = |i: usize| (i as f32 + 0.5) * CELL - HALF;
+    let ab = b - a;
+    let ac = c - a;
+    let area = ab[u] * ac[v] - ab[v] * ac[u];
+    if area.abs() < 1.0e-9 {
+        return;
+    }
+    let inverse = area.recip();
+    for y in ys.0..=ys.1 {
+        let dy = coordinate(y) - a[v];
+        for x in xs.0..=xs.1 {
+            let dx = coordinate(x) - a[u];
+            let s = (dx * ac[v] - dy * ac[u]) * inverse;
+            let t = (ab[u] * dy - ab[v] * dx) * inverse;
+            if s >= 0.0 && t >= 0.0 && s + t <= 1.0 {
+                grid[y * GRID + x].add(a[axis] + s * ab[axis] + t * ac[axis]);
+            }
+        }
     }
 }
 
 impl Garment {
-    fn new() -> Self {
+    /// An envelope of `triangles`, grouped by where they lie on `rest`.
+    fn new(rest: &[Vec3], triangles: &[[usize; 3]]) -> Self {
+        let mut ordered: Vec<_> =
+            triangles.iter().map(|&t| ((rest[t[0]] + rest[t[1]] + rest[t[2]]) / 3.0, t)).collect();
+        let mut nodes = Vec::new();
+        Self::layout(&mut ordered, 0, &mut nodes);
         Self {
+            triangles: ordered.into_iter().map(|(_, t)| t).collect(),
+            bounds: vec![(Vec3::ZERO, Vec3::ZERO); nodes.len()],
+            nodes,
+            vertices: vec![Vec3::ZERO; rest.len()],
             grids: std::array::from_fn(|_| vec![Interval::EMPTY; GRID * GRID]),
-            written: [None; 3],
+            tiles: std::array::from_fn(|_| vec![0; TILES * TILES]),
+            read: std::array::from_fn(|_| vec![0; TILES * TILES]),
+            reading: std::array::from_fn(|_| Vec::with_capacity(TILES * TILES)),
+            refits: [0; 3],
             min: Vec3::ZERO,
             max: Vec3::ZERO,
         }
     }
 
+    /// Splits `triangles` at the middle of their widest axis until a leaf holds 8 or fewer.
+    fn layout(triangles: &mut [(Vec3, [usize; 3])], start: usize, nodes: &mut Vec<RasterNode>) {
+        let at = nodes.len();
+        nodes.push(RasterNode { start, end: start + triangles.len(), right: None });
+        if triangles.len() <= 8 {
+            return;
+        }
+        let (lo, hi) = triangles
+            .iter()
+            .fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), (c, _)| {
+                (lo.min(*c), hi.max(*c))
+            });
+        let extent = hi - lo;
+        let axis = if extent.x >= extent.y && extent.x >= extent.z {
+            0
+        } else if extent.y >= extent.z {
+            1
+        } else {
+            2
+        };
+        triangles.sort_unstable_by(|a, b| a.0[axis].total_cmp(&b.0[axis]).then(a.1.cmp(&b.1)));
+        let middle = triangles.len() / 2;
+        let (left, right) = triangles.split_at_mut(middle);
+        Self::layout(left, start, nodes);
+        nodes[at].right = Some(nodes.len());
+        Self::layout(right, start + middle, nodes);
+    }
+
     #[cfg(test)]
-    fn refit(&mut self, vertices: &[Vec3], triangles: &[[usize; 3]]) {
+    fn refit(&mut self, vertices: &[Vec3]) {
         self.bound(vertices);
         for axis in 0..3 {
-            self.refit_axis(axis, vertices, triangles);
+            self.refit_axis(axis, false);
         }
     }
 
-    /// Bounds the envelope by `vertices`, which its axes are then refit from.
+    /// Poses the envelope at `vertices`, which its axes are then refit from, and bounds it.
     fn bound(&mut self, vertices: &[Vec3]) {
+        self.vertices.copy_from_slice(vertices);
         self.min = vertices.iter().copied().fold(Vec3::splat(f32::INFINITY), Vec3::min);
         self.max = vertices.iter().copied().fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+        for (i, node) in self.nodes.iter().enumerate().rev() {
+            self.bounds[i] = if let Some(right) = node.right {
+                let (a, b) = (self.bounds[i + 1], self.bounds[right]);
+                (a.0.min(b.0), a.1.max(b.1))
+            } else {
+                self.triangles[node.start..node.end].iter().fold(
+                    (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                    |(lo, hi), triangle| {
+                        let [a, b, c] = triangle.map(|i| vertices[i]);
+                        (lo.min(a).min(b).min(c), hi.max(a).max(b).max(c))
+                    },
+                )
+            };
+        }
     }
 
-    /// Rasters `triangles` along `axis`: the depth ranges `vertices` cover in the grid across it.
-    fn refit_axis(&mut self, axis: usize, vertices: &[Vec3], triangles: &[[usize; 3]]) {
-        let grid = &mut self.grids[axis];
-        let written = &mut self.written[axis];
-        if let Some(cells) = written.take() {
-            for y in cells.y.0..=cells.y.1 {
-                grid[y * GRID + cells.x.0..=y * GRID + cells.x.1].fill(Interval::EMPTY);
+    /// Refits `axis` to where the garment was last posed, rastering every tile the garment reaches if
+    /// `whole`, or else the tiles read since it last refit: the others raster as they're read.
+    fn refit_axis(&mut self, axis: usize, whole: bool) {
+        self.refits[axis] = self.refits[axis].wrapping_add(1);
+        let mut reading = std::mem::take(&mut self.reading[axis]);
+        if whole {
+            self.raster_whole(axis);
+        } else {
+            for &tile in &reading {
+                self.raster(axis, tile % TILES * TILE, tile / TILES * TILE);
+                self.tiles[axis][tile] = self.refits[axis];
             }
+        }
+        reading.clear();
+        self.reading[axis] = reading;
+    }
+
+    /// Rasters across `axis` every tile the garment reaches, from every triangle at once: the tiles
+    /// past it are rastered if they're read.
+    fn raster_whole(&mut self, axis: usize) {
+        let Self { triangles, vertices, grids, tiles, refits, min, max, .. } = self;
+        let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+        let xs = (cell_index(min[u]) / TILE, cell_index(max[u]) / TILE);
+        let ys = (cell_index(min[v]) / TILE, cell_index(max[v]) / TILE);
+        let grid = &mut grids[axis];
+        for y in ys.0 * TILE..(ys.1 + 1) * TILE {
+            grid[y * GRID + xs.0 * TILE..y * GRID + (xs.1 + 1) * TILE].fill(Interval::EMPTY);
+        }
+        for triangle in triangles.iter() {
+            let [a, b, c] = triangle.map(|i| vertices[i]);
+            let (low, high) = (a.min(b).min(c), a.max(b).max(c));
+            let cells =
+                ((cell_index(low[u]), cell_index(high[u])), (cell_index(low[v]), cell_index(high[v])));
+            cover(grid, axis, [a, b, c], cells);
+        }
+        for y in ys.0..=ys.1 {
+            tiles[axis][y * TILES + xs.0..=y * TILES + xs.1].fill(refits[axis]);
+        }
+    }
+
+    /// The depth range of cell `x`, `y` across `axis`, its tile rastered if it hasn't been since the
+    /// axis refit.
+    fn cell(&mut self, axis: usize, x: usize, y: usize) -> Interval {
+        let tile = (y / TILE) * TILES + x / TILE;
+        if self.read[axis][tile] != self.refits[axis] {
+            self.read[axis][tile] = self.refits[axis];
+            self.reading[axis].push(tile);
+        }
+        if self.tiles[axis][tile] != self.refits[axis] {
+            self.raster(axis, x / TILE * TILE, y / TILE * TILE);
+            self.tiles[axis][tile] = self.refits[axis];
+        }
+        self.grids[axis][y * GRID + x]
+    }
+
+    /// Rasters across `axis` the tile whose first column is `x0` and first row `y0`: the depths along
+    /// it of the triangles covering each of its cells' centres, as a raster of the whole grid would.
+    fn raster(&mut self, axis: usize, x0: usize, y0: usize) {
+        let Self { triangles, nodes, bounds, vertices, grids, .. } = self;
+        let grid = &mut grids[axis];
+        let (x1, y1) = (x0 + TILE - 1, y0 + TILE - 1);
+        for y in y0..=y1 {
+            grid[y * GRID + x0..=y * GRID + x1].fill(Interval::EMPTY);
         }
         let u = (axis + 1) % 3;
         let v = (axis + 2) % 3;
-        for triangle in triangles {
-            let [a, b, c] = triangle.map(|i| vertices[i]);
-            let min = a.min(b).min(c);
-            let max = a.max(b).max(c);
-            let index = |x: f32| (((x + HALF) / CELL).floor() as isize).clamp(0, GRID as isize - 1) as usize;
-            let coordinate = |i: usize| (i as f32 + 0.5) * CELL - HALF;
-            let ab = b - a;
-            let ac = c - a;
-            let area = ab[u] * ac[v] - ab[v] * ac[u];
-            if area.abs() < 1.0e-9 {
+        // The columns and rows of the tile that `min` to `max` reach, if any.
+        let reach = |min: Vec3, max: Vec3| {
+            let x = (cell_index(min[u]).max(x0), cell_index(max[u]).min(x1));
+            let y = (cell_index(min[v]).max(y0), cell_index(max[v]).min(y1));
+            (x.0 <= x.1 && y.0 <= y.1).then_some((x, y))
+        };
+        let mut stack = [0; 64];
+        let mut depth = 1;
+        while depth > 0 {
+            depth -= 1;
+            let i = stack[depth];
+            let (min, max) = bounds[i];
+            if reach(min, max).is_none() {
                 continue;
             }
-            let inverse = area.recip();
-            *written =
-                Some(Cells::with(*written, (index(min[u]), index(max[u])), (index(min[v]), index(max[v]))));
-            for y in index(min[v])..=index(max[v]) {
-                let dy = coordinate(y) - a[v];
-                for x in index(min[u])..=index(max[u]) {
-                    let dx = coordinate(x) - a[u];
-                    let s = (dx * ac[v] - dy * ac[u]) * inverse;
-                    let t = (ab[u] * dy - ab[v] * dx) * inverse;
-                    if s >= 0.0 && t >= 0.0 && s + t <= 1.0 {
-                        grid[y * GRID + x].add(a[axis] + s * ab[axis] + t * ac[axis]);
-                    }
+            let node = nodes[i];
+            if let Some(right) = node.right {
+                stack[depth] = right;
+                stack[depth + 1] = i + 1;
+                depth += 2;
+                continue;
+            }
+            for triangle in &triangles[node.start..node.end] {
+                let [a, b, c] = triangle.map(|i| vertices[i]);
+                if let Some(cells) = reach(a.min(b).min(c), a.max(b).max(c)) {
+                    cover(grid, axis, [a, b, c], cells);
                 }
             }
         }
@@ -234,26 +402,25 @@ impl Garment {
         (self.min - point).cmple(margin).all() && (point - self.max).cmple(margin).all()
     }
 
-    fn depth(&self, point: Vec3, radius: f32) -> f32 {
+    fn depth(&mut self, point: Vec3, radius: f32) -> f32 {
         if !self.within(point, GARMENT_MARGIN + radius) || point.abs().max_element() >= HALF - CELL {
             return 0.0;
         }
         let sample = (point + Vec3::splat(HALF)) / CELL - Vec3::splat(0.5);
         let mut depth = f32::INFINITY;
-        for (axis, grid) in self.grids.iter().enumerate() {
+        for axis in 0..3 {
             let u = (axis + 1) % 3;
             let v = (axis + 2) % 3;
             let x = sample[u] as usize;
             let y = sample[v] as usize;
             let fx = sample[u] - x as f32;
             let fy = sample[v] - y as f32;
-            let row = y * GRID + x;
             let at = |a: Interval| (point[axis] - a.lo).min(a.hi - point[axis]);
             // Fade the edge of the sampled silhouette over a cell so entry stays continuous.
             let interpolate = |a: f32, b: f32, weight: f32| a + (b - a) * weight;
-            let at = |index: usize| at(grid[index]).clamp(-CELL * 2.0, 1.0);
-            let top = interpolate(at(row), at(row + 1), fx);
-            let bottom = interpolate(at(row + GRID), at(row + GRID + 1), fx);
+            let mut at = |x: usize, y: usize| at(self.cell(axis, x, y)).clamp(-CELL * 2.0, 1.0);
+            let top = interpolate(at(x, y), at(x + 1, y), fx);
+            let bottom = interpolate(at(x, y + 1), at(x + 1, y + 1), fx);
             let distance = interpolate(top, bottom, fy);
             depth = depth.min(distance + GARMENT_MARGIN + radius);
             if depth <= 0.0 {
@@ -412,6 +579,7 @@ impl Clearance {
         };
         let chest = joint(HumanBone::UpperChest)?;
         let mut shirt = Vec::new();
+        let mut rest = Vec::new();
         let mut triangles = Vec::new();
         let mut mapped = vec![None; mesh.streams.len()];
         for face in indices("Tops_01_CLOTH")?.as_chunks::<3>().0 {
@@ -422,7 +590,9 @@ impl Clearance {
                     existing
                 } else {
                     let next = shirt.len();
-                    shirt.push(point(index)?.1);
+                    let (position, point) = point(index)?;
+                    shirt.push(point);
+                    rest.push(position);
                     mapped[index] = Some(next);
                     next
                 };
@@ -542,6 +712,7 @@ impl Clearance {
         let placed = vec![Placed::default(); limbs.len()];
         let probe_count =
             strands.iter().map(|strand| strand.previous_probes.capacity()).max().unwrap_or_default();
+        let garment = Garment::new(&rest, &triangles);
         Some(Self {
             chest,
             shirt,
@@ -549,8 +720,8 @@ impl Clearance {
             triangles,
             limbs,
             strands,
-            garment: Garment::new(),
-            ahead_garment: Garment::new(),
+            ahead_garment: garment.clone(),
+            garment,
             posed_shirt: shirt_points.clone(),
             previous_shirt: shirt_points.clone(),
             ahead_shirt: shirt_points,
@@ -791,12 +962,16 @@ impl Clearance {
                 }
             }
         }
+        // An envelope the strands read in this update rasters only what they read; one they read on a
+        // later tick rasters whole now, on its axis's own tick.
+        let strands = (STRANDS..self.residual_part()).fold(0, |bits, part| bits | 1 << part);
+        let whole = due & strands == 0;
         for axis in 0..3 {
             if take(&mut self.pending, due, AXES + axis, &elapsed).is_some() {
-                self.garment.refit_axis(axis, &self.posed_shirt, &self.triangles);
+                self.garment.refit_axis(axis, whole);
             }
             if take(&mut self.pending, due, AHEAD_AXES + axis, &elapsed).is_some() && self.forecast > 0.0 {
-                self.ahead_garment.refit_axis(axis, &self.ahead_shirt, &self.triangles);
+                self.ahead_garment.refit_axis(axis, whole);
             }
         }
         let chest = Frame::of(&pose.model()[self.chest]);
@@ -858,9 +1033,14 @@ impl Clearance {
                 });
                 strand.relief =
                     choose(strand.relief, elapsed, along, strand.side, strand.front, route, |rotation| {
-                        let current = penetration(rotation, &self.garment, &self.posed_limbs, &self.probes);
-                        let ahead =
-                            penetration(rotation, &self.ahead_garment, &self.ahead_limbs, &self.ahead_probes);
+                        let current =
+                            penetration(rotation, &mut self.garment, &self.posed_limbs, &self.probes);
+                        let ahead = penetration(
+                            rotation,
+                            &mut self.ahead_garment,
+                            &self.ahead_limbs,
+                            &self.ahead_probes,
+                        );
                         (current, ahead)
                     });
             }
@@ -1006,7 +1186,7 @@ fn spread(candidates: &[(Vec3, Point)]) -> Vec<Point> {
     result
 }
 
-fn penetration(rotation: Quat, garment: &Garment, limbs: &[Placed], probes: &[Probe]) -> f32 {
+fn penetration(rotation: Quat, garment: &mut Garment, limbs: &[Placed], probes: &[Probe]) -> f32 {
     if probes.is_empty() {
         return 0.0;
     }
@@ -1046,7 +1226,7 @@ fn choose(
     side: f32,
     front: f32,
     route: Option<Vec3>,
-    depth: impl Fn(Quat) -> (f32, f32),
+    mut depth: impl FnMut(Quat) -> (f32, f32),
 ) -> Relief {
     if elapsed == Some(0.0) {
         return previous;
@@ -1190,14 +1370,93 @@ mod tests {
             [2, 6, 3],
             [3, 6, 7],
         ];
-        let mut garment = Garment::new();
-        garment.refit(&vertices, &triangles);
+        let mut garment = Garment::new(&vertices, &triangles);
+        garment.refit(&vertices);
         let a = Vec3::NEG_X * 0.12;
         let b = Vec3::X * 0.12;
         assert_eq!(garment.depth(a, 0.0), 0.0);
         assert_eq!(garment.depth(b, 0.0), 0.0);
         assert!(garment.depth(a.lerp(b, 0.5), 0.0) > 0.05);
         assert_eq!(garment.depth(Vec3::Y * 0.12, 0.0), 0.0);
+    }
+
+    /// An axis rasters by tiles as they're read, or whole as it refits, and either way must leave every
+    /// cell as a raster of every triangle over the whole grid does, through refits that move it.
+    #[test]
+    fn a_garment_rastered_by_tiles_as_read_matches_one_rastered_whole() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let random_point = |random: &mut dyn FnMut() -> f32| {
+            Vec3::new(random(), random(), random()) * 0.6 - Vec3::splat(0.3)
+        };
+        let rest: Vec<_> = (0..240).map(|_| random_point(&mut random)).collect();
+        let triangles: Vec<_> = (0..300).map(|_| [0; 3].map(|_| (random() * 239.99) as usize)).collect();
+        let whole = |vertices: &[Vec3], axis: usize| {
+            let mut grid = vec![Interval::EMPTY; GRID * GRID];
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            let coordinate = |i: usize| (i as f32 + 0.5) * CELL - HALF;
+            for triangle in &triangles {
+                let [a, b, c] = triangle.map(|i| vertices[i]);
+                let (min, max) = (a.min(b).min(c), a.max(b).max(c));
+                let (ab, ac) = (b - a, c - a);
+                let area = ab[u] * ac[v] - ab[v] * ac[u];
+                if area.abs() < 1.0e-9 {
+                    continue;
+                }
+                let inverse = area.recip();
+                for y in cell_index(min[v])..=cell_index(max[v]) {
+                    let dy = coordinate(y) - a[v];
+                    for x in cell_index(min[u])..=cell_index(max[u]) {
+                        let dx = coordinate(x) - a[u];
+                        let s = (dx * ac[v] - dy * ac[u]) * inverse;
+                        let t = (ab[u] * dy - ab[v] * dx) * inverse;
+                        if s >= 0.0 && t >= 0.0 && s + t <= 1.0 {
+                            grid[y * GRID + x].add(a[axis] + s * ab[axis] + t * ac[axis]);
+                        }
+                    }
+                }
+            }
+            grid
+        };
+        let mut garment = Garment::new(&rest, &triangles);
+        let mut vertices = rest.clone();
+        for pose in 0..4 {
+            if pose > 0 {
+                vertices.iter_mut().for_each(|p| *p += random_point(&mut random) * 0.1);
+            }
+            garment.bound(&vertices);
+            for axis in 0..3 {
+                garment.refit_axis(axis, pose >= 2);
+                let expected = whole(&vertices, axis);
+                // Read a scattered few first, as the strands do, then every cell.
+                for _ in 0..40 {
+                    let (x, y) = ((random() * 127.99) as usize, (random() * 127.99) as usize);
+                    let cell = garment.cell(axis, x, y);
+                    let want = expected[y * GRID + x];
+                    assert_eq!(
+                        (cell.lo.to_bits(), cell.hi.to_bits()),
+                        (want.lo.to_bits(), want.hi.to_bits())
+                    );
+                }
+                if pose % 2 == 1 {
+                    for y in 0..GRID {
+                        for x in 0..GRID {
+                            let (cell, want) = (garment.cell(axis, x, y), expected[y * GRID + x]);
+                            assert_eq!(
+                                (cell.lo.to_bits(), cell.hi.to_bits()),
+                                (want.lo.to_bits(), want.hi.to_bits()),
+                                "pose {pose} axis {axis} cell {x}, {y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1333,8 +1592,8 @@ mod tests {
                 relief: Relief { direction: Vec3::Z, rotation: Quat::from_rotation_x(24.0_f32.to_radians()) },
                 previous_probes: Vec::with_capacity(6),
             }],
-            garment: Garment::new(),
-            ahead_garment: Garment::new(),
+            garment: Garment::new(&[], &[]),
+            ahead_garment: Garment::new(&[], &[]),
             posed_shirt: Vec::new(),
             previous_shirt: Vec::new(),
             ahead_shirt: Vec::new(),

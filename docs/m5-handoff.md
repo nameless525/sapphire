@@ -533,12 +533,11 @@ Each item names the package and its hand-back or row, and why it waits.
 - **The sandbox's party is told apart by tint alone** (A5): the sandbox's, not the game's.
 - **No screen reader or audio description** (m4-plan §3).
 
-**Playtests** (F1, F2):
+**Playtests** (F1, F2, F3):
 
-- **A label typed by a player:** the format takes one, the pause's row gives none (F1).
-- **Each keep rewrites a run's checksums whole,** about 3.8 MB every 10 s near the 4-hour cap, and a kill between the replay and its checksums could leave them mismatched (F1).
-- **The report can't see** a move cut off within one step, damage beyond the attack's number, or hits the player landed (F2).
-- **A capture's session clock runs fast,** so its seconds played are short (F2).
+- **A label typed by a player:** the format takes one, the pause has no text field (F1, F3).
+- **The report can't see** a move started and cut off within one step (it needs the simulation to publish each move's start), and its damage is the attack's number, not health lost (F2, F3). Hits landed and damage dealt are counted since F3.
+- **A kill inside a keep on a phone's file system** is proved only by host SIGKILLs and fault injection (`keep_kill`, `keep_faults`): the emulator's kills fell between keeps (F3). Since F3 a keep appends only its new ticks (about 6–10 KB near the 4-hour cap, from 7–13 MB) and a capture's session clock runs at the game's rate.
 
 **The game and content** (X1, X2, S6):
 

@@ -2963,6 +2963,7 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
                        "--render-scale", "0.428632"],
+                ci_seconds: (lavapipe: 2.1, warp: 9.2),
             ),
             (
                 name: "tier-face-mobile-low-three-quarters",
@@ -3142,48 +3143,56 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 10.5, warp: 29.6),
             ),
             (
                 name: "tier-ward-desktop-high-floor",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--render-scale", "0.7", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 9.7, warp: 35.0),
             ),
             (
                 name: "tier-ward-desktop-high-rung-one",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--rung", "1", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 10.7, warp: 37.8),
             ),
             (
                 name: "tier-ward-desktop-high-rung-two",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--rung", "2", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 9.7, warp: 32.8),
             ),
             (
                 name: "tier-ward-desktop-high-rung-three",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--rung", "3", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 9.4, warp: 35.2),
             ),
             (
                 name: "tier-ward-desktop-low-floor",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
                        "--render-scale", "0.7", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 6.7, warp: 19.5),
             ),
             (
                 name: "tier-ward-desktop-low-rung-one",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
                        "--rung", "1", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 6.7, warp: 23.6),
             ),
             (
                 name: "tier-ward-desktop-low-rung-two",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
                        "--rung", "2", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 6.6, warp: 31.9),
             ),
             (
                 name: "tier-ward-mobile-high",
@@ -3191,6 +3200,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.632479"],
+                ci_seconds: (lavapipe: 3.4, warp: 15.5),
             ),
             (
                 name: "tier-ward-mobile-high-floor",
@@ -3198,6 +3208,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.474359"],
+                ci_seconds: (lavapipe: 3.1, warp: 14.4),
             ),
             (
                 name: "tier-ward-mobile-high-rung-one",
@@ -3205,6 +3216,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.632479", "--rung", "1"],
+                ci_seconds: (lavapipe: 2.8, warp: 15.5),
             ),
             (
                 name: "tier-ward-mobile-high-rung-two",
@@ -3212,6 +3224,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.632479", "--rung", "2"],
+                ci_seconds: (lavapipe: 3.1, warp: 11.2),
             ),
             (
                 name: "tier-ward-mobile-high-rung-three",
@@ -3219,6 +3232,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.632479", "--rung", "3"],
+                ci_seconds: (lavapipe: 2.7, warp: 11.7),
             ),
             (
                 name: "tier-ward-mobile-low-floor",
@@ -3226,6 +3240,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
                        "--render-scale", "0.428632"],
+                ci_seconds: (lavapipe: 2.1, warp: 13.3),
             ),
             (
                 name: "tier-ward-mobile-low-rung-one",
@@ -3233,6 +3248,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
                        "--render-scale", "0.504274", "--rung", "1"],
+                ci_seconds: (lavapipe: 2.3, warp: 13.7),
             ),
             (
                 name: "tier-ward-mobile-low-rung-two",
@@ -3240,12 +3256,14 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
                        "--render-scale", "0.504274", "--rung", "2"],
+                ci_seconds: (lavapipe: 1.8, warp: 13.6),
             ),
             (
                 name: "tier-hit-desktop-high",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-high", "--capture-frames", "12", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 9.5, warp: 39.8),
             ),
             (
                 name: "tier-hit-desktop-high-floor",
@@ -3253,6 +3271,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-high", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 9.8, warp: 23.3),
             ),
             (
                 name: "tier-hit-desktop-high-rung-one",
@@ -3260,6 +3279,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-high", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 8.7, warp: 26.0),
             ),
             (
                 name: "tier-hit-desktop-high-rung-two",
@@ -3267,6 +3287,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-high", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 8.8, warp: 36.3),
             ),
             (
                 name: "tier-hit-desktop-high-rung-three",
@@ -3274,6 +3295,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-high", "--rung", "3", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 9.1, warp: 34.3),
             ),
             (
                 name: "tier-hit-desktop-low-floor",
@@ -3281,6 +3303,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-low", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 5.9, warp: 27.6),
             ),
             (
                 name: "tier-hit-desktop-low-rung-one",
@@ -3288,6 +3311,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-low", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 6.2, warp: 32.7),
             ),
             (
                 name: "tier-hit-desktop-low-rung-two",
@@ -3295,6 +3319,7 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "desktop-low", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
+                ci_seconds: (lavapipe: 6.6, warp: 21.9),
             ),
             (
                 name: "tier-hit-mobile-high",
@@ -3302,6 +3327,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-high", "--render-scale", "0.632479"],
+                ci_seconds: (lavapipe: 2.9, warp: 13.0),
             ),
             (
                 name: "tier-hit-mobile-high-floor",
@@ -3309,6 +3335,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-high", "--render-scale", "0.474359"],
+                ci_seconds: (lavapipe: 2.5, warp: 17.3),
             ),
             (
                 name: "tier-hit-mobile-high-rung-one",
@@ -3316,6 +3343,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "1"],
+                ci_seconds: (lavapipe: 2.6, warp: 17.5),
             ),
             (
                 name: "tier-hit-mobile-high-rung-two",
@@ -3323,6 +3351,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "2"],
+                ci_seconds: (lavapipe: 2.4, warp: 17.2),
             ),
             (
                 name: "tier-hit-mobile-high-rung-three",
@@ -3330,6 +3359,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "3"],
+                ci_seconds: (lavapipe: 2.3, warp: 17.3),
             ),
             (
                 name: "tier-hit-mobile-low-floor",
@@ -3337,6 +3367,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-low", "--render-scale", "0.428632"],
+                ci_seconds: (lavapipe: 2.3, warp: 11.7),
             ),
             (
                 name: "tier-hit-mobile-low-rung-one",
@@ -3344,6 +3375,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "1"],
+                ci_seconds: (lavapipe: 2.1, warp: 12.2),
             ),
             (
                 name: "tier-hit-mobile-low-rung-two",
@@ -3351,6 +3383,7 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "2"],
+                ci_seconds: (lavapipe: 2.1, warp: 16.7),
             ),
             // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera
             // motion: its duotone and speed lines held within 0.08 of the frame's relative luminance, and

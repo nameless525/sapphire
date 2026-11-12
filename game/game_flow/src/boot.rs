@@ -10,8 +10,9 @@
 //! 0. **An update** ([`Step::Update`], M4 P4), if the boot has one ([`Boot::with_update`]): the build's host
 //!    asked for a newer release, what it adds downloaded and then installed on threads of their own
 //!    (`crate::update`), the screen saying which and the bar how far. A release installed here is what the rest
-//!    of the boot stands: the show is made again on it ([`BootUpdate::remake`]), then the content, then its
-//!    first run, a part a frame, with what the run reads of its scenario read on the warm-up pool (M4 Z3e). The
+//!    of the boot stands: the show is made again on it ([`BootUpdate::remake`]), then the content, a part a
+//!    frame, and its first run is prepared and what it reads of its scenario read on the warm-up pool (M4 Z3e).
+//!    The
 //!    renderer builds beside it all along. Nothing that goes wrong stops the boot: it goes on with what it has.
 //! 1. **The renderer** ([`Step::Renderer`]): `Renderer::new` on the warm-up pool (`sapphire_jobs::spawn_warm_up`),
 //!    whose scopes stay on its threads, so its builds never land on a frame. It starts in [`Boot::start`].
@@ -47,7 +48,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use game_combat::combat::{Combat, CombatOption};
-use game_combat::fight::{FightStand, StandPlan, fight_stage};
+use game_combat::fight::{FightStand, PreparedRun, StandPlan, fight_stage};
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
 use sapphire_platform::{AppInitError, ContentFs, Host};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
@@ -564,8 +565,8 @@ impl Boot {
     }
 
     /// Takes the release an update installed a part on ([`Remaking`]): the show and its first run made again on
-    /// it with `remake`, then the content, then the run, with what it reads of its scenario read on the warm-up
-    /// pool, in place of what [`Self::start`] made on the release before. Each is a frame's: no frame of the boot
+    /// it with `remake`, then the content, then the run, prepared and with what it reads of its scenario read on
+    /// the warm-up pool, in place of what [`Self::start`] made on the release before. Each is a frame's: no frame of the boot
     /// screen held them all until M4 Z3e (one of 100 to 250 ms). True once it's done, stood on or not: if a part
     /// fails, the boot goes on with what it had, whose files stay until the next launch confirms.
     fn remake_part(&mut self) -> bool {
@@ -573,21 +574,42 @@ impl Boot {
         let remaking = self.remaking.as_deref_mut().expect("a remake while it's taken on");
         let desc = self.desc.as_ref().expect("a desc until the stage is made");
         let (character, sky) = (desc.character, desc.sky);
+        let before = remaking.made.name();
         let made = match std::mem::replace(&mut remaking.made, Remade::Nothing) {
             Remade::Nothing => (remaking.remake)(remaking.host.content())
                 .map(|(show, first)| Remade::Show(Box::new(show), first)),
             Remade::Show(show, first) => Content::new(&remaking.host, character, sky)
                 .map(|content| Remade::Content(show, first, Box::new(content))),
-            Remade::Content(mut show, first, mut content) => {
-                show.shown.fight.prepare_stock_combat(&first, &mut content).map(|combat| {
-                    // Read beside the renderer's build, as `start`'s is: tens of milliseconds of documents.
-                    let (scenario, party) =
-                        (combat.scenario().to_owned(), combat.simulation().party().is_formed());
-                    let (sender, planned) = mpsc::channel();
-                    sapphire_jobs::spawn_warm_up(move || {
-                        let _ = sender.send(StandPlan::of(&scenario, party));
-                    });
-                    Remade::Run(show, content, combat, planned)
+            Remade::Content(show, first, content) => {
+                // Its setup and its scenario's documents, 65 ms of a frame on an M5, on the warm-up pool.
+                let prepared = show.shown.fight.prepare_run_off_frame(&first);
+                Ok(Remade::Preparing(show, first, content, prepared))
+            }
+            Remade::Preparing(mut show, first, mut content, prepared) => {
+                let combat = match prepared.try_recv() {
+                    Ok(PreparedRun::Ready(combat)) => Ok(Some(*combat)),
+                    // The stock arena's fight, whose setup reads content: a build with no flow's.
+                    Ok(PreparedRun::OnTheFrame) => {
+                        show.shown.fight.prepare_stock_combat(&first, &mut content).map(Some)
+                    }
+                    Ok(PreparedRun::Failed(error)) => Err(AppInitError::msg(error)),
+                    Err(mpsc::TryRecvError::Empty) => Ok(None),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err(AppInitError::msg("the run's preparation on the warm-up pool panicked"))
+                    }
+                };
+                combat.map(|combat| match combat {
+                    Some(combat) => {
+                        // Read beside the renderer's build, as `start`'s is: tens of milliseconds of documents.
+                        let (scenario, party) =
+                            (combat.scenario().to_owned(), combat.simulation().party().is_formed());
+                        let (sender, planned) = mpsc::channel();
+                        sapphire_jobs::spawn_warm_up(move || {
+                            let _ = sender.send(StandPlan::of(&scenario, party));
+                        });
+                        Remade::Run(show, content, combat, planned)
+                    }
+                    None => Remade::Preparing(show, first, content, prepared),
                 })
             }
             Remade::Run(show, content, combat, planned) => match planned.try_recv() {
@@ -618,7 +640,10 @@ impl Boot {
                 true
             }
             Ok(made) => {
-                tracing::info!(target: LOG_TARGET, elapsed_ms = took, made = made.name(), "the update's release is made again in part");
+                // Once a part, not each frame it waits for the warm-up pool.
+                if made.name() != before {
+                    tracing::info!(target: LOG_TARGET, elapsed_ms = took, made = made.name(), "the update's release is made again in part");
+                }
                 self.remaking.as_deref_mut().expect("taken on above").made = made;
                 false
             }
@@ -764,6 +789,8 @@ enum Remade {
     Show(Box<GameShow>, CombatOption),
     /// The content, its packs mounted and the character asked for.
     Content(Box<GameShow>, CombatOption, Box<Content>),
+    /// The run, preparing on the warm-up pool.
+    Preparing(Box<GameShow>, CombatOption, Box<Content>, mpsc::Receiver<PreparedRun>),
     /// The run, prepared, with its plan reading on the warm-up pool.
     Run(Box<GameShow>, Box<Content>, Combat, mpsc::Receiver<Result<StandPlan, String>>),
     /// All of it.
@@ -777,6 +804,7 @@ impl Remade {
             Self::Nothing => "nothing",
             Self::Show(..) => "show",
             Self::Content(..) => "content",
+            Self::Preparing(..) => "preparing",
             Self::Run(..) => "run",
             Self::Planned(..) => "plan",
         }

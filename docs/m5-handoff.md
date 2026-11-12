@@ -223,7 +223,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 
 ### CI
 
-Pull requests run Lint, Test on three OSes, Replays, four App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `wave-bench` and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). `zero_hitches` runs in `walk-desktop-low` (H4), and `follows_the_ladder` and `draws_a_marked_tick` in `the-rest` (X5). Only `main` writes caches, and CI also runs nightly on `main`, where the scripted fight's flash test runs too, one job a setting (`app-tests-flashes`, X5). H3's settings walk has 40 minutes a tier on lavapipe.
+Pull requests run Lint, Test on three OSes, Replays, five App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `walk-mobile-high` since H9, `wave-bench` and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). `zero_hitches` runs in each of the three walk lanes (H4, H9), and `follows_the_ladder` and `draws_a_marked_tick` in `the-rest` (X5). Only `main` writes caches, and CI also runs nightly on `main`, where the scripted fight's flash test runs too, one job a setting (`app-tests-flashes`, X5). H3's settings walk has 40 minutes a tier on lavapipe.
 
 ## How to add
 
@@ -485,8 +485,10 @@ Each item names the package and its hand-back or row, and why it waits.
 
 **Warm-up, tiers and frames** (H1–H5, T0–T6, Z3e, Z1):
 
-- **A renderer the chosen tier can't build fails the boot** rather than trying a lower tier (Z3e).
-- **The ladder's tier rung under heat is walked only by `follows_the_ladder`** (Desktop-High to Low), and the mobile tiers only on this Mac's Metal: `zero_hitches` holds the chosen tier (Z3e).
+- **A renderer the chosen tier can't build steps down a tier** (H9): the boot falls back to the next lower tier of its class, and only the lowest tier's failure ends it. A device lost while the renderer builds makes the next boot start a tier lower. Not proved on a phone's driver: `comes_back` injects the refusal.
+- **Any uncaptured device error during the boot's renderer or packs steps steps the tier down** in a shipping build (H9), including errors that have nothing to do with the tier.
+- **A tier build the graphics row drops runs to its end** (H9): a player stepping across the row compiles a whole tier (89–95 pipelines) for each value they stay on, off the frame. Fix: cancel it between its parts.
+- **The ladder's tier rung under heat** is walked by `follows_the_ladder` from Desktop-High and from Mobile-High, and on the emulator from Mobile-High (H9). `zero_hitches` holds the chosen tier and runs on lavapipe at Desktop-Low, Mobile-Low and Mobile-High.
 - **A restart on a scenario with no flow** (the stock arena) still prepares its fight on the frame, since its setup reads content (H4).
 - **A trip carries no probe grid,** so no zone with one may have an exit (Z3e's cook check) until trips load their own (H4).
 - **The Simulator's and the emulator's boot frames reach 63 to 106 ms** (Z1): neither is a phone's GPU, so exit test 1 is judged on the Mac, and a phone's own boot frames are unknown. A cold emulator's boot screen stalls for far longer ("Known limits and risks").
@@ -497,7 +499,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **H3's walk takes the keyboard's path only,** and holds the cue table's effects all at once rather than as a fight times them.
 - **The thermal status comes from a listener on API 30+** (T7); headroom is still polled every 10 s on the frame thread, its cost unmeasured on a phone.
 - **ADPF hears a frame's work less its swapchain waits** (T7). Owed: a phone's real clocks under ADPF, and a GPU-bound frame on a phone's own GPU (the emulator shares the host's). `APerformanceHint_reportActualWorkDuration2` (API 35, separate CPU and GPU durations) is unused.
-- **The emulator's constant headroom of 0.90 reads `Light`** (T2, Z1), so the ladder sits on rung 1 there from 0.03 s after the title, for good, and a phone between 0.85 and 0.95 will too. Only a phone's falling forecast shows the climb to the top.
+- **The emulator's constant headroom of 0.90 reads `Light`** (T2, Z1), so the ladder sits on rung 1 there from 0.03 s after the title, for good, and a phone between 0.85 and 0.95 will too. Only a phone's falling forecast shows the climb to the top. Once heat took the emulator down to Mobile-Low, a calm one never climbs back to Mobile-High (H9).
 - **Secondary motion on Desktop-Low:** p99 0.72 ms against its 0.5 (H5). Only a cheaper solve, which moves poses and goldens, gets under it.
 - **T4's table is unmeasured:** names a driver reports otherwise (old RADV, NVK) fall to the rules, and Apple's M3 and later and integrated PC GPUs have no rows.
 

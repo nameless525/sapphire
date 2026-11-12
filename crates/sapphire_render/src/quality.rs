@@ -69,8 +69,11 @@
 //! 3. the device's tier.
 //!
 //! Any tier runs on any device, so mobile tiers can be previewed on a desktop. A renderer is
-//! created with its tier's settings; a tier change makes a new one (the app follows
-//! [`Quality::update_tier`]), as device loss does.
+//! created with its tier's settings. The game changes tier in place (M4 T3): the new tier's
+//! renderer builds on the warm-up pool ([`Renderer::build_tier`](crate::Renderer::build_tier)), and
+//! [`Renderer::take_tier`](crate::Renderer::take_tier) swaps it in at a pause or a wipe, keeping every
+//! mesh, material and instance, so no frame builds. The sandbox's `r.tier` still makes a new
+//! renderer ([`Quality::update_tier`]), as device loss does.
 //!
 //! # Render scale and dynamic resolution
 //!
@@ -86,12 +89,14 @@
 //! - **Selection by measurement:** the rules and the GPU table are a first heuristic from specs
 //!   (spec §3's numbers are all Proposals); a startup benchmark, and measurements on the reference
 //!   devices, would refine them.
-//! - **Applying a tier in place:** a tier change makes a new renderer, to which the asset server
-//!   uploads every asset again, reading meshes and textures from their packs (M1 A4). Once
-//!   content is large enough for that to show, settings that don't rebuild pipelines (bloom
-//!   levels, the light budget) can change in place.
-//! - **The player's settings** come from a settings screen (M3) and saves (`sapphire_save`)
-//!   instead of the command line, and can change while running.
+//! - **A tier without a pause:** a tier change waits for a pause or a wipe, since the swap is a
+//!   camera cut that starts temporal history and the shadows' caches again. Settings that build no
+//!   pipeline, as the ladder's rungs already shed, could change mid-fight.
+//! - **Shadows and ambient occlusion for the player:** the game's settings come from its settings
+//!   screen and its save, not the command line, and change while it runs (M4 T3): its tier and
+//!   dynamic resolution reach [`Quality::set_settings`]. Turning shadows off and choosing the
+//!   ambient occlusion are still the sandbox's flags, and take effect only with a new tier's
+//!   renderer.
 //! - **Cheaper timing:** GPU timing costs about 50 µs of CPU and 100 allocations per frame on
 //!   Metal (spec §5.12, M1 R6's cost), while dynamic resolution needs a few samples a second.
 //!   Timing every few frames, a frame graph option, would cut that to a fraction.

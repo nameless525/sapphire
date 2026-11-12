@@ -5,7 +5,7 @@
 - **IDs:** `platform/steam.toml`'s app and depot IDs are Valve's examples, marked placeholders.
 - **Related:** [the privacy policy](privacy-policy.md), [the App Store](apple.md), [Google Play](google-play.md).
 
-**Count:** 30 rules: 21 met here (two of them as drafts the maintainer enters), 9 owed: 6 to the maintainer's account, art or Valve's review (2, 11, 13, 26, 28, 29) and 3 to a run under Steam or a Deck (15, 16, 25). Rule 10 is met for English; its Japanese waits for a reader.
+**Count:** 32 rules: 21 met here (two of them as drafts the maintainer enters), 11 owed: 7 to the maintainer's account, art or Valve's review (2, 11, 13, 26, 28, 29, 32), 3 to a run under Steam or a Deck (15, 16, 25) and 1 to a clean Windows install (31). Rule 10 is met for English; its Japanese waits for a reader.
 
 **Reviewed (M4 Z3b, 2026-11-11):** every met rule's test or command was found and its claim read against the code at d8b621cc. The packages workflow's first full run (#291, run 43002018202, all five jobs passed) meets rule 30 and moves rules 15 and 16 to what only Steam or a Deck shows; rule 19 is met now that Valve's pads have glyphs of their own.
 
@@ -44,6 +44,7 @@
 | 29 | The upload: `steamcmd +login <account> +run_app_build <app build> +quit`, then the client icon and launch options in Steamworks. | S4, 2026-11-10 | `steampipe` writes `depots.txt` with each depot's files and launch option | Owed: the maintainer's account |
 | 30 | The Windows package: per-monitor DPI, VERSIONINFO and icon read back from the executable. | S4 (Steam asks for none of it; Windows' own conventions) | `package --platform windows` reads them back (S4, `pe.rs`), and CI reads the version as Windows does (`packages.yml`'s Windows job, run 43002018202, 2026-11-11) | Met |
 | 31 | A runtime the game needs and a player's machine may lack, the Visual C++ redistributable for one, is either installed by Steam, ticked under Installation, Redistributables in Steamworks ("installed only if necessary"), or not needed. | "Common Redistributables", partner.steamgames.com/doc/features/common_redist, 2026-11-11; "Install Scripts", partner.steamgames.com/doc/sdk/installscripts, 2026-11-11 | Not needed: a shipping Windows build links the C runtime statically (`+crt-static`, and `platform/windows/static_crt.cmake` for SDL's CMake build; M4 X4), and `package --platform windows` fails if the executable imports a C runtime DLL (`VCRUNTIME*`, `MSVCP*`, `ucrtbase`, `api-ms-win-crt-*`). Leave the box unticked | Owed: `packages.yml`'s Windows job on the change, and a launch on a clean Windows install |
+| 32 | Valve's pre-release checklist, before a build goes to review: the game launched through Steam for at least 5 minutes, by anyone, within the past 7 days (or since the last build, if that's older); the redistributables Steam installs named, or none; achievements, if any, complete (names, icons, no duplicates); with Steam Cloud on, a save written to it by a member of the partner group; and 5 screenshots categorized as gameplay, now that a screenshot can be categorized as menus, concept art or cinematics. The checklist is on the right of the app's landing page in Steamworks. Build reviews typically take 3–5 business days and now take up to 12. | "Updates to the Pre-Release Review Process", Valve's post in the Steamworks Development group, steamcommunity.com/groups/steamworks/announcements/detail/696528162820984746, posted 2026-11-03 21:46 UTC. Its page renders client-side, so it was read through the group's own feed, steamcommunity.com/groups/steamworks/rss, 2026-11-12 (summary; the screenshot heading and the 7 days quoted). "Review process" doesn't mention it yet (read 2026-11-12) | Redistributables: none (rule 31). Achievements and Steam Cloud: none, since M4 links no Steamworks SDK (m4-plan §3) and the store page lists neither; saves stay on the player's machine. Screenshots: six of play (rule 1), each categorized as gameplay at upload | Owed: the five minutes through Steam, on the maintainer's account and each OS; the answers entered; 12 business days planned for the review |
 
 ## Owed to the maintainer
 
@@ -51,7 +52,7 @@
 2. **Art:** the capsules and the library assets (rule 2).
 3. **The forms:** the store text, the languages and the content survey below; the generative AI answer is theirs to give (rule 11).
 4. **macOS:** a Developer ID certificate, notarization and stapling (rule 13), and whether the overlay needs an entitlement (rule 14).
-5. **The upload and review:** `steamcmd` (rule 29), the store page's review and the build's (rules 16, 28), and the Deck's (rule 26).
+5. **The upload and review:** `steamcmd` (rule 29), the pre-release checklist with its five minutes through Steam (rule 32), the store page's review and the build's (rules 16, 28; up to 12 business days now), and the Deck's (rule 26).
 6. **A Deck,** for its frame rate at 800p and the self-check below (rules 25–27).
 
 ## Screenshots

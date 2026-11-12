@@ -158,6 +158,7 @@ pub type Stall = Arc<dyn Fn(&str, Option<(u64, u64)>) -> bool + Send + Sync>;
 pub struct Host {
     port: u16,
     log: Arc<Mutex<Vec<Served>>>,
+    busy: Arc<AtomicUsize>,
     stalled: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
@@ -172,11 +173,13 @@ impl Host {
         let port = listener.local_addr()?.port();
         listener.set_nonblocking(true)?;
         let log = Arc::new(Mutex::new(Vec::new()));
+        let busy = Arc::new(AtomicUsize::new(0));
         let stalled = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             dir: dir.to_owned(),
             log: log.clone(),
+            busy: busy.clone(),
             stalled: stalled.clone(),
             stop: stop.clone(),
             stall,
@@ -203,7 +206,7 @@ impl Host {
                 }
             }
         })?;
-        Ok(Self { port, log, stalled, stop, accept: Some(accept) })
+        Ok(Self { port, log, busy, stalled, stop, accept: Some(accept) })
     }
 
     pub fn port(&self) -> u16 {
@@ -215,8 +218,15 @@ impl Host {
         format!("http://127.0.0.1:{}/", self.port)
     }
 
-    /// What it has answered since the last call.
+    /// What it has answered since the last call. A reply can reach its client before the host logs it, so this
+    /// first waits, for a few seconds at most, until every request it has read is logged or stalled.
     pub fn take_log(&self) -> Vec<Served> {
+        for _ in 0..5000 {
+            if self.busy.load(Ordering::Acquire) <= self.stalled.load(Ordering::Acquire) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
         std::mem::take(&mut *self.log.lock().expect("the log"))
     }
 
@@ -239,11 +249,29 @@ impl Drop for Host {
 struct Shared {
     dir: PathBuf,
     log: Arc<Mutex<Vec<Served>>>,
+    /// Requests read and not yet logged, failed or done stalling.
+    busy: Arc<AtomicUsize>,
     stalled: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     stall: Option<Stall>,
     echo: bool,
     total: Mutex<u64>,
+}
+
+/// Counts a request in flight until it's dropped, however answering it ends.
+struct Busy<'a>(&'a AtomicUsize);
+
+impl<'a> Busy<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(count)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// The most a request's line and headers may take.
@@ -261,6 +289,7 @@ impl Shared {
             buffer.drain(..end + 4);
             let request = parse(&head);
             let keep = request.as_ref().is_ok_and(|request| request.keep_alive);
+            let _busy = Busy::new(&self.busy);
             self.answer(&mut stream, request)?;
             if !keep || self.stop.load(Ordering::Acquire) {
                 let _ = stream.shutdown(Shutdown::Both);

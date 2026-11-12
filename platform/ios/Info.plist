@@ -6,9 +6,13 @@
   can use this file unchanged later; BUNDLE_DISPLAY_NAME is a user-defined build setting,
   English's: each language's is in its lproj's InfoPlist.strings.
   The game is landscape only, full screen, with an empty launch screen. ITSAppUsesNonExemptEncryption is
-  false because the game links no encryption of its own: if a TLS library or a cipher joins the link
-  (the patcher's), Apple's export questions need answering again. The games category is the App
-  Store's, and lets iOS start Game Mode. `xtask package` adds the DT* keys Xcode writes, read from
+  false, which claims Apple's exemption for the encryption the game links: since M4 P4 that's the
+  patcher's TLS (rustls with ring, AES-GCM and ChaCha20 among its ciphers), used only for HTTPS to the
+  patch host, and ed25519 signature checks of a release (ed25519-dalek), which authenticate and hide
+  nothing. Whether the exemption holds is the maintainer's to confirm, on Apple's encryption page and in
+  App Store Connect's export compliance questions (docs/store/apple.md, rule 8); anything else that
+  encrypts joining the link asks it again. The games category is the App Store's, and lets iOS start
+  Game Mode. `xtask package` adds the DT* keys Xcode writes, read from
   the installed Xcode and SDK (M4 S2).
 -->
 <plist version="1.0">

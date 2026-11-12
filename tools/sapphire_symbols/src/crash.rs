@@ -320,6 +320,55 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A panic report's frames are return addresses. Where a call that never returns ends its function, as
+    /// `forced_panic`'s call into the panic handler can, the return address is the next function's first
+    /// byte: the report reads the byte before it, the call, at the call's line (M4 C5).
+    #[test]
+    fn a_return_address_past_its_functions_end_reads_the_call() {
+        let dir = std::env::temp_dir().join(format!("sapphire_symbols-return-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let packaged = Packaged {
+            module: crate::Module {
+                format: crate::Format::Elf,
+                arch: "x86_64",
+                debug_file: "crash_test".into(),
+                debug_id: "0A6B168B11223344556677889900AABB0".parse().unwrap(),
+                code_id: "8b166b0a2233114455667788990000aabbccddee".into(),
+            },
+            symbols: dir.join("crash_test"),
+        };
+        let store = Store { root: dir.join("store") };
+        let sym = store.root.join(packaged.module.store_path());
+        std::fs::create_dir_all(sym.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sym,
+            "MODULE Linux x86_64 0A6B168B11223344556677889900AABB0 crash_test\n\
+             FILE 0 /sapphire/crates/sapphire_crash/src/forced.rs\n\
+             FUNC 1000 20 0 sapphire_crash::forced::forced_panic\n1000 8 85 0\n1008 18 86 0\n\
+             FUNC 1020 10 0 sapphire_crash::forced::forced_fault\n1020 10 97 0\n",
+        )
+        .unwrap();
+        let report = dir.join("0001794417504344-41.panic-0.txt");
+        std::fs::write(
+            &report,
+            "Sapphire panic report v2\napp: game\nrelease: 1\nrun: 0001794417504344-41\nthread: main\n\
+             location: a.rs:1:1\n\nmodules:\n\
+             0x0000555500000000 8b166b0a2233114455667788990000aabbccddee /x/crash_test\n\n\
+             frames:\n0x0000555500001020\n\nmessage:\nboom\n\nbacktrace:\n",
+        )
+        .unwrap();
+        let crash = read(&report, std::slice::from_ref(&packaged), &store).unwrap();
+        let frame = &crash.threads[0].frames[0];
+        assert_eq!(frame.module, Some(("crash_test".to_owned(), 0x1020)), "the address as recorded");
+        assert_eq!(frame.location.function.as_deref(), Some("sapphire_crash::forced::forced_panic"));
+        assert_eq!(frame.location.line, Some(86), "{frame:#?}");
+        // Read as it stands, the same address is the next function's.
+        let reader = Reader::new(std::slice::from_ref(&packaged), &store);
+        let raw = reader.frame(0x5555_0000_1020, "crash_test", Some(&packaged), 0x1020, 0x1020);
+        assert_eq!(raw.location.function.as_deref(), Some("sapphire_crash::forced::forced_fault"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn frames_print_inlined_calls_innermost_first() {
         let crash = Crash {

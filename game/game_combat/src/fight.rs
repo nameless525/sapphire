@@ -180,8 +180,10 @@ pub enum PreparedRun {
 /// The part of a [`FightStand`] that's next.
 enum StandPart {
     Place,
-    /// The arena's town, for a fight on its colliders.
+    /// The arena's town, for a fight on its colliders, then its zone and its cells.
     InTown(RenderPose, Figure, ZoneArena),
+    TownZone,
+    TownCells(ZoneStanding),
     InZone(RenderPose, Figure, ZoneArena),
     Zone(ZoneStanding, ZoneArena),
     Timelines,
@@ -2336,15 +2338,24 @@ impl Fight {
                 Ok(None)
             }
             StandPart::InTown(pose, figure, arena) => {
-                // A frame of its own (M4 Z3e): with the first part's, the town's held a boot's frame 45 ms.
+                // The town, then its zone, then its cells, each a frame of its own (M4 Z3e): with the first part's
+                // they held a boot's frame 45 ms on an M5, the zone and its cells alone about 29.
                 let ZoneArena { shot, ground, enemy, held } = arena;
                 let town = content.town(renderer, gpu)?;
                 let fog_cards = Some(content.fog_cards(renderer, gpu)?);
                 let look = LookDev { town, fog_cards, pose, figure };
-                let show = &mut self.show;
-                show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
-                scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
-                show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
+                self.show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+                stand.part = StandPart::TownZone;
+                Ok(None)
+            }
+            StandPart::TownZone => {
+                let standing = scene.begin_town_zone(content, stream_settings(tier), renderer, gpu)?;
+                stand.part = StandPart::TownCells(standing);
+                Ok(None)
+            }
+            StandPart::TownCells(standing) => {
+                scene.finish_town_zone(standing, content, renderer, gpu)?;
+                self.show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
                 stand.part = StandPart::Timelines;
                 Ok(None)
             }

@@ -234,7 +234,8 @@ impl ZoneStage {
     }
 }
 
-/// A zone half stood ([`Scene::begin_stand_in_zone`]): the zone, by its stem, and where the character stands.
+/// A zone half stood ([`Scene::begin_stand_in_zone`], [`Scene::begin_town_zone`]): the zone, by its stem, and
+/// where the character stands.
 pub struct ZoneStanding {
     zone: Handle<Zone>,
     stem: String,
@@ -432,10 +433,40 @@ impl Scene {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        let stand = self.town_stand.ok_or_else(|| AppInitError::msg("the town isn't spawned"))?;
-        let zone =
-            ZoneStage::open(content, lookdev::TOWN_ZONE, lookdev::TOWN_STEM, stand, settings, renderer, gpu)?;
-        self.open_zone(zone, content).map_err(AppInitError::msg)
+        let standing = self.begin_town_zone(content, settings, renderer, gpu)?;
+        self.finish_town_zone(standing, content, renderer, gpu)
+    }
+
+    /// [`Self::open_town_zone`]'s first half, which a boot stands on a frame of its own (M4 Z3e): the town's pack
+    /// mounted, what its meshes draw through built, and its zone loaded.
+    pub fn begin_town_zone(
+        &mut self,
+        content: &mut Content,
+        settings: StreamSettings,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<ZoneStanding, AppInitError> {
+        let position = self.town_stand.ok_or_else(|| AppInitError::msg("the town isn't spawned"))?;
+        let stem = lookdev::TOWN_STEM;
+        let zone = content.begin_zone(lookdev::TOWN_ZONE, &sapphire_zone::pack_name(stem), renderer, gpu)?;
+        Ok(ZoneStanding { zone, stem: stem.to_owned(), position, settings })
+    }
+
+    /// [`Self::open_town_zone`]'s second half, after [`Self::begin_town_zone`]: its cells loaded and on
+    /// `renderer`, and the zone on stage.
+    pub fn finish_town_zone(
+        &mut self,
+        standing: ZoneStanding,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        profiling::scope!("ZoneStage::open");
+        let ZoneStanding { zone, stem, position, settings } = standing;
+        let streamer = content.preload_zone(zone, position.to_array(), settings, renderer, gpu);
+        let pack = sapphire_zone::pack_name(&stem);
+        let opened = ZoneStage { streamer, pack, stand: position, held_focus: None };
+        self.open_zone(opened, content).map_err(AppInitError::msg)
     }
 
     /// Brings zone `target` in over frames, while what's on stage stays: see the [module docs](self). Asking

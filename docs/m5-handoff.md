@@ -2,9 +2,9 @@
 
 What M5 inherits from M4, for whoever starts it. Like [m4-handoff.md](m4-handoff.md), it's a map. Each item gets a line or two and a pointer to where the detail lives: the spec ([engine-spec.md](engine-spec.md)) by section, the plan ([m4-plan.md](m4-plan.md)) by package ID, the runbook ([m4-exit-run.md](m4-exit-run.md)), the store checklists ([docs/store/](store/)), or the code.
 
-**Written on 2026-11-11** (M4 Z4, part 1) on the landing line 2d18c9b8: main at d8b621cc with X3, R1, T4, Z3a and Z3b on it. Z3c's pushed branch was read too, and its fixes count as landing with the line. H4, Z1, Z3d, Z3e and Z2's final exit run were still to come, so this part leaves a marked slot for each.
+**Written on 2026-11-11** (M4 Z4) on the landing line's head 83dc6273: `main` at d8b621cc with every other M4 package on it, the reviews (Z3a–Z3e), the shipping benches (Z1) and the fixes this file's first draft found (X4) among them. Z2's final exit run was taking the same head.
 
-TODO(Z4 part 2): the head the final exit run took, its date, and that every package above has landed on `main`; then drop "part 1" and the line above it.
+TODO(Z2 final): the head and date of Z2's final exit run, and that `main` has fast-forwarded to it.
 
 **Spec §10 names no milestone after M4.** What M5 is, a second slice, a content push, or the off-ramp, is the maintainer's to choose. This file is what any of them starts from, and its "Before a first upload" is what the maintainer acts on first if M5 is a release.
 
@@ -16,24 +16,26 @@ M4 took M3's game, the Lantern Ward from the title to the Knell Colossus, and ma
 
 | Exit test ([m4-plan.md](m4-plan.md) §1) | Where it stands |
 |---|---|
-| 1. No shader hitches | Every pipeline builds on a warm-up pool no frame waits on (H1). The game boots behind a screen of one pipeline while the rest warm (H2). `declares_every_setting` walks every setting at every in-place rung of every tier with no frame-thread or first-use build (H3). Before H4 the boot's longest frame was the fight's stand, 124 ms on cold Metal against the 33 ms allowed. TODO(Z4 part 2): H4's result: whether `zero_hitches` passes in CI on lavapipe and on cold Metal here, the worst load-screen frame against twice the tier's interval, and what became of the stand frame and of P4's 100–250 ms remake under the boot screen. |
-| 2. Patches download only changed chunks | Proved on the desktop, the Simulator and the emulator against a server on this Mac (P4). A screen's edit moved 4,384 bytes: the signed manifest, one pack's header and table, and one range of blocks. A killed download resumed, and a release from an untrusted key was refused. `cargo xtask patch rehearse` is the lane. Owed: a CDN, the maintainer's key, TLS against a real certificate, and a phone. |
-| 3. Builds pass the stores | Every platform's package builds and passes every validator that runs without an account (S1–S4, C1). The nightly `packages.yml` ran all five jobs green for the first time on 2026-11-11 (run 43002018202). The checklists count Apple 22 of 32 rules met, Play 20 of 29 and Steam 21 of 30 (Z3b). The rest is the maintainer's accounts, identity, art and the stores' reviews ("Before a first upload"). |
-| 4. The look at every tier, scale and rung | 12 `tier-*` and 16 `tier-*-rung-*` goldens, and the GPU test `look_tiers` holding lines and the two-tone edge to each floor (T0, T2). The ladder walks down and back on modelled traces and under the emulator's thermal override, and the game follows it, changing tier only at a pause or a wipe (T3). Known desktop GPUs are capped by a table (T4). TODO(Z4 part 2): Z3e's review of warm-up and tiers. Owed: a phone, throttled, after 15 minutes. |
-| 5. Every crash is readable | A forced crash in a shipping build names its function, file and line on macOS, the Simulator and the emulator, from symbols kept from the same link, and every shipped binary is stripped with its ID checked against them (C1, C2). Windows and Linux are proved by a crash test on each CI desktop, not by their packages. TODO(Z4 part 2): Z3d's final fixes, and the emulator run for the Android fault address it fixed. |
+| 1. No shader hitches | Every pipeline builds on a warm-up pool no frame waits on (H1). The game boots behind a screen of one pipeline while the rest warm (H2), and every setting at every in-place rung of every tier is declared (H3). `zero_hitches` plays exit test 1's walk, boot to title to the ward's win, a pause with the ladder, every setting and a tier change, and back to the title, and fails on any first use, frame-thread build or wait (H4); CI runs it at Desktop-Low on lavapipe. On cold Metal here, alone on the machine at Desktop-High, 21,190 frames built nothing on the frame, and every load screen's worst frame was under the 33.3 ms limit: the boot's 24.7 ms (22.8 warm), the wipe back to the title's 5.5. The fight's stand, once a 124 ms frame, stands in five parts; a launch that installs an update and the arena town's boot stand a part a frame too (Z3e). Per tier the boot screen's worst cold frame was 26.6 to 32.4 ms (Z1, spec §3.7). The Simulator's and the emulator's boots have frames of 63 to 106 ms, which say nothing of a phone's GPU: the test is judged on the Mac. Owed: a phone driver's cold compile, and a desktop GPU's cold cache. |
+| 2. Patches download only changed chunks | Proved on the desktop, the Simulator and the emulator against a server on this Mac (P4). A screen's edit moved 4,384 bytes: the signed manifest, one pack's header and table, and one range of blocks. A killed download resumed, and a release from an untrusted key was refused. `cargo xtask patch rehearse` is the lane. The emulator's launch that installs a patch, which overflowed its main thread in Z2's rehearsal, stands on it since H4. Each of P0's edits patched as its own blocks, its pack's tables and the manifest (Z1). Owed: a CDN, the maintainer's key, TLS against a real certificate, and a phone. |
+| 3. Builds pass the stores | Every platform's package builds and passes every validator that runs without an account (S1–S4, C1). The nightly `packages.yml` ran all five jobs green for the first time on 2026-11-11 (run 43002018202). The checklists count Apple 22 of 32 rules met, Play 20 of 29 and Steam 21 of 31 (Z3b; X4 added Steam's rule on redistributables, which needs none). The rest is the maintainer's accounts, identity, art and the stores' reviews ("Before a first upload"). |
+| 4. The look at every tier, scale and rung | The face, the ward and a hit have a golden at every tier, at its dynamic floor and at each rung, 61 `tier-*` scenes on three backends (T0, T2, T5), and `look_tiers` holds lines and the two-tone edge to each floor. Below render scale 1 a moving outline no longer breaks into dots (T6). The ladder walks down and back on modelled traces and under the emulator's thermal override, a rung a hold on the way back in real time, and the game follows it, changing tier only while the show holds still (T3, H4, Z1). Known desktop GPUs are capped by a table (T4). Z3e found no wrong tier. Owed: a phone, throttled, after 15 minutes, whose forecast falls so the ladder climbs to the top. |
+| 5. Every crash is readable | A forced crash in a shipping build names its function, file and line on macOS, the Simulator and the emulator, from symbols kept from the same link, and every shipped binary is stripped with its ID checked against them (C1, C2). Windows and Linux are proved by a crash test on each CI desktop, not by their packages. Z3d fixed twelve things, Linux's missing leaf line and every Linux and Android fault address reading 0 among them, and the reports now hold the player's home directory only masked. Owed: a crash on a device and the stores' own reports, and the emulator's run of the fixed fault address ("Still agents' to run"). |
 | 6. Combat more people can play | Every item of §3's list is a setting, saved and migrated (`PlayerSettings` version 4) and reached by pad, keyboard and touch (A1–A6). With flashes reduced and by default, the scripted fight passes WCAG 2.3.1 (A3, held by a test since Z3c). The smallest text is 14.0 px at 1280×800 by default, in both languages. Warnings are marks of their own shape, held apart under three dichromacies (A5). At the largest size on a phone, every screen fits (Z3c). Owed: players who need these settings, and a reader of Japanese. |
-| 7. Still authorable | The golden, scripted-input, shelved-zone and placeholder-sound steps are documents now (R1–R4). Two Rust steps remain: a screen showing a value no model holds, which is code by design, and the glyph a new remappable binding shows (A4), which the plan's "but one" missed ("Rust steps left"). |
+| 7. Still authorable | The golden, scripted-input, shelved-zone and placeholder-sound steps are documents now (R1–R4), and so is a remappable binding's glyph since X4. One Rust step remains, as the exit test allows: a screen showing a value no model holds, which is code by design. |
 | 8. Ready to play | `cargo xtask playtest` installs a playtest build, and `playtest pull` brings sessions back and replays each run to the device's checksums: on the desktop, a private Simulator and the emulator (F1). `playtest report` reads a session out per encounter (F2), against the review sheet in [playtest.md](playtest.md). Owed: someone playing, and `--platform ios` on a phone. |
 
-TODO(Z4 part 2): Z1's shipping benches, from spec §3's "Measured as shipped", which Z1 writes: binary sizes, cold and warm starts to the title on Metal, the Simulator and the emulator, warm-up per tier, memory, patch sizes for P0's edits and the ladder's trace under the override. And Z2's figures for each exit test from [m4-exit-run.md](m4-exit-run.md)'s final run.
+**As shipped** (Z1, spec §3.7, on the line before T6, which added no pipeline): the macOS app is 60.6 MB, the iOS app 49.5 MB, an Android device downloads 36.6 MB, and the Windows and Linux depots are 66.0 and 66.8 MB. A cold start reaches the title in 3.97 s on the Mac's Metal (0.41 s warm), 8.81 s on the Simulator and 0.90 s on the emulator, whose host's driver cache was warm. Most of a cold boot is the packs' pipelines, 89 prewarmed on the desktop tiers, 85 on Mobile-High and 73 on Mobile-Low. Through exit test 1's walk the process peaks at 1,023 MiB on Desktop-High and 558 on Mobile-Low, far under §3.1's budgets, and the title after a run reads what it read before. A patch for each of P0's edits fetched 5 KB (a screen) to 1.1 MB (the character's mesh), only its blocks, its pack's tables and the manifest. Under the emulator's thermal override heat goes straight to its rung and the ladder climbs back a rung every 10 s. §3 sets no budget for a start, and none of this is a phone's, a store's thinned size, a Deck's or a Windows or Linux PC's.
+
+TODO(Z2 final): each exit test's verdict and figures from [m4-exit-run.md](m4-exit-run.md)'s final run, where they add to or differ from the table.
 
 **The reviews (Z3a–Z3e)** read five areas after they landed, as M3's did:
 
 - **The patcher, as an attacker would (Z3a):** two fixes. A host that dribbled a byte inside every read timeout held the boot open as long as it liked, and `ureq` followed an `https://` host's redirect to plain `http://`. The signature, rollback and every cap held up. Five small gaps stay (see "Patches").
 - **Packaging, against the checklists (Z3b):** the settings got a privacy policy page, Valve's pads their own glyphs, and Android's `INTERNET` permission its reason. Every met rule's test was found and read against the code.
-- **Accessibility, against exit test 6 (Z3c):** nine fixes and holds. A settings file could remap the pause, the way out or a stick. The large interface size ran out of height on a phone for the pause, the character screen and the dialogue. A toggle didn't let go across a pause as a hold does. The flash test of the scripted fight is now a test, though no CI lane runs it yet.
-- **Crash capture (Z3d):** TODO(Z4 part 2): its final commits. Its pushed branch (6197f5a7) fixes seven things: ELF leaves with no line, a minidump frame's inlined calls listed outermost first, Linux and Android fault addresses read as 0, a signal record's address read in the wrong file, a report naming another build of a shipped file without saying so, panic reports naming modules by full path, and the player's environment in Linux minidumps.
-- **Warm-up and tiers (Z3e):** TODO(Z4 part 2): what it fixed and what it left, after H4 and T4.
+- **Accessibility, against exit test 6 (Z3c):** nine fixes and holds. A settings file could remap the pause, the way out or a stick. The large interface size ran out of height on a phone for the pause, the character screen and the dialogue. A toggle didn't let go across a pause as a hold does. The flash test of the scripted fight is now a test, which CI's nightly run takes since X5.
+- **Crash capture (Z3d):** twelve fixes: ELF leaves with no line; a minidump frame's inlined calls listed outermost first; Linux and Android fault addresses read as 0; a signal record's address read with the wrong module's symbols; a report naming another build of a shipped file without saying so; a hung Linux monitor hanging the game, and a fault during a panic's dump waiting forever; a symbol file's section overflowing past the address space; clippy failing on Android; macOS minidumps naming the executable `<Unknown>`; and the player's environment and home directory in reports, now zeroed, written `~` or masked. Windows' wait on its monitor is still unbounded.
+- **Warm-up and tiers (Z3e):** four fixes. A launch that installs an update remade the show, the content and the run in one boot-screen frame of 64 to 66 ms; now it's a part a frame, its worst update frame 2.0 ms. The arena town's boot stand was 45 to 52 ms; now 29.1. `--save-dir`, `--record`, `--replay` and a relative `--patch-dir` went where a phone or the patcher couldn't use them; every path is placed once now. And the cook refuses an exit into or out of a zone with a probe grid, which a trip can't carry yet. No wrong tier, unbounded wait or unanswered warm-up failure was found.
 
 What each left is under "Everything deferred", and what binds now is under "Rules the reviews made".
 
@@ -54,7 +56,7 @@ Each was read on 2026-11-11 at the source named, unless it says otherwise. "Expe
 | App Store | Trader status for the EU (Digital Services Act): required to submit since 2024-10-16, and apps without it removed from the EU since 2025-02-17 | In force | as above | Owed: the maintainer declares it in App Store Connect, or leaves the EU's storefronts out. Not in [apple.md](store/apple.md)'s rules, which predate this read |
 | App Store | Accessibility Nutrition Labels: voluntary, required "over time" | No date | apple.md rule 22, read 2026-11-10 | Drafted; three features claimed, each held by a test |
 | Steam | Store page review 3–5 business days; submit at least 7 business days before it goes live. Build review 3–5 business days; plan for at least 7 | Standing | partner.steamgames.com/doc/store/review_process | Owed: the maintainer's submissions |
-| Steam | Pre-release build reviews take up to 12 business days, and a new pre-release checklist: at least five minutes played through Steam's Play button, the redistributables Steam installs named (or none), achievements and Steam Cloud complete if listed, and five screenshots tagged as gameplay | Announced by Valve on 2026-11-03 | Inven Global's report of Valve's Steamworks Development post (Valve's post wasn't read; its review page above doesn't mention the change yet) | Plan for 12 business days. The five minutes need the maintainer's account. The redistributables need checking: see "Windows' C runtime" under "Packages and stores" |
+| Steam | Pre-release build reviews take up to 12 business days, and a new pre-release checklist: at least five minutes played through Steam's Play button, the redistributables Steam installs named (or none), achievements and Steam Cloud complete if listed, and five screenshots tagged as gameplay | Announced by Valve on 2026-11-03 | Inven Global's report of Valve's Steamworks Development post (Valve's post wasn't read; its review page above doesn't mention the change yet) | Plan for 12 business days. The five minutes need the maintainer's account. Redistributables: none, since Windows links its C runtime statically and `package` refuses an executable that imports one (X4; [steam.md](store/steam.md) rule 31) |
 | Steam | Steam Linux Runtime 3.0 (sniper) for the native Linux build | No deadline; a 4.0 exists | [steam.md](store/steam.md) rule 15 (S4, 2026-11-10); 4.0 from S4's hand-back | Built and checked against 3.0 in CI; choosing the runtime in Steamworks is the maintainer's |
 
 The checklists ([apple.md](store/apple.md), [google-play.md](store/google-play.md), [steam.md](store/steam.md)) keep each rule with its source. Read this table again before each upload: the stores move every year.
@@ -68,15 +70,14 @@ Everything here needs the maintainer's accounts, keys or judgement, which no age
 1. **Choose the identity.** In `platform/identity.toml`, set `game_app`'s `bundle-id` (permanent once a store has seen it), `bundle-name` and display names in both languages, and delete `placeholder = true`. Replace `platform/icon/icon.png`, the master every store's icon is made from by `package`, if the generated one won't do (S1). Put the game's name into the store drafts in [docs/store/](store/).
 2. **Host the privacy policy.** Fill in [privacy-policy.md](store/privacy-policy.md)'s bracketed names and host it at a public URL. Set that URL as `privacy-url` in `content/loc/en/game_ui.ftl` and `content/loc/ja/game_ui.ftl`; once the identity is chosen, `package` refuses the placeholder address. "Collects nothing" holds only if the patch host keeps no access logs that identify a device: choose the host with that in mind.
 3. **Make a release key and choose a patch host,** or ship a build that can never be patched: a build trusts only the keys and host compiled into it.
-   - The key is a 32-byte ed25519 seed. Keep it offline, never in the repository or an environment file:
+   - The key is an ed25519 seed in a file, kept offline and never in the repository (X4):
      ```bash
-     openssl rand -hex 32 > release-key.hex
-     printf '302e020100300506032b657004220420%s' "$(cat release-key.hex)" | xxd -r -p \
-       | openssl pkey -inform DER -pubout -outform DER | tail -c 32 | xxd -p -c 32
+     cargo xtask release-key new <offline dir>/release-key.hex
+     cargo xtask release-key public <offline dir>/release-key.hex
      ```
-     The second command prints its public half. It needs OpenSSL 3 or later: macOS's own `/usr/bin/openssl` (LibreSSL 3.3.6) can't read the key. Checked here with OpenSSL 4.0.3 on the public test seed, where it printed `sapphire_patch::TEST_KEY`'s public half.
-   - Put the public half in `platform/patch.toml`'s `release-keys`, and the host's `https://` URL, ending in `/`, in its `host`.
-   - Sign the first release with the package: `SAPPHIRE_RELEASE_KEY="$(cat release-key.hex)" cargo xtask package --platform <platform> --release-version 1 --expires <YYYY-MM-DD> --min-build <the build number>`. Copy the package's `release/` to the host, `release.smanifest` last. A patch later is the "A patch" recipe below.
+     The first writes a new key, readable only by its owner and never over a file that's there, and prints its public half; the second prints the public half again as `platform/patch.toml` takes it. The seed is never printed.
+   - Put that `release-keys` line in `platform/patch.toml`, and the host's `https://` URL, ending in `/`, in its `host`.
+   - Sign the first release with the package: `SAPPHIRE_RELEASE_KEY="$(cat <offline dir>/release-key.hex)" cargo xtask package --platform <platform> --release-version 1 --expires <YYYY-MM-DD> --min-build <the build number>`. Copy the package's `release/` to the host, `release.smanifest` last. A patch later is the "A patch" recipe below.
    - Mind each release's expiry: a game takes a release only before it expires, so one left on the host past its date stops reaching anyone who hasn't taken it yet. Publish the next release before then.
 4. **Read [m4-plan.md](m4-plan.md) §3's decisions** that most need the maintainer's eye (§7, item 7): patches carry presentation only, no Xcode project, native Linux on the Deck, dynamic resolution on by default, the default flashes as they are with the reduced setting offered, and no CDN chosen.
 5. **Confirm the VRM character's licence allows a commercial release** (S5's note). The other third-party content's provenance is in `content/third_party/README.md`.
@@ -84,7 +85,7 @@ Everything here needs the maintainer's accounts, keys or judgement, which no age
 ### The App Store
 
 1. **The account:** the Apple Developer Program, an Apple Distribution certificate, an App Store profile for the bundle ID, and the App Store Connect record, agreements, tax and banking. Trader status for the EU, or no EU storefronts.
-2. **Export compliance.** The game links `rustls` on `ring` for HTTPS to the patch host (P4), and `ITSAppUsesNonExemptEncryption` stays `false` in `platform/ios/Info.plist`, which claims the exemption; that file's comment still says the game links no encryption, which was true before P4. Confirm it on Apple's encryption page and in App Store Connect's questions, or change the key. The liability for the claim is the developer's ([apple.md](store/apple.md#owed-to-the-maintainer), item 3).
+2. **Export compliance.** The game links `rustls` on `ring` for HTTPS to the patch host (P4), and `ITSAppUsesNonExemptEncryption` stays `false` in `platform/ios/Info.plist`, which claims the exemption; its comment and [apple.md](store/apple.md) rule 8 name what the game links (X4). Confirm it on Apple's encryption page and in App Store Connect's questions, or change the key. The liability for the claim is the developer's ([apple.md](store/apple.md#owed-to-the-maintainer), item 3).
 3. **Package:** `cargo xtask package --platform ios` on a Mac with Xcode 26. It writes `target/package/ios/<bundle-name>.xcarchive` and its checks.
 4. **Sign and upload:** add `<key>teamID</key><string>YOUR TEAM ID</string>` to `platform/ios/ExportOptions.plist`, then
    ```bash
@@ -122,7 +123,7 @@ Everything here needs the maintainer's accounts, keys or judgement, which no age
    xcrun notarytool submit <bundle-name>.zip --keychain-profile <profile> --wait
    xcrun stapler staple <bundle-name>.app
    ```
-4. **Upload:** `cargo xtask steampipe` writes the scripts into `target/package/steam/`; then `steamcmd +login <account> +run_app_build target/package/steam/app_build_<app>.vdf +quit`. In Steamworks: the client icon (the Windows package's `icons/app.ico`), each depot's launch option from `depots.txt`, Steam Linux Runtime 3.0 for Linux, and the redistributables Windows needs, if any.
+4. **Upload:** `cargo xtask steampipe` writes the scripts into `target/package/steam/`; then `steamcmd +login <account> +run_app_build target/package/steam/app_build_<app>.vdf +quit`. In Steamworks: the client icon (the Windows package's `icons/app.ico`), each depot's launch option from `depots.txt`, and Steam Linux Runtime 3.0 for Linux. Leave every redistributable unticked: Windows links its C runtime statically (X4), which a launch on a clean Windows install should confirm.
 5. **The store page,** from [steam.md](store/steam.md)'s drafts: the text, the languages, the content survey with its generative AI answer (the maintainer's), five or more gameplay screenshots, and the capsules, which are art nobody has made. Submit it at least 7 business days before release.
 6. **Before the build's review:** play at least five minutes through Steam's Play button on each OS the page lists, which also checks the macOS overlay under the hardened runtime (steam.md rule 14). Then plan for 12 business days of review.
 7. **A Deck** for its self-check (steam.md rules 25–27).
@@ -133,14 +134,15 @@ Nothing here has been run, for want of a device or a person. [m4-exit-run.md](m4
 
 **M4's:**
 
-- **A phone of each OS:** a phone driver's cold compile of the warm-up, and how long boot's screen holds it; a store install's first launch; the ladder under real heat, a real headroom forecast, what ADPF does to the clocks, and iOS's real thermal states and Low Power Mode (T1, T2); a patch over `https://` (P4); a crash, and the store's own crash report (C2); a real GPU loss and the OS killing the app in the background (S6); a finger on a real iPhone's HUD; Android's back gesture and SDL's safe area on a real cutout (S3); `xtask playtest --platform ios` and its `devicectl` pull, written and never run (F1).
-- **A desktop GPU** other than this Mac's: a driver's cold cache (exit test 1), and any GPU in T4's table, none of which has run the game.
-- **A Steam Deck:** SDL's pad type under Steam Input, the frame rate at 800p by default, and Valve's self-check (S4, T3).
+- **A phone of each OS:** a phone driver's cold compile of the warm-up, and how long boot's screen holds it; a store install's first launch; the ladder under real heat, a real headroom forecast that falls so the ladder climbs back to the top, Mobile-High's frame-rate and tier rungs on it, what ADPF does to the clocks, and iOS's real thermal states and Low Power Mode (T1, T2, Z1); memory under iOS's and Android's own limits, and the packs' read speed from a phone's storage (Z1); a patch over `https://` (P4); a crash, and the store's own crash report (C2); a real GPU loss and the OS killing the app in the background (S6); a finger on a real iPhone's HUD; Android's back gesture and SDL's safe area on a real cutout (S3); `xtask playtest --platform ios` and its `devicectl` pull, written and never run (F1).
+- **A desktop GPU** other than this Mac's: a driver's cold cache (exit test 1), and any GPU in T4's table, none of which has run the game. **A Windows or Linux PC** for a start, memory and warm-up reading, D3D12's and Vulkan's caches each with a cold start of their own (Z1), and a launch on a clean Windows install with no runtime added (X4).
+- **The stores' own sizes:** the App Store's thinned download and Play's install size per device need the accounts (Z1).
+- **A Steam Deck:** SDL's pad type under Steam Input, the frame rate at 800p by default, its start, memory and heat on its GPU and SD card, and Valve's self-check (S4, T3, Z1).
 - **A real display** for the desktop frame cap (T3).
 - **Ears and hands:** the volumes, mono and scaled rumble, captions at a fight's pace (A2), and the timing assist's numbers in a fight (A6).
 - **People:** players who use the accessibility settings, a reader of Japanese for the new strings, the notice and the store text, and someone to pick the store shots by eye (one shows a hit's heavy chromatic aberration, S5).
 
-**Still agents' to run:** the emulator's cold boot under the boot screen (H1, H2: counts only, since the emulator slows any drawing frame during a build) and the emulator run of Z3d's Android fault address. TODO(Z4 part 2): drop either that H4, Z1 or Z2 ran.
+**Still agents' to run:** the emulator's run of the Android fault address Z3d fixed, which no capture has read since (C2's record predates the fix). TODO(Z2 final): drop it if the final run's exit test 5 read it on the emulator. The emulator's cold boot under the boot screen, owed since H2, ran in Z1 (spec §3.7).
 
 **M3's, M2's and M1's, carried:** [m4-handoff.md](m4-handoff.md), "Device checks still owed", has each with its pointer. M4 settled only Windows' save retry, whose test CI's Windows job runs. The rest stand: review 3 and the slice played; motion judged and sound heard; a window on any desktop, and the editor's; a desktop's pointer, focus and gamepad; a phone for everything M1 to M3 built, and latency on glass; iOS touch; x86-64 Android's Luau; the emulator crash nobody cleared; and the open questions Q3, Q4, Q5's device half, Q9 and Q14. M4's handoff's two items "owed to the maintainer", export compliance and a patch on a phone, are in "Before a first upload" and "M4's" above.
 
@@ -168,25 +170,29 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 - **`sapphire_playtest`** (`dev_only`): a playtest's session on disk (F1). Only `game_app`'s `playtest` feature links it, so a store build can't reach it.
 - **`tools/sapphire_symbols`:** checks stripped binaries against their symbols (C1), writes Breakpad `.sym` files, and reads crashes (C2).
 
-**Kinds and versions.** No asset kind was added: `VoiceLines` 25 is still the last. `PlayerSettings` is version 4, `EnemyDocument` 2 and `TargetingTuning` 2. The replay format is still 4, with commands 5 (auto-target strength, A1) and 6 (timing assist, A6). `CHECKSUM_LAYOUT` is still 9 and `PACK_VERSION` 4. New documents: the release manifest (format 1), `GoldenScenes` 1, the GPU table 1, `SessionDocument` 1 and the playtest `Report` 1. The cooker's version is 3 (C3). There are 39 replays and 342 golden scenes.
+**Kinds and versions.** No asset kind was added: `VoiceLines` 25 is still the last. `PlayerSettings` is version 4, `EnemyDocument` 2 and `TargetingTuning` 2. The replay format is still 4, with commands 5 (auto-target strength, A1) and 6 (timing assist, A6). `CHECKSUM_LAYOUT` is still 9 and `PACK_VERSION` 4. New documents: the release manifest (format 1), `GoldenScenes` 1, the GPU table 1, `SessionDocument` 1 and the playtest `Report` 1. The cooker's version is 3 (C3). There are 39 replays and 375 golden scenes.
 
 ### Boot, warm-up and hitches
 
 - **The warm-up pool** (`sapphire_jobs::warm_up_pool`, H0, H1): `Renderer::warm` returns a `WarmUpRequest` and `prepare` takes finished work in. `PipelineStats` counts `frame_thread_builds`, which fail a bench, and `frame_waits`.
 - **The boot** (`game_flow::boot`, H2, P4): `Step::Update`, then the renderer, the packs' and first zone's pipelines, the stage, the stand, the screens and the declared pipelines, under `BootScreen`, drawn by `InterfaceScreen`, the interface's one pipeline. Hitches count from its first frame.
 - **Everything reachable is declared** (H3): `game_app`'s `declares_every_setting` reads tiers, rungs and settings from their documents. A pipeline a new setting switches fails it until declared.
-- TODO(Z4 part 2): H4's `zero_hitches` lane: what it plays, where CI runs it, and what it changed in the stand.
+- **Exit test 1's playthrough** (H4): `cargo test -p game_app --features dev --test zero_hitches -- --ignored` plays the boot, the title, a new game, the ward's whole walk, a pause with the ladder, every setting and a tier change, and the title again, failing on any first use, frame-thread build or wait and naming the step and the pipeline. `SAPPHIRE_HITCH_TIMED=1` also fails a load screen's frame over twice the tier's interval, for a run alone on the machine; CI's `walk-desktop-low` lane runs it on lavapipe, a frame in eight. `zone_trip` checks the same when timed (Z3e). It reports memory and the boot's steps (Z1).
+- **Nothing slow on a boot frame:** the stand is `FightStand`, a part a frame, its plan and the character's clearance read on the warm-up pool (H4); the arena town stands in three parts (Z3e); a restart stands its run under its held wipe (`RunStanding`), and a launch that installs an update remakes the show, then the content, then the run (`Boot::remake_part`, Z3e). The title's sounds decode on the pool (`SoundsLoad`). `Boot` and `GameShow` are boxed and size-tested, at most 16 and 8 KiB, since an install launch overflowed the emulator's main thread (H4).
+- **Paths:** every command-line path is placed once after parsing (`Options::placed`): under a phone's cache, or a desktop's working directory (Z3e).
 
 ### Releases and patches
 
 - **The release manifest** (`sapphire_assets::manifest`, P1): ed25519-signed, with a version that only grows, an expiry, the minimum app build, each pack's header hash and each file outside the packs. A shipping build mounts only packs its manifest names.
 - **`cargo xtask release`** lays a release out for a static host; `package` signs one with the build's options (P3). `Manifest::unpatchable_change` is the one rule for what a patch may not carry.
 - **`Installation`** (P3) assembles a new release beside the current one and switches by one rename. **`game_flow::update`** (P4) checks, downloads and installs in the boot, and never blocks play. The keys and host are `platform/patch.toml`'s, both empty.
+- **Keys and sizes:** `cargo xtask release-key new|public <file>` makes a release key and prints its public half (X4). `cargo xtask patch sizes <name>=<content dir>... [--cook desktop|mobile]` patches release 1 with each edited copy of `content/` and reports each download by kind (Z1).
 
 ### Tiers, heat and the ladder
 
 - **Heat** (T1): `Platform::thermal()` gives one `ThermalReading` a frame (Android's state, headroom and hint session; iOS's state and Low Power Mode). Cvars `thermal.*` force it.
-- **The ladder** (T2): `quality::ladder::Ladder` over each tier's `ladder` in `tiers.ron`, with holds on the way back. Every rung sheds in place.
+- **The ladder** (T2): `quality::ladder::Ladder` over each tier's `ladder` in `tiers.ron`, with holds on the way back, counted in real time (`Stage::hand_frame_time`, H4). Every rung sheds in place.
+- **Lines below scale 1** (T6): `ViewUniforms::lines` and `outline.wgsl`'s `whole_line` hold a hull's width in scene pixels to at least min(its width in output pixels, one sample), so a moving outline stays whole under an upscale.
 - **In the game** (T3): `game_app::tiers::TierFollower` takes heat each frame and changes tier in place, only while the show holds still. The player has quality, a frame cap, dynamic resolution and a battery saver. A Deck starts on Desktop-Low.
 - **Known GPUs** (T4): `crates/sapphire_render/gpus.ron`, a ceiling per family that only lowers what `tiers.ron`'s rules pick.
 
@@ -195,7 +201,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 - **`PlayerSettings` version 4** (`game/game_ui/src/menus/settings.rs`), on the settings screen and its display, graphics, sound, subtitles, controls and privacy pages, each a document and a row in `content/ui/menus.ron` (A1–A4, A6, T3, Z3b).
 - **What they change** (A2, A3): `EffectScale` on post's screen effects, each bus's volume, mono, text and subtitle size. Reduced flashes holds a swing of 0.08. `sapphire_testkit flashes` is a WCAG 2.3.1 analyser.
 - **Marks by shape** (A5): `EffectPlace::Crown` marks; `r.color_vision` shows the frame under a dichromacy.
-- **Remapping and toggles** (A4, Z3c): `sapphire_controls::remap` and `remappable`; `Trigger::Toggle`.
+- **Remapping and toggles** (A4, Z3c, X4): `sapphire_controls::remap`, `remappable` and `remappable_bindings`, whose list fills the remap screens' glyphs (`remap.<device>.<action>`); `Trigger::Toggle`.
 - **The timing assist** (A6): `default_timing_assist.ron`, compiled in, in the run's tables only while it's on.
 
 ### Packages, symbols and crashes
@@ -210,7 +216,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 
 ### CI
 
-Pull requests run Lint, Test on three OSes, Replays, four App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `wave-bench` and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). Only `main` writes caches, and CI also runs nightly on `main`. H3's settings walk has 40 minutes a tier on lavapipe.
+Pull requests run Lint, Test on three OSes, Replays, four App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `wave-bench` and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). `zero_hitches` runs in `walk-desktop-low` (H4), and `follows_the_ladder` and `draws_a_marked_tick` in `the-rest` (X5). Only `main` writes caches, and CI also runs nightly on `main`, where the scripted fight's flash test runs too, one job a setting (`app-tests-flashes`, X5). H3's settings walk has 40 minutes a tier on lavapipe.
 
 ## How to add
 
@@ -218,7 +224,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust:** two steps. A screen showing a value no model holds is code by design, and a new remappable binding's glyph is a field of `game_ui::menus::BindingGlyphs` (M4 A4; "A game screen", step 3). A golden is a row in `tests/golden/scenes.ron` and its PNG since M4 R1 ("A golden"). A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder ([m4-handoff.md](m4-handoff.md), "Tools"), which is data.
+**What's left of Rust:** one step, a screen showing a value no model holds, which is code by design. A remappable binding's glyph is data since M4 X4 ("A game screen", step 3). A golden is a row in `tests/golden/scenes.ron` and its PNG since M4 R1 ("A golden"). A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder ([m4-handoff.md](m4-handoff.md), "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -334,9 +340,9 @@ The worked examples are the six documents in [content/ui/](../content/ui/). Spec
 
 1. **The screen:** `content/ui/<name>.ui.ron` with its sidecar, naming the model it reads, a list of `(path, kind)` that a cook holds every binding to: `menu.model.ron` (a way out, a run to continue, the player's settings), or `character`, `dialogue` or `hud.model.ron` for a screen showing those live values. Its nodes are laid out by `taffy`, with `key_from` for a key chosen at run time under a prefix, and it has `timelines`, `states` and `transitions`.
 2. **Strings:** keys in `content/loc/{en,ja}/game_ui.ftl`, the Japanese under the file's machine-quality mark, and new Han in `content/fonts/ui.charset.ron`. Then run `cargo test -p game_ui --test strings --test menus`.
-3. **Its row** in `content/ui/menus.ron` (M3 U9): its `name`, its `document` by the sidecar's ID, its `model` (`Menu` unless it reads another), `modal: false` only for words under the fight, what `back` does beyond its machine, and a row for each focusable node: `Command(..)` for the flow, `Open("<screen>")`, `Switch("<screen>")` for a tab that takes the screen's place, `Step(..)` for a setting, `Remap("<binding>")` to remap a binding (M4 A4), or `Nothing`. **Rust step:** a binding nobody could remap before needs a field of its name in `game_ui::menus::BindingGlyphs` for its row to show a glyph. A row on another screen that opens it is how it's reached; that screen's document needs the node. `game_ui`'s menus and strings tests read the list, so they hold its nodes and keys with no change to them, and `a_new_screen_is_documents` is the worked example.
+3. **Its row** in `content/ui/menus.ron` (M3 U9): its `name`, its `document` by the sidecar's ID, its `model` (`Menu` unless it reads another), `modal: false` only for words under the fight, what `back` does beyond its machine, and a row for each focusable node: `Command(..)` for the flow, `Open("<screen>")`, `Switch("<screen>")` for a tab that takes the screen's place, `Step(..)` for a setting, `Remap("<binding>")` to remap a binding (M4 A4), or `Nothing`. A remap row's glyph reads `remap.gamepad.<action>` or `remap.keyboard.<action>`, which the menus fill for each binding `sapphire_controls::remappable` lets a player remap in `combat_bindings.ron` (M4 X4): a new one is a named binding there, its row here, its node and its `remap-action-<action>` strings, and `menu.model.ron` gains its path (`the_documents_and_the_code_agree` names it). A row on another screen that opens it is how it's reached; that screen's document needs the node. `game_ui`'s menus and strings tests read the list, so they hold its nodes and keys with no change to them, and `a_new_screen_is_documents` is the worked example.
 
-   Changing an existing screen's look, layout, words or motion is documents alone: the editor's screen pane shows an edit on the next frame, and live link reaches a running game. A `.model.ron` is in field order by path, so on a merge, rebuild it from its model struct.
+   Changing an existing screen's look, layout, words or motion is documents alone: the editor's screen pane shows an edit on the next frame, and live link reaches a running game. A `.model.ron` is in field order by path, so on a merge, rebuild it from its model (`UiModel::of_model` of `ScreenModel::sample`, which reads the glyphs from the bindings too).
 4. **Look at it:** run
    ```bash
    cargo xtask run --platform desktop -- --capture <png> --ui-plain --ui-game <name> --ui-locale ja
@@ -365,7 +371,7 @@ A golden is a row and its PNG (M4 R1). The scenes are `tests/golden/scenes.ron`,
 
 A patch is a release of the content that changes only what the simulation doesn't read: screens, strings, textures, meshes, sounds, effects, the HUD and the bindings (m4-plan §3, "What a patch may carry"). The flow, the flags, the targeting and body tuning and `game.documents.ron` ship only with an app build. M4 P4 is the reference; `cargo xtask patch rehearse` walks the whole road on this machine.
 
-1. **The keys and the host,** once (the maintainer's, "Before a first upload", which has the commands): the public half of each signing seed goes in `platform/patch.toml`'s `release-keys`, and the URL the release is served from in its `host`, `https://` and ending in `/`. Every build after that trusts those keys and checks that host. A build made before has neither, and starts on what it shipped. `cargo xtask package` refuses a binary or a manifest holding the test key.
+1. **The keys and the host,** once (the maintainer's, "Before a first upload"): `cargo xtask release-key new <file>` writes a new signing key to a file kept offline and prints its public half, and `cargo xtask release-key public <file>` prints it again (M4 X4); `SAPPHIRE_RELEASE_KEY=$(cat <file>)` signs with it. The public half of each signing seed goes in `platform/patch.toml`'s `release-keys`, and the URL the release is served from in its `host`, `https://` and ending in `/`. Every build after that trusts those keys and checks that host. A build made before has neither, and starts on what it shipped. `cargo xtask package` refuses a binary or a manifest holding the test key.
 2. **The first release:** the build that ships carries a signed manifest, `cargo xtask package --platform <platform> --release-version 1 --expires <YYYY-MM-DD> --min-build <n>`, with the seeds in `SAPPHIRE_RELEASE_KEY`. Copy the package's `release/` to the host, `release.smanifest` last.
 3. **The patch:** edit `content/`, then `cargo xtask release --cook <desktop|mobile> --out <host directory> --release-version <n+1> --expires <YYYY-MM-DD> --min-build <n> --patch-from <host directory>/manifests/<n>.smanifest`, again with the seeds in `SAPPHIRE_RELEASE_KEY`. It refuses, naming the file, a change the simulation reads, and a release the installed one wouldn't take. One release a cook: desktop and mobile each have their own host directory.
 4. **Try it before it ships:** serve the directory with `cargo xtask patch serve <dir> --port <port>`, and start a `dev` build installed with the release before, with `--update-host http://127.0.0.1:<port>/` (the emulator after `adb reverse tcp:<port> tcp:<port>`). Its boot screen fetches, installs and stands on the patch, and the server prints the bytes each request moved. A release signed by a seed of the maintainer's needs a build that trusts it, so try a dev build signed with the test seed first (`patch rehearse` does).
@@ -418,8 +424,9 @@ A setting is code by design, not a pillar recipe: it's a field of `PlayerSetting
 
 **M4's packages' own,** each held by a test or a scan:
 
-- **No pipeline builds on the frame's thread** after the boot screen's first frame (H1, H3). A pipeline a setting or a rung switches is declared, or `declares_every_setting` fails. An owner a tier shapes joins `Renderer::swap_owners`, and a pipeline family `Held`, or a tier change builds it on the frame (T3).
-- **Every rung sheds in place** (T2), so no rung builds a pipeline.
+- **No pipeline builds on the frame's thread** after the boot screen's first frame (H1, H3), and no frame waits on one: `zero_hitches` fails on either, naming the step (H4). A pipeline a setting or a rung switches is declared, or `declares_every_setting` fails. An owner a tier shapes joins `Renderer::swap_owners`, and a pipeline family `Held`, or a tier change builds it on the frame (T3).
+- **No load screen's frame is over twice the tier's interval:** heavy work on a boot or a wipe goes to the warm-up pool or a part a frame, and `zero_hitches` and `zone_trip` check it when timed (H4, Z3e). `Boot` and `GameShow` stay small enough to move on a main thread, at most 16 and 8 KiB: box a new field rather than raise the limit (H4).
+- **Every rung sheds in place** (T2), so no rung builds a pipeline. **Every tier, floor and rung has its scenes** for the face, the ward and a hit, and a `-floor` scene is its tier's `dynamic_floor` (T5). **A line keeps its scene pixels below scale 1**, up to one sample (T6).
 - **A patch carries presentation only.** `Manifest::unpatchable_change` decides, from whether a replay reads the file (`NamedDocument::simulation`). The flow, the flags, the targeting and body tuning and `game.documents.ron` ship only with an app build (P1, P3).
 - **No key file is committed.** Tests derive keys from fixed seeds, and `package` refuses a binary or a manifest holding the test key (P4). Integrity rests on the hashes and the signature, never on TLS.
 - **A setting that changes what a step reads** is in the run's tables and its recording, and nothing else reaches a checksum (A1, A6). `PlayerSettings` keeps every version's bytes frozen.
@@ -432,14 +439,17 @@ A setting is code by design, not a pillar recipe: it's a field of `PlayerSetting
 - **A golden is a row:** `scenes.ron` refuses the runner's own arguments, and every file in `tests/golden/` is a scene's (R1).
 - **A desktop GPU's row only lowers a tier,** and the golden adapters match none (T4).
 - **A store build has no playtest code:** `sapphire_playtest` is `dev_only` (F1).
+- **A remappable binding's glyph is data:** the menus fill one for each binding `remappable_bindings` lists (X4).
+- **Windows ships its C runtime linked in:** `package --platform windows` refuses an executable importing a C runtime DLL (X4).
+- **A flash sequence shorter than a second, or than its caller expects, can't pass:** the analyser refuses it (X5).
 
 **M4's reviews':**
 
 - **The patcher (Z3a):** a body keeps 4 KiB a second after the read timeout's grace (`Timeouts::min_rate`). An `https://` host's redirects stay on `https://`, and plain `http://` reaches only this machine and follows none.
 - **Packaging (Z3b):** the privacy page summarizes [privacy-policy.md](store/privacy-policy.md), so a change to one changes the other.
 - **Accessibility (Z3c):** a saved remap passes `sapphire_controls::remappable`: the combat context, a device's suffix, and a press of that device other than its cancel. No settings file can take the pause, the resume, the way out or a stick.
-- **Crash capture (Z3d):** a Linux or Android fault's address is read from `si_addr` through `sapphire_crash`'s `siginfo` module, never `crash-handler`'s `ssi_addr`. TODO(Z4 part 2): the rest of Z3d's rules as it lands.
-- **Warm-up and tiers (Z3e):** TODO(Z4 part 2).
+- **Crash capture (Z3d):** a Linux or Android fault's address is read from `si_addr` through `sapphire_crash`'s `siginfo` module, never `crash-handler`'s `ssi_addr`. A Linux dump request waits at most 10 s on its monitor, then the signal ends the process, and a panic's dump blocks the fault signals on its thread. The monitor edits every dump (`minidump_edit`): the environment zeroed, the home directory's user name masked, the macOS executable named. Panic reports name modules by file alone and write the home directory `~`. On ELF, a `.sym` file's lines for a leaf come from the symbol table.
+- **Warm-up and tiers (Z3e):** a launch that installs an update remakes a part a frame (`Boot::remake_part`), and a part that fails leaves the boot on what it had. Every command-line path is placed once after parsing (`Options::placed`). The cook refuses an exit into or out of a zone with a probe grid (`exit_target`) until a trip carries one.
 
 ## Everything deferred
 
@@ -448,7 +458,7 @@ A setting is code by design, not a pillar recipe: it's a field of `PlayerSetting
 M3's first pillar counts each of these as a bug.
 
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust, which is code by design.
-- **A remappable binding's glyph** (A4): the binding, its `Remap` row and its strings are documents, but the glyph its row shows is a field of `game_ui::menus::BindingGlyphs`, named by the action. The plan's exit test 7 counted only the screen. Deriving the fields from the remap screens' rows would close it.
+- **A remappable binding's glyph** (A4) was a field of a Rust struct. **Fixed in M4 X4:** the menus fill a glyph for every binding the document lets a player remap.
 
 ### By area
 
@@ -460,27 +470,35 @@ Each item names the package and its hand-back or row, and why it waits.
 - **No downloads in the background or while playing,** no parallel requests and no bandwidth cap (P2, P4). Not needed for a 4 KB patch; a larger one would want them.
 - **A power cut** during an install is untested (P3): fault injection covers every step, but not the disk's own behaviour.
 - **`--patch-from` doesn't compare packed assets of the simulation's kinds** (P3). The game runs on its compiled-in copies, so a pack's copy can't move a checksum.
-- **Cooks differ across architectures** (C3, Z3a): every texture and 78 meshes differ between x86-64 and AArch64, and one x86-64 machine takes another path through the encoders, untraced. A patch from another architecture's cook would carry most of the 37.8 MB cook. Cook releases on one fixed runner image; `release --patch-from` printing the new blocks' bytes would catch a mistake.
+- **Cooks differ across architectures** (C3, Z3a, Z1): textures by their kernels and 78 meshes differ between x86-64 and AArch64, untraced, and CI's x86-64 desktop cook is 38,740,637 bytes to this Mac's 38,736,717. A patch from another architecture's cook would carry far more than its edit. Cook releases on one fixed runner image; `release --patch-from` printing the new blocks' bytes would catch a mistake.
 - **`fdsm`'s font fields use `std`'s `f64` maths** (C3): third-party, outside the cooker's ban.
-- **No command makes a release key or prints its public half** (found writing "Before a first upload"): the maintainer uses OpenSSL's recipe above.
 - **Android's TLS roots are `webpki-roots`** (decided at P0): no user-installed CAs, and roots age until an app update. The platform verifier's Kotlin half needs a download.
 
-**Warm-up, tiers and frames** (H1–H5, T0–T4):
+**Warm-up, tiers and frames** (H1–H5, T0–T6, Z3e, Z1):
 
-- TODO(Z4 part 2): what H4 and Z3e leave here.
+- **A renderer the chosen tier can't build fails the boot** rather than trying a lower tier (Z3e).
+- **The ladder's tier rung under heat is walked only by `follows_the_ladder`** (Desktop-High to Low), and the mobile tiers only on this Mac's Metal: `zero_hitches` holds the chosen tier (Z3e).
+- **The sounds' device opens on a title frame,** not a load screen (Z3e); their decoding is off the frame since H4.
+- **A restart on a scenario with no flow** (the stock arena) still prepares its fight on the frame, since its setup reads content (H4).
+- **A trip carries no probe grid,** so no zone with one may have an exit (Z3e's cook check) until trips load their own (H4).
+- **A `--record` run writes its replay on a wipe frame** (Z3e; dev only).
+- **A timed install launch alone on the machine** wasn't run: Z3e's figures are from a shared machine in the tools profile.
+- **The Simulator's and the emulator's boot frames reach 63 to 106 ms** (Z1): neither is a phone's GPU, so exit test 1 is judged on the Mac, and a phone's own boot frames are unknown.
+- **§3 sets no budget for a start** (Z1): 3.97 s cold to the title on the Mac's Metal, mostly the packs' pipelines, has nothing to be held to. A phone's cold start would set one.
+- **Below scale 1, still sub-pixel outlines draw thicker** (T6): +38% strength at 640×360 at 0.7, about none at 1080p, and the depth-offset rim follows the width before its floor. Widening only moving lines would need last frame's positions on every outline pipeline.
 - **`AssetServer::finish` uploads every pending asset,** not only the one asked for (H2), so the uploader that panics in `find_zone` is a hazard whenever unrelated uploads are queued. Read on the CPU with `finish_cpu`, as screens and zone inventories are.
-- **The first frame after boot loads the fight's sounds** (H2): long, but not a pipeline.
 - **H3's walk takes the keyboard's path only,** and holds the cue table's effects all at once rather than as a fight times them.
 - **The heat status is asked on the frame thread,** 0.1–0.4 ms once a second on the emulator (T1). A status listener would take it off the frame if a phone hitches.
 - **ADPF's frame report includes the swapchain's wait** (T1), so a GPU-bound frame reads long.
-- **The emulator's constant headroom of 0.90 reads `Light`** (T2), so the ladder sits a rung down there, and a phone between 0.85 and 0.95 will too.
+- **The emulator's constant headroom of 0.90 reads `Light`** (T2, Z1), so the ladder sits on rung 1 there from 0.03 s after the title, for good, and a phone between 0.85 and 0.95 will too. Only a phone's falling forecast shows the climb to the top.
 - **Whether the frame graph culls the scene prepass on Mobile-High when GTAO is shed** wasn't checked (T2).
 - **Secondary motion on Desktop-Low:** p99 0.72 ms against its 0.5 (H5). Only a cheaper solve, which moves poses and goldens, gets under it.
 - **T4's table is unmeasured:** names a driver reports otherwise (old RADV, NVK) fall to the rules, and Apple's M3 and later and integrated PC GPUs have no rows.
 
 **Packages and stores** (S0–S5, I2, Z3b):
 
-- **Windows' C runtime** (found by Z4, unverified): `.cargo/config.toml` doesn't link the CRT statically, so the Windows game likely imports `VCRUNTIME140.dll`, which a clean Windows lacks, and `package`'s PE check doesn't read imports. CI's runners have the runtime installed, so they wouldn't show it. Either declare Microsoft's Visual C++ redistributable in Steamworks, or link the CRT statically with a package change. Check with `dumpbin /dependents` on the packaged executable.
+- **The Android bundle doubled to 108.5 MB** since C1 put the unstripped library's whole DWARF in its `.dbg` (Z1). No player downloads it (36.6 MB to a device) and Play takes symbols up to 1.6 GB, so it costs only the upload; S3's `.dbg`, line tables alone, was 72.2 MB.
+- **Windows' static C runtime is proved only by `packages.yml`'s Windows job** (X4): it was written on macOS, and no clean Windows has launched it.
 - **Larger Text, VoiceOver and Sufficient Contrast aren't claimed** (S5): text reaches 125% on a phone where Apple asks 200%, there's no screen reader, and nothing measures the menus' contrast. The game doesn't read iOS's own Reduce Motion.
 - **`UIRequiresFullScreen` may be deprecated on iPadOS 26** (Z3b, unverified).
 - **`steampipe` isn't run in CI** (I2): no job holds all three desktop packages.
@@ -491,13 +509,12 @@ Each item names the package and its hand-back or row, and why it waits.
 **Crashes and symbols** (C1–C3, Z3d):
 
 - **No `STACK CFI`** (C2): the walk past the crashing frame uses frame pointers, then scanning. **No PDB inlines.**
-- **The macOS monitor names the executable `<Unknown>`** in a minidump; the reader finds it by ID instead (C2).
-- **Z3d's noticed, not fixed:** the Linux minidumper's `request_dump` has no timeout, so a hung monitor hangs the game; the handler can deadlock re-entered on a different signal; `dwarf.rs` can overflow `sh_offset + sh_size` on a hostile file (a tool); panic messages and minidumps' module lists and memory may hold paths; `forced.rs`'s `c as u8` is an unnecessary cast to clippy on Android. TODO(Z4 part 2): drop what Z3d's final commits closed.
+- **Z3d left:** Windows' wait on its monitor is unbounded (the socket is private to `minidumper`); an `abort()` in the crash event would re-enter, since glibc unblocks `SIGABRT` (the event calls nothing that aborts); a monitor hung under `ptrace` can't be bounded; and the Linux-only tests are proved only by CI. A report keeps paths outside the home directory and any other personal text in memory, and stays on the device ([privacy-policy.md](store/privacy-policy.md)).
 - **Crash upload** stays out (m4-plan §3, "Not in M4"): there's no account to send to.
 
 **Settings and accessibility** (A1–A6, Z3c):
 
-- **`flashes.rs` is in no CI lane** (Z3c): it needs a GPU and a cook, 137 s here. A lane or the nightly run should take it.
+- **The flash test runs only in CI's nightly run** (X5), a job a setting, and its time on lavapipe is unmeasured until the first nightly: an hour or more a setting is X5's estimate.
 - **The stress fight passes 2.3.1 by default with no margin** (A3): four of its six transitions in its worst second are the camera cutting past a pillar, which is `sapphire_camera::collision`'s, not an effect's.
 - **The HUD's health trail tells ember from rose only by an inked edge** (A5, Z3c): 0.096 apart in Oklab.
 - **Nothing orders a screen's rows reachable** when scrolling is added elsewhere (Z3c): the walk catches it per screen.
@@ -545,7 +562,8 @@ From m4-plan §3: crash upload and telemetry; accounts and online services; iOS 
 - **The stores move every year:** Play's API 37 by about August 2027, Apple's next Xcode by about April 2027, and Steam's reviews up to 12 business days ("The stores' next deadlines").
 - **"Collects nothing" rests on the patch host** keeping no access logs that identify a device.
 - **Export compliance is a legal call** the run can't make: the game links its own TLS.
-- **More bugs are likely.** M4's reviews found and fixed TODO(Z4 part 2): the count of Z3a–Z3e's fixes and holds once Z3d and Z3e land. Z4 found two more gaps while writing this file (Windows' C runtime, and no command for a release key).
+- **More bugs are likely.** M4's five reviews landed 30 fixes and holds (Z3a 2, Z3b 3, Z3c 9, Z3d 12, Z3e 4), and this file's first draft found four more gaps, which X4 fixed: a binding's glyph in Rust, Windows' C runtime, no command for a release key, and a stale export-compliance comment.
+- **Exit test 1's margin is thin:** Mobile-High's worst cold boot frame was 32.4 ms against 33.3 (Z1), and the arena town's 29.1 (Z3e). A heavier part on a boot frame crosses it, and only `zero_hitches`'s and `zone_trip`'s timed runs, alone on a Mac, catch it; CI's lavapipe run counts builds, not time.
 - **Cooks differ across architectures,** so where a release is cooked decides what a patch moves.
 - **A moved checksum costs two CI rounds,** because no machine here runs x86-64.
 - **Motion without an animator, machine translation, our own navigation runtime, a VM in the step, software rasterizers in place of GPUs, and scenarios compiled in** all carry from [m4-handoff.md](m4-handoff.md)'s risks unchanged.

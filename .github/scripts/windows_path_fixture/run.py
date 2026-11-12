@@ -248,6 +248,8 @@ def run(args):
                 (inputs / "content/canary.txt").write_bytes(b"protected content\n")
                 (inputs / "content/capture.png").write_bytes(png_bytes())
                 (inputs / "goldens/turntable.fixture-path-only.png").write_bytes(png_bytes())
+                # The runner reads its scenes from the document beside the goldens (M4 R1).
+                shutil.copyfile(HERE.parents[2] / "tests/golden/scenes.ron", inputs / "goldens/scenes.ron")
                 shutil.copyfile(fake, inputs / "bin/sandbox.exe")
                 primary = inputs / "content"
             out = output_path(case, root, spec)

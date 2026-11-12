@@ -6,9 +6,11 @@
 //! The frame clock owns the session, since it owns frame pacing: it reports every frame it starts,
 //! from the moment it lets the tick through to the end of the app's iteration, against the pacer's
 //! budget (the target interval, else a refresh). That is wall time on the frame thread, as Google's
-//! samples measure it. It includes a wait for a free swapchain image, which a frame bound by the GPU
-//! spends there, so such a frame reads long and may raise the CPU's clocks for nothing; only a phone
-//! shows how much that costs. Worker threads aren't in the session: the frame thread's wall time
+//! samples measure it, less the swapchain's waits (M4 T7): a frame bound by the GPU spends most of its
+//! time waiting for a free swapchain image, and told that time, the session would read the frame as
+//! long and raise the CPU's clocks for nothing, which is heat on a device that may be trying to cool.
+//! `sapphire_rhi`'s surface times its acquire and present into `sapphire_core::frame_waits`, and the
+//! frame clock leaves them out. Worker threads aren't in the session: the frame thread's wall time
 //! covers the work it waits for on them.
 //!
 //! `APerformanceHint_*` came in Android 13 (API 33), past the app's minimum (29), so it is resolved

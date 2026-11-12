@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use sapphire_core::frame_waits;
+use sapphire_time::Stopwatch;
 use wgpu::{CompositeAlphaMode, CurrentSurfaceTexture, PresentMode, TextureFormat};
 
 use crate::{GpuContext, GpuInstance, LOG_TARGET, RhiError};
@@ -127,10 +129,14 @@ impl SurfaceFrame<'_> {
         self.size
     }
 
-    /// Queues the image for display. Submit the frame's command buffers first.
+    /// Queues the image for display. Submit the frame's command buffers first. Its wait (a driver may
+    /// block here until the compositor takes the image) goes into the thread's
+    /// [`frame_waits`], as the acquire's does.
     pub fn present(mut self) {
         if let Some(texture) = self.texture.take() {
+            let waiting = Stopwatch::start();
             self.state.queue.present(texture);
+            frame_waits::add(waiting.elapsed());
         }
     }
 }
@@ -387,7 +393,13 @@ impl RenderSurface {
         }
         state.frames_since_configure = state.frames_since_configure.saturating_add(1);
         for _ in 0..2 {
-            let texture = match surface.get_current_texture() {
+            // A wait for a free image (every one in flight, as when the GPU is behind) is the display's,
+            // not the frame's work: it goes into the thread's ledger, which the frame clock leaves out of
+            // what Android's ADPF hint session hears (M4 T7).
+            let waiting = Stopwatch::start();
+            let current = surface.get_current_texture();
+            frame_waits::add(waiting.elapsed());
+            let texture = match current {
                 CurrentSurfaceTexture::Success(texture) => texture,
                 CurrentSurfaceTexture::Suboptimal(texture) => {
                     if state.frames_since_configure >= SUBOPTIMAL_REBUILD_INTERVAL {

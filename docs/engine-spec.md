@@ -1800,6 +1800,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - On phones the height cap does most of the softening: a hard edge goes from 1 px to 2.3 (Mobile-High) or 3.25 px (Mobile-Low). The 0.75 floor adds 10–25% to that.
   - GTAO is Desktop-Low's only large optional pass (12–14% of the frame), and a bloom level Mobile-Low's (11–13%). The cirrus and the wind level save nothing measurable.
   - Resolution to 0.85 saves 14–15% on Desktop-Low, and 2–11% on Mobile-Low.
+- **As built (M4 T5, the look at every tier, floor and rung):** with T2's rung scenes and T5's 33, the close-up, the ward and the hit each have a `tier-*` golden on every tier at rest, at its dynamic floor (Mobile-Low's 0.85: T0's 0.75 face is `tier-face-mobile-low-three-quarters`) and at each rung that draws differently: the first three on each tier. A frame-rate rung sheds nothing and drew byte for byte as the rung before it, and a tier rung enters the lower tier at its deepest rung short of a tier (`Ladder::entered`), so neither has a scene. Within a tier every rung prewarms the same pipelines as at rest. Below scale 1 on the desktops, a moving character's outlines break into dots along the silhouette, since TAA takes moving lines from the current frame; still lines keep (T0).
 
 **Debug views**
 

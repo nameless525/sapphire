@@ -2902,7 +2902,9 @@
             // noon, on each tier as it ships, AO and all. The desktop tiers draw 640×360 at scale 1 and at
             // 0.7; the phones' draw 1280×592 at the scales a 1170-row phone draws, their own (740 or 590
             // rows) and 0.75 of it, so the bilinear upscale is a phone's. The thermal ladder's rungs (M4 T2)
-            // compare against these.
+            // compare against these. T2 then raised Mobile-Low's floor to 0.85, so T0's 0.75 scene is
+            // `tier-face-mobile-low-three-quarters`, a frame no rung draws without its shed, and
+            // `tier-face-mobile-low-floor` (M4 T5) is the floor at 0.85, with the ward's and the hit's below.
             (
                 name: "tier-face-desktop-high",
                 ticks: 90,
@@ -2960,11 +2962,19 @@
                 size: "1280x592",
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--render-scale", "0.428632"],
+            ),
+            (
+                name: "tier-face-mobile-low-three-quarters",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
                        "--render-scale", "0.378205"],
                 ci_seconds: (lavapipe: 3.8, warp: 12.2),
             ),
             // The Lantern Ward's street from where a game starts, and a medium hit's spark and aberration on
-            // the look-dev character, on the low tiers that the ladder's passes are measured on.
+            // the look-dev character, on the low tiers that the ladder's passes are measured on (M4 T5 adds
+            // the other tiers, floors and rungs below).
             (
                 name: "tier-ward-desktop-low",
                 ticks: 90,
@@ -3119,6 +3129,228 @@
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "3"],
                 ci_seconds: (lavapipe: 5.5, warp: 20.8),
+            ),
+            // Every tier, floor and rung (M4 T5, exit test 4): the ward and the hit at rest, at the tier's
+            // dynamic floor and at each of its first three rungs, on every tier, as the face has above.
+            // Mobile-Low's floor is 0.85 of its 590 rows. A frame-rate cap sheds nothing (`LadderState::of`)
+            // and drew byte for byte as the rung before it (Metal, 2026-11-11: the face on Desktop-High, the
+            // ward and the hit on Desktop-Low, the hit on Mobile-High), and a tier rung enters the lower tier
+            // at its deepest rung short of a tier (`Ladder::entered`), whose scenes these are, so neither has
+            // a scene.
+            (
+                name: "tier-ward-desktop-high",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-high-floor",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--render-scale", "0.7", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-high-rung-one",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--rung", "1", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-high-rung-two",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--rung", "2", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-high-rung-three",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
+                       "--rung", "3", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-low-floor",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
+                       "--render-scale", "0.7", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-low-rung-one",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
+                       "--rung", "1", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-desktop-low-rung-two",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
+                       "--rung", "2", "--capture-frames", "12"],
+            ),
+            (
+                name: "tier-ward-mobile-high",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
+                       "--render-scale", "0.632479"],
+            ),
+            (
+                name: "tier-ward-mobile-high-floor",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
+                       "--render-scale", "0.474359"],
+            ),
+            (
+                name: "tier-ward-mobile-high-rung-one",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "1"],
+            ),
+            (
+                name: "tier-ward-mobile-high-rung-two",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "2"],
+            ),
+            (
+                name: "tier-ward-mobile-high-rung-three",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
+                       "--render-scale", "0.632479", "--rung", "3"],
+            ),
+            (
+                name: "tier-ward-mobile-low-floor",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
+                       "--render-scale", "0.428632"],
+            ),
+            (
+                name: "tier-ward-mobile-low-rung-one",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "1"],
+            ),
+            (
+                name: "tier-ward-mobile-low-rung-two",
+                size: "1280x592",
+                ticks: 90,
+                args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
+                       "--render-scale", "0.504274", "--rung", "2"],
+            ),
+            (
+                name: "tier-hit-desktop-high",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-high", "--capture-frames", "12", "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-high-floor",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-high", "--render-scale", "0.7", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-high-rung-one",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-high", "--rung", "1", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-high-rung-two",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-high", "--rung", "2", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-high-rung-three",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-high", "--rung", "3", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-low-floor",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-low", "--render-scale", "0.7", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-low-rung-one",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-low", "--rung", "1", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-desktop-low-rung-two",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "desktop-low", "--rung", "2", "--capture-frames", "12",
+                       "--capture-step", "1"],
+            ),
+            (
+                name: "tier-hit-mobile-high",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-high", "--render-scale", "0.632479"],
+            ),
+            (
+                name: "tier-hit-mobile-high-floor",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-high", "--render-scale", "0.474359"],
+            ),
+            (
+                name: "tier-hit-mobile-high-rung-one",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "1"],
+            ),
+            (
+                name: "tier-hit-mobile-high-rung-two",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "2"],
+            ),
+            (
+                name: "tier-hit-mobile-high-rung-three",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "3"],
+            ),
+            (
+                name: "tier-hit-mobile-low-floor",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-low", "--render-scale", "0.428632"],
+            ),
+            (
+                name: "tier-hit-mobile-low-rung-one",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "1"],
+            ),
+            (
+                name: "tier-hit-mobile-low-rung-two",
+                size: "1280x592",
+                ticks: 71,
+                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                       "--cues", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "2"],
             ),
             // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera
             // motion: its duotone and speed lines held within 0.08 of the frame's relative luminance, and

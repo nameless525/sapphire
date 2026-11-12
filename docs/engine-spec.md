@@ -3965,7 +3965,7 @@ On **foreground**:
 - **Android:**
   - 64-bit only.
   - 16 KB page-aligned `.so` files (use NDK r28+, plus a linker flag, §7.3).
-  - Bump the target API level every year as Play requires.
+  - Bump the target API level every year as Play requires. [m5-handoff.md](m5-handoff.md), "The stores' next deadlines", has the next one, as read on 2026-11-11 (M4 Z4).
 - **macOS:** hardened runtime, codesigning, notarization.
   - **As built (M4 S4):** `xtask package --platform macos` signs the app ad hoc with the hardened runtime and `platform/macos/package.entitlements`, which grants nothing: the game JITs nothing, loads no library it didn't link, reads no `DYLD_` variable, records no sound and needs no sandbox (Steam's games ship outside the Mac App Store). The package reads the signature back (`codesign --display`: the `runtime` flag) and the entitlements, and checks `AppIcon.icns`. Developer ID signing and notarization are the maintainer's (m4-plan §7). Whether Steam's overlay needs `com.apple.security.cs.disable-library-validation` under the hardened runtime is owed to a run in the Steam client.
 - **Steam / Steam Deck:** controller support, legible text at 800p, and the Steam Runtime on Linux.
@@ -4268,6 +4268,28 @@ These windows are rough estimates for a small, senior team. A solo developer sho
   - A window on any desktop: the game's first run in one, the editor's (E3, E4 and E5), and a cutscene's blend.
   - A phone, for exit test 5 and everything on [m4-handoff.md](m4-handoff.md)'s device list: Luau, text, zones and saves on a device, iOS touch, a phone driver's cold compile. A desktop GPU other than this Mac's.
   - M2's and M1's device checks, all still owed (above).
+
+**M4 exit run:** [m4-exit-run.md](m4-exit-run.md) is the procedure for all eight exit tests ([m4-plan.md](m4-plan.md) §1): for each, what proves it, the commands, and what CI, this Mac, a device, an account or a person answers. TODO(Z4 part 2): when Z2's rehearsal ran and on what, and that the final run on the head with all of M4 is Z2's, with its numbers there, not here.
+
+**M4 status (TODO(Z4 part 2): the date of Z2's final run): built, and not judged.** TODO(Z4 part 2): that every package in [m4-plan.md](m4-plan.md) has landed, and the head and date of Z2's final exit run, with the heading of [m4-exit-run.md](m4-exit-run.md)'s section that has its figures.
+
+- **The decision.** Nobody has played M2's fight, M3's slice or M4's packaged game, so review 3 never ran and the go/no-go's question is still open ([m2-go-no-go.md](m2-go-no-go.md)). M4 made a playtest one command and packaged the game for three stores, so the answer is cheap to get and to act on, but whether any of it is fun is still unknown, and that's still the project's largest risk. No milestone after M4 is named here: what M5 is, is the maintainer's to choose. [m5-handoff.md](m5-handoff.md) is what it inherits.
+- **Exit test 1: no hitches, as far as H4's lane shows.** Pipelines build on a warm-up pool behind a boot screen that draws (H1, H2), and every setting at every in-place rung of every tier is declared (H3). TODO(Z4 part 2): H4's `zero_hitches` result, on lavapipe in CI and on cold Metal here, its worst frame against twice the tier's interval, and what became of the stand's frame. A phone driver's cold compile and a desktop GPU's cold cache are owed.
+- **Exit test 2: holds on this Mac.** A screen's edit reached the desktop, the Simulator and the emulator from a server on this Mac as 4,384 bytes, signed, resumed after a kill and refused from an untrusted key (P4; `cargo xtask patch rehearse`). A CDN, the maintainer's key, TLS against a real certificate and a phone are owed.
+- **Exit test 3: done up to the accounts.** Every platform's package builds and passes every validator that runs without an account, and the nightly `packages.yml` ran all five green on 2026-11-11 (S1–S4, I2). The checklists in [docs/store/](store/) count Apple 22 of 32 rules met, Play 20 of 29 and Steam 21 of 30 (Z3b); the rest is the maintainer's accounts, identity, art and the stores' reviews, listed as steps in [m5-handoff.md](m5-handoff.md), "Before a first upload", with the stores' next deadlines.
+- **Exit test 4: holds on goldens and modelled heat.** Each tier and each rung has goldens, and lines and the two-tone edge hold to each tier's floor (T0, T2). The ladder walks down and back under the emulator's thermal override, and the game changes tier only while the show holds still (T3). TODO(Z4 part 2): Z3e's review. A phone throttled for 15 minutes is owed.
+- **Exit test 5: holds on macOS, the Simulator and the emulator.** A forced crash in a shipping build names its function, file and line from symbols kept from the same link, and every shipped binary is stripped and matched to them (C1, C2). Windows and Linux are proved by CI's crash tests. TODO(Z4 part 2): Z3d's final fixes, and the emulator run of the Android fault address it fixed.
+- **Exit test 6: holds but for players.** Every item of [m4-plan.md](m4-plan.md) §3's accessibility list is a setting, saved and migrated, reached by pad, keyboard and touch (A1–A6). The scripted fight passes WCAG 2.3.1 with flashes reduced and by default, and every screen fits at the largest size on a phone (A3, Z3c). Players who use the settings, and a reader of Japanese, are owed.
+- **Exit test 7: holds but for two steps.** The golden, scripted-input, shelved-zone and placeholder-sound steps are documents (R1–R4). A screen showing a value no model holds is code by design, and a new remappable binding's glyph is a field of `game_ui::menus::BindingGlyphs` (A4), which the exit test's "no Rust step but one" didn't count.
+- **Exit test 8: ready, and not played.** `cargo xtask playtest` installs a playtest build, and its sessions come back and replay to the device's checksums on the desktop, the Simulator and the emulator, read out per encounter by `playtest report` against [playtest.md](playtest.md) (F1, F2). `--platform ios` on a phone and someone playing are owed.
+- **The budgets as shipped.** TODO(Z4 part 2): Z1's binary sizes, starts, warm-up per tier, memory, patch sizes and the ladder's trace, by pointer to §3's "Measured as shipped". Every number is this Mac's (an Apple M5), the Simulator's or the emulator's, not a phone's.
+- **The reviews.** Five agents who hadn't built the areas read them after the packages landed (Z3a–Z3e): the patcher as an attacker would, packaging against the checklists, accessibility against exit test 6, crash capture, and warm-up and tiers. TODO(Z4 part 2): the count of fixes and holds they landed. [m5-handoff.md](m5-handoff.md) has the rules they made and what they left.
+- **Still open:**
+  - Review 3, M3's slice and M4's build played with a gamepad, and the go/no-go.
+  - Every store's last steps: the maintainer's accounts, identity, keys, art, forms and uploads, and each store's review ([m5-handoff.md](m5-handoff.md), "Before a first upload").
+  - A phone, for the warm-up's cold compile, the ladder under real heat, a patch over the network, a crash and the stores' crash reports, and everything on [m5-handoff.md](m5-handoff.md)'s device list. A desktop GPU other than this Mac's, and a Steam Deck.
+  - Players who use the accessibility settings, ears for the volumes and captions, and a reader of Japanese.
+  - M3's, M2's and M1's device checks, all still owed but Windows' save retry, which CI's Windows job now runs (above).
 
 
 ---

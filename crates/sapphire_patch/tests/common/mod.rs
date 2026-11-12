@@ -90,8 +90,9 @@ pub fn first_release() -> Content {
 }
 
 /// Its successor, with an edit of each kind P0 measured: two neighbouring blocks of a texture, a mesh
-/// rewritten whole at a new size (which moves every block after it, though not their bytes), a string, a
-/// zone's new piece, a screen file outside the packs, and a new pack holding only blocks the install has.
+/// rewritten whole at a new size (which moves every block after it, though not their bytes), a sound
+/// regenerated at another length beside one that isn't, a string, a zone's new piece, a screen file outside
+/// the packs, and a new pack holding only blocks the install has. The fonts' pack is the same.
 pub fn second_release() -> Content {
     content(1)
 }
@@ -112,6 +113,8 @@ fn content(generation: u8) -> Content {
     };
     let strings: Vec<u8> = strings.bytes().cycle().take(3000).collect();
     let sound = noise(2 * BLOCK - 300, 31);
+    // A short cue of one block, stored raw, as P0's regenerated music was: a note changed, a little shorter.
+    let cue = if edited { noise(36_632, 33) } else { noise(36_940, 32) };
     let mut zone =
         vec![asset(40, Codec::Zstd, &noise(4 * BLOCK, 41)), asset(42, Codec::Lz4, &pattern(9000, 5))];
     if edited {
@@ -126,12 +129,13 @@ fn content(generation: u8) -> Content {
                 asset(12, Codec::Lz4, &pattern(2000, 9)),
             ],
         ),
-        ("audio".to_owned(), vec![asset(30, Codec::None, &sound)]),
+        ("audio".to_owned(), vec![asset(30, Codec::None, &sound), asset(32, Codec::None, &cue)]),
+        ("fonts".to_owned(), vec![asset(60, Codec::Zstd, &pattern(20_000, 11))]),
         ("loc".to_owned(), vec![asset(50, Codec::Zstd, &strings)]),
         ("zone_lantern_ward".to_owned(), zone),
     ]);
     if generation == 1 {
-        // The same sound under another ID: a new pack, whose only block the install already holds.
+        // The unedited sound under another ID: a new pack, whose only blocks the install already holds.
         packs.insert("audio_extra".to_owned(), vec![asset(31, Codec::None, &sound)]);
     }
     let menus: &[u8] = match generation {

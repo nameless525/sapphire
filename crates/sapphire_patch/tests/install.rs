@@ -89,8 +89,9 @@ fn an_install_switches_releases_and_the_next_good_launch_removes_the_old() {
     assert_starts_on(&installation, &app.shipped, &second, 2);
     assert_starts_on(&app.open(), &app.shipped, &second, 2);
     // Only what changed lives under the root; the rest is still what the app shipped.
-    assert_eq!(installation.pack("audio"), Some(Location::Shipped));
+    assert_eq!(installation.pack("fonts"), Some(Location::Shipped));
     assert!(matches!(installation.pack("shared"), Some(Location::Patched(_))));
+    assert!(matches!(installation.pack("audio"), Some(Location::Patched(_))));
     assert!(matches!(installation.pack("audio_extra"), Some(Location::Patched(_))));
     assert_eq!(installation.file("documents/game.flow.ron"), Some(Location::Shipped));
     assert!(matches!(installation.file("documents/ui/menus.ron"), Some(Location::Patched(_))));

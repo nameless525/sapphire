@@ -102,16 +102,17 @@ fn a_patch_moves_only_the_manifest_the_changed_tables_and_the_new_blocks() {
     assert_eq!(host.sent(), wire);
     assert_eq!(first.received, wire);
     assert!(padding <= 15 * expected.blocks.len() as u64);
-    // The texture's two edited blocks are new and its eight others kept; the new pack holding only an
-    // installed sound costs its tables alone.
-    assert_eq!(
-        expected
-            .blocks
-            .iter()
-            .filter(|(hash, _)| *hash == common::header(&to.packs["shared"]).hash())
-            .count(),
-        2 + 4
-    );
+    // The texture's two edited blocks are new and its eight others kept, and the mesh's four are new; the
+    // regenerated sound's one block is new and the other sound's two kept; the new pack holding only an
+    // installed sound costs its tables alone, and the fonts' pack, the same, nothing.
+    let new_blocks = |pack: &str| {
+        let hash = common::header(&to.packs[pack]).hash();
+        expected.blocks.iter().filter(|(of, _)| *of == hash).count()
+    };
+    assert_eq!(new_blocks("shared"), 2 + 4);
+    assert_eq!(new_blocks("audio"), 1);
+    assert_eq!(new_blocks("audio_extra"), 0);
+    assert!(!expected.tables.iter().any(|(hash, _)| *hash == common::header(&to.packs["fonts"]).hash()));
     eprintln!(
         "patch: {} bytes = manifest {} + tables {} + blocks {} ({} of them) + padding {padding} + files {}",
         wire,

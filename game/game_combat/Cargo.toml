@@ -24,6 +24,8 @@ sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_physics.workspace = true
 sapphire_input.workspace = true
+# A game's restart prepares its run on the warm-up pool (M4 H4).
+sapphire_jobs.workspace = true
 sapphire_serialize.workspace = true
 sapphire_platform.workspace = true
 sapphire_render.workspace = true

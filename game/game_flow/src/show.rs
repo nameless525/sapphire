@@ -22,12 +22,13 @@
 //! checksums as it ends, which [`GameShow::keep_ended_runs`] keeps for [`GameShow::take_ended_runs`]. A store
 //! build asks neither, and its pause has no mark.
 
+use std::sync::mpsc;
 use std::time::Duration;
 
 use game_combat::combat::{Combat, CombatOption, RunSoFar, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::{FightDocuments, error_chain};
-use game_combat::fight::FightStand;
+use game_combat::fight::{FightStand, PreparedRun};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, OffscreenDisplay, ShownFight};
 use game_ui::menus::{
@@ -53,7 +54,7 @@ use sapphire_math::Vec2;
 use sapphire_ui::{Atlas, UiDrawList};
 
 use crate::LOG_TARGET;
-use crate::flow::{After, FlowAction, FlowCommand, FlowState};
+use crate::flow::{After, FlowAction, FlowCommand, FlowState, WipeAsk};
 use crate::game::{FlowContent, Game, GameSetup};
 use crate::menus::{flow_command, show_hud, show_title};
 
@@ -131,6 +132,16 @@ pub struct GameShow {
     /// The runs that ended since [`Self::take_ended_runs`] last asked, once [`Self::keep_ended_runs`] has
     /// asked for them.
     ended_runs: Option<Vec<RunSoFar>>,
+    /// The restart's run, standing under the held wipe a part a frame (M4 H4).
+    run_standing: Option<RunStanding>,
+}
+
+/// Where a restart's run is, under the held wipe: prepared on the warm-up pool, then the last run ended on a
+/// frame, then this one stood on the next, so no frame of the wipe holds all of it (M4 H4).
+enum RunStanding {
+    Preparing(mpsc::Receiver<PreparedRun>, CombatOption),
+    Ending(Box<Combat>),
+    Standing(Box<Combat>),
 }
 
 impl GameShow {
@@ -179,6 +190,7 @@ impl GameShow {
             offscreen: OffscreenDisplay::default(),
             mark_asked: false,
             ended_runs: None,
+            run_standing: None,
         })
     }
 
@@ -471,6 +483,11 @@ impl GameShow {
     /// and the flow waits for it to end: a run stood under a trip's wipe would be carried through the rest of
     /// the trip.
     fn stand_asked_run(&mut self, scene: &mut Scene, content: &mut Content) {
+        if let Some(standing) = self.run_standing.take() {
+            self.stand_run_part(standing, scene, content);
+            self.follow_flow();
+            return;
+        }
         let Some(game) = &mut self.game else { return };
         let (covered, clear) = match &self.shown.wipe {
             _ if self.shown.fight.show.trip_phase().is_some() => (false, false),
@@ -481,23 +498,46 @@ impl GameShow {
             self.follow_flow();
             return;
         };
+        let prepared = self.shown.fight.prepare_run_off_frame(&option);
+        self.run_standing = Some(RunStanding::Preparing(prepared, option));
+        self.follow_flow();
+    }
+
+    /// Takes the restart's run a part on, under the held wipe ([`RunStanding`]).
+    fn stand_run_part(&mut self, standing: RunStanding, scene: &mut Scene, content: &mut Content) {
         let fight = &mut self.shown.fight;
-        let ended = &mut self.ended_runs;
-        let stood = fight.prepare_stock_combat(&option, content).map_err(|error| error.to_string()).and_then(
-            |combat| {
-                keep_ended_run(ended, fight.combat.as_ref());
-                fight.start_run(combat, scene, content)
+        let next = match standing {
+            RunStanding::Preparing(prepared, option) => match prepared.try_recv() {
+                Ok(PreparedRun::Ready(combat)) => Ok(Some(RunStanding::Ending(combat))),
+                Ok(PreparedRun::OnTheFrame) => fight
+                    .prepare_stock_combat(&option, content)
+                    .map_err(|error| error.to_string())
+                    .and_then(|combat| {
+                        game_combat::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+                        Ok(Some(RunStanding::Ending(Box::new(combat))))
+                    }),
+                Ok(PreparedRun::Failed(error)) => Err(error),
+                Err(mpsc::TryRecvError::Empty) => Ok(Some(RunStanding::Preparing(prepared, option))),
+                Err(mpsc::TryRecvError::Disconnected) => Err("the run's preparation panicked".to_owned()),
             },
-        );
-        match stood {
-            Ok(followed) => {
-                self.beat_dialogue = None;
-                self.shown.hear(followed);
-                tracing::info!(target: LOG_TARGET, "a run stands");
+            RunStanding::Ending(combat) => {
+                keep_ended_run(&mut self.ended_runs, fight.combat.as_ref());
+                fight.end_run();
+                Ok(Some(RunStanding::Standing(combat)))
             }
+            RunStanding::Standing(combat) => {
+                fight.start_checked_run(*combat, scene, content).map(|followed| {
+                    self.beat_dialogue = None;
+                    self.shown.hear(followed);
+                    tracing::info!(target: LOG_TARGET, "a run stands");
+                    None
+                })
+            }
+        };
+        match next {
+            Ok(next) => self.run_standing = next,
             Err(error) => tracing::error!(target: LOG_TARGET, %error, "the run didn't stand"),
         }
-        self.follow_flow();
     }
 
     /// Stands the fight, which waits at the title until [`Self::open_fight`], and loads the menus, with what they
@@ -902,7 +942,9 @@ impl GameShow {
         if let Some(game) = &mut self.game {
             // The flow's holds and banners are on the real clock, and stop with the pause.
             game.update(view_dt);
-            self.shown.ask_wipe(game.flow().wipe_ask(), dt.as_secs_f32());
+            // Held covered while a restart's run stands over frames under it (M4 H4).
+            let ask = if self.run_standing.is_some() { Some(WipeAsk::Cover) } else { game.flow().wipe_ask() };
+            self.shown.ask_wipe(ask, dt.as_secs_f32());
         }
         self.report(dt);
         view_dt

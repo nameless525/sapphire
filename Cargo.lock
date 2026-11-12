@@ -1587,6 +1587,7 @@ dependencies = [
  "sapphire_gameplay",
  "sapphire_hot_reload",
  "sapphire_input",
+ "sapphire_jobs",
  "sapphire_livelink",
  "sapphire_math",
  "sapphire_moves",

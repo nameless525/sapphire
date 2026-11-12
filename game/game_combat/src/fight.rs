@@ -12,7 +12,7 @@ mod overhead_profile;
 mod stock_arena;
 
 use crate::dialogue::DialogueRunner;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use sapphire_anim::FootContact;
@@ -165,6 +165,16 @@ impl FightStand {
     pub fn over_frames(combat: Combat, plan: StandPlan, tier: TierId) -> Self {
         Self { off_frame: true, ..Self::new(combat, plan, tier) }
     }
+}
+
+/// A run [`Fight::prepare_run_off_frame`] prepared.
+pub enum PreparedRun {
+    /// Set up and checked.
+    Ready(Box<Combat>),
+    /// One to prepare on the frame, with the content: the stock arena's fight.
+    OnTheFrame,
+    /// Why it can't stand.
+    Failed(String),
 }
 
 /// The part of a [`FightStand`] that's next.
@@ -2439,12 +2449,28 @@ impl Fight {
         scene: &mut Scene,
         content: &Content,
     ) -> Result<Followed, String> {
+        self.end_run();
+        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        self.start_checked_run(combat, scene, content)
+    }
+
+    /// Ends the run that's there, writing its file if it keeps one: [`Self::start_run`]'s first part, which a
+    /// game's restart takes a frame of its own for (M4 H4).
+    pub fn end_run(&mut self) {
         if let Some(ended) = self.combat.take()
             && let Err(error) = ended.finish()
         {
             tracing::warn!(target: LOG_TARGET, %error, "the run that ended didn't end well");
         }
-        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+    }
+
+    /// [`Self::start_run`] for a combat whose scenario is checked, after [`Self::end_run`].
+    pub fn start_checked_run(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &Content,
+    ) -> Result<Followed, String> {
         // A game's runs are its one scenario's, which loads the same dialogues each time: the runner starts
         // over on them, with nothing open and no trigger counted.
         let held = self.dialogue.dialogues().to_vec();
@@ -2462,6 +2488,32 @@ impl Fight {
         self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
         self.go_home(scene);
         Ok(followed)
+    }
+
+    /// Prepares `option`'s run on the warm-up pool, its scenario checked, for a game's restart under its wipe
+    /// (M4 H4): the simulation's setup and the scenario's documents are most of a restart's frame. The stock
+    /// arena's fight, whose setup reads content, comes back [`PreparedRun::OnTheFrame`].
+    #[must_use]
+    pub fn prepare_run_off_frame(&self, option: &CombatOption) -> mpsc::Receiver<PreparedRun> {
+        let (option, live) = (option.clone(), self.documents.live());
+        let (sender, prepared) = mpsc::channel();
+        sapphire_jobs::spawn_warm_up(move || {
+            let mut on_the_frame = false;
+            let combat = Combat::from_live_with_setup(&option, &live, None, |scenario, _, _| {
+                on_the_frame = scenario.name == crate::arena::FIGHT_SCENARIO;
+                if on_the_frame { Err("the stock arena reads content".to_owned()) } else { Ok(()) }
+            });
+            let checked = combat.and_then(|combat| {
+                crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+                Ok(combat)
+            });
+            let _ = sender.send(match checked {
+                Ok(combat) => PreparedRun::Ready(Box::new(combat)),
+                Err(_) if on_the_frame => PreparedRun::OnTheFrame,
+                Err(error) => PreparedRun::Failed(error),
+            });
+        });
+        prepared
     }
 
     /// An error if a replay has left its recorded checksums so far.

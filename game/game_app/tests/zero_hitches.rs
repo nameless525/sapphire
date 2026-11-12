@@ -13,7 +13,8 @@
 //! Load screens (the boot screen, a wipe, a zone trip) are timed, each frame from its input to its GPU work done,
 //! and the worst frame of each is reported against twice the tier's interval, exit test 1's limit. With
 //! `SAPPHIRE_HITCH_TIMED=1` a frame over it fails the lane: a run on Metal, from a cold cache, alone on the
-//! machine (`docs/m4-plan.md` H4). Anywhere else the times are only read.
+//! machine (`docs/m4-plan.md` H4). Anywhere else the times are only read. Asked to run timed without
+//! `--ignored`, the lane fails rather than skip: a timed run is judged by its exit code (M4 H6).
 //!
 //! The process's footprint (`sapphire_platform::process_memory`) is read after every frame too, and the most
 //! each part of the walk held is reported with the process's own most: the boot, the title, the walk, a fight,
@@ -664,6 +665,14 @@ impl App for OutsideCaller {
 fn main() -> ExitCode {
     if let Err(error) = held_tier().and(size()) {
         eprintln!("zero_hitches: {error}");
+        return ExitCode::FAILURE;
+    }
+    // A timed run is judged by its exit code (docs/m4-plan.md H4), so one that would skip, as the harness does
+    // without `--ignored`, fails rather than pass having played nothing (M4 H6).
+    if timed() && !std::env::args().any(|argument| argument == "--ignored") {
+        eprintln!(
+            "zero_hitches: SAPPHIRE_HITCH_TIMED=1 asks for a timed run, which needs --ignored; nothing was played"
+        );
         return ExitCode::FAILURE;
     }
     drive::main::<OutsideCaller>("zero_hitches")

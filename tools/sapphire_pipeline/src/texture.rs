@@ -955,9 +955,9 @@ mod tests {
     /// way to catch an encoder whose output depends on the CPU, as BC7's did twice: by the widest
     /// instruction set (C3), then by the CPU's maker through `bc7e`'s reciprocal estimates (C4).
     /// CI's x86-64 runners are AMD's and Intel's, so x86-64's hashes hold across makers. The block
-    /// encoders differ between x86-64 and AArch64, so each has its own hashes; x86-64's mobile cook
-    /// has none yet, since CI's packs are desktop cooks. The sources are `gen-combat`'s, whose bytes
-    /// are themselves pinned. A failure prints every hash this machine cooked.
+    /// encoders differ between x86-64 and AArch64, so each has its own hashes (a four-channel
+    /// mask's ASTC happens to agree). The sources are `gen-combat`'s, whose bytes are themselves
+    /// pinned. A failure prints every hash this machine cooked.
     ///
     /// On a deliberate change (an encoder upgrade, a new quantization), the cooker's version
     /// moves too: take the new hashes from this test's failure on each architecture.
@@ -965,34 +965,32 @@ mod tests {
     fn cooks_the_same_bytes_on_every_machine_of_an_architecture() {
         // (source, cook, blake3 of the cooked KTX2 on x86-64, the same on AArch64).
         //
-        // OWED (M4 C4): x86-64's two desktop hashes are still `bc7e`'s cook on one maker's runners, so
-        // x86-64 fails here until they're Intel's kernel's, from the BC7 probe's run (this test's
-        // failure prints them).
-        let pinned: [(&str, Cook, Option<&str>, &str); 4] = [
+        // x86-64's are from M4 C4's BC7 probe (run 43212873352), the same on AMD's and Intel's runners.
+        let pinned: [(&str, Cook, &str, &str); 4] = [
             (
                 // Mask, four channels: BC7 without perceptual weighting, and ASTC 4×4 data.
                 "combat/player/sword_layers.png",
                 Cook::Desktop,
-                Some("6211b10d5a7fa3ecc08b73b3320c99e6427faa3b3a84881af3c6b3eeb0d171e4"),
+                "23966c5990be5c8734a84b4e83e058f2dc4bff2419a32ef4577ffae3148b813f",
                 "56842cf141f64a36e96493a873703f94e2317264944bc1fcc1844ca65d3090d1",
             ),
             (
                 "combat/player/sword_layers.png",
                 Cook::Mobile,
-                None,
+                "9e2e3a5140e79fcce2c6ce26ed4e82db9a91ea915d691abcdc08578bfe532a3c",
                 "9e2e3a5140e79fcce2c6ce26ed4e82db9a91ea915d691abcdc08578bfe532a3c",
             ),
             (
                 // Color: sRGB decoding, then BC7 sRGB perceptual and ASTC sRGB.
                 "combat/lancer/lancer_matcap.png",
                 Cook::Desktop,
-                Some("10396c7251eaaa335647fc90a4bc1f312a9a515af5d186a59c465c90de4b15dc"),
+                "a292bd0f3e693b41c862ce13608f1979d6b930cc38f4cd1553bb54435d6a6b0a",
                 "3c3a7bd918af8df5ed73aef492e9e666b1643f74063eef731666e9867b946ba1",
             ),
             (
                 "combat/lancer/lancer_matcap.png",
                 Cook::Mobile,
-                None,
+                "8a29b99acbbc608ffb90cb9fc746c7d1481edfb055f4356aab11b15c44ec0417",
                 "ea7140502b95050dc62ee177fba07195689dc7b94b86636a3eb152b14a4d28ad",
             ),
         ];
@@ -1006,9 +1004,9 @@ mod tests {
             let bytes = fs::read(&path).unwrap();
             let hash =
                 blake3::hash(&cook_source(&path, &bytes, &settings, cook).unwrap()).to_hex().to_string();
-            let expected = if cfg!(target_arch = "x86_64") { x86_64 } else { Some(aarch64) };
-            if expected.is_some_and(|expected| expected != hash) {
-                wrong.push(format!("{source} ({cook:?}): {hash}, pinned {expected:?}"));
+            let expected = if cfg!(target_arch = "x86_64") { x86_64 } else { aarch64 };
+            if expected != hash {
+                wrong.push(format!("{source} ({cook:?}): {hash}, pinned {expected}"));
             }
             cooked.push(format!("{source} ({cook:?}): {hash}"));
         }

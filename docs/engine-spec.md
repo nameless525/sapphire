@@ -359,7 +359,7 @@ ms, p50 / p99 / worst, on the walk unless named, with §3.2's budget in brackets
 - **No load screen frame over exit test 1's limit on the Mac:** the boot's longest interval was 23.7–24.5 ms cold against Desktop-High's 33.3. The Simulator's cold boots had frames of 63–102 ms against Mobile-Low's 66.7, and two of its warm ones 68–71 ms, and the emulator's cold and warm boots one or two of 67–106 ms: neither stands for a phone's GPU, and exit test 1's times are the Mac's (H0: the emulator slows every frame while pipelines build).
 - **No budget is passed, because §3 sets none for a start.** The figures are for a phone's to be set against.
 
-**Warm-up and memory per tier,** measured last, and before T6. H4's `zero_hitches` plays exit test 1's walk: the boot, the title, a new game, the ward's walk and fights, a pause with a tier change there and back, then the title again. It ran as a release build in a throwaway `.app`, each tier at its own size and cook, every frame drawn and unpaced (`SAPPHIRE_HITCH_TIMED=1`). There were three rounds of each tier, each round cold (a fresh bundle ID) then warm (the same `.app` again), at a load of 2.2–6.0. The boot is timed from `Boot`'s start to its `booted` line, inside a process already running. Every run passed, with no first use, no build on the frame's thread and no wait.
+**Warm-up and memory per tier,** measured last, and before T6, which added no pipeline, pass or binding (its outline floor is two operations in the hull's vertex shader), so the counts stand. H4's `zero_hitches` plays exit test 1's walk: the boot, the title, a new game, the ward's walk and fights, a pause with a tier change there and back, then the title again. It ran as a release build in a throwaway `.app`, each tier at its own size and cook, every frame drawn and unpaced (`SAPPHIRE_HITCH_TIMED=1`). There were three rounds of each tier, each round cold (a fresh bundle ID) then warm (the same `.app` again), at a load of 2.2–6.0. The boot is timed from `Boot`'s start to its `booted` line, inside a process already running. Every run passed, with no first use, no build on the frame's thread and no wait.
 
 | | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
 |---|---|---|---|---|
@@ -433,7 +433,6 @@ Memory is `process_memory()`'s physical footprint in MiB (2²⁰ bytes). On this
 - **The stores' own sizes.** The App Store's thinned download and the Play Store's install size for each device come only from App Store Connect and the Play Console, and both need accounts. The 36.6 MB here is bundletool's estimate for this emulator's device.
 - **A Steam Deck:** Desktop-Low at 800p on its GPU and its SD card, with its start, memory and heat.
 - **A Windows or Linux PC:** CI gives the packages' sizes, but no start, memory or warm-up reading. D3D12's and Vulkan's pipeline caches each have their own cold start.
-- **T6:** if it adds or changes a pipeline, the warm-up's counts above are read again.
 
 ---
 

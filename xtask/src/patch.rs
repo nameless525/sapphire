@@ -19,6 +19,13 @@
 //!   pack's header or table again), and stands on release 2.
 //!
 //! What it measured goes to `<out>/report.txt` (default `target/patch-rehearsal/`).
+//!
+//! `patch sizes <name>=<content dir>... [--cook desktop|mobile] [--out <dir>]` measures what a player downloads
+//! for edits (M4 Z1, spec §3.7): release 1 of the workspace's cook, then for each named copy of `content/` its
+//! cook as release 2, a patch of release 1, which the game (`dev`, no window) installed with release 1 fetches
+//! in its boot from a host counting the bytes, as the rehearsal's patch does. Each edit's bytes, by kind, and
+//! its share of the cook go to `<out>/report.txt` (default `target/patch-sizes/`). The edits are the caller's:
+//! P0's set is in `research_notes/Ship readiness for M4/p0-spike.md`.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -89,7 +96,20 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             args.finish(false)?;
             rehearse(&out)
         }
-        other => bail!("patch takes `serve <dir> [--port <n>]` or `rehearse [--out <dir>]`, not {other:?}"),
+        Some("sizes") => {
+            let out = args
+                .value::<PathBuf>("--out")?
+                .unwrap_or_else(|| workspace::output_dir().join("patch-sizes"));
+            let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
+            ensure!(cook != Cook::Editor, "patch sizes measures a shipping cook: desktop or mobile");
+            let edits = args.rest().iter().map(|arg| Edit::parse(arg)).collect::<anyhow::Result<Vec<_>>>()?;
+            ensure!(!edits.is_empty(), "patch sizes takes at least one <name>=<content dir>");
+            sizes(&out, cook, &edits)
+        }
+        other => bail!(
+            "patch takes `serve <dir> [--port <n>]`, `rehearse [--out <dir>]` or `sizes <name>=<dir>...`, not \
+             {other:?}"
+        ),
     }
 }
 
@@ -436,17 +456,7 @@ struct Rehearsal {
 fn rehearse(out: &Path) -> anyhow::Result<()> {
     workspace::remove_dir_if_exists(out)?;
     fs::create_dir_all(out.join("logs"))?;
-    let game = workspace::build_binary(
-        &CargoBuild {
-            package: "game_app",
-            target: None,
-            profile: BuildProfile::Tools,
-            features: &["dev".to_owned()],
-            env: &[],
-        },
-        "game_app",
-    )?;
-    let mut rehearsal = Rehearsal { out: out.to_owned(), game, report: String::new() };
+    let mut rehearsal = Rehearsal { out: out.to_owned(), game: dev_game()?, report: String::new() };
     let r = &mut rehearsal;
 
     // Release 1, as the workspace cooks it, and the game installed with it.
@@ -500,15 +510,7 @@ fn rehearse(out: &Path) -> anyhow::Result<()> {
     let tables = header_and_tables(&fetched);
     let _ = writeln!(r.report, "patch of one screen edit ({EDITED}: tagline size 18 to 20), release 1 to 2:");
     for served in &fetched {
-        let kind = if served.path == release::MANIFEST {
-            "manifest"
-        } else if tables.contains(&(served.path.clone(), served.range)) {
-            "header or table"
-        } else if served.path.starts_with("files/") {
-            "file"
-        } else {
-            "blocks"
-        };
+        let kind = Kind::of(served, &tables).name();
         let _ =
             writeln!(r.report, "  {kind:16} {:>8} bytes  {} {:?}", served.bytes, served.path, served.range);
     }
@@ -604,6 +606,184 @@ fn rehearse(out: &Path) -> anyhow::Result<()> {
     fs::write(&report, &r.report)?;
     eprint!("{}", r.report);
     eprintln!("patch rehearsal passed; report in {}", report.display());
+    Ok(())
+}
+
+/// The game as the lanes run it: a `dev` build, which trusts the test key and takes `--update-host`.
+fn dev_game() -> anyhow::Result<PathBuf> {
+    workspace::build_binary(
+        &CargoBuild {
+            package: "game_app",
+            target: None,
+            profile: BuildProfile::Tools,
+            features: &["dev".to_owned()],
+            env: &[],
+        },
+        "game_app",
+    )
+}
+
+/// One edit `patch sizes` measures: its name, and the copy of `content/` that holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Edit {
+    name: String,
+    source: PathBuf,
+}
+
+impl Edit {
+    /// `<name>=<content dir>`, the name letters, digits, `-` and `_`, since it names the edit's files.
+    fn parse(arg: &str) -> anyhow::Result<Self> {
+        let (name, source) =
+            arg.split_once('=').with_context(|| format!("an edit is <name>=<content dir>, not {arg:?}"))?;
+        ensure!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "an edit's name is letters, digits, `-` and `_`, not {name:?}"
+        );
+        ensure!(!source.is_empty(), "the edit {name} names no content directory");
+        Ok(Self { name: name.to_owned(), source: PathBuf::from(source) })
+    }
+}
+
+/// What one request of a download was, by what a patch fetches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Manifest,
+    Table,
+    File,
+    Blocks,
+}
+
+impl Kind {
+    /// What `served` was, given the download's header and table requests ([`header_and_tables`]).
+    fn of(served: &Served, tables: &BTreeSet<(String, Option<(u64, u64)>)>) -> Self {
+        if served.path == release::MANIFEST {
+            Self::Manifest
+        } else if tables.contains(&(served.path.clone(), served.range)) {
+            Self::Table
+        } else if served.path.starts_with("files/") {
+            Self::File
+        } else {
+            Self::Blocks
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Manifest => "manifest",
+            Self::Table => "header or table",
+            Self::File => "file",
+            Self::Blocks => "blocks",
+        }
+    }
+}
+
+/// A download's bytes, by kind, and its requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Fetched {
+    requests: usize,
+    manifest: u64,
+    tables: u64,
+    files: u64,
+    blocks: u64,
+}
+
+impl Fetched {
+    fn of(log: &[Served]) -> Self {
+        let tables = header_and_tables(log);
+        let mut fetched = Self { requests: log.len(), ..Self::default() };
+        for served in log {
+            *match Kind::of(served, &tables) {
+                Kind::Manifest => &mut fetched.manifest,
+                Kind::Table => &mut fetched.tables,
+                Kind::File => &mut fetched.files,
+                Kind::Blocks => &mut fetched.blocks,
+            } += served.bytes;
+        }
+        fetched
+    }
+
+    fn total(self) -> u64 {
+        self.manifest + self.tables + self.files + self.blocks
+    }
+}
+
+/// The bytes of every file under `dir`.
+fn dir_bytes(dir: &Path) -> anyhow::Result<u64> {
+    let mut bytes = 0;
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        bytes +=
+            if entry.file_type()?.is_dir() { dir_bytes(&entry.path())? } else { entry.metadata()?.len() };
+    }
+    Ok(bytes)
+}
+
+/// `patch sizes` (see the [module docs](self)).
+fn sizes(out: &Path, cook: Cook, edits: &[Edit]) -> anyhow::Result<()> {
+    workspace::remove_dir_if_exists(out)?;
+    fs::create_dir_all(out.join("logs"))?;
+    let mut sizes = Rehearsal { out: out.to_owned(), game: dev_game()?, report: String::new() };
+    let r = &mut sizes;
+
+    let cooked = content::cook(cook)?;
+    let cook1 = out.join("cook1");
+    workspace::copy_dir(&cooked.dir, &cook1)?;
+    drop(cooked);
+    let host1 = out.join("host1");
+    release::publish_with_test_seeds(&cook1, &host1, &release(1, None), TEST_SEED)?;
+    let app1 = installed(&cook1, &host1.join("manifests/1.smanifest"), &out.join("app1"))?;
+    let shipped = dir_bytes(&cook1)?;
+    let _ = writeln!(
+        r.report,
+        "patches from release 1 of the {} cook ({shipped} bytes of packs and files), in bytes:",
+        cook.name()
+    );
+    let _ = writeln!(
+        r.report,
+        "  {:24} {:>9} {:>9} {:>9} {:>6} {:>9} {:>8} {:>7}",
+        "edit", "manifest", "tables", "blocks", "files", "total", "requests", "share"
+    );
+    for edit in edits {
+        let name = &edit.name;
+        let host_dir = out.join(format!("host-{name}"));
+        workspace::copy_dir(&host1, &host_dir)?;
+        let cook2 = out.join(format!("cook-{name}"));
+        content::cook_copy(&edit.source, &out.join(format!("loose-{name}")), &cook2, cook)?;
+        let second = release(2, Some(host_dir.join("manifests/1.smanifest")));
+        release::publish_with_test_seeds(&cook2, &host_dir, &second, TEST_SEED)?;
+        let host = Host::start(&host_dir, 0, None, false)?;
+        let patch_dir = out.join(format!("patch-{name}"));
+        r.capture(name, &app1, Some(&patch_dir), Some(&host.url()))?;
+        let log = host.take_log();
+        drop(host);
+        ensure!(
+            log.iter().all(|served| matches!(served.status, 200 | 206)),
+            "{name}: the host refused a request: {log:?}"
+        );
+        let installed_manifest = fs::read(patch_dir.join("installed").join(release::MANIFEST))
+            .with_context(|| format!("{name}: nothing was installed"))?;
+        ensure!(
+            installed_manifest == fs::read(host_dir.join("manifests/2.smanifest"))?,
+            "{name}: release 2 isn't installed"
+        );
+        let fetched = Fetched::of(&log);
+        let _ = writeln!(
+            r.report,
+            "  {name:24} {:>9} {:>9} {:>9} {:>6} {:>9} {:>8} {:>6.3}%",
+            fetched.manifest,
+            fetched.tables,
+            fetched.blocks,
+            fetched.files,
+            fetched.total(),
+            fetched.requests,
+            fetched.total() as f64 * 100.0 / shipped as f64
+        );
+    }
+
+    let report = out.join("report.txt");
+    fs::write(&report, &r.report)?;
+    eprint!("{}", r.report);
+    eprintln!("patch sizes measured; report in {}", report.display());
     Ok(())
 }
 
@@ -711,6 +891,39 @@ mod tests {
         assert_eq!(bytes, hex(TEST_KEY));
         assert!(source.contains("[0x50; 32]"), "the seed is sapphire_patch's");
         assert_eq!(TEST_SEED, "50".repeat(32));
+    }
+
+    #[test]
+    fn an_edit_is_a_name_and_a_content_directory() {
+        let edit = Edit::parse("texture-D=/some/content").unwrap();
+        assert_eq!(edit, Edit { name: "texture-D".to_owned(), source: PathBuf::from("/some/content") });
+        for wrong in ["texture", "=dir", "a b=dir", "../x=dir", "name=", "--"] {
+            assert!(Edit::parse(wrong).is_err(), "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn a_downloads_bytes_are_counted_by_kind() {
+        let served = |path: &str, range: Option<(u64, u64)>, bytes| Served {
+            path: path.to_owned(),
+            range,
+            status: if range.is_some() { 206 } else { 200 },
+            bytes,
+        };
+        let log = [
+            served(release::MANIFEST, None, 1_047),
+            served("packs/ab", Some((0, 255)), 256),
+            served("packs/ab", Some((256, 1_791)), 1_536),
+            served("packs/ab", Some((9_000, 10_544)), 1_545),
+            served("packs/ab", Some((20_000, 20_099)), 100),
+            served("files/cd", None, 3_559),
+        ];
+        let fetched = Fetched::of(&log);
+        assert_eq!(
+            fetched,
+            Fetched { requests: 6, manifest: 1_047, tables: 1_792, files: 3_559, blocks: 1_645 }
+        );
+        assert_eq!(fetched.total(), log.iter().map(|served| served.bytes).sum::<u64>());
     }
 
     #[test]

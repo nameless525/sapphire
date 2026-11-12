@@ -15,6 +15,10 @@
 //! `SAPPHIRE_HITCH_TIMED=1` a frame over it fails the lane: a run on Metal, from a cold cache, alone on the
 //! machine (`docs/m4-plan.md` H4). Anywhere else the times are only read.
 //!
+//! The process's footprint (`sapphire_platform::process_memory`) is read after every frame too, and the most
+//! each part of the walk held is reported with the process's own most: the boot, the title, the walk, a fight,
+//! the pause, a load screen and the title again (spec §3.7, M4 Z1).
+//!
 //! - `SAPPHIRE_HITCH_TIER=<key>`: the tier the player holds (default `desktop-high`), the class's other tier the
 //!   one the pause changes to and back.
 //! - `SAPPHIRE_HITCH_SIZE=<w>x<h>`: what's drawn into (default 480x270). The pause's pages draw into at least
@@ -47,7 +51,9 @@ use sapphire_core::target::FormFactor;
 use sapphire_core::thermal::{ThermalReading, ThermalState};
 use sapphire_gameplay::{EncounterPhase, Simulation};
 use sapphire_math::Vec3;
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, Scancode};
+use sapphire_platform::{
+    App, AppControl, AppInitError, AppMetadata, Event, Platform, Scancode, process_memory,
+};
 use sapphire_render::quality::{QualitySettings, TierId, TierTable};
 use sapphire_render::{PipelineStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
@@ -175,6 +181,44 @@ impl LoadScreen {
     }
 }
 
+/// The most footprint each part of the walk held, in the order the parts first came, and the process's own most.
+#[derive(Default)]
+struct Memory {
+    parts: Vec<(&'static str, u64)>,
+    most: u64,
+}
+
+impl Memory {
+    /// Reads the process's footprint into `part`'s most. An OS that can't say leaves it unread.
+    fn read(&mut self, part: &'static str) {
+        let Some(read) = process_memory() else { return };
+        self.most = self.most.max(read.most);
+        match self.parts.iter_mut().find(|(name, _)| *name == part) {
+            Some((_, most)) => *most = (*most).max(read.now),
+            None => self.parts.push((part, read.now)),
+        }
+    }
+
+    /// Which part of the walk a frame of the stood game is in.
+    fn part(stage: &Stage<GameShow>, what: &str) -> &'static str {
+        let fighting = || {
+            let combat = stage.show.shown.fight.combat.as_ref();
+            let zone = combat.and_then(|combat| combat.simulation().zone());
+            zone.is_some_and(|zone| {
+                zone.encounters().iter().any(|held| held.phase() == EncounterPhase::Running)
+            })
+        };
+        match stage.show.game().map(|game| game.flow().state()) {
+            _ if Watch::load_screen(stage) => "a load screen",
+            Some(FlowState::Title { .. }) if what == "the title, again" => "the title again",
+            Some(FlowState::Title { .. }) => "the title",
+            Some(FlowState::Paused { .. }) => "the pause",
+            _ if fighting() => "a fight",
+            _ => "the walk",
+        }
+    }
+}
+
 /// How the lane draws a frame of the stood game, and what it reads after: the window's tier follower first, as
 /// `GameApp` runs it before a frame, then the frame drawn or lost, timed, and the ledger checked.
 struct Watch {
@@ -195,6 +239,7 @@ struct Watch {
     changes: Vec<(TierId, Duration)>,
     /// The longest frame drawn outside a load screen, and where.
     worst: (Duration, String),
+    memory: Memory,
 }
 
 impl Watch {
@@ -254,6 +299,7 @@ impl Draw for Watch {
             self.worst = (took, Self::place(stage, what));
         }
         self.in_load = load;
+        self.memory.read(Memory::part(stage, what));
         Ok(())
     }
 }
@@ -274,6 +320,7 @@ fn boot(
     boot: &mut Boot,
     target: &wgpu::TextureView,
     screen: &mut LoadScreen,
+    memory: &mut Memory,
 ) -> Result<Stage<GameShow>, AppInitError> {
     let dt = (Duration::from_secs(1) / DEFAULT_RATE).as_secs_f32();
     loop {
@@ -283,6 +330,7 @@ fn boot(
         let renderer = stood.as_ref().map(|stage| &stage.renderer).or(boot.renderer());
         finish_gpu(boot.gpu());
         screen.frame(began.elapsed());
+        memory.read("the boot");
         if let Some(renderer) = renderer
             && hitched(renderer.stats().pipelines)
         {
@@ -512,7 +560,8 @@ impl App for OutsideCaller {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut booted = LoadScreen::new("the boot screen".to_owned(), booting.report().interval_limit);
-        let stage = boot(&mut booting, &view, &mut booted)?;
+        let mut memory = Memory::default();
+        let stage = boot(&mut booting, &view, &mut booted, &mut memory)?;
         let report = booting.report().clone();
         assert_eq!(stage.quality.active().id, tier, "the boot made the held tier's renderer");
         let target = stage.target(size.0, size.1, wgpu::TextureUsages::empty());
@@ -530,6 +579,7 @@ impl App for OutsideCaller {
             in_load: false,
             changes: Vec::new(),
             worst: (Duration::ZERO, String::new()),
+            memory,
         };
         let mut walk = Driver::new(stage, watch);
         let walked = walk_the_ward(&mut walk, &screens, held)?;
@@ -556,6 +606,16 @@ impl App for OutsideCaller {
             walk.draw.drawn,
             pipelines.warmed_off_frame,
         );
+        eprintln!(
+            "zero_hitches: the boot's warm-up: the renderer made by {:.0} ms, the packs warm by {:.0}, the stage \
+             stood by {:.0}, all warm by {:.0}; {} pipelines prewarmed, {} of them off the frame",
+            ms(report.renderer),
+            ms(report.packs),
+            ms(report.stood),
+            ms(report.warm),
+            report.pipelines.prewarmed,
+            report.pipelines.warmed_off_frame,
+        );
         for (tier, took) in &walk.draw.changes {
             eprintln!("zero_hitches: the change to {tier} at the pause took {:.1} ms", ms(*took));
         }
@@ -574,6 +634,15 @@ impl App for OutsideCaller {
                 over.push(screen.name.as_str());
             }
         }
+        let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+        let memory = &walk.draw.memory;
+        let parts: Vec<String> =
+            memory.parts.iter().map(|(part, most)| format!("{part} {:.0}", mb(*most))).collect();
+        eprintln!(
+            "zero_hitches: memory, the most footprint each part held (MiB): {}; the process's most {:.0}",
+            parts.join(", "),
+            mb(memory.most)
+        );
         if timed() && !over.is_empty() {
             return Err(AppInitError::msg(format!(
                 "load screens with a frame over twice the interval: {over:?}"

@@ -77,6 +77,11 @@ Commands:
       signed by a key it doesn't trust, and resumes a download killed mid-block. Fails unless
       each draws what it should; the bytes each fetched go to <dir>/report.txt (default
       target/patch-rehearsal/).
+  patch sizes <name>=<content dir>... [--cook desktop|mobile] [--out <dir>]
+      What a player downloads for each edit (M4 Z1): release 1 of the workspace's cook, then each
+      named copy of content/ cooked as release 2, a patch of it, which the game (dev, no window)
+      installed with release 1 fetches in its boot. Each edit's bytes by kind (manifest, tables,
+      blocks, files) and share of the cook go to <dir>/report.txt (default target/patch-sizes/).
   bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
       [--exe <path>] [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/, by the

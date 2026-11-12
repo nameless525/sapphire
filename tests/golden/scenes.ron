@@ -3421,6 +3421,14 @@
                 args: ["--ui-game", "hud", "--ui-locale", "en", "--ui-subtitle", "small:off"],
                 ci_seconds: (lavapipe: 0.6, warp: 1.8),
             ),
+            // Two of a fight's voice lines said at once (M4 A8), stacked on one band, the earlier above.
+            (
+                name: "game-subtitle-band-fight-lines-wide-en",
+                size: "1280x720",
+                ticks: 2,
+                base: "game-screen",
+                args: ["--ui-game", "hud", "--ui-locale", "en", "--ui-subtitle", "normal:normal:fight"],
+            ),
             // The photosensitivity notice (M4 A3) at U7's aspects and the Deck's in both languages, and at
             // the largest text in Japanese, its longest, where its words scroll.
             (

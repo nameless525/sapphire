@@ -11,8 +11,8 @@
 use bevy_reflect::PartialReflect;
 use game_ui::boot::{BOOT_SCREEN, BootModel};
 use game_ui::menus::{
-    DialogueModel, HudModel, MenuDocument, MenuModel, PlayerSettings, ScreenModel, SubtitleBackground,
-    SubtitleSize, Subtitles, TextSize,
+    DialogueModel, HudModel, MenuDocument, MenuModel, PLAYER_SPEAKER, PlayerSettings, ScreenModel,
+    SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
@@ -93,6 +93,9 @@ pub struct ScreenOptions {
     /// `--ui-subtitle <size>:<background>`, with `--ui-game hud`: the sample says a cutscene's line, with
     /// its speaker, in subtitles of that size on that background (M4 A2).
     pub subtitle: Option<Subtitles>,
+    /// `--ui-subtitle <size>:<background>:fight`: the sample says two of a fight's voice lines at once, the
+    /// earlier above, in place of a cutscene's (M4 A8).
+    pub fight_lines: bool,
 }
 
 /// `--ui-text`'s size, by its name in the settings (`normal`, `large`, `larger`).
@@ -106,18 +109,22 @@ pub fn parse_text_size(raw: &str) -> Result<TextSize, String> {
 }
 
 /// `--ui-subtitle`'s `<size>:<background>`, by their names in the settings (`small`, `normal`, `large`,
-/// `larger`; `off`, `light`, `normal`, `solid`).
-pub fn parse_subtitles(raw: &str) -> Result<Subtitles, String> {
+/// `larger`; `off`, `light`, `normal`, `solid`), and whether `:fight` follows ([`ScreenOptions::fight_lines`]).
+pub fn parse_subtitles(raw: &str) -> Result<(Subtitles, bool), String> {
     let invalid =
-        || format!("--ui-subtitle expects <size>:<background>, as the settings name them, got {raw}");
-    let (size, background) = raw.split_once(':').ok_or_else(invalid)?;
+        || format!("--ui-subtitle expects <size>:<background>[:fight], as the settings name them, got {raw}");
+    let (look, fight) = match raw.strip_suffix(":fight") {
+        Some(look) => (look, true),
+        None => (raw, false),
+    };
+    let (size, background) = look.split_once(':').ok_or_else(invalid)?;
     let size = SubtitleSize::ALL.iter().copied().find(|choice| choice.name() == size).ok_or_else(invalid)?;
     let background = SubtitleBackground::ALL
         .iter()
         .copied()
         .find(|choice| choice.name() == background)
         .ok_or_else(invalid)?;
-    Ok(Subtitles { size, background, ..Subtitles::default() })
+    Ok((Subtitles { size, background, ..Subtitles::default() }, fight))
 }
 
 /// Where the screen's clock stands with no `--ui-time`: well past what any screen does as it opens.
@@ -146,6 +153,7 @@ impl ScreenOptions {
             dialogue: None,
             text: TextSize::Normal,
             subtitle: None,
+            fight_lines: false,
         }
     }
 
@@ -217,7 +225,14 @@ impl ScreenOptions {
                 Some(subtitles) => {
                     let mut hud =
                         HudModel { touch: true, has_banner: true, can_skip: true, ..HudModel::default() };
-                    hud.follow_subtitle(Some("subtitle-court-gate-warning"), Some("speaker-warden"));
+                    if self.fight_lines {
+                        // Two of the fight's lines said together, as `game_flow`'s show passes them: the
+                        // player's side's named as theirs, the earlier above (M4 A8).
+                        hud.follow_earlier_subtitle(Some("subtitle-perfect-dodge"), Some(PLAYER_SPEAKER));
+                        hud.follow_subtitle(Some("subtitle-swap-in"), Some(PLAYER_SPEAKER));
+                    } else {
+                        hud.follow_subtitle(Some("subtitle-court-gate-warning"), Some("speaker-warden"));
+                    }
                     hud.follow_subtitle_look(subtitles);
                     Box::new(hud)
                 }

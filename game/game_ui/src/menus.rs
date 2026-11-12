@@ -434,6 +434,12 @@ pub struct HudModel {
     /// The key of who says it, under `speaker-`.
     pub speaker: String,
     pub has_speaker: bool,
+    /// A fight's line said before the newest and still up (M4 A8), drawn above it on the same band: its key,
+    /// under `subtitle-`, and its speaker's.
+    pub earlier: String,
+    pub has_earlier: bool,
+    pub earlier_speaker: String,
+    pub has_earlier_speaker: bool,
     /// How much of the fight's words show, 0 to 1: its names and objective, which a cutscene hides.
     pub fight_words: f32,
     /// What a subtitle's words and its speaker's name are drawn times their size by (M4 A2).
@@ -464,6 +470,10 @@ impl Default for HudModel {
             has_subtitle: false,
             speaker: String::new(),
             has_speaker: false,
+            earlier: String::new(),
+            has_earlier: false,
+            earlier_speaker: String::new(),
+            has_earlier_speaker: false,
             fight_words: 1.0,
             subtitle_scale: 1.0,
             subtitle_band: 1.0,
@@ -505,17 +515,31 @@ impl HudModel {
     /// keys `sapphire_sequencer`'s `Subtitle` holds), or nothing. Allocates only for a key longer than any
     /// before.
     pub fn follow_subtitle(&mut self, line: Option<&str>, speaker: Option<&str>) {
-        let speaker = speaker.filter(|_| line.is_some());
-        self.has_subtitle = line.is_some();
-        self.has_speaker = speaker.is_some();
-        for (held, key) in [(&mut self.subtitle, line), (&mut self.speaker, speaker)] {
-            if let Some(key) = key
-                && held.as_str() != key
-            {
-                key.clone_into(held);
-            }
+        (self.has_subtitle, self.has_speaker) =
+            hold_line([&mut self.subtitle, &mut self.speaker], line, speaker);
+    }
+
+    /// Follows a fight's line said before the one [`Self::follow_subtitle`] shows and still up (M4 A8), which
+    /// shows above it, or nothing: a cutscene says one line at a time. Allocates only for a key longer than
+    /// any before.
+    pub fn follow_earlier_subtitle(&mut self, line: Option<&str>, speaker: Option<&str>) {
+        (self.has_earlier, self.has_earlier_speaker) =
+            hold_line([&mut self.earlier, &mut self.earlier_speaker], line, speaker);
+    }
+}
+
+/// Writes `line`'s key and its `speaker`'s into `held`, over what they held, and says whether each shows:
+/// a speaker only with a line.
+fn hold_line(held: [&mut String; 2], line: Option<&str>, speaker: Option<&str>) -> (bool, bool) {
+    let speaker = speaker.filter(|_| line.is_some());
+    for (held, key) in held.into_iter().zip([line, speaker]) {
+        if let Some(key) = key
+            && held.as_str() != key
+        {
+            key.clone_into(held);
         }
     }
+    (line.is_some(), speaker.is_some())
 }
 
 /// How a [`GameMenus`] starts.
@@ -794,7 +818,7 @@ impl GameMenus {
 
     /// Whether the screen at `index` isn't on its way out, or out already and waiting to be taken away.
     fn stays(&self, index: usize) -> bool {
-        self.stack.tree(index).state() != Some("leaving") && !self.stack.has_left(index)
+        !self.stack.is_leaving(index)
     }
 
     /// Whether a screen that takes presses is up: while one is, a fight's bindings mustn't see them.
@@ -1014,8 +1038,20 @@ impl GameMenus {
         self.commands.push(MenuCommand::SettingsChanged);
     }
 
+    /// Every menu's glyphs, as the pad last used labels them: the bindings', and a remap's own while one is up
+    /// (M4 A8), so a wait's cancel and a taken press read as the pad in hand however late it changed.
     fn show_bindings(&mut self) {
         self.remap_model.show(&self.bindings, self.family);
+        match &self.remap {
+            Some(Remapping::Listening { device, .. }) => {
+                self.remap_model.cancel =
+                    sapphire_controls::glyph(&device.cancel(), self.family).into_owned();
+            }
+            Some(Remapping::Taken { source, .. }) => {
+                self.remap_model.pressed = sapphire_controls::glyph(source, self.family).into_owned();
+            }
+            None => {}
+        }
         self.show_remap();
     }
 
@@ -1045,20 +1081,24 @@ impl GameMenus {
         }
     }
 
+    /// What happened on the screen that took the frame's input: the top one, or the one under it while the top
+    /// one leaves (M4 A8).
     fn read_events(&mut self) {
-        let Some(top) = self.shown.len().checked_sub(1) else { return };
         let mut events = std::mem::take(&mut self.events);
-        self.stack.drain_events(&mut events);
+        let Some(top) = self.stack.drain_events(&mut events) else {
+            self.events = events;
+            return;
+        };
         for event in events.drain(..) {
             let entry = self.entry_at(top);
             match event {
                 UiEvent::Activated(node) => {
                     let chosen = self.chosen(entry.action(self.stack.tree(top).name(node)));
-                    self.act(chosen);
+                    self.act(chosen, top);
                 }
                 UiEvent::Back => {
                     let chosen = self.chosen(entry.back.as_ref());
-                    self.act(chosen);
+                    self.act(chosen, top);
                 }
                 UiEvent::FocusMoved { to: Some(node), .. } => self.focus_moved(top, node),
                 UiEvent::FocusMoved { to: None, .. } => {}
@@ -1067,7 +1107,8 @@ impl GameMenus {
         self.events = events;
     }
 
-    fn act(&mut self, chosen: Chosen) {
+    /// Does what `chosen` asks of the screen at `from`, which it was chosen on.
+    fn act(&mut self, chosen: Chosen, from: usize) {
         match chosen {
             Chosen::Command(MenuCommand::FlashNoticeRead) => {
                 if !self.settings.flash_notice_read {
@@ -1078,9 +1119,7 @@ impl GameMenus {
             Chosen::Command(command) => self.commands.push(command),
             Chosen::Open(place) => self.place(place, self.shown.len()),
             Chosen::Switch(place) => {
-                if let Some(top) = self.shown.len().checked_sub(1) {
-                    self.stack.tree_mut(top).fire("close", self.now);
-                }
+                self.stack.tree_mut(from).fire("close", self.now);
                 self.place(place, self.shown.len());
             }
             Chosen::Step(setting) => self.step(setting),

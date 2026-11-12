@@ -1086,21 +1086,31 @@ impl SceneShow for GameShow {
         if let Some(menus) = &mut self.menus {
             self.panel.follow(menus, &self.shown.fight.dialogue);
             // What a cutscene says at the playhead this frame shows, so a line comes up with its frame and
-            // its cue; with none, the caption of a fight's voice line (M4 A2), the player's side's named as
-            // theirs. A conversation's panel says its own lines, so none shows over it. The fight's words
-            // step aside for a cutscene, as its bars and buttons do. The player's choices say whether
-            // subtitles show, whether they name who's speaking, and how they look.
+            // its cue; with none, the captions of a fight's voice lines (M4 A2), the player's side's named as
+            // theirs, two at most, the earlier above (M4 A8). A conversation's panel says its own lines, so
+            // none shows over it. The fight's words step aside for a cutscene, as its bars and buttons do. The
+            // player's choices say whether subtitles show, whether they name who's speaking, and how they look.
             let show = &self.shown.fight.show;
             let subtitles = menus.settings().subtitles.clone();
-            let said = show.timeline_player().and_then(|player| player.subtitle());
-            let said = said.map(|line| (line.key, line.speaker)).or_else(|| {
-                show.caption().map(|caption| (caption.key, caption.by_player.then_some(PLAYER_SPEAKER)))
-            });
-            let said = said.filter(|_| subtitles.shown && !self.panel.is_up());
-            let speaker = said.and_then(|(_, speaker)| speaker).filter(|_| subtitles.speakers);
+            let cutscene = show.timeline_player().and_then(|player| player.subtitle());
+            let (earlier, said) = match cutscene {
+                Some(line) => (None, Some((line.key, line.speaker))),
+                None => {
+                    let mut captions = show
+                        .captions()
+                        .map(|caption| (caption.key, caption.by_player.then_some(PLAYER_SPEAKER)));
+                    let (first, second) = (captions.next(), captions.next());
+                    if second.is_some() { (first, second) } else { (None, first) }
+                }
+            };
+            let shown = subtitles.shown && !self.panel.is_up();
+            let [earlier, said] = [earlier, said].map(|line| line.filter(|_| shown));
+            let [earlier_speaker, speaker] = [earlier, said]
+                .map(|line| line.and_then(|(_, speaker)| speaker).filter(|_| subtitles.speakers));
             if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::HUD) {
                 model.follow_subtitle_look(&subtitles);
                 model.follow_subtitle(said.map(|(key, _)| key), speaker);
+                model.follow_earlier_subtitle(earlier.map(|(key, _)| key), earlier_speaker);
                 model.fight_words = if show.plays_cutscene() { 0.0 } else { 1.0 };
             }
             menus.draw(size, list);

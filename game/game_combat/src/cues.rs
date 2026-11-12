@@ -56,6 +56,9 @@ pub const CAPTION_PREFIX: &str = "subtitle-";
 /// How long a caption stays up after its line is said, in real seconds: long enough to read the fight's
 /// short lines twice over, since nothing says how long each one sounds.
 pub const CAPTION_SECONDS: f32 = 2.5;
+/// How many of a fight's lines are captioned at once (M4 A8): lines said together, in one step or close by,
+/// stack, the earlier above, each up for its own [`CAPTION_SECONDS`]; one more takes the oldest's place.
+pub const CAPTION_LINES: usize = 2;
 
 /// How a hurtbox's surface maps onto the character's: the test moves' capsule is 0.7 m across and 1.75 m
 /// tall, and the character about half as wide and 1.55 m tall, so a hit on one's edge lands on the other's.
@@ -120,6 +123,65 @@ struct Caption {
     left: f32,
 }
 
+/// The fight's lines on screen (M4 A8), oldest first: up to [`CAPTION_LINES`], their strings written in place,
+/// so they allocate nothing once each has held a line as long as any said.
+#[derive(Debug, Default)]
+struct Captions {
+    lines: [Caption; CAPTION_LINES],
+    /// How many of `lines` are up, from the first.
+    up: usize,
+}
+
+impl Captions {
+    /// `key`, said now by the player's side or not, goes up under the rest. The same line said again while
+    /// it's up moves to the bottom and starts its time again, rather than showing twice.
+    fn say(&mut self, key: &str, by_player: bool) {
+        let same = |caption: &Caption| caption.key.strip_prefix(CAPTION_PREFIX) == Some(key);
+        let at = match self.lines[..self.up].iter().position(|line| same(line) && line.by_player == by_player)
+        {
+            Some(at) => {
+                self.lines[at..self.up].rotate_left(1);
+                self.up - 1
+            }
+            None => {
+                if self.up == CAPTION_LINES {
+                    self.lines.rotate_left(1);
+                    self.up -= 1;
+                }
+                let line = &mut self.lines[self.up];
+                line.key.clear();
+                line.key.push_str(CAPTION_PREFIX);
+                line.key.push_str(key);
+                self.up += 1;
+                self.up - 1
+            }
+        };
+        (self.lines[at].by_player, self.lines[at].left) = (by_player, CAPTION_SECONDS);
+    }
+
+    /// `dt` of the view's time goes by: what's had its time comes down, and the rest keep their order.
+    fn advance(&mut self, dt: f32) {
+        let mut kept = 0;
+        for at in 0..self.up {
+            let line = &mut self.lines[at];
+            line.left = (line.left - dt).max(0.0);
+            if line.left > 0.0 {
+                self.lines.swap(kept, at);
+                kept += 1;
+            }
+        }
+        self.up = kept;
+    }
+
+    fn clear(&mut self) {
+        self.up = 0;
+    }
+
+    fn shown(&self) -> impl Iterator<Item = Captioned<'_>> {
+        self.lines[..self.up].iter().map(|line| Captioned { key: &line.key, by_player: line.by_player })
+    }
+}
+
 /// What a caption shows: the string key of the line, and whether the player's side said it, which names
 /// the player's character as its speaker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,8 +244,8 @@ pub struct CueShow {
     music_phase: Option<&'static str>,
     /// A boss's named phase, as of the latest step, which the score plays in its place if it has it.
     boss_phase: Option<Name>,
-    /// The line said last, while its caption's up.
-    caption: Caption,
+    /// The lines said last, while their captions are up.
+    captions: Captions,
 }
 
 impl CueShow {
@@ -227,7 +289,7 @@ impl CueShow {
             started_over: false,
             music_phase: None,
             boss_phase: None,
-            caption: Caption::default(),
+            captions: Captions::default(),
         })
     }
 
@@ -309,17 +371,14 @@ impl CueShow {
         let said_before = self.dispatcher.said().len();
         self.dispatcher.read_step(tick, cues, &mut step);
         let player = fighters.first().and_then(|player| Some(player.as_ref()?.id));
-        // The step's last line is the one to read: on the one character every line is the player's.
-        if let Some(said) = self.dispatcher.said().skip(said_before).last() {
+        // Every line the step said is captioned, in order (M4 A8): on the one character every line is the
+        // player's.
+        for said in self.dispatcher.said().skip(said_before) {
             let by_player = stand.is_some()
                 || said.actor.is_some_and(|actor| {
                     Some(actor) == player || sim.party().slots().any(|slot| slot.actor == actor)
                 });
-            let caption = &mut self.caption;
-            caption.key.clear();
-            caption.key.push_str(CAPTION_PREFIX);
-            caption.key.push_str(said.key);
-            (caption.by_player, caption.left) = (by_player, CAPTION_SECONDS);
+            self.captions.say(said.key, by_player);
         }
         self.marks.read_step(sim, player, &mut self.dispatcher, &mut step);
         let blades = fighters.iter().enumerate();
@@ -424,16 +483,15 @@ impl CueShow {
     ) -> (Vec3, Vec3) {
         self.dispatcher.end_frame(dt, rumble);
         self.started_over = false;
-        self.caption.left = (self.caption.left - view_dt).max(0.0);
+        self.captions.advance(view_dt);
         self.shakes.stack.advance(view_dt, behind_latest(alpha));
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
     }
 
-    /// The fight's voice line that's still to be read, if any: up for [`CAPTION_SECONDS`] of the view's time
-    /// after it's said, so a pause holds it.
-    pub(crate) fn caption(&self) -> Option<Captioned<'_>> {
-        let caption = &self.caption;
-        (caption.left > 0.0).then_some(Captioned { key: &caption.key, by_player: caption.by_player })
+    /// The fight's voice lines still to be read, oldest first, [`CAPTION_LINES`] at most: each up for
+    /// [`CAPTION_SECONDS`] of the view's time after it's said, so a pause holds them.
+    pub(crate) fn captions(&self) -> impl Iterator<Item = Captioned<'_>> {
+        self.captions.shown()
     }
 
     /// The player's shake setting, 0 to 1: the shakes this plays on a view of its own, and every rumble.
@@ -472,7 +530,7 @@ impl CueShow {
         self.world_time_scale = 1.0;
         self.tick = None;
         self.started_over = true;
-        self.caption.left = 0.0;
+        self.captions.clear();
         screen.start_over();
     }
 
@@ -898,6 +956,88 @@ mod tests {
         assert!(!show.table().sound_cues().is_empty());
     }
 
+    /// The newest line captioned, if any.
+    fn newest(show: &CueShow) -> Option<Captioned<'_>> {
+        show.captions().last()
+    }
+
+    /// M4 A8: two lines said in one step are both captioned, the earlier above, each for its own time; the same
+    /// line again starts its time over at the bottom, and a third takes the oldest's place. Before A8 only the
+    /// step's last showed.
+    #[test]
+    fn lines_said_in_one_step_are_all_captioned() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        // A step that publishes two of the shipped table's cues.
+        let shipped: Vec<String> =
+            CueTable::default_table().rows().iter().map(|row| row.cue.clone()).collect();
+        let published = |sim: &Simulation| {
+            let mut names: Vec<&String> =
+                shipped.iter().filter(|name| sim.cues().any(|cue| cue.cue == Name::new(name))).collect();
+            names.sort_unstable();
+            names.dedup();
+            names.into_iter().cloned().collect::<Vec<_>>()
+        };
+        let mut both = Vec::new();
+        for _ in 0..1200 {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            both = published(&sim);
+            if both.len() >= 2 {
+                break;
+            }
+        }
+        assert!(both.len() >= 2, "the fixture reaches a step with two cues");
+        let speaking = CueTable::from_ron(&format!(
+            r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [
+                (cue: "{}", line: Some("perfect-dodge")),
+                (cue: "{}", line: Some("swap-in")),
+            ]))"#,
+            both[0], both[1]
+        ))
+        .expect("valid on its own");
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let mut show =
+            CueShow::with_table(speaking, VfxLibrary::default_effects(), VfxBudget::DESKTOP_LOW, &presets)
+                .expect("resolves");
+        show.prepare(&sim);
+        let stage = || CueStage::OneCharacter { stand: Vec3::ZERO };
+        show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage());
+        let mut keys: Vec<&str> = show.captions().map(|caption| caption.key).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["subtitle-perfect-dodge", "subtitle-swap-in"], "both of the step's lines");
+        show.end_frame(1.0, CAPTION_SECONDS - 0.5, 1.0, &mut ());
+        assert_eq!(show.captions().count(), 2, "each for its own time");
+        show.end_frame(1.0, 0.5, 1.0, &mut ());
+        assert_eq!(show.captions().count(), 0);
+
+        // The order lines go up in, and what a third does, on the captions alone.
+        let mut captions = Captions::default();
+        captions.say("perfect-dodge", true);
+        captions.say("swap-in", false);
+        let shown =
+            |captions: &Captions| captions.shown().map(|caption| caption.key.to_owned()).collect::<Vec<_>>();
+        assert_eq!(shown(&captions), ["subtitle-perfect-dodge", "subtitle-swap-in"]);
+        captions.advance(1.0);
+        captions.say("perfect-dodge", true);
+        assert_eq!(
+            shown(&captions),
+            ["subtitle-swap-in", "subtitle-perfect-dodge"],
+            "said again, it's newest"
+        );
+        captions.advance(CAPTION_SECONDS - 1.0);
+        assert_eq!(shown(&captions), ["subtitle-perfect-dodge"], "the older one's time is up first");
+        captions.say("swap-in", false);
+        captions.say("court-gate-answer", true);
+        assert_eq!(
+            shown(&captions),
+            ["subtitle-swap-in", "subtitle-court-gate-answer"],
+            "a third takes the oldest's place"
+        );
+    }
+
     /// A fight's voice line is captioned (M4 A2) under its key, for [`CAPTION_SECONDS`] of the view's time,
     /// which a pause holds, and not past a start over. On the one character, every line is the player's.
     #[test]
@@ -926,20 +1066,20 @@ mod tests {
             CueShow::with_table(speaking, VfxLibrary::default_effects(), VfxBudget::DESKTOP_LOW, &presets)
                 .expect("resolves");
         show.prepare(&sim);
-        assert_eq!(show.caption(), None);
+        assert_eq!(newest(&show), None);
         let stage = || CueStage::OneCharacter { stand: Vec3::ZERO };
         show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage());
         let said = Captioned { key: "subtitle-perfect-dodge", by_player: true };
-        assert_eq!(show.caption(), Some(said));
+        assert_eq!(newest(&show), Some(said));
         // Paused, it stays; played, it goes once its time's up.
         show.end_frame(10.0, 0.0, 1.0, &mut ());
-        assert_eq!(show.caption(), Some(said));
+        assert_eq!(newest(&show), Some(said));
         show.end_frame(1.0, CAPTION_SECONDS - 0.5, 1.0, &mut ());
-        assert_eq!(show.caption(), Some(said));
+        assert_eq!(newest(&show), Some(said));
         show.end_frame(1.0, 0.5, 1.0, &mut ());
-        assert_eq!(show.caption(), None);
+        assert_eq!(newest(&show), None);
         show.start_over(&mut screen);
-        assert_eq!(show.caption(), None, "a fight started over says nothing yet");
+        assert_eq!(newest(&show), None, "a fight started over says nothing yet");
     }
 
     /// A new table naming what the libraries lack is refused, and the one firing stays.

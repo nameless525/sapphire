@@ -1239,10 +1239,10 @@ impl FightShow {
         scene.with_screen_effects(|stack, presets| cues.step(sim, stack, presets, view_projection, stage));
     }
 
-    /// The fight's voice line whose caption is up (M4 A2), if any: what the HUD's subtitle shows when no
-    /// cutscene has it.
-    pub fn caption(&self) -> Option<crate::cues::Captioned<'_>> {
-        self.cues.as_ref().and_then(CueShow::caption)
+    /// The fight's voice lines whose captions are up (M4 A2), oldest first, `CAPTION_LINES` at most (M4 A8):
+    /// what the HUD's subtitles show when no cutscene has them.
+    pub fn captions(&self) -> impl Iterator<Item = crate::cues::Captioned<'_>> {
+        self.cues.iter().flat_map(CueShow::captions)
     }
 
     /// What a fight's cues ask of the audio system this frame.

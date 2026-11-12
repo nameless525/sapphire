@@ -71,6 +71,9 @@ pub struct ScreenStack {
     metrics: Option<UiMetrics>,
     pages: UiPageState,
     now: Timestamp,
+    /// The screen the last [`Self::input`] went to, whose events [`Self::drain_events`] reads: a press that
+    /// closes it starts its leave, and its event still has to reach the game.
+    took_input: Option<usize>,
 }
 
 impl std::fmt::Debug for ScreenStack {
@@ -114,6 +117,7 @@ impl ScreenStack {
             metrics: None,
             pages: UiPageState::NO_RENDERER,
             now: Timestamp::default(),
+            took_input: None,
         })
     }
 
@@ -162,6 +166,11 @@ impl ScreenStack {
     /// Takes off the screen at `index`, counting from the bottom.
     pub fn remove(&mut self, index: usize) {
         self.screens.remove(index);
+        self.took_input = match self.took_input {
+            Some(took) if took > index => Some(took - 1),
+            Some(took) if took == index => None,
+            took => took,
+        };
     }
 
     /// How many screens are on it.
@@ -215,19 +224,31 @@ impl ScreenStack {
         self.loc.text(key)
     }
 
-    /// A frame's input: the top screen's, if it's open.
+    /// A frame's input: the screen [`Self::taking_input`] names, if any.
     pub fn input(&mut self, input: &UiInput<'_>) {
-        if let Some(top) = self.screens.last_mut().filter(|top| top.opened) {
-            top.tree.input(input, self.now);
+        self.took_input = self.taking_input();
+        if let Some(index) = self.took_input {
+            self.screens[index].tree.input(input, self.now);
         }
     }
 
-    /// What's happened on the top screen, into `events`, which is cleared first.
-    pub fn drain_events(&mut self, events: &mut Vec<UiEvent>) {
+    /// Which screen a frame's input goes to: the top one that isn't on its way out (M4 A8), once it has opened.
+    /// A screen leaving takes no input, so a press in the frames it takes to go reaches what's under it; one
+    /// not yet drawn takes none either, and nothing under it does.
+    #[must_use]
+    pub fn taking_input(&self) -> Option<usize> {
+        let index = (0..self.screens.len()).rev().find(|&index| !self.is_leaving(index))?;
+        self.screens[index].opened.then_some(index)
+    }
+
+    /// What's happened on the screen the last [`Self::input`] went to, into `events`, which is cleared first:
+    /// which screen that is. It's that screen even when the input started its leave, as a back does.
+    pub fn drain_events(&mut self, events: &mut Vec<UiEvent>) -> Option<usize> {
         events.clear();
-        if let Some(top) = self.screens.last_mut() {
-            events.extend(top.tree.drain_events());
-        }
+        let index =
+            self.took_input.or_else(|| self.taking_input()).filter(|&index| index < self.screens.len())?;
+        events.extend(self.screens[index].tree.drain_events());
+        Some(index)
     }
 
     /// The screen at `index`'s tree, counting from the bottom.
@@ -258,6 +279,13 @@ impl ScreenStack {
     pub fn has_left(&self, index: usize) -> bool {
         let screen = &self.screens[index];
         screen.opened && !screen.tree.is_moving() && screen.tree.state() == Some("hidden")
+    }
+
+    /// Whether the screen at `index` is on its way out, through its machine's `leaving`, or out already and
+    /// waiting to be taken away.
+    #[must_use]
+    pub fn is_leaving(&self, index: usize) -> bool {
+        self.screens[index].tree.state() == Some("leaving") || self.has_left(index)
     }
 
     /// The model of the screen at `index`, if it's a `T`.

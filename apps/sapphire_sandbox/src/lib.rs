@@ -175,7 +175,8 @@
 //!   `content/dialogue/<name>.dialogue.ron`'s cooked conversation that many lines in, in place of its
 //!   sample (M3 Q2b, Z5e); with no name, the Lantern Ward guide's. `--ui-text normal|large|larger` sets the
 //!   player's text size, and `--ui-subtitle <size>:<background>` (`small` to `larger`, `off` to `solid`),
-//!   with `--ui-game hud`, has the sample say a cutscene's line in subtitles of that look (M4 A2).
+//!   with `--ui-game hud`, has the sample say a cutscene's line in subtitles of that look (M4 A2), or with
+//!   `:fight` after it two of a fight's voice lines at once, stacked (M4 A8).
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

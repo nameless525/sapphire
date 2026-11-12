@@ -1240,7 +1240,8 @@ impl Options {
                 spin: ui_spin.unwrap_or(shown.spin),
                 dialogue: ui_dialogue,
                 text: ui_text.unwrap_or(shown.text),
-                subtitle: ui_subtitle,
+                subtitle: ui_subtitle.as_ref().map(|(subtitles, _)| subtitles.clone()),
+                fight_lines: ui_subtitle.as_ref().is_some_and(|(_, fight)| *fight),
                 ..shown
             }
         });
@@ -3057,6 +3058,10 @@ mod tests {
         assert_eq!(screen.text, game_ui::menus::TextSize::Larger);
         let subtitles = screen.subtitle.unwrap();
         assert_eq!((subtitles.size.name(), subtitles.background.name()), ("large", "solid"));
+        assert!(!screen.fight_lines);
+        let (options, _) = parse(&["--ui-game", "hud", "--ui-subtitle", "normal:normal:fight"]).unwrap();
+        assert!(options.ui_screen.unwrap().fight_lines, "two of a fight's lines");
+        assert!(parse(&["--ui-game", "hud", "--ui-subtitle", "normal:normal:cutscene"]).is_err());
         assert!(parse(&["--ui-text", "large"]).is_err(), "it needs --ui-game");
         assert!(parse(&["--ui-game", "hud", "--ui-text", "huge"]).is_err());
         assert!(parse(&["--ui-game", "hud", "--ui-subtitle", "large"]).is_err());

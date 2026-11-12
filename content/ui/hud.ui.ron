@@ -197,6 +197,34 @@
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 150))),
                 binds: [(to: Opacity, path: "subtitle_band")],
             ),
+            // A fight's line said before the newest and still up (M4 A8), above it on the same band: lines said
+            // together stack rather than one hiding the other.
+            (
+                name: "subtitle-earlier-speaker",
+                parent: "subtitle-band",
+                binds: [(to: Shown, path: "has_earlier_speaker"), (to: TextScale, path: "subtitle_scale")],
+                text: (
+                    key: "speaker-wanderer",
+                    style: "speaker",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "earlier_speaker", prefix: "speaker-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
+            (
+                name: "subtitle-earlier",
+                parent: "subtitle-band",
+                layout: (shrink: 0),
+                binds: [(to: Shown, path: "has_earlier"), (to: TextScale, path: "subtitle_scale")],
+                text: (
+                    key: "subtitle-perfect-dodge",
+                    style: "subtitle",
+                    color: (240, 246, 255, 255),
+                    wrap: true,
+                    key_from: (path: "earlier", prefix: "subtitle-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
             (
                 name: "subtitle-speaker",
                 parent: "subtitle-band",

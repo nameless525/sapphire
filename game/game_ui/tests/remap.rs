@@ -75,6 +75,35 @@ fn a_press_remaps_its_binding_and_the_glyph_follows() {
     assert_eq!(drawn(&walk, REMAP_PAD, "heavy-value"), "○");
 }
 
+/// M4 A8: a wait's cancel glyph follows a pad picked up during it. A stick on the new pad is refused, so the
+/// wait goes on, and the glyph reads as that pad labels its Start.
+#[test]
+fn the_waits_cancel_glyph_follows_a_pad_changed_during_it() {
+    let mut walk = walk_on(REMAP_PAD, Device::Pad);
+    walk.choose(REMAP_PAD, "light");
+    let xbox = sapphire_controls::glyph(&RemapDevice::Gamepad.cancel(), GamepadFamily::Xbox).into_owned();
+    assert_eq!(shown(&mut walk, MenuScreen::REMAP_LISTEN).remap.cancel, xbox);
+
+    let at = walk.now();
+    walk.menus.controls_mut().push(at, RawInput::GamepadAdded { pad: 1, kind: GamepadType::PlayStation5 });
+    let at = walk.now();
+    walk.menus.controls_mut().push(at, RawInput::PadAxis { pad: 1, axis: PadAxis::LeftX, value: 1.0 });
+    walk.frame();
+    let at = walk.now();
+    walk.menus.controls_mut().push(at, RawInput::PadAxis { pad: 1, axis: PadAxis::LeftX, value: 0.0 });
+    walk.settle();
+    assert!(walk.menus.is_remapping(), "a stick is refused, and the wait goes on");
+    let playstation =
+        sapphire_controls::glyph(&RemapDevice::Gamepad.cancel(), GamepadFamily::PlayStation).into_owned();
+    assert_ne!(playstation, xbox);
+    assert_eq!(shown(&mut walk, MenuScreen::REMAP_LISTEN).remap.cancel, playstation);
+    assert_eq!(
+        drawn(&walk, MenuScreen::REMAP_LISTEN, "cancel-hint"),
+        format!("{playstation} to cancel"),
+        "what the screen draws"
+    );
+}
+
 /// M4 X4: a binding the bindings document adds shows its glyph with no code: the menus' model holds it under
 /// its device, and a screen's path to it is the model's.
 #[test]

@@ -494,6 +494,35 @@ fn a_press_goes_to_the_top_screen_only_and_the_hud_takes_only_its_pause() {
     assert!(!walk.commands.contains(&MenuCommand::Pause), "{:?}", walk.commands);
 }
 
+/// M4 A8: a press on the frame after a screen closes reaches the screen under it, rather than the one leaving,
+/// whose way out takes no input. Each device's, from the settings back to the title.
+#[test]
+fn a_press_while_a_screen_leaves_reaches_the_one_under_it() {
+    for device in [Device::Pad, Device::Keyboard] {
+        let mut walk = Walk::new(assets(), "en", false, (1280, 720), device);
+        walk.menus.open(MenuScreen::TITLE);
+        walk.settle();
+        walk.choose(MenuScreen::TITLE, "settings");
+        assert!(walk.menus.is_open(SETTINGS));
+        assert_eq!(walk.tree(MenuScreen::TITLE).focus_name(), Some("settings"));
+
+        // Back, and the very next press: the settings are still on their way out.
+        match device {
+            Device::Pad => walk.pad(sapphire_input::PadButton::East),
+            _ => walk.key(Scancode::ESCAPE),
+        }
+        assert!(
+            !walk.menus.is_open(SETTINGS) && walk.menus.tree(SETTINGS).is_some(),
+            "leaving, by {device:?}"
+        );
+        walk.down();
+        assert!(walk.menus.tree(SETTINGS).is_some(), "the press came while they left, by {device:?}");
+        walk.settle();
+        assert!(walk.menus.tree(SETTINGS).is_none());
+        assert_eq!(walk.tree(MenuScreen::TITLE).focus_name(), Some("leave"), "by {device:?}");
+    }
+}
+
 /// A cutscene's skip shows only while one can be skipped, and a tap on it asks for the skip; the banner shows
 /// what it's given, from the tables.
 #[test]
@@ -673,4 +702,70 @@ fn rust_naming_screens(dir: &Path, into: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// M4 A8: two of a fight's lines said at once both show, the earlier above the newest on the one band, each
+/// with its speaker, in both languages at every aspect, and the band stays on the screen's lower half. With
+/// one line, the earlier's nodes take no room, so a single line draws as it did.
+#[test]
+fn two_lines_said_at_once_both_show_on_the_band() {
+    let mut wrong = Vec::new();
+    for locale in ["en", "ja"] {
+        let table = table(locale);
+        let text = |key: &str| {
+            let Pattern::Plain(span) = table.entry(key).expect("in the table").pattern else {
+                panic!("{key} is plain text")
+            };
+            table.str(span).to_owned()
+        };
+        for size in SIZES {
+            let at = format!("{locale}, {size:?}");
+            let mut walk = Walk::new(assets(), locale, false, size, Device::Keyboard);
+            walk.menus.open(MenuScreen::HUD);
+            let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            model.follow_subtitle(Some("subtitle-swap-in"), Some("speaker-wanderer"));
+            walk.settle();
+            let one = walk
+                .tree(MenuScreen::HUD)
+                .screen_rect(walk.tree(MenuScreen::HUD).find("subtitle-line").unwrap());
+
+            let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            model.follow_earlier_subtitle(Some("subtitle-perfect-dodge"), Some("speaker-wanderer"));
+            walk.settle();
+            walk.check(MenuScreen::HUD, false);
+            let tree = walk.tree(MenuScreen::HUD);
+            let node = |name| tree.find(name).expect("a node");
+            let said = |name| tree.strings().find(|(node, _)| *node == name).expect("text").1.to_owned();
+            for name in ["subtitle-earlier-speaker", "subtitle-earlier", "subtitle-speaker", "subtitle-line"]
+            {
+                assert!(tree.is_visible(node(name)), "{at}: {name}");
+            }
+            assert_eq!(said("subtitle-earlier"), text("subtitle-perfect-dodge"), "{at}");
+            assert_eq!(said("subtitle-line"), text("subtitle-swap-in"), "{at}");
+            assert_eq!(said("subtitle-earlier-speaker"), text("speaker-wanderer"), "{at}");
+            let (earlier, newest) =
+                (tree.screen_rect(node("subtitle-earlier")), tree.screen_rect(node("subtitle-line")));
+            assert!(earlier.max.y <= newest.min.y, "{at}: the earlier above, {earlier:?} over {newest:?}");
+            assert!((newest.max.y - one.max.y).abs() < 0.5, "{at}: the newest stays where one line stands");
+            let band = tree.screen_rect(node("subtitle-band"));
+            if band.min.y < size.1 as f32 * 0.5 || band.max.y > size.1 as f32 {
+                wrong.push(format!("{at}: the band's at {band:?}"));
+            }
+
+            // The earlier one's time is up: the newest alone, as one line draws.
+            let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            model.follow_earlier_subtitle(None, Some("speaker-wanderer"));
+            walk.settle();
+            let tree = walk.tree(MenuScreen::HUD);
+            assert!(!tree.is_visible(tree.find("subtitle-earlier").unwrap()), "{at}");
+            assert!(
+                !tree.is_visible(tree.find("subtitle-earlier-speaker").unwrap()),
+                "{at}: no speaker alone"
+            );
+            let alone = tree.screen_rect(tree.find("subtitle-line").unwrap());
+            assert!((alone.min.y - one.min.y).abs() < 0.5 && (alone.max.y - one.max.y).abs() < 0.5, "{at}");
+            wrong.extend(walk.wrong);
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

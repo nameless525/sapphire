@@ -675,13 +675,14 @@ fn a_strand_by_a_grounded_torsos_middle_keeps_its_side() {
     assert_eq!(torso_side(-1.0, 0.019, hold), -1.0);
 }
 
-/// Clearance solves every frame near the camera on Desktop-High, less often on the lighter tiers, half
-/// as often again past `near` on every tier, and holds past `far`.
+/// Clearance solves every frame near the camera on Desktop-High, every fourth tick on the lighter tiers
+/// (Desktop-Low as the phones since M4 H7), half as often again past `near` on every tier, and holds
+/// past `far`.
 #[test]
 fn clearance_solves_less_often_on_lighter_tiers_and_further_away() {
     let [high, low, mobile] = SpringQuality::SHIPPED.map(|quality| quality.clearance);
     assert_eq!(high.interval_at(2.0), Some(1));
-    assert_eq!(low.interval_at(2.0), Some(3));
+    assert_eq!(low.interval_at(2.0), Some(4));
     assert_eq!(mobile.interval_at(2.0), Some(4));
     for clearance in [high, low, mobile] {
         assert_eq!(clearance.interval_at(clearance.near), Some(clearance.interval));

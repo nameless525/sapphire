@@ -210,7 +210,7 @@ impl SpringQuality {
     /// Desktop-High's: 120 Hz out to 40 m, and clearance solved on every frame near the camera.
     pub const DESKTOP_HIGH: Self =
         Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::FULL };
-    /// Desktop-Low's: Desktop-High's springs, with clearance solved every third tick.
+    /// Desktop-Low's: Desktop-High's springs, with clearance solved every fourth tick.
     pub const DESKTOP_LOW: Self =
         Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::DESKTOP_LOW };
     /// The phones': one sub-step a tick, the 60 Hz VRM's parameters are tuned at, out to 25 m, with
@@ -244,8 +244,10 @@ pub struct ClearanceQuality {
 impl ClearanceQuality {
     /// Every frame out to 12 m, every other tick out to 24 m.
     pub const FULL: Self = Self { interval: 1, near: 12.0, far: 24.0 };
-    /// Every third tick: 20 solves a second, near, so two frames in three at 60 frames a second hold.
-    pub const DESKTOP_LOW: Self = Self { interval: 3, ..Self::FULL };
+    /// Every fourth tick, as the phones: 15 solves a second, near, each spread over four frames at 60
+    /// frames a second, with no forecast ahead (it runs only under 4 ticks). Every third tick until
+    /// M4 H7, whose half-weight forecast and three-way spread held p99 over Desktop-Low's budget.
+    pub const DESKTOP_LOW: Self = Self { interval: 4, ..Self::FULL };
     /// Every fourth tick: 15 solves a second, every other frame at 30 frames a second.
     pub const MOBILE: Self = Self { interval: 4, ..Self::FULL };
 

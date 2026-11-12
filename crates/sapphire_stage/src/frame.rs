@@ -256,8 +256,9 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     /// stage sets it each frame from `Platform::thermal`. Unknown until then, so only dynamic resolution's
     /// pressure and `r.rung` move the ladder.
     pub thermal: ThermalReading,
-    /// The ladder's clock: frames here have no real length, so it advances by [`FRAME`] a frame.
-    ladder_clock: Duration,
+    /// The ladder's clock: the frame time the window hands it ([`Self::hand_frame_time`]), else the tier's
+    /// interval a frame drawn (M4 H4).
+    ladder_clock: LadderClock,
     /// A tier's renderer building off the frame (M4 T3, [`Self::prepare_tier_change`]).
     tier_change: TierChange,
     /// Held from the renderer's making to the first frame, with [`StageDesc::warm_load`].
@@ -362,7 +363,7 @@ impl Stage {
             gpu,
             last_times: None,
             thermal: ThermalReading::default(),
-            ladder_clock: Duration::ZERO,
+            ladder_clock: LadderClock::default(),
             tier_change: TierChange::default(),
             load_warmup,
             format,
@@ -500,11 +501,18 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// and a tier the ladder asks for ([`Quality::take_tier_request`], at a pause or a wipe) are the
     /// caller's.
     fn follow_heat(&mut self) -> Result<(), AppInitError> {
-        self.ladder_clock += FRAME;
-        self.quality.follow_heat(self.ladder_clock, &self.thermal);
+        let now = self.ladder_clock.advance(self.quality.frame_rate());
+        self.quality.follow_heat(now, &self.thermal);
         // Every frame rather than on a step, so a renderer made since gets the rung's shed too.
         let shed = self.quality.ladder().state().shed;
         self.renderer.set_shed(shed).map_err(AppInitError::msg)
+    }
+
+    /// Hands the ladder this frame's real length, `dt`, from the window's clock: its holds count real time, so a
+    /// game at 30 frames a second climbs as fast as one at 60 (M4 H4). Frames skipped for want of an image count
+    /// too, toward the next drawn. A stage nobody hands a time to counts the tier's interval a frame.
+    pub fn hand_frame_time(&mut self, dt: Duration) {
+        self.ladder_clock.hand(dt);
     }
 
     /// Starts building the renderer of the tier [`Quality::wanted_tier`] names on the warm-up's threads, which no
@@ -552,7 +560,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         if self.quality.wanted_tier() != Some(id) {
             return None;
         }
-        let previous = self.quality.change_tier(self.ladder_clock)?;
+        let previous = self.quality.change_tier(self.ladder_clock.now)?;
         let grid = self.content.zone_probe_grid();
         match self.renderer.take_tier(build, grid) {
             Ok(()) => {
@@ -744,3 +752,65 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
 /// The length dynamic resolution and tools are told a frame takes: frames here have no real length, so
 /// dynamic resolution follows GPU timings alone.
 pub const FRAME: Duration = Duration::from_micros(16_667);
+
+/// The thermal ladder's clock (M4 H4): what the window hands it of real time, else a frame at the tier's rate
+/// ([`FRAME`] uncapped) for each frame drawn.
+#[derive(Clone, Copy, Debug, Default)]
+struct LadderClock {
+    now: Duration,
+    /// Real time handed since the last frame that followed the heat.
+    handed: Option<Duration>,
+}
+
+impl LadderClock {
+    fn hand(&mut self, dt: Duration) {
+        self.handed = Some(self.handed.unwrap_or_default() + dt);
+    }
+
+    /// Moves on by a frame drawn at `rate` (`None` uncapped), or by what was handed since, and says when it is.
+    fn advance(&mut self, rate: Option<std::num::NonZeroU32>) -> Duration {
+        let interval = rate.map_or(FRAME, |rate| Duration::from_secs(1) / rate.get());
+        self.now += self.handed.take().unwrap_or(interval);
+        self.now
+    }
+}
+
+#[cfg(test)]
+mod ladder_clock_tests {
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
+    use super::LadderClock;
+
+    /// Frames until the clock passes `hold`, at `rate` frames a second, handed the window's time or not.
+    fn frames_to(hold: Duration, rate: u32, handed: bool) -> u32 {
+        let mut clock = LadderClock::default();
+        let mut frames = 0;
+        while clock.now < hold {
+            if handed {
+                clock.hand(Duration::from_secs(1) / rate);
+            }
+            clock.advance(NonZeroU32::new(rate));
+            frames += 1;
+        }
+        frames
+    }
+
+    /// A ten-second hold is ten seconds at 30 frames a second as at 60, whether the window hands the clock
+    /// its time or the tier's interval stands in for it: it once took 600 frames at either rate.
+    #[test]
+    fn the_ladder_holds_real_time_at_30_and_60_frames_a_second() {
+        // A millisecond short of ten seconds: a thirtieth of a second in nanoseconds rounds down.
+        let hold = Duration::from_secs(10) - Duration::from_millis(1);
+        for handed in [false, true] {
+            assert_eq!(frames_to(hold, 30, handed), 300, "handed: {handed}");
+            assert_eq!(frames_to(hold, 60, handed), 600, "handed: {handed}");
+        }
+        // Frames the window skipped count toward the next one drawn.
+        let mut clock = LadderClock::default();
+        for _ in 0..3 {
+            clock.hand(Duration::from_millis(20));
+        }
+        assert_eq!(clock.advance(NonZeroU32::new(60)), Duration::from_millis(60));
+    }
+}

@@ -285,6 +285,8 @@ impl App for GameApp {
 
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT);
+        // The thermal ladder's holds count real time, whatever the frame rate (M4 H4).
+        stage.hand_frame_time(dt);
         let view_dt = stage.show.drive_view(dt);
         let dt = dt.as_secs_f32();
         if let Some(audio) = &mut self.audio {

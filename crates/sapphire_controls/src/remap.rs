@@ -97,10 +97,20 @@ pub struct Remapped {
 /// out's, and the sticks that move and look, are the document's alone, whatever a player's file says.
 #[must_use]
 pub fn remappable(base: &InputBindings, name: &str) -> Option<RemapDevice> {
-    let device = RemapDevice::of_binding(name)?;
-    let combat = base.contexts.iter().find(|context| context.name == COMBAT_CONTEXT)?;
-    let binding = combat.bindings.iter().find(|binding| binding.name.as_deref() == Some(name))?;
-    (device.accepts(&binding.source) && binding.source != device.cancel()).then_some(device)
+    remappable_bindings(base).find(|(found, ..)| *found == name).map(|(_, device, _)| device)
+}
+
+/// Each binding a player may remap in `bindings` ([`remappable`]), in the document's order: its name, its
+/// device and what it reads. The remap screens show a glyph for each (M4 X4), so a binding the document
+/// adds is shown with no code.
+pub fn remappable_bindings(bindings: &InputBindings) -> impl Iterator<Item = (&str, RemapDevice, &Source)> {
+    let combat = bindings.contexts.iter().find(|context| context.name == COMBAT_CONTEXT);
+    combat.into_iter().flat_map(|context| &context.bindings).filter_map(|binding| {
+        let name = binding.name.as_deref()?;
+        let device = RemapDevice::of_binding(name)?;
+        let source = &binding.source;
+        (device.accepts(source) && *source != device.cancel()).then_some((name, device, source))
+    })
 }
 
 /// `base` with the player's bindings over it: each of `remapped` reading its source, and each action in
@@ -398,6 +408,22 @@ mod tests {
 
     fn remap(binding: &str, source: Source) -> Remapped {
         Remapped { binding: binding.to_owned(), source }
+    }
+
+    /// M4 X4: the remap screens show a glyph for each binding a player may remap, and no other: the
+    /// pause's, the way out's and the sticks' aren't listed.
+    #[test]
+    fn the_remappable_bindings_are_the_buttons_and_keys_a_player_may_move() {
+        let base = default_bindings().expect("the default bindings");
+        let listed: Vec<_> = remappable_bindings(&base).map(|(name, device, _)| (name, device)).collect();
+        let count = |device| listed.iter().filter(|(_, of)| *of == device).count();
+        assert_eq!((count(RemapDevice::Gamepad), count(RemapDevice::Keyboard)), (8, 12), "{listed:?}");
+        assert_eq!(listed[0], ("move_forward.keyboard", RemapDevice::Keyboard), "in the document's order");
+        for kept in ["move.gamepad", "look.gamepad", "pause.gamepad", "pause.keyboard", "light.mouse"] {
+            assert!(listed.iter().all(|(name, _)| *name != kept), "{kept}");
+            assert_eq!(remappable(&base, kept), None, "{kept}");
+        }
+        assert_eq!(remappable(&base, "resume.keyboard"), None, "not the combat context's");
     }
 
     #[test]

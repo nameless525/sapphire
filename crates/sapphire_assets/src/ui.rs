@@ -46,12 +46,16 @@
 //! **Paths.** A bind reads its value through a reflection path into the model an app hands the tree. A
 //! [`UiModel`] (`hud.model.ron`, named by [`UiDocument::model`]) says what paths a model has, so a cook
 //! refuses a path that doesn't resolve without linking the game. [`UiModel::of_type`] makes one from a
-//! Rust type's reflection, and a test beside the type holds the two together.
+//! Rust type's reflection, and a test beside the type holds the two together. A model some of whose names
+//! are a document's (a `DynamicStruct` field: a game's glyph for each binding its bindings document has)
+//! says those by its value ([`UiModel::of_model`]).
 
 use std::collections::BTreeSet;
 
 use bevy_reflect::enums::VariantInfo;
-use bevy_reflect::{ParsedPath, Reflect, ReflectDeserialize, ReflectSerialize, TypeInfo};
+use bevy_reflect::{
+    ParsedPath, PartialReflect, Reflect, ReflectDeserialize, ReflectRef, ReflectSerialize, TypeInfo,
+};
 use sapphire_reflect::Versioned;
 use sapphire_reflect::bevy_reflect::std_traits::ReflectDefault;
 use sapphire_serialize::DocumentError;
@@ -1815,8 +1819,21 @@ impl UiModel {
     /// levels down, and what's past that isn't a path a screen can bind.
     #[must_use]
     pub fn of_type(info: &'static TypeInfo) -> Self {
+        Self::walked(Some(info), None)
+    }
+
+    /// The model `model` holds: its type's paths, as [`Self::of_type`] has them, and under a struct's field
+    /// of no type, a `DynamicStruct` whose names come from data, the paths that field's value has. What a
+    /// value can hold less of than its type (an `Option`, a list) is read from its type alone, so two values
+    /// of a type whose dynamic fields hold the same names have the same model.
+    #[must_use]
+    pub fn of_model(model: &dyn PartialReflect) -> Self {
+        Self::walked(model.get_represented_type_info(), Some(model))
+    }
+
+    fn walked(info: Option<&'static TypeInfo>, value: Option<&dyn PartialReflect>) -> Self {
         let mut fields = Vec::new();
-        walk_type(info, &mut String::new(), 0, &mut fields);
+        walk(info, value, &mut String::new(), 0, &mut fields);
         fields.sort_by(|a: &UiModelField, b| a.path.cmp(&b.path));
         Self { fields }
     }
@@ -1854,43 +1871,76 @@ fn value_kind(type_path: &str) -> Option<UiValueKind> {
     }
 }
 
-fn walk_type(info: &'static TypeInfo, path: &mut String, depth: usize, fields: &mut Vec<UiModelField>) {
+/// Walks one level further down `path`, to `name`: a list's index follows on, and a field after a dot.
+fn descend(
+    name: &str,
+    list: bool,
+    (info, value): (Option<&'static TypeInfo>, Option<&dyn PartialReflect>),
+    path: &mut String,
+    depth: usize,
+    fields: &mut Vec<UiModelField>,
+) {
+    if info.is_none() && value.is_none() {
+        return;
+    }
+    let end = path.len();
+    if !list && !path.is_empty() {
+        path.push('.');
+    }
+    path.push_str(name);
+    walk(info, value, path, depth + 1, fields);
+    path.truncate(end);
+}
+
+/// Adds the paths under `path` to `fields`: from `info`, or from `value` where there's no type to read. A
+/// value is followed only through a struct's named fields, since anywhere else it may hold less than its
+/// type.
+fn walk(
+    info: Option<&'static TypeInfo>,
+    value: Option<&dyn PartialReflect>,
+    path: &mut String,
+    depth: usize,
+    fields: &mut Vec<UiModelField>,
+) {
     if depth > MODEL_DEPTH {
         return;
     }
-    let mut child =
-        |name: &str, list: bool, info: Option<&'static TypeInfo>, fields: &mut Vec<UiModelField>| {
-            let Some(info) = info else { return };
-            let end = path.len();
-            if list {
-                path.push_str(name);
-            } else {
-                if !path.is_empty() {
-                    path.push('.');
-                }
-                path.push_str(name);
+    let Some(info) = info.or_else(|| value.and_then(PartialReflect::get_represented_type_info)) else {
+        // A dynamic struct: the names its value holds.
+        if let Some(ReflectRef::Struct(value)) = value.map(PartialReflect::reflect_ref) {
+            for index in 0..value.field_len() {
+                let (Some(name), Some(field)) = (value.name_at(index), value.field_at(index)) else {
+                    continue;
+                };
+                descend(name, false, (None, Some(field)), path, depth, fields);
             }
-            walk_type(info, path, depth + 1, fields);
-            path.truncate(end);
-        };
+        }
+        return;
+    };
+    let typed = |info: Option<&'static TypeInfo>| (info, None);
     match info {
         TypeInfo::Struct(info) => {
+            let value = match value.map(PartialReflect::reflect_ref) {
+                Some(ReflectRef::Struct(value)) => Some(value),
+                _ => None,
+            };
             for field in info.iter() {
-                child(field.name(), false, field.type_info(), fields);
+                let held = value.and_then(|value| value.field(field.name()));
+                descend(field.name(), false, (field.type_info(), held), path, depth, fields);
             }
         }
         TypeInfo::TupleStruct(info) => {
             for field in info.iter() {
-                child(&field.index().to_string(), false, field.type_info(), fields);
+                descend(&field.index().to_string(), false, typed(field.type_info()), path, depth, fields);
             }
         }
         TypeInfo::Tuple(info) => {
             for field in info.iter() {
-                child(&field.index().to_string(), false, field.type_info(), fields);
+                descend(&field.index().to_string(), false, typed(field.type_info()), path, depth, fields);
             }
         }
-        TypeInfo::List(info) => child("[*]", true, info.item_info(), fields),
-        TypeInfo::Array(info) => child("[*]", true, info.item_info(), fields),
+        TypeInfo::List(info) => descend("[*]", true, typed(info.item_info()), path, depth, fields),
+        TypeInfo::Array(info) => descend("[*]", true, typed(info.item_info()), path, depth, fields),
         TypeInfo::Enum(info) => {
             if info.iter().all(|variant| matches!(variant, VariantInfo::Unit(_))) {
                 fields.push(UiModelField { path: path.clone(), kind: UiValueKind::Text });
@@ -1900,12 +1950,13 @@ fn walk_type(info: &'static TypeInfo, path: &mut String, depth: usize, fields: &
                 match variant {
                     VariantInfo::Struct(variant) => {
                         for field in variant.iter() {
-                            child(field.name(), false, field.type_info(), fields);
+                            descend(field.name(), false, typed(field.type_info()), path, depth, fields);
                         }
                     }
                     VariantInfo::Tuple(variant) => {
                         for field in variant.iter() {
-                            child(&field.index().to_string(), false, field.type_info(), fields);
+                            let name = field.index().to_string();
+                            descend(&name, false, typed(field.type_info()), path, depth, fields);
                         }
                     }
                     VariantInfo::Unit(_) => {}
@@ -2285,6 +2336,35 @@ mod tests {
         assert_eq!(kind("player"), None, "a struct has no value to show");
         assert_eq!(kind("player.mana"), None);
         let _ = (Stance::Idle, Stance::Guard);
+    }
+
+    #[derive(Reflect)]
+    #[reflect(from_reflect = false)]
+    struct Glyphs {
+        family: String,
+        by_name: bevy_reflect::structs::DynamicStruct,
+        later: Option<Fighter>,
+    }
+
+    #[test]
+    fn a_model_s_dynamic_struct_says_its_paths_by_its_value() {
+        let mut by_name = bevy_reflect::structs::DynamicStruct::default();
+        by_name.insert("light", "X".to_owned());
+        by_name.insert("lock_on", "RS".to_owned());
+        let glyphs = Glyphs { family: "xbox".to_owned(), by_name, later: None };
+        let model = UiModel::of_model(&glyphs);
+        let kind = |path: &str| model.kind_of(path);
+        assert_eq!(kind("family"), Some(UiValueKind::Text));
+        assert_eq!(kind("by_name.light"), Some(UiValueKind::Text), "a name the value holds");
+        assert_eq!(kind("by_name.lock_on"), Some(UiValueKind::Text));
+        assert_eq!(kind("by_name.heavy"), None, "a name it doesn't");
+        assert_eq!(kind("later.0.health"), Some(UiValueKind::Number), "what's absent is read from its type");
+        let typed = UiModel::of_type(Glyphs::type_info());
+        assert!(typed.kind_of("by_name.light").is_none(), "the type alone doesn't know the names");
+        // A model with no dynamic field is its type's, whatever its value holds.
+        let fighter = || Fighter { name: String::new(), health: 0.0, alive: true, state: Stance::Guard };
+        let typed = Model { level: 1, player: fighter(), enemy: None, party: Vec::new(), pair: (0, 0.0) };
+        assert_eq!(UiModel::of_model(&typed), UiModel::of_type(Model::type_info()));
     }
 
     #[test]

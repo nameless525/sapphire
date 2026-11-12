@@ -270,9 +270,9 @@ impl ScreenStack {
     pub fn replace(&mut self, text: &str) -> Result<(), String> {
         let top = self.screens.last_mut().ok_or("no screen is showing")?;
         let document = UiDocument::from_document(text).map_err(|error| error.to_string())?;
-        // What a cook checks with the model's document, from the type itself.
-        let info = top.model.get_represented_type_info().ok_or("a model of no known type")?;
-        let model = UiModel::of_type(info);
+        // What a cook checks with the model's document, from the model itself.
+        top.model.get_represented_type_info().ok_or("a model of no known type")?;
+        let model = UiModel::of_model(top.model.as_ref());
         self.replace_document(&document, &model)
     }
 

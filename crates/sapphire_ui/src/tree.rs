@@ -31,8 +31,9 @@
 //! its value would. A cook refuses both before a shipped build can meet them (`sapphire_pipeline::ui`),
 //! so this is what a pushed document or an edit in progress shows. A path that the model's type has and
 //! whose value is absent right now, through an `Option` holding nothing or past a list's end, isn't
-//! wrong: its node reads as hidden, transparent, empty. Paths are checked against the model's type, or,
-//! for a model of dynamic values with no type, the model document it declares ([`UiTree::declare_model`]).
+//! wrong: its node reads as hidden, transparent, empty. Paths are checked against the model's type (and the
+//! names a dynamic field of it holds), or, for a model of dynamic values with no type, the model document
+//! it declares ([`UiTree::declare_model`]).
 //!
 //! A key the tables don't hold shows as itself and counts in `LocStats`. Under pseudo-localization,
 //! [`UiTree::unframed`] finds it, along with anything else that didn't come through a message.
@@ -692,8 +693,9 @@ impl UiTree {
         self.update_cost = stopwatch.elapsed();
     }
 
-    /// Checks the paths against the model's type, the first time it's seen: what a cook does with a
-    /// model document, here with the real thing.
+    /// Checks the paths against the model's type, the first time it's seen, with the names a dynamic field
+    /// of that first value holds ([`UiModel::of_model`]): what a cook does with a model document, here
+    /// with the real thing.
     fn check_model(&mut self, model: Option<&dyn PartialReflect>) {
         let info = model.and_then(PartialReflect::get_represented_type_info);
         let seen = (model.is_some(), info.map(|info| info.type_id()));
@@ -705,7 +707,9 @@ impl UiTree {
         self.problems.retain(|problem| !problem.field.contains("path"));
         let model = match (model, &self.declared) {
             (Some(_), Some(declared)) => Some(declared.clone()),
-            _ => info.map(UiModel::of_type),
+            // Its type's paths, and a dynamic field's names, which its type doesn't know.
+            (Some(model), None) if info.is_some() => Some(UiModel::of_model(model)),
+            _ => None,
         };
         for node in &mut self.nodes {
             let mut report = |field: String, problem: String| {

@@ -29,7 +29,8 @@ mod settings;
 
 use std::fmt::Write as _;
 
-use bevy_reflect::{PartialReflect, Reflect, TypeInfo, Typed};
+use bevy_reflect::structs::{DynamicStruct, Struct as _};
+use bevy_reflect::{PartialReflect, Reflect};
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::{MenuControls, MenuError, RemapDevice, Taken};
 use sapphire_core::target::FormFactor;
@@ -59,7 +60,9 @@ pub const OPENED_BY_CODE: [&str; 4] = ["title", "pause", "hud", "dialogue"];
 
 impl ScreenModel {
     /// Its model as a golden shows it: as it stands with nothing yet said, but for the HUD, which shows every
-    /// word it has.
+    /// word it has. Its model document (`content/ui/<`[`Self::file`]`>`) is this one's paths
+    /// ([`UiModel::of_model`](sapphire_assets::ui::UiModel::of_model)): its type's, and the menus' glyph for
+    /// each binding a player may remap.
     #[must_use]
     pub fn sample(self) -> Box<dyn PartialReflect> {
         match self {
@@ -77,58 +80,48 @@ impl ScreenModel {
             }),
         }
     }
+}
 
-    /// Its type, which its model document (`content/ui/<`[`Self::file`]`>`) is made from.
-    #[must_use]
-    pub fn type_info(self) -> &'static TypeInfo {
-        match self {
-            Self::Menu => MenuModel::type_info(),
-            Self::Character => CharacterModel::type_info(),
-            Self::Dialogue => DialogueModel::type_info(),
-            Self::Hud => HudModel::type_info(),
+/// Shows in `glyphs` each binding of `device` a player may remap in `bindings`: a field by the binding's name
+/// before the device's suffix (`light` is `light.gamepad`'s), holding the glyph of what it reads as `family`
+/// labels a pad.
+fn show_glyphs(
+    glyphs: &mut DynamicStruct,
+    bindings: &InputBindings,
+    device: RemapDevice,
+    family: GamepadFamily,
+) {
+    for (name, of, source) in sapphire_controls::remappable_bindings(bindings) {
+        if of != device {
+            continue;
+        }
+        let stem = &name[..name.len() - device.suffix().len()];
+        let glyph = sapphire_controls::glyph(source, family);
+        match glyphs.field_mut(stem).and_then(|field| field.try_downcast_mut::<String>()) {
+            Some(held) => {
+                if *held != glyph {
+                    held.clear();
+                    held.push_str(&glyph);
+                }
+            }
+            None => glyphs.insert(stem, glyph.into_owned()),
         }
     }
 }
 
-/// What a binding shows for each remappable action of one device (M4 A4): the glyph of what it reads, by its
-/// binding's name before the device's suffix (`light` is `light.gamepad`'s on the pad), or nothing for one
-/// the bindings don't have. A game that lets a player remap another binding adds its field here.
-#[derive(Clone, Debug, Default, Reflect)]
-pub struct BindingGlyphs {
-    pub move_forward: String,
-    pub move_back: String,
-    pub move_left: String,
-    pub move_right: String,
-    pub light: String,
-    pub heavy: String,
-    pub dodge: String,
-    pub skill: String,
-    pub ultimate: String,
-    pub swap: String,
-    pub lock_on: String,
-    pub jump: String,
-}
-
-impl BindingGlyphs {
-    /// Each field's glyph, from what its binding of `device` reads in `bindings`, as `family` labels a pad.
-    fn show(&mut self, bindings: &InputBindings, device: RemapDevice, family: GamepadFamily) {
-        use bevy_reflect::structs::Struct as _;
-
-        let mut name = String::new();
-        for index in 0..self.field_len() {
-            let Some(stem) = self.name_at(index) else { continue };
-            name.clear();
-            name.push_str(stem);
-            name.push_str(device.suffix());
-            let glyph = sapphire_controls::source_of(bindings, &name)
-                .map(|source| sapphire_controls::glyph(source, family))
-                .unwrap_or_default();
-            if let Some(held) = self.field_at_mut(index).and_then(|field| field.try_downcast_mut::<String>())
-                && *held != glyph
-            {
-                held.clear();
-                held.push_str(&glyph);
-            }
+/// Makes `to` hold the glyphs `from` does, in place where it holds the same names.
+fn copy_glyphs(to: &mut DynamicStruct, from: &DynamicStruct) {
+    let same_names = to.field_len() == from.field_len()
+        && (0..from.field_len()).all(|at| to.name_at(at) == from.name_at(at));
+    if !same_names {
+        *to = DynamicStruct::default();
+    }
+    for at in 0..from.field_len() {
+        let glyph = from.field_at(at).and_then(|field| field.try_downcast_ref::<String>());
+        let (Some(name), Some(glyph)) = (from.name_at(at), glyph) else { continue };
+        match to.field_mut(name).and_then(|field| field.try_downcast_mut::<String>()) {
+            Some(held) => held.clone_from(glyph),
+            None => to.insert(name, glyph.clone()),
         }
     }
 }
@@ -136,10 +129,19 @@ impl BindingGlyphs {
 /// What the remap screens read (M4 A4): each binding's glyph, and the remap in progress. Until a remap
 /// starts it holds a sample, light attack's press on the pad taken by heavy attack, which is what a golden
 /// of the screens shows.
-#[derive(Clone, Debug, Reflect)]
+///
+/// The glyphs are the bindings document's (M4 X4): a field for each binding a player may remap
+/// ([`sapphire_controls::remappable_bindings`]), so a screen's row binds `remap.gamepad.light`, and a binding
+/// the document adds is shown with no code. Their names are the value's, not the type's, which
+/// [`UiModel::of_model`](sapphire_assets::ui::UiModel::of_model) reads; nothing's there until
+/// [`Self::show`].
+#[derive(Debug, Reflect)]
+#[reflect(from_reflect = false)]
 pub struct RemapModel {
-    pub gamepad: BindingGlyphs,
-    pub keyboard: BindingGlyphs,
+    /// The glyph of what each of the pad's bindings reads, as the pad last used labels it.
+    pub gamepad: DynamicStruct,
+    /// The glyph of each of the keyboard's bindings' keys.
+    pub keyboard: DynamicStruct,
     /// The key of the binding being remapped, under `remap-action-`.
     pub binding: String,
     /// The key of what to press, `remap-press-gamepad` or `remap-press-keyboard`.
@@ -154,11 +156,50 @@ pub struct RemapModel {
     pub kept: bool,
 }
 
+impl RemapModel {
+    /// The glyph of each binding a player may remap in `bindings`, a pad's as `family` labels them.
+    pub fn show(&mut self, bindings: &InputBindings, family: GamepadFamily) {
+        show_glyphs(&mut self.gamepad, bindings, RemapDevice::Gamepad, family);
+        show_glyphs(&mut self.keyboard, bindings, RemapDevice::Keyboard, family);
+    }
+}
+
+impl Clone for RemapModel {
+    fn clone(&self) -> Self {
+        let mut clone = Self {
+            gamepad: DynamicStruct::default(),
+            keyboard: DynamicStruct::default(),
+            binding: self.binding.clone(),
+            press: self.press.clone(),
+            cancel: self.cancel.clone(),
+            pressed: self.pressed.clone(),
+            taken_by: self.taken_by.clone(),
+            kept: self.kept,
+        };
+        copy_glyphs(&mut clone.gamepad, &self.gamepad);
+        copy_glyphs(&mut clone.keyboard, &self.keyboard);
+        clone
+    }
+
+    /// Every menu's model takes the remap as it stands each time it moves, so the glyphs' strings are
+    /// written over in place.
+    fn clone_from(&mut self, from: &Self) {
+        copy_glyphs(&mut self.gamepad, &from.gamepad);
+        copy_glyphs(&mut self.keyboard, &from.keyboard);
+        self.binding.clone_from(&from.binding);
+        self.press.clone_from(&from.press);
+        self.cancel.clone_from(&from.cancel);
+        self.pressed.clone_from(&from.pressed);
+        self.taken_by.clone_from(&from.taken_by);
+        self.kept = from.kept;
+    }
+}
+
 impl Default for RemapModel {
     fn default() -> Self {
         Self {
-            gamepad: BindingGlyphs::default(),
-            keyboard: BindingGlyphs::default(),
+            gamepad: DynamicStruct::default(),
+            keyboard: DynamicStruct::default(),
             binding: "remap-action-light".to_owned(),
             press: "remap-press-gamepad".to_owned(),
             cancel: sapphire_controls::glyph(&RemapDevice::Gamepad.cancel(), GamepadFamily::Xbox)
@@ -182,6 +223,7 @@ fn action_key(name: &str) -> String {
 /// player's settings (M4 A1 adds the settings' pages' own, A4 the bindings' glyphs), each a key of what it's
 /// set to or a percent. The title, the pause and the settings read it, and so can any screen content adds.
 #[derive(Clone, Debug, Default, Reflect)]
+#[reflect(from_reflect = false)]
 pub struct MenuModel {
     /// Whether this platform has a way out to offer: iOS doesn't.
     pub can_leave: bool,
@@ -251,8 +293,7 @@ impl MenuModel {
 
     /// The glyph of each remappable binding in `bindings`, a pad's as `family` labels them.
     pub fn show_bindings(&mut self, bindings: &InputBindings, family: GamepadFamily) {
-        self.remap.gamepad.show(bindings, RemapDevice::Gamepad, family);
-        self.remap.keyboard.show(bindings, RemapDevice::Keyboard, family);
+        self.remap.show(bindings, family);
     }
 
     fn show_settings(&mut self, settings: &PlayerSettings) {
@@ -606,8 +647,8 @@ impl GameMenus {
         let mut controls = MenuControls::with_defaults().map_err(|error: MenuError| error.to_string())?;
         controls.set_player_scale(settings.scale());
         let bindings = sapphire_controls::layered(&base, &settings.remapped, &[]);
-        let mut shown = MenuModel::default();
-        shown.show_bindings(&bindings, GamepadFamily::Xbox);
+        let mut remap_model = RemapModel::default();
+        remap_model.show(&bindings, GamepadFamily::Xbox);
         Ok(Self {
             stack,
             shown: Vec::with_capacity(screens.screens.len()),
@@ -619,7 +660,7 @@ impl GameMenus {
             bindings,
             family: GamepadFamily::Xbox,
             remap: None,
-            remap_model: shown.remap,
+            remap_model,
             can_leave,
             can_mark,
             can_continue: false,
@@ -974,9 +1015,7 @@ impl GameMenus {
     }
 
     fn show_bindings(&mut self) {
-        let mut shown = MenuModel { remap: std::mem::take(&mut self.remap_model), ..MenuModel::default() };
-        shown.show_bindings(&self.bindings, self.family);
-        self.remap_model = shown.remap;
+        self.remap_model.show(&self.bindings, self.family);
         self.show_remap();
     }
 

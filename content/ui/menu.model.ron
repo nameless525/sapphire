@@ -1,6 +1,7 @@
 // What a menu's paths can read (M3 U9): the title's, the pause's, the settings' and any screen's whose row in
-// `menus.ron` reads `Menu`. Generated from `game_ui::menus::MenuModel`, which a test holds this to. A cook
-// refuses a path that isn't here.
+// `menus.ron` reads `Menu`. Generated from `game_ui::menus::MenuModel`, which a test holds this to: its
+// fields, and under `remap.gamepad` and `remap.keyboard` a glyph for each binding a player may remap in
+// `combat_bindings.ron` (M4 X4). A cook refuses a path that isn't here.
 (
     type: "sapphire::assets::UiModel",
     version: 1,
@@ -32,10 +33,6 @@
             (path: "remap.gamepad.jump", kind: Text),
             (path: "remap.gamepad.light", kind: Text),
             (path: "remap.gamepad.lock_on", kind: Text),
-            (path: "remap.gamepad.move_back", kind: Text),
-            (path: "remap.gamepad.move_forward", kind: Text),
-            (path: "remap.gamepad.move_left", kind: Text),
-            (path: "remap.gamepad.move_right", kind: Text),
             (path: "remap.gamepad.skill", kind: Text),
             (path: "remap.gamepad.swap", kind: Text),
             (path: "remap.gamepad.ultimate", kind: Text),

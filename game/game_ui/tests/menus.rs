@@ -576,7 +576,7 @@ fn the_documents_and_the_code_agree() {
     let ui = content().join("ui");
     for kind in [ScreenModel::Menu, ScreenModel::Character, ScreenModel::Dialogue, ScreenModel::Hud] {
         let model = UiModel::from_document(&std::fs::read_to_string(ui.join(kind.file())).unwrap()).unwrap();
-        assert_eq!(model, UiModel::of_type(kind.type_info()), "{kind:?}");
+        assert_eq!(model, UiModel::of_model(kind.sample().as_ref()), "{kind:?}");
     }
     let menus = menus();
     menus.require(&OPENED_BY_CODE).expect("the screens the code opens");

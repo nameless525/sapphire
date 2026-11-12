@@ -105,6 +105,9 @@ pub use controls::{
     default_bindings,
 };
 pub use menu::{MENU_BINDINGS, MENU_CONTEXT, MenuControls, MenuError, menu_bindings};
-pub use remap::{RemapDevice, Remapped, Taken, glyph, layered, remappable, reset, set, source_of, taken};
+pub use remap::{
+    RemapDevice, Remapped, Taken, glyph, layered, remappable, remappable_bindings, reset, set, source_of,
+    taken,
+};
 
 const LOG_TARGET: &str = "sapphire::controls";

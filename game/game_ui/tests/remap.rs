@@ -6,7 +6,7 @@ mod support;
 
 use game_ui::menus::{MenuCommand, MenuModel, MenuScreen};
 use sapphire_controls::{RemapDevice, Remapped};
-use sapphire_input::{Key, PadAxis, PadButton, RawInput, Source};
+use sapphire_input::{GamepadFamily, Key, PadAxis, PadButton, RawInput, Source};
 use sapphire_platform::{GamepadType, Scancode};
 use support::assets;
 use support::walk::{Device, REMAP_KEYS, REMAP_PAD, Walk};
@@ -73,6 +73,34 @@ fn a_press_remaps_its_binding_and_the_glyph_follows() {
     walk.settle();
     assert_eq!(drawn(&walk, REMAP_PAD, "light-value"), "L2");
     assert_eq!(drawn(&walk, REMAP_PAD, "heavy-value"), "○");
+}
+
+/// M4 X4: a binding the bindings document adds shows its glyph with no code: the menus' model holds it under
+/// its device, and a screen's path to it is the model's.
+#[test]
+fn a_binding_the_document_adds_shows_its_glyph() {
+    use bevy_reflect::structs::Struct as _;
+    use sapphire_assets::ui::{UiModel, UiValueKind};
+
+    let mut bindings = sapphire_controls::default_bindings().expect("the game's bindings");
+    let combat =
+        bindings.contexts.iter_mut().find(|context| context.name == sapphire_controls::COMBAT_CONTEXT);
+    let combat = combat.expect("the combat context");
+    let light = combat.bindings.iter().find(|binding| binding.name.as_deref() == Some("light.gamepad"));
+    let mut parry = light.expect("light attack's").clone();
+    parry.name = Some("parry.gamepad".to_owned());
+    parry.source = Source::Pad(PadButton::DpadUp);
+    combat.bindings.push(parry);
+
+    let mut model = MenuModel::default();
+    model.show_bindings(&bindings, GamepadFamily::Xbox);
+    let glyph = model.remap.gamepad.field("parry").and_then(|field| field.try_downcast_ref::<String>());
+    let wanted = sapphire_controls::glyph(&Source::Pad(PadButton::DpadUp), GamepadFamily::Xbox);
+    assert_eq!(glyph.map(String::as_str), Some(wanted.as_ref()));
+    let paths = UiModel::of_model(&model);
+    assert_eq!(paths.kind_of("remap.gamepad.parry"), Some(UiValueKind::Text));
+    assert_eq!(paths.kind_of("remap.keyboard.parry"), None, "the pad's alone");
+    assert_eq!(paths.kind_of("remap.gamepad.pause"), None, "never the pause's");
 }
 
 #[test]

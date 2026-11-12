@@ -505,7 +505,7 @@ Each item names the package and its hand-back or row, and why it waits.
 
 - **The Android bundle doubled to 108.5 MB** since C1 put the unstripped library's whole DWARF in its `.dbg` (Z1). No player downloads it (36.6 MB to a device) and Play takes symbols up to 1.6 GB, so it costs only the upload; S3's `.dbg`, line tables alone, was 72.2 MB.
 - **Windows' static C runtime is proved only by `packages.yml`'s Windows job** (X4): it was written on macOS, and no clean Windows has launched it.
-- **Larger Text, VoiceOver and Sufficient Contrast aren't claimed** (S5): text reaches 125% on a phone where Apple asks 200%, there's no screen reader, and nothing measures the menus' contrast. The game doesn't read iOS's own Reduce Motion.
+- **Larger Text, VoiceOver and Sufficient Contrast aren't claimed** (S5): text reaches 125% on a phone where Apple asks 200%, there's no screen reader, and 63 texts fall short of WCAG 1.4.3's contrast (A8's test, below). The game doesn't read iOS's own Reduce Motion.
 - **`UIRequiresFullScreen` is deprecated since iPadOS 26** (S8, apple.md rule 34): honoured on the iOS 26 SDK, not on the iOS 27 SDK. Before an upload built with Xcode 27, prove the screens in an iPad window narrower than 4:3, or set a minimum scene size, then remove the key or add `UIRequiresFullScreenIgnoredStartingWithVersion`.
 - **Linux's packaged game draws only on lavapipe on CI's Ubuntu host,** not inside Steam Linux Runtime 3.0, so a launch in the runtime and from Steam stays owed (S7, steam.md rule 16).
 - **macOS is arm64 only** (S4); a universal binary if Intel Macs are wanted.
@@ -523,9 +523,8 @@ Each item names the package and its hand-back or row, and why it waits.
 - **The stress fight passes 2.3.1 by default with no margin** (A3, and 6 of 6 again in Z2's final run): four of its six transitions in its worst second are the camera cutting past a pillar, which is `sapphire_camera::collision`'s, not an effect's.
 - **The HUD's health trail tells ember from rose only by an inked edge** (A5, Z3c): 0.096 apart in Oklab.
 - **Nothing orders a screen's rows reachable** when scrolling is added elsewhere (Z3c): the walk catches it per screen.
-- **Remapping:** mouse bindings and sticks aren't remappable, glyphs are text in US key names, and the listen screen's cancel glyph doesn't follow a pad changed mid-wait (A4).
-- **Captions:** 2.5 s is a guess, and lines said in one step show only the last (A2).
-- **A cue on the Music bus would take the whole volume twice** (A2's noticed; not checked since).
+- **Remapping:** mouse bindings and sticks aren't remappable, glyphs are text in US key names (A4). The listen screen's glyphs follow a pad changed mid-wait since A8.
+- **Captions:** 2.5 s is a guess (A2). Two lines said in one step both show since A8; a third pushes out the oldest.
 - **The timing assist has no `GameDocuments` row,** so a game can't swap its numbers in (A6).
 - **The sandbox's party is told apart by tint alone** (A5): the sandbox's, not the game's.
 - **No screen reader or audio description** (m4-plan §3).
@@ -541,7 +540,6 @@ Each item names the package and its hand-back or row, and why it waits.
 - **No objectives in the flow** (X1): beats that re-fire on a continue and strings in both languages are a package of their own.
 - **The collider check can't see** a placement scaled past its colliders, or a collider nothing names (X1).
 - **The cooked kind carries neither its name nor its script** (X2, M3), so a game reading kinds from packs needs a format change.
-- **`game_app`'s `KeptSettings` duplicates `game_flow`'s kept settings file** (S6's noticed).
 
 **CI and tools** (I1, R1, R4):
 
@@ -571,6 +569,7 @@ From m4-plan §3: crash upload and telemetry; accounts and online services; iOS 
 - **The title's first frame on Desktop-High is 35 to 36 ms** against 33.3, 26 of it the stage's first frame on the GPU (H8). It isn't split by pass, and `zero_hitches` reports it without failing. Read a phone's first title frame.
 - **A cold emulator's boot screen stalls** while the packs' pipelines prewarm off the frame (Z2's final run): 18 frames over 66.7 ms, the worst 1,297.4 ms, in the 7 s before the packs are warm, with the counts at 0. A warm launch is smooth (57.5 ms), and neither cold Metal (25.5 ms) nor a cold Simulator (62.9 ms) shows it. H6 found why: the emulator's GPU transport holds the boot screen's own GPU calls on the host behind the warm-up's pipeline compiles, at any warm-up thread count, and neither our code nor wgpu holds a lock across a compile. The engine is unchanged for it. On a phone, a cold boot (app uninstalled first) should show no boot-screen frame over 66.7 ms. If one is over, read the booted line's `longest_drawing_ms`: near `longest_frame_ms` means the driver serializes the frame's GPU calls behind the compiles, as the emulator does; a long frame that isn't drawing points at the boot's own work or a starved core, and then fewer warm-up threads on that phone is the lever.
 - **The stress fight's flashes sit on WCAG 2.3.1's limit by default:** 6 transitions in its worst second, of 6, in A3, the rehearsal, the final run and A7. A7 measured that second as two inks 20 frames apart (a heavy hit's, then a poise break's that the dispatcher admits as a rising run) and a fighter passing in front of the camera. Margin needs the dispatcher to hold rising runs (an estimated 4) or C-7's camera; a flash added to that second fails exit test 6.
+- **Text short of WCAG 1.4.3's contrast** (A8): 63 texts in `game_ui/tests/contrast.rs`'s `KNOWN_SHORT` want colour calls: the title's tagline (3.20 of 4.5), the amber row values on the focused gradient (3.74–3.87), and the HUD's plate-less text, banner and default subtitle band over the world. Each fix takes its text off the list; when it's empty, the App Store can claim Sufficient Contrast.
 - **The ward's red transitions:** 1 a second at two camera passes, the court's red post after an ultimate and the terrace boss's red cloth (A7). `flashes_in_the_ward`'s `MOST_RED` holds 1 until C-7's camera fades near props.
 - **Cooks differ across architectures,** so where a release is cooked decides what a patch moves.
 - **A moved checksum costs two CI rounds,** because no machine here runs x86-64.

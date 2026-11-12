@@ -172,7 +172,8 @@ pub const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86
 /// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
 pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
 
-/// How long [`Content::load_screens_alone`] and [`Content::zone_pipelines`] wait for what they read, all told.
+/// How long [`Content::load_screens_alone`], [`Content::zone_pipelines`] and [`Content::find_zone`] wait for what
+/// they read, all told.
 const SCREENS_ALONE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What a zone coming next draws through, warming up off the frame ([`Content::queue_zone_prewarm`]).
@@ -1343,11 +1344,17 @@ impl Content {
 
     /// Mounts the pack of the zone whose source's stem is `stem`, and returns that zone, ready to read: a zone
     /// found by its name alone, so that no code names its ID. A pack holds one zone (`pack.rs`' grouping).
+    ///
+    /// A zone and its colliders need no uploader ([`AssetServer::finish_without_uploads`]), so uploads something
+    /// else queued (a boot's, a restart's or a trip's) stay queued for the frame's: `finish` would hand them all
+    /// to this call, which has no renderer (M4 H8).
     pub fn find_zone(&mut self, stem: &str) -> Result<Handle<Zone>, AppInitError> {
         let id = self.zone_id(stem)?;
         let zone = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let stopwatch = Stopwatch::start();
+        let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
         self.server
-            .finish(&zone, |upload| panic!("a zone sent {} to the uploader", upload.kind()))
+            .finish_without_uploads(&zone, &remaining)
             .map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
         Ok(zone)
     }
@@ -2543,7 +2550,7 @@ mod new_renderer_tests {
     };
     use sapphire_assets::pack::{Codec, PackAsset, write_pack};
     use sapphire_assets::texture::Swizzle;
-    use sapphire_assets::{AssetKind, MemoryPackSource};
+    use sapphire_assets::{AssetKind, LoadState, MemoryPackSource};
 
     use super::*;
 
@@ -2561,6 +2568,11 @@ mod new_renderer_tests {
     /// Content over a pack in memory, with no platform and no renderer: all that deciding what a
     /// material uploads as takes.
     fn content() -> Content {
+        content_over(MemoryPackSource::new())
+    }
+
+    /// As [`content`], over `source` with the character's pack added.
+    fn content_over(source: MemoryPackSource) -> Content {
         let vertex = |position: [f32; 3]| Vertex {
             position,
             normal: [0.0, 0.0, 1.0],
@@ -2578,7 +2590,6 @@ mod new_renderer_tests {
         );
         let bytes = mesh.to_cooked().expect("cooked");
         let asset = PackAsset::encode(CHARACTER, AssetKind::Mesh, Codec::Lz4, &bytes, Vec::new(), 3);
-        let source = MemoryPackSource::new();
         source.insert(PACK, write_pack(vec![asset.expect("encoded")]).expect("a pack"));
         #[cfg(feature = "dev")]
         let live_packs = Arc::new(LivePacks::new(source));
@@ -2626,6 +2637,42 @@ mod new_renderer_tests {
         assert_eq!(transmission(&content, &hair), Some(0.8), "and one after a device loss or a tier change");
         content.keep_renderer(previous);
         assert_eq!(transmission(&content, &hair), Some(0.8), "and going back to one that was kept");
+    }
+
+    /// A stand finds its zone while something else's upload is queued, as a boot's, a restart's or a trip's
+    /// can be: the zone needs no uploader, and the other upload stays queued for the frame's. `find_zone` drove
+    /// `finish` with an uploader that panicked, and `finish` hands over every queued upload (M4 H8).
+    #[test]
+    fn a_zone_is_found_while_another_upload_waits() {
+        let source = MemoryPackSource::new();
+        let zone = sapphire_synthetic_zone::SyntheticZone::SMALL;
+        source.insert(&sapphire_zone::pack_name("synthetic"), zone.pack(Vec::new()).expect("a zone pack"));
+        let mut content = content_over(source);
+        // The character's mesh decodes and, with nothing to wait for, joins the upload queue.
+        for _ in 0..100 {
+            if content.server.cpu_resident(&content.character).is_some() {
+                break;
+            }
+            content.server.wait(std::time::Duration::from_millis(100));
+        }
+        assert!(content.server.cpu_resident(&content.character).is_some(), "the character's mesh decoded");
+        assert_eq!(content.server.state(&content.character), LoadState::Loading, "and waits for an uploader");
+
+        let found = content.find_zone("synthetic").expect("the zone, with no uploader");
+        assert!(content.read(&found).is_some(), "read on the CPU");
+        assert_eq!(
+            content.server.state(&content.character),
+            LoadState::Loading,
+            "still waiting for the frame's"
+        );
+
+        let mut uploaded = Vec::new();
+        content.server.upload(|upload| {
+            uploaded.push(upload.id());
+            Ok(())
+        });
+        assert_eq!(uploaded, [CHARACTER], "the frame's uploader gets it");
+        assert_eq!(content.server.state(&content.character), LoadState::Ready);
     }
 }
 

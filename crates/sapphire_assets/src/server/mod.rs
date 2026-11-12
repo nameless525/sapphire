@@ -1112,6 +1112,30 @@ impl AssetServer {
         }
     }
 
+    /// As [`Self::finish`], for an asset that needs no uploader: one of a kind that doesn't upload, whose
+    /// dependencies don't either (a zone and its colliders). It waits until the asset and its dependencies are
+    /// ready and hands nothing to an uploader, so uploads queued for anything else stay queued for the frame's
+    /// (M4 H8: `finish` drains the whole queue through the uploader it's given). An asset that would need an
+    /// upload to be ready stalls. `remaining` reads the caller's budget before each wait.
+    pub fn finish_without_uploads<T: Asset>(
+        &mut self,
+        handle: &Handle<T>,
+        remaining: &impl Fn() -> Duration,
+    ) -> Result<(), LoadError> {
+        loop {
+            self.update();
+            match self.state(handle) {
+                LoadState::Ready => return Ok(()),
+                LoadState::Failed(error) => return Err(error),
+                LoadState::Loading => {}
+            }
+            let timeout = remaining();
+            if timeout.is_zero() || !self.wait(timeout) {
+                return Err(LoadError::Stalled { id: handle.id() });
+            }
+        }
+    }
+
     /// Sends every uploaded asset through the upload queue again, dependencies first: for a new
     /// renderer, after device loss or a quality-tier change. Assets that kept their bytes are
     /// queued from them; the others are read and decoded again. An asset with a new version on

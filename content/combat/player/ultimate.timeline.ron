@@ -10,9 +10,20 @@
 // its first steps, so the ceremony plays out over a fight that waits for it, and they come back to speed over
 // its last half second. The character's own clock is scaled back up, and its move plays at its speed.
 //
-// Four shots, cut on the move's beats: round from its right to low in front as the sword rises and the hands
-// close on it, close from behind and below as it's held over the shoulder, wide from the side for the bound and
-// the chop, and from behind the character as the view goes back to the fight's camera.
+// One shot, with no cut: over its right shoulder, easing in as the sword rises and is held there, then rising
+// and following as it bounds and chops, and drawing back to behind it, where the fight's camera takes the view
+// back.
+//
+// Flashes (M4 A7): a cut, or an eye swept past what stands near it, changes much of a field's light at once,
+// and WCAG 2.3.1 counts that as it counts a flash; a cut onto a red awning or a lancer's coat is half a red
+// flash. In the ward's streets and crowds the first version's four shots, round to the character's front, low
+// among the enemies, wide from the side and back behind, made seven of a field's transitions in a second, ten
+// with the chop's flash (nine with flashes reduced), and three shots with two cuts still made red transitions
+// at both cuts. So the eye eases and follows, and doesn't cut: a cut or a swing here wants the ward's whole
+// walk judged again (`game_app`'s `flashes_in_the_ward`). Two red transitions are left, one a second: its way
+// back to the fight's camera passes a red-hung post in the court, and its drawing back passes the Knell
+// Colossus's red cloth on the terrace. Near props are the camera's to keep off (thin occluders fading, triage
+// C-7): drawing back further left lost the cloth's but made the post's two in a second.
 (
     type: "sapphire::timeline::TimelineDocument",
     version: 1,
@@ -24,17 +35,12 @@
             blend_out: 0.4,
             eye: Clear,
             keys: [
-                // From the character's right, a little behind, round to low on its right front as the sword rises.
-                (at: 0.0, eye: (-2.1, 1.5, -1.2), look_at: (0.0, 1.3, 0.5), fov_degrees: 44.0),
-                (at: 0.58, eye: (-1.5, 0.95, 2.0), look_at: (0.0, 1.35, 0.0), fov_degrees: 36.0, ease: Smooth),
-                // Close behind and below, up at the blade held over the shoulder.
-                (at: 0.6, eye: (0.9, 0.7, -1.4), look_at: (0.0, 1.8, 1.0), roll_degrees: 3.0, fov_degrees: 42.0, ease: Cut),
-                (at: 0.96, eye: (1.1, 0.75, -1.2), look_at: (0.0, 1.8, 1.2), roll_degrees: 4.0, fov_degrees: 40.0, ease: Smooth),
-                // Wide from the right for the bound and the chop, then the landing held.
-                (at: 0.98, eye: (-3.6, 1.3, 1.6), look_at: (0.0, 1.0, 1.4), fov_degrees: 45.0, ease: Cut),
-                (at: 1.73, eye: (-3.3, 1.2, 1.7), look_at: (0.0, 0.95, 1.5), fov_degrees: 43.0, ease: Smooth),
-                // From behind the character, where the fight's camera takes it back.
-                (at: 1.75, eye: (0.6, 2.0, -2.4), look_at: (0.0, 1.2, 2.6), fov_degrees: 46.0, ease: Cut),
+                // Over the character's right shoulder, easing in and tilting up as the sword rises and is held.
+                (at: 0.0, eye: (-1.1, 1.75, -2.3), look_at: (0.0, 1.45, 1.2), fov_degrees: 44.0),
+                (at: 0.96, eye: (-0.85, 1.6, -1.8), look_at: (0.0, 1.65, 1.2), roll_degrees: 2.0, fov_degrees: 40.0, ease: Smooth),
+                // Rising and following, a little wider, as it bounds and chops ahead, the landing held.
+                (at: 1.75, eye: (-1.3, 1.9, -0.9), look_at: (0.0, 1.1, 3.0), fov_degrees: 46.0, ease: Smooth),
+                // Drawing back behind the character, where the fight's camera takes it back.
                 (at: 2.4, eye: (0.5, 2.1, -2.8), look_at: (0.0, 1.2, 2.6), fov_degrees: 48.0, ease: Smooth),
             ],
         )),

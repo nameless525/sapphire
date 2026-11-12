@@ -1518,7 +1518,8 @@ fn ultimate() -> Arc<Timeline> {
 /// M3 Q3b, the brief's "cuts back to the fight camera with no pop": the eye's path through the player's
 /// ultimate in the arena, on `arena-ultimate`'s script, from the fight's camera into the cinematic and back
 /// out. It plays in the player's space as they stand on its first step, it never holds the fight (it plays on
-/// the steps), a skip lets nothing go, and through its blends and shots, but for its three authored cuts,
+/// the steps), a skip lets nothing go, and through its blends and its one shot (four, cut three times, until
+/// M4 A7's flashes),
 /// the eye moves less than 0.35 m a frame and turns its path no more sharply than the fight's own camera does.
 #[test]
 #[allow(clippy::print_stdout, reason = "the numbers the spec's note reports")]
@@ -1551,15 +1552,15 @@ fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
         }
         frames.push(drawn);
     }
-    // The first shot comes round to the player's right front, in their own space.
+    // The first shot eases in over the player's right shoulder, in their own space.
     let (position, yaw) = origin.expect("it started");
-    let first = position + Quat::from_rotation_y(yaw) * Vec3::new(-1.5, 0.95, 2.0);
-    let settled = frames[at + 34].eye;
+    let first = position + Quat::from_rotation_y(yaw) * Vec3::new(-0.85, 1.6, -1.8);
+    let settled = frames[at + 56].eye;
     assert!(settled.distance(first) < 0.6, "the first shot stands at {settled}, its key at {first}");
 
     let cuts: Vec<usize> =
         frames.iter().enumerate().filter(|(_, frame)| frame.cut).map(|(at, _)| at).collect();
-    assert_eq!(cuts.len(), 3, "the cinematic's three cuts and nothing else: {cuts:?}");
+    assert!(cuts.is_empty(), "the cinematic cuts nowhere: {cuts:?}");
     let moved = |at: usize| frames[at + 1].eye - frames[at].eye;
     let jerk = |at: usize| (moved(at + 1) - moved(at)).length();
     let smooth = |at: &usize| !frames[at + 1].cut && !frames[at + 2].cut;

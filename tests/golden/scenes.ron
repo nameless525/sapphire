@@ -1194,9 +1194,9 @@
                 ci_seconds: (lavapipe: 30.6, warp: 69.2),
             ),
             // The player's ultimate (M3 Q3b) on `arena-ultimate`, which presses it on frame 60: 1.1 s into
-            // its cinematic, the wide shot from the character's right as the chop lands on the warrior, the
-            // flash on the landing and the bloom up, the vignette closed in, and the warrior held at a fifth
-            // of its speed.
+            // its cinematic, its one shot (since M4 A7's flashes) rising over the character's right shoulder
+            // as the chop lands on the warrior, the flash on the landing and the bloom up, the vignette closed
+            // in, and the warrior held at a fifth of its speed.
             (
                 name: "arena-ultimate-chop",
                 ticks: 126,

@@ -92,9 +92,10 @@ pub struct Reload {
 
 /// See this module.
 pub struct GameShow {
-    pub shown: ShownFight,
+    /// Boxed, as the menus are: a show moves by value through a boot's frames on the main thread (M4 H4).
+    pub shown: Box<ShownFight>,
     /// From [`Self::stand`] on.
-    menus: Option<GameMenus>,
+    menus: Option<Box<GameMenus>>,
     /// What the menus start from.
     setup: MenuSetup,
     /// What the HUD and the menus draw from: a frame's list has one atlas.
@@ -157,7 +158,7 @@ impl GameShow {
             None => default_bindings()?,
         };
         let controls = CombatControls::new(players_map(&settings, &bindings)?)?;
-        let mut shown = ShownFight::default();
+        let mut shown = Box::<ShownFight>::default();
         shown.fight.documents = documents;
         // iOS's guidelines leave leaving to the home gesture.
         let setup = MenuSetup {
@@ -355,7 +356,7 @@ impl GameShow {
     /// takes the game back to ([`Self::reload_from`]).
     pub fn end_for_reload(&mut self) -> Reload {
         let reload = Reload {
-            settings: self.menus.as_ref().map_or(&self.setup.settings, GameMenus::settings).clone(),
+            settings: self.menus.as_deref().map_or(&self.setup.settings, GameMenus::settings).clone(),
             run: self.fight_open,
             played: self.is_played(),
         };
@@ -384,7 +385,7 @@ impl GameShow {
     /// The menus, from [`Self::stand`] on.
     #[must_use]
     pub fn menus(&self) -> Option<&GameMenus> {
-        self.menus.as_ref()
+        self.menus.as_deref()
     }
 
     /// A command for the flow, and what it asks of the show.
@@ -626,7 +627,7 @@ impl GameShow {
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
         menus.open(MenuScreen::TITLE);
         menus.set_display_scale(self.offscreen.scale);
-        self.menus = Some(menus);
+        self.menus = Some(Box::new(menus));
         self.follow_presentation();
         // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
         let trips =
@@ -833,7 +834,7 @@ impl GameShow {
     /// strings.
     #[must_use]
     pub fn window_title(&self) -> Option<&str> {
-        self.menus.as_ref().map(GameMenus::window_title)
+        self.menus.as_deref().map(GameMenus::window_title)
     }
 
     /// Opens the run's dialogue `id` between steps, as a game's flow or a script's beat asks: the panel comes
@@ -1004,7 +1005,7 @@ impl SceneShow for GameShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         self.shown.declare_pipelines(inventory);
         inventory.ui = true;
-        inventory.insets |= self.menus.as_ref().is_some_and(GameMenus::holds_insets);
+        inventory.insets |= self.menus.as_deref().is_some_and(GameMenus::holds_insets);
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -1136,6 +1137,15 @@ mod tests {
     /// Longer than anything a screen does.
     const SETTLE: u64 = 2_000_000_000;
 
+    /// A show moves by value through a boot's frames, and a release the boot installs makes it again from
+    /// inside them (M4 H4): at 31 KiB, with the fight and the menus in it, the install's launch overflowed an
+    /// Android emulator's main thread. Box the next field rather than raise this.
+    #[test]
+    fn a_show_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<GameShow>();
+        assert!(size <= 8 * 1024, "a show takes {size} bytes");
+    }
+
     /// The game's screens.
     fn screens() -> MenuDocument {
         MenuDocument::from_ron(include_str!("../../../content/ui/menus.ron")).expect("reads")
@@ -1163,7 +1173,7 @@ mod tests {
         ask(&mut show);
         let mut menus = GameMenus::new(assets, show.atlas.clone(), show.setup.clone()).unwrap();
         menus.open(MenuScreen::TITLE);
-        show.menus = Some(menus);
+        show.menus = Some(Box::new(menus));
         show
     }
 

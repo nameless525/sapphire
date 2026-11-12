@@ -208,7 +208,7 @@ pub struct Boot {
     /// What stands, until it does.
     desc: Option<StageDesc>,
     content: Option<Content>,
-    show: Option<GameShow>,
+    show: Option<Box<GameShow>>,
     combat: Option<Combat>,
     /// What the first run's stand reads of its scenario: on the warm-up pool, then here (M4 H4).
     planned: Option<mpsc::Receiver<Result<StandPlan, String>>>,
@@ -218,8 +218,8 @@ pub struct Boot {
     /// What frames draw into.
     format: wgpu::TextureFormat,
     frame_rate: Option<NonZeroU32>,
-    renderer: Option<Renderer>,
-    stage: Option<Stage<GameShow>>,
+    renderer: Option<Box<Renderer>>,
+    stage: Option<Box<Stage<GameShow>>>,
     screen: BootScreen,
     interface: InterfaceScreen,
     executor: GraphExecutor,
@@ -288,7 +288,7 @@ impl Boot {
             downloaded: 0.0,
             desc: Some(desc),
             content: Some(content),
-            show: Some(show),
+            show: Some(Box::new(show)),
             combat: Some(combat),
             planned: Some(planned),
             plan: None,
@@ -350,7 +350,7 @@ impl Boot {
     /// waited for (exit test 1's counts), so a lane can name the step a hitch came in.
     #[must_use]
     pub fn renderer(&self) -> Option<&Renderer> {
-        self.renderer.as_ref().or(self.stage.as_ref().map(|stage| &stage.renderer))
+        self.renderer.as_deref().or(self.stage.as_ref().map(|stage| &stage.renderer))
     }
 
     /// A frame of the boot, `dt` real seconds after the last: moves it on, then draws its screen into `view`,
@@ -360,7 +360,7 @@ impl Boot {
         &mut self,
         view: Option<&wgpu::TextureView>,
         dt: f32,
-    ) -> Result<Option<Stage<GameShow>>, AppInitError> {
+    ) -> Result<Option<Box<Stage<GameShow>>>, AppInitError> {
         let stopwatch = Stopwatch::start();
         if let Some(interval) = self.since_frame.replace(stopwatch).map(|since| since.elapsed()) {
             self.report.longest_interval = self.report.longest_interval.max(interval);
@@ -431,7 +431,7 @@ impl Boot {
         mut self,
         size: (u32, u32),
         paced: bool,
-    ) -> Result<(Stage<GameShow>, BootReport), AppInitError> {
+    ) -> Result<(Box<Stage<GameShow>>, BootReport), AppInitError> {
         let pace = paced.then_some(self.report.interval_limit / 2);
         let target = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: self.gpu.label("boot screen target"),
@@ -503,7 +503,7 @@ impl Boot {
                         ..content.pipeline_inventory()
                     });
                     self.step = Step::Packs(renderer.warm(&inventory));
-                    self.renderer = Some(renderer);
+                    self.renderer = Some(Box::new(renderer));
                 }
                 Some(Err(mpsc::TryRecvError::Empty)) => {}
                 Some(Err(mpsc::TryRecvError::Disconnected)) => {
@@ -531,7 +531,7 @@ impl Boot {
             Step::Screens => {
                 self.stand_screens()?;
                 self.report.stood = self.started.elapsed();
-                let stage = self.stage.as_mut().expect("a stood stage");
+                let stage = self.stage.as_deref_mut().expect("a stood stage");
                 let declared = stage.scene.declared_pipelines(&stage.show);
                 self.step = Step::Declared(stage.renderer.warm(&declared));
             }
@@ -557,7 +557,8 @@ impl Boot {
         let desc = self.desc.as_ref().expect("a desc until the stage is made");
         let (character, sky) = (desc.character, desc.sky);
         let made = (|| -> Result<_, AppInitError> {
-            let (mut show, first) = remake(host.content())?;
+            let (show, first) = remake(host.content())?;
+            let mut show = Box::new(show);
             let mut content = Content::new(&host, character, sky)?;
             let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
             let plan = StandPlan::of_combat(&combat).map_err(AppInitError::msg)?;
@@ -583,7 +584,9 @@ impl Boot {
         }
     }
 
-    /// Makes the stage on the warm renderer, with the character and the sky.
+    /// Makes the stage on the warm renderer, with the character and the sky. Never inlined: the stage it builds
+    /// by value would sit in [`Self::frame`]'s frame, under every step, the update's install among them (M4 H4).
+    #[inline(never)]
     fn make_stage(&mut self) -> Result<(), AppInitError> {
         let stopwatch = Stopwatch::start();
         let (Some(desc), Some(content), Some(show), Some(renderer)) =
@@ -591,8 +594,8 @@ impl Boot {
         else {
             unreachable!("a boot makes its stage once, with everything it was started with");
         };
-        let stage = Stage::new_with_renderer(self.gpu.clone(), desc, content, renderer)?.with_show(show);
-        self.stage = Some(stage);
+        let stage = Stage::new_with_renderer(self.gpu.clone(), desc, content, *renderer)?.with_show(*show);
+        self.stage = Some(Box::new(stage));
         tracing::info!(
             target: LOG_TARGET,
             elapsed_ms = format_args!("{:.1}", stopwatch.elapsed().as_secs_f64() * 1e3),
@@ -621,7 +624,7 @@ impl Boot {
     /// frame, so no frame of the screen holds all of it (M4 H4). True once it's stood.
     fn stand(&mut self) -> Result<bool, AppInitError> {
         let stopwatch = Stopwatch::start();
-        let stage = self.stage.as_mut().expect("a stage to stand on");
+        let stage = self.stage.as_deref_mut().expect("a stage to stand on");
         let Stage { show, scene, content, renderer, gpu, quality, .. } = stage;
         let stand = match &mut self.stand {
             Some(stand) => stand,
@@ -648,7 +651,7 @@ impl Boot {
     /// Loads the show's screens, on the title.
     fn stand_screens(&mut self) -> Result<(), AppInitError> {
         let stopwatch = Stopwatch::start();
-        let stage = self.stage.as_mut().expect("a stage to stand on");
+        let stage = self.stage.as_deref_mut().expect("a stage to stand on");
         let Stage { show, content, renderer, gpu, quality, .. } = stage;
         show.stand_screens(content, renderer, gpu, quality.active().id)?;
         tracing::info!(
@@ -685,7 +688,7 @@ impl Boot {
         let (before, done) = match &self.step {
             Step::Update(_) => return self.update_share * self.downloaded,
             Step::Renderer => (0.0, 0.0),
-            Step::Packs(_) => (RENDERER_SHARE, warmed(self.renderer.as_ref())),
+            Step::Packs(_) => (RENDERER_SHARE, warmed(self.renderer.as_deref())),
             Step::Stage => (RENDERER_SHARE + PACKS_SHARE, 0.0),
             Step::Stand => (RENDERER_SHARE + PACKS_SHARE + STAND_SHARE / 3.0, 0.0),
             Step::Screens => (RENDERER_SHARE + PACKS_SHARE + STAND_SHARE * 2.0 / 3.0, 0.0),
@@ -703,4 +706,19 @@ impl Boot {
 fn srgb_to_linear(code: u8) -> f32 {
     let encoded = f32::from(code) / 255.0;
     if encoded <= 0.04045 { encoded / 12.92 } else { ((encoded + 0.055) / 1.055).powf(2.4) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A boot moves by value through `Result`s and the app's frames while it boots, and a release it installs
+    /// stands its show from inside them, on the thread SDL runs the app on: 1 MiB on iOS and about that on
+    /// Android. At 116 KiB, with the show and the stage in it, the install's launch overflowed an Android
+    /// emulator's (M4 H4, exit test 2). Box the next field rather than raise this.
+    #[test]
+    fn a_boot_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<Boot>();
+        assert!(size <= 16 * 1024, "a boot takes {size} bytes");
+    }
 }

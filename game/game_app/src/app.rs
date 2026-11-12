@@ -111,8 +111,11 @@ struct OnDevice {
 enum Game {
     /// The boot screen up, the rest building where no frame waits.
     Booting(Box<Boot>),
-    Stood(Box<Stage<GameShow>>),
+    Stood(StoodStage),
 }
+
+/// A stood game's stage, boxed, as the boot hands it over: it's too big to move through the app's frames.
+type StoodStage = Box<Stage<GameShow>>;
 
 impl App for GameApp {
     const METADATA: AppMetadata = AppMetadata {
@@ -259,7 +262,7 @@ impl App for GameApp {
                         {
                             patches.reopen();
                         }
-                        *game = Game::Stood(Box::new(stage));
+                        *game = Game::Stood(stage);
                     }
                     Ok(None) => {}
                     Err(error) if boot.gpu().is_lost() => {
@@ -624,7 +627,7 @@ fn boot_frame(
     surface: &mut Option<RenderSurface>,
     boot: &mut Boot,
     dt: f32,
-) -> Result<(Option<Stage<GameShow>>, bool), AppInitError> {
+) -> Result<(Option<StoodStage>, bool), AppInitError> {
     // The image, if any, goes with this statement, before a lost surface is let go of.
     let (stage, presented, lost) = match surface.as_mut().map(RenderSurface::acquire) {
         Some(SurfaceAcquire::Frame(frame)) => {

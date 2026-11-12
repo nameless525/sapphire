@@ -121,7 +121,7 @@ pub fn capture_with(
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
-        (stage, None)
+        (Box::new(stage), None)
     };
     if let Some(command) = capture.choose {
         stage.show.choose(command);

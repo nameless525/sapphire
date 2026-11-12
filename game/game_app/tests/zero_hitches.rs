@@ -289,7 +289,7 @@ fn boot(
             return Err(hitch(&format!("the boot's {step} step"), renderer));
         }
         if let Some(stage) = stood {
-            return Ok(stage);
+            return Ok(*stage);
         }
     }
 }

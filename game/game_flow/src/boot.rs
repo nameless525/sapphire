@@ -10,7 +10,8 @@
 //! 0. **An update** ([`Step::Update`], M4 P4), if the boot has one ([`Boot::with_update`]): the build's host
 //!    asked for a newer release, what it adds downloaded and then installed on threads of their own
 //!    (`crate::update`), the screen saying which and the bar how far. A release installed here is what the rest
-//!    of the boot stands: the content is made again on it, and the show with it ([`BootUpdate::remake`]). The
+//!    of the boot stands: the show is made again on it ([`BootUpdate::remake`]), then the content, then its
+//!    first run, a part a frame, with what the run reads of its scenario read on the warm-up pool (M4 Z3e). The
 //!    renderer builds beside it all along. Nothing that goes wrong stops the boot: it goes on with what it has.
 //! 1. **The renderer** ([`Step::Renderer`]): `Renderer::new` on the warm-up pool (`sapphire_jobs::spawn_warm_up`),
 //!    whose scopes stay on its threads, so its builds never land on a frame. It starts in [`Boot::start`].
@@ -201,6 +202,8 @@ pub struct Boot {
     /// The renderer, building on the warm-up pool until [`Step::Renderer`] takes it.
     built: mpsc::Receiver<Result<Renderer, RenderError>>,
     update: Option<BootUpdate>,
+    /// A release the update installed, made again a part a frame until it's stood on.
+    remaking: Option<Box<Remaking>>,
     /// The bar's share the update took: [`UPDATE_SHARE`] once it downloads, else none.
     update_share: f32,
     /// How far its download has got, 0 to 1.
@@ -284,6 +287,7 @@ impl Boot {
             step: Step::Renderer,
             built,
             update: None,
+            remaking: None,
             update_share: 0.0,
             downloaded: 0.0,
             desc: Some(desc),
@@ -460,6 +464,12 @@ impl Boot {
     /// Moves the boot on as far as this frame can without waiting.
     fn advance(&mut self) -> Result<(), AppInitError> {
         match &self.step {
+            Step::Update(_) if self.remaking.is_some() => {
+                if self.remake_part() {
+                    self.report.update = self.started.elapsed();
+                    self.step = Step::Renderer;
+                }
+            }
             Step::Update(_) => {
                 let update = &mut self.update.as_mut().expect("an update while it's the step").update;
                 let state = update.poll();
@@ -479,10 +489,15 @@ impl Boot {
                         let BootUpdate { remake, .. } =
                             self.update.take().expect("an update while it's the step");
                         if let Some(content) = installed {
-                            self.stand_on(content, remake);
+                            // From the next frame, under the install's words.
+                            let host = self.host.with_content(content);
+                            let made = Remade::Nothing;
+                            let stopwatch = Stopwatch::start();
+                            self.remaking = Some(Box::new(Remaking { host, remake, made, stopwatch }));
+                        } else {
+                            self.report.update = self.started.elapsed();
+                            self.step = Step::Renderer;
                         }
-                        self.report.update = self.started.elapsed();
-                        self.step = Step::Renderer;
                     }
                 }
             }
@@ -548,26 +563,49 @@ impl Boot {
         Ok(())
     }
 
-    /// Makes the content again on `content`, a release an update installed, and the show and its first run on
-    /// it with `remake`, in place of what [`Self::start`] made on the release before. If that fails, the boot goes
-    /// on with what it had, whose files stay until the next launch confirms.
-    fn stand_on(&mut self, content: ContentFs, mut remake: MakeShow) {
-        let stopwatch = Stopwatch::start();
-        let host = self.host.with_content(content);
+    /// Takes the release an update installed a part on ([`Remaking`]): the show and its first run made again on
+    /// it with `remake`, then the content, then the run, with what it reads of its scenario read on the warm-up
+    /// pool, in place of what [`Self::start`] made on the release before. Each is a frame's: no frame of the boot
+    /// screen held them all until M4 Z3e (one of 100 to 250 ms). True once it's done, stood on or not: if a part
+    /// fails, the boot goes on with what it had, whose files stay until the next launch confirms.
+    fn remake_part(&mut self) -> bool {
+        let part = Stopwatch::start();
+        let remaking = self.remaking.as_deref_mut().expect("a remake while it's taken on");
         let desc = self.desc.as_ref().expect("a desc until the stage is made");
         let (character, sky) = (desc.character, desc.sky);
-        let made = (|| -> Result<_, AppInitError> {
-            let (show, first) = remake(host.content())?;
-            let mut show = Box::new(show);
-            let mut content = Content::new(&host, character, sky)?;
-            let combat = show.shown.fight.prepare_stock_combat(&first, &mut content)?;
-            let plan = StandPlan::of_combat(&combat).map_err(AppInitError::msg)?;
-            Ok((show, content, combat, plan))
-        })();
+        let made = match std::mem::replace(&mut remaking.made, Remade::Nothing) {
+            Remade::Nothing => (remaking.remake)(remaking.host.content())
+                .map(|(show, first)| Remade::Show(Box::new(show), first)),
+            Remade::Show(show, first) => Content::new(&remaking.host, character, sky)
+                .map(|content| Remade::Content(show, first, Box::new(content))),
+            Remade::Content(mut show, first, mut content) => {
+                show.shown.fight.prepare_stock_combat(&first, &mut content).map(|combat| {
+                    // Read beside the renderer's build, as `start`'s is: tens of milliseconds of documents.
+                    let (scenario, party) =
+                        (combat.scenario().to_owned(), combat.simulation().party().is_formed());
+                    let (sender, planned) = mpsc::channel();
+                    sapphire_jobs::spawn_warm_up(move || {
+                        let _ = sender.send(StandPlan::of(&scenario, party));
+                    });
+                    Remade::Run(show, content, combat, planned)
+                })
+            }
+            Remade::Run(show, content, combat, planned) => match planned.try_recv() {
+                Ok(Ok(plan)) => Ok(Remade::Planned(show, content, combat, plan)),
+                Ok(Err(error)) => Err(AppInitError::msg(error)),
+                Err(mpsc::TryRecvError::Empty) => Ok(Remade::Run(show, content, combat, planned)),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(AppInitError::msg("the stand's plan on the warm-up pool panicked"))
+                }
+            },
+            Remade::Planned(..) => unreachable!("a remake that's done isn't taken on"),
+        };
+        let took = format_args!("{:.1}", part.elapsed().as_secs_f64() * 1e3).to_string();
         match made {
-            Ok((show, content, combat, plan)) => {
+            Ok(Remade::Planned(show, content, combat, plan)) => {
+                let Remaking { host, stopwatch, .. } = *self.remaking.take().expect("taken on above");
                 let zone = plan.zone_stem();
-                (self.show, self.content, self.combat) = (Some(show), Some(content), Some(combat));
+                (self.show, self.content, self.combat) = (Some(show), Some(*content), Some(combat));
                 (self.planned, self.plan) = (None, Some(plan));
                 self.host = host;
                 self.report.updated = true;
@@ -577,9 +615,17 @@ impl Boot {
                     zone,
                     "the game's content is the update's"
                 );
+                true
+            }
+            Ok(made) => {
+                tracing::info!(target: LOG_TARGET, elapsed_ms = took, made = made.name(), "the update's release is made again in part");
+                self.remaking.as_deref_mut().expect("taken on above").made = made;
+                false
             }
             Err(error) => {
+                self.remaking = None;
                 tracing::warn!(target: LOG_TARGET, %error, "the update's content didn't stand; the game goes on with what it had");
+                true
             }
         }
     }
@@ -699,6 +745,41 @@ impl Boot {
             Step::Done => return 1.0,
         };
         self.update_share + (1.0 - self.update_share) * (before + self.step.share() * done)
+    }
+}
+
+/// A release an update installed, made again under the boot screen a part a frame ([`Boot::remake_part`]).
+struct Remaking {
+    /// The device, with the release's content.
+    host: Host,
+    remake: MakeShow,
+    made: Remade,
+    stopwatch: Stopwatch,
+}
+
+/// How far a [`Remaking`] has got.
+enum Remade {
+    Nothing,
+    /// The show and its first run.
+    Show(Box<GameShow>, CombatOption),
+    /// The content, its packs mounted and the character asked for.
+    Content(Box<GameShow>, CombatOption, Box<Content>),
+    /// The run, prepared, with its plan reading on the warm-up pool.
+    Run(Box<GameShow>, Box<Content>, Combat, mpsc::Receiver<Result<StandPlan, String>>),
+    /// All of it.
+    Planned(Box<GameShow>, Box<Content>, Combat, StandPlan),
+}
+
+impl Remade {
+    /// What's made, for the log.
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Nothing => "nothing",
+            Self::Show(..) => "show",
+            Self::Content(..) => "content",
+            Self::Run(..) => "run",
+            Self::Planned(..) => "plan",
+        }
     }
 }
 

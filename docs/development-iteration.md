@@ -233,7 +233,7 @@ A release build's inlining decides what a frame holds, so read a release binary'
 
 From `main` to the first pipeline, on an M5, a `--capture` run holds about 190 KiB (`OffscreenApp::init`, `Stage::new`, `Renderer::new`, the `join` of its closures), and the windowed app about 250 KiB (`app_init`, `SandboxApp::init`, `create_renderer`, then the same two). iOS's main thread has 1 MiB, and the driver's pipeline creation runs below that.
 
-A release the boot installs makes the game's show again from inside the boot's frames (M4 H4): `GameApp::iterate`, `Boot::frame`, `Boot::stand_on`, `GameShow::from_content` and `GameShow::new` held about 580 KiB on an M5 with the show (31 KiB) and the stage in the boot by value (116 KiB), and overflowed the Android emulator's main thread. With the show's fight and menus and the boot's show, renderer and stage boxed, and `Boot::make_stage` kept out of `Boot::frame`, that chain is about 110 KiB. Size tests hold `Boot` to 16 KiB and `GameShow` to 8 KiB beside `Renderer` and `Scene`.
+A release the boot installs makes the game's show again from inside the boot's frames (M4 H4): `GameApp::iterate`, `Boot::frame`, `Boot::stand_on` (since M4 Z3e `Boot::remake_part`), `GameShow::from_content` and `GameShow::new` held about 580 KiB on an M5 with the show (31 KiB) and the stage in the boot by value (116 KiB), and overflowed the Android emulator's main thread. With the show's fight and menus and the boot's show, renderer and stage boxed, and `Boot::make_stage` kept out of `Boot::frame`, that chain is about 110 KiB. Size tests hold `Boot` to 16 KiB and `GameShow` to 8 KiB beside `Renderer` and `Scene`.
 
 ## Measurements
 

@@ -1739,6 +1739,24 @@ mod tests {
         assert!(!scratch.0.exists());
     }
 
+    /// A restart ends its run off the frame, so `--record`'s file is written where no wipe frame waits for it
+    /// (M4 H8), and a quit waits for that write: the file is whole once the fight's `finish` returns.
+    #[test]
+    fn a_run_a_restart_ends_is_written_off_the_frame_and_a_quit_waits_for_it() {
+        let scratch = Scratch::new("ended-off-the-frame");
+        let mut combat = recording(&scratch.0, None);
+        for _ in 0..30 {
+            combat.step(&mut no_bindings);
+        }
+        let mut fight = crate::fight::Fight::default();
+        fight.combat = Some(combat);
+        fight.end_run();
+        assert!(fight.combat.is_none(), "the run's gone from the frame");
+        fight.finish().expect("nothing's left standing to end");
+        let written = Replay::decode(&fs::read(&scratch.0).expect("written")).expect("a whole file");
+        assert_eq!(written.ticks(), 30);
+    }
+
     #[test]
     fn only_the_bindings_count_as_someone_playing() {
         let fight = |script: Option<&str>| {

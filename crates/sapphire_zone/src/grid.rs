@@ -8,6 +8,7 @@
 //! can't make a cell's bounding sphere enter every view.
 
 use bevy_reflect::Reflect;
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
 /// The smallest cell side, in metres. A smaller grid buys nothing: a building would span many cells.
@@ -56,8 +57,8 @@ impl Bounds {
     #[must_use]
     pub fn union(self, other: Self) -> Self {
         Self {
-            min: std::array::from_fn(|axis| self.min[axis].min(other.min[axis])),
-            max: std::array::from_fn(|axis| self.max[axis].max(other.max[axis])),
+            min: std::array::from_fn(|axis| det::min(self.min[axis], other.min[axis])),
+            max: std::array::from_fn(|axis| det::max(self.max[axis], other.max[axis])),
         }
     }
 

@@ -323,22 +323,21 @@ impl Scene {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        let standing = self.begin_stand_in_zone(show, content, renderer, gpu)?;
+        let standing = self.begin_stand_in_zone(show, content)?;
+        let standing = self.light_zone(standing, content, renderer, gpu)?;
         self.finish_stand_in_zone(standing, content, renderer, gpu)
     }
 
-    /// [`Self::stand_in_zone`]'s first half, which a boot stands on a frame of its own (M4 H4): the character and
-    /// the camera placed, the zone's day and light rigs read, and the zone and its probe grid on `renderer`.
+    /// [`Self::stand_in_zone`]'s first part, which a boot stands on a frame of its own (M4 H4): the character and
+    /// the camera placed, and the zone's day and light rigs read. [`Self::light_zone`] is the next, on a frame of
+    /// its own since M4 H8: together they held a boot's frame 22 ms on an M5.
     pub fn begin_stand_in_zone(
         &mut self,
         show: ZoneShow<'_>,
         content: &mut Content,
-        renderer: &mut Renderer,
-        gpu: &GpuContext,
     ) -> Result<ZoneStanding, AppInitError> {
         let ZoneShow { stem, at, walk, settings, pose, figure } = show;
         let handle = content.find_zone(stem)?;
-        let id = handle.id();
         let zone = content.read(&handle).expect("a zone just loaded");
         let spawner = zone
             .simulation
@@ -389,11 +388,24 @@ impl Scene {
             ZONE_CAMERA_DISTANCE,
             ZONE_CAMERA_FOV.to_radians(),
         ));
-        let zone = content.begin_zone(id, &sapphire_zone::pack_name(stem), renderer, gpu)?;
-        Ok(ZoneStanding { zone, stem: stem.to_owned(), position, settings })
+        Ok(ZoneStanding { zone: handle, stem: stem.to_owned(), position, settings })
     }
 
-    /// [`Self::stand_in_zone`]'s second half, after [`Self::begin_stand_in_zone`]: the cells near where it
+    /// [`Self::stand_in_zone`]'s second part, after [`Self::begin_stand_in_zone`]: what the zone's meshes draw
+    /// through built, and its probe grid on `renderer` (M4 H8).
+    pub fn light_zone(
+        &mut self,
+        standing: ZoneStanding,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<ZoneStanding, AppInitError> {
+        let pack = sapphire_zone::pack_name(&standing.stem);
+        let zone = content.begin_zone(standing.zone.id(), &pack, renderer, gpu)?;
+        Ok(ZoneStanding { zone, ..standing })
+    }
+
+    /// [`Self::stand_in_zone`]'s last part, after [`Self::light_zone`]: the cells near where it
     /// stands, loaded and on `renderer`, and the zone on stage.
     pub fn finish_stand_in_zone(
         &mut self,
@@ -640,6 +652,14 @@ impl Scene {
         if let Some(zone) = &mut self.zone {
             zone.streamer.hold(held);
         }
+    }
+
+    /// Places what the zone's load screen brought in ([`Self::finish_stand_in_zone`], [`Self::finish_town_zone`]):
+    /// the first streaming update after a preload places every cell it loaded, at once. A boot does it on a frame
+    /// of its own under the boot screen, where it was the title's first frame (M4 H8); otherwise the next frame's
+    /// [`Self::follow_content`] does. Nothing without a zone open.
+    pub fn place_zone(&mut self, content: &mut Content) {
+        self.stream_zone(content);
     }
 
     /// Runs this frame's streaming, after the content's update. Allocates nothing while nothing changes.

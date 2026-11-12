@@ -4,8 +4,9 @@
 //! here, so it rounds alike on every machine (M4 C3): quantizing, sRGB encoding, half floats and
 //! RGB9E5, both for uncompressed formats and for the 8-bit or half-float images the block
 //! encoders read. The block encoders themselves are [`super::kernels`], pinned to one instruction
-//! set per architecture. ctt's converter, which this replaced, picked SIMD paths by the CPU (its
-//! AVX-512 sRGB store estimates reciprocals), as did the kernels' dispatchers.
+//! set per architecture and to kernels whose results don't depend on the CPU's maker. ctt's
+//! converter, which this replaced, picked SIMD paths by the CPU (its AVX-512 sRGB store estimates
+//! reciprocals), as did the kernels' dispatchers.
 //!
 //! The arithmetic is ctt 0.6.1's own, so cooks kept their bytes: its sRGB encode is a minimax fit
 //! within half a code value of the exact curve, evaluated with exact square roots and divides,
@@ -31,7 +32,8 @@ use super::mips::Level;
 pub(super) enum Encoding {
     /// Converted, not compressed.
     Uncompressed,
-    /// bc7enc-rdo. Perceptual weighting suits colors and is wrong for data.
+    /// BC7, at the architecture's pinned encoder ([`kernels::bc7`]). Perceptual weighting suits
+    /// colors and is wrong for data; only AArch64's encoder weighs.
     Bc7 { perceptual: bool },
     /// Intel's ISPC kernels: BC4, BC5 and BC6H.
     Ispc,
@@ -71,7 +73,8 @@ pub(super) fn encode_level(
         (Encoding::Bc7 { perceptual }, _) => {
             kernels::check_cpu()?;
             let texels = rgba8(level, format.is_srgb());
-            kernels::bc7(&tile_blocks(&texels, width, height), perceptual)
+            let (texels, width, height) = pad_to_blocks(bytemuck::cast_slice(&texels), width, height, 4);
+            kernels::bc7(&Blocks { texels: &texels, width, height, bytes_per_texel: 4 }, perceptual)
         }
         (Encoding::Ispc, TextureFormat::Bc4RUnorm) => {
             kernels::check_cpu()?;
@@ -231,25 +234,6 @@ fn pad_to_blocks(texels: &[u8], width: u32, height: u32, bytes_per_texel: usize)
         }
     }
     (out, padded_width, padded_height)
-}
-
-/// `texels` (RGBA8 words, `width` × `height`) as whole 4 × 4 blocks in row order, each block's 16
-/// texels in row order, edge texels repeated past the last whole block.
-fn tile_blocks(texels: &[u32], width: u32, height: u32) -> Vec<u32> {
-    let (blocks_x, blocks_y) = (width.div_ceil(4), height.div_ceil(4));
-    let mut out = Vec::with_capacity(blocks_x as usize * blocks_y as usize * 16);
-    for by in 0..blocks_y {
-        for bx in 0..blocks_x {
-            for py in 0..4 {
-                let y = (by * 4 + py).min(height - 1);
-                for px in 0..4 {
-                    let x = (bx * 4 + px).min(width - 1);
-                    out.push(texels[(y * width + x) as usize]);
-                }
-            }
-        }
-    }
-    out
 }
 
 /// The level through astcenc at its "medium" preset, single-threaded, from RGBA8 texels.

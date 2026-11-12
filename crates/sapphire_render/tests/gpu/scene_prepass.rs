@@ -1,5 +1,6 @@
 //! The scene prepass's pipelines are built only where the pass can run: a tier that reads it builds
-//! them with what's drawn, Mobile-Low, which doesn't, builds none, and debug lines, which read it when
+//! them with what's drawn, Mobile-Low, which doesn't, builds none, Mobile-High's thermal ladder sheds
+//! it with GTAO, and debug lines, which read it when
 //! they come, build what's drawn so far on their first frame. Run with
 //! `cargo test -p sapphire_render --test gpu scene_prepass:: -- --ignored --test-threads=1`.
 
@@ -14,7 +15,7 @@ use sapphire_assets::texture::Swizzle;
 use sapphire_core::debug_draw::{Color, DebugLine, Depth};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
-use sapphire_render::quality::{TierId, TierTable};
+use sapphire_render::quality::{LadderState, OptionalPass, Rung, TierId, TierTable};
 use sapphire_render::{
     CameraData, DirectionalLight, FramePacketRing, InstanceId, MeshInstance, PipelineInventory,
     RenderSettings, Renderer, SCENE_PREPASS, ViewData,
@@ -178,10 +179,18 @@ impl Frames {
 
     /// Whether the last frame's graph ran the scene prepass.
     fn prepass_ran(&self) -> bool {
+        self.ran(SCENE_PREPASS)
+    }
+
+    /// Whether the last frame's graph ran the pass `name`.
+    fn ran(&self, name: &str) -> bool {
         let report = self.graph.report().expect("the report is on");
-        report.passes.iter().any(|pass| pass.name == SCENE_PREPASS && pass.order.is_some())
+        report.passes.iter().any(|pass| pass.name == name && pass.order.is_some())
     }
 }
+
+/// The ambient pass (M1 W5), which on a phone without a probe grid is GTAO's alone.
+const AMBIENT: &str = "ambient";
 
 fn tier(id: TierId) -> RenderSettings {
     TierTable::shipped().get(id).render_settings()
@@ -225,6 +234,51 @@ fn every_tier_that_reads_the_pass_builds_it() {
         frames.renderer.keep_scene_prepass();
         assert_eq!(frames.pipelines(), built, "{id}");
     }
+}
+
+/// Mobile-High reads the scene prepass for GTAO alone, so the thermal ladder's rung that sheds GTAO
+/// sheds the prepass with it (M4 T7): the graph records neither, the frame draws what a Mobile-High
+/// without GTAO draws, byte for byte, and both come back when the rung is climbed.
+#[test]
+#[ignore = "needs a GPU"]
+fn mobile_high_sheds_the_scene_prepass_with_gtao() {
+    let table = TierTable::shipped();
+    let tier = table.get(TierId::MobileHigh);
+    let depth = 1 + tier
+        .ladder
+        .iter()
+        .position(|rung| matches!(rung, Rung::Shed(passes) if passes.contains(&OptionalPass::Gtao)))
+        .expect("Mobile-High's ladder sheds GTAO");
+    let rung = LadderState::of(&tier.ladder[..depth]);
+    assert_eq!(rung.scale, 1.0, "the rung sheds in place, at the tier's scale");
+
+    let mut frames = Frames::new(tier.render_settings());
+    frames.add_every_kind();
+    frames.render(&[]);
+    assert!(frames.prepass_ran() && frames.ran(AMBIENT), "GTAO reads it at the top");
+    let built = frames.pipelines();
+
+    frames.renderer.set_shed(rung.shed).expect("sheds in place");
+    let shed = frames.render(&[]);
+    assert!(!frames.prepass_ran(), "rung {depth} ({}) records no scene prepass", rung.shed);
+    assert!(!frames.ran(AMBIENT), "nor GTAO's pass");
+    assert_eq!(frames.pipelines(), built, "the shed builds nothing");
+
+    // A Mobile-High that never had GTAO, at the same rung, draws the same frame: nothing else read
+    // what the prepass wrote.
+    let mut settings = tier.render_settings();
+    settings.ambient_occlusion.gtao = None;
+    let mut never = Frames::new(settings);
+    never.renderer.set_shed(rung.shed).expect("sheds in place");
+    never.add_every_kind();
+    never.render(&[]);
+    assert!(!never.prepass_ran());
+    assert!(shed == never.render(&[]), "the shed frame is a frame without GTAO");
+
+    frames.renderer.set_shed(LadderState::of(&[]).shed).expect("climbs in place");
+    frames.render(&[]);
+    assert!(frames.prepass_ran() && frames.ran(AMBIENT), "both come back at the top");
+    assert_eq!(frames.pipelines(), built, "and build nothing coming back");
 }
 
 /// Debug lines read the pass: their first frame on Mobile-Low builds it for all that's drawn and tests

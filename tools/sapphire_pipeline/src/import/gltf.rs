@@ -122,6 +122,7 @@ use sapphire_assets::character_maps::{MATERIAL_IDS, MaterialId};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
 use sapphire_assets::mesh::{Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
 use sapphire_assets::skeleton::{Joint, JointTransform};
+use sapphire_math::det;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
@@ -137,7 +138,9 @@ pub use self::accessors::AccessorFault;
 pub mod clips;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file. 11: isolate instances of meshes with selected-node morph animation.
+/// for the same file. 12: a static part's rigid bind inverts its joint's rest transform through
+/// `sapphire_math::det::mat4_inverse`, the same bits on every architecture (M4 C6). 11: isolate instances of
+/// meshes with selected-node morph animation.
 /// 10: validate cutoff/morph/sparse data and reserve authored morph names before splitting.
 /// 9: instances of one mesh resting a morph target at different weights
 /// get a target each (the review's AP-003). 8: generated materials take the material's
@@ -146,7 +149,7 @@ pub mod clips;
 /// material extras (M1 C5). 6: generated materials carry outlines v2's settings,
 /// and VRM's MToon maps its outline widths onto the width's curve and its outline lighting mix
 /// (M1 C4).
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 11 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 12 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -669,7 +672,7 @@ impl Skeleton {
                 None => break 0,
             }
         };
-        let inverse = self.rest_world[usize::from(joint)].inverse();
+        let inverse = det::mat4_inverse(&self.rest_world[usize::from(joint)]);
         if !inverse.is_finite() {
             let node = self.joint_of.iter().find(|&(_, &j)| j == joint).map_or(0, |(&node, _)| node);
             return Err(GltfImportError::DegenerateJoint { node });
@@ -1018,8 +1021,9 @@ impl Builder<'_> {
         within_budget(&at, "vertices", self.mesh.vertices.len() + new_vertices, self.budget.vertices)?;
 
         // A negative determinant mirrors the geometry, which turns counter-clockwise front
-        // faces clockwise; swap two corners to restore the winding (glTF 2.0 §3.7.4).
-        let mirrored = transform.determinant() < 0.0;
+        // faces clockwise; swap two corners to restore the winding (glTF 2.0 §3.7.4). A node's transform is
+        // affine, so its linear part's determinant is the whole one's, and `Mat3`'s is the same on every architecture.
+        let mirrored = Mat3::from_mat4(transform).determinant() < 0.0;
         if mirrored {
             for triangle in indices.as_chunks_mut::<3>().0 {
                 triangle.swap(1, 2);

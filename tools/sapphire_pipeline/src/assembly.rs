@@ -119,8 +119,10 @@ pub use shapes::{
 /// pieces are imported by it, so a bump there must recook assemblies too. Bump the high bits
 /// whenever assembly output changes for the same document and pieces. Version 4 rechecks
 /// procedural geometry admission and texture agreement throughout coplanar overlaps; version 5
-/// takes its trigonometry from `det`, which moved a Linux cook's `#ground` and nothing elsewhere.
-pub const IMPORTER: Stage = Stage { name: "assembly", version: (5 << 16) | gltf::IMPORTER.version };
+/// takes its trigonometry from `det`, which moved a Linux cook's `#ground` and nothing elsewhere; version 6
+/// turns shapes' parts through `det::quat_rotate` and wraps texture coordinates through `det::min`, the same
+/// bits on every architecture, which moved five of x86-64's lantern ward cells to AArch64's welds (M4 C6).
+pub const IMPORTER: Stage = Stage { name: "assembly", version: (6 << 16) | gltf::IMPORTER.version };
 
 /// The end of an assembly document's file name, lowercase.
 pub const SOURCE_SUFFIX: &str = ".assembly.ron";
@@ -1132,9 +1134,10 @@ impl<'a> Builder<'a> {
         };
         if how.wrap {
             // Whole blocks of tiles off, which a repeating map can't tell apart: the triangle
-            // starts in the first block.
+            // starts in the first block. The least through `det::min`: a 0 and a −0 among the corners
+            // leave each a sign the weld keys on, and `f32::min` picks between them by architecture.
             for axis in 0..2 {
-                let least = uvs.iter().map(|uv| uv[axis]).fold(f32::INFINITY, f32::min);
+                let least = uvs.iter().map(|uv| uv[axis]).fold(f32::INFINITY, det::min);
                 let whole = (least / WRAP_TILES).floor() * WRAP_TILES;
                 uvs.iter_mut().for_each(|uv| uv[axis] -= whole);
             }

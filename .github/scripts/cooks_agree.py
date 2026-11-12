@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Hold two golden-input bundles' desktop cooks to the same bytes (M4 C3).
+"""Hold two desktop cooks of one commit to the same bytes (M4 C3, C6).
 
 CI cooks the same commit on Linux and on Windows, each through its own C library and on whatever CPU
 the runner has. Cooks are deterministic by construction, so every content file must match. When one
 doesn't, each differing pack's assets are listed by ID and kind, so the step that diverged can be
-found without downloading anything."""
+found without downloading anything.
+
+With `--across-architectures` the second cook is AArch64's (the Metal golden job's packs) and the first
+x86-64's. Block-compressed textures are encoded by each architecture's own kernels, by design, so
+they may differ and are only counted; every other asset, every mesh among them, must match."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -20,13 +25,34 @@ KINDS = {
     15: "font", 16: "font chains", 17: "navmesh", 18: "timeline", 19: "ui", 20: "encounter",
     21: "script", 22: "dialogue", 23: "enemy", 24: "score", 25: "voice lines",
 }
+TEXTURE = 2
 
 
-def read(archive: Path) -> tuple[dict, tarfile.TarFile]:
-    bundle = tarfile.open(archive, "r:gz")
-    with bundle.extractfile("manifest.json") as stream:
-        manifest = json.load(stream)
-    return manifest, bundle
+class Cook:
+    """A cook's content files: a golden-input bundle's (`golden-bundle.tar.gz`), or a directory of packs."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        if path.is_dir():
+            self.bundle = None
+            self.family, self.commit = path.name, None
+            self.files = {
+                f"content/{file.name}": hashlib.sha256(file.read_bytes()).hexdigest()
+                for file in sorted(path.glob("*.spack"))
+            }
+        else:
+            self.bundle = tarfile.open(path, "r:gz")
+            with self.bundle.extractfile("manifest.json") as stream:
+                manifest = json.load(stream)
+            self.family, self.commit = manifest["family"], manifest["commit"]
+            self.files = {
+                name: record["sha256"] for name, record in manifest["files"].items() if name.startswith("content/")
+            }
+
+    def read(self, name: str) -> bytes:
+        if self.bundle is None:
+            return (self.path / Path(name).name).read_bytes()
+        return self.bundle.extractfile(name).read()
 
 
 def entries(pack: bytes) -> dict:
@@ -43,37 +69,59 @@ def entries(pack: bytes) -> dict:
     return table
 
 
+def compare(first: Cook, second: Cook, across_architectures: bool) -> int:
+    """Prints what differs and returns how many differences count against the cooks."""
+    a, b = first.files, second.files
+    if across_architectures:
+        # The packs' own bytes hold the textures, and the release manifest the packs: only assets count.
+        a = {name: digest for name, digest in a.items() if name.endswith(".spack")}
+    differing = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
+    print(f"{len(a)} content files from {first.family}, {len(b)} from {second.family}"
+          + (f", commit {first.commit}" if first.commit else ""))
+    failures = 0
+    textures = 0
+    for name in differing:
+        if name not in a or name not in b:
+            print(f"differs: {name} ({first.family} {a.get(name, 'missing')}, {second.family} {b.get(name, 'missing')})")
+            failures += 1
+            continue
+        if not across_architectures:
+            print(f"differs: {name} ({first.family} {a[name]}, {second.family} {b[name]})")
+            failures += 1
+            if not name.endswith(".spack"):
+                continue
+        ours, theirs = entries(first.read(name)), entries(second.read(name))
+        for asset in sorted(ours.keys() | theirs.keys()):
+            x, y = ours.get(asset), theirs.get(asset)
+            if x == y:
+                continue
+            kind = (x or y)[0]
+            if across_architectures and x and y and kind == TEXTURE:
+                textures += 1
+                continue
+            if across_architectures:
+                failures += 1
+            print(f"  {name}: asset {asset} ({KINDS.get(kind, kind)}): {x and x[1:]} against {y and y[1:]}")
+    if across_architectures:
+        print(f"{textures} textures differ, as each architecture's block encoders do.")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("first", type=Path, help="a golden-bundle.tar.gz")
-    parser.add_argument("second", type=Path, help="another, from the same commit")
+    parser.add_argument("second", type=Path, help="another from the same commit, or a directory of its packs")
+    parser.add_argument("--across-architectures", action="store_true",
+                        help="the second cook is another architecture's: only textures may differ")
     args = parser.parse_args()
-    (first, first_bundle), (second, second_bundle) = read(args.first), read(args.second)
-    if first["commit"] != second["commit"]:
+    first, second = Cook(args.first), Cook(args.second)
+    if first.commit and second.commit and first.commit != second.commit:
         raise ValueError("the bundles come from different commits")
-    content = lambda manifest: {
-        name: record["sha256"] for name, record in manifest["files"].items() if name.startswith("content/")
-    }
-    a, b = content(first), content(second)
-    differing = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
-    print(f"{len(a)} content files from {first['family']}, {len(b)} from {second['family']}, "
-          f"commit {first['commit']}")
-    for name in differing:
-        print(f"differs: {name} ({first['family']} {a.get(name, 'missing')}, "
-              f"{second['family']} {b.get(name, 'missing')})")
-        if name.endswith(".spack") and name in a and name in b:
-            ours = entries(first_bundle.extractfile(name).read())
-            theirs = entries(second_bundle.extractfile(name).read())
-            for asset in sorted(ours.keys() | theirs.keys()):
-                x, y = ours.get(asset), theirs.get(asset)
-                if x != y:
-                    kind = (x or y)[0]
-                    print(f"  asset {asset} ({KINDS.get(kind, kind)}): {x and x[1:]} against {y and y[1:]}")
-    if differing:
-        print("The cooks differ: a cook step depends on the OS or the CPU. Spec §5.27, \"Reproducible "
-              "cooks\", says what must hold.")
+    if compare(first, second, args.across_architectures):
+        print("The cooks differ: a cook step depends on the OS, the CPU or the architecture. Spec §5.27, "
+              "\"Reproducible cooks\", says what must hold.")
         return 1
-    print("The cooks agree byte for byte.")
+    print("The cooks agree" + (" but for textures." if args.across_architectures else " byte for byte."))
     return 0
 
 

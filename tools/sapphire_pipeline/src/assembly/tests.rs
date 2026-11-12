@@ -246,6 +246,30 @@ fn placement_slots_override_the_rules_and_builtins_take_them() {
     }
 }
 
+/// A box standing on the ground projects some side corners' V to 0 and others' to −0. Wrapping by
+/// blocks takes the least of each triangle's, and `f32::min` picks between 0 and −0 by architecture
+/// (M4 C6): with a −0 left in, x86-64 welded fewer corners than AArch64, so the cooks differed.
+#[test]
+fn texture_coordinates_hold_no_negative_zero_so_welds_are_the_same_everywhere() {
+    let mesh = assemble_text(&format!(
+        r##"{RULES}
+        place: [
+            (piece: "kit/wall", slot: Some("Stone")),
+            (piece: "#box", at: (5.0, 0.5, 0.0), slot: Some("Stone")),
+            (piece: "#box", at: (0.0, 0.5, -3.0), turn: 90.0, slot: Some("Stone")),
+        ],"##
+    ))
+    .unwrap();
+    // The boxes' corners: the wall, a piece, isn't wrapped.
+    let boxes: Vec<_> =
+        mesh.vertices.iter().filter(|vertex| vertex.position[0] > 4.0 || vertex.position[2] < -2.0).collect();
+    for vertex in &boxes {
+        assert!(vertex.uv.iter().all(|&uv| uv.to_bits() != (-0.0f32).to_bits()), "{vertex:?}");
+    }
+    // Each box's six faces, four corners each.
+    assert_eq!(boxes.len(), 2 * 6 * 4);
+}
+
 #[test]
 fn ground_builtins_come_in_small_cells_near_their_center_without_t_junctions() {
     let builtins = |place: &str| {

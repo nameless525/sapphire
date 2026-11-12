@@ -11,7 +11,8 @@
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
 //! `cargo test -p game_app --features dev --test zone_trip -- --ignored`. CI's `App tests` job runs it on lavapipe.
 //! With `SAPPHIRE_HITCH_TIMED=1`, as `zero_hitches` takes it, a boot screen's frame over twice the tier's
-//! interval fails it too: a release build on Metal, alone on the machine (M4 Z3e).
+//! interval fails it too: a release build on Metal, alone on the machine (M4 Z3e). Asked to run timed without
+//! `--ignored`, it fails rather than skip (M4 H8).
 
 #![allow(clippy::print_stdout, reason = "the trips' frames, for a look at CI's log")]
 
@@ -120,6 +121,11 @@ fn tier_change_after_the_trips(stage: &mut Stage<GameShow>) -> Result<(), AppIni
     Ok(())
 }
 
+/// Whether `SAPPHIRE_HITCH_TIMED=1` asks for a timed run, as `zero_hitches` takes it.
+fn timed() -> bool {
+    std::env::var("SAPPHIRE_HITCH_TIMED").is_ok_and(|raw| raw == "1")
+}
+
 /// Does it all in `init`, and the first frame exits.
 struct OutsideCaller;
 
@@ -153,9 +159,8 @@ impl App for OutsideCaller {
         );
         // Exit test 1's limit for a load screen's frame (M4 Z3e): the arena's town stood with the fight's first part
         // held one 45 ms on an M5.
-        let timed = std::env::var("SAPPHIRE_HITCH_TIMED").is_ok_and(|raw| raw == "1");
         assert!(
-            !timed || report.longest_frame <= report.interval_limit,
+            !timed() || report.longest_frame <= report.interval_limit,
             "a frame of the boot screen took {:?} in its {} step, over {:?}",
             report.longest_frame,
             report.longest_in,
@@ -459,6 +464,14 @@ fn restart_after_a_trip(platform: &mut Platform) -> Result<(), AppInitError> {
 
 fn main() -> ExitCode {
     if !std::env::args().any(|argument| argument == "--ignored") {
+        // A timed run is judged by its exit code, so one that would skip fails rather than pass having played
+        // nothing, as `zero_hitches` does (M4 H6, H8).
+        if timed() {
+            eprintln!(
+                "zone_trip: SAPPHIRE_HITCH_TIMED=1 asks for a timed run, which needs --ignored; nothing was played"
+            );
+            return ExitCode::FAILURE;
+        }
         eprintln!("zone_trip: needs a GPU and cooked content; run it with --ignored");
         return ExitCode::SUCCESS;
     }

@@ -714,10 +714,12 @@ impl Boot {
                 self.stand.insert(FightStand::over_frames(combat, plan, quality.active().id))
             }
         };
+        let part = stand.next_part();
         let stood = show.stand_fight_part(stand, scene, content, renderer, gpu)?;
         tracing::info!(
             target: LOG_TARGET,
             elapsed_ms = format_args!("{:.1}", stopwatch.elapsed().as_secs_f64() * 1e3),
+            part,
             stood,
             "a part of the game's fight is stood under the boot screen"
         );

@@ -192,22 +192,37 @@ impl DeviceAudio {
     /// Opens the device for sounds a [`SoundsLoad`] has made ready, with nothing due to play. `None`, logged,
     /// if the OS won't set up audio.
     pub fn open(ready: ReadySounds, platform: &mut Platform) -> Result<Option<Self>, AppInitError> {
-        let ReadySounds { loaded, score } = ready;
-        if let Err(error) = platform.prepare_audio() {
-            tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
-            return Ok(None);
+        Self::prepare(platform).map(|prepared| Self::open_prepared(ready, prepared)).transpose()
+    }
+
+    /// Tells the OS the app plays sound ([`Platform::prepare_audio`]), on the platform's thread, the one it may
+    /// be told on: what opening a device needs first, anywhere ([`Self::open_prepared`]). `None`, logged, if the
+    /// OS won't set up audio.
+    pub fn prepare(platform: &mut Platform) -> Option<AudioPrepared> {
+        match platform.prepare_audio() {
+            Ok(()) => Some(AudioPrepared(())),
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
+                None
+            }
         }
+    }
+
+    /// Opens the device for `ready`, on any thread, once [`Self::prepare`] has: the default output found, the
+    /// mixer made and the sounds handed to it, which a [`DeviceOpening`] does on the warm-up pool.
+    pub fn open_prepared(ready: ReadySounds, _: AudioPrepared) -> Result<Self, AppInitError> {
+        let ReadySounds { loaded, score } = ready;
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
         add_loaded(&mut system, loaded)?;
-        Ok(Some(Self {
+        Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
             score,
             repeating: None,
             emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
-        }))
+        })
     }
 
     /// One frame, `dt` real seconds after the last: plays `--cue`'s cue when it's due and what a fight
@@ -356,6 +371,55 @@ impl SoundsLoad {
             Err(mpsc::TryRecvError::Disconnected) => Err(AppInitError::msg("decoding the sounds panicked")),
         };
         Some(loaded.map(|loaded| ReadySounds { loaded, score: self.score }))
+    }
+}
+
+/// That the OS has been told the app plays sound ([`DeviceAudio::prepare`]), which a device opened anywhere needs.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioPrepared(());
+
+/// A show's sounds on their way to the device (M4 H8): read on the frame that asks, as a [`SoundsLoad`] reads
+/// them, then decoded and the device opened for them on the warm-up pool. Finding the default output and making
+/// the mixer take tens of milliseconds on some OSes, which were a title frame's.
+pub struct DeviceOpening {
+    opening: mpsc::Receiver<Result<DeviceAudio, String>>,
+}
+
+impl DeviceOpening {
+    /// Reads `sounds`, and starts decoding them and opening the device for them off the frame.
+    pub fn begin(
+        sounds: &ShowSounds,
+        prepared: AudioPrepared,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Self, AppInitError> {
+        let read = read(sounds, content, renderer, gpu)?;
+        let score = sounds.score;
+        let (sender, opening) = mpsc::channel();
+        sapphire_jobs::spawn_warm_up(move || {
+            let opened = read.decode().and_then(|loaded| {
+                let stopwatch = Stopwatch::start();
+                let audio = DeviceAudio::open_prepared(ReadySounds { loaded, score }, prepared);
+                let audio = audio.map_err(|error| error.to_string())?;
+                let open = stopwatch.elapsed();
+                tracing::info!(target: LOG_TARGET, ?open, "audio set up off the frame: its device asked for and its mixer made");
+                Ok(audio)
+            });
+            let _ = sender.send(opened);
+        });
+        Ok(Self { opening })
+    }
+
+    /// The device once it's open, without waiting: `None` while it isn't, and then once.
+    pub fn take(&mut self) -> Option<Result<DeviceAudio, AppInitError>> {
+        match self.opening.try_recv() {
+            Ok(opened) => Some(opened.map_err(AppInitError::msg)),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(AppInitError::msg("opening the audio device panicked")))
+            }
+        }
     }
 }
 

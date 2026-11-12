@@ -8,7 +8,9 @@
 //! - Device creation with a deliberately chosen limit floor, and [`GpuCaps`], the probed
 //!   feature set the renderer selects passes by.
 //! - Presentable surfaces ([`RenderSurface`]) that are cheap to drop and recreate, because
-//!   Android destroys the native window on every background.
+//!   Android destroys the native window on every background. They time their swapchain waits
+//!   (acquire and present) into `sapphire_core::frame_waits`, which the frame clock leaves out of the
+//!   work Android's ADPF hint session hears (M4 T7).
 //! - The persistent Vulkan pipeline cache.
 //!
 //! # Does not own

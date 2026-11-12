@@ -8,21 +8,17 @@ use std::time::Duration;
 
 use bevy_reflect::TypePath;
 use sapphire_core::thermal::ThermalReading;
-use sapphire_gameplay::replay::{ARCHITECTURE, Replay, Trail, checksums_file_name, is_valid_name};
+use sapphire_gameplay::replay::{Replay, Trail, is_valid_name};
 use sapphire_reflect::Versioned;
 use serde::Serialize;
 
 use crate::document::{Build, Device, Dropped, Ending, KeptRun, Mark, SessionDocument, SettingsKept};
 use crate::frames::{FRAMES_HEADER, OpenSecond};
-use crate::writer::{Content, Writer, WriterStats};
+use crate::writer::{Content, Disk, RunKept, Writer, WriterStats};
 use crate::{
     DOCUMENT_FILE, FRAMES_FILE, KEEP_EVERY, LOG_TARGET, MAX_LABEL, MAX_MARKS, MAX_RUNS, MAX_SECONDS,
     MAX_SESSIONS, MAX_SETTINGS, MAX_TRIPS, RUNS_DIR,
 };
-
-/// Writes a file whole, so a process killed at any moment leaves the old file or the new one:
-/// `sapphire_platform::durable_replace` in a game, which this crate doesn't link.
-pub type Replace = Arc<dyn Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync>;
 
 /// What a session says of where it was kept, as it begins.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -42,8 +38,9 @@ pub struct About {
 pub struct Session {
     dir: PathBuf,
     document: SessionDocument,
-    /// `frames.csv`'s text so far.
-    frames: String,
+    /// `frames.csv` so far: its header and each keep's rows, which only grows, and the rows since the last keep.
+    pieces: Vec<Arc<str>>,
+    open_rows: String,
     rows: u32,
     second: OpenSecond,
     /// The session's clock: its frames' times summed.
@@ -61,7 +58,7 @@ pub struct Session {
 impl Session {
     /// Begins a session in a directory of its own under `sessions`, which is made if it isn't there, removing
     /// the oldest past [`MAX_SESSIONS`]. Nothing's written until the first [`Self::keep`].
-    pub fn begin(sessions: &Path, about: About, replace: Replace) -> io::Result<Self> {
+    pub fn begin(sessions: &Path, about: About, disk: Arc<dyn Disk>) -> io::Result<Self> {
         fs::create_dir_all(sessions)?;
         prune(sessions, MAX_SESSIONS - 1)?;
         let dir = free_dir(sessions, about.began);
@@ -81,8 +78,10 @@ impl Session {
                 settings: Vec::new(),
                 trips: Vec::new(),
                 dropped: Dropped::default(),
+                frames: Some(0),
             },
-            frames: format!("{FRAMES_HEADER}\n"),
+            pieces: Vec::new(),
+            open_rows: format!("{FRAMES_HEADER}\n"),
             rows: 0,
             second: OpenSecond::default(),
             clock: Duration::ZERO,
@@ -91,7 +90,7 @@ impl Session {
             run_began: None,
             since_keep: Duration::ZERO,
             asked: true,
-            writer: Writer::new(replace),
+            writer: Writer::new(disk),
         })
     }
 
@@ -121,19 +120,33 @@ impl Session {
     /// A frame that took `frame`, against the tier's interval `budget`, with the OS's `heat` at its end and the
     /// standing run at `tick`. Past [`MAX_SECONDS`] the session ends, and keeps once more.
     pub fn frame(&mut self, frame: Duration, budget: Duration, heat: ThermalReading, tick: u64) {
+        self.frame_standing_for(frame, frame, budget, heat, tick);
+    }
+
+    /// [`Self::frame`], for a frame that stands for `stands` of play however long it took: a capture's, which
+    /// draws a tick a frame, so the session's clock keeps to the run's ticks rather than to how fast this
+    /// machine draws (M4 F3). `frame` is what `frames.csv` holds the frame to.
+    pub fn frame_standing_for(
+        &mut self,
+        stands: Duration,
+        frame: Duration,
+        budget: Duration,
+        heat: ThermalReading,
+        tick: u64,
+    ) {
         if self.document.ended.is_some() {
             return;
         }
-        self.clock += frame;
-        self.since_keep += frame;
+        self.clock += stands;
+        self.since_keep += stands;
         self.tick = tick;
         if tick > 0 && self.run_began.is_none() {
             self.run_began = Some(self.at());
         }
-        if let Some(row) = self.second.add(frame, budget, heat, self.at(), (self.run, tick))
+        if let Some(row) = self.second.add((stands, frame), budget, heat, self.at(), (self.run, tick))
             && self.rows < MAX_SECONDS
         {
-            row.write(&mut self.frames);
+            row.write(&mut self.open_rows);
             self.rows += 1;
         }
         if self.clock >= Duration::from_secs(MAX_SECONDS.into()) {
@@ -143,17 +156,20 @@ impl Session {
         }
     }
 
-    /// The standing run ended with `replay` and `trail`: its files are kept as they end, and the next run has
-    /// the next number. A run with no ticks, the title's, is kept nowhere and leaves the number to the next.
+    /// The standing run ended with `replay` and `trail`: it's kept as it ended, at once, and the next run has the
+    /// next number. A run with no ticks, the title's, is kept nowhere and leaves the number to the next.
     pub fn run_ended(&mut self, replay: Replay, trail: Trail) {
         if replay.ticks() == 0 {
             return;
         }
+        // A keep, with the document that names the run's last ticks: a run's record waiting to be written may be
+        // overtaken only by one whose document overtakes the one waiting with it, or the document on the disk
+        // could name ticks no record ends at.
         self.keep_run(replay, &trail, true);
         self.run += 1;
         self.tick = 0;
         self.run_began = None;
-        self.asked = true;
+        self.keep(None);
     }
 
     /// The player marked this moment from the pause: the standing run's tick, with `label` if they gave one,
@@ -213,16 +229,22 @@ impl Session {
         self.asked || (self.document.ended.is_none() && self.since_keep >= KEEP_EVERY)
     }
 
-    /// Writes what's changed on a job, the run standing as far as it's got (`standing`, its file and its
-    /// checksums) among it. Also hears how the last keep went.
+    /// Writes what's changed since the last keep on a job, the run standing as far as it's got (`standing`, its
+    /// file and its checksums) among it: only its new ticks, and only the new rows of frames. Also hears how
+    /// the last keep went.
     pub fn keep(&mut self, standing: Option<(Replay, Trail)>) {
         self.writer.poll();
         if let Some((replay, trail)) = standing {
             self.keep_run(replay, &trail, false);
         }
         self.document.seconds = self.at();
+        if !self.open_rows.is_empty() {
+            self.pieces.push(Arc::from(std::mem::take(&mut self.open_rows)));
+        }
+        self.document.frames = Some(self.rows);
+        // The writer puts the document after the frames, whose rows it counts, and the runs, whose ticks it does.
+        self.writer.write(self.dir.join(FRAMES_FILE), Content::Pieces(self.pieces.clone()));
         self.writer.write(self.dir.join(DOCUMENT_FILE), Content::Document(Box::new(self.document.clone())));
-        self.writer.write(self.dir.join(FRAMES_FILE), Content::Text(self.frames.clone()));
         self.asked = false;
         self.since_keep = Duration::ZERO;
         self.writer.poll();
@@ -258,8 +280,8 @@ impl Session {
         self.clock.as_millis() as f64 / 1e3
     }
 
-    /// Keeps the standing run's file and checksums as far as `replay` and `trail` go, if they've moved since
-    /// the last keep, and says so in the document.
+    /// Keeps the standing run's file and checksums in its journal as far as `replay` and `trail` go, if they've
+    /// moved since the last keep, and says so in the document.
     fn keep_run(&mut self, replay: Replay, trail: &Trail, ended: bool) {
         let ticks = replay.ticks();
         if ticks == 0 {
@@ -281,6 +303,7 @@ impl Session {
                 self.document.runs.push(KeptRun {
                     number,
                     file: format!("{RUNS_DIR}/{number}/{name}.sreplay"),
+                    journal: Some(format!("{RUNS_DIR}/{number}/{name}.journal")),
                     scenario,
                     began: self.run_began.unwrap_or_else(|| self.at()),
                     ticks: 0,
@@ -297,11 +320,8 @@ impl Session {
         kept.ticks = ticks;
         kept.ended = ended;
         kept.checksum = format!("{:016x}", trail.end());
-        let file = self.dir.join(&kept.file);
-        let name = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
-        let checksums = file.with_file_name(checksums_file_name(ARCHITECTURE));
-        self.writer.write(checksums, Content::Checksums { name, trail: trail.clone() });
-        self.writer.write(file, Content::Replay(replay));
+        let journal = self.dir.join(kept.journal.as_deref().expect("this session's runs each have one"));
+        self.writer.write(journal, Content::Run(Box::new(RunKept { replay, trail: trail.clone(), ended })));
     }
 }
 

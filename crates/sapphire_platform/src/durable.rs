@@ -50,6 +50,31 @@ pub fn durable_replace_with(target: &Path, bytes: &[u8], steps: &mut impl Replac
     replaced
 }
 
+/// Writes `bytes` into `target` at `at`, after cutting anything past `at`, then flushes it, and the directory
+/// too if `target` is new: a file that only grows, whose reader knows how long it should be (a playtest's run
+/// and its frames, M4 F3). `at` past the file's end is refused, as a file shorter than its writer thinks.
+///
+/// A kill or a power cut leaves the first `at` bytes as they were, and any of `bytes`, perhaps only their
+/// first part. A call that fails may have written some of them; the next call at the same `at` cuts them.
+/// The flushes are [`durable_replace`]'s, and stop where its table says.
+pub fn durable_append(target: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+    let new = !target.exists();
+    let mut file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(target)?;
+    let length = file.metadata()?.len();
+    if length < at {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("{} holds {length} bytes, short of the {at} written to it", target.display()),
+        ));
+    }
+    file.set_len(at)?;
+    io::Seek::seek(&mut file, io::SeekFrom::Start(at))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    if new { sync_dir(containing_dir(target)) } else { Ok(()) }
+}
+
 fn replace(temp: &Path, target: &Path, bytes: &[u8], steps: &mut impl ReplaceSteps) -> io::Result<()> {
     let mut file = File::create(temp)?;
     steps.write_temp(&mut file, bytes)?;
@@ -328,5 +353,22 @@ mod tests {
     fn a_bare_file_name_lives_in_the_current_directory() {
         assert_eq!(containing_dir(Path::new("save")), Path::new("."));
         assert_eq!(containing_dir(Path::new("user/save")), Path::new("user"));
+    }
+
+    /// An append makes the file, grows it where it's told, cuts what a torn write left past there, and refuses
+    /// a place past the end.
+    #[test]
+    fn an_append_grows_the_file_and_cuts_a_torn_tail() {
+        let dir = TestDir::new("appends");
+        durable_append(&dir.file(), 0, b"one").expect("create");
+        durable_append(&dir.file(), 3, b" two").expect("grow");
+        assert_eq!(fs::read(dir.file()).expect("read"), b"one two");
+        // A write a kill stopped part way, then the next at the place the writer knew.
+        fs::OpenOptions::new().append(true).open(dir.file()).unwrap().write_all(b" thr").unwrap();
+        durable_append(&dir.file(), 7, b" three").expect("over the torn tail");
+        assert_eq!(fs::read(dir.file()).expect("read"), b"one two three");
+        let short = durable_append(&dir.file(), 100, b"!").expect_err("past the end");
+        assert_eq!(short.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(fs::read(dir.file()).expect("read"), b"one two three", "a refusal changes nothing");
     }
 }

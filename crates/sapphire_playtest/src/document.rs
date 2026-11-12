@@ -1,7 +1,7 @@
 //! `session.ron`: what a session says of itself (the crate's docs have the format).
 
 use bevy_reflect::TypePath;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use serde::{Deserialize, Serialize};
 
 /// A session, as `session.ron` holds it. Every `at` is seconds on the session's clock: its frames' times summed.
@@ -28,11 +28,24 @@ pub struct SessionDocument {
     pub trips: Vec<f64>,
     /// What the limits left out.
     pub dropped: Dropped,
+    /// The rows of `frames.csv` as of this write: rows past them, a later keep's, are left out. `None` in a
+    /// session from before version 2, whose `frames.csv` was written whole.
+    #[serde(default)]
+    pub frames: Option<u32>,
 }
 
 impl Versioned for SessionDocument {
-    /// 1: M4 F1.
-    const VERSION: u32 = 1;
+    /// 1: M4 F1. 2: M4 F3, each run kept in a journal that grows (`KeptRun::journal`), and `frames`.
+    const VERSION: u32 = 2;
+
+    /// Version 1 is version 2 with no journals and no row count: its runs' files and `frames.csv` were each
+    /// written whole, so a reader takes them as they are.
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode().map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 impl SessionDocument {
@@ -94,8 +107,14 @@ pub struct KeptRun {
     pub number: u32,
     /// The scenario it plays.
     pub scenario: String,
-    /// Its file, from the session's directory: `runs/<n>/<scenario>-<n>.sreplay`.
+    /// Its file, from the session's directory: `runs/<n>/<scenario>-<n>.sreplay`. A host writes it, and the
+    /// run's checksums beside it, from the journal (`Kept::settle`); a session from before version 2 kept
+    /// them there itself.
     pub file: String,
+    /// Its journal, from the session's directory: `runs/<n>/<scenario>-<n>.journal`, which grows a part a keep
+    /// (the `journal` module's docs have its format). `None` before version 2.
+    #[serde(default)]
+    pub journal: Option<String>,
     /// When its first kept tick was seen.
     pub began: f64,
     /// The ticks its file holds.

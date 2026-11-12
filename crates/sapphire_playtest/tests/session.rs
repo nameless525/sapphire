@@ -1,118 +1,29 @@
 //! A session kept as a playtest build keeps one, read back as a host reads a pulled one: its document, its
 //! frames, and each run's file replayed here to the checksums the run reached as it was played.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bevy_reflect::TypePath;
+use common::{FRAME, Plain, Played, Scratch, Settings, about, every_run_replays, read_document};
 use sapphire_core::thermal::{ThermalReading, ThermalState};
-use sapphire_gameplay::replay::{
-    ARCHITECTURE, ChecksumFile, Player, Recording, Replay, SCENARIOS, Trail, checksums_file_name, find_script,
-};
+use sapphire_gameplay::replay::{ARCHITECTURE, ChecksumFile, Player, Replay, SCENARIOS, checksums_file_name};
 use sapphire_playtest::{
-    About, Build, DOCUMENT_FILE, Device, Ending, FRAMES_FILE, FrameRow, MAX_MARKS, MAX_SECONDS, MAX_SESSIONS,
-    Replace, SESSIONS_DIR, Session, SessionDocument,
+    DOCUMENT_FILE, Ending, FRAMES_FILE, FrameRow, Kept, MAX_MARKS, MAX_SECONDS, MAX_SESSIONS, Session,
+    SessionDocument,
 };
-use sapphire_reflect::Versioned;
-use serde::{Deserialize, Serialize};
 
-const FRAME: Duration = Duration::from_micros(16_667);
-
-/// A directory of its own, gone with the test.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("sapphire-playtest-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-
-    fn sessions(&self) -> PathBuf {
-        self.0.join(SESSIONS_DIR)
-    }
+fn plain() -> Arc<Plain> {
+    Arc::new(Plain)
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypePath)]
-#[type_path = "sapphire::playtest::tests"]
-struct Settings {
-    volume: u32,
-}
-
-impl Versioned for Settings {
-    const VERSION: u32 = 1;
-}
-
-fn replace() -> Replace {
-    Arc::new(|path: &Path, bytes: &[u8]| {
-        // Whole or not at all, as `durable_replace` writes: a temp beside it, then a rename.
-        let temp = path.with_added_extension("tmp");
-        fs::write(&temp, bytes)?;
-        fs::rename(&temp, path)
-    })
-}
-
-fn about(began: Option<u64>) -> About {
-    About {
-        build: Build { app: "Sapphire".into(), version: "0.1.0".into(), id: "0.1.0+local".into() },
-        device: Device {
-            os: "MacOs".into(),
-            class: "Desktop".into(),
-            emulator: false,
-            architecture: ARCHITECTURE.into(),
-            ram_mib: 24_576,
-            cores: 10,
-        },
-        began,
-    }
-}
-
-fn heat() -> ThermalReading {
-    ThermalReading { state: ThermalState::Light, headroom: Some(0.5), ..ThermalReading::default() }
-}
-
-/// A run someone's playing, a frame a step, with the session told each frame.
-struct Played {
-    recording: Recording,
-}
-
-impl Played {
-    fn new() -> Self {
-        let scenario = &SCENARIOS[0];
-        Self { recording: Recording::new(scenario, scenario.config).unwrap() }
-    }
-
-    fn play(&mut self, session: &mut Session, frames: u32) {
-        let mut source = find_script("melee-play").unwrap();
-        for _ in 0..frames {
-            self.recording.step(&mut source).unwrap();
-            session.frame(FRAME, FRAME, heat(), self.recording.simulation().tick());
-            if session.wants_keep() {
-                session.keep(Some(self.so_far()));
-            }
-        }
-    }
-
-    fn so_far(&self) -> (Replay, Trail) {
-        (self.recording.so_far(), self.recording.trail().clone())
-    }
-}
-
-fn read_document(dir: &Path) -> SessionDocument {
-    SessionDocument::from_ron(&fs::read_to_string(dir.join(DOCUMENT_FILE)).unwrap()).unwrap()
-}
-
-/// Plays the run's file as a host does a pulled one, held to the checksums the device kept beside it.
+/// Settles the session as a host does a pulled one, then plays the run's file as `check --dir` does, held to
+/// the checksums the device kept, written beside it.
 fn replays_to_its_checksums(session: &Path, document: &SessionDocument, number: u32) -> u32 {
+    Kept::read(session).unwrap().settle(session).unwrap();
     let run = document.run(number).expect("the run's kept");
     let file = session.join(&run.file);
     let replay = Replay::decode(&fs::read(&file).unwrap()).unwrap();
@@ -134,7 +45,7 @@ fn replays_to_its_checksums(session: &Path, document: &SessionDocument, number: 
 #[test]
 fn a_killed_session_keeps_what_it_last_kept_and_replays_to_its_checksums() {
     let scratch = Scratch::new("killed");
-    let mut session = Session::begin(&scratch.sessions(), about(Some(1_794_344_673)), replace()).unwrap();
+    let mut session = Session::begin(&scratch.sessions(), about(Some(1_794_344_673)), plain()).unwrap();
     let dir = session.dir().to_owned();
     assert_eq!(dir.file_name().unwrap(), "2026-11-10-210433");
     session.settings(&Settings { volume: 80 });
@@ -167,7 +78,7 @@ fn a_killed_session_keeps_what_it_last_kept_and_replays_to_its_checksums() {
     assert_eq!(run.ticks, 500, "as far as the flush before the kill");
     assert_eq!(replays_to_its_checksums(&dir, &document, 1), 500);
 
-    let frames = FrameRow::read_all(&fs::read_to_string(dir.join(FRAMES_FILE)).unwrap()).unwrap();
+    let frames = every_run_replays(&dir).frames;
     assert!((8..=9).contains(&frames.len()), "a row a second of 500 frames: {}", frames.len());
     assert!(frames.iter().all(|row| row.run == 1 && row.heat.state == ThermalState::Light && row.late == 0));
     assert!(frames.windows(2).all(|pair| pair[0].tick < pair[1].tick));
@@ -178,7 +89,7 @@ fn a_killed_session_keeps_what_it_last_kept_and_replays_to_its_checksums() {
 #[test]
 fn a_session_that_quits_keeps_each_run_as_it_ended() {
     let scratch = Scratch::new("quit");
-    let mut session = Session::begin(&scratch.sessions(), about(None), replace()).unwrap();
+    let mut session = Session::begin(&scratch.sessions(), about(None), plain()).unwrap();
     let dir = session.dir().to_owned();
     assert_eq!(dir.file_name().unwrap(), "session-1", "no calendar, so a number");
 
@@ -216,7 +127,7 @@ fn a_session_and_the_sessions_are_bounded() {
         fs::create_dir_all(scratch.sessions().join(sapphire_playtest::session_name(1_000_000 + second)))
             .unwrap();
     }
-    let mut session = Session::begin(&scratch.sessions(), about(Some(2_000_000_000)), replace()).unwrap();
+    let mut session = Session::begin(&scratch.sessions(), about(Some(2_000_000_000)), plain()).unwrap();
     let left: Vec<_> =
         fs::read_dir(scratch.sessions()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
     assert_eq!(left.len(), MAX_SESSIONS);
@@ -238,4 +149,48 @@ fn a_session_and_the_sessions_are_bounded() {
     assert_eq!(document.ended, Some(Ending::Full { at: f64::from(MAX_SECONDS) }));
     let frames = FrameRow::read_all(&fs::read_to_string(dir.join(FRAMES_FILE)).unwrap()).unwrap();
     assert_eq!(frames.len(), MAX_SECONDS as usize);
+}
+
+/// A session kept by M4 F1's build (version 1), whose runs' files and frames were each written whole, reads
+/// as it is: its document upgrades with no journals and no row count, and its runs replay from their files.
+#[test]
+fn a_version_1_session_reads() {
+    let scratch = Scratch::new("version-1");
+    let mut session = Session::begin(&scratch.sessions(), about(Some(1_794_344_673)), plain()).unwrap();
+    let dir = session.dir().to_owned();
+    let mut played = Played::new();
+    played.play(&mut session, 300);
+    let (replay, trail) = played.so_far();
+    session.run_ended(replay.clone(), trail.clone());
+    session.end(None);
+
+    // What F1's build left: the run's file and checksums beside each other, and the document of version 1.
+    let mut document = read_document(&dir);
+    let journal = dir.join(document.runs[0].journal.take().unwrap());
+    fs::remove_file(journal).unwrap();
+    document.frames = None;
+    fs::write(dir.join(&document.runs[0].file), replay.encode()).unwrap();
+    let mut checksums = ChecksumFile::new(ARCHITECTURE);
+    checksums.set("melee-1", sapphire_gameplay::replay::RecordedTrail::from_trail(&trail));
+    fs::write(dir.join("runs/1").join(checksums_file_name(ARCHITECTURE)), checksums.to_text()).unwrap();
+    let text = sapphire_serialize::to_ron(&document).unwrap();
+    assert!(text.contains("version: 2,"));
+    let old: String = text
+        .replace("version: 2,", "version: 1,")
+        .lines()
+        .filter(|line| {
+            !line.trim_start().starts_with("journal:") && !line.trim_start().starts_with("frames:")
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(dir.join(DOCUMENT_FILE), &old).unwrap();
+
+    let upgraded = SessionDocument::from_ron(&old).unwrap();
+    assert_eq!(upgraded, document);
+    let kept = every_run_replays(&dir);
+    assert_eq!(kept.document, document);
+    assert_eq!(kept.runs[0].as_ref().unwrap().replay, replay);
+    let rows = FrameRow::read_all(&fs::read_to_string(dir.join(FRAMES_FILE)).unwrap()).unwrap();
+    assert_eq!(kept.frames, rows, "every row, with no count to cut them to");
+    assert_eq!(replays_to_its_checksums(&dir, &kept.document, 1), 300);
 }

@@ -157,6 +157,21 @@ pub enum ReplayError {
     BadArgument { index: u32, kind: u8, argument: u32 },
     #[error("command {index} is at tick {tick}, before the one before it or past the file's {ticks} ticks")]
     CommandOutOfOrder { index: u32, tick: u32, ticks: u32 },
+    #[error(
+        "this part of a recording carries on from tick {}, command {}, and the recording has reached tick {}, \
+         command {}",
+        .found.ticks, .found.commands, .reached.ticks, .reached.commands
+    )]
+    PartOutOfPlace { found: Reached, reached: Reached },
+}
+
+/// How far a recording had got: its ticks and its commands. [`Replay::encode_since`] writes what came after
+/// one, and [`Recorder::extend`] adds it back, so a run can be kept a part at a time (a playtest's session,
+/// M4 F3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reached {
+    pub ticks: u32,
+    pub commands: u32,
 }
 
 /// Reads a file's fields in order, refusing to read past its end.
@@ -232,10 +247,21 @@ fn read_commands(
     if count == 0 && !may_be_empty {
         return Err(ReplayError::EmptyCommands);
     }
+    read_command_list(reader, count, 0, ticks)
+}
+
+/// Reads `count` commands, each at a tick from `after` to `ticks` and none before the one before it. Allocates
+/// what the bytes that are really there pay for.
+fn read_command_list(
+    reader: &mut Reader<'_>,
+    count: u32,
+    after: u32,
+    ticks: u32,
+) -> Result<Vec<(u32, ReplayCommand)>, ReplayError> {
     let needed = (count as usize).saturating_mul(COMMAND_LEN);
     let mut section = Reader(reader.take("the commands", needed)?);
     let mut commands = Vec::with_capacity(count as usize);
-    let mut last = 0;
+    let mut last = after;
     for index in 0..count {
         let tick = section.u32("a command's tick")?;
         let [kind] = section.array("a command's kind")?;
@@ -263,6 +289,22 @@ fn read_commands(
         commands.push((tick, command));
     }
     Ok(commands)
+}
+
+/// Writes a command as [`read_command_list`] reads it.
+fn write_command(out: &mut Vec<u8>, tick: u32, command: ReplayCommand) {
+    let (kind, argument) = match command {
+        ReplayCommand::PlayTimeline(id) => (COMMAND_PLAY, id.raw()),
+        ReplayCommand::SkipTimeline { at_ms } => (COMMAND_SKIP, at_ms),
+        ReplayCommand::ReturnTo(checkpoint) => (COMMAND_RETURN, checkpoint.raw()),
+        ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
+        ReplayCommand::Dialogue(effect) => (COMMAND_DIALOGUE, effect.to_raw()),
+        ReplayCommand::AutoTarget(strength) => (COMMAND_AUTO_TARGET, strength.to_raw()),
+        ReplayCommand::TimingAssist(step) => (COMMAND_TIMING_ASSIST, step.to_raw()),
+    };
+    out.extend_from_slice(&tick.to_le_bytes());
+    out.push(kind);
+    out.extend_from_slice(&argument.to_le_bytes());
 }
 
 /// Reads a zone's start section: the checkpoint's name and the cleared encounters, ascending.
@@ -571,18 +613,7 @@ impl Replay {
         if version != PLAIN_FORMAT_VERSION {
             out.extend_from_slice(&(self.commands.len() as u32).to_le_bytes());
             for &(tick, command) in &self.commands {
-                let (kind, argument) = match command {
-                    ReplayCommand::PlayTimeline(id) => (COMMAND_PLAY, id.raw()),
-                    ReplayCommand::SkipTimeline { at_ms } => (COMMAND_SKIP, at_ms),
-                    ReplayCommand::ReturnTo(checkpoint) => (COMMAND_RETURN, checkpoint.raw()),
-                    ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
-                    ReplayCommand::Dialogue(effect) => (COMMAND_DIALOGUE, effect.to_raw()),
-                    ReplayCommand::AutoTarget(strength) => (COMMAND_AUTO_TARGET, strength.to_raw()),
-                    ReplayCommand::TimingAssist(step) => (COMMAND_TIMING_ASSIST, step.to_raw()),
-                };
-                out.extend_from_slice(&tick.to_le_bytes());
-                out.push(kind);
-                out.extend_from_slice(&argument.to_le_bytes());
+                write_command(&mut out, tick, command);
             }
         }
         if version >= FLAGS_FORMAT_VERSION {
@@ -655,6 +686,70 @@ impl Replay {
     pub fn actions(&self) -> impl Iterator<Item = TickActions> + '_ {
         let mut cursor = Cursor::START;
         std::iter::from_fn(move || cursor.next(self))
+    }
+
+    /// How far it has got.
+    #[must_use]
+    pub fn reached(&self) -> Reached {
+        Reached { ticks: self.ticks, commands: self.commands.len() as u32 }
+    }
+
+    /// What it holds past `from`, where an earlier copy of the same recording had got to, as a part that
+    /// [`Recorder::extend`] adds to a recording that has reached `from`. `None` if it hasn't got that far, or
+    /// `from` splits its commands where no recording could have stood.
+    ///
+    /// # A part
+    ///
+    /// Little-endian, as the file is:
+    ///
+    /// | Bytes | What |
+    /// |---|---|
+    /// | 4 | the ticks it carries on from |
+    /// | 4 | the commands it carries on from |
+    /// | 4 | the ticks it adds |
+    /// | 4 | the commands it adds |
+    /// | 9 each | a command, as the file holds one, at its tick in the whole run |
+    /// | … | the added ticks' runs, as the file's body holds them |
+    ///
+    /// Its runs are canonical among themselves; the first may carry on the recording's last, and adding it
+    /// joins them, so a run kept in parts is the run kept whole. It has no magic and no digest: whatever
+    /// keeps it frames it.
+    #[must_use]
+    pub fn encode_since(&self, from: Reached) -> Option<Vec<u8>> {
+        let split = from.commands as usize;
+        if from.ticks > self.ticks
+            || split > self.commands.len()
+            || self.commands[..split].iter().any(|&(tick, _)| tick > from.ticks)
+            || self.commands[split..].iter().any(|&(tick, _)| tick < from.ticks)
+        {
+            return None;
+        }
+        let added = &self.commands[split..];
+        let mut out = Vec::with_capacity(16 + added.len() * COMMAND_LEN);
+        out.extend_from_slice(&from.ticks.to_le_bytes());
+        out.extend_from_slice(&from.commands.to_le_bytes());
+        out.extend_from_slice(&(self.ticks - from.ticks).to_le_bytes());
+        out.extend_from_slice(&(added.len() as u32).to_le_bytes());
+        for &(tick, command) in added {
+            write_command(&mut out, tick, command);
+        }
+        // Past the runs that end by `from`, then what's left of the one it falls in, then the rest as they are.
+        let mut rest = &self.body[..];
+        let mut tick = 0;
+        while !rest.is_empty() {
+            const VALIDATED: &str = "a replay's body is validated when it's made";
+            let (length, after) = read_run_length(rest).expect(VALIDATED);
+            let (actions, after) = TickActions::read_from(after).expect(VALIDATED);
+            if tick + length > from.ticks {
+                write_run_length(&mut out, tick + length - from.ticks);
+                actions.write_to(&mut out);
+                out.extend_from_slice(after);
+                break;
+            }
+            tick += length;
+            rest = after;
+        }
+        Some(out)
     }
 }
 
@@ -768,6 +863,74 @@ impl Recorder {
     pub fn finish(mut self) -> Replay {
         self.end_run();
         self.replay
+    }
+
+    /// Carries on recording after `replay`'s last tick: how a run kept in parts is put back together.
+    #[must_use]
+    pub fn resume(mut replay: Replay) -> Self {
+        // The last run comes off the body, to be the open one.
+        let mut rest = &replay.body[..];
+        let mut last = None;
+        while !rest.is_empty() {
+            const VALIDATED: &str = "a replay's body is validated when it's made";
+            let start = replay.body.len() - rest.len();
+            let (length, after) = read_run_length(rest).expect(VALIDATED);
+            let (actions, after) = TickActions::read_from(after).expect(VALIDATED);
+            last = Some((start, length, actions));
+            rest = after;
+        }
+        let Some((start, run_len, run)) = last else {
+            return Self { replay, run: TickActions::NEUTRAL, run_len: 0 };
+        };
+        replay.body.truncate(start);
+        Self { replay, run, run_len }
+    }
+
+    /// How far it has got.
+    #[must_use]
+    pub fn reached(&self) -> Reached {
+        self.replay.reached()
+    }
+
+    /// Adds a part that [`Replay::encode_since`] wrote, from where this recording has got to. Checks all of
+    /// it first, so a part refused leaves the recording as it was. Allocates what the part's bytes pay for.
+    pub fn extend(&mut self, part: &[u8]) -> Result<(), ReplayError> {
+        let reached = self.reached();
+        let mut reader = Reader(part);
+        let found = Reached {
+            ticks: reader.u32("the part's ticks so far")?,
+            commands: reader.u32("the part's commands so far")?,
+        };
+        if found != reached {
+            return Err(ReplayError::PartOutOfPlace { found, reached });
+        }
+        let added = reader.u32("the part's ticks")?;
+        let ticks = reached
+            .ticks
+            .checked_add(added)
+            .filter(|&ticks| ticks <= MAX_TICKS)
+            .ok_or(ReplayError::TooManyTicks { count: u64::from(reached.ticks) + u64::from(added) })?;
+        let count = reader.u32("the part's commands")?;
+        let commands = read_command_list(&mut reader, count, reached.ticks, ticks)?;
+        validate_body(reader.0, added)?;
+
+        self.replay.ticks = ticks;
+        self.replay.commands.extend(commands);
+        let mut rest = reader.0;
+        while !rest.is_empty() {
+            const VALIDATED: &str = "validated above";
+            let (length, after) = read_run_length(rest).expect(VALIDATED);
+            let (actions, after) = TickActions::read_from(after).expect(VALIDATED);
+            if self.run_len > 0 && self.run == actions {
+                self.run_len += length;
+            } else {
+                self.end_run();
+                self.run = actions;
+                self.run_len = length;
+            }
+            rest = after;
+        }
+        Ok(())
     }
 }
 
@@ -894,5 +1057,101 @@ mod tests {
             Err(ReplayError::TooManyTicks { count: u64::from(MAX_TICKS) + 1 })
         );
         assert_eq!(recorder.ticks(), MAX_TICKS);
+    }
+
+    /// A tick where actor 1 holds `buttons`.
+    fn held(buttons: u16) -> TickActions {
+        let mut tick = TickActions::NEUTRAL;
+        let actor = crate::actors::ActorId::from_raw(1).unwrap();
+        let actions = crate::actions::ActorActions {
+            buttons: crate::actions::Buttons::from_bits(buttons).unwrap(),
+            stick: crate::actions::Stick::CENTER,
+        };
+        tick.set(actor, actions).unwrap();
+        tick
+    }
+
+    /// A recording, copied as it was after each tick and each command: what a session's keeps see.
+    fn copies() -> Vec<Replay> {
+        let mut recorder = Recorder::new("s", SimConfig::default(), 7).unwrap();
+        recorder.start_at(ZoneStart { checkpoint: Some("gate".into()), cleared: Vec::new() }).unwrap();
+        let mut copies = vec![recorder.clone().finish()];
+        // Runs of 1 to 5 ticks of a few presses, and a command before every seventh tick.
+        for tick in 0..120_u32 {
+            if tick % 7 == 3 {
+                recorder.command(ReplayCommand::SkipTimeline { at_ms: tick });
+                copies.push(recorder.clone().finish());
+            }
+            recorder.push(&held([0, 1, 2][(tick / (1 + tick % 5)) as usize % 3])).unwrap();
+            copies.push(recorder.clone().finish());
+        }
+        recorder.command(ReplayCommand::AutoTarget(AutoTarget::Weak));
+        copies.push(recorder.finish());
+        copies
+    }
+
+    /// Kept a part at a time, from any copy to any later one, a recording is put back byte for byte, whether a
+    /// part splits a run or a tick's commands or carries nothing.
+    #[test]
+    fn a_run_kept_in_parts_is_the_run_kept_whole() {
+        let copies = copies();
+        let whole = copies.last().unwrap().encode();
+        for every in [1, 2, 3, 5, 8, 13, 40, copies.len()] {
+            for first in [0, 1, 4] {
+                let mut recorder = Recorder::resume(copies[first].clone());
+                let mut kept = first;
+                for next in (first + every..copies.len()).step_by(every).chain([copies.len() - 1]) {
+                    let part = copies[next].encode_since(recorder.reached()).expect("a later copy");
+                    recorder.extend(&part).unwrap();
+                    assert_eq!(recorder.clone().finish(), copies[next], "copy {next} from {kept}");
+                    kept = next;
+                }
+                assert_eq!(recorder.finish().encode(), whole, "every {every} from {first}");
+            }
+        }
+        let last = copies.last().unwrap();
+        let nothing = last.encode_since(last.reached()).unwrap();
+        assert_eq!(nothing.len(), 16, "a part with nothing new is its counts");
+        let mut recorder = Recorder::resume(last.clone());
+        recorder.extend(&nothing).unwrap();
+        assert_eq!(&recorder.finish(), last);
+    }
+
+    /// A part refused leaves the recording as it was: one from another place, one cut short, and one whose runs
+    /// or commands a file would refuse.
+    #[test]
+    fn a_part_out_of_place_or_spoiled_is_refused() {
+        let copies = copies();
+        let (early, later) = (&copies[20], &copies[60]);
+        assert_eq!(early.encode_since(later.reached()), None, "it hasn't got that far");
+        let part = later.encode_since(early.reached()).unwrap();
+
+        let mut behind = Recorder::resume(copies[10].clone());
+        let refused = behind.extend(&part).unwrap_err();
+        assert!(matches!(refused, ReplayError::PartOutOfPlace { .. }), "{refused}");
+        assert_eq!(behind.finish(), copies[10]);
+
+        let mut recorder = Recorder::resume(early.clone());
+        for cut in [0, 7, 15, 16, part.len() - 1] {
+            assert!(recorder.extend(&part[..cut]).is_err(), "cut at {cut}");
+        }
+        assert_eq!(recorder.clone().finish(), *early);
+
+        // A run split in two, which one run would hold.
+        let mut split = part[..16].to_vec();
+        split[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        split[12..16].copy_from_slice(&0_u32.to_le_bytes());
+        for _ in 0..2 {
+            write_run_length(&mut split, 1);
+            held(4).write_to(&mut split);
+        }
+        assert!(matches!(recorder.extend(&split), Err(ReplayError::SplitRun { tick: 1 })));
+        // A command before the tick the part carries on from.
+        let mut before = part[..16].to_vec();
+        before[8..12].copy_from_slice(&0_u32.to_le_bytes());
+        before[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        write_command(&mut before, early.ticks() - 1, ReplayCommand::SkipTimeline { at_ms: 0 });
+        assert!(matches!(recorder.extend(&before), Err(ReplayError::CommandOutOfOrder { .. })));
+        assert_eq!(recorder.finish(), *early);
     }
 }

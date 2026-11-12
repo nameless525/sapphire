@@ -3,7 +3,8 @@
 //! A playtest build is the game (`game_app`) built for release with its `playtest` feature, which keeps a
 //! session of each time someone plays it (`sapphire_playtest` has the format) under the player's directory,
 //! in `sessions/`. `playtest --platform <p>` builds, installs and launches it as `run` does. `playtest pull`
-//! copies every session on the device to `target/playtest/<platform>/sessions/`, whole, and replays each run
+//! copies every session on the device to `target/playtest/<platform>/sessions/`, whole, settles each (writes
+//! every run's file and checksums from its journal, as of the session's last keep, M4 F3) and replays each run
 //! in it with `sapphire_replay`, which names the first tick where this machine's simulation differs from the
 //! device's. `playtest report <session>` replays a session's runs and reads them out per encounter (M4 F2,
 //! `sapphire_playtest`'s `report` module): text here, and `report.ron` beside the session.
@@ -117,6 +118,7 @@ pub fn run(command: &Command) -> anyhow::Result<()> {
                 eprintln!("no sessions on {}", pull.platform);
                 return Ok(());
             }
+            settle_all(&pulled)?;
             if pull.replay { replay_all(&pulled, &dest.join("checks")) } else { Ok(()) }
         }
         Command::Report { session } => {
@@ -233,6 +235,20 @@ fn bring_back(pull: &Pull, dest: &Path) -> anyhow::Result<Vec<PathBuf>> {
     }
     workspace::remove_dir_if_exists(&incoming)?;
     Ok(pulled)
+}
+
+/// Writes each run's file and checksums in every session of `sessions`, from its journal, so `check --dir`
+/// plays it. A session killed before its first keep holds nothing yet, so it's passed over.
+fn settle_all(sessions: &[PathBuf]) -> anyhow::Result<()> {
+    let runner = replay::runner()?;
+    for session in sessions {
+        if !session.join(DOCUMENT).is_file() {
+            eprintln!("{} was killed before its first keep: it holds nothing", session.display());
+            continue;
+        }
+        workspace::run(Process::new(&runner).arg("settle").arg("--session").arg(session))?;
+    }
+    Ok(())
 }
 
 /// Replays every run of every session in `sessions`, writing what the runner makes under `checks`, and

@@ -479,6 +479,31 @@ mod through_the_system {
         assert_eq!(system.stats().cues_played, 2);
     }
 
+    /// A cue on the music bus (M4 A8) takes the player's volume once: the bus carries it for the score's stems
+    /// (`follow_music_gain`), so the voice itself mustn't take it too. At a music volume of a half, and every
+    /// sound's a half, it's 12 dB down, not 24.
+    #[test]
+    fn a_cue_on_the_music_bus_takes_the_players_volume_once() {
+        use sapphire_audio::Volumes;
+
+        let sound = tones(&[1_000.0], 1.0);
+        let heard = |bus: Bus, volumes: Volumes| {
+            let mut system = system(&sound, Cue { bus, ..cue() });
+            system.set_volumes(volumes);
+            let out = left(&run(&mut system, Some(CueTarget::Flat), 1.0, 30));
+            // Past the bus's fade to its volume.
+            rms(&out[out.len() - GAME_FRAME * 12..])
+        };
+        let half = Volumes { all: 0.5, music: 0.5, ..Volumes::FULL };
+        for bus in [Bus::Music, Bus::Sfx] {
+            let full = heard(bus, Volumes::FULL);
+            assert!(full > 0.05, "{bus:?}: {full}");
+            let down = db(heard(bus, half) / full);
+            let wanted = if bus == Bus::Music { -12.04 } else { -6.02 };
+            assert!((down - wanted).abs() < 0.5, "{bus:?}: {down} dB, not {wanted}");
+        }
+    }
+
     #[test]
     fn played_out_voices_free_their_slots_as_the_mixer_runs() {
         let sound = tones(&[1_000.0], 0.05);

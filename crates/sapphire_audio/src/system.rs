@@ -586,7 +586,13 @@ impl<B: AudioBackend> AudioSystem<B> {
                 .find(|tracked| tracked.emitter.id == id)
                 .map(|tracked| tracked.emitter.position),
         };
-        let mut gain_db = voice.gain_db + self.volume_db + self.bus_volume_db[voice.bus.index()];
+        // The music bus carries the player's volume itself, for the score's stems ([`Self::follow_music_gain`]),
+        // so a cue on it takes it there and not again here (M4 A8).
+        let volume_db = match voice.bus {
+            Bus::Music => 0.0,
+            bus => self.volume_db + self.bus_volume_db[bus.index()],
+        };
+        let mut gain_db = voice.gain_db + volume_db;
         let mut pan = 0.0;
         if let (Some(position), Some(attenuation)) = (position, voice.attenuation) {
             let (distance, side) = relative(listener, position);

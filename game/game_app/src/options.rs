@@ -1,6 +1,6 @@
 //! What the game takes on its command line: only what a run with nobody playing needs (see the crate's docs).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use game_combat::combat::CombatOption;
 use game_flow::boot::MakeShow;
@@ -12,7 +12,7 @@ use game_flow::show::GameShow;
 use game_flow::update::PatchSetup;
 use game_ui::hud::OffscreenDisplay;
 use game_ui::menus::PlayerSettings;
-use sapphire_platform::{AppInitError, ContentFs, Platform, durable_replace};
+use sapphire_platform::{AppInitError, ContentFs, DeviceClass, Platform, durable_replace};
 use sapphire_render::quality::QualitySettings;
 
 use crate::build_info;
@@ -191,7 +191,10 @@ impl Options {
         if !self.patches() {
             return None;
         }
-        let dir = self.patch_dir.clone().unwrap_or_else(|| platform.user_dir().join("patch"));
+        let dir = match &self.patch_dir {
+            Some(dir) => writable(dir.clone(), platform),
+            None => platform.user_dir().join("patch"),
+        };
         let host = Some(build_info::PATCH_HOST).filter(|host| !host.is_empty()).map(str::to_owned);
         #[cfg(feature = "dev")]
         let host = self.update_host.clone().or(host);
@@ -250,9 +253,31 @@ impl Options {
     }
 }
 
+/// Where a path the command line names is written: a relative one on a phone goes under the app's cache, since
+/// its app runs from nowhere it can write, and `adb shell run-as` and `devicectl` reach the cache (M3 Z2b):
+/// `--capture`'s, and `--patch-dir`'s, which a phone's check skipped as read-only before (M4 H4).
+pub(crate) fn writable(path: PathBuf, platform: &Platform) -> PathBuf {
+    placed(path, platform.system_info().device_class, platform.cache_dir())
+}
+
+fn placed(path: PathBuf, device: DeviceClass, cache: &Path) -> PathBuf {
+    if path.is_relative() && device != DeviceClass::Desktop { cache.join(path) } else { path }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--capture`'s and `--patch-dir`'s relative paths go under a phone's cache, as nothing else there is
+    /// writable; absolute ones, and a desktop's, stay as they're given.
+    #[test]
+    fn a_phone_writes_relative_paths_under_its_cache() {
+        let cache = Path::new("/data/user/0/com.example.sapphire.game/cache");
+        let phone = |path: &str, device| placed(PathBuf::from(path), device, cache);
+        assert_eq!(phone("patch", DeviceClass::Mobile), cache.join("patch"));
+        assert_eq!(phone("/sdcard/patch", DeviceClass::Mobile), PathBuf::from("/sdcard/patch"));
+        assert_eq!(phone("patch", DeviceClass::Desktop), PathBuf::from("patch"));
+    }
 
     fn parse(args: &[&str]) -> Result<Options, String> {
         let args: Vec<String> = ["game_app"].iter().chain(args).map(ToString::to_string).collect();

@@ -13,7 +13,7 @@ use std::path::Path;
 use game_flow::boot::BootUpdate;
 use game_flow::update::Patches;
 use game_ui::menus::PlayerSettings;
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
 
 use crate::LOG_TARGET;
 use crate::app::GameApp;
@@ -27,12 +27,8 @@ impl App for OffscreenGame {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
-        let mut path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
-        // A phone's app runs from nowhere it can write: a path with no directory of its own goes under its
-        // cache, which `adb shell run-as` and `devicectl` reach (M3 Z2b).
-        if path.is_relative() && platform.system_info().device_class != DeviceClass::Desktop {
-            path = platform.cache_dir().join(path);
-        }
+        let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
+        let path = crate::options::writable(path, platform);
         let mut patches = options.patch_setup(platform).map(|setup| Patches::open(platform.host(), setup));
         let host = patches.as_ref().map_or(platform.host(), Patches::host).clone();
         // A run nobody's playing shows the defaults, whatever whoever's machine this is has chosen.

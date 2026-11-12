@@ -102,6 +102,11 @@ struct ViewUniforms {
     // x: the proximity fade's turn this frame (M1 C7; `temporal::fade_turn`): a sixteenth under
     // temporal AA, 0 without.
     dither: vec4<f32>,
+    // What keeps outlines whole below render scale 1 (M4 T6; outline.wgsl's `whole_line`): x,
+    // the output's height over this target's (1 at scale 1, and in every view but the main
+    // one); y, the narrowest line the target's samples draw without gaps, in its pixels (1
+    // single-sampled, 1/n under n× MSAA).
+    lines: vec4<f32>,
 }
 
 struct InstanceData {

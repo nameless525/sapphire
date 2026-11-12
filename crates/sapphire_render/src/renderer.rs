@@ -2674,17 +2674,19 @@ impl Renderer {
             let (uniforms, buffer) = passes.uniforms();
             (uniforms, buffer.clone())
         });
-        let view =
-            ViewUniforms::new(&camera, size, previous_clip_from_world, jitter).with_fade_turn(fade_turn);
+        let view = ViewUniforms::new(&camera, size, previous_clip_from_world, jitter)
+            .with_fade_turn(fade_turn)
+            .upscaled_to(output, samples);
         // The frame's effects, if any: a frame with none adds nothing to the graph below.
         let (vfx_upload, vfx_draw) = vfx.split_for_record(output).unzip();
         let (vfx_main, vfx_after) = vfx_draw.map(|draw| (draw.main, draw.after)).unzip();
         // A debug view draws through the main view without temporal AA's jitter or the fade's
-        // turn, so it holds still (M1 F5). Boxed, so the uploads' pass doesn't grow by a view
-        // while none shows.
+        // turn, so it holds still (M1 F5), into single-sampled targets. Boxed, so the uploads'
+        // pass doesn't grow by a view while none shows.
         let debug_view = debug_views.as_deref().filter(|views| views.shown() != DebugView::Off);
         let debug_upload = debug_view.map(|views| {
-            Box::new((views.view_uniforms(), ViewUniforms::new(&camera, size, clip_from_world, [0.0; 2])))
+            let view = ViewUniforms::new(&camera, size, clip_from_world, [0.0; 2]).upscaled_to(output, 1);
+            Box::new((views.view_uniforms(), view))
         });
         // Debug draw (M2 T1): over everything, through the same unjittered view. Boxed for the
         // same reason.

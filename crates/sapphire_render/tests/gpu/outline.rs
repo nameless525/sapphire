@@ -2,7 +2,8 @@
 //! the width's distance curve, FOV normalization, model scale and LOD cutoff, view-space
 //! flattening and push-back, lines lit in light, shade and at night, and the hull's own velocity;
 //! and lines under temporal AA (M1 P1) against 4× MSAA: turning, under a circling camera,
-//! upsampled and held still. Run with `cargo test -p sapphire_render --tests -- --ignored`.
+//! upsampled and held still; and moving lines kept whole below render scale 1 (M4 T6). Run with
+//! `cargo test -p sapphire_render --tests -- --ignored`.
 
 use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
@@ -1157,4 +1158,97 @@ fn dump(name: &str, pixels: &[[u8; 4]]) {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().expect("header");
     writer.write_image_data(pixels.as_flattened()).expect("write");
+}
+
+/// A line's peaks along a sphere's silhouette: per output pixel of arc round the sphere found in
+/// `pixels` (its orange pixels' bounds), the darkest pixel from just inside the silhouette to
+/// `reach` px outside it, as darkness against the grey sky, read from the image's corner.
+fn silhouette_peaks(pixels: &[[u8; 4]], reach: f32) -> Vec<f32> {
+    let grey = linear(at(pixels, 0, 0)).y;
+    let (mut left, mut right, mut top, mut bottom) = (u32::MAX, 0, u32::MAX, 0);
+    for y in 0..SIZE.1 {
+        for x in 0..SIZE.0 {
+            let color = linear(at(pixels, x, y));
+            if color.x > color.z + 0.2 {
+                (left, right, top, bottom) = (left.min(x), right.max(x), top.min(y), bottom.max(y));
+            }
+        }
+    }
+    let center = ((left + right + 1) as f32 / 2.0, (top + bottom + 1) as f32 / 2.0);
+    let radius = ((right + 1 - left) + (bottom + 1 - top)) as f32 / 4.0;
+    let samples = (TAU * radius).round() as u32;
+    (0..samples)
+        .map(|sample| {
+            let (sin, cos) = (TAU * sample as f32 / samples as f32).sin_cos();
+            // Quarter-pixel steps outward from a pixel inside the silhouette.
+            (0..=((reach + 1.0) * 4.0) as u32)
+                .map(|step| {
+                    let along = radius - 1.0 + step as f32 / 4.0;
+                    let (x, y) = (center.0 + cos * along, center.1 + sin * along);
+                    (1.0 - linear(at(pixels, x as u32, y as u32)).y / grey).clamp(0.0, 1.0)
+                })
+                .fold(0.0, f32::max)
+        })
+        .collect()
+}
+
+/// The unit sphere 4 m from the camera, its line `width` px wide at 1080 rows at every distance,
+/// moving across the view by about 2 px a frame under temporal AA at render scale `scale`: the
+/// line's peaks along its silhouette (`silhouette_peaks`) in the last 8 of 24 frames.
+fn moving_line(gpu: &GpuContext, width: f32, scale: f32) -> Vec<f32> {
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    let mut frames = Frames::new(gpu, settings);
+    let ball = upload(&mut frames.renderer, &sphere(1.0, &flat([0.9, 0.6, 0.3], width), |n| n));
+    frames.renderer.set_render_scale(scale);
+    let eye = camera(Vec3::new(0.0, 0.0, 4.0), 45.0);
+    // The line's output pixels, as many again where the scale widens it, and a margin.
+    let reach = width * SIZE.1 as f32 / 1080.0 / scale + 2.0;
+    let mut peaks = Vec::new();
+    for frame in 0..24 {
+        let x = 0.013 * frame as f32 - 0.15;
+        let changed = [instance(1, ball, Mat4::from_translation(Vec3::new(x, 0.3 * x, 0.0)))];
+        if frame < 16 {
+            frames.complete(gpu, eye, &changed);
+        } else {
+            let pixels = frames.render(gpu, eye, &changed, &[]);
+            dump(&format!("moving-{width}-{scale}"), &pixels);
+            peaks.extend(silhouette_peaks(&pixels, reach));
+        }
+    }
+    peaks
+}
+
+/// A moving line stays whole below render scale 1 (M4 T6). Under temporal AA a moving line is
+/// drawn from the current frame (M1 P1), one sample a pixel, and where its width in the scene's
+/// pixels falls under one the rasterizer leaves gaps along it, which the upscale magnifies: the
+/// look-dev character's lines broke into dots in the hit's tier scenes at 0.85 and 0.7. So a line
+/// keeps the pixels it covers at scale 1, up to one (`whole_line` in outline.wgsl), and leaves no
+/// more gaps than at scale 1. A gap is a pixel of arc whose peak is under a quarter of the line's
+/// own darkness at scale 1, the median of its peaks there. On Metal, before: the 0.9 px line in
+/// gaps over 12.8%, 25.6% and 44.7% of its silhouette at 0.85, 0.7 and 0.5, against 5.2% at 1,
+/// and the 1.3 px one over 0.7%, 4.5% and 22.3%, against 0.2%; now 4.5%, 4.7% and 3.7%, and
+/// 0.7%, 1.0% and 0.7%.
+#[test]
+#[ignore = "needs a GPU"]
+fn moving_lines_stay_whole_below_render_scale_one() {
+    let gpu = gpu();
+    // 0.9 and 1.3 px here, at 540 rows.
+    for width in [1.8, 2.6] {
+        let native = moving_line(&gpu, width, 1.0);
+        let mut sorted = native.clone();
+        sorted.sort_by(f32::total_cmp);
+        let gap = 0.25 * sorted[sorted.len() / 2];
+        let gaps =
+            |peaks: &[f32]| peaks.iter().filter(|&&peak| peak < gap).count() as f32 / peaks.len() as f32;
+        let at_one = gaps(&native);
+        for scale in [0.85, 0.7, 0.5] {
+            let found = gaps(&moving_line(&gpu, width, scale));
+            eprintln!(
+                "a {width} px line at scale {scale}: {:.1}% of its silhouette in gaps, against {:.1}% at 1",
+                found * 100.0,
+                at_one * 100.0
+            );
+            assert!(found < at_one + 0.02, "{width} px at {scale}: {found} in gaps, against {at_one} at 1");
+        }
+    }
 }

@@ -1252,6 +1252,22 @@ mod tests {
             ),
             ("FogUniforms", offsets!(GpuFog { near, far, height, shape, light })),
             (
+                "ViewUniforms",
+                offsets!(ViewUniforms {
+                    view_from_world,
+                    clip_from_view,
+                    clip_from_world,
+                    world_from_clip,
+                    previous_clip_from_world,
+                    position,
+                    viewport,
+                    unjittered_clip_from_world,
+                    jitter,
+                    dither,
+                    lines,
+                }),
+            ),
+            (
                 "InstanceData",
                 offsets!(InstanceData {
                     world_from_object,

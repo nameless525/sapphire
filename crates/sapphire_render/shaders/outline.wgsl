@@ -17,6 +17,8 @@
 // between its near, mid and far knots and keeps the line's width in the world outside them:
 // readable in close-ups, thinning with distance without vanishing early. Over the last quarter of
 // the material's LOD cutoff the width fades to nothing; past it the renderer draws no hull.
+// Below render scale 1 a line keeps the pixels it covers at scale 1, up to one sample's spacing
+// (`whole_line`, M4 T6), so lowering the scale never breaks it into dots.
 //
 // Extrusion, in view space: the outline normal's part across the screen, with the material's
 // flattening behind it (away from the camera) in place of its own depth, normalized (view-space Z
@@ -157,13 +159,23 @@ fn outline_clip(clip_from_world: mat4x4<f32>, hull: HullVertex, width: HullWidth
     let extrusion = safe_normalize(vec3<f32>(normal.xy, -materials[width.material].outline_shape.w));
     let depth = max(clip.w, 1e-4);
     let distance = effective_distance(depth, focal.y);
-    let pixels = width.pixels * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT) * outline_curve(width.material, distance);
+    let pixels = whole_line(width.pixels * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT) * outline_curve(width.material, distance));
     // Pixels to view-space meters at this depth: the target's height spans 2 × depth / focal y.
     let meters = pixels * 2.0 * depth / (focal.y * view.viewport.y);
     let across = clip.xy + extrusion.xy * focal * meters;
     // Back along the view ray by the Z offset and the extrusion's depth, in meters of depth.
     let back = 1.0 + max(width.z_offset - extrusion.z * meters, -0.5 * depth) / depth;
     return vec4<f32>(across * back, clip.z, clip.w * back);
+}
+
+// A line `pixels` wide in the target as it draws (M4 T6): no narrower than it is in output
+// pixels, up to the narrowest line the target's samples draw without gaps (`view.lines`). Below
+// render scale 1 a line's width in the target's pixels falls with the scale, and under one
+// sample's spacing the rasterizer leaves gaps along it: a moving line, drawn from the current
+// frame under temporal AA, broke into dots that the upscale then magnified. So it keeps the
+// pixels it covers at scale 1, where `view.lines.x` is exactly 1 and nothing changes.
+fn whole_line(pixels: f32) -> f32 {
+    return max(pixels, min(pixels * view.lines.x, view.lines.y));
 }
 
 // The focal lengths of `clip_from_world` (see `outline_clip`): the rows of clip x and y have

@@ -124,6 +124,11 @@ pub(crate) struct ViewUniforms {
     /// x: the proximity fade's turn this frame (M1 C7, [`crate::temporal::fade_turn`]): a
     /// sixteenth under temporal AA, 0 without and in every other view.
     pub dither: [f32; 4],
+    /// What keeps outlines whole below render scale 1 (M4 T6, `whole_line` in outline.wgsl):
+    /// x, the output's height over this target's (1 at scale 1, and in every view but the main
+    /// one); y, the narrowest line this target's samples draw without gaps, in its pixels: their
+    /// spacing, 1 single-sampled and 1/n under n× MSAA.
+    pub lines: [f32; 4],
 }
 
 impl ViewUniforms {
@@ -151,12 +156,22 @@ impl ViewUniforms {
             unjittered_clip_from_world: (camera.proj * camera.view).to_cols_array_2d(),
             jitter: [jitter[0], jitter[1], ndc.x, ndc.y],
             dither: [0.0; 4],
+            lines: [1.0, 1.0, 0.0, 0.0],
         }
     }
 
     /// The view with the proximity fade's dither turned by `turn` this frame (M1 C7).
     pub(crate) fn with_fade_turn(self, turn: f32) -> Self {
         Self { dither: [turn, 0.0, 0.0, 0.0], ..self }
+    }
+
+    /// The view as the scene's, upscaled to an `output` of that many pixels, its target drawn
+    /// with `samples` samples a pixel (M4 T6): below render scale 1 its outlines keep the pixels
+    /// they cover at scale 1, up to their samples' spacing. At scale 1 the ratio is exactly 1, and
+    /// lines draw as they did.
+    pub(crate) fn upscaled_to(self, output: (u32, u32), samples: u32) -> Self {
+        let ratio = output.1 as f32 / self.viewport[1];
+        Self { lines: [ratio, (samples.max(1) as f32).recip(), 0.0, 0.0], ..self }
     }
 }
 
@@ -266,6 +281,22 @@ mod tests {
         assert_eq!((uniforms(0.15), uniforms(2.5), uniforms(0.0)), (0.15, 2.5, 0.0));
         assert_eq!(uniforms(-0.5), 0.0, "none, never a negative light");
         assert_eq!((uniforms(f32::NAN), uniforms(f32::INFINITY)), (1.0, 1.0), "as authored");
+    }
+
+    /// Outlines keep whole below render scale 1 by the view's `lines` (M4 T6): at scale 1 the
+    /// ratio must be exactly 1, so lines draw as they did, bit for bit.
+    #[test]
+    fn views_tell_outlines_their_scale_and_sample_spacing() {
+        let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 0.8, 16.0 / 9.0, 0.05);
+        let view = |size, output, samples| {
+            ViewUniforms::new(&camera, size, Mat4::IDENTITY, [0.0; 2]).upscaled_to(output, samples).lines
+        };
+        assert_eq!(ViewUniforms::new(&camera, (640, 360), Mat4::IDENTITY, [0.0; 2]).lines[..2], [1.0, 1.0]);
+        for rows in [360, 361, 592, 1080, 1170, 2160] {
+            assert_eq!(view((640, rows), (640, rows), 1)[0], 1.0, "{rows} rows at scale 1");
+        }
+        assert_eq!(view((448, 252), (640, 360), 1)[..2], [360.0 / 252.0, 1.0], "0.7, single-sampled");
+        assert_eq!(view((640, 299), (1280, 592), 4)[..2], [592.0 / 299.0, 0.25], "4× MSAA's spacing");
     }
 
     #[test]

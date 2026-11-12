@@ -2586,7 +2586,7 @@ fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
         .exits
         .iter()
         .map(|exit| {
-            let (other, _) = exit_target(path, exit, assets)?;
+            let (other, _) = exit_target(path, plan.document(), exit, assets)?;
             Ok(sapphire_zone::pack_name(zone::stem(other)))
         })
         .collect::<Result<Vec<_>, CookError>>()?;
@@ -3289,7 +3289,7 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         }
     }
     for exit in &document.exits {
-        let (other, _) = exit_target(path, exit, assets)?;
+        let (other, _) = exit_target(path, document, exit, assets)?;
         let hash = blake3::hash(zone::stem(other).as_bytes());
         dependencies.push(Dependency::File { path: format!("#exit {}", exit.name), hash });
     }
@@ -3316,13 +3316,29 @@ fn check_encounter_in(
     })
 }
 
-/// The zone `exit` of the zone at `path` leads to, its source's path and its plan, once it's held to having
-/// the spawner the exit arrives at: from its document, since two zones can lead to each other.
+/// The zone `exit` of the zone at `path`, whose document is `document`, leads to, its source's path and its
+/// plan, once it's held to having the spawner the exit arrives at: from its document, since two zones can lead to
+/// each other.
+///
+/// Neither zone may have a probe grid (M4 Z3e): a trip brings no grid of its own, nor warms the environment's
+/// pipelines a grid's constants build again, and the renderer keeps the grid it had, so a zone with one would be
+/// lit by another's, or a tier change after the trip would build on the frame. Every cook checks it, as the
+/// spawner, so a grid added to the other zone fails this one's cook.
 fn exit_target<'a>(
     path: &Path,
+    document: &ZoneDocument,
     exit: &sapphire_zone::Exit,
     assets: &Assets<'a>,
 ) -> Result<(&'a Path, &'a ZonePlan), CookError> {
+    let refused = |field: &str, problem: String| {
+        zone_error(path)(ZoneCookError::invalid(format!("exits `{}`{field}", exit.name), problem))
+    };
+    if document.probes.is_some() {
+        return Err(refused(
+            "",
+            "a zone with a probe grid has no exits yet: a trip leaves its grid on the renderer".to_owned(),
+        ));
+    }
     let found = assets.zones.iter().find(|(_, plan)| plan.id() == exit.to);
     let (other, plan) = found.ok_or_else(|| CookError::ZoneReference {
         path: path.to_owned(),
@@ -3330,10 +3346,12 @@ fn exit_target<'a>(
         what: "a zone",
         id: exit.to,
     })?;
+    if plan.document().probes.is_some() {
+        let problem = format!("{} has a probe grid, which a trip doesn't bring yet", other.display());
+        return Err(refused(".to", problem));
+    }
     if !plan.document().spawners.iter().any(|spawner| spawner.name == exit.arrive) {
-        let problem = format!("{} has no spawner `{}`", other.display(), exit.arrive);
-        let field = format!("exits `{}`.arrive", exit.name);
-        return Err(zone_error(path)(ZoneCookError::invalid(field, problem)));
+        return Err(refused(".arrive", format!("{} has no spawner `{}`", other.display(), exit.arrive)));
     }
     Ok((other, plan))
 }

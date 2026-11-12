@@ -1448,8 +1448,9 @@ impl Content {
 
     /// The zone a trip is bringing on stage, `zone` (M4 H4): the last zone's probe grid goes, with its pack, so
     /// a tier's renderer built from here on takes no grid of a zone that's gone ([`Self::zone_probe_grid`]). A
-    /// trip brings no probe grid of its own, nor warms what one draws through ([`Self::queue_zone_prewarm`]): a
-    /// zone with one is lit without it there, which it says.
+    /// trip brings no probe grid of its own, nor warms what one draws through ([`Self::queue_zone_prewarm`]), and
+    /// the renderer keeps the grid it had: so the cook refuses an exit into or out of a zone with a grid (M4 Z3e,
+    /// the pipeline's `exit_target`), and a zone that arrives with one anyway, cooked before that, says so.
     pub(crate) fn arrive_in_zone(&mut self, zone: &Handle<Zone>) {
         self.zone_probes = None;
         if self.server.get(zone).is_some_and(|zone| zone.presentation.probes.is_some()) {

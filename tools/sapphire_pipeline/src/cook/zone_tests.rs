@@ -1416,3 +1416,52 @@ fn the_other_zones_pack_is_in_the_key() {
     let town = Zone::read(&town).unwrap();
     assert_eq!(town.simulation.exits[0].pack.as_str(), "zone_bazaar");
 }
+
+const GRID: AssetId = AssetId::from_bytes([0x2b; 16]);
+
+/// A probe grid around the lamp, small and quick to bake, as `GRID`.
+fn add_probe_grid(tree: &Tree) {
+    add_lamp(tree);
+    let document = probes::ProbeGridDocument {
+        bounds: probes::BakeBounds { min: [-1.0, 0.0, -1.0], max: [1.0, 2.0, 1.0] },
+        spacing: probes::PerCook { desktop: 1.0, mobile: 1.0 },
+        visibility: probes::PerCook { desktop: probes::ShOrder::L1, mobile: probes::ShOrder::L1 },
+        rays: probes::PerCook { desktop: 16, mobile: 16 },
+        surfel_rays: 16,
+        surfel_spacing: 1.0,
+        bounces: 1,
+        bounce_strength: 1.0,
+        timeline: probes::BakeTimeline::DefaultDay,
+        meshes: vec![probes::BakeMesh { mesh: LAMP, translation: [0.0; 3], yaw: 0.0 }],
+    };
+    let text = sapphire_serialize::to_ron(&document).unwrap();
+    let path = tree.write("lamp.probes.ron", text.as_bytes());
+    tree.sidecar(&path, GRID, ImportSettings::ProbeGrid(probes::ProbeGridSettings::default()));
+}
+
+/// A trip brings no probe grid, and leaves the renderer the one it had (M4 Z3e): until it does, a zone with a
+/// grid has no exits and none leads into one, so no shipped trip lights a zone with another's grid, or builds
+/// on the frame of a tier change after it. Without a grid on either side the same exit cooks.
+#[test]
+fn no_exit_leads_into_or_out_of_a_zone_with_a_probe_grid() {
+    let tree = tree("zone-exit-probes");
+    add_probe_grid(&tree);
+    let exit = format!(r#"exits: [(name: "out", to: "{MARKET}", arrive: "from_town")],"#);
+    let grid = format!(r#"probes: Some("{GRID}"),"#);
+    write_zone(&tree, &format!("{} {exit}", placements()));
+    let market = write_market(&tree, "");
+    tree.cook();
+
+    write_zone(&tree, &format!("{} {grid} {exit}", placements()));
+    let text = chain(&tree.try_cook(false).expect_err("an exit out of a zone with a grid"));
+    assert!(
+        text.contains("town.zone.ron") && text.contains("exits `out`") && text.contains("probe grid"),
+        "{text}"
+    );
+
+    write_zone(&tree, &format!("{} {exit}", placements()));
+    let into = fs::read_to_string(&market).unwrap().replace("exits: [],", &format!("{grid} exits: [],"));
+    fs::write(&market, into).unwrap();
+    let text = chain(&tree.try_cook(false).expect_err("an exit into a zone with a grid"));
+    assert!(text.contains("exits `out`.to") && text.contains("market.zone.ron has a probe grid"), "{text}");
+}

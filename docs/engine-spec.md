@@ -327,6 +327,114 @@ ms, p50 / p99 / worst, on the walk unless named, with §3.2's budget in brackets
 
 **Read again at M3's final exit run** (M3 Z2, 2026-11-10), on the head with all of M3 and Z1's fixes, with the machine to itself (a load of 2 to 6), three rounds of the same loads: [m3-exit-run.md](m3-exit-run.md), "Final run at 4fe253e6", has the table. Since the readings above: the ward's walk exercises the script row; the GPU frame row reads on Metal; Desktop-Low's and the phones' secondary motion holds its clearance between solves, so its p50 is within budget and its p99 is a solve's; and a trip allocates nothing in a fixed step.
 
+### 3.7 Measured as shipped (M4 Z1)
+
+**What ships, on a Mac and two stand-ins.** §3.5 and §3.6 measured the frame. This measures what leaves the machine: each store package's size, the start to the title, the warm-up per tier, memory through exit test 1's walk, a patch's bytes for each of P0's edits, and the thermal ladder on the emulator. No number here was taken on a phone, a Steam Deck or a Windows or Linux PC; what each would have to answer is at the end.
+
+- **Hardware and code:** Apple M5 (4 performance and 6 efficiency cores, 10-core GPU, 24 GB), macOS 27.0.1, on AC power, Metal; the iOS Simulator (iPhone 17 Pro, iOS 26.3) and the Android emulator (`sapphire_api36`, Android 16, `-gpu host`, so Vulkan runs on the M5 through the emulator's translation). The landing line at 994a5bf6 (`main` with every M4 package but T6), taken on 2026-11-11, `--dev` packages at build 1355 (the build number of a commit `main` hasn't had; nothing else differs from a store build). Windows and Linux are CI's own packages (`packages.yml` run 43141958545, on d16a950a, eleven commits (X5's and H4's) under 994a5bf6, none of them touching `content/`), read from its artifacts. **Everything here predates T6** (a moving character's outlines below scale 1), which may add or change a pipeline: the warm-up's counts are read again if it does.
+- **How it was read:** every timed run alone on the machine (`slot --all --load 8`), with the load at its start beside each figure; three or more runs where a figure varies, giving the median and the worst. MB is 10⁶ bytes.
+
+**Sizes.** `cargo xtask package --platform <p> --dev` here, and CI's artifacts for Windows and Linux. "Shipped" is what a store or depot receives for players; symbols stay with the build (C1, C2).
+
+| Platform | Shipped | The executable, stripped | Its symbols, unstripped | The cook |
+|---|---|---|---|---|
+| macOS, `SapphireGame.app` (arm64) | 60.6 MB | 21.6 MB | a 394.9 MB dSYM (387.3 MB of DWARF) | 38.7 MB, desktop |
+| iOS, `SapphireGame.xcarchive` | an archive of 437.0 MB: the app 49.5 MB, its dSYM 387.5 MB | 21.3 MB | in the archive's dSYM | 27.9 MB, mobile |
+| Android, `SapphireGame.aab` | an AAB of 108.5 MB; a device downloads 36.6 MB (bundletool's total, 36,572,188–36,572,194 bytes) | `libgame_app.so` 22.8 MB (10.4 MB in the AAB) | 399.5 MB (`symbols/`); the AAB's FULL `.dbg` is 376.5 MB, 71.9 MB compressed | 27.9 MB, mobile |
+| Windows (x86-64, CI) | the depot's folder, 66.0 MB | `game_app.exe` 27.2 MB, no debug information in it | `game_app.pdb`, 323.9 MB | 38.7 MB, desktop |
+| Linux (x86-64, CI, the sniper SDK) | the depot's folder, 66.8 MB | 28.0 MB (`strip --strip-all`) | 422.9 MB | 38.7 MB, desktop |
+
+- **Since the packages' own readings:** S2's archive was 380 MB with a 22.7 MB executable and a 331 MB dSYM, S3's AAB 49.3 MB with a 20.1 MB library and a 72.2 MB `.dbg`, S4's macOS app 60 MB. Since then iOS's executable went from 22.7 to 21.3 MB and Android's library from 20.1 to 22.8 MB, with what landed between (P4's patching and its TLS, C2's remapped paths, H4); this reading doesn't separate them. The AAB doubled because since C1 its `.dbg` is the unstripped library, all its DWARF, where S3's held the line tables alone. Play takes FULL symbols up to 1.6 GB (S3's source), and no player downloads them: the device's download moved from 35.2 to 36.6 MB.
+- **Two x86-64 cooks against an arm64 one:** CI's Windows and Linux cooks are 38,740,637 bytes, this Mac's 38,736,717, from the same `content/`: P0's caveat (a release is cooked on one machine) holds, as C3 found for two textures.
+
+**Starts to the title.** From the process's start to the boot's `booted` line, the title stood and drawn (the window's game logs `the title is up` in the same frame). Each start's own tier, as the device chose it: Desktop-High on the Mac, Mobile-Low on the Simulator and the emulator (by RAM and GPU kind: neither adapter is in T4's table).
+
+| | Cold: median / worst (runs) | Warm: median / worst (runs) | What was cold | Load at the start |
+|---|---|---|---|---|
+| macOS, the packaged app, Metal | 3.97 / 4.12 s (3) | 0.41 / 0.41 s (6) | a copy of the app with a fresh bundle ID, signed ad hoc, so Metal's cache was empty; the OS's first look at the new binary (0.31–0.32 s) taken apart, by a run that exits on a bad argument | 5.5–6.3 |
+| iOS Simulator, the `ios-sim` package | 8.81 / 8.98 s (5) | 0.88 / 0.90 s (15) | a new simulator device for each, installed fresh: a device's Metal cache is its own | 7–8 settled (2 runs), 39–46 as the device booted (3) |
+| Android emulator, the store APKs | 0.90 / 1.11 s (3) | 0.78 / 0.86 s (6) | a fresh install, so the app's Vulkan pipeline cache was empty (`seeded_bytes=0`); **not** the host's own shader cache under `-gpu host`, warm from earlier runs | 4.7–4.9 |
+
+- **Where a cold start goes:** the boot's own steps (`BootReport`) on the Mac: the renderer made by 1.08–1.20 s, the packs' pipelines warm by 3.09–3.24 s, the stage stood and everything warm by 3.74–3.91 s; warm, 91–98 ms, 110–118 and 268–274 ms. Before the boot (the process, the GPU device, the content mounted) takes 0.14–0.23 s. The Simulator's cold boot is 7.9–8.5 s, its renderer 2.3–2.7 s of it: its Metal is the M5's under the Simulator, so the time says where a phone's first launch spends (pipelines), not how long a phone takes. The emulator's cold boot, 0.64–0.72 s against a warm 0.53–0.61, is fast only because its host's driver cache was warm: an empty Vulkan cache on a phone compiles everything, and only a phone says how long.
+- **No load screen frame over exit test 1's limit on the Mac:** the boot's longest interval was 23.7–24.5 ms cold against Desktop-High's 33.3. The Simulator's cold boots had frames of 63–102 ms against Mobile-Low's 66.7, and two of its warm ones 68–71 ms, and the emulator's cold and warm boots one or two of 67–106 ms: neither stands for a phone's GPU, and exit test 1's times are the Mac's (H0: the emulator slows every frame while pipelines build).
+- **No budget is passed, because §3 sets none for a start.** The figures are for a phone's to be set against.
+
+**Warm-up and memory per tier,** measured last, and before T6. H4's `zero_hitches` plays exit test 1's walk: the boot, the title, a new game, the ward's walk and fights, a pause with a tier change there and back, then the title again. It ran as a release build in a throwaway `.app`, each tier at its own size and cook, every frame drawn and unpaced (`SAPPHIRE_HITCH_TIMED=1`). There were three rounds of each tier, each round cold (a fresh bundle ID) then warm (the same `.app` again), at a load of 2.2–6.0. The boot is timed from `Boot`'s start to its `booted` line, inside a process already running. Every run passed, with no first use, no build on the frame's thread and no wait.
+
+| | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Size and cook | 2560 × 1440, desktop | 1920 × 1080, desktop | 1600 × 740, mobile | 1280 × 590, mobile |
+| Pipelines the boot prewarms, all off the frame | 89 | 89 | 85 | 73 |
+| … and warmed off the frame over the whole walk | 374 | 374 | 542 | 533 |
+| The boot cold: median / worst | 3.85 / 3.97 s | 4.11 / 4.40 s | 3.92 / 4.46 s | 3.65 / 3.69 s |
+| … the renderer made, the packs warm, the stage stood (cold medians) | 1.12, 3.19, 3.30 s | 1.12, 3.51, 3.60 s | 0.98, 3.27, 3.34 s | 0.95, 3.04, 3.11 s |
+| The boot warm: median / worst | 196 / 206 ms | 196 / 212 ms | 175 / 177 ms | 180 / 188 ms |
+| The boot screen's worst frame, cold / warm (the limit) | 26.6 / 23.9 ms (33.3) | 27.6 / 25.8 ms (33.3) | 32.4 / 22.1 ms (33.3) | 28.4 / 22.6 ms (66.7) |
+
+- **Most of a cold boot is the packs' pipelines.** 2.0–2.4 s of it falls between the renderer being made and the packs being warm, on every tier, while the shader compiler fills Metal's empty cache. Warm, the same work takes about 11 ms.
+- **The tiers' counts follow their pipelines.** The desktop tiers prewarm the same 89, Mobile-High 85 and Mobile-Low 73. Over the walk, the desktop tiers warm 374 and the mobile tiers 533–542, all of them off the frame. This run doesn't say why the mobile tiers warm more in play. The counts are the same in every run of a tier, cold or warm.
+
+Memory is `process_memory()`'s physical footprint in MiB (2²⁰ bytes). On this Mac's unified memory it includes Metal's resources. Each part shows the most it held, as the cold median. The last row is the OS's peak for the process: the cold median, then the worst of all six runs.
+
+| MiB | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| The boot | 339 | 328 | 286 | 279 |
+| The title | 916 | 714 | 519 | 493 |
+| The ward's walk | 928 | 720 | 521 | 498 |
+| A fight | 999 | 759 | 563 | 549 |
+| The pause, with its tier change there and back | 1,004 | 830 | 564 | 551 |
+| The title again, after the run | 916 | 714 | 519 | 493 |
+| The process's most | 1,019 / 1,023 | 862 / 865 | 564 / 565 | 557 / 558 |
+| The tier's budget (§3.1) | 10 GB RAM, 6 GB VRAM | 6 GB, 3 GB | 2.8 GB in all | 1.6 GB in all |
+
+- **No leak:** the title after the run reads what the title read before it, to the MiB, on every tier. The warm runs match too: they read 0–20 MiB lower at each part, and their most was 546–1,019.
+- **Under every budget** by a wide margin. Mobile-Low's peak of 558 MiB (585 MB) is about a third of its 1.6 GB, and Desktop-High's 1,023 MiB is unified memory against 16 GB split between RAM and VRAM.
+- **The pause's peak comes with its tier change:** 70 MiB over the fight on Desktop-Low, whose change goes up to Desktop-High, and 1–5 MiB on the other tiers.
+- **Against §3.6:** this is the game's own app, with its screens, sounds and flow, where §3.6 read the sandbox's walk. The walk here reads 120–200 MB above §3.6's footprints at the same sizes and cooks, and this reading doesn't separate the causes.
+
+**What a patch downloads.** P0's edits, each made in its own copy of `content/` (`research_notes/Ship readiness for M4/p0-spike.md` §2 has them), cooked as release 2, a patch of release 1 of the same cook, both signed with the test seed. A `dev` game installed with release 1 fetched each in its boot from a host on this Mac counting the bytes, and installed it (`cargo xtask patch sizes`, which runs exit test 2's download as `patch rehearse` does, for any set of edits). Bytes, desktop cook / mobile cook; the share is of the cook the package ships (38,736,717 and 27,927,784 bytes):
+
+| Edit | Manifest | Changed packs' headers and tables | New blocks | Files | Total | Share |
+|---|---|---|---|---|---|---|
+| a texture: a 64 × 64 square of the sky's nebula map inverted | 1,047 / 1,046 | 122,720 / 118,496 | 167,272 / 175,125 | | 291,039 / 294,667 | 0.75 / 1.06 % |
+| a mesh: the character's first vertex moved 9 mm | | 122,720 / 118,496 | 959,816 / 670,675 | | 1,083,583 / 790,217 | 2.80 / 2.83 % |
+| a mesh: the boss's first vertex moved 7 cm | | 122,720 / 118,496 | 57,539 / 49,522 | | 181,306 / 169,064 | 0.47 / 0.61 % |
+| a sound: the bells' third note, 79 to 81, regenerated | | 40,880 | 36,632 | | 78,559 / 78,558 | 0.20 / 0.28 % |
+| a string: the title's tagline, in both languages | | 512 | 11,017 | | 12,576 / 12,575 | 0.03 / 0.05 % |
+| a screen: the tagline's size, 18 to 20 | | 2,688 | 1,545 | | 5,280 / 5,279 | 0.01 / 0.02 % |
+| the screen list: a comment in `ui/menus.ron` | | | | 10,758 | 11,805 / 11,804 | 0.03 / 0.04 % |
+| a zone's look: a lantern post moved 0.1 m | | 55,920 / 49,104 | 2,292 | | 59,259 / 52,442 | 0.15 / 0.19 % |
+
+- **Every patch was its edit's blocks, the changed pack's tables and the manifest, and every edit installed;** no other pack was touched. Against P0's estimates on 0755aafb: the same within a few hundred bytes for the texture, the meshes, the sound and the placement; the manifest is 1,047 bytes signed, not P0's 920 unsigned estimate; the string's two blocks are 11.0 KB where P0's were 4.9 (the tables have grown with M4's later screens' text); the `ui` pack's tables 2,688 where the rehearsal's were 1,792 (Z3b's privacy screen came between); and `menus.ron` is now 10.8 KB, fetched whole as a file, since P1 names `documents/` in the manifest.
+- **The lantern post moves 0.1 m, not P0's 0.5:** a cook now holds a collider to what its placement draws (0.12 m at most), and moving the collider too would change what the simulation reads, which a patch may not carry (m4-plan §3). 0.1 m stays inside both.
+- **X5's sound edit,** in `sapphire_patch`'s own test (`a_patch_moves_only_the_manifest_the_changed_tables_and_the_new_blocks`, on the test's small releases, not the game's cook): the regenerated cue's one raw block, its pack's tables and nothing of the sound beside it or the untouched fonts pack. The test's whole patch, a texture's two blocks, a mesh's four and that sound's one among it, is 373,660 bytes: the manifest 647, tables 3,424, ten blocks 369,540, 14 bytes of padding between neighbours, and a file of 35.
+- **The full package against a patch:** the largest patch here, the character's mesh, is 1.1 MB against a 36.6 MB Android download and a 60.6 MB macOS app.
+
+**The ladder under the emulator's thermal override.** The store build on the emulator, at its title on Mobile-Low (the tier it chose), with `adb shell cmd thermalservice override-status` stepped from Light to Critical a level every 20 s, then `reset`; the times are logcat's, from the first override (load 3–5):
+
+| s | Heat | The ladder |
+|---|---|---|
+| at launch, 0.03 s after the title | Nominal, headroom 0.90 | depth 1 (`Heat(Light)`): the sky's face rate and a bloom level shed |
+| 0.0 | Light | stays at 1 |
+| 20.3 | Moderate | depth 2 at once: scale 0.85 |
+| 39.6 | Severe | depth 3 at once: scale 0.75, Mobile-Low's last rung |
+| 60.0 | Critical | stays at 3: Mobile-Low has no lower tier and no frame-rate rung |
+| 80.3 | Nominal (`reset`) | |
+| 90.4 | | depth 2 (`Calm`), 10.0 s after the heat cleared |
+| 100.4 | | depth 1, 10.0 s later |
+| to 240 | | stays at 1 |
+
+- **Heat goes straight to its depth, and the climb is a rung each hold** (`HOLD`, 10 s), as T2 built it; no rung came back while heat asked for it, and none flapped.
+- **The emulator never climbs to the top.** Its headroom forecast is a constant 0.90 (T1), over Google's 0.85 for "reduce workload if possible", which the ladder reads as Light, so the emulator runs every reading at rung 1, from 0.03 s after its title: the starts above were all taken before it. On a phone whose forecast falls the ladder would reach 0; here only the override's state moves. The frame-rate rung and the tier's own rung, which Mobile-Low lacks, are read on Desktop-High by T3's `follows_the_ladder` and H4's `zero_hitches` (critical heat, then the climb back in 9,001 frames).
+
+**What this Mac can't stand in for:**
+
+- **A phone.** The first launch's driver compile is the cold start a player waits through: its own GPU's compiler with an empty cache, which the Simulator (the M5's Metal) and the emulator (its host's warm cache) both skip. A phone also has its own memory limits (iOS's jetsam, Android's low-memory killer), its storage's read speed for the packs, and a real thermal forecast that falls, so the ladder can climb back to 0. Mobile-High's frame-rate rung and tier rung on a falling forecast are owed too.
+- **The stores' own sizes.** The App Store's thinned download and the Play Store's install size for each device come only from App Store Connect and the Play Console, and both need accounts. The 36.6 MB here is bundletool's estimate for this emulator's device.
+- **A Steam Deck:** Desktop-Low at 800p on its GPU and its SD card, with its start, memory and heat.
+- **A Windows or Linux PC:** CI gives the packages' sizes, but no start, memory or warm-up reading. D3D12's and Vulkan's pipeline caches each have their own cold start.
+- **T6:** if it adds or changes a pipeline, the warm-up's counts above are read again.
+
 ---
 
 ## 4. Architecture

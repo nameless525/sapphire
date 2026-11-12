@@ -131,7 +131,10 @@ jobs:
         # older sysroot, such as the Steam Runtime SDK container.
         os: [ubuntu-24.04, macos-26, windows-2025]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Windows from a cold cache (none from `main` to restore) ran out of 60 minutes: 49 to build and test,
+    # 6 for audio, then the output-path check cut off 4 minutes in (#293, 2026-11-12). With a cache the
+    # whole job takes about 32 (#292).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

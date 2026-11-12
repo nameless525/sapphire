@@ -2049,6 +2049,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.5),
             ),
             (
                 name: "game-privacy-tablet-ja",
@@ -2056,6 +2057,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
             ),
             (
                 name: "game-privacy-wide-en",
@@ -2063,6 +2065,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.9),
             ),
             (
                 name: "game-privacy-wide-ja",
@@ -2070,6 +2073,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.4, warp: 1.8),
             ),
             (
                 name: "game-privacy-ultrawide-en",
@@ -2077,6 +2081,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.3),
             ),
             (
                 name: "game-privacy-ultrawide-ja",
@@ -2084,6 +2089,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
             ),
             (
                 name: "game-controls-tablet-en",
@@ -2652,6 +2658,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "en"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.0),
             ),
             (
                 name: "game-privacy-deck-ja",
@@ -2659,6 +2666,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "privacy", "--ui-locale", "ja"],
+                ci_seconds: (lavapipe: 0.6, warp: 2.1),
             ),
             (
                 name: "game-controls-deck-en",

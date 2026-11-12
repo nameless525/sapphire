@@ -485,6 +485,33 @@ fn prune_old_runs(dir: &Path, current_run_id: &str) {
     }
 }
 
+/// `text` with the player's home directory written `~` wherever it starts a path: a panic's message
+/// and its symbolized backtrace quote paths, and a home directory is named after its player. A home of
+/// `/` or a drive's root names nobody and is left alone, as is a longer name it begins (`/home/runner` in
+/// `/home/runneradmin`).
+pub(crate) fn without_home(text: &str, home: &str) -> String {
+    let home = home.trim_end_matches(['/', '\\']);
+    if !home.contains(['/', '\\']) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(home) {
+        let after = &rest[at + home.len()..];
+        let whole = after.chars().next().is_none_or(|next| !continues_name(next));
+        out.push_str(&rest[..at]);
+        out.push_str(if whole { "~" } else { home });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `next` can carry on a user name, so a home directory followed by it is another's.
+pub(crate) fn continues_name(next: char) -> bool {
+    next.is_alphanumeric() || matches!(next, '_' | '-' | '.' | '$')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,6 +611,21 @@ mod tests {
         let parsed = PanicReport::parse(&text).expect("parses");
         let names: Vec<&str> = parsed.modules.iter().map(|module| module.name.as_str()).collect();
         assert_eq!(names, ["game_app", "libsystem c.so"]);
+    }
+
+    #[test]
+    fn panic_reports_name_no_home_directory() {
+        let message = "cannot read /Users/you/Library/Sapphire/x.ron: denied; /Users/you";
+        assert_eq!(without_home(message, "/Users/you/"), "cannot read ~/Library/Sapphire/x.ron: denied; ~");
+        let windows = r"at C:\Users\you\Games\Sapphire\src\main.rs:3";
+        assert_eq!(without_home(windows, r"C:\Users\you"), r"at ~\Games\Sapphire\src\main.rs:3");
+        assert_eq!(
+            without_home("/home/runneradmin/x", "/home/runner"),
+            "/home/runneradmin/x",
+            "another player's"
+        );
+        assert_eq!(without_home("/x/y", "/"), "/x/y");
+        assert_eq!(without_home(r"C:\x", r"C:\"), r"C:\x");
     }
 
     #[test]

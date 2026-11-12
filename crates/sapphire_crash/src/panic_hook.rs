@@ -42,6 +42,8 @@ struct HookState {
     latest_report: Mutex<()>,
     started: Instant,
     symbolize: Symbolizer,
+    /// The player's home directory, which reports write `~` (`report::without_home`).
+    home: Option<String>,
 }
 
 /// Keeps the hook armed. Dropping it disarms the hook.
@@ -74,6 +76,7 @@ fn install_with(context: HookContext, symbolize: Symbolizer) -> Registration {
         latest_report: Mutex::new(()),
         started,
         symbolize,
+        home: std::env::home_dir().and_then(|home| home.into_os_string().into_string().ok()),
     });
 
     let hook_state = Arc::clone(&state);
@@ -134,7 +137,7 @@ impl HookState {
         // dyld's image list, which another thread unloading a library can pull from under it
         // (review PA-002). A fault or a hang there now costs only the names.
         let written = if seq < MAX_PANIC_DUMPS {
-            report.backtrace = (self.symbolize)(Backtrace::force_capture());
+            report.backtrace = self.without_home((self.symbolize)(Backtrace::force_capture()));
             let symbolized =
                 report::write_atomically(&self.context.dump_dir, &name, report.render().as_bytes());
             // If the rewrite fails, the first version is still on disk.
@@ -175,14 +178,22 @@ impl HookState {
             release: self.context.release.clone(),
             run_id: self.context.run_id.clone(),
             pid: std::process::id(),
-            thread,
-            location,
+            thread: self.without_home(thread),
+            location: self.without_home(location),
             unix_time_ms: report::unix_time_ms(),
             uptime_ms,
             modules: capture.modules,
             frames: capture.frames,
-            message: info.payload_as_str().unwrap_or("Box<dyn Any>").to_owned(),
+            message: self.without_home(info.payload_as_str().unwrap_or("Box<dyn Any>").to_owned()),
             backtrace: NOT_SYMBOLIZED.to_owned(),
+        }
+    }
+
+    /// `text` as a report keeps it: with the player's home directory written `~`.
+    fn without_home(&self, text: String) -> String {
+        match &self.home {
+            Some(home) => report::without_home(&text, home),
+            None => text,
         }
     }
 }

@@ -91,6 +91,9 @@ mod desktop {
                 })
                 .unwrap_or_else(|| panic!("no frame is the forced panic's: {read:#?}"));
             assert_names(frame, "forced_panic", "panic!(");
+            // A dev build's symbolized backtrace quotes this checkout's paths, under the home directory
+            // on macOS and on CI's Linux runners: the report writes it `~`.
+            assert_no_home(&fs::read(&report.1).expect("the panic report"), "the panic report");
             assert_inlined_alike(&dumped, &read);
         }
         fs::remove_dir_all(&dir).expect("the test's directory goes");
@@ -99,6 +102,22 @@ mod desktop {
 
     /// Fails unless the callers both crashes' stacks share list their inlined calls in one order, innermost
     /// first, as `Frame` says: the minidump's walk and the panic report's frames are read by different code.
+    /// Fails if `bytes` holds the home directory's path, as UTF-8 or as UTF-16.
+    fn assert_no_home(bytes: &[u8], what: &str) {
+        let Some(home) = std::env::home_dir().and_then(|home| home.into_os_string().into_string().ok())
+        else {
+            return;
+        };
+        let home = home.trim_end_matches(['/', '\\']);
+        let wide: Vec<u8> = home.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        for found in [home.as_bytes(), &wide] {
+            assert!(
+                !bytes.windows(found.len()).any(|window| window == found),
+                "{what} names the home directory"
+            );
+        }
+    }
+
     fn assert_inlined_alike(dumped: &crash::Crash, reported: &crash::Crash) {
         let names = |frame: &Frame| -> Vec<String> {
             frame.inlined.iter().map(|inline| inline.function.clone().unwrap_or_default()).collect()

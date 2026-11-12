@@ -86,7 +86,7 @@ Everything here needs the maintainer's accounts, keys or judgement, which no age
    - Put that `release-keys` line in `platform/patch.toml`, and the host's `https://` URL, ending in `/`, in its `host`.
    - Sign the first release with the package: `SAPPHIRE_RELEASE_KEY="$(cat <offline dir>/release-key.hex)" cargo xtask package --platform <platform> --release-version 1 --expires <YYYY-MM-DD> --min-build <the build number>`. Copy the package's `release/` to the host, `release.smanifest` last. A patch later is the "A patch" recipe below.
    - Mind each release's expiry: a game takes a release only before it expires, so one left on the host past its date stops reaching anyone who hasn't taken it yet. Publish the next release before then.
-4. **Read [m4-plan.md](m4-plan.md) §3's decisions** that most need the maintainer's eye (§7, item 7): patches carry presentation only, no Xcode project, native Linux on the Deck, dynamic resolution on by default, the default flashes as they are with the reduced setting offered, and no CDN chosen.
+4. **Read [m4-plan.md](m4-plan.md) §3's decisions** that most need the maintainer's eye (§7, item 7): patches carry presentation only, no Xcode project, native Linux on the Deck, dynamic resolution off by default (§3 planned it on; T3 kept it off), the default flashes as they are with the reduced setting offered, and no CDN chosen.
 5. **Confirm the VRM character's licence allows a commercial release** (S5's note). The other third-party content's provenance is in `content/third_party/README.md`.
 
 ### The App Store

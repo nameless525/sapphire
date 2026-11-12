@@ -3428,6 +3428,7 @@
                 ticks: 2,
                 base: "game-screen",
                 args: ["--ui-game", "hud", "--ui-locale", "en", "--ui-subtitle", "normal:normal:fight"],
+                ci_seconds: (lavapipe: 0.6, warp: 1.7),
             ),
             // The photosensitivity notice (M4 A3) at U7's aspects and the Deck's in both languages, and at
             // the largest text in Japanese, its longest, where its words scroll.

@@ -3,7 +3,8 @@
 //! as `sapphire_testkit::flashes` reads them, with flashes reduced and, since A3, at the default too.
 //!
 //! The run draws, so it needs a GPU and cooked content and is `#[ignore]`d: `cargo xtask content`, then
-//! `cargo test -p sapphire_sandbox --test flashes -- --ignored`. It captures at 480 × 270, as A3 measured:
+//! `cargo test -p sapphire_sandbox --test flashes -- --ignored`, a test for each setting (about 135 s for
+//! both on Metal here; CI's nightly run takes them on lavapipe). It captures at 480 × 270, as A3 measured:
 //! the analyser sizes its field by the height, so a smaller capture judges the same frame.
 
 use std::fs;
@@ -103,20 +104,27 @@ fn the_fight_at(flashes: &str) -> FlashReport {
     analyser.report(Some(TICKS)).expect("every frame of the fight")
 }
 
+/// Holds the scripted fight at `flashes` to both tests, printing its scores.
+#[allow(clippy::print_stdout, reason = "the scores are exit test 6's numbers, read with --nocapture")]
+fn passes_at(flashes: &str) {
+    let report = the_fight_at(flashes);
+    println!(
+        "{flashes}: {} frames, general {} a second (area {:.3}), red {} a second (area {:.3})",
+        report.frames, report.general.rate, report.general.area, report.red.rate, report.red.area
+    );
+    assert!(report.passes(), "{flashes}: {report:?}");
+}
+
+// Two tests, so CI's nightly run judges the two settings on two runners at once.
+
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
-#[allow(clippy::print_stdout, reason = "the scores are exit test 6's numbers, read with --nocapture")]
-fn the_scripted_fight_passes_wcag_2_3_1_reduced_and_by_default() {
-    let mut wrong = Vec::new();
-    for flashes in ["reduced", "normal"] {
-        let report = the_fight_at(flashes);
-        println!(
-            "{flashes}: {} frames, general {} a second (area {:.3}), red {} a second (area {:.3})",
-            report.frames, report.general.rate, report.general.area, report.red.rate, report.red.area
-        );
-        if !report.passes() {
-            wrong.push(format!("{flashes}: {report:?}"));
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+fn the_scripted_fight_passes_wcag_2_3_1_with_flashes_reduced() {
+    passes_at("reduced");
+}
+
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_scripted_fight_passes_wcag_2_3_1_by_default() {
+    passes_at("normal");
 }

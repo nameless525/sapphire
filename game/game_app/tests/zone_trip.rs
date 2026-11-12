@@ -10,6 +10,8 @@
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
 //! `cargo test -p game_app --features dev --test zone_trip -- --ignored`. CI's `App tests` job runs it on lavapipe.
+//! With `SAPPHIRE_HITCH_TIMED=1`, as `zero_hitches` takes it, a boot screen's frame over twice the tier's
+//! interval fails it too: a release build on Metal, alone on the machine (M4 Z3e).
 
 #![allow(clippy::print_stdout, reason = "the trips' frames, for a look at CI's log")]
 
@@ -148,6 +150,16 @@ impl App for OutsideCaller {
             report.longest_frame.as_secs_f64() * 1e3,
             report.longest_in,
             booted.warmed_off_frame,
+        );
+        // Exit test 1's limit for a load screen's frame (M4 Z3e): the arena's town stood with the fight's first part
+        // held one 45 ms on an M5.
+        let timed = std::env::var("SAPPHIRE_HITCH_TIMED").is_ok_and(|raw| raw == "1");
+        assert!(
+            !timed || report.longest_frame <= report.interval_limit,
+            "a frame of the boot screen took {:?} in its {} step, over {:?}",
+            report.longest_frame,
+            report.longest_in,
+            report.interval_limit,
         );
         assert!(stage.show.shown.wipe.is_some(), "a fight that goes between zones has a wipe");
         stage.show.open_fight();
@@ -450,6 +462,8 @@ fn main() -> ExitCode {
         eprintln!("zone_trip: needs a GPU and cooked content; run it with --ignored");
         return ExitCode::SUCCESS;
     }
+    // The boot's steps say what each frame of its screen took (`RUST_LOG=info`), as the other lanes' do.
+    sapphire_core::log::init(Default::default(), None).expect("initialize app test logging");
     if std::env::var_os("SAPPHIRE_CONTENT_DIR").is_none() {
         let cook = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop");
         // SAFETY: nothing else runs yet: the platform's loop and its threads start below.

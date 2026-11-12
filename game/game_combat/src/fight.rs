@@ -133,7 +133,7 @@ impl StandPlan {
 }
 
 /// A fight standing a part a frame ([`Fight::stand_part`], M4 H4): the ground and the enemy's meshes; the
-/// zone's day, light rigs and probe grid; its cells; the timelines, the dialogue and the graphs; and the
+/// arena's town (M4 Z3e), or the zone's day, light rigs and probe grid, then its cells; the timelines, the dialogue and the graphs; and the
 /// fighters, once the character's clearance is fitted on the warm-up pool. No part is more than a frame of a boot's screen can hold.
 pub struct FightStand {
     combat: Option<Combat>,
@@ -180,6 +180,8 @@ pub enum PreparedRun {
 /// The part of a [`FightStand`] that's next.
 enum StandPart {
     Place,
+    /// The arena's town, for a fight on its colliders.
+    InTown(RenderPose, Figure, ZoneArena),
     InZone(RenderPose, Figure, ZoneArena),
     Zone(ZoneStanding, ZoneArena),
     Timelines,
@@ -2325,18 +2327,25 @@ impl Fight {
                 stand.world = Some(ground.share());
                 let enemy = show.load_enemy(content, renderer, gpu)?;
                 let held = show.held_enemy(content)?;
-                let shot = ArenaShot::Director;
-                if place.zone.is_some() {
-                    stand.part = StandPart::InZone(pose, figure, ZoneArena { shot, ground, enemy, held });
+                let arena = ZoneArena { shot: ArenaShot::Director, ground, enemy, held };
+                stand.part = if place.zone.is_some() {
+                    StandPart::InZone(pose, figure, arena)
                 } else {
-                    let town = content.town(renderer, gpu)?;
-                    let fog_cards = Some(content.fog_cards(renderer, gpu)?);
-                    let look = LookDev { town, fog_cards, pose, figure };
-                    show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
-                    scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
-                    show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
-                    stand.part = StandPart::Timelines;
-                }
+                    StandPart::InTown(pose, figure, arena)
+                };
+                Ok(None)
+            }
+            StandPart::InTown(pose, figure, arena) => {
+                // A frame of its own (M4 Z3e): with the first part's, the town's held a boot's frame 45 ms.
+                let ZoneArena { shot, ground, enemy, held } = arena;
+                let town = content.town(renderer, gpu)?;
+                let fog_cards = Some(content.fog_cards(renderer, gpu)?);
+                let look = LookDev { town, fog_cards, pose, figure };
+                let show = &mut self.show;
+                show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+                scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
+                show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
+                stand.part = StandPart::Timelines;
                 Ok(None)
             }
             StandPart::InZone(pose, figure, arena) => {

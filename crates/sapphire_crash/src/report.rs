@@ -202,7 +202,8 @@ pub(crate) fn partial_name(final_name: &str) -> String {
 /// Locking is best effort: where the filesystem has no locks, the startup cleanup can't prove
 /// the writer gone either, and it keeps the file.
 pub(crate) fn create_partial(path: &Path) -> io::Result<File> {
-    let file = File::create(path)?;
+    // Readable too, so the monitor can edit a dump through the handle that holds the lock.
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
     let _ = file.try_lock();
     Ok(file)
 }

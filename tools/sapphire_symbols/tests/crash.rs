@@ -55,11 +55,23 @@ mod desktop {
         println!("{}", crash::render(&dumped, &maps));
         // The fault's address, which Linux's dumps read as 0 before (`sapphire_crash`'s `siginfo`).
         assert!(dumped.summary[0].ends_with(" at 0x10"), "{:?}", dumped.summary);
+        let raw = minidump::Minidump::read_path(&dump.1).expect("the minidump");
         if cfg!(target_os = "linux") {
             // The player's environment stays out of the dump (`sapphire_crash`'s monitor clears it).
-            let raw = minidump::Minidump::read_path(&dump.1).expect("the minidump");
             let environment = raw.get_raw_stream(0x4767_0007).expect("an environment stream");
             assert!(environment.iter().all(|&byte| byte == 0), "the dump keeps its environment");
+        }
+        if cfg!(target_os = "macos") {
+            // The executable is named. The writer leaves a shipping package's `<Unknown>`, with no file,
+            // which `sapphire_crash`'s monitor names (its `minidump_edit` tests that case); this program's
+            // own dump keeps the path the writer read.
+            use minidump::Module as _;
+            let modules = raw.get_stream::<minidump::MinidumpModuleList>().expect("a module list");
+            let executable = modules.iter().next().expect("the executable's module");
+            let name = std::env::current_exe().expect("this program").file_name().expect("a name").to_owned();
+            let name = name.to_string_lossy();
+            assert!(executable.code_file().ends_with(&*name), "{executable:?}");
+            assert!(executable.debug_file().is_some_and(|file| file.ends_with(&*name)), "{executable:?}");
         }
         let first = &dumped.threads[0].frames[0];
         assert_names(first, "forced_fault", "*address = ");

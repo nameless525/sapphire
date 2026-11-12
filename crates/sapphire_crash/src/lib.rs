@@ -131,6 +131,8 @@ mod panic_hook;
 mod report;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod minidump_edit;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod monitor;
 
 #[cfg(target_os = "android")]

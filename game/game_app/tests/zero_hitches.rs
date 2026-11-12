@@ -59,7 +59,7 @@ use sapphire_render::quality::{QualitySettings, TierId, TierTable};
 use sapphire_render::{PipelineStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_stage::audio::SoundsLoad;
-use sapphire_stage::{Stage, headless_gpu};
+use sapphire_stage::{FrameLaps, Stage, headless_gpu};
 use sapphire_time::Stopwatch;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -163,23 +163,74 @@ fn limit_at(rate: Option<NonZeroU32>) -> Duration {
     Duration::from_secs(2) / rate.map_or(DEFAULT_RATE, NonZeroU32::get)
 }
 
-/// One load screen's frames: how many, the worst, and the limit.
+/// One load screen's frames: how many, the worst and what it was doing, and the limit.
 struct LoadScreen {
     name: String,
     frames: u32,
     worst: Duration,
+    /// How much of the worst frame waited for the GPU's work, after the frame's own (M4 H8).
+    worst_waited: Duration,
+    /// The boot's step the worst frame was in, for the boot screen's (M4 H8).
+    worst_in: Option<&'static str>,
+    /// Where the worst frame of a stood stage went before its GPU wait: `Stage`'s own laps (M4 H8).
+    worst_laps: Option<FrameLaps>,
     limit: Duration,
+    /// Whether a timed run fails on a frame over `limit`, or only says so.
+    held: bool,
 }
 
 impl LoadScreen {
     fn new(name: String, limit: Duration) -> Self {
-        Self { name, frames: 0, worst: Duration::ZERO, limit }
+        Self {
+            name,
+            frames: 0,
+            worst: Duration::ZERO,
+            worst_waited: Duration::ZERO,
+            worst_in: None,
+            worst_laps: None,
+            limit,
+            held: true,
+        }
     }
 
-    fn frame(&mut self, took: Duration) {
-        self.frames += 1;
-        self.worst = self.worst.max(took);
+    /// Frames timed against `limit` and reported, which a timed run doesn't fail on.
+    fn reported(name: String, limit: Duration) -> Self {
+        Self { held: false, ..Self::new(name, limit) }
     }
+
+    /// A frame that `took` this long, `waited` of it for the GPU.
+    fn frame(&mut self, took: Duration, waited: Duration) {
+        self.frames += 1;
+        if took > self.worst {
+            (self.worst, self.worst_waited) = (took, waited);
+        }
+    }
+
+    /// A frame of the stood stage, its laps `laps`.
+    fn stage_frame(&mut self, took: Duration, waited: Duration, laps: FrameLaps) {
+        if took > self.worst {
+            self.worst_laps = Some(laps);
+        }
+        self.frame(took, waited);
+    }
+
+    /// A frame of the boot, in its step `step`.
+    fn boot_frame(&mut self, took: Duration, waited: Duration, step: &'static str) {
+        if took > self.worst {
+            self.worst_in = Some(step);
+        }
+        self.frame(took, waited);
+    }
+}
+
+/// What a frame added to `Stage`'s laps, which add up until reset: the four the report reads.
+fn laps_since(before: FrameLaps, after: FrameLaps) -> FrameLaps {
+    let mut laps = after;
+    laps.content = after.content.saturating_sub(before.content);
+    laps.packet = after.packet.saturating_sub(before.packet);
+    laps.prepare = after.prepare.saturating_sub(before.prepare);
+    laps.record = after.record.saturating_sub(before.record);
+    laps
 }
 
 /// The most footprint each part of the walk held, in the order the parts first came, and the process's own most.
@@ -240,6 +291,11 @@ struct Watch {
     changes: Vec<(TierId, Duration)>,
     /// The longest frame drawn outside a load screen, and where.
     worst: (Duration, String),
+    /// The title's first frames, while the show's sounds read and decode (M4 H8): timed against a load screen's
+    /// limit, as the first frames the player sees after the boot screen, and reported. The first is the stage's
+    /// first on the GPU, which waits for it about 27 ms on Desktop-High on an M5 (spec §3.7), so a run doesn't
+    /// fail on them. Some while they're counted.
+    title: Option<LoadScreen>,
     memory: Memory,
 }
 
@@ -276,12 +332,16 @@ impl Draw for Watch {
         let draw = load || changed || self.frames.is_multiple_of(self.every);
         stage.lose_frames = !draw;
         let target = if self.on_pages { &self.pages } else { &self.target };
+        let before = stage.laps;
         stage.render(target, 1.0, |_, _| {})?;
+        let laps = laps_since(before, stage.laps);
+        let recorded = began.elapsed();
         if draw {
             finish_gpu(&stage.gpu);
         }
         stage.check_gpu()?;
         let took = began.elapsed();
+        let waited = took.saturating_sub(recorded);
         self.frames += 1;
         self.drawn += u32::from(draw);
         if hitched(stage.renderer.stats().pipelines) {
@@ -292,12 +352,17 @@ impl Draw for Watch {
             self.changes.push((stage.quality.active().id, took));
         } else if load {
             if !self.in_load {
-                let name = format!("a wipe, at {}", Self::place(stage, what));
+                let name = format!("load screen a wipe, at {}", Self::place(stage, what));
                 self.screens.push(LoadScreen::new(name, limit_at(stage.quality.frame_rate())));
             }
-            self.screens.last_mut().expect("pushed").frame(took);
-        } else if draw && !moved && took > self.worst.0 {
-            self.worst = (took, Self::place(stage, what));
+            self.screens.last_mut().expect("pushed").stage_frame(took, waited, laps);
+        } else {
+            if let Some(title) = self.title.as_mut().filter(|_| draw) {
+                title.stage_frame(took, waited, laps);
+            }
+            if draw && !moved && took > self.worst.0 {
+                self.worst = (took, Self::place(stage, what));
+            }
         }
         self.in_load = load;
         self.memory.read(Memory::part(stage, what));
@@ -329,8 +394,10 @@ fn boot(
         let step = boot.step().name();
         let stood = boot.frame(Some(target), dt)?;
         let renderer = stood.as_ref().map(|stage| &stage.renderer).or(boot.renderer());
+        let recorded = began.elapsed();
         finish_gpu(boot.gpu());
-        screen.frame(began.elapsed());
+        let took = began.elapsed();
+        screen.boot_frame(took, took.saturating_sub(recorded), step);
         memory.read("the boot");
         if let Some(renderer) = renderer
             && hitched(renderer.stats().pipelines)
@@ -442,12 +509,17 @@ fn walk_the_ward(
         .transpose()?
         .expect("the game's fight has sounds");
     let read = stopwatch.elapsed();
+    let limit = limit_at(walk.stage.quality.frame_rate());
+    walk.draw.title = Some(LoadScreen::reported(format!("the title's first {TITLE_FRAMES} frames"), limit));
     let mut frame = 0;
     let mut decoded = None;
     while frame < TITLE_FRAMES || decoded.is_none() {
         assert!(frame < MOST_SOUND_FRAMES, "the sounds never decoded");
         walk.play()?;
         frame += 1;
+        if frame == TITLE_FRAMES {
+            walk.draw.screens.extend(walk.draw.title.take());
+        }
         if decoded.is_none()
             && let Some(ready) = sounds.take()
         {
@@ -560,7 +632,8 @@ impl App for OutsideCaller {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut booted = LoadScreen::new("the boot screen".to_owned(), booting.report().interval_limit);
+        let mut booted =
+            LoadScreen::new("load screen the boot screen".to_owned(), booting.report().interval_limit);
         let mut memory = Memory::default();
         let stage = boot(&mut booting, &view, &mut booted, &mut memory)?;
         let report = booting.report().clone();
@@ -580,6 +653,7 @@ impl App for OutsideCaller {
             in_load: false,
             changes: Vec::new(),
             worst: (Duration::ZERO, String::new()),
+            title: None,
             memory,
         };
         let mut walk = Driver::new(stage, watch);
@@ -625,14 +699,28 @@ impl App for OutsideCaller {
         eprintln!("zero_hitches: the longest frame of play drawn, {:.1} ms, at {at}", ms(*worst));
         let mut over = Vec::new();
         for screen in &walk.draw.screens {
+            let step = match (screen.worst_in, screen.worst_laps) {
+                (Some(step), _) => format!(" in the boot's {step} step"),
+                (None, Some(laps)) => format!(
+                    " (content {:.1}, packet {:.1}, prepare {:.1}, record and submit {:.1})",
+                    ms(laps.content),
+                    ms(laps.packet),
+                    ms(laps.prepare),
+                    ms(laps.record)
+                ),
+                (None, None) => String::new(),
+            };
             eprintln!(
-                "zero_hitches: load screen {}: {} frames, the worst {:.1} ms against {:.1} ms",
+                "zero_hitches: {}: {} frames, the worst {:.1} ms{step} ({:.1} of it waiting for the GPU) against \
+                 {:.1} ms{}",
                 screen.name,
                 screen.frames,
                 ms(screen.worst),
-                ms(screen.limit)
+                ms(screen.worst_waited),
+                ms(screen.limit),
+                if screen.held { "" } else { ", reported only" }
             );
-            if screen.worst > screen.limit {
+            if screen.held && screen.worst > screen.limit {
                 over.push(screen.name.as_str());
             }
         }
@@ -646,9 +734,7 @@ impl App for OutsideCaller {
             mb(memory.most)
         );
         if timed() && !over.is_empty() {
-            return Err(AppInitError::msg(format!(
-                "load screens with a frame over twice the interval: {over:?}"
-            )));
+            return Err(AppInitError::msg(format!("screens with a frame over twice the interval: {over:?}")));
         }
         walk.stage.show.finish().map_err(AppInitError::msg)?;
         Ok(Self)

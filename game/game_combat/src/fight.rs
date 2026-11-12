@@ -133,8 +133,9 @@ impl StandPlan {
 }
 
 /// A fight standing a part a frame ([`Fight::stand_part`], M4 H4): the ground and the enemy's meshes; the
-/// arena's town (M4 Z3e), or the zone's day, light rigs and probe grid, then its cells; the timelines, the dialogue and the graphs; and the
-/// fighters, once the character's clearance is fitted on the warm-up pool. No part is more than a frame of a boot's screen can hold.
+/// arena's town (M4 Z3e), or the zone's day and light rigs, then its probe grid (M4 H8), then its cells; what
+/// those cells place in the scene (M4 H8); the timelines, the dialogue and the graphs; and the fighters, once the
+/// character's clearance is fitted on the warm-up pool. No part is more than a frame of a boot's screen can hold.
 pub struct FightStand {
     combat: Option<Combat>,
     plan: StandPlan,
@@ -165,6 +166,24 @@ impl FightStand {
     pub fn over_frames(combat: Combat, plan: StandPlan, tier: TierId) -> Self {
         Self { off_frame: true, ..Self::new(combat, plan, tier) }
     }
+
+    /// The part [`Fight::stand_part`] stands next, by name: for a boot's log of what each frame stood (M4 H8).
+    #[must_use]
+    pub const fn next_part(&self) -> &'static str {
+        match self.part {
+            StandPart::Place => "place",
+            StandPart::InTown(..) => "town",
+            StandPart::TownZone => "town zone",
+            StandPart::TownCells(_) => "town cells",
+            StandPart::InZone(..) => "zone",
+            StandPart::ZoneLit(..) => "zone's grid",
+            StandPart::Zone(..) => "zone cells",
+            StandPart::Placed => "placed",
+            StandPart::Timelines => "timelines",
+            StandPart::Fighters => "fighters",
+            StandPart::Taken => "taken",
+        }
+    }
 }
 
 /// A run [`Fight::prepare_run_off_frame`] prepared.
@@ -185,7 +204,12 @@ enum StandPart {
     TownZone,
     TownCells(ZoneStanding),
     InZone(RenderPose, Figure, ZoneArena),
+    /// The zone's pipelines and probe grid, on a frame of their own since M4 H8.
+    ZoneLit(ZoneStanding, ZoneArena),
     Zone(ZoneStanding, ZoneArena),
+    /// The cells the zone's load screen brought in, placed in the scene: the title's first frame did it all, at
+    /// once, until M4 H8.
+    Placed,
     Timelines,
     Fighters,
     /// While a part's taken on.
@@ -1988,6 +2012,8 @@ pub struct Fight {
     held_steps: u64,
     /// The conversations the run holds, and the one that's open (M3 Q2b).
     pub dialogue: DialogueRunner,
+    /// A run [`Self::end_run`] ended, still writing its file off the frame (M4 H8): says when it's done.
+    ending: Option<mpsc::Receiver<()>>,
 }
 
 impl Fight {
@@ -2356,14 +2382,19 @@ impl Fight {
             StandPart::TownCells(standing) => {
                 scene.finish_town_zone(standing, content, renderer, gpu)?;
                 self.show.trips.home = Some(trip::Home::Town(scene.zone_on_stage()));
-                stand.part = StandPart::Timelines;
+                stand.part = StandPart::Placed;
                 Ok(None)
             }
             StandPart::InZone(pose, figure, arena) => {
                 let (stem, at) = stand.plan.place.zone.expect("a zone's part stands in a zone");
                 let settings = stream_settings(tier);
                 let zone = ZoneShow { stem, at, walk: None, settings, pose, figure };
-                let standing = scene.begin_stand_in_zone(zone, content, renderer, gpu)?;
+                let standing = scene.begin_stand_in_zone(zone, content)?;
+                stand.part = StandPart::ZoneLit(standing, arena);
+                Ok(None)
+            }
+            StandPart::ZoneLit(standing, arena) => {
+                let standing = scene.light_zone(standing, content, renderer, gpu)?;
                 stand.part = StandPart::Zone(standing, arena);
                 Ok(None)
             }
@@ -2377,6 +2408,11 @@ impl Fight {
                         (sapphire_zone::pack_name(stem), sapphire_core::Name::new(at).as_u64());
                     trip::Home::Zone(ZoneTarget { zone, pack, arrive })
                 });
+                stand.part = StandPart::Placed;
+                Ok(None)
+            }
+            StandPart::Placed => {
+                scene.place_zone(content);
                 stand.part = StandPart::Timelines;
                 Ok(None)
             }
@@ -2475,12 +2511,27 @@ impl Fight {
     }
 
     /// Ends the run that's there, writing its file if it keeps one: [`Self::start_run`]'s first part, which a
-    /// game's restart takes a frame of its own for (M4 H4).
+    /// game's restart takes a frame of its own for (M4 H4). The run ends off the frame (M4 H8): `--record`'s
+    /// file is encoded and written there, and the run let go, where they held the restart's wipe. A run ended
+    /// before it is waited for first, so the files land in the order the runs ended, and [`Self::finish`]
+    /// waits for it too, so a quit leaves every file whole.
     pub fn end_run(&mut self) {
-        if let Some(ended) = self.combat.take()
-            && let Err(error) = ended.finish()
-        {
-            tracing::warn!(target: LOG_TARGET, %error, "the run that ended didn't end well");
+        let Some(ended) = self.combat.take() else { return };
+        self.wait_for_ending();
+        let (done, ending) = mpsc::channel();
+        sapphire_jobs::spawn_async(move || {
+            if let Err(error) = ended.finish() {
+                tracing::warn!(target: LOG_TARGET, %error, "the run that ended didn't end well");
+            }
+            let _ = done.send(());
+        });
+        self.ending = Some(ending);
+    }
+
+    /// Waits until the run [`Self::end_run`] last ended is done with its file. One that panicked is done.
+    fn wait_for_ending(&mut self) {
+        if let Some(ending) = self.ending.take() {
+            let _ = ending.recv();
         }
     }
 
@@ -2550,6 +2601,7 @@ impl Fight {
         if volumes.encounters > 0 {
             tracing::info!(target: LOG_TARGET, stats = ?volumes, "warmed a fight's encounters");
         }
+        self.wait_for_ending();
         self.combat.take().map_or(Ok(()), Combat::finish)
     }
 }

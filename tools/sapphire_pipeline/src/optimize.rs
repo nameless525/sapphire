@@ -406,7 +406,7 @@ fn spacing(mesh: &ImportedMesh, indices: &[u32], scale: f32) -> f32 {
 fn posed_positions(mesh: &ImportedMesh, skin: &ImportedSkin, axis: Vec3, angle: f32) -> Vec<Vec3> {
     let mut pivots: Vec<Option<Vec3>> = vec![None; skin.joints.len()];
     for bind in &skin.binds {
-        let pivot = Mat4::from_cols_array_2d(&bind.inverse_bind_matrix).inverse().w_axis.truncate();
+        let pivot = det::mat4_inverse(&Mat4::from_cols_array_2d(&bind.inverse_bind_matrix)).w_axis.truncate();
         if let Some(first @ None) = pivots.get_mut(usize::from(bind.joint))
             && pivot.is_finite()
         {

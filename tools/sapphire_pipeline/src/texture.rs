@@ -94,8 +94,10 @@ use crate::import::image::{
 /// they change output for the same image. The name carries the versions of the crates whose
 /// output the cook embeds, and a test keeps it in step with `Cargo.lock`: every `ctt*` crate
 /// (the encoders are separate crates on caret ranges, so `cargo update` can move them alone)
-/// and `ktx2`, whose generated descriptors the reader compares byte for byte.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 4 };
+/// and `ktx2`, whose generated descriptors the reader compares byte for byte. 4: x86-64 encodes BC7
+/// with Intel's kernel (M4 C4). 5: astcenc builds without floating-point contraction on AArch64, as
+/// every C++ dependency there does (M4 C6), which moved AArch64's ASTC blocks and nothing on x86-64.
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 5 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;
@@ -991,7 +993,7 @@ mod tests {
                 "combat/lancer/lancer_matcap.png",
                 Cook::Mobile,
                 "8a29b99acbbc608ffb90cb9fc746c7d1481edfb055f4356aab11b15c44ec0417",
-                "ea7140502b95050dc62ee177fba07195689dc7b94b86636a3eb152b14a4d28ad",
+                "42e60f3ea0e807f67c4152c5342bfdf2d5747f77d65d03ddc58707e43424dabe",
             ),
         ];
         let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");

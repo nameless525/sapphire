@@ -28,6 +28,13 @@ CXXSTDLIB_x86_64_linux_android = "c++_static"
 # one FMA on ARM by default, and not on x86-64, so the same script would read differently across the
 # gate's own machines. Luau's compiler folds `%` through the same code. (MSVC warns and ignores it.)
 LUAU_CXXFLAGS = "-ffp-contract=off"
+# C++ on AArch64 hosts doesn't fuse either, so a cook's C++ rounds as on x86-64 (M4 C6): meshoptimizer's
+# simplifier and its vertex-cache and overdraw scores, fused on a Mac and not on CI's x86-64 runners, cooked
+# 134 meshes to other bytes. x86-64 has no FMA without `-mfma` and MSVC doesn't contract by default, so only
+# AArch64's Clang and GCC need it. cc adds these to `CXXFLAGS`, which stays free for a person's or xtask's own,
+# and after a crate's own flags: astcenc's `-ffp-contract=fast` loses too, so ASTC moved once on AArch64.
+CXXFLAGS_aarch64_apple_darwin = "-ffp-contract=off"
+CXXFLAGS_aarch64_unknown_linux_gnu = "-ffp-contract=off"
 
 # Windows gives a main thread a 1 MiB stack, and d3dcompiler_47, which wgpu compiles HLSL with on
 # D3D12, needs more than that on the anime character shader once the app's own frames are counted.

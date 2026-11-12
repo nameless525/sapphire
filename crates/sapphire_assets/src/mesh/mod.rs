@@ -91,6 +91,7 @@ mod skin;
 mod validate;
 
 use bevy_reflect::TypePath;
+use sapphire_math::det;
 use sapphire_reflect::Versioned;
 /// The buffer cooked meshes are written to, and must be read from: 16-byte aligned.
 pub use sapphire_serialize::cooked::AlignedVec;
@@ -608,7 +609,11 @@ impl ArchivedMesh {
 fn enclosing<const N: usize>(values: impl IntoIterator<Item = [f32; N]>) -> Option<([f32; N], [f32; N])> {
     values.into_iter().fold(None, |bounds, value| {
         let (min, max) = bounds.unwrap_or((value, value));
-        Some((std::array::from_fn(|i| min[i].min(value[i])), std::array::from_fn(|i| max[i].max(value[i]))))
+        // `det`'s, whose zeros' signs don't hang on the architecture (M4 C6).
+        Some((
+            std::array::from_fn(|i| det::min(min[i], value[i])),
+            std::array::from_fn(|i| det::max(max[i], value[i])),
+        ))
     })
 }
 

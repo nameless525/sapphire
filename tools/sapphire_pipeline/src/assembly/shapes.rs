@@ -633,8 +633,8 @@ impl Mesh {
     /// `other`'s triangles, turned by `rotation` and moved by `offset`.
     pub fn append(&mut self, other: Mesh, rotation: Quat, offset: Vec3) {
         for mut triangle in other.triangles {
-            triangle.positions = triangle.positions.map(|p| rotation * p + offset);
-            triangle.normals = triangle.normals.map(|n| rotation * n);
+            triangle.positions = triangle.positions.map(|p| det::quat_rotate(rotation, p) + offset);
+            triangle.normals = triangle.normals.map(|n| det::quat_rotate(rotation, n));
             self.triangles.push(triangle);
         }
     }

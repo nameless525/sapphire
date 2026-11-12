@@ -13,6 +13,7 @@
 //! ```text
 //! <out>/release.smanifest               the current release: the one name that changes, written last
 //! <out>/manifests/<version>.smanifest   every release published there, never rewritten
+//! <out>/manifests/<version>.arch        the architecture it was cooked on, for publishers only (M4 S7)
 //! <out>/packs/<header hash>.spack       each pack, by its header hash in hex
 //! <out>/files/<blake3>                  each file outside the packs, by its hash in hex
 //! ```
@@ -27,7 +28,9 @@
 //! anything is written unless an install of the earlier release would take it, of the same cook, newer, and
 //! signed by a key the earlier names, and unless it carries only what a patch may: every file the simulation
 //! reads as the earlier release has it, the first one that isn't named (m4-plan §3 "What a patch may carry").
-//! What the simulation reads otherwise is compiled into the app, so no pack can change it.
+//! What the simulation reads otherwise is compiled into the app, so no pack can change it. A patch also counts
+//! what it moves, by kind, and is warned of when that's more than an edit moves or when the two releases were
+//! cooked on different architectures ([`PatchSize`], M4 S7).
 //!
 //! **Key files** (M4 X4): the maintainer keeps the release key offline as a file holding its seed in hex, as
 //! [`KEY_VAR`] takes it. [`new_key_file`] writes a new one, never over a file that's there, and
@@ -49,6 +52,10 @@ use sapphire_assets::pack::{HEADER_LEN, PACK_EXTENSION, PackError, PackHeader};
 use crate::cook::Cook;
 use crate::meta;
 use crate::pack::NOTICES;
+
+mod patch_size;
+
+pub use patch_size::{ARCH_EXTENSION, KindBytes, PatchSize, WARN_SHARE};
 
 /// The environment variable a release's signing keys come from: each key's 32-byte ed25519 seed in hex,
 /// separated by commas when a release is signed by an old key and a new one.
@@ -138,6 +145,8 @@ pub struct Published {
     /// Packs and files copied, as against those the host directory already held.
     pub written: usize,
     pub kept: usize,
+    /// What a patch moves over the release it patches, with `--patch-from`.
+    pub patch: Option<PatchSize>,
 }
 
 /// What a release says beyond its content.
@@ -263,9 +272,14 @@ pub fn publish(
     let signed = release.encode(&signatures).map_err(manifest_error)?;
     // What a client will do with it, before anything's written.
     Manifest::verify(&signed, &signers).map_err(manifest_error)?;
-    if let Some(path) = &options.patch_from {
-        check_patch(&read_manifest(path)?, &release, &signers)?;
-    }
+    let patch = match &options.patch_from {
+        Some(path) => {
+            let from = read_manifest(path)?;
+            check_patch(&from, &release, &signers)?;
+            Some(PatchSize::measure(path, &from, packs, &release, signed.len() as u64)?)
+        }
+        None => None,
+    };
 
     if current_path.exists() {
         let existing = read_manifest(&current_path)?;
@@ -316,6 +330,8 @@ pub fn publish(
     }
     let history = out.join("manifests").join(format!("{}.smanifest", release.version));
     write_once(&history, &signed)?;
+    let architecture = format!("{}\n", patch_size::this_architecture());
+    write_once(&history.with_extension(ARCH_EXTENSION), architecture.as_bytes())?;
     meta::replace_file(&current_path, &signed)
         .map_err(|source| ReleaseError::Io { path: current_path, source })?;
     Ok(Published {
@@ -323,6 +339,7 @@ pub fn publish(
         current: out.join(manifest::FILE_NAME),
         written,
         kept: copies.len() - written,
+        patch,
     })
 }
 

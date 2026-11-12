@@ -262,6 +262,85 @@ fn a_patch_carries_only_what_a_patch_may_and_names_what_it_may_not() {
     assert_eq!(first.accept_successor(&signed, 1_800_000_000, 1200), Ok(published.manifest));
 }
 
+/// `--patch-from` counts what an install of the earlier release fetches, as `sapphire_patch` plans it, by
+/// the kind of each new block, and says where each release was cooked (M4 S7).
+#[test]
+fn a_patch_counts_what_it_moves_by_kind() {
+    let cooked = Cooked::new("release_patch_size");
+    let out = cooked.out();
+    assert!(publish(&cooked.packs(), &out, &options(1), &[key(7)]).unwrap().patch.is_none());
+    let arch = fs::read_to_string(out.join("manifests/1.arch")).unwrap();
+    assert_eq!(arch, format!("{}\n", std::env::consts::ARCH), "each release records where it was cooked");
+    let patch = |version: u64| ReleaseOptions {
+        patch_from: Some(out.join(format!("manifests/{}.smanifest", version - 1))),
+        ..options(version)
+    };
+
+    // A presentation file changed: the manifest and that file, nothing of the packs.
+    fs::write(cooked.packs().join("documents/hud.ron"), format!("{HUD}\n// a new HUD\n")).unwrap();
+    write_manifest(&cooked.packs(), Cook::Desktop).unwrap();
+    let published = publish(&cooked.packs(), &out, &patch(2), &[key(7)]).unwrap();
+    let size = published.patch.expect("a patch's size");
+    let hud = fs::metadata(cooked.packs().join("documents/hud.ron")).unwrap().len();
+    assert_eq!((size.from, size.version, size.changed_packs, size.tables), (1, 2, 0, 0));
+    assert_eq!(size.files, hud);
+    assert_eq!(size.manifest, fs::metadata(&published.current).unwrap().len());
+    assert_eq!(size.total(), size.manifest + hud);
+    assert!(size.kinds.values().all(|kind| kind.new == 0), "{size:?}");
+    let packs: u64 = ["shared", "zone_town"]
+        .iter()
+        .map(|name| fs::metadata(cooked.packs().join(format!("{name}.spack"))).unwrap().len())
+        .sum();
+    assert!(size.cook_bytes > packs, "the cook is its packs and its files");
+    assert_eq!(size.from_architecture.as_deref(), Some(std::env::consts::ARCH));
+    // This cook is a few kilobytes, so any edit is a large share of it: only the architecture is judged here.
+    let cooked_elsewhere =
+        |size: &PatchSize| size.warnings().iter().any(|warning| warning.contains(" was cooked on "));
+    assert!(!cooked_elsewhere(&size), "{:?}", size.warnings());
+
+    // A pack whose one texture changed: its header and table, and its new blocks as textures. The whole
+    // pack is new, much of this cook, so it's warned of.
+    fs::write(cooked.packs().join("zone_town.spack"), pack(3)).unwrap();
+    write_manifest(&cooked.packs(), Cook::Desktop).unwrap();
+    let size = publish(&cooked.packs(), &out, &patch(3), &[key(7)]).unwrap().patch.unwrap();
+    let toc_end = |bytes: &[u8]| PackHeader::read(bytes).unwrap().toc_range().end;
+    let pack3 = pack(3);
+    assert_eq!((size.changed_packs, size.tables, size.files), (1, toc_end(&pack3), 0));
+    let texture = size.kinds["texture"];
+    let reader = sapphire_assets::pack::PackReader::new(&pack3).unwrap();
+    let stored: u64 = reader
+        .toc()
+        .entries()
+        .iter()
+        .flat_map(|entry| reader.toc().blocks(entry))
+        .map(|block| u64::from(block.stored_len))
+        .sum();
+    assert_eq!(texture.new, stored, "every block of the new texture");
+    assert!(texture.cook > texture.new, "the other pack's texture is the cook's too");
+    assert!(size.warnings()[0].contains("of its cook over release 2"), "{:?}", size.warnings());
+    assert!(!cooked_elsewhere(&size), "{:?}", size.warnings());
+    assert!(size.to_string().contains("\n  texture "), "{size}");
+
+    // Release 3 cooked on another architecture, by its record: release 4 is warned of, though it moves
+    // nothing but its manifest. A release published before the record says so, and isn't.
+    let other = if std::env::consts::ARCH == "x86_64" { "aarch64" } else { "x86_64" };
+    fs::write(out.join("manifests/3.arch"), format!("{other}\n")).unwrap();
+    let size = publish(&cooked.packs(), &out, &patch(4), &[key(7)]).unwrap().patch.unwrap();
+    assert_eq!(size.total(), size.manifest);
+    let warnings = size.warnings();
+    let wanted = format!("release 3 was cooked on {other} and release 4 on {}", std::env::consts::ARCH);
+    assert!(warnings.iter().any(|warning| warning.starts_with(&wanted)), "{warnings:?}");
+    fs::remove_file(out.join("manifests/4.arch")).unwrap();
+    let size = publish(&cooked.packs(), &out, &patch(5), &[key(7)]).unwrap().patch.unwrap();
+    assert!(!cooked_elsewhere(&size) && size.to_string().contains("release 4 records no architecture"));
+
+    // An earlier release's pack missing from the host counts whole, and is named.
+    let hosted = out.join("packs").join(format!("{}.spack", hex(&PackHeader::read(&pack3).unwrap().hash())));
+    fs::remove_file(hosted).unwrap();
+    let size = publish(&cooked.packs(), &out, &patch(6), &[key(7)]).unwrap().patch.unwrap();
+    assert!(size.warnings().iter().any(|warning| warning.contains("packs zone_town aren't in the host")));
+}
+
 #[test]
 fn keys_come_from_the_environment_and_are_never_echoed() {
     assert!(matches!(keys_from_env(None), Err(ReleaseError::NoKey)));

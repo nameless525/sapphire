@@ -11,7 +11,10 @@
 //!
 //! `--patch-from <manifest>` makes the release a patch of an earlier one, whose signed manifest it names: the
 //! pipeline refuses, before anything is written, a patch that changes a file the simulation reads (naming it)
-//! or one an install of the earlier release wouldn't take (M4 P3, m4-plan §3 "What a patch may carry").
+//! or one an install of the earlier release wouldn't take (M4 P3, m4-plan §3 "What a patch may carry"). It
+//! prints what an install of the earlier release fetches, by asset kind with each one's share of the cook, and
+//! warns over `sapphire_pipeline::release::WARN_SHARE` of the cook or when the two releases were cooked on
+//! different architectures (M4 S7: `PatchSize` there; each release records its in `manifests/<n>.arch`).
 //!
 //! The command itself is a thin entry, cooking and then publishing; `package` calls [`publish`] on the cook it
 //! made, when it's given a release's options ([`Release::from_args`]).

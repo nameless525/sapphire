@@ -89,7 +89,9 @@ Usage:
       higher than --out's current release's. The release names the keys that may sign the next
       one: the signing keys, unless --next-keys says. With --patch-from, it's a patch of that
       earlier release: refused, naming the file, if it changes anything the simulation reads, and
-      unless an install of the earlier one would take it (same cook, newer, a key it names).
+      unless an install of the earlier one would take it (same cook, newer, a key it names). It
+      prints what an install of the earlier release fetches, by kind, and warns when that's over
+      5% of the cook or the two were cooked on different architectures (manifests/<N>.arch).
   sapphire_pipeline release-key new <FILE>
       Write a new release key to FILE, which mustn't be there: an ed25519 seed from the OS's
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
@@ -333,6 +335,12 @@ fn run(command: Command) -> anyhow::Result<()> {
                 published.written,
                 published.kept
             );
+            if let Some(patch) = &published.patch {
+                eprint!("{patch}");
+                for warning in patch.warnings() {
+                    eprintln!("warning: {warning}");
+                }
+            }
         }
         Command::ReleaseKey { file, new } => {
             let public =

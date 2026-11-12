@@ -494,10 +494,9 @@ Each item names the package and its hand-back or row, and why it waits.
 - **Below scale 1, still sub-pixel outlines draw thicker** (T6): +38% strength at 640×360 at 0.7, about none at 1080p, and the depth-offset rim follows the width before its floor. Widening only moving lines would need last frame's positions on every outline pipeline.
 - **`AssetServer::finish` uploads every pending asset,** not only the one asked for (H2). `find_zone` reads with `AssetServer::finish_without_uploads` (H8), but any new caller of `finish` needs the real uploader. Read on the CPU with `finish_cpu`, as screens and zone inventories are.
 - **H3's walk takes the keyboard's path only,** and holds the cue table's effects all at once rather than as a fight times them.
-- **The heat status is asked on the frame thread,** 0.1–0.4 ms once a second on the emulator (T1). A status listener would take it off the frame if a phone hitches.
-- **ADPF's frame report includes the swapchain's wait** (T1), so a GPU-bound frame reads long.
+- **The thermal status comes from a listener on API 30+** (T7); headroom is still polled every 10 s on the frame thread, its cost unmeasured on a phone.
+- **ADPF hears a frame's work less its swapchain waits** (T7). Owed: a phone's real clocks under ADPF, and a GPU-bound frame on a phone's own GPU (the emulator shares the host's). `APerformanceHint_reportActualWorkDuration2` (API 35, separate CPU and GPU durations) is unused.
 - **The emulator's constant headroom of 0.90 reads `Light`** (T2, Z1), so the ladder sits on rung 1 there from 0.03 s after the title, for good, and a phone between 0.85 and 0.95 will too. Only a phone's falling forecast shows the climb to the top.
-- **Whether the frame graph culls the scene prepass on Mobile-High when GTAO is shed** wasn't checked (T2).
 - **Secondary motion on Desktop-Low:** p99 0.72 ms against its 0.5 (H5). Only a cheaper solve, which moves poses and goldens, gets under it.
 - **T4's table is unmeasured:** names a driver reports otherwise (old RADV, NVK) fall to the rules, and Apple's M3 and later and integrated PC GPUs have no rows.
 

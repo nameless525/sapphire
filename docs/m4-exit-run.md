@@ -184,6 +184,8 @@ The test (§1): the character's close-up, the ward and a hit's post get goldens 
 - **The GPU test** `look_tiers` (T0, T2): `lines_and_two_tone_edges_hold_at_every_tier_and_scale` measures lines and the hard edge in output pixels at each tier and scale against scale 1, and `the_ladder_walks_down_and_back_without_building_on_the_frame` walks each tier's ladder on one renderer.
 - **Traces** (T2): `sapphire_render::quality::ladder`'s tests (heating, recovery, heat that comes and goes, a closed-loop dynamic-resolution trace, a lowered tier's climb back, forced depths).
 - **The emulator's override:** the game in its window follows `adb shell cmd thermalservice override-status <n>`, logging each step as `thermal ladder`; `reset` ends it.
+- **Heat is heard, not asked (T7):** on Android the thermal status comes from a listener. Logcat shows `thermal status listener registered` once on `SDLThread`, then `thermal status heard … asked=1` on a `binder:` thread for each `override-status`. A phone run should show the same, with `asked` staying at 1.
+- **ADPF's time (T7):** the sandbox's `frame stats` give `work_ms` (what the hint session hears) and `display_wait_ms` (the swapchain waits it doesn't). On a phone under a GPU-bound load, `work_ms` should stay near the CPU's share while the frame time rises.
 - `follows_the_ladder` and `declares_every_setting` (exit test 1) hold the rungs to building nothing.
 
 ```bash

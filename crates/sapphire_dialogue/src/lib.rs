@@ -49,12 +49,13 @@ mod tests;
 
 pub use condition::{Condition, MAX_CONDITION};
 pub use cooked::{
-    ArchivedDialogue, CookedArm, CookedChoice, CookedNode, CookedSay, DIALOGUE_EXTENSION, Dialogue,
-    DialoguePresentation, DialogueSimulation, Effect, FlagWrite, LineView,
+    ArchivedDialogue, CookedArm, CookedChoice, CookedFace, CookedNode, CookedSay, DIALOGUE_EXTENSION,
+    Dialogue, DialoguePresentation, DialogueSimulation, Effect, FlagWrite, LineView,
 };
 pub use document::{
-    BranchArm, ChoiceDocument, DialogueDocument, DialogueError, KEY_PREFIX, MAX_ARMS, MAX_CHOICES, MAX_NODES,
-    MAX_SOURCE, MAX_WRITES, NodeDocument, SayDocument,
+    BranchArm, ChoiceDocument, DEFAULT_FACE_BLEND, DialogueDocument, DialogueError, KEY_PREFIX, MAX_ARMS,
+    MAX_CHOICES, MAX_FACE_BLEND, MAX_FACES, MAX_NODES, MAX_SOURCE, MAX_WRITES, NodeDocument, SayDocument,
+    SayFace,
 };
 pub use flags::{FlagRegistry, MAX_FLAGS};
 pub use walk::{ChoiceView, ConditionId, DialogueView, DialogueWalk, DialogueWorld, EffectId};

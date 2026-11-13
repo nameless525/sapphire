@@ -232,6 +232,10 @@ fn checks_name_the_field() {
             "`nodes[1].say.speaker`",
         ),
         (r#"vo: "guide_greet""#, r#"vo: """#, "`nodes[0].say.vo`"),
+        (r#"(role: "hero""#, r#"(role: """#, "`nodes[2].say.faces[0].role`"),
+        (r#"expression: "happy""#, r#"expression: """#, "`nodes[2].say.faces[0].expression`"),
+        (r#"weight: 0.7"#, r#"weight: 1.7"#, "`nodes[2].say.faces[0].weight`"),
+        (r#"blend: 0.5"#, r#"blend: -0.5"#, "`nodes[2].say.faces[1].blend`"),
         (r#"to: "lit", set"#, r#"to: "gone", set"#, "`nodes[1].choices[0].to`"),
         (r#"line: "dialogue-choice-leave""#, r#"line: "leave now""#, "`nodes[1].choices[2].line`"),
         (r#""flag.ward_lit >= 1""#, r#""flag.ward_lit""#, "`nodes[1].choices[1].when`"),
@@ -266,8 +270,8 @@ fn checks_name_the_field() {
         (r#"otherwise: "farewell""#, r#"otherwise: "farewell", next: "greet""#, "`nodes[3].next`"),
         (r#"to: "greet")], otherwise"#, r#"to: "again")], otherwise"#, "`nodes[3]`"),
         (
-            r#"line: "dialogue-guide-thanks")"#,
-            r#"line: "dialogue-guide-thanks"), branch: [(when: "flag.visits > 1", to: "greet")]"#,
+            r#"blend: 0.5)])"#,
+            r#"blend: 0.5)]), branch: [(when: "flag.visits > 1", to: "greet")]"#,
             "`nodes[2].branch`",
         ),
         (
@@ -315,6 +319,48 @@ fn conditions_the_compiler_refuses_stop_the_cook() {
     assert!(error.contains("don't compile"), "{error}");
 }
 
+/// M5 C5: a line's faces are presentation's, so the digest the guide's pinned to above holds with them, and
+/// a version 1 document, which has none, still loads.
+#[test]
+fn faces_stay_out_of_the_digest_and_version_1_still_loads() {
+    let dialogue = cooked();
+    let faces = &dialogue.presentation.nodes[2].say.as_ref().unwrap().faces;
+    assert_eq!(faces.len(), 2);
+    assert_eq!(
+        (faces[0].role, faces[0].expression),
+        (Name::new("hero").as_u64(), Name::new("happy").as_u64())
+    );
+    assert_eq!((faces[0].weight, faces[0].blend, faces[1].weight, faces[1].blend), (0.7, 0.2, 1.0, 0.5));
+    let mut plain = guide();
+    plain.nodes[2].say.as_mut().unwrap().faces.clear();
+    let plain = plain.cook(&registry(), compile).unwrap();
+    assert_eq!(plain.simulation.digest(), dialogue.simulation.digest());
+
+    let at = GUIDE.find(", faces: [").unwrap();
+    let end = at + GUIDE[at..].find("])").unwrap() + 1;
+    let old = format!("{}{}", &GUIDE[..at], &GUIDE[end..]).replacen("version: 2,", "version: 1,", 1);
+    let old = DialogueDocument::from_ron(&old).expect("version 1 loads");
+    assert_eq!(old.cook(&registry(), compile).unwrap(), plain);
+    for version in ["version: 0,", "version: 3,"] {
+        assert!(DialogueDocument::from_ron(&GUIDE.replacen("version: 2,", version, 1)).is_err(), "{version}");
+    }
+    let committed = include_str!("../../../content/dialogue/ward_guide.dialogue.ron");
+    assert!(committed.contains("version: 1,") && DialogueDocument::from_ron(committed).is_ok());
+}
+
+#[test]
+fn a_lines_view_has_its_faces() {
+    let mut world = Flags::new(&[]);
+    let dialogue = world.dialogue.clone();
+    let mut at = walk(&mut world);
+    assert!(at.view(&dialogue).unwrap().faces.is_empty());
+    at.next(&dialogue, &mut world);
+    at.choose(&dialogue, 0, &mut world);
+    let view = at.view(&dialogue).unwrap();
+    assert_eq!(view.line, "dialogue-guide-thanks");
+    assert_eq!(view.faces.len(), 2);
+}
+
 /// Bytes from somewhere else get what a document gets: a graph a document couldn't hold, a pack can't.
 #[test]
 fn values_a_document_cant_hold_a_pack_cant_either() {
@@ -331,6 +377,13 @@ fn values_a_document_cant_hold_a_pack_cant_either() {
         ("`source`", |d| d.presentation.source.clear()),
         ("`source`", |d| d.presentation.source = "-".repeat(crate::MAX_SOURCE + 1)),
         ("`effects[0].writes`", |d| d.simulation.effects[0].writes.clear()),
+        ("`nodes[2].say.faces[0].weight`", |d| {
+            d.presentation.nodes[2].say.as_mut().unwrap().faces[0].weight = f32::NAN
+        }),
+        ("`nodes[2].say.faces`", |d| {
+            let say = d.presentation.nodes[2].say.as_mut().unwrap();
+            say.faces = vec![say.faces[0]; crate::MAX_FACES + 1];
+        }),
         ("`nodes[1].choices`", |d| {
             for choice in &mut d.presentation.nodes[1].choices {
                 choice.when = Some(0);

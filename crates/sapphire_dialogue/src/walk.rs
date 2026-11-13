@@ -12,7 +12,7 @@
 
 use sapphire_core::Name;
 
-use crate::cooked::{CookedNode, Dialogue};
+use crate::cooked::{CookedFace, CookedNode, Dialogue};
 use crate::document::MAX_CHOICES;
 
 /// A condition of a dialogue: the function at this place in its chunk's `conditions`, from 0.
@@ -32,11 +32,14 @@ pub trait DialogueWorld {
 }
 
 /// What a panel shows: see the [module docs](self). Keys, for `sapphire_loc`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DialogueView<'a> {
     pub speaker: &'a str,
     pub line: &'a str,
     pub vo: Option<&'a str>,
+    /// The faces the line sets (M5 C5): a game holds each until a later line sets that role's again, or the
+    /// conversation ends.
+    pub faces: &'a [CookedFace],
     /// The choices shown, from the first slot, in the document's order: [`DialogueWalk::choose`] takes a
     /// slot.
     pub choices: [Option<ChoiceView<'a>>; MAX_CHOICES],
@@ -119,6 +122,7 @@ impl DialogueWalk {
             speaker: &say.speaker,
             line: &say.line,
             vo: say.vo.as_deref(),
+            faces: &say.faces,
             choices,
             next: node.choices.is_empty(),
         })

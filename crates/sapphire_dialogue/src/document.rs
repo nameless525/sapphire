@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::dialogue::DialogueDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         start: "greet",
 //!         // A zone's trigger whose event this is opens it, as someone goes in. Without, nothing does.
@@ -22,9 +22,11 @@
 //!                 // No `to`: the conversation ends.
 //!                 (line: "dialogue-leave"),
 //!             ]),
-//!             // Saying a line can set flags too, as it's shown.
-//!             (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks"),
-//!              set: [("met_guide", 1)]),
+//!             // Saying a line can set flags too, as it's shown, and faces (version 2, M5 C5): a role's
+//!             // expression preset, as a timeline's face key has it, held until a line sets that role's
+//!             // again or the conversation ends.
+//!             (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks",
+//!              faces: [(role: "hero", expression: "happy", weight: 0.7)]), set: [("met_guide", 1)]),
 //!             // A branch says nothing: it goes to the first arm whose `when` holds, or `otherwise`.
 //!             (name: "again", branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "lit"),
 //!         ],
@@ -41,14 +43,14 @@ use std::fmt::Write as _;
 
 use bevy_reflect::Reflect;
 use sapphire_core::Name;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::{CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::condition::Condition;
 use crate::cooked::{
-    CookedArm, CookedChoice, CookedNode, CookedSay, Dialogue, DialoguePresentation, DialogueSimulation,
-    Effect, FlagWrite,
+    CookedArm, CookedChoice, CookedFace, CookedNode, CookedSay, Dialogue, DialoguePresentation,
+    DialogueSimulation, Effect, FlagWrite,
 };
 use crate::flags::FlagRegistry;
 
@@ -72,7 +74,7 @@ pub const MAX_SOURCE: usize = 1 << 20;
 pub const KEY_PREFIX: &str = "dialogue-";
 
 /// A dialogue document: see the [module docs](self).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::dialogue"]
 #[serde(deny_unknown_fields)]
 pub struct DialogueDocument {
@@ -86,12 +88,20 @@ pub struct DialogueDocument {
 }
 
 impl Versioned for DialogueDocument {
-    /// 1: M3 Q2, with `opens_on` since M3 Q2b, which a document without needn't say.
-    const VERSION: u32 = 1;
+    /// 1: M3 Q2, with `opens_on` since M3 Q2b, which a document without needn't say. 2: M5 C5's faces on a
+    /// line, which default to none, so a version 1 document decodes as it is.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode().map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 /// A node: a line, with a `next` or `choices` or neither, or a branch.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::dialogue"]
 #[serde(deny_unknown_fields)]
 pub struct NodeDocument {
@@ -117,7 +127,7 @@ pub struct NodeDocument {
 }
 
 /// Who says what, by `sapphire_loc`'s keys.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::dialogue"]
 #[serde(deny_unknown_fields)]
 pub struct SayDocument {
@@ -126,6 +136,42 @@ pub struct SayDocument {
     /// A voice line's cue, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vo: Option<String>,
+    /// Faces the line sets as it's shown (M5 C5), each held until a later line sets that role's again or
+    /// the conversation ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faces: Vec<SayFace>,
+}
+
+/// An expression a line sets on a character's face, as a timeline's face key does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::dialogue"]
+#[serde(deny_unknown_fields)]
+pub struct SayFace {
+    /// Who, as a timeline's track names them: `hero`, `foe`, or a kind of enemy by its name.
+    pub role: String,
+    /// A VRM 1.0 expression preset, by its name (`happy`, `sad`). The cook refuses any other.
+    pub expression: String,
+    /// 0 to 1: 1 with none.
+    #[serde(default = "full")]
+    pub weight: f32,
+    /// Seconds from the face before; [`DEFAULT_FACE_BLEND`] with none.
+    #[serde(default = "default_face_blend")]
+    pub blend: f32,
+}
+
+/// How long a face takes to change when a line doesn't say, in seconds: a timeline's.
+pub const DEFAULT_FACE_BLEND: f32 = 0.2;
+/// The most faces one line sets.
+pub const MAX_FACES: usize = 4;
+/// The longest blend, in seconds.
+pub const MAX_FACE_BLEND: f32 = 60.0;
+
+fn full() -> f32 {
+    1.0
+}
+
+fn default_face_blend() -> f32 {
+    DEFAULT_FACE_BLEND
 }
 
 /// One of a node's choices.
@@ -219,6 +265,34 @@ pub(crate) fn check_shown_key(field: impl Fn() -> String, key: &str) -> Result<(
             format!("{key:?} doesn't start with `{KEY_PREFIX}`, which is all a dialogue panel reads");
         Err(DialogueError::invalid(field(), problem))
     }
+}
+
+/// A line's faces: a role and an expression each, by name, and a weight and blend that are numbers.
+pub(crate) fn check_faces(
+    field: impl Fn() -> String,
+    count: usize,
+    faces: impl Iterator<Item = (bool, f32, f32)>,
+) -> Result<(), DialogueError> {
+    if count > MAX_FACES {
+        let problem = format!("{count} faces, past the limit of {MAX_FACES}");
+        return Err(DialogueError::invalid(field(), problem));
+    }
+    for (index, (named, weight, blend)) in faces.enumerate() {
+        let at = |part: &str| format!("{}[{index}].{part}", field());
+        if !named {
+            return Err(DialogueError::invalid(at("role"), format!("a name is 1 to {MAX_KEY} bytes")));
+        }
+        if !(0.0..=1.0).contains(&weight) {
+            return Err(DialogueError::invalid(at("weight"), format!("{weight} is outside 0 to 1")));
+        }
+        if !(0.0..=MAX_FACE_BLEND).contains(&blend) {
+            return Err(DialogueError::invalid(
+                at("blend"),
+                format!("{blend} is outside 0 to {MAX_FACE_BLEND}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn check_cue(field: impl FnOnce() -> String, cue: &str) -> Result<(), DialogueError> {
@@ -478,7 +552,32 @@ fn cook_node(
         let problem = "one choice has no `when`, so there's always something to pick";
         return Err(DialogueError::invalid(at("choices"), problem));
     }
-    let say = CookedSay { speaker: say.speaker.clone(), line: say.line.clone(), vo: say.vo.clone() };
+    for (face_index, face) in say.faces.iter().enumerate() {
+        let field = |part: &str| format!("nodes[{index}].say.faces[{face_index}].{part}");
+        if !(1..=MAX_KEY).contains(&face.expression.len()) {
+            return Err(DialogueError::invalid(
+                field("expression"),
+                format!("a name is 1 to {MAX_KEY} bytes"),
+            ));
+        }
+    }
+    let named = |name: &str| (1..=MAX_KEY).contains(&name.len());
+    check_faces(
+        || at("say.faces"),
+        say.faces.len(),
+        say.faces.iter().map(|face| (named(&face.role), face.weight, face.blend)),
+    )?;
+    let faces = say
+        .faces
+        .iter()
+        .map(|face| CookedFace {
+            role: Name::new(&face.role).as_u64(),
+            expression: Name::new(&face.expression).as_u64(),
+            weight: face.weight,
+            blend: face.blend,
+        })
+        .collect();
+    let say = CookedSay { speaker: say.speaker.clone(), line: say.line.clone(), vo: say.vo.clone(), faces };
     Ok(CookedNode { name, say: Some(say), effect, next, choices, branch: Vec::new(), otherwise: None })
 }
 

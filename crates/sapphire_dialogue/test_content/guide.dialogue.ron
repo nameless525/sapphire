@@ -1,7 +1,8 @@
-// The guide at the ward: every kind of node, a choice that hides, a branch, and a way out.
+// The guide at the ward: every kind of node, a choice that hides, a branch, and a way out, and (version 2,
+// M5 C5) a line that sets a face.
 (
     type: "sapphire::dialogue::DialogueDocument",
-    version: 1,
+    version: 2,
     data: (
         start: "greet",
         opens_on: "court_entered",
@@ -12,7 +13,7 @@
                 (line: "dialogue-choice-ask-again", to: "again", when: "flag.ward_lit >= 1"),
                 (line: "dialogue-choice-leave"),
             ]),
-            (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks"), set: [("met_guide", 1)], next: "again"),
+            (name: "lit", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-thanks", faces: [(role: "hero", expression: "happy", weight: 0.7), (role: "enemy-captain", expression: "sad", blend: 0.5)]), set: [("met_guide", 1)], next: "again"),
             (name: "again", branch: [(when: "flag.met_guide == 0", to: "greet")], otherwise: "farewell"),
             (name: "farewell", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-farewell")),
         ],

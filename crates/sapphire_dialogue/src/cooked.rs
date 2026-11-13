@@ -24,15 +24,15 @@ use sapphire_serialize::cooked::AlignedVec;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::document::{
-    DialogueError, MAX_ARMS, MAX_CHOICES, MAX_NODES, MAX_SOURCE, MAX_WRITES, check_cue, check_graph,
-    check_shown_key,
+    DialogueError, MAX_ARMS, MAX_CHOICES, MAX_NODES, MAX_SOURCE, MAX_WRITES, check_cue, check_faces,
+    check_graph, check_shown_key,
 };
 
 /// Conventional file extension for cooked dialogues.
 pub const DIALOGUE_EXTENSION: &str = "sdialogue";
 
 /// A cooked dialogue. See the [module docs](self).
-#[derive(Clone, Debug, PartialEq, Eq, TypePath, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Debug, PartialEq, TypePath, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::dialogue"]
 pub struct Dialogue {
@@ -41,8 +41,9 @@ pub struct Dialogue {
 }
 
 impl Versioned for Dialogue {
-    /// 1: M3 Q2. 2: M3 Q2b's conditions as source, not bytecode, and the trigger that opens it.
-    const VERSION: u32 = 2;
+    /// 1: M3 Q2. 2: M3 Q2b's conditions as source, not bytecode, and the trigger that opens it. 3: M5 C5's
+    /// faces on a line, in the presentation half.
+    const VERSION: u32 = 3;
 }
 
 /// What a dialogue can do to the simulation.
@@ -70,7 +71,7 @@ pub struct FlagWrite {
 }
 
 /// What only presentation reads: the graph and what it shows.
-#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct DialoguePresentation {
     /// The node it starts at.
@@ -89,7 +90,7 @@ pub struct DialoguePresentation {
 }
 
 /// A node, as the document's, with names made places.
-#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct CookedNode {
     /// Its name's hash.
@@ -102,12 +103,24 @@ pub struct CookedNode {
     pub otherwise: Option<u16>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct CookedSay {
     pub speaker: String,
     pub line: String,
     pub vo: Option<String>,
+    /// The faces it sets, as it's shown (M5 C5).
+    pub faces: Vec<CookedFace>,
+}
+
+/// A face a line sets, by its role's and its expression preset's names' hashes.
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedFace {
+    pub role: u64,
+    pub expression: u64,
+    pub weight: f32,
+    pub blend: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -232,6 +245,12 @@ impl Dialogue {
                 if let Some(vo) = &say.vo {
                     check_cue(|| at("say.vo"), vo)?;
                 }
+                // A role's a hash, so any is a name.
+                check_faces(
+                    || at("say.faces"),
+                    say.faces.len(),
+                    say.faces.iter().map(|face| (true, face.weight, face.blend)),
+                )?;
                 if !node.branch.is_empty() || node.otherwise.is_some() {
                     return Err(DialogueError::invalid(
                         at("branch"),

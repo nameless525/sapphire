@@ -61,6 +61,7 @@ Each milestone has a plan (work packages and their "As built" notes), an exit ru
 | [m4-exit-run.md](m4-exit-run.md) | M4's exit-test runbook: what to measure, and what only a device or an account proves |
 | [m4-handoff.md](m4-handoff.md) | What M4 inherited from M3, with the first "How to add" recipes |
 | [m5-handoff.md](m5-handoff.md) | What the next milestone inherits from M4 (also under "Working in the code") |
+| [m5-plan.md](m5-plan.md) | M5, fidelity at scale, **the milestone under way**: a benchmark at the content budgets, exit tests (§1), decisions (§3), work packages by track (§4), what's needed from the maintainer (§7) |
 
 `docs/media/` holds screenshots the older docs show.
 
@@ -76,3 +77,4 @@ Background reading behind the packages: web research, with each claim marked unv
 | [../research_notes/Combat slice for M2/](../research_notes/Combat%20slice%20for%20M2/) | The animation runtime, content and audio |
 | [../research_notes/World and tools for M3/](../research_notes/World%20and%20tools%20for%20M3/) | The editor, navigation, scripting, text, zones |
 | [../research_notes/Ship readiness for M4/](../research_notes/Ship%20readiness%20for%20M4/) | Accessibility, the three stores, patching, symbols, thermal, and M4's spikes' findings (H0, P0, S0, T0) |
+| [../research_notes/Fidelity at scale for M5/](../research_notes/Fidelity%20at%20scale%20for%20M5/) | Four surveys of the code at 0.1.0: the renderer's scale machinery, the rendering features the look lacks, assets and world data, characters and animation |

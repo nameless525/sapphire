@@ -1,0 +1,364 @@
+# M5 plan: fidelity at scale
+
+- **Status:** planned. The maintainer approved it on 2026-11-13 and asked for M5 to be built to its end. Nothing here is built yet. The maintainer asked what 0.1.0 still needs before it could carry a game like Wuthering Waves or Zenless Zone Zero, then asked for this plan around the answer. Every decision here was taken by the agent who wrote it and approved as a whole, and each can still be undone by saying so (§7). MetalFX's crate wasn't given its own yes, so that spike stays out.
+- **Milestone:** M5, which lands as release 0.2.0. It builds on 0.1.0 (tag `v0.1.0`, 27f29b5f): M0 to M4 built, nothing played by a person, and nothing run on a phone or on a Windows or Linux GPU.
+- **Inputs:**
+  - The spec: §1's scope and non-goals, §3's tiers and budgets (all still proposals), the module specs (§5.10, §5.12, §5.13, §5.16, §5.21, §5.23, §5.27) and §9's gates.
+  - [m5-handoff.md](m5-handoff.md), and the older handoffs' deferred lists it carries.
+  - Four design surveys under [research_notes/Fidelity at scale for M5/](../research_notes/Fidelity%20at%20scale%20for%20M5/): `render-scale.md`, `look-features.md`, `assets-and-world.md` and `characters.md`. Each is a read of the code at 27f29b5f on 2026-11-13, with nothing built or run, and each marks what it couldn't confirm. They correct the handoffs in places (§3, "What the surveys corrected"). A package that leans on one checks it against the code first, and the spikes (§4) exist to do that.
+
+## 1. What M5 is for
+
+M5 answers one question: **can the engine hold the reference games' picture at the reference games' density, on every tier?**
+
+0.1.0 can't say, because everything it has drawn is small:
+
+- the most it has drawn in one view is 162 surface draws, against §3.4's 2,500 on a desktop and 700 on a phone;
+- its hero is 36,470 triangles against 80,000, and its enemies about 3,000 against 8,000;
+- it has fought three enemies at once, against twelve;
+- its whole cook is 39 MB, where one zone's texture pool is budgeted at 2.5 GB;
+- it reflects nothing but the sky, its effects are sprites and ribbons, one character is playable, and a face only blinks.
+
+M5 builds a benchmark at the budgets and measures where the engine breaks. Then it builds what the measurement and the look ask for:
+
+- draw lists, culling and levels of detail that scale;
+- a texture pool that is a hard budget;
+- the missing parts of the picture, ranked by how much of the look each carries;
+- characters at budget, with cloth, faces, a party of three kinds and a crowd around them.
+
+The target is Zenless Zone Zero's structure: zones and a hub, reached through loads (spec §1.1). A seamless open world, co-op, ray tracing and consoles stay non-goals (§1.3). M5 adds no game: the Lantern Ward stays as it is, and no fight is tuned.
+
+### Exit tests
+
+Each test says what this run can prove and what it can't. The run has one machine, an Apple M5, which is none of §3.1's reference devices. It has no phone, no Windows or Linux GPU, no artist and no animator. It may not open a window or download content.
+
+1. **The district holds the frame (new).** A scripted walk of the benchmark district: dusk into night, dry into wet, through its crowd, ending in an encounter of twelve enemies against a party of three. With the view at §3.4's counts (2,500 draws and 64 lights on a desktop, 700 and 8 on a phone), every row of §3.2 and §3.3 is at or under its budget at each tier's settings.
+   - **Proved here:** the Mac at the four tiers' settings, alone on the machine, runs alternated and the least kept. Counts that no machine changes: draws submitted, triangles, skinned vertices, instances, the levels of detail drawn.
+   - **Owed:** every reference device. Metal overlaps its passes, so exclusive GPU pass times are owed to a Vulkan or DX12 GPU too.
+2. **Memory holds under a hard pool (new).** The district's textures come to twice the tier's pool. Through the walk the pool never exceeds its budget and the process stays under §3.1's memory. A surface newly in view reaches the level it asks for within 30 frames at the tier's rate (99th percentile; a proposal M5 sets). Nothing loads on the frame's thread, bytes decoded and waiting for the GPU stay under a cap, and after a trip the mesh pool returns to its floor.
+   - **Proved here:** the Mac, the Simulator and the emulator, by the engine's own counters.
+   - **Owed:** a phone's own memory limit and its kill, a discrete GPU's VRAM, and whether a level arriving late reads as a pop to a person.
+3. **The look survives scale (pillar 1).** Sorting, instancing, culling, levels of detail, streaming and the phone's upscaler leave the picture alone:
+   - every existing golden stays byte-identical;
+   - each optimization has a test that draws the same image with it on and off, or within a stated gate where it can't be exact;
+   - at each switch of a level of detail, outline widths in output pixels and the shading's two-tone edge stay inside the testkit's gates.
+   - **Proved here:** Metal, lavapipe and WARP.
+   - **Owed:** a person's eye on motion, which no golden shows.
+4. **The picture's missing parts (new).** Reflection probes with wet streets, effect meshes with distortion, ground decals, depth of field, the effects pack and cut-ins, dissolves and driven emission, characters shadowing each other, light shafts. Each has goldens on three backends, a stated behaviour on each tier, a budget row it's measured against, a document that authors it, and nothing built or dispatched while it's off.
+   - **Proved here:** all of that, with the look judged by description against the Wuthering Waves frames kept outside the repository.
+   - **Owed:** an artist's eye, and Zenless Zone Zero references, of which there are none.
+5. **Characters at budget (new).** A party of three kinds, each with its own mesh, skeleton, graph and springs at §3.4's hero row, and twelve enemies at 8,000 triangles. Animation and IK, secondary motion with cloth, skinning, outlines and the character prepass each hold their row on each tier. A conversation plays its voice lines with expressions and lip curves. Cloth stays bounded through a ten-minute soak at 30, 60 and 120 Hz.
+   - **Proved here:** on generated figures and generated voice lines.
+   - **Owed:** a second authored character, authored clips, recorded voice, and a person's verdict on the cloth and the faces.
+6. **A crowd (new).** Sixty ambient characters on the desktop tiers and thirty on the phones' walk the district inside the animation row. They are presentation only: every committed replay reaches its checksum with the crowd on and off.
+   - **Proved here:** all of it.
+7. **No hitches at scale (carried from M4).** `zero_hitches` plays the district's walk too: no first use, no pipeline built on the frame's thread, and no frame waiting on a load, a level of detail or a texture level.
+   - **Proved here:** Metal on this Mac, cold and warm, and lavapipe in CI by counts.
+   - **Owed:** a phone driver's cold compile, as in M4.
+8. **Still authorable (pillar 1 of M3, carried).** Each new thing has a "How to add" recipe with no Rust step: a level-of-detail setting, a reflection probe, a zone's weather, a decal, an effect mesh, a focus key, a cloth, a face track, an ambient character and a playable kind.
+   - **Proved here:** all of it, by walking the recipes.
+
+**Feel stays unknown.** Nobody has played anything, and M5 doesn't change that. Everything it builds serves any game on this engine, so a bad answer from a playtest costs M5 nothing but the party's HUD.
+
+## 2. What "done well" means
+
+Ranked. Each has a measure a test or a bench can read.
+
+| # | Pillar | Measure |
+|---|---|---|
+| 1 | **The look holds at scale.** No level of detail, culled draw, streamed texture or upscale touches the lines, the two-tone edge, the ramps or the grade. | Exit test 3: byte-identical goldens, on-and-off equality, and the testkit's gates at every switch. |
+| 2 | **Measured, not assumed.** Every budget row has a number from the district at each tier's settings, and says what machine it's from. | Spec §3.8, "Measured at scale": a baseline before any scale work, and a final table. No row left unmeasured. |
+| 3 | **Phones first.** A feature lands with its Mobile-Low answer: off, baked, or a cheaper form. Nothing needs depth or resolved colour where a phone tier has none. | Each look package's row names its four tiers, and `look_tiers` and the `tier-*` goldens cover them. |
+| 4 | **Nothing hitches or pops.** Scale adds no frame-thread work and no first use. | Exit test 7's counts. Upload and activation at the 99th percentile inside §3.2's streaming row. A no-flap test for levels of detail. |
+| 5 | **The simulation is untouched.** Levels of detail, streaming, cloth, faces and the crowd are presentation. | No committed replay's checksum moves, and none moves with a feature on or off. A new scenario is the only new checksum. |
+| 6 | **Authorable.** What M5 adds is documents. | Exit test 8's recipes. |
+| 7 | **Small in the repository and in CI.** The benchmark is generated, nothing cooked is committed, and no pull request's job grows. | The repository grows by documents only. Every PR job ends under two thirds of its limit. |
+
+## 3. Decisions this plan takes
+
+Where a decision changes what the spec says, the spec says so with the package that builds it, as a "Decision" bullet in its section. Each can be undone as its last column says.
+
+| Topic | Decision | Why | To undo |
+|---|---|---|---|
+| **The go-ahead and feel** | M5 started when the maintainer said yes to this plan, on 2026-11-13. It tunes no fight and adds no game content. | Nobody has played M2's fight, M3's slice or M4's build. The run can't play, so it builds what any game on the engine needs. | If a playtest takes the off-ramp, M5's renderer, asset and animation work stays. Only the party's HUD (C9) is the game's. |
+| **The target** | Zenless Zone Zero's structure: zones and a hub. A seamless open world, terrain, traversal, co-op, ray tracing and consoles stay out (§1.3). | It's what the engine was designed for, and it's the nearer of the two reference games. An open world is a different engine underneath: world partition, terrain and traversal. | A later milestone, chosen on its own. |
+| **The benchmark is generated** | A district and a cast built by generators from the project's own parametric shapes, at exactly §3.4's budgets. It lives as documents under a new `bench/` root, cooks into `target/`, is never committed cooked and never ships in a package. It has two presets: `ci`, small, and `budget`. | There is no artist, and agents download nothing. A generator hits a budget exactly, repeats byte for byte, and keeps gigabytes out of git, which has no LFS. | Authored content replaces it piece by piece when the maintainer brings some (§7). |
+| **What the benchmark proves** | Cost, not beauty. It proves frame rows, memory ceilings, streaming and load times. It can't prove the anime aesthetic at density. | Generated shapes and procedural textures have none of an artist's overdraw, material variety or composition. | An authored district. |
+| **What "draw calls" counts** | §3.4's row counts main-view surface draws after culling. A second row counts every call submitted in a frame, across all passes. | Today's "162 against 700" compares draw-list entries with a draw-call budget, and submitted calls are counted nowhere. | One row. |
+| **§3.3 grows** | It gains Desktop-High and Mobile-High columns, and rows for skinning, reflections, depth of field and decals. B4 proposes each number from the baseline. All of §3 stays a proposal. | Features land per tier, and two tiers have no column to be measured against. | Drop the rows. |
+| **CPU-driven everywhere** | One draw path on every backend: per-view sorted lists and instanced runs, built on the CPU. GPU culling and multi-draw are a spike (D11), on Vulkan and DX12 only. | In wgpu 30 Metal has no native multi-draw: an indirect draw loops one call per record, and the count variant is unimplemented. The iOS Simulator can't execute indirect draws. Main-pass multi-draw would need bindless materials. | Build the spike out for the depth-only passes on desktop. |
+| **Instancing without first instance** | A run of equal mesh, level and material draws as `0..n`, with the run's first record bound at slot 0. | The Simulator has no first instance or base vertex (ADR 0002), and one path is cheaper to keep than two. | None needed. |
+| **Occlusion** | Per-cell visible sets written by the zone cook, on every tier, if D0's spike on the district says they pay. Hi-Z on desktop waits. | A dense district is mostly hidden behind its own streets. Phones have no depth to build a pyramid from, and a cooked set costs a lookup. | Occlusion queries or Hi-Z on desktop. |
+| **Levels of detail** | Selection by the cooked error projected to pixels, with hysteresis. `lod_bias` becomes a multiplier of 2^bias and a rung of the ladder. The on-field hero, any inset and any close-up stay at the first level. A switch pops; a dithered crossfade is added only where a gate fails. | The cook already writes up to four levels with their errors, and nothing reads them. The two-tone edge follows normals, so it moves farther than the geometry's error says, and only a gate on the picture can catch it. | A crossfade everywhere. |
+| **No memory mapping** | Packs stay as they are: a mount reads the table, and each asset is a ranged read. | Only assets stored raw would gain, and textures are zstd. Android hides the file's offset behind SDL, a mapped pack breaks a dev cook on Windows, and an IO error becomes a signal. The saving is one copy. | Map raw assets, which the format already aligns for. |
+| **Mip streaming** | The cook splits a texture into a tail (levels up to 128 px, a whole KTX2, what materials depend on) and one asset per higher level. Raising or lowering a level makes a new GPU texture, copies the kept levels, writes the new one and rebinds the materials. The pool is a hard budget per tier. | wgpu has no sparse textures. This way loading, hashing, eviction, unmounting and patching apply unchanged, with no change to the pack format. M0 proves compressed copies on each backend first. | A pack format with partial reads of one asset. |
+| **Mobile-Low's pool** | 400 MiB, from 600. | The process already peaks at 558 MiB on Mobile-Low with today's small content. A 600 MiB pool and the mesh pool on top of that near the tier's 1.6 GB. The spec already notes that Wuthering Waves' mobile pool is reportedly 400 MB. | One number in the tier's budgets. |
+| **Zones bring their look** | A zone's day, rigs, probes, sky, wind, weather and fog apply when it opens and after a trip. A trip carries its probe grid, and the cook stops refusing exits on zones with one. | `ZonePresentation` holds four of these today and a trip applies none. A hub at night and a hollow at dusk must each look like themselves. | None needed. |
+| **Reflections** | Local cubes baked per time-of-day key, blended by the key, with the live sky added through a baked visibility. Cube arrays where the device has them, and one nearest cube where it doesn't. No screen-space or planar reflections in M5. | Interiors and night streets are where a zone-and-hub game lives, and today they reflect open sky or nothing. The cooker already traces per key, and the keys already blend. A relit G-buffer per probe costs more for the same picture. | Screen-space reflections for flagged materials on desktop, after a spike. |
+| **Weather and water** | Wet surfaces, with porosity and a weather override. No water plane. | A hub's rain is most of what weather adds to the picture. A water body is rare in a hub and is a subsystem of its own. | A water plane, after a spike. |
+| **Fog** | The analytic fog stays, and radial light shafts join the fused pass. Froxels wait. | Froxels are the trap of the list: their cost on WARP is unknown, and phones couldn't run them. | A froxel spike after the shafts. |
+| **Effects** | Effect meshes with scrolling UVs, erosion and flipbooks; distortion; ground decals as quads and SDF shapes. No GPU particles. | Combat reads through meshes and telegraphs, and six generated sprites can't carry it. The look doesn't need 50,000 particles, and without indirect draws they'd need a fixed-capacity draw. | GPU particles if rain or motes ask. Projected decals after a spike. |
+| **Depth of field** | A half-resolution gather on the desktop tiers. Mobile-High blurs only an inset's backdrop. Off on Mobile-Low. | It needs depth, which Mobile-Low doesn't keep. | None needed. |
+| **The character shader** | Split the frame's bind group by family, so characters and the world each bind only what they read. Dissolve, driven emission, per-region opacity and glass join as branches. Sorted translucent cloth stays out. | "Full" was a limit of the shared layout: the character shader reads 13 of its 16 textures. Re-keying the permutations would move every pipeline. | A second character family. |
+| **Shadows** | Characters receive each other's shadows: tiles on desktop, capsules on phones. Hair cards cast. Up to four cached spot tiles on desktop (cuttable). No point-light cubes. | Cheap on what's built. Cubes cost six views a light. | None needed. |
+| **Upscaling and output** | Phones get an edge-adaptive upscale and a sharpen in WGSL, after FSR 1's two passes (MIT; the package keeps its notice). Desktop keeps its own temporal upsampling. No DLSS and no HDR output. MetalFX is a spike, if the maintainer allows its crate (§7). | A bilinear upscale softens the lines the look depends on. DLSS has no machine here to run on. HDR needs a second grade, which is art direction. | Each plugs in behind the temporal inputs that exist. |
+| **Cloth** | Chain cloth: XPBD links between neighbouring spring chains, with capsules and a floor. Presentation only, on the owner's clock. No cloth meshes. | It needs no renderer change, authors from a VRM's chains, and is the cheapest form. The spec already sketches it. | Mesh cloth for a garment chains can't carry. |
+| **Secondary motion's budget** | A scheduler across characters: the on-field hero first, the rest staggered. The clearance pass stays the first hero's own. | One hero's clearance pass already takes most of the row, and a party has three. | Corrective morphs driven by pose, after a spike. |
+| **Faces** | A face layer in presentation, after the graph, driving the VRM's expression presets. A timeline gains face and look keys, for any role. | The cook already holds all 18 presets, five visemes among them, and the runtime reads only the blink. A fighter's morphs belong to the simulation, so the layer stays out of the body's pose. | None needed. |
+| **Lip-sync** | Curves cooked per voice sound: an envelope first, five visemes second. Not read from the mixer at run time. | A cooked curve repeats, can be held by a golden, and needs nothing from the audio thread. | A run-time envelope for unscripted speech. |
+| **Ragdolls** | None. | Authored reactions and a dissolve are what the genre shows, and get-up clips already exist. | Physical blends, with dynamic bodies. |
+| **The party** | A playable is a document, as an enemy's kind is, and owns its mesh, skeleton, graph, springs and weapon. One hero is on the field (§1.1); three on screen at once is the worst case exit test 5 measures. | The single character is a constant in a dozen places, and three tints of one mesh isn't a party. | None needed. |
+| **The crowd** | Ambient characters are presentation only. Walkers follow splines and block nothing; a standing post is a collider in the zone. | The simulation's actors are pooled, hashed and checked. A crowd in the step would be a budget and a checksum, for no gain a player sees. | Simulation actors for a character the game must be able to hit. |
+| **The simulation's data** | Scenarios, kinds, scripts and zones stay compiled in, and a save still holds one zone. The district's fight builds its zone in code, as the synthetic zone does. | The benchmark needs neither, and moving them changes what a checksum covers. It belongs with the game systems that need several zones. | The next milestone's first track (§3, "Waiting"). |
+| **Pins** | wgpu 30.0.1, egui 0.37, bevy 0.20.1 and `sdl3-sys` 0.7.2, as M4 left them. wgpu 31 isn't out; 30.0.2 and `sdl3-sys` 0.7.3 are. | A patch release can move a golden, and M5 moves enough. | A package that needs a fix takes it. |
+| **CI** | Pull requests get a few small district goldens on the `ci` preset. The walk by counts runs nightly on lavapipe. Timed benches run only on the Mac, by hand and at the exit. | CI's caches sit at their 10 GB ceiling, and a scene costs minutes on the software rasterizers. | Promote a nightly step when it's cheap. |
+| **Sizes** | S is a few hours of an agent's work and M about a day. Nothing is larger: the surveys' larger packages are split here, and a row may split again when it's briefed. | M4's rule, which held. | None needed. |
+| **Accounts and downloads** | None. No content is downloaded and nothing is published. | The run's rules. | The maintainer's. |
+
+### What the surveys corrected
+
+The handoffs, the spec and the answer this plan grew from were wrong in places. X2 corrects the documents.
+
+- **Packs don't load whole.** A mount reads the table and each asset is a ranged read. What loads whole is each asset, with every level of a texture.
+- **Levels of detail are cooked and unused.** Most meshes cook four levels; zone cells cook one. Nothing selects, and `lod_bias` is read by nobody.
+- **Nothing is instanced,** though spec §5.12 says foliage is. Every draw is one instance.
+- **Fighters animate one after another** on the frame's thread. `evaluate_all` has no caller but its own test, though the spec says each character has its own job.
+- **Get-up clips exist,** for the hero and the warrior. And most motion is generated key poses now: only two dodges are still retargeted from KayKit.
+- **The character shader isn't full.** It reads 13 of 16 textures, and eight permutation bits is the spec's own cap. Metal with matcap and opaque sheer cloth are built.
+- **Posed bounds exist** and only outlines use them. Mesh residency with generational handles landed in M3.
+- **Multi-draw isn't equal across backends:** Metal has none natively in wgpu 30.
+- **`memmap2` is no dependency,** though the spec says cooked data is memory-mapped.
+
+### Spec §11's open questions
+
+M5 answers none of them: Q4 (Windows' default backend), Q9 (device floors, throttled), Q14 (Android pre-rotation) and Q5's phone measurements all still need devices. Three questions of M5's own go to spikes: compressed texture copies on each backend (M0), cube arrays against octahedral arrays where a device has no cube arrays (L0), and whether cooked visibility pays on the district (D0).
+
+### From m5-handoff's deferred list
+
+- **Taken into M5:**
+  - level-of-detail selection, culling, and sorting draws by material and mesh;
+  - the mesh pool that never shrinks, and a staging ring for uploads;
+  - mip streaming and per-cook texture size;
+  - a trip that carries no probe grid, and weather per zone;
+  - reflection probes, wet surfaces, light shafts and depth of field;
+  - decals, and effects beyond sprites;
+  - cut-ins, halftone and the other effects M2 never authored;
+  - characters shadowing each other, and alpha-tested casters;
+  - a phone's upscaler;
+  - chain cloth, a floor for springs, and secondary motion's budget across a party;
+  - lip-sync, and voice in conversations;
+  - a second character's engine side, the party's HUD slots and touch swap;
+  - the hero's material count;
+  - the cold boot's untraced flake (X3).
+- **Waiting, with the reason:**
+  - **The simulation's data from packs, a save across zones, a run-wide `tables_hash`, the script VM's heap in replays and per-script boards:** for the milestone that builds game systems, which needs several zones.
+  - **Reactions beyond what exists, and motion intake from FBX packs:** until there are clips to take in. Building them against generated motion would be building blind.
+  - **Memory-mapped packs:** decided against, above.
+  - **Screen-space reflections, froxel fog, GPU particles, projected decals, a water plane, point-light shadows, mesh cloth and ragdolls:** each is a spike or a later package, named in the table above.
+  - **HDR output and DLSS.**
+  - **The editor's scenario choice and live tuning of kinds, live link's pairing token, navigation's limits, and music's.**
+  - **Nightly device runs and gate 5,** which need devices.
+
+**Not in M5:**
+
+- an open world, terrain and traversal;
+- game systems: stats, levels, equipment, inventory, elements, quests, a map, interactables;
+- audio beyond voice in conversations: reverb, occlusion, streamed music;
+- the interface's motion design, text entry and more languages;
+- the editor's build-out and artist tools;
+- accounts, online services, telemetry and crash upload;
+- consoles.
+
+Every device check [m5-handoff.md](m5-handoff.md) lists stays owed.
+
+## 4. Work packages
+
+Each package is one pull request into `main`, or a few. Sizes are as §3 says. Each finished package gets an "As built" note in its row and in its spec §5 section.
+
+The usual rules carry over:
+
+- Existing goldens stay byte-identical unless a row says otherwise, and an old scene pins a new feature off.
+- A new scene commits only a Metal golden.
+- A feature builds its pipelines only when its work can run, declares them to the inventory, and joins the warm-up and `declares_every_setting`.
+- Every system publishes a stat counter (R9) against its budget.
+- No checksum moves unless a row says so.
+- Each new document struct denies unknown fields.
+- A cook step stays on the deterministic maths, so cooks agree across architectures.
+- A rule from [m5-handoff.md](m5-handoff.md)'s "Rules the reviews made" binds whatever it touches.
+- A look package's row names its four tiers: Desktop-High, Desktop-Low, Mobile-High and Mobile-Low.
+
+### Track B: the benchmark (exit tests 1 and 2; first)
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| B1 | **A bench content root.** `bench/` holds documents only: a zone, prefabs, procedural-texture specs and figure specs. One xtask command generates and cooks a preset, `ci` or `budget`, into `target/`. The generator repeats byte for byte. Nothing cooked is committed, and no package ships it. The hand-back records the `budget` cook's time and peak memory. | M | Plan | |
+| B2 | **The district.** A generated hub district about 256 m square in 32 m cells, from the project's own parametric shapes: about forty building variants as instances, six to ten thousand merged props, lights up to 64 and 8, and procedural textures that fill the pool, or twice the pool. It has a tour spline, a dusk and a night key, and a plaza with an encounter volume. The simulation's half is built in code, as the synthetic zone's is. | M | B1 | |
+| B3 | **The cast at budget.** Generated figures: a hero at exactly §3.4's row (80,000 and 30,000 triangles, 200 and 140 joints, 6 and 4 materials, 2K and 1K maps, skirt and hair chains, the 18 expression morphs), enemies at 8,000 triangles, and six to eight ambient figures. The look-dev VRM is measured against the row and reported. | M | B1 | |
+| B4 | **Counters and the baseline.** The frame's stats gain calls submitted per pass, triangles, a histogram of levels drawn, culled counts, instances and skinned vertices. The asset server reports pool bytes and bytes decoded and waiting. A `--bench` walk of the district runs per tier, alternating runs and keeping the least, and logs each frame's core type, to explain the ×2.6–3 spread nobody has explained. **Then it measures 0.1.0's renderer on the district and writes spec §3.8's baseline, before any scale package lands,** and proposes §3.3's new rows and columns. | M | B2, B3 | |
+
+### Track D: draws (exit tests 1 and 3)
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| D0 | **Spike: visibility by cell.** Prototypes cooked visible sets on the district: draws saved along the tour, a camera outside the sampled space, the cook's time, and whether two architectures agree. Its report decides D7. | S | B2 | |
+| D1 | **A draw list per view, sorted.** The main view, the prepass, each cascade, the character maps and each inset get their own compacted list, sorted by pipeline, material and mesh. A pass no longer walks every command through filters. Goldens stay byte-identical on three backends, and a readback test compares old against new while both exist. | M | B4 | |
+| D2 | **Instanced runs.** Runs of equal mesh, level and material draw as one call, by §3's rule. Repeated buildings, props and foliage first. The hand-back gives a pass's record time at 2,500 draws. | M | D1 | |
+| D3 | **Culling for every view.** Distance and small-object culling by tier. Characters, skinned instances and fog cards cull by posed bounds with the hull's margin. Views cull in parallel, and skinning poses only what some view draws. On and off draw the same image. | M | D1 | |
+| D4 | **Levels of detail, static.** Selection by projected error with hysteresis, for instances and merged props. Cascades choose by their texel size. `lod_bias` goes live, as a ladder rung too. A no-flap test, `lod-*` goldens and the testkit's gates on lines. | M | D3 | |
+| D5 | **Levels of detail, characters.** Skinning takes the finest prefix a view needs, and hulls stop at a level. The on-field hero, insets and close-ups stay at the first level. Gates hold outline width and the two-tone edge at each switch, and a dithered crossfade covers a switch that fails one. | M | D4 | |
+| D6 | **Cells with levels.** The zone cook gives cell meshes levels with locked borders. Only the zone's presentation half changes, so no digest moves. | M | D4 | |
+| D7 | **Cooked visibility,** if D0 and the baseline say draws need it. The zone cook writes per-cell visible sets, and every view reads them. A walk's replays draw identical pixels on and off. | M | D0, D3 | |
+| D8 | **Shadows at scale.** A caster list and caster levels per cascade. A cached cascade keeps its static depth and redraws only what moved. The shadows row holds on the district, and every `shadows-*` golden stays. | M | D4 | |
+| D9 | **The mesh pool gives back.** Compaction under a trip's wipe, and a staging ring for mesh uploads. After a trip the pool is at its floor, and an upload's 99th percentile is in the hand-back. | M | Plan | |
+| D10 | **A depth-equal main pass** on the desktop tiers: the main pass loads the prepass's depth and tests equal. Byte-identical goldens. Cuttable. | M | D1 | |
+| D11 | **Spike: GPU-driven on Vulkan and DX12.** Compute culling and multi-draw with a count for the cascades and the prepass, matching the CPU path's pixels on lavapipe and WARP. A report, not a feature. Cuttable. | S | D2 | |
+
+### Track M: memory (exit test 2)
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| M0 | **Spike: compressed copies.** `copy_texture_to_texture` between BC7 textures and between ASTC textures, level by level, on Metal, lavapipe, WARP, the Simulator and the emulator. Its report confirms or changes §3's mip design. | S | Plan | |
+| M1 | **Texture size per cook.** A sidecar caps a map's size per cook by dropping top levels, so the mobile cook meets §3.4's 1K a part. A content test holds every character map to its cap. Any mobile-cook golden that moves is named in the hand-back. | S | Plan | |
+| M2 | **Load admission and budgets by tier.** A cap on bytes decoded and waiting for the GPU, a queued load whose priority can rise, and budgets chosen by tier where form factor chooses today. Mobile-Low's pool becomes 400 MiB. A server test loads 1 GiB and never holds more than the cap. | M | Plan | |
+| M3 | **A texture cooks as a tail and levels.** The tail is a whole KTX2 that every reader takes as today; each higher level is an asset of its own. With every level resident, every golden is unchanged. | M | M0 | |
+| M4 | **Raising and lowering a level.** The renderer makes the new texture, copies the kept levels, writes the new one and rebinds the materials that hold it, off the frame's critical path. A readback test: streamed up to full equals a whole upload. | M | M3 | |
+| M5 | **The texture streamer.** A wanted level per texture from screen coverage in the draw lists, a hard pool per tier, an eviction order, and a debt counter: frames between wanting a level and having it. The district's walk holds the pool on every tier. | M | M4, D1, B4 | |
+| M6 | **Zones bring their look.** A zone's day, rigs and probes apply on open and after a trip. `ZonePresentation` gains a sky material, wind, weather and fog. A trip carries its probe grid, a hub keeps its packs mounted between visits, and the cook's refusal of exits on zones with a grid goes. A `zone-trip` golden pair. | M | Plan | |
+| M7 | **Spike: a 1 GiB patch.** Rehearses a patch against a pack of 1 GiB: install time, disk held, and how long the boot waits. A report for the milestone that ships real content. Cuttable. | S | B1 | |
+
+### Track L: the look (exit test 4)
+
+Every row names its tiers as DH, DL, MH and ML.
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| L0 | **Spike: where probes live.** Cube arrays against octahedral 2D arrays, for devices and the Simulator that have no cube arrays. Adds the capability to `GpuCaps`. A report and a choice. | S | Plan | |
+| L1 | **A frame group per family.** The frame's bind group splits, so characters stop binding the probe atlas, bricks and AO, and the world stops binding character depth, IDs and the character buffer. A layout test counts the slots freed. Metal's goldens stay exact; lavapipe's and WARP's are re-baselined only if a code value moves, and the hand-back names each. Lands alone among the shader packages. | M | Plan | |
+| L2 | **Probe bake.** The cooker bakes local reflection cubes per time-of-day key, with sky visibility in alpha, on the probe grid's tracer. Sizes 128, 128, 64 and 32 by cook. Cooks agree across architectures. | M | M6 | |
+| L3 | **Probe runtime.** Keys blend by the day's key, the live sky is added by alpha, and one probe is prefiltered a frame. The environment picks by grid cell with box parallax; a character by an index in its record. A GPU test: a red room reflects red. DH and DL full; MH without parallax; ML characters only, one cube composed at load. Nothing is built in a zone without probes. | M | L0, L1, L2 | |
+| L4 | **Wet surfaces and weather.** The environment reads the frame's weather: darkening, gloss and puddles by porosity, reflecting L3's probes. A weather override in time of day, and M6's per-zone weather. `wet-street-night`. ML darkens only. | M | M6, L3 | |
+| L5 | **Effect meshes.** A mesh family for effects: unlit, scrolling UVs, erosion and flipbook frames, drawn where sprites draw, authored as an effect document's layer. All tiers; phones without the soft fade. Nothing built until an effect uses one. | M | Plan | |
+| L6 | **Distortion.** Effects write an offset buffer that post's fused pass applies. DH and DL at half resolution, MH at a quarter, ML off. | M | L5 | |
+| L7 | **Ground decals.** Ground-facing quads and SDF shapes for telegraphs and scorch marks, depth-biased in the main pass, on the cue table. A z-fight test on three backends, and `decal-telegraph`. All tiers. | S | Plan | |
+| L8 | **Depth of field.** A half-resolution gather after the resolve, from the prepass's depth, with focus keys on a timeline's shot and in a move's cinematic. DH and DL; MH blurs an inset's backdrop only; ML off. `dof-closeup`, and a row in §3.3. | M | Plan | |
+| L9 | **The effects pack.** Halftone, CRT and glitch, a flash, and desaturation that keeps the characters, in post's existing colour variant, so no pipeline is new. Each respects the flash limiter and is added to the flash tests. | S | Plan | |
+| L10 | **Cut-ins.** A full-frame inset of a character, composed by the interface, called from a move or a timeline. Declared to the inventory. Phones draw it at a lower size. Cuttable. | M | L9 | |
+| L11 | **Character materials.** A noise dissolve with an emissive edge, emission and a flash driven per character, opacity per region through the fade's dither, and a glass branch under the layers. Old goldens exact; `dissolve-*` and the layers' GPU tests. All tiers. | M | L1 | |
+| L12 | **Characters shadow each other.** A character receives the others' tiles on desktop and their capsules on phones, and hair cards cast. `shadows-party`. | M | L1 | |
+| L13 | **Light shafts.** Radial shafts in the fused pass, keyed by the day. DH, DL and MH; ML off. `shafts-golden-hour`. Cuttable. | S | Plan | |
+| L14 | **A phone's upscaler.** The edge-adaptive upscale and the sharpen of §3, after the fused pass on the phone tiers, held by warm-up. `look_tiers`' gates on lines must beat bilinear's at each tier's floor. | M | Plan | |
+| L15 | **Material merge.** The cook atlases a character's same-part materials, bringing the look-dev VRM from 13 slots toward §3.4's 6 and 4. A draw-count test, and goldens within the gates. Cuttable. | M | B3 | |
+| L16 | **Spot shadows.** Up to four cached spot tiles in the character atlas: DH 4, DL 2, phones none. Cuttable. | S | L12 | |
+| L17 | **Sky content.** A denser starfield in the nebula and finer cumulus. Moves five look-dev goldens. Cuttable. | S | Plan | |
+
+### Track C: characters (exit tests 5 and 6)
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| C1 | **Animation in jobs, with levels.** Fighters evaluate through `evaluate_all` on a retained list, with no allocation. An update interval by distance on tick boundaries, IK and springs off far away, and a hold off screen. The simulation's own pair is never thinned. Near poses hash as before. Bench rows at 15 and 60 characters. | M | B4 | |
+| C2 | **Secondary motion's budget, and a floor.** A deterministic scheduler across characters, the on-field hero first and the rest staggered, and a floor plane from the foot probes so hair stops passing through paving. Three heroes inside the row on each tier. | M | B3 | |
+| C3 | **Chain cloth: the solver.** XPBD lateral and bend links between neighbouring spring chains, with the rig's capsules, beside `SpringBones` and sharing its frame, sub-steps, reset and sleep. Unit tests: a tolerance across 30, 60 and 120 Hz, identical bits on a frozen clock, no allocation, bounded stretch through a soak. | M | Plan | |
+| C4 | **Chain cloth: authoring and tiers.** A `cloth:` section naming chains in the character's motion document. Iterations 4, 2 and 1 by tier, and off past a distance. A golden on B3's hero, since no committed character wears a skirt. A cost row. | M | B3, C2, C3 | |
+| C5 | **Faces.** A face layer after the graph, driving expression presets with their overrides, with a clock of its own so it runs while a dialogue holds the simulation. Timeline version 2 adds face and look keys and takes any role. The timeline's simulation digest is unchanged. Close-up goldens. | M | Plan | |
+| C6 | **Voice in conversations, with lip curves.** A dialogue line's `vo` plays through the voice lines' document. The cook writes a 60 Hz mouth curve per voice sound, an envelope first and five visemes second, and the face layer reads it at the line's playhead. A cook byte test on the generated lines, and an offline audio capture. | M | C5 | |
+| C7 | **No single character.** The stage, the content and look-dev stop naming one character: the constants in look-dev, the graph key, the scene's character and the roster's index 0 become lookups by kind. No golden and no checksum moves. | M | Plan | |
+| C8 | **A playable is a document.** A playable kind, as an enemy's kind is: its mesh, skeleton, graph, springs, cloth, weapon and moves. Party members are kinds, and B3's hero is the second one. A new scenario and replay with two kinds, the only new checksum; `party-swap` and `arena-party-*` unchanged. | M | B3, C7 | |
+| C9 | **The party on the HUD.** Slots for the party with each member's readiness, and a swap button on touch. `game-hud-party-*` goldens in both languages, and the text-size and contrast tests. | S | Plan | |
+| C10 | **Ambient characters.** A zone's presentation gains posts and walks. The stage spawns ambient characters from them with a shared graph, animated through C1. Zone digests and every replay are unchanged with the crowd on and off. | M | B2, C1 | |
+| C11 | **A crowd's levels.** Poses shared by phase bucket, bones dropped by a joint prefix, no springs far away, and D5's levels of detail. Sixty and thirty characters inside the animation row on the district. A street golden. | M | C10, D5 | |
+
+### Track X: tools and loose ends
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| X1 | **Scale views.** Debug views for the level drawn, a texture's wanted and resident levels, culled and instanced draws, and overdraw. The overlay shows B4's counters against their budgets. | M | B4 | |
+| X2 | **The spec says what's built.** Corrects the lines §3's "What the surveys corrected" lists, in the spec, the handoffs and the crate docs. Words only. | S | Plan | |
+| X3 | **Trace the cold boot's flake.** One cold boot in six holds a boot-screen frame of 35 to 37 ms waiting on the GPU ([m5-handoff.md](m5-handoff.md), "Known limits and risks"). Trace one, and fix it or say why it stays. | S | Plan | |
+| X4 | **The scale lane in CI.** Nightly, on lavapipe, the `ci` preset cooks and walks by counts: draws, levels, pool bytes, first uses. Pull requests get three small district goldens. No PR job grows past two thirds of its limit. | M | B4 | |
+
+### Track Z: exit
+
+| ID | Package | Size | Depends on | As built |
+|---|---|---|---|---|
+| Z1 | **Benches at scale.** Every row of §3.2 and §3.3 on the district per tier, the pool and memory through the walk, load and trip times, the crowd and the cast. They go into spec §3.8 beside the baseline. | M | All above | |
+| Z2 | **The exit run.** `docs/m5-exit-run.md`, rehearsed headless on the desktop, the Simulator and the emulator before the last packages land, then run on the head. | M | All above | |
+| Z3 | **Reviews.** Fresh agents read each area after it lands and fix what they find: draws and culling, for a pixel that differs; streaming, for a race or a leak; the look packages, tier by tier and off; characters, for anything that reaches a checksum; and the benchmark, for what it flatters. | M | All above | |
+| Z4 | **Handoff and release.** `docs/m6-handoff.md` with the new "How to add" recipes, spec §10's M5 status, the changelog, the workspace's version at 0.2.0 and its tag. | S | Z2, Z3 | |
+
+## 5. Order
+
+Sixty-one packages in five phases. Within a phase, packages that don't depend on each other run as parallel pull requests.
+
+1. **Prove it, with the plan:** B1; the spikes M0 and L0; X2 and X3; and what needs nothing built: D9, M1, M2, M6, L1, L5, L7, L8, L9, L13, L14, L17, C3, C5, C7 and C9. Reports change §3 if they must, in a docs commit before the packages that lean on them.
+2. **The baseline:** B2 and B3, then B4, and D0 beside it. Also M3, L2, L6, L10, L11, L12 and C6. **B4's numbers can reorder everything after them:** a row that already holds on the district loses its package's priority, and a row that breaks badly gains it.
+3. **Build out:** D1, D2, D3, M4, L3, C1, C2, C8, X1, X4 and M7.
+4. **Assemble:** D4 to D8, D10, D11, M5, L4, L15, L16, C4, C10 and C11.
+5. **Exit:** Z1, Z2, Z3 and Z4.
+
+**Critical path:** B1 → B2 → B4 → D1 → D3 → D4 → D5 → C11 → Z1 → Z2 → Z4. The memory chain, M0 → M3 → M4 → M5, and the reflections chain, M6 → L2 → L3 → L4, are shorter and start on day one.
+
+**Shader packages land one at a time.** L1 first and alone, then L3, L4, L11 and L12 in a line, since each edits WGSL the others include and a rebase of one re-proves its goldens.
+
+**Up to eight agents at once,** fewer when the Mac is loaded. The orchestrator starts the three chains' heads first (B1, M0, M6), then fills from phase 1.
+
+**Load:** the Mac also runs the gates. Heavy work queues for a slot. Benches and cold Metal runs take the whole machine, one at a time, so B4, Z1 and every row's own bench are planned around each other. At most one simulator or emulator is booted.
+
+**If time runs short, cut in this order:**
+
+1. L17;
+2. L16;
+3. D11;
+4. D10;
+5. M7;
+6. L10;
+7. L15;
+8. L13;
+9. C11's pose sharing (keep its levels);
+10. D7, if the baseline's draws allow.
+
+**Never cut** B1–B4, D1–D5, M2–M5, L1–L4, C1, C2, C7, C8, X1 or track Z. They're the benchmark, what the look needs to survive it, and the proof.
+
+**Landing:**
+
+- Goldens move only where a row says so: L17's five, M1's if the mobile cook's maps shrink, and L1's on lavapipe and WARP if a code value moves. Every new scene commits a Metal golden, and the other backends' come from CI.
+- No row moves a checksum. C8 adds a scenario and its replay.
+- A package that touches a zone's format changes only its presentation half, and a test holds the digest.
+
+## 6. Risks
+
+| Risk | Mitigation |
+|---|---|
+| **Feel is still unknown,** and M5 builds more on a game nobody has played. | M5 tunes nothing and adds no game. All of it but the party's HUD serves any game on the engine. The playtest is still one command (§7). |
+| **The benchmark flatters.** Generated shapes and textures lack an artist's overdraw and variety, so a budget met on them may not hold on real art. | The plan says so wherever it reports a number. Z3 reads the benchmark for what it hides, and the generator can raise overdraw and material counts on purpose. |
+| **One machine, and not a reference device.** An Apple M5 is far faster than either phone tier's devices, so a row met here at a phone tier's settings isn't yet met on a phone. Metal also overlaps its passes, so a pass's own GPU time can't be read. | Counts no machine changes sit beside every time. Every number says what it's from. The reference devices stay owed (§7). |
+| **No artist and no animator.** Reflections, cloth, faces and effects are judged by description, on generated content. | Goldens hold what's built, and each package says what a person must judge. Nothing in M5 claims the look is reached. |
+| **wgpu 30's limits:** no multi-draw on Metal, no sparse textures, no input attachments, optional cube arrays, 16 sampled textures a stage. | Each is designed around in §3, and the three unknowns have spikes first (D0, M0, L0). |
+| **Pixels that move by accident.** Sorting changes draw order at depth ties and in blended draws, and an edit to shared WGSL can move lavapipe by a code value everywhere. | D1 lands byte-identical with an old-against-new readback. Shader packages land one at a time. L1's row says what may be re-baselined. |
+| **A texture level that arrives late shows as a pop.** | A debt counter with a stated limit, a tail level always resident, and X1's view of wanted against resident. A person's eye is owed. |
+| **Determinism near the new formats.** Zones, timelines and kinds all sit beside what `tables_hash` covers. | Presentation halves only, a test that holds each digest, and every replay run with features on and off. A moved checksum still costs two CI rounds. |
+| **Secondary motion's row is nearly spent** by one hero before cloth or a party arrives. | C2's scheduler lands before C4, cloth scales by tier and distance, and B3's hero measures it early. If the row can't hold, the plan asks for a larger one (§7). |
+| **CI is at its ceiling:** caches near 10 GB, and a scene costs minutes on the rasterizers. | The benchmark cooks into `target/` and its `ci` preset is small. Counts run nightly. Timed benches never run in CI. |
+| **Size.** Sixty-one packages is about M4's size, on harder ground: more of M5 is new rendering than M4's was. | The cut order, and B4's gate after phase 2, where the plan can shrink to what the baseline shows is needed. |
+| **Disk and load** on the one Mac. | The briefing note's disk and slot rules, and whole-machine runs planned one at a time. |
+
+## 7. Needed from you
+
+Nothing here blocks the work now: the first item was answered on 2026-11-13.
+
+1. **A yes to this plan,** given on 2026-11-13 to the plan as a whole. The decisions most worth a second look, each still yours to change:
+   - the target is Zenless Zone Zero's zones and hub, and an open world waits;
+   - the benchmark is generated, so it proves cost and not beauty;
+   - one CPU-driven draw path, with GPU-driven work only a spike;
+   - no screen-space reflections, froxel fog, GPU particles or water plane;
+   - chain cloth, no ragdolls, and cooked lip curves;
+   - the simulation's data stays compiled in, and a save still holds one zone, until the milestone after;
+   - Mobile-Low's texture pool drops to 400 MiB, and §3.3 gains rows and columns;
+   - a MetalFX spike would add a crate (`objc2-metal-fx`): it waits for a yes of its own.
+2. **Play the slice.** It's still the most useful thing anyone could do for this project, and it's still one command ([playtest.md](playtest.md)).
+3. **Devices.** A phone of each OS, a Windows or Linux GPU, and a Steam Deck. Every number M5 will produce is this Mac's, and none of §3.1's reference devices has run anything.
+4. **People and content,** which no agent can supply:
+   - a second character's model, licensed for a public repository (M1's plan named VirtualCast's Seed-san, under VPL 1.0);
+   - clips from an animator or a licensed pack, and recorded voice;
+   - an artist's eye on the reflections, the cloth and the faces;
+   - reference frames of Zenless Zone Zero, kept outside the repository as Wuthering Waves' are.
+5. **The size.** Sixty-one packages, cut as §5 says. Say if M5 should be smaller: the smallest useful M5 is tracks B, D and M, with L1 to L4.

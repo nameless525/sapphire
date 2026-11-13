@@ -4,9 +4,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use sapphire_time::Stopwatch;
-
 use crate::LOG_TARGET;
+#[cfg(all(test, feature = "notify"))]
+pub(crate) use backend::Script;
 
 /// A watched directory, from [`FileWatcher::watch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,8 +81,7 @@ pub struct FileWatcher {
     states: Vec<DirState>,
     changed: Vec<Changed>,
     errors: Vec<String>,
-    /// When to look at the directories next, on this clock.
-    clock: Stopwatch,
+    /// When to look at the directories next, on the backend's clock.
     next_check: Duration,
 }
 
@@ -123,21 +122,25 @@ impl FileWatcher {
     /// `debounce`, if longer) after it first changed if it never is. Fails with
     /// [`WatchError::Unsupported`] in builds without the backend.
     pub fn new(debounce: Duration) -> Result<Self, WatchError> {
-        Self::with_max_wait(debounce, MAX_WAIT)
+        Ok(Self::with_backend(backend::Backend::new(debounce, MAX_WAIT.max(debounce))?))
     }
 
-    /// [`Self::new`] with another longest wait, for tests.
-    pub(crate) fn with_max_wait(debounce: Duration, max_wait: Duration) -> Result<Self, WatchError> {
-        let backend = backend::Backend::new(debounce, max_wait.max(debounce))?;
-        Ok(Self {
+    /// A watcher whose events and time are a test's [`Script`], with another longest wait.
+    #[cfg(all(test, feature = "notify"))]
+    pub(crate) fn scripted(debounce: Duration, max_wait: Duration) -> (Self, Script) {
+        let script = Script::new(debounce, max_wait.max(debounce));
+        (Self::with_backend(backend::Backend::Scripted(script.clone())), script)
+    }
+
+    fn with_backend(backend: backend::Backend) -> Self {
+        Self {
             backend,
             dirs: Vec::new(),
             states: Vec::new(),
             changed: Vec::new(),
             errors: Vec::new(),
-            clock: Stopwatch::start(),
             next_check: CHECK_DIRS_EVERY,
-        })
+        }
     }
 
     /// Watches the files in directory `dir`, not its subdirectories. A directory watched already
@@ -162,12 +165,6 @@ impl FileWatcher {
         &self.dirs[watch.0]
     }
 
-    /// Has the backend stop watching `watch`, as Linux's does by itself when the directory goes.
-    #[cfg(all(test, feature = "notify"))]
-    pub(crate) fn drop_backend_watch(&mut self, watch: WatchId) {
-        self.backend.unwatch(&self.dirs[watch.0]);
-    }
-
     /// What changed since the last poll.
     pub fn poll(&mut self) -> WatchEvents<'_> {
         self.changed.clear();
@@ -188,7 +185,7 @@ impl FileWatcher {
             },
             |error| errors.push(error),
         );
-        let now = self.clock.elapsed();
+        let now = self.backend.now();
         if named || now >= self.next_check {
             self.next_check = now + CHECK_DIRS_EVERY;
             self.check_dirs();
@@ -261,16 +258,28 @@ mod backend {
     use super::WatchError;
 
     /// What the debounce thread sends: paths that came due together, or errors.
-    enum Report {
+    pub(super) enum Report {
         Changed(Vec<PathBuf>),
         Errors(Vec<String>),
     }
 
-    /// `notify`'s recommended watcher for the platform (FSEvents, inotify,
-    /// ReadDirectoryChangesW), whose events a thread of its own debounces into reports.
-    pub(super) struct Backend {
-        watcher: RecommendedWatcher,
-        reports: Receiver<Report>,
+    impl Report {
+        fn deliver(self, changed: &mut impl FnMut(PathBuf), error: &mut impl FnMut(String)) {
+            match self {
+                Self::Changed(paths) => paths.into_iter().for_each(changed),
+                Self::Errors(errors) => errors.into_iter().for_each(error),
+            }
+        }
+    }
+
+    pub(super) enum Backend {
+        /// `notify`'s recommended watcher for the platform (FSEvents, inotify,
+        /// ReadDirectoryChangesW), whose events a thread of its own debounces into reports, and
+        /// the clock [`super::FileWatcher`] looks at its directories by.
+        Notify { watcher: RecommendedWatcher, reports: Receiver<Report>, clock: Stopwatch },
+        /// A test's events, at a test's times.
+        #[cfg(test)]
+        Scripted(Script),
     }
 
     impl Backend {
@@ -288,26 +297,60 @@ mod backend {
                 .name("sapphire-hot-reload".into())
                 .spawn(move || debounce_events(&received, debounce, &sender))
                 .map_err(|error| backend_error(error.to_string()))?;
-            Ok(Self { watcher, reports })
+            Ok(Self::Notify { watcher, reports, clock: Stopwatch::start() })
+        }
+
+        /// The time since the backend began.
+        pub(super) fn now(&self) -> Duration {
+            match self {
+                Self::Notify { clock, .. } => clock.elapsed(),
+                #[cfg(test)]
+                Self::Scripted(script) => script.now(),
+            }
         }
 
         pub(super) fn watch(&mut self, dir: &Path) -> Result<(), String> {
-            self.watcher.watch(dir, RecursiveMode::NonRecursive).map_err(|error| error.to_string())
+            match self {
+                Self::Notify { watcher, .. } => {
+                    watcher.watch(dir, RecursiveMode::NonRecursive).map_err(|error| error.to_string())
+                }
+                #[cfg(test)]
+                Self::Scripted(script) => {
+                    script.lock().calls.push((dir.to_owned(), true));
+                    Ok(())
+                }
+            }
         }
 
         /// Stops watching `dir`, if it still is: a backend may have stopped by itself when the
         /// directory went, which is the only way this fails.
         pub(super) fn unwatch(&mut self, dir: &Path) {
-            let _ = self.watcher.unwatch(dir);
+            match self {
+                Self::Notify { watcher, .. } => {
+                    let _ = watcher.unwatch(dir);
+                }
+                #[cfg(test)]
+                Self::Scripted(script) => script.lock().calls.push((dir.to_owned(), false)),
+            }
         }
 
         /// Hands each path and error reported since the last call to `changed` and `error`, in
         /// the order they came.
         pub(super) fn drain(&mut self, mut changed: impl FnMut(PathBuf), mut error: impl FnMut(String)) {
-            while let Ok(report) = self.reports.try_recv() {
-                match report {
-                    Report::Changed(paths) => paths.into_iter().for_each(&mut changed),
-                    Report::Errors(errors) => errors.into_iter().for_each(&mut error),
+            match self {
+                Self::Notify { reports, .. } => {
+                    while let Ok(report) = reports.try_recv() {
+                        report.deliver(&mut changed, &mut error);
+                    }
+                }
+                #[cfg(test)]
+                Self::Scripted(script) => {
+                    let mut script = script.lock();
+                    let Scripted { now, debounce, reports, .. } = &mut *script;
+                    reports.extend(debounce.wake(None, *now));
+                    for report in reports.drain(..) {
+                        report.deliver(&mut changed, &mut error);
+                    }
                 }
             }
         }
@@ -336,13 +379,73 @@ mod backend {
                     Err(RecvTimeoutError::Disconnected) => return,
                 },
             };
-            let now = clock.elapsed();
-            let errors = event.and_then(|event| debounce.add(event, now));
-            let sent = errors.is_none_or(|errors| reports.send(Report::Errors(errors)).is_ok())
-                && debounce.take_due(now).is_none_or(|paths| reports.send(Report::Changed(paths)).is_ok());
-            if !sent {
-                return;
+            for report in debounce.wake(event, clock.elapsed()) {
+                if reports.send(report).is_err() {
+                    return;
+                }
             }
+        }
+    }
+
+    /// A test's file events and time for a [`super::FileWatcher`], in place of the platform's and
+    /// a clock: an event sent is taken at the time set, and the debounce runs as its thread would,
+    /// waking when an event comes and at each poll, with no thread to wait for. What the watcher
+    /// asks the backend to watch is kept for the test to read.
+    #[cfg(test)]
+    #[derive(Clone)]
+    pub(crate) struct Script(std::sync::Arc<std::sync::Mutex<Scripted>>);
+
+    #[cfg(test)]
+    struct Scripted {
+        now: Duration,
+        debounce: Debounce,
+        /// What the debounce reported that the watcher hasn't polled yet.
+        reports: Vec<Report>,
+        /// Each directory the watcher asked to watch (`true`) or to stop watching (`false`).
+        calls: Vec<(PathBuf, bool)>,
+    }
+
+    #[cfg(test)]
+    impl Script {
+        pub(super) fn new(debounce: Duration, max_wait: Duration) -> Self {
+            let debounce = Debounce::new(debounce, max_wait);
+            Self(std::sync::Arc::new(std::sync::Mutex::new(Scripted {
+                now: Duration::ZERO,
+                debounce,
+                reports: Vec::new(),
+                calls: Vec::new(),
+            })))
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, Scripted> {
+            self.0.lock().expect("the script's lock")
+        }
+
+        /// The time, from zero when the watcher was made.
+        pub(crate) fn now(&self) -> Duration {
+            self.lock().now
+        }
+
+        /// Sets the time, which never goes back.
+        pub(crate) fn set_time(&self, now: Duration) {
+            let mut script = self.lock();
+            assert!(now >= script.now, "time goes back from {:?} to {now:?}", script.now);
+            script.now = now;
+        }
+
+        /// The platform reports `event` now.
+        pub(crate) fn send(&self, event: notify::Result<Event>) {
+            let mut script = self.lock();
+            let Scripted { now, debounce, reports, .. } = &mut *script;
+            // What came due before it, which the thread would have woken for.
+            reports.extend(debounce.wake(None, *now));
+            reports.extend(debounce.wake(Some(event), *now));
+        }
+
+        /// What the watcher asked the backend since the last call: each directory to watch
+        /// (`true`) or to stop watching (`false`), in order.
+        pub(crate) fn take_calls(&self) -> Vec<(PathBuf, bool)> {
+            std::mem::take(&mut self.lock().calls)
         }
     }
 
@@ -411,6 +514,18 @@ mod backend {
                 .map(|pending| pending.path)
                 .collect();
             (!due.is_empty()).then_some(due)
+        }
+
+        /// A wake of the debounce thread at `now`, with the event that woke it, if one did:
+        /// what to report, the errors first, then the paths due.
+        fn wake(
+            &mut self,
+            event: Option<notify::Result<Event>>,
+            now: Duration,
+        ) -> impl Iterator<Item = Report> + use<> {
+            let errors = event.and_then(|event| self.add(event, now)).map(Report::Errors);
+            let due = self.take_due(now).map(Report::Changed);
+            errors.into_iter().chain(due)
         }
 
         fn due(&self, pending: &Pending) -> Duration {
@@ -549,6 +664,10 @@ mod backend {
         }
 
         pub(super) fn drain(&mut self, _changed: impl FnMut(PathBuf), _error: impl FnMut(String)) {
+            match *self {}
+        }
+
+        pub(super) fn now(&self) -> Duration {
             match *self {}
         }
     }

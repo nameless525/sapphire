@@ -241,7 +241,9 @@ pub struct Boot {
     downloaded: f32,
     /// What stands, until it does.
     desc: Option<StageDesc>,
-    content: Option<Content>,
+    /// Boxed, as the update's remade content is: about 2 KiB that a boot moving by value doesn't carry (the size
+    /// test below).
+    content: Option<Box<Content>>,
     show: Option<Box<GameShow>>,
     combat: Option<Combat>,
     /// What the first run's stand reads of its scenario: on the warm-up pool, then here (M4 H4).
@@ -335,7 +337,7 @@ impl Boot {
             update_share: 0.0,
             downloaded: 0.0,
             desc: Some(desc),
-            content: Some(content),
+            content: Some(Box::new(content)),
             show: Some(Box::new(show)),
             combat: Some(combat),
             planned: Some(planned),
@@ -756,7 +758,7 @@ impl Boot {
             Ok(Remade::Planned(show, content, combat, plan)) => {
                 let Remaking { host, stopwatch, .. } = *self.remaking.take().expect("taken on above");
                 let zone = plan.zone_stem();
-                (self.show, self.content, self.combat) = (Some(show), Some(*content), Some(combat));
+                (self.show, self.content, self.combat) = (Some(show), Some(content), Some(combat));
                 (self.planned, self.plan) = (None, Some(*plan));
                 self.host = host;
                 self.report.updated = true;
@@ -794,7 +796,7 @@ impl Boot {
         else {
             unreachable!("a boot makes its stage once, with everything it was started with");
         };
-        let stage = Stage::new_with_renderer(self.gpu.clone(), desc, content, *renderer)?.with_show(*show);
+        let stage = Stage::new_with_renderer(self.gpu.clone(), desc, *content, *renderer)?.with_show(*show);
         self.stage = Some(Box::new(stage));
         tracing::info!(
             target: LOG_TARGET,

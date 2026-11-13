@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use egui::{Align2, Color32, FontId, Id, Order, RichText, Sense, Stroke, Ui, pos2, vec2};
-use sapphire_assets::AssetKind;
+use sapphire_assets::{AssetBudgets, AssetKind};
 use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_platform::PacingSource;
@@ -730,7 +730,20 @@ fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             ),
         );
         for kind in AssetKind::ALL {
-            let (resident, budget) = (assets.resident[kind.index()], assets.budgets.resident(kind));
+            let pool = AssetBudgets::pool(kind);
+            if pool != kind {
+                // Counted in another kind's row: texture levels, in the textures' pool.
+                let resident = format_bytes(assets.resident[kind.index()]);
+                row(ui, &format!("  {kind}s"), format!("{resident}, in the {pool}s' pool"));
+                continue;
+            }
+            // A pool's row counts every kind in it.
+            let resident = AssetKind::ALL
+                .into_iter()
+                .filter(|&counted| AssetBudgets::pool(counted) == kind)
+                .map(|counted| assets.resident[counted.index()])
+                .sum::<u64>();
+            let budget = assets.budgets.resident(kind);
             let over = if resident > budget { ", over budget" } else { "" };
             row(
                 ui,

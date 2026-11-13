@@ -774,9 +774,12 @@ fn a_walk_over_a_whole_zone_keeps_what_it_holds_within_its_budgets() {
     } else {
         let desktop = SyntheticZone { quads: 128, texture: 1024, ..SyntheticZone::LARGE };
         let mobile = SyntheticZone { quads: 64, texture: 512, ..SyntheticZone::LARGE };
+        use sapphire_render::quality::{TierId, TierTable};
+        let tiers = TierTable::shipped();
+        let budgets = |id| Content::tier_budgets(tiers.get(id));
         vec![
-            ("Desktop-Low", desktop, StreamSettings::DESKTOP, AssetBudgets::DESKTOP),
-            ("Mobile-Low", mobile, StreamSettings::MOBILE, AssetBudgets::MOBILE),
+            ("Desktop-Low", desktop, StreamSettings::DESKTOP, budgets(TierId::DesktopLow)),
+            ("Mobile-Low", mobile, StreamSettings::MOBILE, budgets(TierId::MobileLow)),
         ]
     };
     for (name, zone, settings, budgets) in tiers {

@@ -48,6 +48,10 @@
 //! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
 //! the sandbox's `--outline-distance`). Every tier draws the same lines today, within its budget.
 //!
+//! The zone texture pool ([`QualityTier::texture_pool_mib`], §3.4) is the stage's rather than the
+//! renderer's: the asset server's texture budget on the tier (M5 M2), 2,560 MiB on the desktop tiers, 600
+//! on Mobile-High and 400 on Mobile-Low.
+//!
 //! Plain data until their packages read them: volumetric fog (after W3's distance and height fog,
 //! which every tier has), screen-space environment outlines (the desktop option beside C4's
 //! character hulls, which no M1 package builds), the particle cap (`sapphire_vfx`, M2) and the
@@ -247,6 +251,9 @@ pub struct QualityTier {
     /// The screen-space edge pass for the environment, from the prepass's normals and IDs: a
     /// desktop option beside the characters' inverted-hull outlines (C4) that no M1 package builds.
     pub screen_space_outlines: bool,
+    /// The zone texture pool in MiB (§3.4): the textures' residency budget the stage gives the asset
+    /// server on this tier (M5 M2). The renderer doesn't read it.
+    pub texture_pool_mib: u32,
     /// Live GPU particles at most (§3.4), for `sapphire_vfx` (M2).
     pub max_particles: u32,
     /// Added to each draw's LOD choice, in LOD levels: positive picks coarser LODs sooner. Read
@@ -518,6 +525,9 @@ impl QualityTier {
         }
         if let Err((field, problem)) = self.shadows.validate() {
             return invalid(field, problem);
+        }
+        if self.texture_pool_mib == 0 {
+            return invalid("texture_pool_mib", "must be at least 1");
         }
         if !(-4.0..=4.0).contains(&self.lod_bias) {
             return invalid("lod_bias", "must be within -4..=4");
@@ -1657,6 +1667,16 @@ mod tests {
         assert!(TierTable::from_ron(&text).is_err());
         let newer = SHIPPED.replace("version: 1", "version: 2");
         assert!(matches!(TierTable::from_ron(&newer), Err(DocumentError::TooNew { found: 2, current: 1 })));
+    }
+
+    /// §3.4's zone texture pools, with Mobile-Low's at 400 MiB (m5-plan §3, M5 M2).
+    #[test]
+    fn each_tier_has_its_texture_pool() {
+        use TierId::*;
+        let table = TierTable::shipped();
+        let pools = [DesktopHigh, DesktopLow, MobileHigh, MobileLow].map(|id| table.get(id).texture_pool_mib);
+        assert_eq!(pools, [2560, 2560, 600, 400]);
+        assert_eq!(invalid_field(edited(MobileLow, |tier| tier.texture_pool_mib = 0)), "texture_pool_mib");
     }
 
     #[test]

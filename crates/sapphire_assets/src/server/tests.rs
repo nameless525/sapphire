@@ -301,6 +301,33 @@ fn a_split_texture_is_whole_before_its_material_is_ready() {
     assert_eq!(order, [(AssetKind::TextureLevel, TextureLevel::id(id(TEXTURE), 0))]);
 }
 
+/// A split texture's tail and levels count against one texture pool (M5 M2): a pool that holds them
+/// together keeps them cached, and one a byte short of that lets them go, though the tail alone would fit.
+#[test]
+fn a_texture_and_its_levels_share_the_texture_pool() {
+    let cached = |pool: u64| {
+        let budgets = unlimited().with_resident(AssetKind::Texture, pool);
+        let (mut server, _) = serve(split_texture(10), budgets);
+        let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+        server.finish(&mesh, |_| Ok(())).unwrap();
+        let resident = server.stats().resident;
+        let (tail, level) = (resident[AssetKind::Texture.index()], resident[AssetKind::TextureLevel.index()]);
+        drop(mesh);
+        server.update();
+        let stats = server.stats();
+        let left =
+            (stats.resident[AssetKind::Texture.index()], stats.resident[AssetKind::TextureLevel.index()]);
+        (tail, level, left, stats.resident_peak[AssetKind::Texture.index()])
+    };
+    let (tail, level, left, peak) = cached(u64::MAX);
+    assert!(tail > 0 && level > tail, "a level above its tail is the larger: {tail}, {level}");
+    assert_eq!(peak, tail + level, "the pool's peak counts both");
+    assert_eq!(cached(tail + level).2, (tail, level), "within the pool, both stay cached");
+    assert_eq!(cached(tail + level - 1).2, (0, 0), "over it, the cached mesh goes with both");
+    assert_eq!(left, (tail, level));
+    assert_eq!(AssetBudgets::DESKTOP.resident(AssetKind::TextureLevel), 2560 << 20, "the textures' pool");
+}
+
 #[test]
 fn a_parent_is_ready_only_once_its_children_are() {
     // One asset a frame.

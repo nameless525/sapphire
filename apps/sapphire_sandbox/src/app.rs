@@ -154,6 +154,7 @@ impl App for SandboxApp {
         // the display for it, and on Android its frame limiter holds it and the window asks for it.
         platform.set_frame_rate(quality.frame_rate());
         let mut content = Content::new(platform.host(), options.character(), options.sky())?;
+        content.set_tier(quality.tier());
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
@@ -1199,6 +1200,7 @@ impl SandboxApp {
             }
         }
         self.scene.set_spring_quality(sapphire_stage::animate::spring_quality(self.quality.active().id));
+        self.content.set_tier(self.quality.tier());
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())
     }

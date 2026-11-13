@@ -221,6 +221,7 @@ impl Serving {
             }
         }
         stage.scene.set_spring_quality(sapphire_stage::animate::spring_quality(stage.quality.active().id));
+        stage.content.set_tier(stage.quality.tier());
     }
 
     fn draw(&mut self) -> Result<(), AppInitError> {

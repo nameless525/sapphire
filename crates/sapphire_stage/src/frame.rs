@@ -316,6 +316,7 @@ impl Stage {
             inventory_without,
             warm_load,
         } = desc;
+        content.set_tier(quality.tier());
         let load_warmup = warm_load.then(|| renderer.warm_load());
         if prewarm_packs {
             let mut inventory = content.pipeline_inventory();
@@ -555,8 +556,8 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
 
     /// Changes to the tier quality wants, if [`Self::prepare_tier_change`] has its renderer built: the game
     /// calls it at a pause or a wipe, never while a fight moves (M4 T3). The renderer changes in place, keeping
-    /// every mesh, material and instance, and builds nothing on the frame; the show hears of it
-    /// ([`SceneShow::tier_changed`]). Returns the tier it changed to. The cap may have changed with it
+    /// every mesh, material and instance, and builds nothing on the frame; the content loads within the
+    /// tier's budgets ([`Content::set_tier`]), and the show hears of it ([`SceneShow::tier_changed`]). Returns the tier it changed to. The cap may have changed with it
     /// ([`Quality::frame_rate`]), which is the caller's to pace. If the renderer can't be taken, quality goes
     /// back to the tier it had, and the live renderer goes on; a build that failed, or that the device reported
     /// an error during (M4 H9), isn't tried again until another tier is wanted.
@@ -579,6 +580,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         let grid = self.content.zone_probe_grid();
         match self.renderer.take_tier(build, grid) {
             Ok(()) => {
+                self.content.set_tier(self.quality.tier());
                 self.show.tier_changed(&mut self.scene, id);
                 tracing::info!(target: LOG_TARGET, tier = id.name(), from = previous.id.name(), "tier changed");
                 Some(id)

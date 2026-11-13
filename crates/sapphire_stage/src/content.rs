@@ -117,6 +117,7 @@ use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
 use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
+use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     MaterialHandle, MeshHandle, PipelineInventory, Renderer, WarmUpProgress, WarmUpRequest,
@@ -1022,9 +1023,28 @@ impl Content {
         self.body_tuning = tuning;
     }
 
+    /// The asset server's budgets on quality tier `tier` (M5 M2): its class's, with the tier's zone texture
+    /// pool (§3.4), which split textures' tails and levels share, so a phone's tier previewed on a desktop
+    /// loads as the phone would.
+    pub fn tier_budgets(tier: &QualityTier) -> AssetBudgets {
+        let pool = u64::from(tier.texture_pool_mib) << 20;
+        AssetBudgets::for_form_factor(tier.id.class()).with_resident(AssetKind::Texture, pool)
+    }
+
+    /// Loads within quality tier `tier`'s budgets ([`Self::tier_budgets`]) from here on: what's over a budget
+    /// now is trimmed at the next [`Self::update`]. The stage calls it when it takes a tier's renderer.
+    pub fn set_tier(&mut self, tier: &QualityTier) {
+        let budgets = Self::tier_budgets(tier);
+        if *self.server.budgets() != budgets {
+            tracing::info!(target: LOG_TARGET, tier = tier.id.name(), ?budgets, "asset budgets for the tier");
+            self.server.set_budgets(budgets);
+        }
+    }
+
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
-    /// within the budgets of the device's class. The scene's sky is the sky material `sky`
+    /// within the budgets of the device's class until a tier's are set ([`Self::set_tier`]). The scene's
+    /// sky is the sky material `sky`
     /// ([`SKY`] unless the scene wants another), loaded when asked for.
     pub fn new(host: &Host, character: AssetId, sky: AssetId) -> Result<Self, AppInitError> {
         let stopwatch = Stopwatch::start();
@@ -3248,8 +3268,7 @@ mod tests {
             let source = Arc::new(MemoryPackSource::new());
             source.insert(PACK, pack);
             let live_packs = Arc::new(LivePacks::new(source.clone()));
-            let budgets =
-                AssetBudgets::UNLIMITED;
+            let budgets = AssetBudgets::UNLIMITED;
             let mut server = AssetServer::new(live_packs.clone(), budgets);
             server.mount_now(PACK).expect("the pack");
             let character = server.load_with(MESH, LoadPriority::Critical).expect("loading");
@@ -4615,8 +4634,7 @@ mod tests {
                 let source = Arc::new(MemoryPackSource::new());
                 source.insert(PACK, source_pack(0.0));
                 let live_packs = Arc::new(LivePacks::new(source.clone()));
-                let budgets =
-                    AssetBudgets::UNLIMITED;
+                let budgets = AssetBudgets::UNLIMITED;
                 let mut server = AssetServer::new(live_packs.clone(), budgets);
                 server.mount_now(PACK).expect("mounted");
                 let character = server.load_with(MESH, LoadPriority::Critical).expect("character");

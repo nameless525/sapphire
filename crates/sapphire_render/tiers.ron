@@ -47,6 +47,9 @@
 //   shed is in place, so no rung builds a pipeline; the cirrus and the wind levels can't be (they
 //   are pipeline constants) and T0 measured no saving from either. Mobile-Low is the device floor: it
 //   already runs at 30 fps and has no lower tier.
+// - `texture_pool_mib` (M5 M2): §3.4's zone texture pool, which the stage gives the asset server as
+//   its textures' budget, a split texture's tail and levels together. Mobile-Low's is 400 MiB, from 600 (m5-plan §3): the process already peaked
+//   at 558 MiB there on 0.1.0's small content.
 // - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4), `max_particles`
 //   (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
@@ -108,6 +111,7 @@
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
                 screen_space_outlines: true,
+                texture_pool_mib: 2560,
                 max_particles: 50000,
                 lod_bias: 0.0,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
@@ -148,6 +152,7 @@
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
                 screen_space_outlines: false,
+                texture_pool_mib: 2560,
                 max_particles: 50000,
                 lod_bias: 0.5,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
@@ -188,6 +193,7 @@
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 1, steps: 4, radius: 0.75))),
                 volumetric_fog: false,
                 screen_space_outlines: false,
+                texture_pool_mib: 600,
                 max_particles: 8000,
                 lod_bias: 0.0,
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
@@ -229,6 +235,7 @@
                 ambient_occlusion: (capsules: true, gtao: None),
                 volumetric_fog: false,
                 screen_space_outlines: false,
+                texture_pool_mib: 400,
                 max_particles: 8000,
                 lod_bias: 0.5,
                 // A face every other frame is a full cube every 0.4 s at 30 fps; the card clouds

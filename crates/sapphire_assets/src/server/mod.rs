@@ -44,7 +44,9 @@ pub struct AssetBudgets {
     /// what a burst of loads can hold in memory before the uploads catch up. One read always goes, however
     /// large.
     pub admission: u64,
-    /// Bytes of each kind resident, decoded, indexed by [`AssetKind::index`].
+    /// Bytes of each kind resident, decoded, indexed by [`AssetKind::index`]. A kind counted in another's
+    /// budget ([`Self::pool`]: texture levels, in the textures' pool) has no budget of its own, and its
+    /// entry is unused.
     pub resident: [u64; AssetKind::ALL.len()],
 }
 
@@ -54,10 +56,10 @@ impl AssetBudgets {
     /// 64 MiB, skeletons 16 MiB, clips 128 MiB, collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets
     /// 16 MiB, animation graphs 1 MiB, zones 16 MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB,
     /// navmeshes 16 MiB, timelines 4 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 4 MiB, dialogues 1
-    /// MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 2.5 GiB. The numbers besides the
-    /// texture pool's are proposals, to set by measuring zones (M2, M3). Texture levels take the pool's
-    /// number too until the pool counts tails and levels as one (M5). A quality tier sets its own texture
-    /// pool on top ([`Self::with_resident`]; `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2).
+    /// MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures' pool with
+    /// their tails ([`Self::pool`], M5 M2). The numbers besides the texture pool's are proposals, to set by
+    /// measuring zones (M2, M3). A quality tier sets its own texture pool on top ([`Self::with_resident`];
+    /// `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         admission: 256 * MIB,
@@ -89,7 +91,8 @@ impl AssetBudgets {
             MIB,
             MIB,
             MIB,
-            2560 * MIB,
+            // Texture levels: counted in the textures' pool.
+            0,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
@@ -97,7 +100,8 @@ impl AssetBudgets {
     /// probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB, sounds 16 MiB, cues 1 MiB,
     /// move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB, font chains
     /// 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 2 MiB,
-    /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 600 MiB.
+    /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures'
+    /// pool.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         admission: 64 * MIB,
@@ -127,7 +131,8 @@ impl AssetBudgets {
             MIB,
             MIB,
             MIB,
-            600 * MIB,
+            // Texture levels: counted in the textures' pool.
+            0,
         ]),
     };
 
@@ -144,15 +149,26 @@ impl AssetBudgets {
         }
     }
 
-    /// The residency budget of `kind`.
+    /// The residency budget `kind`'s bytes count against: its pool's ([`Self::pool`]).
     pub const fn resident(&self, kind: AssetKind) -> u64 {
-        self.resident[kind.index()]
+        self.resident[Self::pool(kind).index()]
+    }
+
+    /// The kind whose residency budget `kind`'s bytes count against: a texture level's are its texture's,
+    /// so a tail and the levels above it share the tier's one texture pool (m5-plan §3, "Mip streaming");
+    /// every other kind's are its own. Eviction measures and frees a pool as one, least recently used
+    /// first across its kinds.
+    pub const fn pool(kind: AssetKind) -> AssetKind {
+        match kind {
+            AssetKind::TextureLevel => AssetKind::Texture,
+            kind => kind,
+        }
     }
 
     /// These budgets with `kind`'s residency budget `bytes`: a quality tier's texture pool, say.
     #[must_use]
     pub const fn with_resident(mut self, kind: AssetKind, bytes: u64) -> Self {
-        self.resident[kind.index()] = bytes;
+        self.resident[Self::pool(kind).index()] = bytes;
         self
     }
 
@@ -381,8 +397,9 @@ pub struct AssetStats {
     pub pinned: u32,
     /// Bytes resident or on their way, by [`AssetKind::index`].
     pub resident: [u64; AssetKind::ALL.len()],
-    /// The most each kind held at an [`AssetServer::update`] since the server started, before that update
-    /// trimmed it: the texture pool's high-water mark against its budget, for one.
+    /// The most each budget held at an [`AssetServer::update`] since the server started, before that update
+    /// trimmed it, by its pool's kind ([`AssetBudgets::pool`]): the texture pool's high-water mark, tails and
+    /// levels together, against its budget, for one. A kind counted in another's pool has none of its own.
     pub resident_peak: [u64; AssetKind::ALL.len()],
     pub budgets: AssetBudgets,
     /// Bytes read or decoded and not yet on the GPU ([admission](AssetServer#admission)), against
@@ -1550,7 +1567,7 @@ impl AssetServer {
                 SlotState::Failed(_) if evictable => failed.push(key),
                 SlotState::Failed(_) => {}
                 _ if evictable && slot.entry.is_none() => failed.push(key),
-                _ => resident[slot.handle.kind().index()] += slot.resident_size(),
+                _ => resident[AssetBudgets::pool(slot.handle.kind()).index()] += slot.resident_size(),
             }
         }
         for (peak, &bytes) in self.resident_peak.iter_mut().zip(&resident) {
@@ -1563,14 +1580,15 @@ impl AssetServer {
         for key in failed {
             self.remove(key);
         }
-        for kind in AssetKind::ALL {
+        // Each pool once, by its own kind: texture levels go with the textures' pool.
+        for kind in AssetKind::ALL.into_iter().filter(|&kind| AssetBudgets::pool(kind) == kind) {
             // An earlier kind's eviction can also remove holders of this kind. Keep the
             // initial one-pass snapshot on frames that have removed nothing.
             if removed {
                 resident[kind.index()] = self
                     .slots
                     .values()
-                    .filter(|slot| slot.handle.kind() == kind)
+                    .filter(|slot| AssetBudgets::pool(slot.handle.kind()) == kind)
                     .map(Slot::resident_size)
                     .sum();
             }
@@ -1581,15 +1599,16 @@ impl AssetServer {
         }
     }
 
-    /// Unloads unused assets of `kind`, least recently used first, until `excess` bytes are
-    /// gone or none are left. Reports whether removing one could have released dependencies.
+    /// Unloads unused assets in `kind`'s pool ([`AssetBudgets::pool`]), least recently used first, until
+    /// `excess` bytes are gone or none are left. Reports whether removing one could have released
+    /// dependencies.
     fn evict(&mut self, kind: AssetKind, mut excess: u64) -> bool {
         let mut candidates = std::mem::take(&mut self.eviction_scratch);
         candidates.clear();
         candidates.extend(
             self.slots
                 .iter()
-                .filter(|(_, slot)| slot.handle.kind() == kind && Self::evictable(slot))
+                .filter(|(_, slot)| AssetBudgets::pool(slot.handle.kind()) == kind && Self::evictable(slot))
                 .map(|(key, slot)| (slot.last_used, key)),
         );
         candidates.sort_unstable();
@@ -1610,7 +1629,7 @@ impl AssetServer {
     }
 
     /// Unloads the unused assets that hold `kind`'s for nobody, least recently used first, with all they
-    /// alone hold, until `excess` bytes of `kind` are gone or none are left. A cached mesh keeps its
+    /// alone hold, until `excess` bytes of `kind`'s pool are gone or none are left. A cached mesh keeps its
     /// material in use, and that its textures, so without this a kind could stay over budget with nothing
     /// the app holds to blame. What the app holds or pins, and all that holds up, stays, and a cached
     /// asset that shares only that isn't touched: it would free nothing. Reports whether it removed any.
@@ -1634,7 +1653,7 @@ impl AssetServer {
         let mut stack: Vec<SlotKey> = self
             .slots
             .iter()
-            .filter(|&(key, slot)| slot.handle.kind() == kind && !held.contains(&key))
+            .filter(|&(key, slot)| AssetBudgets::pool(slot.handle.kind()) == kind && !held.contains(&key))
             .map(|(key, _)| key)
             .collect();
         let mut seen = HashSet::new();
@@ -1663,14 +1682,14 @@ impl AssetServer {
         removed
     }
 
-    /// Unloads an asset nothing uses, and those it was the last user of. Returns how many bytes of `kind`
-    /// went.
+    /// Unloads an asset nothing uses, and those it was the last user of. Returns how many bytes of
+    /// `kind`'s pool went.
     fn remove_with_what_it_holds(&mut self, key: SlotKey, kind: AssetKind) -> u64 {
         let mut bytes = 0;
         let mut stack = vec![key];
         while let Some(key) = stack.pop() {
             let slot = &self.slots[key];
-            if slot.handle.kind() == kind {
+            if AssetBudgets::pool(slot.handle.kind()) == kind {
                 bytes += slot.resident_size();
             }
             let next_children = slot.next.iter().flat_map(|next| &next.children);

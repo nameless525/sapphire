@@ -110,7 +110,7 @@
 // `--arena`, so no earlier scene sees its stage. `arena-replay` plays a replay on it, and
 // `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with the
 // enemy (M2 G6), side on, so the character isn't in front of what they're there to show. `arena-party-second`
-// and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`. `cutscene-gate-*` stand
+// and `arena-party-third` play a party's fight (M2 G7), and only they and `game-hud-party-*` run `--party`. `cutscene-gate-*` stand
 // the arena's stage in the Lantern Ward's court for a replay that watches its gate cutscene (M3 Q3), and only
 // they play a cutscene from a fight. `arena-ultimate-chop` plays the player's ultimate (M3 Q3b) on the
 // arena's own stage, the only scene in a move's cinematic. `arena-skirmish` plays eight fighters (M3 B1), on
@@ -3605,6 +3605,46 @@
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "crt@0.5"],
                 ci_seconds: (lavapipe: 27.7, warp: 81.8),
+            ),
+            // A party's slots and its swap on the HUD (M5 C9), over the recorded `party-swap` as
+            // `arena-party-second` plays it, with the HUD's document following the fight. `ready`: the first
+            // member on the field, all three rested, the second next and the swap ready. `cooling`: the second
+            // on the field since its swap, the swap cooling, the first resting with its seconds, the third next.
+            (
+                name: "game-hud-party-ready-en",
+                size: "1280x720",
+                ticks: 60,
+                args: ["--cues", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "en",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+            ),
+            (
+                name: "game-hud-party-ready-ja",
+                size: "1280x720",
+                ticks: 60,
+                args: ["--cues", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "ja",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+            ),
+            (
+                name: "game-hud-party-cooling-en",
+                size: "1280x720",
+                ticks: 110,
+                args: ["--cues", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "en",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+            ),
+            (
+                name: "game-hud-party-cooling-ja",
+                size: "1280x720",
+                ticks: 110,
+                args: ["--cues", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "ja",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
             ),
         ],
     ),

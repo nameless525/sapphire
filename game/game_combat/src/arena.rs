@@ -678,6 +678,12 @@ impl ArenaActors {
         self.fighters[fighter].kind
     }
 
+    /// The place of the kind of enemy whose name hashes to `name` (`enemy-warrior`, `boss-captain`): what a
+    /// timeline's or a conversation's role names it by (M5 C5).
+    pub(crate) fn kind_named(&self, name: sapphire_core::Name) -> Option<usize> {
+        self.kinds.iter().find(|kind| sapphire_core::Name::new(&kind.name) == name).map(|kind| kind.place)
+    }
+
     /// How many fight here, the player among them.
     pub(crate) fn fighter_count(&self) -> usize {
         self.fighters.len()

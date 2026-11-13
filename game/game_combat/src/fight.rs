@@ -23,6 +23,7 @@ use sapphire_assets::{AssetId, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
+use sapphire_dialogue::DialogueView;
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
@@ -66,8 +67,9 @@ use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::documents::FightDocuments;
+use crate::faces::{self, DialogueFaces};
 use crate::party_looks::{Drawn, PartyLooks};
-use crate::timeline::TimelineShow;
+use crate::timeline::{self, TimelineShow};
 use sapphire_stage::scene::{
     DEFAULT_TIME_OF_DAY, Fade, Figure, LookDev, NearFade, Scene, ZoneShow, ZoneStanding, ZoneTarget,
     stream_settings,
@@ -489,6 +491,12 @@ pub struct FightShow {
     /// The player's shake setting (M4 A2), 0 to 1, for every shake and rumble the fight's cues fire: none
     /// plays them as authored.
     shake: Option<f32>,
+    /// Real seconds since the fighters' faces last moved, held by a pause and nothing else (M5 C5).
+    face_dt: f32,
+    /// How many timelines the stage has shown: what tells one run's face keys from another's (M5 C5).
+    timeline_generation: u32,
+    /// The faces the open conversation's lines have set (M5 C5).
+    dialogue_faces: DialogueFaces,
     /// How much of the screen effects shows, as the player's flashes and camera motion say (M4 A2).
     effect_scale: EffectScale,
 }
@@ -962,6 +970,9 @@ impl FightShow {
     /// on, and says whether it took them.
     pub fn drive_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
         self.trips.add_time(dt);
+        if dt > 0.0 && dt.is_finite() {
+            self.face_dt += dt;
+        }
         if let Some(show) = &mut self.timeline {
             show.drive(dt);
         }
@@ -976,6 +987,7 @@ impl FightShow {
     }
 
     fn show_timeline(&mut self, show: TimelineShow) {
+        self.timeline_generation = self.timeline_generation.wrapping_add(1);
         self.draws_latest = show.holds_simulation();
         self.timeline = Some(show);
         self.timeline_unready = None;
@@ -1030,6 +1042,12 @@ impl FightShow {
             )),
             None => self.play_timeline(timeline, Origin::default()),
         }
+    }
+
+    /// Follows the open conversation's faces (M5 C5): a line's faces for the roles it names, held until a
+    /// later line sets them again or the conversation ends. Allocates nothing.
+    pub fn follow_dialogue(&mut self, view: Option<&DialogueView<'_>>, lines_shown: u64) {
+        self.dialogue_faces.follow(view, lines_shown);
     }
 
     /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
@@ -1511,7 +1529,9 @@ impl FightShow {
         };
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
-        let staged = self.timeline.as_ref().map(TimelineShow::staged_fighters);
+        let timeline = self.timeline.as_ref();
+        let (generation, dialogue_faces) = (self.timeline_generation, &self.dialogue_faces);
+        let face_dt = std::mem::take(&mut self.face_dt);
         let held_ticks = self.held_ticks;
         let kinds = &self.assets.kinds;
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
@@ -1534,6 +1554,18 @@ impl FightShow {
             };
             if !driver.fits(&render) {
                 continue;
+            }
+            // What its role's track says, a timeline's face before a conversation's (M5 C5).
+            let cue = timeline.and_then(|show| show.cue_of_fighter(index, arena));
+            if let Some(face) = driver.face_mut() {
+                let order = cue.and_then(|cue| cue.face).map(|face| faces::timeline_order(generation, face));
+                let said = || {
+                    dialogue_faces
+                        .held()
+                        .find(|&(role, _)| timeline::fighter_of_role(role, arena) == Some(index))
+                        .map(|(_, order)| order)
+                };
+                faces::drive(face, face_dt, order.or_else(said));
             }
             if let Some(fixed) = self.fixed_fighters.get_mut(index).and_then(Option::as_mut) {
                 let (content, _) = presentation.expect("fixed body presentation needs its source");
@@ -1593,15 +1625,17 @@ impl FightShow {
             // A timeline's character track plays its row in the combat slot over whatever the simulation
             // says (M3 Q3), on a clock that goes on through a cutscene that holds the simulation's.
             input.ticks += held_ticks;
-            // Only the first two have a role, `hero` and `foe`: a crowd's others play what the simulation says
-            // (the whole walk's ultimate among three found this, M3 G1c).
-            if let Some(combat) = staged.and_then(|staged| staged.get(index).copied().flatten()) {
+            // Only a fighter a role names has a track: `hero`, `foe`, or the first of a kind of enemy by its
+            // name (M5 C5). A crowd's others play what the simulation says (the whole walk's ultimate among
+            // three found this, M3 G1c).
+            if let Some(combat) = cue.as_ref().and_then(timeline::staged_row) {
                 input.combat = Some(combat);
             }
             stats.characters += 1;
             let place = arena.drawn(index, alpha);
             if let Some(ik) = driver.ik_mut() {
-                ik.set_look_target(arena.look_target(index, alpha));
+                // A track's look key over who it's fighting (M5 C5).
+                ik.set_look_target(cue.and_then(|cue| cue.look).or_else(|| arena.look_target(index, alpha)));
                 // Read plants in the move's own root space so extra gameplay travel
                 // cannot turn a stationary shoe into a skating shoe.
                 ik.set_foot_contact(if input.locomotion.grounded && !input.defeated {
@@ -2652,6 +2686,7 @@ impl SceneShow for Fight {
     }
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
+        self.show.follow_dialogue(self.dialogue.view().as_ref(), self.dialogue.lines_shown());
         let simulation = self.combat.as_ref().map(Combat::simulation);
         self.show.animate_with_simulation(scene, content, alpha, simulation);
     }

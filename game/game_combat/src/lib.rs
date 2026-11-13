@@ -20,6 +20,7 @@ pub mod cues;
 pub mod dialogue;
 pub mod documents;
 pub mod enemy;
+mod faces;
 pub mod fight;
 pub mod party_looks;
 mod timeline;

@@ -1,8 +1,9 @@
 //! A timeline on a fight's stage (M3 Q1): the little that joins [`TimelinePlayer`]'s plain values to the
 //! director. [`FightShow`](crate::fight::FightShow) adds the frame's post and cues, and an app's loop asks it whether
 //! the simulation is held. The rest of it, and what a skip means, are in `sapphire_sequencer`'s docs. A track's
-//! [`CharacterCue`](sapphire_sequencer::CharacterCue) becomes what a fighter's graph plays in its combat slot
-//! ([`TimelineShow::staged_fighters`], M3 Q3), for fighters posed by their graphs.
+//! [`CharacterCue`] becomes what a fighter's graph plays in its combat slot ([`staged_row`], M3 Q3), for
+//! fighters posed by their graphs, where it looks, and what its face shows (M5 C5), for the fighter its role
+//! names ([`fighter_of_role`]).
 
 use std::sync::Arc;
 
@@ -10,8 +11,10 @@ use sapphire_anim::CombatInput;
 use sapphire_camera::{CameraDirector, CameraPose, ShotEye, TakeoverTerms};
 use sapphire_core::Name;
 use sapphire_gameplay::Simulation;
-use sapphire_sequencer::{Origin, StepClock, TimelinePlayer};
+use sapphire_sequencer::{CharacterCue, Origin, StepClock, TimelinePlayer};
 use sapphire_timeline::{EyeRule, Timeline};
+
+use crate::arena::ArenaActors;
 
 /// The roles a fight's timelines name for its two fighters.
 const HERO: Name = Name::new("hero");
@@ -19,6 +22,32 @@ const FOE: Name = Name::new("foe");
 
 /// Set in a staged row's serial, which no simulation move's reaches.
 const STAGED_SERIAL: u32 = 1 << 31;
+
+/// The fighter a timeline's or a conversation's role names, the player being 0: `hero` is the fight's player
+/// and `foe` whoever they face, the second fighter, as since M3 Q3; and since M5 C5 any other role names a
+/// kind of enemy by its name (`enemy-warrior`, `boss-captain`), and binds the first fighter of that kind.
+pub(crate) fn fighter_of_role(role: Name, arena: &ArenaActors) -> Option<usize> {
+    let count = arena.fighter_count();
+    if role == HERO {
+        return (count > 0).then_some(0);
+    }
+    if role == FOE {
+        return (count > 1).then_some(1);
+    }
+    let kind = arena.kind_named(role)?;
+    (1..count).find(|&fighter| arena.kind(fighter) == kind)
+}
+
+/// What a fighter's graph plays in its combat slot for `cue`: its track's row there, if any.
+pub(crate) fn staged_row(cue: &CharacterCue) -> Option<CombatInput> {
+    Some(CombatInput {
+        name: cue.row?,
+        // Apart from every serial the simulation's moves count, so that a row's start, and the move after it,
+        // are each a transition.
+        serial: STAGED_SERIAL | cue.serial,
+        position: cue.position_ticks,
+    })
+}
 
 /// What [`TimelineShow::present`] did this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -67,19 +96,11 @@ impl TimelineShow {
         self.player.holds_simulation()
     }
 
-    /// What each fighter's graph plays in its combat slot at the playhead, the player first: the row its
-    /// role's track has there, if any. `hero` is the fight's player and `foe` whoever they face.
-    pub(crate) fn staged_fighters(&self) -> [Option<CombatInput>; 2] {
-        [HERO, FOE].map(|role| {
-            let cue = self.player.character(role)?;
-            Some(CombatInput {
-                name: cue.row?,
-                // Apart from every serial the simulation's moves count, so that a row's start, and the move
-                // after it, are each a transition.
-                serial: STAGED_SERIAL | cue.serial,
-                position: cue.position_ticks,
-            })
-        })
+    /// What the track whose role names `fighter` says at the playhead, if one does: the first in the
+    /// document's order ([`fighter_of_role`]). Allocates nothing.
+    pub(crate) fn cue_of_fighter(&self, fighter: usize, arena: &ArenaActors) -> Option<CharacterCue> {
+        let role = self.player.roles().find(|&role| fighter_of_role(role, arena) == Some(fighter))?;
+        self.player.character(role)
     }
 
     /// This much real time for the next frame.

@@ -515,7 +515,7 @@ fn a_wave_comes_on_with_no_heap() {
     scene.end_frame();
     assert_eq!(scene.packet().characters.len(), 1 + 2 * planned, "and they're all lit");
 
-    // A timeline's `foe` is the stage's fighter 1 (`TimelineShow::staged_fighters`), which is the encounter's
+    // A timeline's `foe` is the stage's fighter 1 (`timeline::fighter_of_role`), which is the encounter's
     // first spawn, whoever the soft lock picks (M3 G1): a beat's cutscene needs no other fallback.
     let first = sim.zone().expect("it has one").encounters()[0].fighters().next().expect("came");
     let arena = scene.show.arena.as_ref().expect("built");
@@ -1511,7 +1511,10 @@ fn the_gates_tracks_stage_each_fighter_in_turn() {
     let mut at = |seconds: f32| {
         show.drive(seconds);
         show.present(1.0, None);
-        show.staged_fighters()
+        ["hero", "foe"].map(|role| {
+            let cue = show.player().character(sapphire_core::Name::new(role))?;
+            timeline::staged_row(&cue)
+        })
     };
     assert_eq!(at(1.0), [None, None]);
     let [hero, foe] = at(2.0);

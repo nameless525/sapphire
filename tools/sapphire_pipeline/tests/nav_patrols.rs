@@ -30,6 +30,7 @@ fn proving_ground_zone() -> sapphire_serialize::cooked::AlignedVec {
     document.day = None;
     document.rigs = None;
     document.exits.clear();
+    document.reflections.clear();
     let geometry = ZoneGeometry {
         meshes: BTreeMap::new(),
         instances: Vec::new(),

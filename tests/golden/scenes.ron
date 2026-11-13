@@ -1070,6 +1070,7 @@
                 ticks: 225,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 32.7, warp: 111.2),
             ),
             // Past its second trip, in the proving ground, which names the look-dev day and rigs and no grid: the
             // hub's look gone with the hub, midday again, and no grid on the renderer.
@@ -1078,6 +1079,7 @@
                 ticks: 290,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 58.3, warp: 74.3),
             ),
             // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
             // the enemy's stand-in past the player's shoulder, the pavilion on the left and the market on the

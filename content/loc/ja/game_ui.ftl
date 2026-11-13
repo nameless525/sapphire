@@ -188,6 +188,8 @@ hud-skip = スキップ
 hud-banner-checkpoint = チェックポイント到達
 hud-banner-victory = 勝利
 hud-banner-defeat = 敗北
+hud-party-next = 次
+hud-party-down = 戦闘不能
 
 enemy-warrior = 骸骨の戦士
 enemy-lancer = 槍使い

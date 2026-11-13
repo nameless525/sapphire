@@ -19,7 +19,7 @@
 mod support;
 
 use game_ui::boot::BootModel;
-use game_ui::menus::{GameMenus, HudModel, MenuScreen, ScreenModel};
+use game_ui::menus::{GameMenus, HudModel, MenuScreen, PARTY_DOWN, PARTY_NEXT, ScreenModel};
 use game_ui::screen::{ScreenStack, StackSetup};
 use game_ui::wipe::WipeModel;
 use sapphire_assets::ui::UiDocument;
@@ -376,6 +376,12 @@ fn measure_menus(measured: &mut Vec<Measured>) {
             hud.objective = "hud-objective-arena".to_owned();
             hud.has_enemy = true;
             hud.enemy = "enemy-warrior".to_owned();
+            // A party's slots (M5 C9): one says who comes in next, one who has fallen.
+            hud.has_party = true;
+            hud.has_party_second = true;
+            hud.party_second = PARTY_NEXT.to_owned();
+            hud.has_party_third = true;
+            hud.party_third = PARTY_DOWN.to_owned();
             hud.follow_subtitle(Some("subtitle-court-gate-warning"), Some("speaker-warden"));
         }
         walk.settle();

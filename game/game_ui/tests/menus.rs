@@ -377,6 +377,92 @@ fn each_kind_of_enemy_is_named_by_its_own_key() {
     }
 }
 
+/// A party's slots say who a press of the swap brings in and who has fallen (M5 C9), in both languages and
+/// at every aspect, each level with its slot as `sapphire_ui::CombatHud` lays it out and past where the
+/// slot's health and seconds end; with no party, or nothing to say of a member, nothing shows.
+#[test]
+fn a_partys_slots_say_who_comes_next_and_who_has_fallen() {
+    use game_ui::menus::{PARTY_DOWN, PARTY_NEXT};
+    use sapphire_ui::{HudDesign, HudLayout, Insets, PartyMember, PartyValues, UiMetrics};
+
+    let mut party = PartyValues::default();
+    party.push(PartyMember { hp: 0.6, on_field: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 0.0, down: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 1.0, next: true, ..PartyMember::default() });
+    let values = HudValues { party: Some(party), ..HudValues::default() };
+    let rows = ["party-first", "party-second", "party-third"];
+    let mut wrong = Vec::new();
+    for locale in ["en", "ja"] {
+        let table = table(locale);
+        let said_by = |key: &str| {
+            let Pattern::Plain(span) = table.entry(key).expect("in the table").pattern else {
+                panic!("{key} is plain text")
+            };
+            table.str(span).to_owned()
+        };
+        for size in SIZES {
+            let at = format!("{locale}, {size:?}");
+            let mut walk = Walk::new(assets(), locale, false, size, Device::Keyboard);
+            walk.menus.open(MenuScreen::HUD);
+            walk.settle();
+            let tree = walk.tree(MenuScreen::HUD);
+            assert!(!tree.is_visible(tree.find("party").unwrap()), "{at}: no party, no words");
+
+            walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().follow_fight(Some(&values), None);
+            walk.settle();
+            walk.check(MenuScreen::HUD, false);
+            let tree = walk.tree(MenuScreen::HUD);
+            let node = |name: &str| tree.find(name).unwrap_or_else(|| panic!("a node {name}"));
+            let said =
+                |name: &str| tree.strings().find(|(node, _)| *node == name).expect("text").1.to_owned();
+            assert!(tree.is_visible(node("party")), "{at}");
+            assert!(
+                !tree.is_visible(node("party-first-tag")),
+                "{at}: the one on the field has nothing to say"
+            );
+            assert!(
+                tree.is_visible(node("party-second-tag")) && tree.is_visible(node("party-third-tag")),
+                "{at}"
+            );
+            assert_eq!(said("party-second-text"), said_by(PARTY_DOWN), "{at}");
+            assert_eq!(said("party-third-text"), said_by(PARTY_NEXT), "{at}");
+
+            let metrics = UiMetrics::new(Vec2::new(size.0 as f32, size.1 as f32), Insets::default());
+            let layout = HudLayout::designed(metrics, HudDesign::shipped());
+            for (row, slot) in rows.iter().zip(&layout.party.rows) {
+                let rect = tree.screen_rect(node(row));
+                if (rect.center().y - slot.chip.y).abs() > 0.5 {
+                    wrong.push(format!(
+                        "{at}: {row}'s middle at {} isn't its slot's {}",
+                        rect.center().y,
+                        slot.chip.y
+                    ));
+                }
+                if rect.min.x < slot.digits.x - 0.5 {
+                    wrong.push(format!(
+                        "{at}: {row} starts at {} over its slot, which runs to {}",
+                        rect.min.x, slot.digits.x
+                    ));
+                }
+            }
+
+            // Back to nobody to bring in: the words go with what they said.
+            let mut rested = PartyValues::default();
+            rested.push(PartyMember { hp: 0.6, on_field: true, ..PartyMember::default() });
+            rested.push(PartyMember { hp: 1.0, rest: 0.5, seconds: Some(2), ..PartyMember::default() });
+            let values = HudValues { party: Some(rested), ..HudValues::default() };
+            walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().follow_fight(Some(&values), None);
+            walk.settle();
+            let tree = walk.tree(MenuScreen::HUD);
+            for row in rows {
+                assert!(!tree.is_visible(tree.find(&format!("{row}-tag")).unwrap()), "{at}: {row}");
+            }
+            wrong.extend(walk.wrong);
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// A cutscene's every line shows on the HUD with its speaker, as the table says it, in both languages and under
 /// pseudo-localization, at every aspect (M3 Q4): low on the screen, clear of its edges, in at most two lines,
 /// and gone when nothing's said.

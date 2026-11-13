@@ -32,6 +32,7 @@ use sapphire_ui::{
 };
 
 use crate::LOG_TARGET;
+use crate::menus::HudModel;
 use crate::screen::ScreenStack;
 use crate::touch::TouchControls;
 use crate::wipe::{WipeAsk, ZoneWipe};
@@ -719,6 +720,16 @@ impl SceneShow for ShownFight {
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
         if let Some(screen) = &mut self.screen {
+            // The HUD's document over a fight says what the fight says, its foe's name and its party's slots, as
+            // a game's show has it say them.
+            if let Some((values, _)) = self.fight.show.hud_values() {
+                let foe_name = self.fight.show.foe_name();
+                for index in 0..screen.len() {
+                    if let Some(model) = screen.model_mut::<HudModel>(index) {
+                        model.follow_fight(Some(&values), foe_name);
+                    }
+                }
+            }
             screen.draw(size, list);
         }
         // A cutscene has the screen: its subtitles and its way out are the HUD document's.

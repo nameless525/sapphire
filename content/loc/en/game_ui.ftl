@@ -207,6 +207,8 @@ hud-skip = Skip
 hud-banner-checkpoint = Checkpoint reached
 hud-banner-victory = Victory
 hud-banner-defeat = Defeated
+hud-party-next = Next
+hud-party-down = Down
 
 enemy-warrior = Skeleton Warrior
 enemy-lancer = Lancer

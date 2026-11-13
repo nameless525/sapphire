@@ -9,7 +9,8 @@
 mod support;
 
 use game_ui::menus::{
-    GameMenus, HudModel, MenuScreen, MenuSetup, PlayerSettings, SubtitleSize, Subtitles, TextSize,
+    GameMenus, HudModel, MenuScreen, MenuSetup, PARTY_DOWN, PARTY_NEXT, PlayerSettings, SubtitleSize,
+    Subtitles, TextSize,
 };
 use sapphire_look::UiDrawList;
 use sapphire_math::Vec2;
@@ -73,7 +74,8 @@ fn menus_with(settings: PlayerSettings) -> GameMenus {
 }
 
 /// Each of the game's screens, alone, settled at `size` pixels: `look` sees it. The HUD says everything it
-/// can: a banner, and a cutscene's subtitle, with its speaker.
+/// can: a banner, a cutscene's subtitle, with its speaker, and a party's three slots' words (M5 C9), the
+/// longer of them where they differ.
 fn each_screen(menus: &mut GameMenus, size: (u32, u32), mut look: impl FnMut(&str, &GameMenus, MenuScreen)) {
     let mut list = UiDrawList::default();
     for entry in &support::menus().screens {
@@ -86,6 +88,16 @@ fn each_screen(menus: &mut GameMenus, size: (u32, u32), mut look: impl FnMut(&st
             hud.has_banner = true;
             hud.follow_subtitle(Some("subtitle-court-gate-warning"), Some("speaker-warden"));
             hud.follow_subtitle_look(&subtitles);
+            hud.has_party = true;
+            for (key, shown) in [
+                (&mut hud.party_first, &mut hud.has_party_first),
+                (&mut hud.party_second, &mut hud.has_party_second),
+                (&mut hud.party_third, &mut hud.has_party_third),
+            ] {
+                PARTY_DOWN.clone_into(key);
+                *shown = true;
+            }
+            hud.party_third = PARTY_NEXT.to_owned();
         }
         for frame in 1..=30u64 {
             menus.update(Timestamp::from_nanos(1_000_000_000 + frame * 16_666_667));
@@ -96,7 +108,8 @@ fn each_screen(menus: &mut GameMenus, size: (u32, u32), mut look: impl FnMut(&st
     }
 }
 
-/// The smallest text on every screen and the HUD's numbers, in pixels, with what it is.
+/// The smallest text on every screen and the HUD's numbers, the party slots' seconds too, in pixels, with
+/// what it is.
 fn smallest_text(settings: &PlayerSettings, (size, display): ((u32, u32), f32)) -> (f32, String) {
     let mut menus = menus_with(settings.clone());
     let mut least = (f32::INFINITY, String::new());
@@ -118,6 +131,10 @@ fn smallest_text(settings: &PlayerSettings, (size, display): ((u32, u32), f32)) 
         if pixels < least.0 {
             least = (pixels, format!("the HUD's {bars} numbers"));
         }
+    }
+    let pixels = layout.party.digit_height * settings.text_size.scale() * pixels_per_point * display;
+    if pixels < least.0 {
+        least = (pixels, "the HUD's party seconds".to_owned());
     }
     least
 }

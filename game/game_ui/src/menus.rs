@@ -39,7 +39,7 @@ use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
 use sapphire_stage::content::ScreenAssets;
-use sapphire_ui::{Atlas, HudValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
+use sapphire_ui::{Atlas, HudValues, PartyValues, UiEvent, UiHit, UiInput, UiMetrics, UiTree};
 use serde::{Deserialize, Serialize};
 
 pub use self::document::{
@@ -421,6 +421,18 @@ pub struct HudModel {
     /// `enemy`. Empty reads the document's own.
     pub boss: String,
     pub has_boss: bool,
+    /// Whether the fight has a party for the HUD's slots (M5 C9): none until [`Self::follow_fight`] says so.
+    pub has_party: bool,
+    /// The key of what the party's first slot says, under `hud-party-`: who a press of the swap brings in
+    /// next, or who has fallen ([`Self::follow_fight`]). Empty reads the document's own.
+    pub party_first: String,
+    pub has_party_first: bool,
+    /// The same for the second slot.
+    pub party_second: String,
+    pub has_party_second: bool,
+    /// The same for the third slot.
+    pub party_third: String,
+    pub has_party_third: bool,
     /// The objective's key, under `hud-objective-`. Empty reads the document's own.
     pub objective: String,
     /// Whether the run gives an objective: none unless whoever stands the run says so.
@@ -465,6 +477,13 @@ impl Default for HudModel {
             names_enemy: true,
             boss: String::new(),
             has_boss: false,
+            has_party: false,
+            party_first: String::new(),
+            has_party_first: false,
+            party_second: String::new(),
+            has_party_second: false,
+            party_third: String::new(),
+            has_party_third: false,
             objective: String::new(),
             has_objective: false,
             touch: false,
@@ -487,6 +506,11 @@ impl Default for HudModel {
     }
 }
 
+/// What a party's slot says of a member a press of the swap brings in next (M5 C9).
+pub const PARTY_NEXT: &str = "hud-party-next";
+/// What a party's slot says of a member who has fallen.
+pub const PARTY_DOWN: &str = "hud-party-down";
+
 /// Who a fight's voice line said by the player's side is captioned as (M4 A2): the player's character, by
 /// the speaker key the cutscenes name them by.
 pub const PLAYER_SPEAKER: &str = "speaker-wanderer";
@@ -496,7 +520,30 @@ impl HudModel {
     /// `FightShow::foe_name` gives, as the foe's kind of enemy names it), which is `boss` while its bar is a
     /// boss's and `enemy` otherwise (M4 X2). A foe with no name shows none, rather than another's. Allocates
     /// only for a name longer than any before.
+    ///
+    /// And the party's slots (M5 C9), from `values`' party: whether there is one, and what each slot says of
+    /// its member, [`PARTY_DOWN`] for one who has fallen and [`PARTY_NEXT`] for whoever a press of the swap
+    /// brings in, or nothing. The slots themselves are `sapphire_ui::CombatHud`'s.
     pub fn follow_fight(&mut self, values: Option<&HudValues>, foe_name: Option<&str>) {
+        let party = values.and_then(|values| values.party);
+        self.has_party = party.is_some();
+        let members = party.as_ref().map_or(&[][..], PartyValues::members);
+        let slots = [
+            (&mut self.party_first, &mut self.has_party_first),
+            (&mut self.party_second, &mut self.has_party_second),
+            (&mut self.party_third, &mut self.has_party_third),
+        ];
+        for (place, (held, shown)) in slots.into_iter().enumerate() {
+            let word = members.get(place).and_then(|member| {
+                if member.down { Some(PARTY_DOWN) } else { member.next.then_some(PARTY_NEXT) }
+            });
+            *shown = word.is_some();
+            if let Some(word) = word
+                && held != word
+            {
+                word.clone_into(held);
+            }
+        }
         self.has_enemy = values.is_some_and(|values| values.enemy.is_some());
         let name = foe_name.filter(|_| self.has_enemy);
         self.has_boss = name.is_some() && values.is_some_and(|values| values.boss.is_some());

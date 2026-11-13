@@ -1,6 +1,6 @@
-// What the HUD says in words (M3 U7): names, the objective, a pause for what has no key to press, and a
-// cutscene's subtitles (M3 Q4). Its bars, buttons and numbers animate every frame, and `sapphire_ui::CombatHud`
-// draws those.
+// What the HUD says in words (M3 U7): names, the objective, a pause for what has no key to press, a
+// cutscene's subtitles (M3 Q4), and what a party's slots say of their members (M5 C9). Its bars, buttons and
+// numbers animate every frame, and `sapphire_ui::CombatHud` draws those.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -44,6 +44,82 @@
                     color: (255, 192, 56, 255),
                     args: [(name: "level", path: "level")],
                     shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
+            // What the party's slots say (M5 C9), each beside its slot's health, which `sapphire_ui::CombatHud`
+            // draws with the slot down the left (`default_hud.ron`'s `party`): who a press of the swap brings in
+            // next, and who has fallen. A row a slot, as tall as a slot's, on a plate of its own so it reads over
+            // anything.
+            (
+                name: "party",
+                parent: "root",
+                layout: (anchored: (left: Points(120), top: Points(108)), direction: Column, gap: 4),
+                binds: [(to: Shown, path: "has_party"), (to: Opacity, path: "fight_words")],
+            ),
+            (
+                name: "party-first",
+                parent: "party",
+                layout: (direction: Row, align: Center, min_height: Points(24)),
+            ),
+            (
+                name: "party-first-tag",
+                parent: "party-first",
+                layout: (direction: Row, align: Center, padding: (left: 6, right: 6)),
+                look: (shape: Slice(sprite: Button, corner: 6), fill: Color((9, 12, 20, 235))),
+                binds: [(to: Shown, path: "has_party_first")],
+            ),
+            (
+                name: "party-first-text",
+                parent: "party-first-tag",
+                text: (
+                    key: "hud-party-next",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_first", prefix: "hud-party-"),
+                ),
+            ),
+            (
+                name: "party-second",
+                parent: "party",
+                layout: (direction: Row, align: Center, min_height: Points(24)),
+            ),
+            (
+                name: "party-second-tag",
+                parent: "party-second",
+                layout: (direction: Row, align: Center, padding: (left: 6, right: 6)),
+                look: (shape: Slice(sprite: Button, corner: 6), fill: Color((9, 12, 20, 235))),
+                binds: [(to: Shown, path: "has_party_second")],
+            ),
+            (
+                name: "party-second-text",
+                parent: "party-second-tag",
+                text: (
+                    key: "hud-party-next",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_second", prefix: "hud-party-"),
+                ),
+            ),
+            (
+                name: "party-third",
+                parent: "party",
+                layout: (direction: Row, align: Center, min_height: Points(24)),
+            ),
+            (
+                name: "party-third-tag",
+                parent: "party-third",
+                layout: (direction: Row, align: Center, padding: (left: 6, right: 6)),
+                look: (shape: Slice(sprite: Button, corner: 6), fill: Color((9, 12, 20, 235))),
+                binds: [(to: Shown, path: "has_party_third")],
+            ),
+            (
+                name: "party-third-text",
+                parent: "party-third-tag",
+                text: (
+                    key: "hud-party-next",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_third", prefix: "hud-party-"),
                 ),
             ),
             (

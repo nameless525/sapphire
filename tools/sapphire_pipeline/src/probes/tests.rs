@@ -658,7 +658,7 @@ fn a_color_map_reads_as_its_texture_does() {
         let path = scratch.path().join(file);
         fs::write(&path, bytes).unwrap();
         let settings = ImportSettings::Texture(TextureSettings { class });
-        let input = |_| Some(ProbeInput { source: &path, settings: &settings, cooked: None });
+        let input = |_| Some(ProbeInput { source: &path, settings: &settings, mesh: false, cooked: None });
         let read = color_map(Some(AssetId::from_bytes([1; 16])), &input);
         match read {
             Ok(Some(map)) if map.mean(|_| true) == Vec3::splat(expected) => {}
@@ -673,7 +673,7 @@ fn a_color_map_reads_as_its_texture_does() {
     let leaves = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([40, 200, 40, 128]));
     leaves.save_with_format(&path, Png).unwrap();
     let settings = ImportSettings::Texture(TextureSettings { class: color() });
-    let input = |_| Some(ProbeInput { source: &path, settings: &settings, cooked: None });
+    let input = |_| Some(ProbeInput { source: &path, settings: &settings, mesh: false, cooked: None });
     let map = color_map(Some(AssetId::from_bytes([1; 16])), &input).unwrap().unwrap();
     assert!(map.alpha.iter().all(|&alpha| alpha == 128.0 / 255.0));
     assert_eq!((map.width, map.height), (4, 4));

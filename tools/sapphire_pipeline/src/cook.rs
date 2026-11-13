@@ -2039,6 +2039,7 @@ impl<'a> Assets<'a> {
         Some(ProbeInput {
             source: &planned.asset.path,
             settings: &planned.asset.meta.importer,
+            mesh: planned.is_mesh() || matches!(planned.part, Part::Cell(_)),
             cooked: self
                 .cooked
                 .get(index)

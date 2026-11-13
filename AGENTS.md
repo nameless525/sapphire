@@ -4,7 +4,7 @@ The entry point for anyone, agent or person, who lands in this repository. It's 
 
 ## What Sapphire is
 
-A Rust engine for 3D **anime-aesthetic** action games, the look of Wuthering Waves and Zenless Zone Zero: zone-based levels, a three-character party, character action combat. It targets macOS, Windows, Linux, iOS and Android, all five first-class. It's about 220k lines in 60+ crates, on Rust 1.99 (edition 2024, [rust-toolchain.toml](rust-toolchain.toml)), with SDL3 for the platform, wgpu for the GPU and `bevy_ecs` as the world database.
+A Rust engine for 3D **anime-aesthetic** action games, the look of Wuthering Waves and Zenless Zone Zero: zone-based levels, a three-character party, character action combat. It targets macOS, Windows, Linux, iOS and Android, all five first-class. It's about 550k lines of Rust (a third of them tests) in 61 crates, on Rust 1.99 (edition 2024, [rust-toolchain.toml](rust-toolchain.toml)), with SDL3 for the platform, wgpu for the GPU and `bevy_ecs` as the world database.
 
 - **Where it stands:** milestones M0 to M4 are built: bring-up, the data path and the look, a combat slice, world and tools, ship readiness. The game is one slice, the Lantern Ward, from the title to its boss, packaged for three stores. [docs/engine-spec.md §10](docs/engine-spec.md#10-milestones) has the milestones, and [docs/m5-handoff.md](docs/m5-handoff.md) has what the next milestone inherits.
 - **Words:** say "anime-aesthetic" and "anime character shading", never "toon", in code, docs, comments and commit text. Proper names such as MToon are fine.

@@ -1,227 +1,138 @@
+<div align="center">
+
+<img src="docs/media/sapphire-icon.png" alt="Sapphire" width="128">
+
 # Sapphire
 
-Sapphire is a Rust game engine built for 3D anime-aesthetic action games in the vein of Zenless Zone Zero and Wuthering Waves. It targets **macOS, Windows, Linux, iOS and Android**.
+**A Rust engine for 3D anime-aesthetic action games.**
 
-![The look-dev stage at golden hour. An anime character with long chestnut hair, a white T-shirt and black shorts stands in a flagstone square, in three-quarter view. Behind the character on the left is a pavilion with dark red columns and a sweeping charcoal tile roof, the low sun glowing over its eaves. On the right a white plastered wall opens through a round moon gate onto a street strung with paper lanterns. Long blue-violet shadows cross the paving, under a lavender sky and a pale mountain in haze.](docs/media/m1-lookdev.png)
+Anime character shading, authored light, stylized worlds and character action combat,<br>
+on macOS, Windows, Linux, iOS and Android.
 
-**Status: the combat slice (M2) is built, and nobody has played it (2026-11-02).** One anime character fights one enemy in the look-dev town, on a gamepad, keyboard and mouse, or by touch, tuned while it runs, with deterministic replays in CI (`--arena --fight`). A review by agents who hadn't built it found and fixed 31 bugs. Whether it feels right is the project's go/no-go, and only the maintainer can answer it: [docs/m2-go-no-go.md](docs/m2-go-no-go.md). M1 is done, pending devices (2026-10-27). It built the engine's data path and its anime look:
+[![CI](https://github.com/nameless525/sapphire/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nameless525/sapphire/actions/workflows/ci.yml)
+[![GPU tests](https://github.com/nameless525/sapphire/actions/workflows/gpu-tests-warp.yml/badge.svg?branch=main)](https://github.com/nameless525/sapphire/actions/workflows/gpu-tests-warp.yml)
+[![Rust 1.99](https://img.shields.io/badge/rust-1.99-e43716?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2f81f7)](LICENSE)
 
-- **Data path:** `sapphire_pipeline` imports glTF, VRM 1.0 and FBX models, textures and RON documents. It cooks them per platform (BC on desktop, ASTC on phones) through a content-hash cache into packs, which the runtime loads asynchronously, by asset ID, behind handles.
-- **Characters:** anime character shading, with authored ramps and ILM maps, SDF face shadows, layered eyes, hair highlights, a depth-offset rim, inverted-hull outlines, material layers and a light rig of their own.
-- **World:** one time-of-day key moves the sky, fog, ambient light, shadow tint, the character light rig and the grade. Under it are a stylized environment shader, cascaded shadows, ambient probes and AO, and NPR foliage in the wind.
-- **Post:** HDR with bloom, a diffusion glow, gradient layers and a custom grade, TAA on desktop and 4× MSAA on phones, and a stack of combat screen effects.
-- **Iteration:** hot reload on the desktop, and live link to any development build. Content, materials, time-of-day keys, cvars and shaders change in the running app without a restart.
-- **Golden images:** 334 scenes, compared on Metal, Vulkan (lavapipe) and DX12 (WARP) on every pull request.
+[Features](#features) · [Quick start](#quick-start) · [Architecture](#architecture) · [Status](#status) · [Documentation](#documentation) · [For AI agents](AGENTS.md)
 
-The look-dev stage (`--look-dev`) puts it all together: a VRM character in a Jinzhou-style town, through a day and a night.
+</div>
 
-It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator and on the Android 16 emulator. Windows and Linux build, pass their tests and render the golden images in CI, on software rasterizers. Nothing has run on a phone or on Windows or Linux hardware yet, and those checks are still owed. The spec's [§10](docs/engine-spec.md#10-milestones) has the M1 and M2 statuses, and the [M3 handoff notes](docs/m3-handoff.md) what comes next, if the go/no-go says so.
+<br>
 
-## Documents
+![The lantern street at night: strings of paper lanterns run between white-walled halls with lit lattice windows toward a tiered tower, and the character stands in the street](docs/media/hero.jpg)
 
-- [Engine spec](docs/engine-spec.md): what gets built, and how.
-- [M1 plan](docs/m1-plan.md): M1's work packages, each with an "As built" note.
-- [M1 exit run](docs/m1-exit-run.md): how to run M1's exit tests on the desktop, simulators and phones.
-- [M2 handoff notes](docs/m2-handoff.md): what M2 inherits from M1.
-- [M2 plan](docs/m2-plan.md): the combat slice's decisions, work packages and order.
-- [M2 exit run](docs/m2-exit-run.md): how to run M2's four exit tests, the feel reviews' sheet, and which file changes what.
-- [M2 go/no-go](docs/m2-go-no-go.md): what's proven and what isn't, and what the maintainer needs to do to decide.
-- [M3 handoff notes](docs/m3-handoff.md): what M3 would inherit from M2.
-- [Research report](reports/Rust%20anime%20action%20game%20engine.md): why Rust, and why these libraries.
-- [Conventions](docs/conventions.md): how the code should read.
-- [Privacy safeguards](docs/privacy.md): safe commit identities, local hooks and the CI guard.
-- [Architecture decisions](docs/adr/).
+## Features
 
-## Requirements
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/media/feature-face.jpg" alt="The character's face up close at golden hour: a clean face-shadow line down the nose, eye and hair highlights, fine outlines">
+<h3>Anime character shading</h3>
+Authored ramps and ILM maps, SDF face shadows, layered eyes, hair highlights, depth-offset rims and stable inverted-hull outlines, under a light rig of the character's own.
+</td>
+<td width="50%" valign="top">
+<img src="docs/media/feature-day.jpg" alt="One view of the town square at 13:00, 18:30, 19:45 and 23:00">
+<h3>One key for the whole day</h3>
+A single time-of-day key moves the sky, fog, ambient light, shadow tint, the character's light rig and the grade together, from noon to a night under the stars.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/media/feature-combat.webp" alt="The character fighting seven enemies in the square at golden hour, in motion">
+<h3>Character action combat</h3>
+Moves are data: hit windows, hitstop, perfect-dodge slow motion, cancels, party swaps, enemies and a boss, with combat screen effects and an ultimate that cuts to its own cinematic.
+</td>
+<td width="50%" valign="top">
+<img src="docs/media/feature-story.jpg" alt="A dialogue panel with four replies in Japanese, over the character's face at golden hour">
+<h3>Cinematics and story</h3>
+Timelines, a camera director, dialogue, subtitles and scripted encounters in Luau, all authored as documents: a new enemy, encounter, boss or cutscene needs no Rust.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/media/feature-game.jpg" alt="The title menu in Japanese beside the character, at dusk">
+<h3>A whole game around it</h3>
+Title, saves, settings with remapping, subtitles, reduced flashes and larger text, in English and Japanese: the Lantern Ward, a slice from the title to the boss.
+</td>
+<td width="50%" valign="top">
+<img src="docs/media/feature-mobile.jpg" alt="A boss fight on the touch HUD: health bars, the boss's phase marks, a stick and skill buttons">
+<h3>Made for phones too</h3>
+Four quality tiers with a ladder that steps down under heat, ASTC textures, a touch HUD, and pipelines warmed off the frame, so a scripted playthrough draws with zero shader hitches.
+</td>
+</tr>
+</table>
 
-| For | Install |
-|---|---|
-| Everything | `rustup`. The toolchain and targets are pinned in `rust-toolchain.toml` and installed automatically. CMake and Ninja are needed to build SDL3 from source. |
-| macOS / iOS | Xcode 26 or newer, plus an iOS Simulator runtime (`xcodebuild -downloadPlatform iOS`). |
-| Android | JDK 17 (with `JAVA_HOME` set for Gradle) and the Android SDK (`ANDROID_HOME`, or the default `~/Library/Android/sdk`), with NDK r28 or newer, `platforms;android-36`, `build-tools;36.0.0`, `platform-tools` and an emulator image. `cargo xtask run --platform android` boots an AVD named `sapphire_api36` when no device is connected, using `-gpu host` for hardware Vulkan. |
-| Linux | The SDL3 build dependencies (X11, Wayland, xkbcommon, udev development headers). |
+<p align="center">
+<img src="docs/media/gallery-aurora.jpg" width="32%" alt="The town square at night under stars and a green-blue aurora">
+<img src="docs/media/gallery-effects.jpg" width="32%" alt="A sword arc, sparks and flares around the character at night">
+<img src="docs/media/gallery-impact.jpg" width="32%" alt="A manga impact frame: ink speed lines over a posterized frame of a guard-breaking hit">
+</p>
+<p align="center"><sub>Every image here is a frame the engine drew, captured offscreen: <a href="docs/media/README.md">how each was made</a>.</sub></p>
+
+### Under the hood
+
+- **Renderer:** `wgpu` over Metal, Vulkan and DX12, driven by a frame graph. HDR, bloom, a diffusion glow, gradient layers and a custom grade; cascaded shadows, ambient probes and AO; NPR foliage in the wind; TAA on desktop and 4× MSAA on phones.
+- **Content:** glTF, VRM 1.0 and FBX, cooked per platform (BC7 or ASTC) through a content-hash cache into packs, loaded asynchronously by asset ID. Signed releases patch themselves by downloading only the blocks that changed.
+- **Simulation:** a deterministic fixed 60 Hz step on `bevy_ecs`, whose replays are checked tick by tick on x86-64 and ARM. Our own animation runtime (inertialization, IK, spring bones), physics and navigation, with `kira` for audio.
+- **Iteration:** hot reload, and live link to any device: content, materials, time-of-day keys, cvars and shaders change in the running app. A debug overlay, a timeline editor, and playtest builds that bring back marked moments as replays.
+- **Proof:** 376 golden scenes compared on three GPU backends and 39 replays, on every pull request; release packages for all five platforms, built nightly.
 
 ## Quick start
 
-On any desktop host (Windows, Linux or macOS):
+You need `rustup` (the toolchain is pinned), CMake and Ninja; Xcode for Apple platforms and the Android SDK for Android. [Getting started](docs/getting-started.md) has the details.
 
 ```bash
-cargo xtask run --platform desktop
+git clone https://github.com/nameless525/sapphire.git && cd sapphire
+cargo xtask run --platform desktop --release --app game_app    # play the Lantern Ward
+cargo xtask run --platform desktop --release -- --look-dev hero  # the look-dev stage
 ```
 
-On a Mac, for the macOS app bundle, the iOS Simulator or Android:
+`--platform macos`, `ios-sim` and `android` run the same apps as a macOS bundle, on the iOS Simulator and on Android. Add `--features dev` for the debug overlay, hot reload and live link.
 
-```bash
-cargo xtask run --platform macos
+## Architecture
+
+Sixty-one crates in strict layers, which `cargo xtask check-layers` enforces: a crate depends only on the layers below it, and the shipping game never links the development tools.
+
+```mermaid
+flowchart TB
+    game["<b>Game</b> · game_app · game_flow · game_combat · game_ui"]
+    stage["<b>Composition</b> · sapphire_stage · sapphire_controls · sapphire_cues"]
+    sim["<b>Gameplay and world</b> · gameplay · world · camera · sequencer · script · save · patch"]
+    sys["<b>Systems</b> · render · anim · physics · audio · vfx · ui · input · nav · time of day"]
+    data["<b>Data</b> · assets · ecs · rhi · reflect · serialize · zone · loc · dialogue · timeline"]
+    base["<b>Foundation</b> · core · math · platform · jobs · time · crash"]
+    game --> stage --> sim --> sys --> data --> base
+    tools["<b>Tools</b> · pipeline · editor · testkit · replay · symbols · xtask"] -. cook and check .-> data
+    dev["<b>Development only</b> · debug · hot reload · live link · playtest"] -. attach in dev builds .-> stage
 ```
 
-```bash
-cargo xtask run --platform ios-sim
-```
+Each frame, the fixed step advances the simulation, then resolves everything the renderer needs into a `FramePacket`; the renderer never reads the world directly. [Architecture](docs/architecture.md) walks through the frame, the content pipeline and the test pyramid.
 
-```bash
-cargo xtask run --platform android
-```
+## Status
 
-For an app you're editing, `cargo xtask run --platform desktop --incremental` builds it optimized, with no LTO, so a one-line edit rebuilds in seconds. Each command cooks the sample content, builds the sandbox (`--app <package>` builds another app), packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames, and `-- --look-dev hero` shows the look-dev stage (also `wide`, `sky`, `street` and `face`). `--release` builds optimized, `--features dev` adds the debug overlay, hot reload and live link, and `--dry-run` builds and packages but prints the launch command instead of running it.
+Every milestone below is built, and runs on macOS, the iOS Simulator and the Android emulator; Windows and Linux build, pass their tests and render the golden images in CI. What only a phone, a store account or a person can prove is still owed.
 
-- **desktop** runs the build in place against `target/content/desktop/` (through `SAPPHIRE_CONTENT_DIR`). Use it to test on Windows and Linux hardware. `cargo xtask bundle --platform desktop` makes a self-contained `target/desktop/SapphireSandbox/` directory (the executable plus `content/`) to copy to another machine.
-- **macos** builds and signs `target/macos/SapphireSandbox.app`, then runs the executable inside it, which reads the content bundled with it as a player's copy does. A `--features dev` build reads `target/content/desktop/` instead (through `SAPPHIRE_CONTENT_DIR`, unless you set it), so `cargo xtask content` reaches it while it runs.
-- **ios-sim** boots a simulator headless if none is booted; add `--show` to also open Simulator.app.
-- **android** uses the connected device, or boots the `sapphire_api36` AVD headless (`-no-window -gpu host`), and returns when the app exits.
-
-**Sandbox controls:**
-
-| Input | Action |
+| Milestone | What it built |
 |---|---|
-| Drag (mouse or finger), arrow keys, right stick | Orbit |
-| Wheel, pinch, triggers | Zoom |
-| `Space`, gamepad South or a double tap | World slow motion |
-| `H`, gamepad East or a long press | Hitstop |
-| `P`, gamepad Start or Android's Back | Pause: the simulation stops, and the overlay, hot reload and live link don't |
-| `P`, `Esc`, gamepad Start or East, or a tap, while paused | Resume |
-| Android's Back, gamepad Back or `Backspace`, which pause too, while paused | Leave |
-| `Esc` (desktop) | Quit |
-| `` ` `` (the key below `Esc`), or hold two fingers still for a second | Show or hide the debug overlay (`dev` builds) |
+| **M1** Data path | The asset pipeline and runtime, the renderer and the anime look, hot reload, live link and golden images |
+| **M2** Combat slice | Animation, physics, the combat core, the camera director, enemy AI, audio, VFX, touch controls and the timeline editor |
+| **M3** World and tools | Zones, navigation, the sequencer and dialogue, Luau, UI and menus, saves, localization and the editor's documents: the Lantern Ward |
+| **M4** Ship readiness | Pipeline warm-up, signed patches, quality tiers and heat, crash symbols, accessibility, store packages and playtests |
 
-The bindings are `sapphire_input` documents: [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron), over combat's own in [`crates/sapphire_controls/combat_bindings.ron`](crates/sapphire_controls/combat_bindings.ron). `--combat-input` leaves combat's alone: every verb on the pad and the keyboard.
+The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M5 handoff](docs/m5-handoff.md) says where the next one starts.
 
-### Debug overlay
+## Documentation
 
-Development builds add the debug overlay (`sapphire_debug`, egui): frame time and CPU stages against the spec's budgets, renderer and frame-graph stats, the frame graph pass by pass with GPU timings, cvars and a console, and time controls (pause, step one tick, speed). Build with the sandbox's `dev` feature; shipping builds leave it out entirely:
-
-```bash
-cargo xtask run --platform macos --features dev
-```
-
-`--debug-overlay` shows it from the first frame, optionally with a list of panels (`stats`, `graph`, `time`, `day`, `effects`, `console`, `cvars` or `all`). The `day` panel scrubs time of day: the day strip, every value it resolves, and a character preview under the scrubbed key light. It works in offscreen captures too, for checking it without a window:
-
-```bash
-cargo xtask run --platform desktop --features dev -- --capture overlay.png --size 1280x720 --debug-overlay=all
-```
-
-While the overlay shows, input over its windows is its own and the game gets the rest. In the console, `list` shows every cvar, `<name> <value>` sets one and Tab completes names.
-
-### Hot reload and live link
-
-Development builds swap edits in while they run. On a desktop, hot reload watches the cooked packs, the renderer's WGSL sources and the time-of-day, light rig and screen effect documents (under `--look-dev`, the stage's own day and light rigs): save a document and it shows within a few tenths of a second; save a shader and its pipelines build off the frame thread, so frames keep drawing until the new ones swap in (about two seconds on a Mac with a cold shader cache); edit content and run `cargo xtask content`, and the assets that changed are swapped in behind their handles. On any platform, live link takes the same edits from the desktop over TCP (127.0.0.1:7811 by default; `iproxy` for an iPhone, `adb reverse` or `adb forward` for Android). Build the app and the tool from the same commit: live link's protocol is at version 4, and different versions refuse each other.
-
-```bash
-cargo xtask link status                                   # what the app runs, its assets and their generations
-cargo xtask link push target/content/mobile/shared.spack  # sends only the assets that changed
-cargo xtask link push crates/sapphire_world/default_day.ron crates/sapphire_render/shaders/post.wgsl
-cargo xtask link cvar post.filter_strength 0.5
-cargo xtask link capture frame.png                        # the next frame the app draws
-cargo xtask link watch                                    # push whatever changes, until stopped
-```
-
-[docs/m1-exit-run.md](docs/m1-exit-run.md) walks through all of it on the desktop, the simulators and phones.
-
-## Checking visuals and performance without a window
-
-On a desktop, the sandbox has three offscreen modes. None opens a window, starts the display stack or takes focus, so they're safe to run while someone is using the machine:
-
-- `--capture <png> [--capture-ticks N] [--capture-frames F]` simulates N fixed ticks, draws F frames (1 by default; TAA builds its history over several) and writes the last as a PNG. The golden-image tests run on it.
-- `--bench <frames>` runs the per-frame CPU path (fixed step, `Renderer::prepare`, encoding, submit) that many times and logs CPU time and allocations per frame.
-- `--offscreen` (`dev` builds) keeps drawing at 60 frames a second until stopped (Ctrl-C), with hot reload and live link on: what a phone runs, without a window. `cargo xtask link capture <png>` shows what it draws.
-
-They render at `--size WxH` (default 1920x1080). `--time-of-day <hours>` sets the hour (default 10, the default day's key that matches the look from before time of day) and `--day-length <seconds>` runs the day cycle, in these modes and in the window alike. `xtask run --platform desktop` cooks the content and points the app at it:
-
-```bash
-cargo xtask run --platform desktop --release -- --bench 600
-```
-
-```bash
-cargo xtask run --platform desktop -- --capture out.png --capture-ticks 120 --size 1600x900
-```
-
-The image at the top of this page is the look-dev hero shot at 18:00, rendered this way with the flags of its golden scene, `lookdev-town-hero`, at 1280×720:
-
-```bash
-cargo xtask run --platform desktop --release -- --capture-ticks 90 --look-dev hero --time-of-day 18 --tier desktop-high --ao off --capture-frames 32 --capture docs/media/m1-lookdev.png --size 1280x720
-```
-
-On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb exec-out screencap -p > <png>` (Android) while the app runs, or `cargo xtask link capture <png>` with a `dev` build on any device.
-
-### Golden images
-
-`cargo xtask golden` renders the golden scenes (334 of them, in the document `tests/golden/scenes.ron`) with `--capture` (640×360 unless a scene gives its own size) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP. `--scene <name>` runs one scene, and `--shard <index>/<count>` one of `count` shards, dealt by the scenes' CI times where that backend has them (each scene's `ci_seconds`) and in turn elsewhere.
-
-- **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
-- **CI** schedules every golden scene on every pull request: lavapipe in three shards, WARP in six and Metal in one job. The separate ignored GPU-test suite runs on lavapipe for pull requests; its WARP workflow runs on main pushes and pull requests changing that workflow.
-- **Gates:** mean error, 99th-percentile error and the worst 16×16 tile's mean error, not the maximum, because hard two-tone edges flip whole pixels between backends. Spec §9 has the numbers and the noise they sit above.
-- **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`).
-- **CI artifacts:** every golden job uploads `target/golden/` (each scene's capture, plus the failures' diffs), kept for 7 days.
-- **New scene or intended change:** a new scene is a row in `tests/golden/scenes.ron`. `cargo xtask golden --update --scene <name>` writes this machine's family. The other families' images come from the CI run's artifacts, which a passing run has too, with each scene's time in `timings.json`.
-
-## Everyday commands
-
-```bash
-cargo test-fast
-```
-
-```bash
-cargo test --workspace
-```
-
-```bash
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-```bash
-cargo xtask check-layers
-```
-
-```bash
-cargo deny check
-```
-
-```bash
-cargo xtask content --cook desktop
-```
-
-```bash
-cargo xtask bundle --platform android --release
-```
-
-See [Development iteration](docs/development-iteration.md) for focused test commands, build profiles and measured costs.
-
-`cargo test-fast` is the inner loop: unit and integration tests without doctests, which Cargo recompiles on every run (CI runs everything). `cargo xtask check-layers` enforces [xtask/layers.toml](xtask/layers.toml): where each crate sits, and which features it may declare. `cargo xtask content` cooks `content/` into `target/content/` with the optimized `tools` profile through a content cache, so only assets whose source, `.meta` sidecar settings or importer and cooker versions changed are cooked again. The first cook of a new source asset creates its sidecar, which holds the asset's ID: commit it with the source. `cargo xtask bundle` builds the installable package for a platform under `target/<platform>/` without launching it. CI runs xtask as `cargo --locked xtask --locked …`, so neither xtask's build nor the builds it runs may change `Cargo.lock`, and a source without a committed sidecar fails the cook.
-
-## Layout
-
-```
-crates/   runtime crates (they ship), layered L0–L5, and the dev-only debug overlay, hot reload and live link; see ADR 0001
-apps/     the engine sandbox binary (sapphire_sandbox)
-game/     game composition crates (L6) and the shipping game_app binary
-tools/    never-shipped tools (sapphire_pipeline, sapphire_testkit, headless Blender scripts)
-xtask/    build automation and the layer checker
-platform/ per-platform packaging (Info.plist templates, Android Gradle project)
-content/  source assets and their .meta sidecars, third-party content with its licenses
-tests/    golden images, one per scene and backend family
-docs/     spec, plans, exit runs and handoffs per milestone, the go/no-go, conventions, ADRs
-```
-
-## Troubleshooting
-
-- **SDL fails to configure on macOS with "unknown architecture arm64e.x1-macos".** The Command Line Tools SDK is newer than the active Xcode's linker. `cargo xtask` sets `SDKROOT` for macOS builds itself. For plain `cargo` builds, run the following first:
-
-  ```bash
-  export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-  ```
-
-  The deployment targets (macOS 14.0, iOS 17.0) come from `.cargo/config.toml`, so every build agrees on them.
-
-- **`cargo xtask bundle` reports a minimum OS that doesn't match Info.plist.** The deployment targets in `.cargo/config.toml` and `platform/{macos,ios}/Info.plist` have drifted apart; change them together. SDL doesn't rebuild when they change, so after changing them run `cargo clean -p sdl3-sys`.
-
-- **SDL for Android still targets the old API level or NDK.** SDL doesn't rebuild when the NDK or `minSdk` changes. Run `cargo clean -p sdl3-sys --target aarch64-linux-android`.
-
-- **`cargo xtask run --platform android` says the AVD is locked.** An emulator for `sapphire_api36` is starting or still running without reaching adb. If none is running, delete the lock file the message names.
-
-- **The macOS window logs `skipping frames reason=Occluded`.** The window isn't visible, for example because it opened on another Space. The loop idles at 30 Hz until the window is visible again.
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | Build and run on every platform, the sandbox's controls, the debug overlay, hot reload, captures and goldens |
+| [AGENTS.md](AGENTS.md) | The fast orientation for AI agents and new contributors: the map, the rules, the checks |
+| [Architecture](docs/architecture.md) | How the crates, the frame and the content pipeline fit together |
+| [Docs index](docs/README.md) | Every document, and when to read it |
+| [Engine spec](docs/engine-spec.md) | What gets built and how, module by module, with each one's "As built" notes |
+| [Conventions](docs/conventions.md) · [Iteration](docs/development-iteration.md) | How the code reads, and the smallest useful check for each kind of change |
 
 ## License
 
-Sapphire is licensed under the [MIT License](LICENSE).
-
-Third-party content under [content/third_party/](content/third_party/) keeps its own licenses (CC0 and the VRM Public License 1.0); each folder's `SOURCE.md` gives the author, source and terms.
+Sapphire is licensed under the [MIT License](LICENSE). Third-party content in [content/third_party/](content/third_party/) keeps its own licenses (CC0, the SIL Open Font License and the VRM Public License 1.0); each folder's `SOURCE.md` gives its author, source and terms.

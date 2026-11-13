@@ -83,7 +83,7 @@ pub struct ZoneStage {
     /// The zone's origin's place in the world is `-stand`.
     pub(super) stand: Vec3,
     /// Where it streams from, in its own space, until the camera's had a frame there:
-    /// [`Scene::arrive_in_zone`] to [`Scene::release_zone_focus`].
+    /// [`Scene::arrive_in_zone`] to [`Scene::end_arrival`].
     held_focus: Option<[f32; 3]>,
 }
 
@@ -674,7 +674,8 @@ impl Scene {
     /// ([`Self::prefetch_exits`]). What the new zone prefetches stays mounted, and coming if it was: a hub's
     /// next zone, the one just left among them, isn't mounted again on every visit (M5 M6). Under a wipe,
     /// because everything moves at once. The new zone's cells come from the next frame on, within its budget,
-    /// until [`Self::zone_settled`]. `None` for a zone that isn't ready.
+    /// until [`Self::zone_settled`], and the mesh pool gives back the last zone's room meanwhile: the wipe holds
+    /// until [`Self::zone_arrived`], and [`Self::end_arrival`] lets it go. `None` for a zone that isn't ready.
     pub fn arrive_in_zone(&mut self, zone: AssetId, content: &mut Content) -> Option<ArrivedZone> {
         let at = self.next_zones.iter().position(|next| next.target.zone == zone && next.is_ready())?;
         let NextZone { target, coming, focus, look, .. } = self.next_zones.remove(at);
@@ -749,11 +750,21 @@ impl Scene {
         self.zone.as_ref().is_some_and(|zone| zone.streamer.first_cells_in())
     }
 
-    /// Streaming goes by the camera's eye from here on.
-    pub fn release_zone_focus(&mut self) {
+    /// Whether a trip's arrival can end, its wipe let go: the zone's first cells are in, and the renderer's
+    /// mesh pool has given back what the zone left held, down to its floor (M5 D9,
+    /// [`Content::meshes_given_back`]).
+    #[must_use]
+    pub fn zone_arrived(&self, content: &Content) -> bool {
+        self.zone_settled() && content.meshes_given_back()
+    }
+
+    /// The arrival's over: streaming goes by the camera's eye from here on, and the mesh pool grows as the
+    /// zone needs, no longer asked to compact.
+    pub fn end_arrival(&mut self, content: &mut Content) {
         if let Some(zone) = &mut self.zone {
             zone.held_focus = None;
         }
+        content.end_giving_back();
     }
 
     /// The zone on stage's exit called `name`, the hash of it, if there's a zone on stage with that exit.

@@ -279,6 +279,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
         let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
         scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
+        if options.face.is_some() {
+            scene.set_held_face(options.face, content);
+        }
         if let Some(settings) = options.stream.settings(quality.active().id) {
             scene.open_town_zone(content, settings, renderer, gpu)?;
         }

@@ -59,11 +59,11 @@
 use std::sync::{Arc, mpsc};
 
 use sapphire_anim::{
-    AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, HeroineClearance, IkRig,
-    SpringBones,
+    AnimGraph, ArchivedSkeleton, CharacterPose, FaceLayer, FaceOrder, GraphBinding, GraphPlayer,
+    HeroineClearance, IkRig, Mouth, SpringBones,
 };
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
-use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
+use sapphire_assets::rig::{ArchivedCharacterRig, ExpressionPreset, HumanBone};
 use sapphire_assets::skeleton::SKELETON_SUB_ASSET;
 use sapphire_assets::{AssetId, AssetKind, NamedAsset};
 use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, BodyTuning, HeadAuthority};
@@ -588,8 +588,50 @@ fn turns() -> [(HumanBone, Quat); 7] {
     ]
 }
 
-/// The expression the character holds, and its weight: a soft, relaxed face.
+/// The expression the character holds, and its weight: a soft, relaxed face. Its face layer rests on it
+/// ([`face_layer`]).
 const EXPRESSION: (&str, f32) = ("relaxed", 0.35);
+
+/// The character's face layer (M5 C5): its rig's expression presets over its morphs, resting on its soft
+/// expression. `None` if the character or its rig isn't in, or the rig has no presets.
+#[must_use]
+pub fn face_layer(content: &Content) -> Option<FaceLayer> {
+    let mesh = content.character_mesh()?;
+    let rig = content.rig()?;
+    face_layer_of(mesh, rig)
+}
+
+fn face_layer_of(mesh: &Mesh, rig: &ArchivedCharacterRig) -> Option<FaceLayer> {
+    let (name, weight) = EXPRESSION;
+    let rest = ExpressionPreset::from_name(name).map(|preset| (preset, weight));
+    FaceLayer::new(rig, mesh.morph_targets.len(), rest)
+}
+
+/// A face the held character shows, settled (`--face`, `--face-mouth`; M5 C5): what the close-up goldens
+/// look at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeldFace {
+    /// A preset and its weight, or `None` for the resting face.
+    pub expression: Option<(ExpressionPreset, f32)>,
+    /// How open its mouth is, 0 to 1, from outside the face, as a voice's would be.
+    pub mouth: f32,
+}
+
+impl HeldFace {
+    /// Puts it on `pose`, the character's held pose as `content` has it, through its face layer.
+    pub(crate) fn apply(&self, content: &Content, pose: &mut RenderPose) {
+        let Some(mut face) = face_layer(content) else { return };
+        if pose.morph_weights.len() != content.character_mesh().map_or(0, |mesh| mesh.morph_targets.len()) {
+            return;
+        }
+        if let Some((preset, weight)) = self.expression {
+            let expression = sapphire_core::Name::new(preset.name());
+            face.show(FaceOrder { key: 1, expression, weight, blend: 0.0, since: 0.0 });
+        }
+        face.set_mouth(Mouth::open(self.mouth));
+        face.apply(&mut pose.morph_weights);
+    }
+}
 
 /// The weights of the character's face material's expression map (M1 C3; X1 part 2c): a faint
 /// blush over the cheeks and nose it paints, as the reference games' characters wear at rest, and
@@ -700,7 +742,9 @@ pub fn graph_driver_fitted(content: &Content, fit: Option<ClearanceFit>) -> Resu
         Some(fit) => springs.with_clearance(fit.take()),
         None => springs.with_heroine_clearance(mesh, skeleton, rig),
     });
-    Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
+    Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints)
+        .with_springs(springs)
+        .with_face(face_layer_of(mesh, rig)))
 }
 
 /// The character's hair and shirt clearance ([`HeroineClearance`]), fitting on the warm-up pool, for

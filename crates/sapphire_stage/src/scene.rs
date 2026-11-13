@@ -473,6 +473,8 @@ pub struct Scene {
     /// Whether something plays the character by a graph that a [`SceneShow`] gave it
     /// ([`Self::pose_character_by_graph`]).
     character_plays_graph: bool,
+    /// The face the held character shows (`--face`, M5 C5), kept so a new version of it shows it too.
+    held_face: Option<lookdev::HeldFace>,
     /// A new version of the character landed that its other parts or its graph's clips don't fit yet
     /// ([`Self::replace_graph`]).
     character_waits: bool,
@@ -633,6 +635,7 @@ impl Scene {
             town_mountains: Vec::new(),
             view_cut: false,
             character_plays_graph: false,
+            held_face: None,
             character_waits: false,
             figure,
             animating: false,
@@ -1209,7 +1212,12 @@ impl Scene {
             && self.ecs.world().get::<GraphDriver>(self.character).is_none()
         {
             match lookdev::held(content) {
-                Ok((pose, figure)) => self.hold_character(pose, figure),
+                Ok((mut pose, figure)) => {
+                    if let Some(face) = self.held_face {
+                        face.apply(content, &mut pose);
+                    }
+                    self.hold_character(pose, figure);
+                }
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps its pose");
                 }
@@ -1769,6 +1777,30 @@ impl Scene {
         character.insert((driver, pose, figure));
         if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
             rig.head = figure.head;
+        }
+    }
+
+    /// Shows `face` on the held character from now on (`--face`, `--face-mouth`, M5 C5), and on every new
+    /// version of it. Nothing for a character a clip or a graph plays, whose face its driver has, and
+    /// nothing at all if it neither had a face nor gets one: the held character stays as it was held.
+    pub fn set_held_face(&mut self, face: Option<lookdev::HeldFace>, content: &Content) {
+        if std::mem::replace(&mut self.held_face, face).is_none() && face.is_none() {
+            return;
+        }
+        let world = self.ecs.world();
+        if world.get::<ClipPlayer>(self.character).is_some()
+            || world.get::<GraphDriver>(self.character).is_some()
+        {
+            return;
+        }
+        match lookdev::held(content) {
+            Ok((mut pose, figure)) => {
+                if let Some(face) = face {
+                    face.apply(content, &mut pose);
+                }
+                self.hold_character(pose, figure);
+            }
+            Err(error) => tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps its face"),
         }
     }
 
@@ -3046,6 +3078,71 @@ mod tests {
                 }
             }
             assert!(farthest < -0.5, "the dodge's travel: {farthest}");
+        }
+
+        /// M5 C5: a face asked for while the graph's clock stands still is drawn at once, over the pose's
+        /// morph weights, which stay the pose's; and with nothing asked a frame touches nothing.
+        #[test]
+        fn a_face_draws_over_the_pose_and_leaves_the_pose_its_own() {
+            use sapphire_anim::{FaceLayer, FaceOrder};
+            use sapphire_assets::rig::{CharacterRig, Expression, ExpressionOverride, ExpressionPreset};
+
+            let happy = Expression {
+                name: "happy".to_owned(),
+                preset: Some(ExpressionPreset::Happy),
+                binary: false,
+                override_blink: ExpressionOverride::None,
+                override_look_at: ExpressionOverride::None,
+                override_mouth: ExpressionOverride::None,
+                morph_targets: vec![sapphire_assets::rig::MorphTargetWeight { target: 1, weight: 1.0 }],
+                material_colors: Vec::new(),
+                texture_transforms: Vec::new(),
+            };
+            let rig =
+                CharacterRig { morph_target_count: 2, expressions: vec![happy], ..CharacterRig::default() };
+            let rig = rig.to_cooked().expect("cooked");
+            let face = FaceLayer::new(CharacterRig::read(&rig).expect("a rig"), 2, None);
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+            let mut scene = stage();
+            // Into a hit's stop, as `a_stopped_clock_costs_a_graph_nothing` has it: frames with nothing to do.
+            scene.play_graph(driver(&table).with_face(face), GraphShow::new(GraphScript::Hitstop));
+            let id = extract::instance_id(scene.character);
+            let character = scene.character;
+            let mut weights = None;
+            for _ in 0..32 {
+                scene.step();
+                weights = graph_frame(&mut scene, &table, 1.0, id).weights.or(weights);
+            }
+            let pose = {
+                let driver = scene.ecs.world().get::<GraphDriver>(character).expect("it plays");
+                driver.player.pose().weights().to_vec()
+            };
+            assert_eq!(weights, Some(pose.clone()), "an idle face is the pose's to the bit");
+            let drawn = graph_frame(&mut scene, &table, 1.0, id);
+            assert_eq!((drawn.weights, scene.anim_stats().evaluated), (None, 0), "nothing to do");
+            let order = FaceOrder {
+                key: 1,
+                expression: sapphire_core::Name::new("happy"),
+                weight: 0.5,
+                blend: 0.0,
+                since: 0.0,
+            };
+            {
+                let mut driver = scene.ecs.world_mut().get_mut::<GraphDriver>(character).expect("it plays");
+                driver.face_mut().expect("a face").show(order);
+            }
+            let drawn = graph_frame(&mut scene, &table, 1.0, id);
+            assert_eq!(scene.anim_stats().evaluated, 0, "the graph still has nothing to do");
+            assert_eq!(drawn.weights, Some(vec![pose[0], (pose[1] + 0.5).min(1.0)]), "but the face did");
+            let driver = scene.ecs.world().get::<GraphDriver>(character).expect("it plays");
+            assert_eq!(driver.player.pose().weights(), pose, "the pose's own are the pose's");
+            assert_eq!(
+                graph_frame(&mut scene, &table, 1.0, id).weights,
+                None,
+                "a settled face writes nothing"
+            );
         }
 
         /// A stopped clock sends the renderer nothing: no skin, no move, and nothing evaluated.

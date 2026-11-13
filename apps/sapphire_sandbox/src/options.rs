@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
+use sapphire_assets::rig::ExpressionPreset;
 use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
@@ -292,6 +293,10 @@ pub(crate) struct Options {
     /// tick (M3 C2, [`lookdev::model`]): a new enemy, looked at before anything plays it. Needs
     /// `--look-dev`.
     pub model: Option<lookdev::model::Model>,
+    /// `--face <preset>[:<weight>]` and `--face-mouth <openness>`: the held character's face, through its
+    /// face layer (M5 C5): a VRM expression preset at a weight, 1 if it doesn't say, and a mouth open by 0 to 1
+    /// as a voice's would be. Needs `--look-dev` and nothing playing the character.
+    pub face: Option<lookdev::HeldFace>,
     /// `--blade on|off`: the player's sword in the character's right hand (M2 O3). On for
     /// `--look-dev body` and `--fight`, off anywhere else unless it says, so no older scene draws one.
     /// Needs `--look-dev` or `--arena`. See [`Self::blade`].
@@ -968,6 +973,29 @@ impl Options {
                 }
                 "--clip" => options.clip = Some(lookdev::ClipName::parse(&value("--clip")?)),
                 "--clip-in-place" => options.clip_in_place = true,
+                "--face" => {
+                    let raw = value("--face")?;
+                    let (name, weight) = match raw.split_once(':') {
+                        Some((name, weight)) => (name, Some(weight)),
+                        None => (raw.as_str(), None),
+                    };
+                    let preset = ExpressionPreset::from_name(name).ok_or_else(|| {
+                        let names: Vec<&str> =
+                            ExpressionPreset::ALL.iter().map(|preset| preset.name()).collect();
+                        format!("--face expects one of {}, got {name:?}", names.join(", "))
+                    })?;
+                    let weight = match weight {
+                        Some(weight) => unit("--face", weight)?,
+                        None => 1.0,
+                    };
+                    let face = options.face.get_or_insert(lookdev::HeldFace { expression: None, mouth: 0.0 });
+                    face.expression = Some((preset, weight));
+                }
+                "--face-mouth" => {
+                    let mouth = unit("--face-mouth", &value("--face-mouth")?)?;
+                    options.face.get_or_insert(lookdev::HeldFace { expression: None, mouth: 0.0 }).mouth =
+                        mouth;
+                }
                 "--model" => {
                     options.model =
                         Some(value("--model")?.parse().map_err(|error| format!("--model: {error}"))?)
@@ -1334,6 +1362,11 @@ impl Options {
         }
         if options.model.is_some() && options.look_dev.is_none() {
             return Err("--model stands on the look-dev stage: it needs --look-dev".to_owned());
+        }
+        if options.face.is_some()
+            && (options.look_dev.is_none() || options.clip.is_some() || options.graph.is_some())
+        {
+            return Err("--face and --face-mouth are the held look-dev character's: they need --look-dev, and no --clip or --graph".to_owned());
         }
         if options.graph.is_some() && options.look_dev.is_none() {
             return Err("--graph plays on the look-dev character: it needs --look-dev".to_owned());
@@ -1728,6 +1761,14 @@ fn parse_effect_scale(raw: &str) -> Result<EffectScale, String> {
     Ok(EffectScale { flash_swing, motion: motion.ok_or_else(invalid)? })
 }
 
+/// A number from 0 to 1, for `flag`.
+fn unit(flag: &str, raw: &str) -> Result<f32, String> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|value| (0.0..=1.0).contains(value))
+        .ok_or_else(|| format!("{flag} expects a number from 0 to 1, got {raw:?}"))
+}
+
 /// `<preset>` or `<preset>@<seconds>`.
 fn parse_post_effect(raw: &str) -> Result<(String, Option<f32>), String> {
     let invalid = || format!("--post-effect expects PRESET or PRESET@SECONDS, got {raw:?}");
@@ -2108,6 +2149,18 @@ mod tests {
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
+        // The held character's face (M5 C5).
+        let face = |args: &[&str]| parse(args).map(|(options, ..)| options.face);
+        let happy = face(&["--look-dev", "face", "--face", "happy"]).unwrap().unwrap();
+        assert_eq!((happy.expression, happy.mouth), (Some((ExpressionPreset::Happy, 1.0)), 0.0));
+        let speaking =
+            face(&["--look-dev", "face", "--face", "sad:0.5", "--face-mouth", "0.8"]).unwrap().unwrap();
+        assert_eq!((speaking.expression, speaking.mouth), (Some((ExpressionPreset::Sad, 0.5)), 0.8));
+        assert_eq!(face(&["--look-dev", "face", "--face-mouth", "1"]).unwrap().unwrap().expression, None);
+        assert!(face(&["--look-dev", "face", "--face", "grin"]).unwrap_err().contains("happy"));
+        assert!(face(&["--look-dev", "face", "--face", "happy:2"]).unwrap_err().contains("0 to 1"));
+        assert!(face(&["--face", "happy"]).unwrap_err().contains("--look-dev"));
+        assert!(face(&["--look-dev", "hero", "--clip", "strike", "--face", "happy"]).is_err());
         // A model, by asset IDs, on the look-dev stage only.
         let model = "41e229ad-28a3-41f9-aeb8-ba214e06be6a:0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4@12";
         let parsed = parse(&["--look-dev", "enemy", "--model", model]).unwrap().0.model.unwrap();

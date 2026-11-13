@@ -209,6 +209,10 @@
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
+//! - `--face <preset>[:<weight>]` and `--face-mouth <openness>` (with `--look-dev`, and no `--clip` or
+//!   `--graph`): the held character's face through its face layer (M5 C5, `sapphire_anim::face`), a VRM
+//!   expression preset at a weight (1 if it doesn't say) and a mouth open from 0 to 1, settled. The golden
+//!   scenes `face-*` show it.
 //! - `--blade on|off` (with `--look-dev` or `--arena`): the player's sword in the character's right
 //!   hand (M2 O3, `blade.rs`), placed by the hand's joint each frame at the `blade` socket its hit
 //!   volumes bake from. On for `--look-dev body` and `--fight`, off otherwise, so no older scene draws

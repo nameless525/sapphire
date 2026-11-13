@@ -184,7 +184,10 @@ impl FixedBodyRenderer {
         );
         if pose_moved || springs.wrote_pose {
             pose.write_palette(&mut render.palette);
-            render.morph_weights.copy_from_slice(pose.weights());
+        }
+        // The face goes over what's drawn, never into the pose the simulation solved (M5 C5).
+        if driver.take_face_moved() || pose_moved || springs.wrote_pose {
+            driver.write_morphs(&mut render.morph_weights);
         }
         driver.posed = true;
         (pose_moved, springs, elapsed)

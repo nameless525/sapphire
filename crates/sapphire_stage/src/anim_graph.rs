@@ -36,7 +36,7 @@ pub use fixed_presentation::FixedBodyRenderer;
 use std::time::Duration;
 
 use sapphire_anim::{
-    ArchivedClip, AuthoredHeadLook, ClipSource, CombatInput, GraphInput, GraphPlayer, GroundTurn,
+    ArchivedClip, AuthoredHeadLook, ClipSource, CombatInput, FaceLayer, GraphInput, GraphPlayer, GroundTurn,
     LocomotionInput, ReactionInput, SpringBones, SpringFrame, SpringWork, graph_foot_contact,
 };
 use sapphire_assets::AssetId;
@@ -349,6 +349,9 @@ pub struct GraphDriver {
     turn: Option<GroundTurn>,
     prepared_takeoff: bool,
     authored_head_look: Option<AuthoredHeadLook>,
+    /// Its expressions, over the morph weights its pose makes (M5 C5): `None` for a character with no
+    /// presets. What owns the character drives it ([`Self::face_mut`]); idle, it changes nothing.
+    face: Option<FaceLayer>,
     /// Whether its graph has made a pose yet.
     posed: bool,
 }
@@ -376,6 +379,7 @@ impl GraphDriver {
             turn: None,
             prepared_takeoff: false,
             authored_head_look: None,
+            face: None,
             posed: false,
         }
     }
@@ -425,6 +429,36 @@ impl GraphDriver {
     #[must_use]
     pub fn with_ik(self, ik: IkDriver) -> Self {
         Self { ik: Some(ik), ..self }
+    }
+
+    /// This driver, showing `face`'s expressions over its pose's morph weights (M5 C5).
+    #[must_use]
+    pub fn with_face(self, face: Option<FaceLayer>) -> Self {
+        Self { face, ..self }
+    }
+
+    /// Its face, for whatever decides what it shows to ask, and to move its clock.
+    pub fn face_mut(&mut self) -> Option<&mut FaceLayer> {
+        self.face.as_mut()
+    }
+
+    #[must_use]
+    pub fn face(&self) -> Option<&FaceLayer> {
+        self.face.as_ref()
+    }
+
+    /// Whether its face changed what it draws since this was last asked.
+    pub(crate) fn take_face_moved(&mut self) -> bool {
+        self.face.as_mut().is_some_and(FaceLayer::take_moved)
+    }
+
+    /// What it draws of its morphs: its pose's weights, with its face over them. The pose's own are left
+    /// as they are, since a fighter's are the simulation's (`SolvedBody::morphs`). Allocates nothing.
+    pub(crate) fn write_morphs(&self, weights: &mut [f32]) {
+        weights.copy_from_slice(self.player.pose().weights());
+        if let Some(face) = &self.face {
+            face.apply(weights);
+        }
     }
 
     /// Coordinates the hero's solved foot and chest response to fast grounded steering.
@@ -654,12 +688,15 @@ impl<'a> GraphEvaluation<'a> {
         };
         (self.spring_work, self.spring_time) =
             driver.run_springs(&frame, self.input.locomotion.grounded, &self.figure);
-        // `Extract` watches the pose: a frame with nothing to do must not touch it.
-        if self.evaluated || self.spring_work.wrote_pose {
-            let pose = driver.player.pose();
+        // `Extract` watches the pose: a frame with nothing to do must not touch it. A face that moved on
+        // its own clock is something to do (M5 C5).
+        let face_moved = driver.take_face_moved();
+        if self.evaluated || self.spring_work.wrote_pose || face_moved {
             let render = &mut *self.render;
-            pose.write_palette(&mut render.palette);
-            render.morph_weights.copy_from_slice(pose.weights());
+            if self.evaluated || self.spring_work.wrote_pose {
+                driver.player.pose().write_palette(&mut render.palette);
+            }
+            driver.write_morphs(&mut render.morph_weights);
         }
     }
 }

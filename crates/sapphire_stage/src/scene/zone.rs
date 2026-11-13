@@ -16,9 +16,20 @@
 //! [`Streamer::prefetch`]'s limits. So no frame stalls on any of it, on a hub's way there or under a wipe,
 //! and nothing's asked for before what draws it is built, so `first_use` stays 0 across a change, as a load
 //! screen's [`Content::open_zone`] holds it. What the last zone had goes with [`Scene::arrive_in_zone`].
+//!
+//! # Zones bring their look (M5 M6)
+//!
+//! A zone's day, light rigs, probe grid, sky material, wind, weather and fog are its own, as it opens and as a
+//! trip arrives in it ([`ZoneLook`]). A zone coming next brings its grid and its sky in with it, its grid's bytes
+//! kept aside, since the renderer holds one grid, and what a grid draws through warmed with its pipelines; the
+//! arrival puts them on. A zone that names none of something gets the stage's own back. And what the zone
+//! arriving prefetches stays mounted, the zone left behind included, so a hub's next zone isn't mounted again
+//! on every visit.
 
 use std::f32::consts::PI;
 
+use sapphire_assets::material::Material;
+use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::{
     AssetId, AssetServer, Handle, LoadPriority, LoadState, MountError, MountState, UnmountReport,
 };
@@ -26,12 +37,14 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
-use sapphire_render::{LightKind, LocalLight, MeshHandle, Renderer};
+use sapphire_render::{
+    Fog, FramePacket, LightKind, LocalLight, MaterialHandle, MeshHandle, Renderer, Weather, Wind,
+};
 use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
-use sapphire_world::tod::TodTimeline;
-use sapphire_zone::{ArchivedCookedLight, CookedLightShape, Zone};
+use sapphire_world::tod::{TimeOfDay, TodTimeline};
+use sapphire_zone::{ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, Zone, ZoneFog};
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
 use crate::content::Content;
@@ -68,7 +81,7 @@ pub struct ZoneStage {
     /// Its pack, for closing it.
     pack: String,
     /// The zone's origin's place in the world is `-stand`.
-    stand: Vec3,
+    pub(super) stand: Vec3,
     /// Where it streams from, in its own space, until the camera's had a frame there:
     /// [`Scene::arrive_in_zone`] to [`Scene::release_zone_focus`].
     held_focus: Option<[f32; 3]>,
@@ -119,6 +132,50 @@ pub(super) struct NextZone {
     hurried: bool,
     /// Where it's arrived at, once it can be read.
     focus: [f32; 3],
+    /// Its probe grid and sky, coming with it.
+    look: ComingLook,
+}
+
+/// What of a zone's look comes in with it, ahead of its arrival: its probe grid, whose bytes wait aside in the
+/// server until the arrival puts them on the renderer, and its sky material, on the renderer beside the app's.
+#[derive(Default)]
+struct ComingLook {
+    grid: Option<Handle<ProbeGrid>>,
+    sky: Option<Handle<Material>>,
+    /// Both are in, or the zone names neither.
+    ready: bool,
+}
+
+impl ComingLook {
+    /// Asks for the grid and sky a zone's presentation names, at `priority`.
+    fn ask(
+        server: &mut AssetServer,
+        (grid, sky): (Option<AssetId>, Option<AssetId>),
+        priority: LoadPriority,
+    ) -> Result<Self, String> {
+        let grid = grid.map(|grid| server.load_with(grid, priority)).transpose();
+        let sky = sky.map(|sky| server.load_with(sky, priority)).transpose();
+        Ok(Self {
+            grid: grid.map_err(|error| error.to_string())?,
+            sky: sky.map_err(|error| error.to_string())?,
+            ready: false,
+        })
+    }
+
+    /// Whether it's all in yet, or why it can't come.
+    fn follow(&mut self, server: &AssetServer) -> Result<(), String> {
+        let grid = self.grid.as_ref().map_or(LoadState::Ready, |grid| server.state(grid));
+        let sky = self.sky.as_ref().map_or(LoadState::Ready, |sky| server.state(sky));
+        match (grid, sky) {
+            (LoadState::Failed(error), _) => Err(format!("its probe grid didn't load: {error}")),
+            (_, LoadState::Failed(error)) => Err(format!("its sky material didn't load: {error}")),
+            (LoadState::Ready, LoadState::Ready) => {
+                self.ready = true;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl NextZone {
@@ -157,7 +214,16 @@ impl NextZone {
                 match server.state(zone) {
                     LoadState::Ready => {
                         self.focus = arrival(server, zone, self.target.arrive);
-                        self.coming = Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)));
+                        let presentation = &server.get(zone).expect("the zone is ready").presentation;
+                        let names =
+                            (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied());
+                        self.coming = match ComingLook::ask(server, names, self.priority()) {
+                            Ok(look) => {
+                                self.look = look;
+                                Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)))
+                            }
+                            Err(error) => Coming::Failed(error),
+                        };
                     }
                     LoadState::Failed(error) => self.coming = Coming::Failed(error.to_string()),
                     LoadState::Loading => {}
@@ -168,7 +234,15 @@ impl NextZone {
         if let Coming::Near(streamer) = &mut self.coming {
             let (server, _) = content.streaming_parts();
             streamer.prefetch(self.focus, server, self.hurried);
+            if let Err(error) = self.look.follow(server) {
+                self.coming = Coming::Failed(error);
+            }
         }
+    }
+
+    /// Whether it's ready to arrive in: the meshes around where it's arrived at, its grid and its sky in.
+    fn is_ready(&self) -> bool {
+        matches!(&self.coming, Coming::Near(streamer) if streamer.near_is_loaded()) && self.look.ready
     }
 
     fn priority(&self) -> LoadPriority {
@@ -231,6 +305,84 @@ impl ZoneStage {
         gpu: &GpuContext,
     ) -> Result<Self, AppInitError> {
         Ok(Self { stand: Vec3::ZERO, ..Self::open(content, id, stem, focus, settings, renderer, gpu)? })
+    }
+}
+
+/// What a zone says it looks like, read from its presentation (M5 M6): what [`Scene`] takes as it opens and as a
+/// trip arrives in it. Its probe grid and its sky material are assets, which the content holds.
+pub struct ZoneLook {
+    day: Option<TodTimeline>,
+    rigs: Option<LightRigLibrary>,
+    wind: Option<Wind>,
+    weather: Option<Weather>,
+    fog: Option<ZoneFog>,
+}
+
+impl ZoneLook {
+    /// Reads `presentation`'s, whose day and rigs a cook checked.
+    pub fn read(presentation: &ArchivedZonePresentation) -> Result<Self, String> {
+        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str())).transpose();
+        let rigs =
+            presentation.rigs.as_ref().map(|text| LightRigLibrary::from_ron(text.as_str())).transpose();
+        let wind = presentation.wind.as_ref().map(|wind| {
+            let wind = wind.to_native();
+            Wind { direction: Vec3::from(wind.direction), strength: wind.strength, gustiness: wind.gustiness }
+        });
+        let weather = presentation.weather.as_ref().map(|weather| {
+            let weather = weather.to_native();
+            Weather { wetness: weather.wetness, puddles: weather.puddles }
+        });
+        Ok(Self {
+            day: day.map_err(|error| format!("its day: {error}"))?,
+            rigs: rigs.map_err(|error| format!("its light rigs: {error}"))?,
+            wind,
+            weather,
+            fog: presentation.fog.as_ref().map(|fog| fog.to_native()),
+        })
+    }
+}
+
+/// What a zone's look leaves on the scene beyond its day and rigs (M5 M6), which the frame's packet takes, and
+/// what the stage had before a zone's look first replaced it.
+#[derive(Default)]
+pub(super) struct ZoneAir {
+    /// The stage's own day, rigs and wind, for a zone that names none of them.
+    own: Option<StageLook>,
+    /// The zone's weather: dry without one.
+    weather: Weather,
+    /// Its fog over the day's.
+    fog: Option<ZoneFog>,
+    /// Its sky material on the renderer, once it's there (`Content::zone_sky_material`).
+    pub(super) sky: Option<MaterialHandle>,
+}
+
+/// What the stage looked like before a zone's: see [`ZoneAir::own`].
+struct StageLook {
+    day: TodTimeline,
+    rigs: LightRigLibrary,
+    wind: Wind,
+}
+
+impl ZoneAir {
+    /// Writes the zone's weather and its fog over the day's into `packet`, after time of day has written it, the
+    /// zone's origin lying at `origin` in the world's height; and its sky in place of the app's `sky`.
+    pub(super) fn write(&self, packet: &mut FramePacket, sky: Option<MaterialHandle>, origin: f32) {
+        packet.weather = self.weather;
+        packet.sky_material = self.sky.or(sky);
+        if let Some(zone) = self.fog {
+            thicken(&mut packet.fog, zone, origin);
+        }
+    }
+}
+
+/// `fog`, the day's, as zone `zone` has it: each layer's density times the zone's, and the height fog on the
+/// zone's floor, which lies at `origin` + its base in the world.
+fn thicken(fog: &mut Fog, zone: ZoneFog, origin: f32) {
+    fog.near.density *= zone.density;
+    fog.far.density *= zone.density;
+    fog.height.density *= zone.density;
+    if let Some(base) = zone.height_base {
+        fog.height.base = origin + base;
     }
 }
 
@@ -344,8 +496,8 @@ impl Scene {
             .spawner(sapphire_core::Name::new(at))
             .ok_or_else(|| AppInitError::msg(format!("zone {stem} has no spawner {at:?}")))?;
         let (position, yaw) = (Vec3::from(spawner.position()), spawner.yaw());
-        let day = zone.presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str()));
-        let rigs = zone.presentation.rigs.as_ref().map(|text| LightRigLibrary::from_ron(text.as_str()));
+        let look = ZoneLook::read(&zone.presentation)
+            .map_err(|error| AppInitError::msg(format!("zone {stem}'s look: {error}")))?;
         let walk = walk
             .map(|(name, metres_per_second)| {
                 let spline = zone
@@ -359,19 +511,13 @@ impl Scene {
                 Ok::<_, AppInitError>(ZoneWalk::new(points, metres_per_step))
             })
             .transpose()?;
-        if let Some(day) = day {
-            self.time_of_day_mut()
-                .set_timeline(day.map_err(AppInitError::msg)?)
-                .map_err(AppInitError::msg)?;
-        }
         self.figure = figure;
         self.extract_poses();
+        // The zone stage's own breeze, for a zone that names no wind.
         self.wind = lookdev::WIND;
+        self.take_zone_look(look).map_err(AppInitError::msg)?;
         self.zone_walk = walk;
         let world = self.ecs.world_mut();
-        if let Some(rigs) = rigs {
-            world.insert_resource(rigs.map_err(AppInitError::msg)?);
-        }
         let place = Mat4::from_translation(position) * Mat4::from_rotation_y(yaw);
         let mut character = world.entity_mut(self.character);
         character.remove::<Turntable>();
@@ -497,6 +643,7 @@ impl Scene {
             coming: Coming::Mounting,
             hurried: false,
             focus: [0.0; 3],
+            look: ComingLook::default(),
         });
     }
 
@@ -514,41 +661,80 @@ impl Scene {
             return ZoneLoad::Waiting;
         };
         match &next.coming {
-            Coming::Near(streamer) if streamer.near_is_loaded() => ZoneLoad::Ready,
+            _ if next.is_ready() => ZoneLoad::Ready,
             Coming::Failed(error) => ZoneLoad::Failed(error.clone()),
             _ => ZoneLoad::Waiting,
         }
     }
 
     /// Makes a zone that's [`ZoneLoad::Ready`] the one on stage, where it lies, with the focus at where it's
-    /// arrived at: the town's dressing goes, the last zone goes, entities and handles, and its pack unmounts,
-    /// and any other zone that was coming goes the same way, since from here what's next is the new zone's
-    /// to say ([`Self::prefetch_exits`]). Under a wipe, because everything moves at once. The new zone's
-    /// cells come from the next frame on, within its budget, until [`Self::zone_settled`]. `None` for a zone
-    /// that isn't ready.
+    /// arrived at, and its look the stage's ([`ZoneLook`]; its grid goes on the renderer with the next content
+    /// update): the town's dressing goes, the last zone goes, entities and handles, and its pack unmounts, and
+    /// any other zone that was coming goes the same way, since from here what's next is the new zone's to say
+    /// ([`Self::prefetch_exits`]). What the new zone prefetches stays mounted, and coming if it was: a hub's
+    /// next zone, the one just left among them, isn't mounted again on every visit (M5 M6). Under a wipe,
+    /// because everything moves at once. The new zone's cells come from the next frame on, within its budget,
+    /// until [`Self::zone_settled`]. `None` for a zone that isn't ready.
     pub fn arrive_in_zone(&mut self, zone: AssetId, content: &mut Content) -> Option<ArrivedZone> {
-        let at = self.next_zones.iter().position(|next| {
-            next.target.zone == zone
-                && matches!(&next.coming, Coming::Near(streamer) if streamer.near_is_loaded())
-        })?;
-        let arriving = self.next_zones.remove(at);
-        if let Coming::Near(streamer) = &arriving.coming {
-            content.arrive_in_zone(streamer.zone());
-        }
-        let left = self.close_zone(content);
-        self.leave_town();
-        for next in std::mem::take(&mut self.next_zones) {
-            next.drop_with_pack(content);
-        }
-        let NextZone { target, coming, focus, .. } = arriving;
+        let at = self.next_zones.iter().position(|next| next.target.zone == zone && next.is_ready())?;
+        let NextZone { target, coming, focus, look, .. } = self.next_zones.remove(at);
         let Coming::Near(streamer) = coming else { unreachable!("it was just looked at") };
+        let (server, _) = content.streaming_parts();
+        let arrived = server.get(streamer.zone()).expect("a zone ready to arrive in is resident");
+        let ahead: Vec<String> = arrived
+            .simulation
+            .exits
+            .iter()
+            .filter(|exit| exit.prefetch)
+            .map(|exit| exit.pack.as_str().to_owned())
+            .collect();
+        let read = ZoneLook::read(&arrived.presentation);
+        content.arrive_in_zone(look.grid, look.sky);
+        let left = self.close_zone_keeping(content, &ahead);
+        self.leave_town();
+        for mut next in std::mem::take(&mut self.next_zones) {
+            if ahead.contains(&next.target.pack) {
+                next.hurried = false;
+                self.next_zones.push(next);
+            } else {
+                next.drop_with_pack(content);
+            }
+        }
         self.zone = Some(ZoneStage {
             streamer: *streamer,
             pack: target.pack,
             stand: Vec3::ZERO,
             held_focus: Some(focus),
         });
+        // A cook checked its day and rigs: one that doesn't read leaves the stage the look it had.
+        if let Err(error) = read.and_then(|look| self.take_zone_look(look)) {
+            tracing::error!(target: LOG_TARGET, %zone, error, "a zone's look didn't read");
+        }
         Some(ArrivedZone { focus: Vec3::from(focus), left })
+    }
+
+    /// Takes `look` in place of what the stage has (M5 M6): its day, light rigs and wind, or the stage's own again
+    /// for what it names none of; its weather, dry with none; and its fog over the day's, its height base in the
+    /// zone's space. Its probe grid and sky are the content's.
+    pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
+        let ZoneLook { day, rigs, wind, weather, fog } = look;
+        let world = self.ecs.world();
+        let own = self.zone_air.own.get_or_insert_with(|| StageLook {
+            day: world.resource::<TimeOfDay>().timeline().clone(),
+            rigs: world.resource::<LightRigLibrary>().clone(),
+            wind: self.wind,
+        });
+        let (day, rigs, wind) = (
+            day.unwrap_or_else(|| own.day.clone()),
+            rigs.unwrap_or_else(|| own.rigs.clone()),
+            wind.unwrap_or(own.wind),
+        );
+        self.time_of_day_mut().set_timeline(day).map_err(|error| error.to_string())?;
+        self.ecs.world_mut().insert_resource(rigs);
+        self.wind = wind;
+        self.zone_air.weather = weather.unwrap_or_default();
+        self.zone_air.fog = fog;
+        Ok(())
     }
 
     /// The zone on stage, if there's one.
@@ -610,12 +796,21 @@ impl Scene {
     /// wipe (M3 W4). What's unused of its assets goes with the call, and what the app holds unloads as
     /// it lets go.
     pub fn close_zone(&mut self, content: &mut Content) -> Option<Result<UnmountReport, MountError>> {
+        self.close_zone_keeping(content, &[])
+    }
+
+    /// [`Self::close_zone`], its pack left mounted if `kept` names it: then `None`, as nothing was given back.
+    fn close_zone_keeping(
+        &mut self,
+        content: &mut Content,
+        kept: &[String],
+    ) -> Option<Result<UnmountReport, MountError>> {
         let ZoneStage { streamer, pack, stand: _, held_focus: _ } = self.zone.take()?;
         let (server, _) = content.streaming_parts();
         let mut host = Host { world: self.ecs.world_mut(), find: &|_| None, to_world: Mat4::IDENTITY };
         streamer.close(&mut host);
         server.update();
-        Some(server.unmount(&pack))
+        (!kept.contains(&pack)).then(|| server.unmount(&pack))
     }
 
     /// What this frame's zones on their way took on the CPU, mounting, loading and streaming around where

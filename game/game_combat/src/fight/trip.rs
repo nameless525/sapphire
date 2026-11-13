@@ -15,8 +15,9 @@
 //!    in behind it, which is what makes it a hub.
 //! 4. **Uncovering.** Steps run again, and the trip's over when the wipe says the screen's clear.
 //!
-//! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The day, the light rigs and the
-//! probes stay the stage's: the test zones name none.
+//! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The zone arrived in brings its look
+//! (M5 M6): its day, light rigs, probe grid, sky, wind, weather and fog, which came in with its prefetch, or the
+//! stage's own for what it names none of.
 //!
 //! A game's restart after a trip ([`Fight::start_run`]) starts the new run in its own zone, where the stage
 //! no longer is: a trip home takes the stage back there, its simulation held at its first tick until the

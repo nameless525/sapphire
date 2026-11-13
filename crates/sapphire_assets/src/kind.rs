@@ -234,9 +234,12 @@ impl AssetKind {
         )
     }
 
-    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures, texture
-    /// levels and probe grids are GPU data, so their bytes go once uploaded (a new renderer has them read again). Materials
-    /// are small and CPU code reads them (live link, the editor), and rigs, skeletons, clips, collider sets,
+    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures and
+    /// texture levels are GPU data, so their bytes go once uploaded (a new renderer has them read again).
+    /// Materials are small and CPU code reads them (live link, the editor). A probe grid is read on the CPU
+    /// after its upload: the renderer holds one, so a zone coming next keeps its grid aside until a trip
+    /// arrives in it, and a tier's new renderer takes the grid on stage from its bytes (M5 M6). Rigs,
+    /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores and voice lines are read on
     /// the CPU only, so they stay.
@@ -244,6 +247,7 @@ impl AssetKind {
         matches!(
             self,
             Self::Material
+                | Self::ProbeGrid
                 | Self::Rig
                 | Self::Skeleton
                 | Self::Clip

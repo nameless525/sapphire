@@ -462,6 +462,8 @@ pub struct Scene {
     stream_ahead: ([Vec3; sapphire_world::streaming::AHEAD], usize),
     /// Zones on their way (M3 W4).
     next_zones: Vec<zone::NextZone>,
+    /// What the zone on stage's look leaves on the frame beyond its day and rigs (M5 M6).
+    zone_air: zone::ZoneAir,
     /// What this frame's zones on their way took: [`Self::prefetch_time`].
     prefetch_time: Duration,
     /// The zone laid out for an editor.
@@ -629,6 +631,7 @@ impl Scene {
             zone_walk: None,
             stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
             next_zones: Vec::new(),
+            zone_air: zone::ZoneAir::default(),
             prefetch_time: Duration::ZERO,
             layout: None,
             town_plants: Vec::new(),
@@ -1195,6 +1198,7 @@ impl Scene {
     /// changed.
     pub fn follow_content(&mut self, content: &mut Content, show: &mut impl SceneShow) {
         self.set_probe_hours(content.probe_hours());
+        self.zone_air.sky = content.zone_sky_material();
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
         }
@@ -2092,7 +2096,7 @@ impl Scene {
         let mut inventory = PipelineInventory {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
-            sky: self.sky_material.into_iter().collect(),
+            sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off,
             debug_draw: demo || debug_draw::enabled(),
             color_vision: COLOR_VISION.get().dichromacy().into_iter().collect(),
@@ -2130,6 +2134,7 @@ impl Scene {
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let probe_hours = &self.probe_hours;
+        let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
         let vfx = &mut self.vfx;
         let view_cut = &mut self.view_cut;
         if let Some(aspect) = drawable_aspect(target_size) {
@@ -2157,7 +2162,8 @@ impl Scene {
             packet.probe_keys = time_of_day.probe_keys(probe_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
-            packet.sky_material = sky_material;
+            // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's.
+            zone_air.write(packet, sky_material, zone_origin);
             if let Some(cover) = cloud_cover {
                 packet.sky_layers.clouds.coverage = cover;
                 packet.sky_layers.clouds.cirrus = cover;

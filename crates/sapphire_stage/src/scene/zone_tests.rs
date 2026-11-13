@@ -7,11 +7,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialFamily, MaterialFlags};
+use sapphire_assets::material::{
+    AnimeCharacterMaterial, Material, MaterialFamily, MaterialFlags, SkyMaterial,
+};
 use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+use sapphire_assets::probes::{BOUNCE_COEFFICIENTS, BRICK_PROBES, ProbeData, ProbeGrid};
 use sapphire_assets::texture::Swizzle;
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, LoadPriority, MemoryPackSource, MountState, PipelineKey,
@@ -23,7 +26,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use sapphire_synthetic_zone::SyntheticZone;
 use sapphire_time::Stopwatch;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
-use sapphire_zone::CookedExit;
+use sapphire_zone::{CookedExit, ZoneFog, ZonePresentation, ZoneWeather, ZoneWind};
 
 use super::*;
 use crate::content::Content;
@@ -213,6 +216,28 @@ impl Walk {
         Self::standing(source, BASE_PACK, budgets, None)
     }
 
+    /// As [`Self::rooms`], each room dressed by its `looks` entry (M5 M6), with no listed keys.
+    fn dressed_rooms(zone: SyntheticZone, looks: &[RoomLook], budgets: AssetBudgets) -> Self {
+        let rooms = looks.len() as u32;
+        let source = Arc::new(MemoryPackSource::new());
+        source.insert(BASE_PACK, write_pack(vec![character()]).expect("a pack"));
+        for (room, look) in (0..rooms).zip(looks) {
+            let next = (room + 1) % rooms;
+            let exit = CookedExit {
+                id: exit_to(next),
+                name: format!("to_room_{next}"),
+                to: SyntheticZone::room_id(next),
+                pack: room_pack(next),
+                arrive: 0,
+                prefetch: true,
+            };
+            let (extra, dress) = look.assets(room);
+            let pack = zone.dressed_room_pack(room, vec![exit], extra, dress).expect("a pack");
+            source.insert(&room_pack(room), pack);
+        }
+        Self::standing(source, BASE_PACK, budgets, None)
+    }
+
     /// Puts the camera at about `place`, in the zone's space.
     fn look_from(&mut self, place: Vec3) {
         *self.scene.camera_mut() = OrbitCamera::fitting(place - self.start, (0.5, 0.5));
@@ -222,6 +247,11 @@ impl Walk {
     /// and removed, how many lights it has, and what the content's uploads and the renderer's prepare
     /// took and did.
     fn frame(&mut self) -> Frame {
+        self.frame_seeing(|_| {})
+    }
+
+    /// [`Self::frame`], showing `see` its packet before it's prepared.
+    fn frame_seeing(&mut self, see: impl FnOnce(&FramePacket)) -> Frame {
         let before = self.renderer.stats();
         let stopwatch = Stopwatch::start();
         self.content.update(&mut self.renderer, &self.gpu);
@@ -230,6 +260,7 @@ impl Walk {
         self.scene.follow_content(&mut self.content, &mut ());
         self.scene.step();
         let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)), &mut ());
+        see(packet);
         let mut frame = Frame {
             changed: packet.instances.changed.len(),
             removed: packet.instances.removed.len(),
@@ -391,6 +422,80 @@ struct TripHolds {
     material_bytes: u64,
     texture_bytes: u64,
     gpu_textures: usize,
+}
+
+/// What a room looks like (M5 M6): the hours its probe grid was baked under, if it has one, whether it names a
+/// sky material and the look-dev day, and its air.
+#[derive(Clone, Default)]
+struct RoomLook {
+    grid: Option<Vec<f32>>,
+    sky: bool,
+    day: bool,
+    wind: Option<ZoneWind>,
+    weather: Option<ZoneWeather>,
+    fog: Option<ZoneFog>,
+}
+
+/// The look-dev day, which a room may name as its own.
+const LOOKDEV_DAY: &str = include_str!("../../../../content/lookdev/lookdev_day.ron");
+
+impl RoomLook {
+    fn grid_id(room: u32) -> AssetId {
+        SyntheticZone::room_id(room).sub_asset("probes")
+    }
+
+    fn sky_id(room: u32) -> AssetId {
+        SyntheticZone::room_id(room).sub_asset("sky")
+    }
+
+    /// Room `room`'s assets for this look, and what its presentation says of it.
+    fn assets(&self, room: u32) -> (Vec<PackAsset>, impl FnOnce(&mut ZonePresentation) + use<>) {
+        let mut assets = Vec::new();
+        if let Some(hours) = &self.grid {
+            let bytes = probe_grid(hours).to_cooked().expect("a grid").into_vec();
+            let grid = Self::grid_id(room);
+            assets.push(
+                PackAsset::encode(grid, AssetKind::ProbeGrid, Codec::Lz4, &bytes, Vec::new(), 3).unwrap(),
+            );
+        }
+        if self.sky {
+            let swizzles = [Swizzle::IDENTITY; SkyMaterial::TEXTURE_SLOTS.len()];
+            let sky = Material::from_document(&SkyMaterial::default(), &swizzles).expect("a sky material");
+            let bytes = sky.to_cooked().expect("it cooks").into_vec();
+            let id = Self::sky_id(room);
+            assets
+                .push(PackAsset::encode(id, AssetKind::Material, Codec::Lz4, &bytes, Vec::new(), 3).unwrap());
+        }
+        let look = self.clone();
+        let dress = move |presentation: &mut ZonePresentation| {
+            presentation.probes = look.grid.as_ref().map(|_| Self::grid_id(room));
+            presentation.sky = look.sky.then(|| Self::sky_id(room));
+            presentation.day = look.day.then(|| LOOKDEV_DAY.to_owned());
+            presentation.wind = look.wind;
+            presentation.weather = look.weather;
+            presentation.fog = look.fog;
+        };
+        (assets, dress)
+    }
+}
+
+/// A one-brick probe grid baked under `hours`, every probe open, its light all the same.
+fn probe_grid(hours: &[f32]) -> ProbeGrid {
+    let probes = BRICK_PROBES as usize;
+    // 0.5 and about 0.1 as half floats.
+    let (half, tenth) = (0x3800_u16, 0x2e66_u16);
+    ProbeGrid {
+        origin: [0.0; 3],
+        spacing: 2.0,
+        bricks: [1, 1, 1],
+        brick_table: vec![0],
+        brick_probes: (0..BRICK_PROBES).collect(),
+        key_hours: hours.to_vec(),
+        visibility_coefficients: 4,
+        visibility: vec![half; probes * 4],
+        bounce: vec![tenth; probes * hours.len() * BOUNCE_COEFFICIENTS as usize],
+        probe_data: vec![ProbeData { free: [ProbeData::FULL; 6], valid: true }.to_bits(); probes],
+    }
 }
 
 /// A little of everything, near enough to see all at once.
@@ -919,16 +1024,104 @@ fn a_zone_coming_next_places_nothing_until_it_is_arrived_in_and_then_the_last_on
     assert!(matches!(server.mount_state(&room_pack(0)), MountState::Mounted));
     assert!(matches!(server.mount_state(&room_pack(1)), MountState::Mounted));
 
-    // A trip takes what's already there.
+    // A trip takes what's already there. The room it arrives in leads back, so the last one's pack stays
+    // mounted for it (M5 M6), though nobody's asked for the last zone again yet.
     let stopwatch = Stopwatch::start();
     walk.trip(1, settings);
     assert!(stopwatch.elapsed() < Duration::from_secs(5));
     let (server, _) = walk.content.streaming_parts();
-    assert!(matches!(server.mount_state(&room_pack(0)), MountState::Unmounted));
-    assert!(!server.contains(SyntheticZone::room_id(0)));
+    assert!(matches!(server.mount_state(&room_pack(0)), MountState::Mounted));
     assert!(walk.scene.zone_load(room(0).zone) == ZoneLoad::Waiting, "and nobody's asked for the last");
-    assert_eq!(walk.holds().resident, at_first.resident, "the same size of room, and the other's gone");
+    // Once it's all in, as the first room was counted.
+    walk.holds();
     assert_eq!(walk.drawing(), drawing);
+}
+
+/// A trip brings the look of the zone it arrives in (M5 M6): its probe grid on the renderer in place of the
+/// last one's, or none, its day, its sky material and its air; and a zone that names none of them gives the
+/// stage its own back. A zone coming next leaves the grid on the renderer the one on stage's until it's arrived
+/// in. And a zone that doesn't lead back to the last one lets its pack go.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
+    let settings = small_settings();
+    let looks = [
+        RoomLook {
+            grid: Some(vec![6.0]),
+            sky: true,
+            day: true,
+            wind: Some(ZoneWind { direction: [0.0, 0.0, 1.0], strength: 2.5, gustiness: 0.1 }),
+            weather: Some(ZoneWeather { wetness: 0.7, puddles: 0.3 }),
+            ..RoomLook::default()
+        },
+        RoomLook { grid: Some(vec![12.0, 18.0]), ..RoomLook::default() },
+        RoomLook { fog: Some(ZoneFog { density: 2.0, height_base: Some(1.5) }), ..RoomLook::default() },
+    ];
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    let (stage_day, stage_wind) = (walk.scene.time_of_day().timeline().clone(), walk.scene.wind);
+    let packet = |walk: &mut Walk| {
+        // What the grid's change reaches is on the renderer from the frame after the arrival's.
+        walk.frame();
+        let mut seen = None;
+        walk.frame_seeing(|packet| seen = Some(packet.clone()));
+        seen.expect("a packet")
+    };
+
+    walk.trip(0, settings);
+    let in_first = packet(&mut walk);
+    let on_renderer = |walk: &Walk| {
+        let ambient = walk.renderer.stats().ambient;
+        ambient.grid.then_some(ambient.keys)
+    };
+    assert_eq!(walk.content.probe_hours(), [6.0], "its grid's on the renderer");
+    assert_eq!(on_renderer(&walk), Some(1));
+    assert_eq!(walk.content.zone_probe_grid().map(|grid| grid.key_hours.len()), Some(1));
+    assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "its day");
+    assert!(in_first.sky_material.is_some(), "its sky");
+    assert_eq!(in_first.sky_material, walk.content.zone_sky_material());
+    assert_eq!((in_first.wind.strength, in_first.wind.direction), (2.5, Vec3::Z), "its wind");
+    assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (0.7, 0.3), "its weather");
+
+    // The next one coming leaves the grid as it is.
+    walk.scene.prefetch_exits(&mut walk.content, settings);
+    let mut frames = 0;
+    while walk.scene.zone_load(room(1).zone) != ZoneLoad::Ready {
+        walk.frame();
+        frames += 1;
+        assert!(frames < 100_000, "it never came");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    walk.frame();
+    assert_eq!(walk.content.probe_hours(), [6.0], "the grid on stage stays until the next is arrived in");
+    assert_eq!(on_renderer(&walk), Some(1));
+
+    walk.trip(1, settings);
+    let in_second = packet(&mut walk);
+    assert_eq!(walk.content.probe_hours(), [12.0, 18.0], "the next zone's grid replaced it");
+    assert_eq!(on_renderer(&walk), Some(2));
+    assert_eq!(walk.scene.time_of_day().timeline(), &stage_day, "the stage's own day again");
+    assert_eq!(in_second.sky_material, None, "and the app's sky, which this stage has none of");
+    assert_eq!(walk.scene.wind, stage_wind);
+    assert_eq!(in_second.weather.wetness, 0.0, "dry");
+    let (server, _) = walk.content.streaming_parts();
+    assert!(matches!(server.mount_state(&room_pack(0)), MountState::Unmounted), "room 1 doesn't lead back");
+
+    walk.trip(2, settings);
+    let in_third = packet(&mut walk);
+    assert!(walk.content.probe_hours().is_empty(), "a zone with no grid takes the last one's off");
+    assert!(walk.content.zone_probe_grid().is_none());
+    // The renderer's own copy too, though the last zone's pack, and the grid with it, went at the arrival.
+    assert_eq!(on_renderer(&walk), None);
+    assert_eq!(in_third.fog.near.density, 2.0 * in_second.fog.near.density, "its fog, twice the day's");
+    assert_eq!(in_third.fog.height.density, 2.0 * in_second.fog.height.density);
+    assert_eq!(in_third.fog.height.base, 1.5, "on its floor");
+
+    walk.trip(0, settings);
+    let again = packet(&mut walk);
+    assert_eq!(walk.content.probe_hours(), [6.0], "and back");
+    assert_eq!(again.fog.near.density, in_first.fog.near.density);
+    assert!(again.sky_material.is_some());
 }
 
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.
@@ -1044,9 +1237,10 @@ fn a_zone_coming_next_warms_up_off_the_frame() {
     assert_eq!(stats.frame_thread_builds, 0, "{}", walk.renderer.first_use_report());
 }
 
-/// Trip after trip between two zones, a hub and a room, on each class of device's settings and budgets: each
-/// visit holds the same as the visit before it, on the server and the renderer, and no buffer grows after
-/// the first round. `--nocapture` in release reports it at a size worth reporting; a debug build, as CI's,
+/// Trip after trip between two zones, a hub and a room, each with a probe grid it brings (M5 M6), on each class
+/// of device's settings and budgets: after the first round, each visit to a room holds the same as the visit
+/// before it, on the server and the renderer, the other's pack kept mounted as the room leads back to it, and
+/// no buffer grows. `--nocapture` in release reports it at a size worth reporting; a debug build, as CI's,
 /// goes between small ones and holds the same.
 #[test]
 #[ignore = "needs a GPU"]
@@ -1066,14 +1260,16 @@ fn a_repeated_trip_does_not_grow() {
             ("Mobile's budgets", mobile, StreamSettings::MOBILE, AssetBudgets::MOBILE),
         ]
     };
+    // Grids of a size, as the rooms are.
+    let looks = [
+        RoomLook { grid: Some(vec![6.0, 18.0]), ..RoomLook::default() },
+        RoomLook { grid: Some(vec![12.0, 20.0]), ..RoomLook::default() },
+    ];
     for (name, zone, settings, budgets) in tiers {
-        let mut walk = Walk::rooms(zone, 2, budgets, Vec::new());
+        let mut walk = Walk::dressed_rooms(zone, &looks, budgets);
         walk.look_from(Vec3::new(32.0, 0.0, 32.0));
         walk.trip(0, settings);
         let in_first = walk.holds();
-        walk.trip(1, settings);
-        let in_second = walk.holds();
-        assert_eq!(in_first, in_second, "{name}: two rooms of a size hold the same");
         let one_room = walk.renderer.stats().mesh_pool_capacity;
         println!(
             "{name}: {} cells of {} triangles and a {}px texture, {one_room} B of mesh pool: {in_first:?}",
@@ -1084,6 +1280,16 @@ fn a_repeated_trip_does_not_grow() {
         // A hub holds where it is and where it leads at once, so the first round may grow the pool to two
         // rooms' worth; no round after it grows anything.
         let mut after_first: Option<(u64, u32)> = None;
+        // What each room held on the round before, from the second on.
+        let mut visits: [Option<TripHolds>; 2] = [None, None];
+        let mut holds_as_before = |walk: &mut Walk, room: u32, lap: u32, how: &str| {
+            let held = walk.holds();
+            assert_eq!(walk.content.probe_hours(), looks[room as usize].grid.as_deref().unwrap_or_default());
+            if lap > 0 {
+                let before = visits[room as usize].get_or_insert(held);
+                assert_eq!(held, *before, "{name}, trip {lap}, {how}");
+            }
+        };
         for lap in 0..6 {
             // Warm: the hub says the next is coming, and it's in before the trip.
             walk.scene.prefetch_exits(&mut walk.content, settings);
@@ -1095,18 +1301,16 @@ fn a_repeated_trip_does_not_grow() {
                 std::thread::sleep(Duration::from_micros(500));
             }
             let warm = walk.trip(lap % 2, settings);
-            let held = walk.holds();
-            assert_eq!(held, in_first, "{name}, trip {lap}, warm");
+            holds_as_before(&mut walk, lap % 2, lap, "warm");
             // Cold: nothing went ahead of it.
             let cold = walk.trip((lap + 1) % 2, settings);
-            let held = walk.holds();
-            assert_eq!(held, in_first, "{name}, trip {lap}, cold");
+            holds_as_before(&mut walk, (lap + 1) % 2, lap, "cold");
             println!(
                 "{name}, round {lap}: warm {:?} over {} frames, cold {:?} over {} frames, worst upload {:?}",
                 warm.load, warm.frames, cold.load, cold.frames, cold.worst_upload,
             );
             walk.trip(lap % 2, settings);
-            assert_eq!(walk.holds(), in_first, "{name}, trip {lap}, back");
+            holds_as_before(&mut walk, lap % 2, lap, "back");
             let stats = walk.renderer.stats();
             let now = (stats.mesh_pool_capacity, stats.buffer_growths);
             match after_first {

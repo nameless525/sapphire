@@ -793,8 +793,9 @@ fn a_probe_grid_uploads_and_reloads_in_place() {
         })
         .unwrap();
     assert_eq!(seen.len(), 1);
-    // Its bytes go once uploaded, as a mesh's do: the renderer holds the grid.
-    assert!(server.get(&grid).is_none());
+    // Its bytes stay once uploaded (M5 M6): the renderer holds one grid, and a zone coming next keeps its own
+    // aside until it's arrived in.
+    assert_eq!(server.get(&grid).map(|grid| grid.key_hours().count()), Some(2));
 
     // A new bake: the same slot at the next generation, so the app replaces its copy.
     source.insert("shared", grid_pack(3));

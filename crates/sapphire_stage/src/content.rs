@@ -273,8 +273,14 @@ struct GpuAssets {
     copies: CharacterCopies,
     /// A new version of the character has replaced the stage's copies, since the scene last asked.
     studio_replaced: bool,
-    /// The probe grid the renderer holds (it holds one), as its key hours.
-    probe_grid: Option<Held<Vec<f32>>>,
+    /// The probe grid the renderer holds (it holds one), by its ID, as its key hours.
+    probe_grid: Option<(AssetId, Held<Vec<f32>>)>,
+    /// The grid the stage wants on the renderer: the zone on stage's, or the courtyard's (`--probes`). Another
+    /// grid uploaded waits aside in the server, which keeps a grid's bytes: a zone coming next's, which a trip's
+    /// arrival puts on ([`Content::arrive_in_zone`], M5 M6).
+    wanted_grid: Option<AssetId>,
+    /// Every grid uploaded, by ID: its slot and version, which one put on from its bytes is held by.
+    grids: HashMap<AssetId, (AssetSlot, u32)>,
     /// Meshes and materials of assets unloaded, for the next [`Self::free_stale`].
     stale_meshes: Vec<MeshHandle>,
     stale_materials: Vec<MaterialHandle>,
@@ -299,6 +305,8 @@ impl GpuAssets {
             copies: CharacterCopies::default(),
             studio_replaced: false,
             probe_grid: None,
+            wanted_grid: None,
+            grids: HashMap::new(),
             stale_meshes: Vec::new(),
             stale_materials: Vec::new(),
         }
@@ -352,6 +360,7 @@ impl GpuAssets {
             overrides: self.overrides,
             watcher: self.watcher.as_ref().map(|watcher| watcher.for_new_renderer()),
             kept_meshes: self.kept_meshes.iter().map(|(id, _)| (*id, None)).collect(),
+            wanted_grid: self.wanted_grid,
             ..Self::new(self.character, self.keep_character)
         }
     }
@@ -542,15 +551,57 @@ impl GpuAssets {
                 self.character_mesh = copy;
             }
         } else if let Some(grid) = upload.get::<ProbeGrid>() {
-            // The renderer holds one grid: a new version (hot reload) replaces it there.
-            if self.probe_grid.as_ref().is_some_and(|held| held.slot == slot && held.generation >= generation)
+            // The renderer holds one grid, the one the stage wants: a new version (hot reload) replaces it there.
+            self.grids.insert(id, (slot, generation));
+            if self.wanted_grid != Some(id)
+                || self
+                    .probe_grid
+                    .as_ref()
+                    .is_some_and(|(_, held)| held.slot == slot && held.generation >= generation)
             {
                 return Ok(());
             }
             renderer.set_probe_grid(Some(grid))?;
-            self.probe_grid = Some(Held { slot, generation, object: grid.key_hours().collect() });
+            self.probe_grid = Some((id, Held { slot, generation, object: grid.key_hours().collect() }));
         }
         Ok(())
+    }
+
+    /// Puts the grid the stage wants on `renderer` if another is there, from the bytes the server kept of it,
+    /// `wanted`'s; or takes the last one off for a zone with none (M5 M6). A trip's arrival changes which it
+    /// wants. One not yet uploaded goes on with its upload.
+    fn follow_wanted_grid(
+        &mut self,
+        server: &AssetServer,
+        wanted: Option<&Handle<ProbeGrid>>,
+        renderer: &mut Renderer,
+    ) {
+        if self.probe_grid.as_ref().map(|(id, _)| *id) == self.wanted_grid {
+            return;
+        }
+        let Some(id) = self.wanted_grid else {
+            if let Err(error) = renderer.set_probe_grid(None) {
+                tracing::error!(target: LOG_TARGET, %error, "taking a zone's probe grid off the renderer failed");
+            }
+            self.probe_grid = None;
+            return;
+        };
+        let Some(&(slot, generation)) = self.grids.get(&id) else { return };
+        let Some(grid) = wanted.filter(|handle| handle.id() == id).and_then(|handle| server.get(handle))
+        else {
+            return;
+        };
+        match renderer.set_probe_grid(Some(grid)) {
+            Ok(()) => {
+                self.probe_grid = Some((id, Held { slot, generation, object: grid.key_hours().collect() }));
+            }
+            Err(error) => {
+                // The renderer took its last grid off: the zone stays lit by its hemisphere.
+                tracing::error!(target: LOG_TARGET, %error, grid = %id, "a zone's probe grid didn't reach the renderer");
+                self.probe_grid = None;
+                self.wanted_grid = None;
+            }
+        }
     }
 
     /// Gives an unloaded asset's GPU objects back. A texture's is let go of here, and goes when the last
@@ -578,10 +629,10 @@ impl GpuAssets {
         {
             self.stale_meshes.push(held.object.handle);
         }
-        // The renderer keeps the grid until another replaces it: it holds one.
-        if self.probe_grid.as_ref().is_some_and(|held| held.slot == slot) {
-            self.probe_grid = None;
-        }
+        // The renderer keeps the grid it holds, its own copy, until `follow_wanted_grid` takes it off or puts
+        // another on: a trip's arrival unmounts the last zone's pack, and so its grid, before the next update
+        // takes that grid off (M5 M6).
+        self.grids.retain(|_, (held, _)| *held != slot);
     }
 }
 
@@ -803,9 +854,11 @@ pub struct Content {
     town: Vec<Handle<Mesh>>,
     /// The entry an opening zone's inventory leaves out ([`Self::leave_out_of_zones`]).
     left_out_of_zones: Option<String>,
-    /// The open zone's probe grid, which the renderer holds one of, and its bytes: a grid's go once it's uploaded,
-    /// and a tier's renderer takes them again (M4 H4).
-    zone_probes: Option<(Handle<ProbeGrid>, CpuResident<ProbeGrid>)>,
+    /// The zone on stage's probe grid, which the renderer holds one of: the server keeps its bytes, which a
+    /// tier's renderer takes again (M4 H4), and a trip's arrival puts on (M5 M6).
+    zone_probes: Option<Handle<ProbeGrid>>,
+    /// The zone on stage's sky material, if it names one (M5 M6).
+    zone_sky: Option<Handle<Material>>,
     /// The pipelines of zones coming next and those a load left for after its screen, warming up off the
     /// frame: see [`Self::queue_zone_prewarm`] and [`Self::warm_after_load`].
     zone_prewarms: Vec<OffFrameWarm>,
@@ -1045,6 +1098,7 @@ impl Content {
             town: Vec::new(),
             left_out_of_zones: None,
             zone_probes: None,
+            zone_sky: None,
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
             warm_up: WarmUpProgress::default(),
@@ -1078,6 +1132,7 @@ impl Content {
         self.gpu.free_stale(renderer);
         let assets = &mut self.gpu;
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
+        self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
     }
 
     /// Loads until the character is on `renderer`, then returns its mesh and bounds: the load
@@ -1405,6 +1460,7 @@ impl Content {
             self.server.load_with(environment::ARCADE, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let grid =
             self.server.load_with(environment::PROBES, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        self.gpu.wanted_grid = Some(environment::PROBES);
         let assets = &mut self.gpu;
         let loaded = self
             .server
@@ -1422,7 +1478,7 @@ impl Content {
     /// The hours of the time-of-day keys the uploaded probe grid was baked at, for time of day
     /// to pick the keys a frame blends (`TimeOfDay::probe_keys`); empty without a grid.
     pub fn probe_hours(&self) -> &[f32] {
-        self.gpu.probe_grid.as_ref().map_or(&[], |held| &held.object)
+        self.gpu.probe_grid.as_ref().map_or(&[], |(_, held)| &held.object)
     }
 
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,
@@ -1535,38 +1591,58 @@ impl Content {
         self.server
             .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
-        let probes = self.server.get(&zone).and_then(|zone| zone.presentation.probes.as_ref().copied());
+        let (probes, sky) = self.server.get(&zone).map_or((None, None), |zone| {
+            (zone.presentation.probes.as_ref().copied(), zone.presentation.sky.as_ref().copied())
+        });
         self.mount_zone_pack(pack, probes.is_some(), renderer)?;
+        // A zone with no grid leaves the renderer the one it had, as a load screen always has.
+        if probes.is_some() {
+            self.gpu.wanted_grid = probes;
+        }
+        let failed = |what: &'static str| {
+            move |error: LoadError| AppInitError::msg(format!("zone {id}'s {what} didn't load: {error}"))
+        };
         let assets = &mut self.gpu;
         self.zone_probes = probes
             .map(|grid| {
-                let failed = |error: &dyn std::fmt::Display| {
-                    AppInitError::msg(format!("zone {id}'s probe grid didn't load: {error}"))
-                };
                 let grid = self.server.load_with(grid, LoadPriority::Critical).map_err(AppInitError::msg)?;
-                // Kept before the upload lets the bytes go, for the next tier's renderer.
-                let stopwatch = Stopwatch::start();
-                let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
-                let kept = self.server.finish_cpu(&grid, &remaining).map_err(|error| failed(&error))?;
                 self.server
                     .finish(&grid, |upload| assets.upload(upload, renderer, gpu))
-                    .map_err(|error| failed(&error))?;
-                Ok::<_, AppInitError>((grid, kept))
+                    .map_err(failed("probe grid"))?;
+                Ok::<_, AppInitError>(grid)
             })
             .transpose()?;
+        self.zone_sky = sky
+            .map(|sky| {
+                let sky = self.server.load_with(sky, LoadPriority::Critical).map_err(AppInitError::msg)?;
+                self.server
+                    .finish(&sky, |upload| assets.upload(upload, renderer, gpu))
+                    .map_err(failed("sky material"))?;
+                Ok::<_, AppInitError>(sky)
+            })
+            .transpose()?;
+        self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
         Ok(zone)
     }
 
-    /// The zone a trip is bringing on stage, `zone` (M4 H4): the last zone's probe grid goes, with its pack, so
-    /// a tier's renderer built from here on takes no grid of a zone that's gone ([`Self::zone_probe_grid`]). A
-    /// trip brings no probe grid of its own, nor warms what one draws through ([`Self::queue_zone_prewarm`]), and
-    /// the renderer keeps the grid it had: so the cook refuses an exit into or out of a zone with a grid (M4 Z3e,
-    /// the pipeline's `exit_target`), and a zone that arrives with one anyway, cooked before that, says so.
-    pub(crate) fn arrive_in_zone(&mut self, zone: &Handle<Zone>) {
-        self.zone_probes = None;
-        if self.server.get(zone).is_some_and(|zone| zone.presentation.probes.is_some()) {
-            tracing::warn!(target: LOG_TARGET, zone = %zone.id(), "a trip brings no zone's probe grid");
-        }
+    /// The zone a trip is bringing on stage (M5 M6), with its probe grid and its sky material, which came with it
+    /// under its prefetch: the grid goes on the renderer at the next [`Self::update`], from the bytes the server
+    /// kept of it, in place of the last zone's, or the last zone's comes off for a zone with none; and the sky
+    /// draws with the zone's material, or the app's again ([`Self::zone_sky_material`]). What the last zone had
+    /// goes with its handles, so a tier's renderer built from here on takes this zone's grid
+    /// ([`Self::zone_probe_grid`]).
+    pub(crate) fn arrive_in_zone(&mut self, grid: Option<Handle<ProbeGrid>>, sky: Option<Handle<Material>>) {
+        self.gpu.wanted_grid = grid.as_ref().map(Handle::id);
+        self.zone_probes = grid;
+        self.zone_sky = sky;
+    }
+
+    /// The zone on stage's sky material on the renderer, once it's there: what the sky draws with in place of the
+    /// app's. `None` for a zone that names none.
+    #[must_use]
+    pub fn zone_sky_material(&self) -> Option<MaterialHandle> {
+        let sky = self.zone_sky.as_ref()?;
+        self.gpu.materials.get(&sky.id()).map(|held| held.object)
     }
 
     /// [`Self::open_zone`]'s second half, after [`Self::begin_zone`]: everything near `focus`, in the zone's
@@ -1585,12 +1661,16 @@ impl Content {
         streamer
     }
 
-    /// Warms up what zone pack `pack` draws through, off the frame (M4 H1, `Renderer::warm`): a zone that may
-    /// come next, whose first mesh mustn't be asked for until [`Self::prewarms_pack`] says it's done, so that no
+    /// Warms up what zone pack `pack` draws through, off the frame (M4 H1, `Renderer::warm`), lit by a probe grid if
+    /// the pack holds one: a zone that may come next, whose first mesh mustn't be asked for until [`Self::prewarms_pack`] says it's done, so that no
     /// upload finds one unbuilt. No frame in a hub builds any of it or waits for it.
     pub(crate) fn queue_zone_prewarm(&mut self, pack: &str) {
-        let mut inventory =
-            PipelineInventory { meshes: self.server.pipeline_keys_of(pack), ..PipelineInventory::default() };
+        // A zone's grid is in its pack, which is mounted, where the zone itself isn't read yet (M5 M6).
+        let mut inventory = PipelineInventory {
+            meshes: self.server.pipeline_keys_of(pack),
+            probe_grid: !self.server.assets_of_kind(pack, AssetKind::ProbeGrid).is_empty(),
+            ..PipelineInventory::default()
+        };
         if let Some(entry) = &self.left_out_of_zones {
             inventory.remove(entry);
         }
@@ -1688,7 +1768,7 @@ impl Content {
         gpu: &GpuContext,
     ) {
         let assets = &mut self.gpu;
-        if let Some((grid, _)) = &self.zone_probes
+        if let Some(grid) = &self.zone_probes
             && let Err(error) = self.server.finish(grid, |upload| assets.upload(upload, renderer, gpu))
         {
             tracing::warn!(target: LOG_TARGET, %error, "a zone's probe grid didn't reach the new renderer");
@@ -2554,10 +2634,10 @@ impl Content {
         Ok(self.gpu.materials.get(&self.sky_id).expect("a ready material was uploaded here").object)
     }
 
-    /// The open zone's probe grid: what a tier's renderer takes in place of the one the renderer it replaces
-    /// holds (M4 T3). Its bytes are kept from the zone's open, since the upload lets the server's go (M4 H4).
+    /// The zone on stage's probe grid: what a tier's renderer takes in place of the one the renderer it replaces
+    /// holds (M4 T3), from the bytes the server keeps of a grid (M5 M6).
     pub fn zone_probe_grid(&self) -> Option<&ArchivedProbeGrid> {
-        self.zone_probes.as_ref().map(|(_, kept)| kept.view())
+        self.zone_probes.as_ref().and_then(|grid| self.server.get(grid))
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

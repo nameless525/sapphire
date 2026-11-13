@@ -156,6 +156,7 @@ use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
+use sapphire_assets::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes};
 use sapphire_assets::rig::{CharacterRig, HumanBone, RigError};
 use sapphire_assets::score::{SCORE_EXTENSION, Score};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
@@ -204,6 +205,7 @@ use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::procedural::{self, ProceduralError};
+use crate::reflections::{self, ReflectionCookError};
 use crate::script::{self, ScriptCookError};
 use crate::texture::{self, CookedTexture, TextureError};
 use crate::timeline::{self, TimelineCookError};
@@ -491,6 +493,16 @@ impl Recipe {
         }
     }
 
+    /// The recipe of a zone's reflection probes.
+    fn zone_reflections() -> Self {
+        Self {
+            importer: reflections::IMPORTER,
+            cooker: reflections::COOKER,
+            format: ReflectionProbes::VERSION,
+            extension: REFLECTIONS_EXTENSION,
+        }
+    }
+
     /// The recipe of a zone's navmesh.
     fn zone_navigation() -> Self {
         Self {
@@ -668,6 +680,12 @@ pub enum CookError {
         /// Boxed, as material errors are.
         #[source]
         source: Box<ProbeCookError>,
+    },
+    #[error("failed to bake the reflection probes of zone {}", path.display())]
+    Reflections {
+        path: PathBuf,
+        #[source]
+        source: Box<ReflectionCookError>,
     },
     #[error("failed to cook collider document {}", path.display())]
     Colliders {
@@ -1113,7 +1131,7 @@ fn cook_dir_through(
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
                 }
-                Part::Navigation => zone::output_path(&source_relative, recipe.extension),
+                Part::Navigation | Part::Reflections => zone::output_path(&source_relative, recipe.extension),
                 // Beside the tail, by its name: `albedo.mip0.smip`, `brick.color.mip0.smip`.
                 Part::Level { level, .. } => {
                     let file = format!(
@@ -1152,15 +1170,16 @@ fn cook_dir_through(
     // textures they reference, so everything else cooks first; clips,
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
-    // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
-    // their materials, a navmesh reads cooked colliders, and a zone's `.szone` reads its meshes and holds
+    // move sets read clips' keys, so those go before move sets; probe grids and a zone's reflection
+    // probes read cooked meshes and their materials, a navmesh reads cooked colliders, and a zone's `.szone` reads its meshes and holds
     // its navmesh's key, so those cook last. `others` read none of what those cook.
     let (own_zones, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_own_zone());
     let (navigation, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].part == Part::Navigation);
-    let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|&index| plan[index].is_probe_grid());
+    let (probe_grids, rest): (Vec<usize>, Vec<usize>) = rest
+        .into_iter()
+        .partition(|&index| plan[index].is_probe_grid() || plan[index].part == Part::Reflections);
     let (materials, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].is_material());
     let (move_sets, rest): (Vec<usize>, Vec<usize>) =
@@ -1476,6 +1495,8 @@ enum Part {
     FontSubset { index: usize, pack: String },
     /// A zone's navmesh.
     Navigation,
+    /// A zone's reflection probes (M5 L2).
+    Reflections,
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
@@ -1668,7 +1689,12 @@ fn sub_assets(
                 part: Part::Navigation,
                 recipe: Recipe::zone_navigation(),
             });
-            let parts = parts.chain(navigation).collect();
+            let reflections = plan.reflections_id().map(|id| PlannedPart {
+                id,
+                part: Part::Reflections,
+                recipe: Recipe::zone_reflections(),
+            });
+            let parts = parts.chain(navigation).chain(reflections).collect();
             zones.insert(path.clone(), plan);
             Ok(parts)
         }
@@ -2032,7 +2058,7 @@ impl<'a> Assets<'a> {
         })
     }
 
-    /// What a probe grid's cook knows about asset `id`.
+    /// What a probe grid's or reflection probes' cook knows about asset `id`.
     fn probe_input(&self, id: AssetId) -> Option<ProbeInput<'a>> {
         let index = *self.by_id.get(&id)?;
         let planned = &self.plan[index];
@@ -2336,11 +2362,12 @@ fn asset_key(
     let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, .. } = planned;
     let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
-    // A cell's or a navmesh's key holds what's in it, rather than the whole document (see `zone`).
+    // A cell's, a navmesh's or reflection probes' key holds what's in it, rather than the whole document (see `zone`).
     let keyed_source = match part {
         Part::Cell(place) => assets.zones[path].recipe(*place),
         Part::Shape(shape) => assets.zones[path].shape_recipe(shape),
         Part::Navigation => assets.zones[path].navigation_recipe(),
+        Part::Reflections => assets.zones[path].reflections_recipe(),
         _ => source.hash,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -2505,6 +2532,12 @@ fn cook_source(
             return cook_shape(path, shape, settings, cook, assets);
         }
         Part::Navigation => return cook_navigation(path, assets),
+        Part::Reflections => {
+            let plan = &assets.zones[path];
+            return reflections::cook(plan, path, cook, |id| assets.probe_input(id)).map_err(|source| {
+                CookError::Reflections { path: path.to_owned(), source: Box::new(source) }
+            });
+        }
         Part::Level { texture, level } => {
             let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
             let level = chain.level(*texture, *level).map_err(|source| CookError::Texture {
@@ -3430,6 +3463,12 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if *part == Part::Navigation {
         let id = document.colliders.expect("a document with `navigation` names `colliders`");
         return Ok(vec![cooked_key(id, "colliders".to_owned(), "a collider document")?]);
+    }
+    // What the probes see and the day they're baked under: their recipe holds the rest.
+    if *part == Part::Reflections {
+        return reflections::dependencies(plan, path, |id| assets.probe_input(id)).map_err(|source| {
+            CookError::Reflections { path: path.to_owned(), source: Box::new(source.into()) }
+        });
     }
     if let Some(id) = plan.navigation_id() {
         dependencies.push(cooked_key(id, "navigation".to_owned(), "a navmesh")?);

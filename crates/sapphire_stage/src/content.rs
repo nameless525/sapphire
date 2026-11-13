@@ -176,9 +176,11 @@ pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866
 /// they read, all told.
 const SCREENS_ALONE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// What a zone coming next draws through, warming up off the frame ([`Content::queue_zone_prewarm`]).
-struct ZonePrewarm {
-    pack: String,
+/// What warms up off the frame from [`Content::update`]: what a zone coming next draws through
+/// ([`Content::queue_zone_prewarm`]), or what a load left for after its screen ([`Content::warm_after_load`]).
+struct OffFrameWarm {
+    /// The zone pack it's for, or `None` for a load's.
+    pack: Option<String>,
     inventory: PipelineInventory,
     /// The renderer's request, once asked.
     request: Option<WarmUpRequest>,
@@ -764,8 +766,9 @@ pub struct Content {
     /// The open zone's probe grid, which the renderer holds one of, and its bytes: a grid's go once it's uploaded,
     /// and a tier's renderer takes them again (M4 H4).
     zone_probes: Option<(Handle<ProbeGrid>, CpuResident<ProbeGrid>)>,
-    /// The pipelines of zones coming next, warming up off the frame: see [`Self::queue_zone_prewarm`].
-    zone_prewarms: Vec<ZonePrewarm>,
+    /// The pipelines of zones coming next and those a load left for after its screen, warming up off the
+    /// frame: see [`Self::queue_zone_prewarm`] and [`Self::warm_after_load`].
+    zone_prewarms: Vec<OffFrameWarm>,
     /// What asking for them took this frame: [`Self::zone_prewarm_time`].
     zone_prewarm_time: std::time::Duration,
     /// How far the renderer's warm-up had got at the last update: [`Self::warm_up`].
@@ -1490,17 +1493,32 @@ impl Content {
         if let Some(entry) = &self.left_out_of_zones {
             inventory.remove(entry);
         }
-        self.zone_prewarms.push(ZonePrewarm { pack: pack.to_owned(), inventory, request: None });
+        self.zone_prewarms.push(OffFrameWarm { pack: Some(pack.to_owned()), inventory, request: None });
     }
 
     /// Whether what [`Self::queue_zone_prewarm`] asked for has yet to be built.
     pub(crate) fn prewarms_pack(&self, pack: &str) -> bool {
-        self.zone_prewarms.iter().any(|prewarm| prewarm.pack == pack)
+        self.zone_prewarms.iter().any(|prewarm| prewarm.pack.as_deref() == Some(pack))
     }
 
     /// Lets go of what [`Self::queue_zone_prewarm`] asked for.
     pub(crate) fn drop_zone_prewarm(&mut self, pack: &str) {
-        self.zone_prewarms.retain(|prewarm| prewarm.pack != pack);
+        self.zone_prewarms.retain(|prewarm| prewarm.pack.as_deref() != Some(pack));
+    }
+
+    /// Warms `inventory` up off the frame from the next [`Self::update`] on, as a zone coming next warms
+    /// ([`Self::queue_zone_prewarm`]), asking again of a renderer made since (M4 C7): what a load leaves for after
+    /// its screen, so the screen doesn't wait for it. Whatever draws through it must wait until
+    /// [`Self::warms_after_load`] says it's built, or build it on its frame, as a first use.
+    pub fn warm_after_load(&mut self, inventory: PipelineInventory) {
+        self.zone_prewarms.push(OffFrameWarm { pack: None, inventory, request: None });
+    }
+
+    /// Whether anything [`Self::warm_after_load`] asked for has yet to be built and taken in, as of the last
+    /// [`Self::update`].
+    #[must_use]
+    pub fn warms_after_load(&self) -> bool {
+        self.zone_prewarms.iter().any(|prewarm| prewarm.pack.is_none())
     }
 
     /// What this frame's update took to ask for the pipelines of zones coming next (M3 Z1): since M4 H1 they
@@ -3146,6 +3164,31 @@ mod tests {
         assert_eq!(replaced.palette_bytes, posed.palette_bytes, "posed: {replaced:?}");
         let after = stage.frame();
         assert_eq!((after.skinned, after.palette_bytes), (0, 0), "and sent once");
+    }
+
+    /// What a load leaves for after its screen (M4 C7, a fighter's fade) warms off the frame while frames go on,
+    /// none of which builds any of it or waits for it, and it's said to be warming until it's built and taken in.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn what_a_load_leaves_warms_off_the_frame_and_says_so() {
+        let mut stage = Stage::new();
+        stage.frame();
+        let before = stage.renderer.stats().pipelines;
+        assert!(!stage.content.warms_after_load(), "nothing was left");
+        stage.content.warm_after_load(PipelineInventory { fades: true, ..PipelineInventory::default() });
+        assert!(stage.content.warms_after_load(), "from when it's asked, before any frame asks the renderer");
+        let mut frames = 0;
+        while stage.content.warms_after_load() {
+            assert!(frames < 100_000, "never built");
+            stage.frame();
+            frames += 1;
+        }
+        let after = stage.renderer.stats().pipelines;
+        assert!(after.warmed_off_frame > before.warmed_off_frame, "the fades built: {before:?} {after:?}");
+        let hitches = |stats: sapphire_render::PipelineStats| {
+            (stats.first_use_builds, stats.frame_thread_builds, stats.frame_waits)
+        };
+        assert_eq!(hitches(after), hitches(before), "no frame built or waited for any of it");
     }
 
     #[test]

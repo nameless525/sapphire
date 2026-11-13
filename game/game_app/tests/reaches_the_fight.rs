@@ -30,6 +30,8 @@ const WIDTH: u32 = 320;
 const HEIGHT: u32 = 180;
 /// A script that swings: long enough that someone's been hurt.
 const STEPS: u32 = 600;
+/// More title frames than the fades the boot leaves to warm there take to build, even on lavapipe.
+const MOST_WARM_FRAMES: u32 = 100_000;
 
 /// Draws the stage's next frame into a new texture and reads it back.
 fn frame(stage: &mut Stage<GameShow>) -> Result<Vec<u8>, AppInitError> {
@@ -95,6 +97,18 @@ impl App for OutsideCaller {
         assert_eq!(tick(&stage), 0, "the title holds the fight");
         let guard = guard_joints(&stage);
         assert_ne!(guard, held_pose, "the title poses the heroine in her guard");
+
+        // Play waits on the title for the fades the boot left to warm there (M4 C7), which no frame builds.
+        assert!(stage.show.play_waits(), "the boot left the fades to the title");
+        let mut frames = 0;
+        while stage.show.play_waits() {
+            assert!(frames < MOST_WARM_FRAMES, "the title's fades never built");
+            frame(&mut stage)?;
+            frames += 1;
+        }
+        let pipelines = stage.renderer.stats().pipelines;
+        let on_frame = (pipelines.first_use_builds, pipelines.frame_thread_builds, pipelines.frame_waits);
+        assert_eq!(on_frame, (0, 0, 0), "{}", stage.renderer.first_use_report());
 
         // What the title's first draw opened has had time to come in; its first row has the focus.
         let press = Event::Key(KeyEvent {

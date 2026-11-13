@@ -35,8 +35,12 @@
 //!    next its screens ([`GameShow::stand_screens`]). Their uploads and prewarms find everything built. They're
 //!    the frames of reading and uploading, each within twice the tier's interval on an M5, with the screen saying
 //!    so from the frame before.
-//! 4. **What the show declares** ([`Step::Declared`]): its screen effects' post variants, its sky, its fades and
-//!    insets (`Scene::declared_pipelines`), warmed the same way.
+//! 4. **What the show declares** ([`Step::Declared`]): its screen effects' post variants, its sky and insets
+//!    (`Scene::declared_pipelines`), warmed the same way. Its fighters' fades are left to warm on the title
+//!    ([`GameShow::warm_before_play`], M4 C7), whose play waits for them: 29 pipelines when the game stands
+//!    (every opaque anime character surface's alpha-tested variant, with its prepasses' masked ones, outlines
+//!    and eyes through hair), whose compiles on this screen made a cold boot about 2 s longer and, once in
+//!    four, held a frame past twice the interval.
 //!
 //! Then [`Boot::frame`] hands the stage back, and the title is the next frame. [`BootReport`] says what it took.
 //!
@@ -626,7 +630,14 @@ impl Boot {
                 self.stand_screens()?;
                 self.report.stood = self.started.elapsed();
                 let stage = self.stage.as_deref_mut().expect("a stood stage");
-                let declared = stage.scene.declared_pipelines(&stage.show);
+                let mut declared = stage.scene.declared_pipelines(&stage.show);
+                // A fighter's fade warms on the title instead, with play held until it's built (M4 C7), so this
+                // screen needn't wait for it: the title's camera is still, so nothing there comes near enough to
+                // fade, and one that did would build its fade on its frame, a first use exit test 1 counts.
+                if std::mem::take(&mut declared.fades) {
+                    let fades = PipelineInventory { fades: true, ..PipelineInventory::default() };
+                    stage.show.warm_before_play(fades);
+                }
                 self.step = Step::Declared(stage.renderer.warm(&declared));
             }
             &Step::Declared(request) => {

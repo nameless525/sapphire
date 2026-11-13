@@ -98,6 +98,13 @@ fn walk(platform: &Platform, high: TierId) -> Result<(), AppInitError> {
     let held = QualitySettings { tier: Some(high), ..QualitySettings::default() };
     let boot = Boot::start(&host, gpu, FORMAT, held, show, &option)?;
     let (mut stage, _) = boot.run_offscreen((WIDTH, HEIGHT), false)?;
+    // Play waits on the title for the fades the boot left to warm there (M4 C7), which no frame builds.
+    let mut waited = 0;
+    while stage.show.play_waits() {
+        assert!(waited < 100_000, "the title's fades never built");
+        frame(&mut stage)?;
+        waited += 1;
+    }
     stage.show.open_fight();
     assert_eq!(stage.quality.active().id, high);
     let character = stage.character;

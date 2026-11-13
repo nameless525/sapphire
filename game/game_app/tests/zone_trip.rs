@@ -167,6 +167,13 @@ impl App for OutsideCaller {
             report.interval_limit,
         );
         assert!(stage.show.shown.wipe.is_some(), "a fight that goes between zones has a wipe");
+        // Play waits on the title for the fades the boot left to warm there (M4 C7), which no frame builds.
+        let mut waited = 0;
+        while stage.show.play_waits() {
+            assert!(waited < 100_000, "the title's fades never built");
+            frame(&mut stage)?;
+            waited += 1;
+        }
         stage.show.open_fight();
 
         let mut trips: Vec<Seen> = Vec::new();

@@ -124,6 +124,10 @@ pub fn capture_with(
         (Box::new(stage), None)
     };
     if let Some(command) = capture.choose {
+        // A booted game's play waits on its title for what its fades draw through (M4 C7), as a player's does.
+        while stage.show.play_waits() {
+            stage.skip_frame(1.0);
+        }
         stage.show.choose(command);
     }
 

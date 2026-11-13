@@ -292,7 +292,8 @@ struct Watch {
     changes: Vec<(TierId, Duration)>,
     /// The longest frame drawn outside a load screen, and where.
     worst: (Duration, String),
-    /// The title's first frames, while the show's sounds read and decode (M4 H8): timed against a load screen's
+    /// The title's first frames, while the show's sounds read and decode (M4 H8) and on until the fighters' fades
+    /// the boot left to it are built (M4 C7), which the new game waits for: timed against a load screen's
     /// limit, as the first frames the player sees after the boot screen, and reported. The first is the stage's
     /// first on the GPU, which waits for it about 27 ms on Desktop-High on an M5 (spec §3.7), so a run doesn't
     /// fail on them. Some while they're counted.
@@ -511,14 +512,19 @@ fn walk_the_ward(
         .expect("the game's fight has sounds");
     let read = stopwatch.elapsed();
     let limit = limit_at(walk.stage.quality.frame_rate());
-    walk.draw.title = Some(LoadScreen::reported(format!("the title's first {TITLE_FRAMES} frames"), limit));
+    // Its first frames, and on until the fades the boot left to it are built: the frames they build beside.
+    let title = format!("the title's first {TITLE_FRAMES} frames and its fades' warm-up");
+    walk.draw.title = Some(LoadScreen::reported(title, limit));
     let mut frame = 0;
     let mut decoded = None;
-    while frame < TITLE_FRAMES || decoded.is_none() {
+    // The title holds a new game until the fades the boot left to warm there are built (M4 C7): a player at it
+    // presses once they are, as here, or has the press held until then.
+    let mut fades_in = None;
+    while frame < TITLE_FRAMES || decoded.is_none() || walk.stage.show.play_waits() {
         assert!(frame < MOST_SOUND_FRAMES, "the sounds never decoded");
         walk.play()?;
         frame += 1;
-        if frame == TITLE_FRAMES {
+        if frame >= TITLE_FRAMES && !walk.stage.show.play_waits() {
             walk.draw.screens.extend(walk.draw.title.take());
         }
         if decoded.is_none()
@@ -526,7 +532,14 @@ fn walk_the_ward(
         {
             decoded = Some((frame, ready?.sounds()));
         }
+        if fades_in.is_none() && !walk.stage.show.play_waits() {
+            fades_in = Some(frame);
+        }
     }
+    eprintln!(
+        "zero_hitches: the title's fades built off the frame by its frame {}",
+        fades_in.expect("built")
+    );
     let (frame, count) = decoded.expect("decoded");
     eprintln!(
         "zero_hitches: the title's sounds read in {:.1} ms on its first frame, {count} decoded off the frame by its \

@@ -1908,8 +1908,6 @@ fn draw(world: &mut World, warrior: Warrior, meshes: EnemyMeshes) {
 impl SceneShow for FightShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         inventory.effects |= self.cues.is_some();
-        // Its fighters fade near the eye (M4 C7), from whenever one stands.
-        inventory.fades = true;
     }
 
     fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {

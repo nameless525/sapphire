@@ -135,6 +135,24 @@ pub struct GameShow {
     ended_runs: Option<Vec<RunSoFar>>,
     /// The restart's run, standing under the held wipe a part a frame (M4 H4).
     run_standing: Option<RunStanding>,
+    /// Whether play waits for what the boot left to warm on the title ([`Self::warm_before_play`]).
+    play_waits: bool,
+    /// What play waits for, until the title's first frame asks for it.
+    play_warm: Option<Box<PipelineInventory>>,
+    /// What would have begun play while it waited, taken once it doesn't.
+    held: Option<HeldPlay>,
+}
+
+/// What would begin play, held while it waits on the title for what the boot left to warm there
+/// ([`GameShow::warm_before_play`], M4 C7).
+#[derive(Debug, PartialEq)]
+enum HeldPlay {
+    /// The title's new game or continue, a row's or [`GameShow::choose`]'s.
+    Command(FlowCommand),
+    /// [`GameShow::open_fight`], for a show with no game's flow.
+    OpenFight,
+    /// [`GameShow::reload_from`], a show on a new device going back where the last one was.
+    Reload(Box<Reload>),
 }
 
 /// Where a restart's run is, under the held wipe: prepared on the warm-up pool, then the last run ended on a
@@ -192,6 +210,9 @@ impl GameShow {
             mark_asked: false,
             ended_runs: None,
             run_standing: None,
+            play_waits: false,
+            play_warm: None,
+            held: None,
         })
     }
 
@@ -373,6 +394,10 @@ impl GameShow {
         if !reload.run {
             return;
         }
+        if self.play_waits {
+            self.held = Some(HeldPlay::Reload(Box::new(reload.clone())));
+            return;
+        }
         self.choose(FlowCommand::Continue);
         if reload.played && self.is_played() {
             self.controls.set_paused(true);
@@ -388,9 +413,55 @@ impl GameShow {
         self.menus.as_deref()
     }
 
+    /// Warms `inventory` up off the frame while the title shows ([`Content::warm_after_load`]), and holds play
+    /// until it's built (M4 C7): what the boot leaves for after its screen, which nothing on the title should
+    /// draw through, since nothing there moves. It's asked for once the title's first frame is drawn, which is
+    /// the stage's first on the GPU and slow enough alone (about 28 ms of 33 on Desktop-High, cold): asked on it,
+    /// the compiles made it 32 to 44. A new game or a continue chosen meanwhile, from the title's rows or by
+    /// [`Self::choose`], is held, and taken on the first frame it's built; so are [`Self::open_fight`] and
+    /// [`Self::reload_from`]. The last one asked is the one taken.
+    pub fn warm_before_play(&mut self, inventory: PipelineInventory) {
+        self.play_warm = Some(Box::new(inventory));
+        self.play_waits = true;
+    }
+
+    /// Whether play waits for what [`Self::warm_before_play`] asked for.
+    #[must_use]
+    pub fn play_waits(&self) -> bool {
+        self.play_waits
+    }
+
+    /// Play stops waiting once what [`Self::warm_before_play`] asked for is built, and the command it held is
+    /// taken.
+    fn follow_warm_up(&mut self, content: &mut Content) {
+        if let Some(inventory) = self.play_warm.take() {
+            // The title's first frame, whose content update came before this: the next asks, once it's drawn.
+            content.warm_after_load(*inventory);
+        } else if self.play_waits && !content.warms_after_load() {
+            self.play_ready();
+        }
+    }
+
+    /// What [`Self::warm_before_play`] asked for is built: play waits no longer, and what was held is taken.
+    fn play_ready(&mut self) {
+        self.play_waits = false;
+        let Some(held) = self.held.take() else { return };
+        tracing::info!(target: LOG_TARGET, "what the title held is taken: what play draws through is warm");
+        match held {
+            HeldPlay::Command(command) => self.choose(command),
+            HeldPlay::OpenFight => self.open_fight(),
+            HeldPlay::Reload(reload) => self.reload_from(&reload),
+        }
+    }
+
     /// A command for the flow, and what it asks of the show.
     fn command_game(&mut self, command: FlowCommand) {
         let Some(game) = &mut self.game else { return };
+        if self.play_waits && matches!(command, FlowCommand::NewGame | FlowCommand::Continue) {
+            // Nothing that plays may begin before what it draws through is built (`warm_before_play`).
+            self.held = Some(HeldPlay::Command(command));
+            return;
+        }
         match game.command(command) {
             Some(FlowAction::SkipTimeline) => {
                 self.shown.fight.skip_timeline();
@@ -702,6 +773,11 @@ impl GameShow {
     /// The title goes and the fight begins, with its HUD on, in the player's size.
     pub fn open_fight(&mut self) {
         if self.fight_open {
+            return;
+        }
+        if self.play_waits {
+            // As a game's new game or continue is held (`command_game`).
+            self.held = Some(HeldPlay::OpenFight);
             return;
         }
         self.fight_open = true;
@@ -1044,6 +1120,7 @@ impl SceneShow for GameShow {
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
+        self.follow_warm_up(content);
         self.stand_asked_run(scene, content);
         self.shown.follow_content(scene, content, changes);
     }
@@ -1577,6 +1654,66 @@ mod tests {
         frame(&mut show, &mut clock);
         assert!(is_open(&show, MenuScreen::HUD), "a new game plays");
         assert_eq!(hud(&mut show), (false, false), "no foe, and the flow gives no objective");
+    }
+
+    /// While play waits for what the boot left to warm on the title (M4 C7), the title's new game, a chosen
+    /// continue and an asked-for fight are held, not dropped or taken early, and each is taken once it's built.
+    #[test]
+    fn the_title_holds_play_until_its_warm_up_is_built() {
+        let game = || {
+            let document = FlowDocument::from_ron(include_str!("../../../content/game.flow.ron")).unwrap();
+            let registry = FlagRegistry::from_ron(include_str!("../../../content/flags.ron")).unwrap();
+            let registered = registry.flags.iter().map(|flag| Name::new(flag)).collect();
+            Game::new(FlowContent { document, registered }, GameSetup::default()).unwrap()
+        };
+        let state = |show: &GameShow| show.game().unwrap().flow().state();
+
+        // The title's row, pressed.
+        let mut show = undrawn().with_game(game());
+        show.play_waits = true;
+        let mut clock = 0;
+        frame(&mut show, &mut clock);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        frame(&mut show, &mut clock);
+        assert!(show.on_title() && matches!(state(&show), FlowState::Title { .. }), "{:?}", state(&show));
+        assert_eq!(show.held, Some(HeldPlay::Command(FlowCommand::NewGame)));
+        show.play_ready();
+        assert!(!show.play_waits() && !show.on_title(), "the held new game is taken");
+        assert_eq!(state(&show), FlowState::Playing);
+        frame(&mut show, &mut clock);
+        assert!(is_open(&show, MenuScreen::HUD));
+
+        // A script's choice.
+        let mut show = undrawn().with_game(game());
+        show.play_waits = true;
+        frame(&mut show, &mut clock);
+        show.choose(FlowCommand::NewGame);
+        assert!(show.on_title() && matches!(state(&show), FlowState::Title { .. }));
+        show.play_ready();
+        assert_eq!(state(&show), FlowState::Playing);
+
+        // A show on a new device, going back where the lost one's run was.
+        let mut show = undrawn().with_game(game());
+        show.play_waits = true;
+        frame(&mut show, &mut clock);
+        let reload = Reload { settings: PlayerSettings::default(), run: true, played: false };
+        show.reload_from(&reload);
+        assert_eq!(show.held, Some(HeldPlay::Reload(Box::new(reload))));
+        show.play_ready();
+        assert_eq!(show.held, None, "taken: its continue, with no save here, stays on the title");
+
+        // A show with no game's flow.
+        let (mut show, mut clock) = self::show();
+        show.play_waits = true;
+        show.open_fight();
+        frame(&mut show, &mut clock);
+        assert!(show.on_title() && show.shown.hud.is_none());
+        show.play_ready();
+        assert!(!show.on_title() && show.shown.hud.is_some());
+
+        // Nothing waits unless the boot asked.
+        let (show, _) = self::show();
+        assert!(!show.play_waits());
     }
 
     /// A game's own bindings are what its show reads, and a document that lacks what combat reads stops it,

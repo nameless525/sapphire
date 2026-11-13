@@ -38,6 +38,9 @@
 //! - **Anime character maps** cook `.facesdf.ron`, `.ramp.ron` and `.ilm.ron` documents →
 //!   `.ktx2` (A7): the map a document describes is generated, then cooked as its texture
 //!   class ([`character_maps`]).
+//! - **Procedural textures** cook `.ptex.ron` documents → `.ktx2` (M5 B1): the surface a document
+//!   describes is rasterized as the map its sidecar names, then cooked as that map's texture class
+//!   ([`procedural`]).
 //! - **Materials** cook `.material.ron` documents → `.smat` (A3), checked against the textures
 //!   they reference ([`material`]). A mesh's slots embed the materials the importer generated,
 //!   or name the material assets its sidecar binds them to, which must be materials of the same
@@ -200,8 +203,9 @@ use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, So
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
+use crate::procedural::{self, ProceduralError};
 use crate::script::{self, ScriptCookError};
-use crate::texture::{self, CookedTexture, TextureError, TextureSettings};
+use crate::texture::{self, CookedTexture, TextureError};
 use crate::timeline::{self, TimelineCookError};
 use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
@@ -312,6 +316,13 @@ impl Recipe {
             // The importer generates the map as an image, which the texture cooker cooks.
             ImportSettings::CharacterMap(settings) => Self {
                 importer: settings.kind().importer(),
+                cooker: texture::COOKER,
+                format: TEXTURE_VERSION,
+                extension: TEXTURE_EXTENSION,
+            },
+            // The rasterizer makes the map as an image, which the texture cooker cooks.
+            ImportSettings::ProceduralTexture(_) => Self {
+                importer: procedural::IMPORTER,
                 cooker: texture::COOKER,
                 format: TEXTURE_VERSION,
                 extension: TEXTURE_EXTENSION,
@@ -514,7 +525,7 @@ impl Recipe {
     /// cooked extension in place of the source's (`samples/mannequin.glb` →
     /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`, `courtyard.probes.ron` →
     /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`, `fighter.moves.ron` → `fighter.smoves`,
-    /// `ui.fontchains.ron` → `ui.sfontc`).
+    /// `ui.fontchains.ron` → `ui.sfontc`, `brick.color.ptex.ron` → `brick.color.ktx2`).
     pub fn output_path(&self, relative: &Path) -> PathBuf {
         if material::is_source(relative) {
             material::output_path(relative, self.extension)
@@ -552,6 +563,8 @@ impl Recipe {
             timeline::output_path(relative, self.extension)
         } else if dialogue::is_source(relative) {
             dialogue::output_path(relative, self.extension)
+        } else if procedural::is_source(relative) {
+            procedural::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -622,6 +635,13 @@ pub enum CookError {
         /// Boxed, as texture errors are.
         #[source]
         source: Box<MapError>,
+    },
+    #[error("failed to cook procedural texture {}", path.display())]
+    Procedural {
+        path: PathBuf,
+        /// Boxed, as texture errors are.
+        #[source]
+        source: Box<ProceduralError>,
     },
     #[error("cooked mesh from {} is invalid", path.display())]
     Invalid {
@@ -1094,8 +1114,13 @@ fn cook_dir_through(
                     source_relative.with_file_name(file)
                 }
                 Part::Navigation => zone::output_path(&source_relative, recipe.extension),
+                // Beside the tail, by its name: `albedo.mip0.smip`, `brick.color.mip0.smip`.
                 Part::Level { level, .. } => {
-                    let file = format!("{}.mip{level}.{}", file_stem(&source_relative), recipe.extension);
+                    let file = format!(
+                        "{}.mip{level}.{}",
+                        file_stem(&recipe.output_path(&source_relative)),
+                        recipe.extension
+                    );
                     source_relative.with_file_name(file)
                 }
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
@@ -1463,6 +1488,17 @@ struct PlannedPart {
     recipe: Recipe,
 }
 
+/// The `above` levels of the texture `texture` above its tail, cooked with `own` (M5 M3).
+fn texture_levels(texture: AssetId, above: u32, own: Recipe) -> Vec<PlannedPart> {
+    (0..above)
+        .map(|level| PlannedPart {
+            id: TextureLevel::id(texture, level),
+            part: Part::Level { texture, level },
+            recipe: own.texture_level(),
+        })
+        .collect()
+}
+
 /// The sub-assets `asset` cooks to besides its own asset, reading the file where that depends on
 /// what it holds, and saying the hash of what it read in `planned_from`. Its `clips` settings are
 /// checked here, before anything cooks, and a zone's plan is made, from `prefabs`, and left in `zones`.
@@ -1583,14 +1619,11 @@ fn sub_assets(
         }
         // A large texture's levels above its tail, by its header and the cook's format (M5 M3).
         ImportSettings::Texture(settings) => {
-            let above = texture::planned_levels(path, &read()?, settings, cook);
-            Ok((0..above)
-                .map(|level| PlannedPart {
-                    id: TextureLevel::id(meta.id, level),
-                    part: Part::Level { texture: meta.id, level },
-                    recipe: own.texture_level(),
-                })
-                .collect())
+            Ok(texture_levels(meta.id, texture::planned_levels(path, &read()?, settings, cook), own))
+        }
+        // A procedural texture's, by its document's size, as a texture of its map's class.
+        ImportSettings::ProceduralTexture(settings) => {
+            Ok(texture_levels(meta.id, procedural::planned_levels(&read()?, settings, cook), own))
         }
         ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
@@ -2221,12 +2254,13 @@ impl LastSource {
 struct LastTexture(RefCell<Option<(PathBuf, blake3::Hash, Rc<CookedTexture>)>>);
 
 impl LastTexture {
-    /// The chain of the texture source `bytes` read from `path`, cooked for `cook`.
+    /// The chain of the texture or procedural texture source `bytes` read from `path`, cooked for
+    /// `cook`.
     fn cook(
         &self,
         path: &Path,
         bytes: &[u8],
-        settings: &TextureSettings,
+        settings: &ImportSettings,
         cook: Cook,
         memory: &CookMemory,
     ) -> Result<Rc<CookedTexture>, CookError> {
@@ -2238,9 +2272,23 @@ impl LastTexture {
             return Ok(Rc::clone(chain));
         }
         *self.0.borrow_mut() = None;
-        let _held = memory.hold(texture::cook_memory(path, bytes));
-        let chain = texture::cook_chain(path, bytes, settings, cook)
-            .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) })?;
+        let chain = match settings {
+            ImportSettings::Texture(settings) => {
+                let _held = memory.hold(texture::cook_memory(path, bytes));
+                texture::cook_chain(path, bytes, settings, cook).map_err(|source| CookError::Texture {
+                    path: path.to_owned(),
+                    source: Box::new(source),
+                })?
+            }
+            ImportSettings::ProceduralTexture(settings) => {
+                let _held = memory.hold(procedural::cook_memory(bytes));
+                procedural::cook_chain(bytes, settings, cook).map_err(|source| CookError::Procedural {
+                    path: path.to_owned(),
+                    source: Box::new(source),
+                })?
+            }
+            _ => unreachable!("only textures and procedural textures cook a chain"),
+        };
         let chain = Rc::new(chain);
         *self.0.borrow_mut() = Some((path.to_owned(), hash, Rc::clone(&chain)));
         Ok(chain)
@@ -2457,9 +2505,6 @@ fn cook_source(
         }
         Part::Navigation => return cook_navigation(path, assets),
         Part::Level { texture, level } => {
-            let ImportSettings::Texture(settings) = settings else {
-                unreachable!("only textures plan levels");
-            };
             let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
             let level = chain.level(*texture, *level).map_err(|source| CookError::Texture {
                 path: path.to_owned(),
@@ -2516,13 +2561,18 @@ fn cook_source(
             unreachable!("animation sources have their clips and skeleton, and nothing of their own")
         }
         // The texture's own asset is its tail, below the levels it plans as assets of their own (M5 M3).
-        ImportSettings::Texture(settings) => {
+        ImportSettings::Texture(texture) => {
             let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
-            Ok(chain.tail(chain.levels_above(settings)))
+            Ok(chain.tail(chain.levels_above(texture)))
         }
         ImportSettings::CharacterMap(settings) => {
             let _held = assets.memory.hold(map_memory(path, bytes, settings));
             character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
+        }
+        // A procedural texture splits as a texture of its map's class does (M5 M3).
+        ImportSettings::ProceduralTexture(procedural) => {
+            let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
+            Ok(chain.tail(chain.levels_above(&procedural.texture())))
         }
         ImportSettings::Material(_) => material::read(bytes)
             .and_then(|document| material::cook(&document, |id| assets.referenced(id)))
@@ -3097,8 +3147,10 @@ fn source_dependencies(
                 })
                 .collect()
         }
-        // Images, collider and encounter documents, timelines and scripts are self-contained.
+        // Images, procedural textures, collider and encounter documents, timelines and scripts are
+        // self-contained.
         ImportSettings::Texture(_)
+        | ImportSettings::ProceduralTexture(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
         | ImportSettings::Fluent(_)
@@ -3616,7 +3668,8 @@ fn imported_mesh(
         | ImportSettings::Vrma(_)
         | ImportSettings::Zone(_)
         | ImportSettings::Timeline(_)
-        | ImportSettings::Dialogue(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Dialogue(_)
+        | ImportSettings::ProceduralTexture(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 

@@ -1,0 +1,17 @@
+// Fired brick in a running bond, warm and worn. A family the district varies sets from: each set takes its
+// own seed and shifts these colours (`sapphire_pipeline::bench::district`), at its preset's size.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 1,
+        pattern: Blocks((columns: 6, rows: 16, joint: 0.006, stagger: 0.5, bevel: 0.008)),
+        grain: (scale: 16, octaves: 6, depth: 0.25),
+        colors: [(0.0, "#7a4a3c"), (0.5, "#9c624c"), (1.0, "#b8846a")],
+        joint_color: "#5c564e",
+        relief: 0.012,
+        roughness: (0.7, 0.95),
+        specular: 0.15,
+    ),
+)

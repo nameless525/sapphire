@@ -1,0 +1,57 @@
+// A prefab: one storey under a gable, a door between two lattice windows, in five slots the district binds
+// to its texture sets.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {},
+        slots: [
+            (name: "wall", tile: (3.2, 3.2)),
+            (name: "stone", tile: (2.0, 2.0), projection: Box),
+            (name: "roof", tile: (2.0, 2.0)),
+            (name: "wood", tile: (1.5, 1.5)),
+            (name: "paper", tile: (1.0, 1.0)),
+        ],
+        surfaces: [
+            (pieces: ["#*"], material: Some("plaster"), slot: "wall"),
+            (pieces: ["#*"], material: Some("gable"), slot: "wall"),
+            (pieces: ["#*"], material: Some("plinth"), slot: "stone"),
+            (pieces: ["#*"], material: Some("trim"), slot: "stone"),
+            (pieces: ["#*"], material: Some("tiles"), slot: "roof"),
+            (pieces: ["#*"], material: Some("roof_tile"), slot: "roof"),
+            (pieces: ["#*"], material: Some("ridge"), slot: "roof"),
+            (pieces: ["#*"], material: Some("eaves"), slot: "roof"),
+            (pieces: ["#*"], material: Some("timber"), slot: "wood"),
+            (pieces: ["#*"], material: Some("lattice"), slot: "wood"),
+            (pieces: ["#*"], material: Some("door"), slot: "wood"),
+            (pieces: ["#*"], material: Some("boards"), slot: "wood"),
+            (pieces: ["#*"], material: Some("back"), slot: "wood"),
+            (pieces: ["#*"], material: Some("frame"), slot: "wood"),
+            (pieces: ["#*"], material: Some("sign"), slot: "wood"),
+            (pieces: ["#*"], material: Some("window"), slot: "paper"),
+            (pieces: ["#*"], material: Some("paper"), slot: "paper"),
+            (pieces: ["#*"], material: Some("cloth"), slot: "paper"),
+            (pieces: ["#*"], material: Some("valance"), slot: "paper"),
+            (pieces: ["#*"], material: Some("wicker"), slot: "stone"),
+            (pieces: ["#*"], material: Some("pottery"), slot: "stone"),
+            (pieces: ["#*"], material: Some("iron"), slot: "stone"),
+            (pieces: ["#*"], material: Some("produce"), slot: "stone"),
+            (pieces: ["#*"], material: Some("fruit"), slot: "stone"),
+        ],
+        occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
+        place: [
+            (shape: Some(Hall((
+                size: (6.4, 5.0, 3.6),
+                plinth: (height: 0.45, proud: 0.06),
+                posts: Some((width: 0.22, proud: 0.04, bays: (3, 1))),
+                beams: [(at: 3.6, height: 0.26, proud: 0.07)],
+                openings: [
+                    (kind: Door, size: (1.3, 2.4)),
+                    (kind: Window, at: (-2.13, 1.1), size: (1.2, 1.2), lattice: (3, 2)),
+                    (kind: Window, at: (2.13, 1.1), size: (1.2, 1.2), lattice: (3, 2)),
+                ],
+            )))),
+            (shape: Some(Roof((size: (6.4, 5.0), kind: Gable, rise: 2.0, overhang: 0.8, barge: 0.5, sweep: 0.3))), at: (0.0, 3.6, 0.0)),
+        ],
+    ),
+)

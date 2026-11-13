@@ -1,0 +1,21 @@
+// The benchmark's district (M5 B1's placeholder; M5 B2 builds the district): `cells` × `cells` cells around
+// the origin, each with its ground and this block, in texture sets varied from `surfaces/`
+// (`sapphire_pipeline::bench::district`). The budget preset's sets fill the desktop texture pool: 160 sets
+// of three 2K maps with full mips, 16 MiB a set in BC7 and BC5, are 2.5 GiB.
+(
+    type: "sapphire::pipeline::BenchDistrict",
+    version: 1,
+    data: (
+        cell_size: 32.0,
+        block: [
+            (prefab: "house", at: (9.0, 0.0, 9.0)),
+            (prefab: "house", at: (23.0, 0.0, 10.0), turn: 90.0),
+            (prefab: "wall", at: (16.0, 0.0, 25.0)),
+            (prefab: "stall", at: (24.0, 0.0, 24.0), turn: 180.0),
+        ],
+        presets: (
+            ci: (cells: 2, texture_sets: 4, texture_size: 256),
+            budget: (cells: 6, texture_sets: 160, texture_size: 2048),
+        ),
+    ),
+)

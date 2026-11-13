@@ -675,7 +675,7 @@ pub fn import(path: &Path, bytes: &[u8], settings: &TextureSettings) -> Result<S
 /// 2048 × 2048: source and level 0 at 16 bytes each, widened level 0 at 28, largest intermediate at
 /// 14 and result at 7, chain so far at about 5, plus encoder input. The source cook now transfers
 /// level 0's storage; keep the estimate conservative until complete-cook peaks justify a lower one.
-const COOK_BYTES_PER_TEXEL: u64 = 100;
+pub(crate) const COOK_BYTES_PER_TEXEL: u64 = 100;
 
 /// About what cooking the texture source in `bytes` holds at its peak, from its header: nothing if that
 /// doesn't read, since neither will the rest of it.

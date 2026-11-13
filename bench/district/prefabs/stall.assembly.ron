@@ -1,0 +1,53 @@
+// A prefab: a market stall under a tiled awning, jars on its shelves, a lantern hung at its corner.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {},
+        slots: [
+            (name: "wood", tile: (1.5, 1.5)),
+            (name: "roof", tile: (2.0, 2.0)),
+            (name: "goods", tile: (1.0, 1.0), projection: Box),
+        ],
+        surfaces: [
+            (pieces: ["#*"], material: Some("plaster"), slot: "wood"),
+            (pieces: ["#*"], material: Some("gable"), slot: "wood"),
+            (pieces: ["#*"], material: Some("plinth"), slot: "wood"),
+            (pieces: ["#*"], material: Some("trim"), slot: "wood"),
+            (pieces: ["#*"], material: Some("tiles"), slot: "roof"),
+            (pieces: ["#*"], material: Some("roof_tile"), slot: "roof"),
+            (pieces: ["#*"], material: Some("ridge"), slot: "roof"),
+            (pieces: ["#*"], material: Some("eaves"), slot: "roof"),
+            (pieces: ["#*"], material: Some("timber"), slot: "wood"),
+            (pieces: ["#*"], material: Some("lattice"), slot: "wood"),
+            (pieces: ["#*"], material: Some("door"), slot: "wood"),
+            (pieces: ["#*"], material: Some("boards"), slot: "wood"),
+            (pieces: ["#*"], material: Some("back"), slot: "wood"),
+            (pieces: ["#*"], material: Some("frame"), slot: "wood"),
+            (pieces: ["#*"], material: Some("sign"), slot: "wood"),
+            (pieces: ["#*"], material: Some("window"), slot: "goods"),
+            (pieces: ["#*"], material: Some("paper"), slot: "goods"),
+            (pieces: ["#*"], material: Some("cloth"), slot: "roof"),
+            (pieces: ["#*"], material: Some("valance"), slot: "roof"),
+            (pieces: ["#*"], material: Some("wicker"), slot: "goods"),
+            (pieces: ["#*"], material: Some("pottery"), slot: "goods"),
+            (pieces: ["#*"], material: Some("iron"), slot: "goods"),
+            (pieces: ["#*"], material: Some("produce"), slot: "goods"),
+            (pieces: ["#*"], material: Some("fruit"), slot: "goods"),
+        ],
+        place: [
+            (shape: Some(Stall((
+                size: (2.8, 1.7),
+                awning: Tiles((kind: HipGable(0.55), rise: 0.95)),
+                shelves: (count: 2),
+                sign: Some((size: (0.36, 0.62), at: 0.85, drop: 0.08)),
+                goods: [
+                    (kind: Jar, at: (-0.5, 0.0), size: 0.32, count: 3),
+                    (kind: Basket(Empty), at: (0.75, 0.0), size: 0.36),
+                    (kind: Jar, on: Shelf(0), size: 0.25, count: 6),
+                ],
+            )))),
+            (shape: Some(Lantern((size: (0.3, 0.36), sides: 8, mount: Hang(0.12)))), at: (-1.05, 2.16, 0.79)),
+        ],
+    ),
+)

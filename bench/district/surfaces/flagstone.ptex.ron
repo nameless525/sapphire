@@ -1,0 +1,16 @@
+// Grey flagstones, irregular, with dark joints. A family the district varies sets from.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 2,
+        pattern: Stones((cells: 5, joint: 0.008, bevel: 0.01)),
+        grain: (scale: 8, octaves: 7, depth: 0.3),
+        colors: [(0.0, "#6c6e72"), (0.6, "#8e8e8a"), (1.0, "#aaa69c")],
+        joint_color: "#3e3e3c",
+        relief: 0.01,
+        roughness: (0.65, 0.9),
+        specular: 0.25,
+    ),
+)

@@ -1,0 +1,12 @@
+// The benchmark's cast (M5 B1's placeholder; M5 B3 builds the cast): each figure spec in `figures/`, as many
+// copies as a preset says (`sapphire_pipeline::bench::cast`).
+(
+    type: "sapphire::pipeline::BenchCast",
+    version: 1,
+    data: (
+        presets: (
+            ci: (copies: 1),
+            budget: (copies: 2),
+        ),
+    ),
+)

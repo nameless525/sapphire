@@ -1,0 +1,15 @@
+// Whitewashed plaster, soft and mottled. A family the district varies sets from.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 3,
+        pattern: Plain,
+        grain: (scale: 4, octaves: 8, depth: 0.15),
+        colors: [(0.0, "#c8bea8"), (0.5, "#e0d8c6"), (1.0, "#f0eadc")],
+        relief: 0.004,
+        roughness: (0.8, 1.0),
+        specular: 0.08,
+    ),
+)

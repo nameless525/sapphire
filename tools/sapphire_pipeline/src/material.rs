@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::{CacheKey, Dependency, Stage};
 use crate::character_maps::MapKind;
 use crate::meta::ImportSettings;
+use crate::procedural::SurfaceMap;
 use crate::texture::TextureClass;
 
 /// Reading the document, as cache keys know it. Bump the version whenever its output changes
@@ -83,7 +84,8 @@ pub enum TextureKind {
 
 impl TextureKind {
     /// What an asset imported with `settings` cooks as, if a texture: a texture source by its
-    /// class, an anime character map document (A7) by the class its generated map cooks as.
+    /// class, an anime character map document (A7) or a procedural texture (M5 B1) by the class its
+    /// generated map cooks as.
     pub fn of(settings: &ImportSettings) -> Option<Self> {
         Some(match settings {
             ImportSettings::Texture(settings) => match settings.class {
@@ -100,6 +102,11 @@ impl TextureKind {
                 MapKind::Ramp => Self::Ramp,
                 MapKind::Ilm => Self::Ilm,
                 MapKind::LayerMask => Self::Mask,
+            },
+            ImportSettings::ProceduralTexture(settings) => match settings.map {
+                SurfaceMap::Color => Self::Color,
+                SurfaceMap::Normal => Self::Normal,
+                SurfaceMap::Mask => Self::Mask,
             },
             ImportSettings::Gltf(_)
             | ImportSettings::Fbx(_)
@@ -333,5 +340,14 @@ mod tests {
             ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) });
         assert_eq!(TextureKind::of(&color), Some(TextureKind::Color));
         assert_eq!(TextureKind::of(&ImportSettings::Material(MaterialSettings::default())), None);
+    }
+
+    #[test]
+    fn procedural_maps_count_as_the_textures_they_cook_to() {
+        use crate::procedural::ProceduralSettings;
+        let kind = |map| TextureKind::of(&ImportSettings::ProceduralTexture(ProceduralSettings { map }));
+        assert_eq!(kind(SurfaceMap::Color), Some(TextureKind::Color));
+        assert_eq!(kind(SurfaceMap::Normal), Some(TextureKind::Normal));
+        assert_eq!(kind(SurfaceMap::Mask), Some(TextureKind::Mask));
     }
 }

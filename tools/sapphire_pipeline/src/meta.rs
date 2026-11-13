@@ -65,6 +65,9 @@
 //!
 //! UI documents (`menu.ui.ron`, M3 U4) have `importer: Ui(())`.
 //!
+//! Procedural textures (`bricks.normal.ptex.ron`, M5 B1) have `importer: ProceduralTexture((map: Normal))`:
+//! which of the surface's maps the source cooks to ([`crate::procedural`]).
+//!
 //! Fonts (`.ttf`, `.otf`, M3 U3) have `importer: Font((…))`, saying their license and the packs they
 //! go in, and a new font's sidecar has neither, so its cook asks ([`crate::font`]). Font chains
 //! documents (`ui.fontchains.ron`) have `importer: FontChains(())`.
@@ -155,6 +158,7 @@ use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
+use crate::procedural::{self, ProceduralSettings};
 use crate::script::{self, ScriptSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 use crate::timeline::{self, TimelineSettings};
@@ -270,6 +274,9 @@ pub enum ImportSettings {
     Timeline(TimelineSettings),
     /// A dialogue document (`.dialogue.ron`, M3 Q2).
     Dialogue(DialogueSettings),
+    /// A procedural texture (`.ptex.ron`): a surface the cook rasterizes, cooked as the map its settings
+    /// name (M5 B1).
+    ProceduralTexture(ProceduralSettings),
 }
 
 impl ImportSettings {
@@ -310,6 +317,9 @@ impl ImportSettings {
         }
         if dialogue::is_source(source) {
             return Some(Self::Dialogue(DialogueSettings::default()));
+        }
+        if procedural::is_source(source) {
+            return Some(Self::ProceduralTexture(ProceduralSettings::default()));
         }
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
@@ -399,7 +409,8 @@ impl ImportSettings {
             | Self::Vrma(_)
             | Self::Zone(_)
             | Self::Timeline(_)
-            | Self::Dialogue(_) => None,
+            | Self::Dialogue(_)
+            | Self::ProceduralTexture(_) => None,
         }
     }
 
@@ -433,7 +444,8 @@ impl ImportSettings {
             | Self::Vrma(_)
             | Self::Zone(_)
             | Self::Timeline(_)
-            | Self::Dialogue(_) => None,
+            | Self::Dialogue(_)
+            | Self::ProceduralTexture(_) => None,
         }
     }
 

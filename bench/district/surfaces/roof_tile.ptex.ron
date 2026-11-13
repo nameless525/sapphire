@@ -1,0 +1,16 @@
+// Glazed roof tiles in courses, slate blue-grey. A family the district varies sets from.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 5,
+        pattern: Blocks((columns: 8, rows: 10, joint: 0.005, stagger: 0.5, bevel: 0.02)),
+        grain: (scale: 16, octaves: 5, depth: 0.2),
+        colors: [(0.0, "#3c4654"), (0.5, "#4e5a6a"), (1.0, "#64707e")],
+        joint_color: "#22262c",
+        relief: 0.016,
+        roughness: (0.35, 0.7),
+        specular: 0.6,
+    ),
+)

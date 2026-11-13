@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail};
 use sapphire_pipeline::bake::OutlineSettings;
+use sapphire_pipeline::bench::{self, Preset};
 use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
@@ -22,6 +23,7 @@ use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
+use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
 use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
 
@@ -45,6 +47,11 @@ Usage:
       Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
       tools/figures) under the content directory --out, in the folder each spec names. Missing
       files only, as gen-samples, unless --force.
+  sapphire_pipeline gen-bench --bench <DIR> --preset <PRESET> --out <DIR>
+      Write the benchmark's sources that the documents under --bench (bench/) describe, at a preset's
+      scale (ci or budget), each with its sidecar, into --out: a source tree for a cook under target/,
+      never committed. Files an earlier run left in --out that this one doesn't write are removed;
+      --out must be empty or a tree gen-bench wrote.
   sapphire_pipeline icons --source <PNG> --out <DIR>
       Make every platform's icon set from a square, opaque master of at least 1024 px under DIR:
       Apple's asset catalogs (ios/, macos/), Android's adaptive icon and Play's listing icon
@@ -64,9 +71,10 @@ Usage:
       bind textures; --all extracts every material. Never overwrites a file, and keeps the
       materials the sidecar already binds.
   sapphire_pipeline bake-map <DOCUMENT> <OUTPUT>
-      Generate the map a .facesdf.ron, .ramp.ron or .ilm.ron document describes, with the
-      settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
-      compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps.
+      Generate the map a .facesdf.ron, .ramp.ron, .ilm.ron or .ptex.ron document describes, with
+      the settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
+      compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps and a
+      procedural texture's colour, 8-bit linear for its normal and mask (colour without a sidecar).
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
                          [--cache <DIR>] [--locked] [--editor]
       Cook every source asset under --source (skipping hidden entries, and sources whose
@@ -143,6 +151,11 @@ enum Command {
         specs: PathBuf,
         out: PathBuf,
         force: bool,
+    },
+    GenBench {
+        bench: PathBuf,
+        preset: Preset,
+        out: PathBuf,
     },
     Icons {
         source: PathBuf,
@@ -232,6 +245,21 @@ fn run(command: Command) -> anyhow::Result<()> {
                 format!("failed to write the figures from {} to {}", specs.display(), out.display())
             })?;
             print_generated(&generated, "gen-figures");
+        }
+        Command::GenBench { bench, preset, out } => {
+            let generated = bench::generate(&bench, preset, &out).with_context(|| {
+                format!(
+                    "failed to generate the {preset} benchmark from {} into {}",
+                    bench.display(),
+                    out.display()
+                )
+            })?;
+            eprintln!(
+                "gen-bench: {preset} into {}: {} written, {} unchanged",
+                out.display(),
+                generated.created.len() + generated.replaced.len(),
+                generated.unchanged.len()
+            );
         }
         Command::Icons { source, out } => {
             let written = icon::write_sets(&source, &out)?;
@@ -380,6 +408,21 @@ fn print_generated(generated: &Generated, command: &str) {
 /// Generates the map the document at `input` describes and writes it to `output` as a PNG.
 fn bake_map(input: &Path, output: &Path) -> anyhow::Result<()> {
     let sidecar = meta::sidecar_path(input);
+    if procedural::is_source(input) {
+        let map = if sidecar.exists() {
+            match meta::read(&sidecar)?.importer {
+                ImportSettings::ProceduralTexture(settings) => settings.map,
+                _ => bail!("{} isn't a procedural texture's sidecar", sidecar.display()),
+            }
+        } else {
+            SurfaceMap::Color
+        };
+        let bytes = std::fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
+        let surface =
+            ProceduralTexture::read(&bytes).with_context(|| format!("failed to read {}", input.display()))?;
+        let png = procedural::to_png(&surface.rasterize(map), map).context("failed to encode the PNG")?;
+        return write_png(output, &png);
+    }
     let settings = if sidecar.exists() {
         match meta::read(&sidecar)?.importer {
             ImportSettings::CharacterMap(settings) => settings,
@@ -396,6 +439,10 @@ fn bake_map(input: &Path, output: &Path) -> anyhow::Result<()> {
     let map = character_maps::generate(input, &bytes, &settings)
         .with_context(|| format!("failed to generate the map {} describes", input.display()))?;
     let png = character_maps::to_png(&map).context("failed to encode the PNG")?;
+    write_png(output, &png)
+}
+
+fn write_png(output: &Path, png: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     }
@@ -499,6 +546,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             specs: options.required("--specs")?,
             out: options.required("--out")?,
             force: options.flag("--force"),
+        },
+        "gen-bench" => Command::GenBench {
+            bench: options.required("--bench")?,
+            preset: options.required("--preset")?,
+            out: options.required("--out")?,
         },
         "icons" => Command::Icons { source: options.required("--source")?, out: options.required("--out")? },
         "cook-mesh" => {
@@ -628,6 +680,11 @@ mod tests {
             parse(&["gen-samples", "--force", "--out", "dir"]).unwrap(),
             Command::GenSamples { out: "dir".into(), force: true }
         );
+        assert_eq!(
+            parse(&["gen-bench", "--bench", "bench", "--preset", "budget", "--out", "src"]).unwrap(),
+            Command::GenBench { bench: "bench".into(), preset: Preset::Budget, out: "src".into() }
+        );
+        assert!(parse(&["gen-bench", "--bench", "bench", "--preset", "huge", "--out", "src"]).is_err());
         assert_eq!(
             parse(&["gen-lookdev", "--out", "dir"]).unwrap(),
             Command::GenLookdev { out: "dir".into(), force: false }

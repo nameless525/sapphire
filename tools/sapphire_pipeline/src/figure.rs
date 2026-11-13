@@ -56,10 +56,10 @@
 //!
 //! # Determinism
 //!
-//! Two runs on one machine write the same bytes, which `generating_twice_is_byte_identical` holds.
-//! Rings are placed by `sin` and `cos`, which go through each platform's C library, so another OS
-//! or architecture can write numbers an ulp or two apart: the committed files are compared within
-//! 1e-5 (positions in metres, weights, UVs) and normals as directions, never byte for byte.
+//! Every machine writes the same bytes. Rings are placed by `det::sin_cos`, joint rotations come
+//! from `det::quat_from_mat3` and colours go through `det::pow`, so nothing reaches a platform's C
+//! library or glam's SIMD backends. `generating_twice_is_byte_identical` holds one machine to itself,
+//! and `the_committed_figures_are_generated` holds every OS CI tests to the committed bytes.
 
 pub mod build;
 pub mod paint;

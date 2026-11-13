@@ -319,7 +319,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
         | ImportSettings::Zone(_)
-        | ImportSettings::Timeline(_) => {
+        | ImportSettings::Timeline(_)
+        | ImportSettings::ProceduralTexture(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

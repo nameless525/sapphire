@@ -1,0 +1,93 @@
+// The cast's stand-in (M5 B1): a plain figure that proves a spec reaches the benchmark's cook, until M5 B3's
+// cast. 1.6 m tall in a T-pose, facing +Z, its left toward +X, with KayKit's joint names. The cast writes it
+// under its own folder, so `dir` here is replaced (`sapphire_pipeline::bench::cast`).
+(
+    type: "sapphire::pipeline::Figure",
+    version: 1,
+    data: (
+        dir: "cast/stand_in",
+        name: "stand_in",
+        max_triangles: 4000,
+        joints: [
+            (name: "root", at: (0.0, 0.0, 0.0), aim: Some((0.0, 1.0, 0.0))),
+            (name: "hips", parent: Some("root"), at: (0.0, 0.88, 0.0)),
+            (name: "spine", parent: Some("hips"), at: (0.0, 0.98, 0.0)),
+            (name: "chest", parent: Some("spine"), at: (0.0, 1.14, 0.0)),
+            (name: "head", parent: Some("chest"), at: (0.0, 1.38, 0.0), aim: Some((0.0, 1.6, 0.0))),
+            (name: "upperarm.l", parent: Some("chest"), at: (0.17, 1.32, 0.0)),
+            (name: "lowerarm.l", parent: Some("upperarm.l"), at: (0.43, 1.32, 0.0)),
+            (name: "hand.l", parent: Some("lowerarm.l"), at: (0.67, 1.32, 0.0), aim: Some((0.8, 1.32, 0.0))),
+            (name: "upperarm.r", parent: Some("chest"), at: (-0.17, 1.32, 0.0)),
+            (name: "lowerarm.r", parent: Some("upperarm.r"), at: (-0.43, 1.32, 0.0)),
+            (name: "hand.r", parent: Some("lowerarm.r"), at: (-0.67, 1.32, 0.0), aim: Some((-0.8, 1.32, 0.0))),
+            (name: "upperleg.l", parent: Some("hips"), at: (0.09, 0.86, 0.0)),
+            (name: "lowerleg.l", parent: Some("upperleg.l"), at: (0.09, 0.47, 0.01)),
+            (name: "foot.l", parent: Some("lowerleg.l"), at: (0.09, 0.08, 0.0), aim: Some((0.09, 0.03, 0.15))),
+            (name: "upperleg.r", parent: Some("hips"), at: (-0.09, 0.86, 0.0)),
+            (name: "lowerleg.r", parent: Some("upperleg.r"), at: (-0.09, 0.47, 0.01)),
+            (name: "foot.r", parent: Some("lowerleg.r"), at: (-0.09, 0.08, 0.0), aim: Some((-0.09, 0.03, 0.15))),
+        ],
+        regions: [
+            // 0: a jacket, slate blue, lighter at the shoulders.
+            (name: "cloth", albedo: [(0.0, "#6a7ca8"), (1.0, "#34405e")], shadow_bias: 0.55),
+            // 1: skin.
+            (name: "skin", albedo: [(0.0, "#f6e2d4"), (1.0, "#e2c2ae")], specular: 0.2, specular_size: 0.3),
+            // 2: ink: hair, trousers and shoes, with a soft sheen.
+            (name: "ink", albedo: [(0.0, "#3a3a4a"), (1.0, "#16161e")], specular: 0.35, specular_size: 0.45),
+        ],
+        shapes: [
+            Loft((
+                region: "skin", bones: ["head"], sides: 12,
+                from: (0.0, 1.38, 0.0), to: (0.0, 1.6, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.04, 0.04)),
+                    (at: 0.2, radius: (0.075, 0.085)),
+                    (at: 0.6, radius: (0.09, 0.1)),
+                    (at: 0.95, radius: (0.05, 0.055)),
+                    (at: 1.0, radius: (0.01, 0.01)),
+                ],
+            )),
+            Loft((
+                region: "ink", bones: ["head"], sides: 10,
+                from: (0.0, 1.44, -0.01), to: (0.0, 1.62, -0.01),
+                rings: [
+                    (at: 0.0, radius: (0.085, 0.095)),
+                    (at: 0.6, radius: (0.098, 0.108)),
+                    (at: 1.0, radius: (0.05, 0.055)),
+                ],
+                arc: Some((-15.0, 195.0)), thickness: 0.02,
+            )),
+            Loft((
+                region: "cloth", bones: ["hips", "spine", "chest"], blend: 0.08, sides: 12,
+                from: (0.0, 0.84, 0.0), to: (0.0, 1.38, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.15, 0.1)),
+                    (at: 0.35, radius: (0.14, 0.095)),
+                    (at: 0.75, radius: (0.18, 0.11)),
+                    (at: 0.92, radius: (0.12, 0.08)),
+                    (at: 1.0, radius: (0.045, 0.045)),
+                ],
+            )),
+            Loft((
+                region: "cloth", bones: ["upperarm.l", "lowerarm.l"], mirror: true, sides: 8,
+                from: (0.15, 1.32, 0.0), to: (0.67, 1.32, 0.0),
+                rings: [(at: 0.0, radius: (0.05, 0.05)), (at: 0.5, radius: (0.042, 0.042)), (at: 1.0, radius: (0.036, 0.036))],
+            )),
+            Loft((
+                region: "skin", bones: ["hand.l"], mirror: true, sides: 8,
+                from: (0.67, 1.32, 0.0), to: (0.78, 1.32, 0.0),
+                rings: [(at: 0.0, radius: (0.03, 0.024)), (at: 0.6, radius: (0.038, 0.018)), (at: 1.0, radius: (0.02, 0.012))],
+            )),
+            Loft((
+                region: "ink", bones: ["upperleg.l", "lowerleg.l"], mirror: true, sides: 8,
+                from: (0.09, 0.88, 0.0), to: (0.09, 0.08, 0.0),
+                rings: [(at: 0.0, radius: (0.075, 0.075)), (at: 0.5, radius: (0.05, 0.05)), (at: 1.0, radius: (0.04, 0.04))],
+            )),
+            Loft((
+                region: "ink", bones: ["foot.l"], mirror: true, sides: 8,
+                from: (0.09, 0.05, -0.04), to: (0.09, 0.04, 0.16),
+                rings: [(at: 0.0, radius: (0.045, 0.04)), (at: 0.7, radius: (0.05, 0.035)), (at: 1.0, radius: (0.03, 0.02))],
+            )),
+        ],
+    ),
+)

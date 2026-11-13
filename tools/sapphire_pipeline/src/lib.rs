@@ -35,6 +35,8 @@
 //! - [`character_maps`]: the anime character maps, generated from RON documents and cooked
 //!   as textures: SDF face maps from threshold masks, ramps from color stops, and ILM maps and
 //!   layer masks (M1 C7) packed from separate masks or color textures' channels.
+//! - [`procedural`]: procedural textures (`.ptex.ron`, M5 B1), a tiling surface of blocks or stones
+//!   described in a few lines, rasterized at cook as its colour, normal or mask map.
 //! - [`material`]: material documents (`.material.ron`) cooked to
 //!   [`Material`](sapphire_assets::material::Material)s, checked against the textures (and
 //!   character maps) they reference, whose swizzles they record.
@@ -62,6 +64,8 @@
 //!   masks.
 //! - [`figure`]: figures built from specs (M3 C2): an enemy's skinned model and the maps its
 //!   material reads, from `tools/figures/`.
+//! - [`bench`](mod@bench): the benchmark's content (M5 B1), a source tree generated from `bench/`'s documents at a
+//!   preset's scale for a cook under `target/`, never committed and never shipped.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
 //!   mannequin, the shader swatches' maps and materials, the face test head with its face
 //!   maps and material, the sky's maps and material, the environment's courtyard with its
@@ -117,6 +121,7 @@ pub mod anim_graph;
 pub mod assembly;
 pub mod audio;
 pub mod bake;
+pub mod bench;
 pub mod cache;
 pub mod character_maps;
 pub mod clip;
@@ -149,6 +154,7 @@ pub mod nav;
 pub mod optimize;
 pub mod pack;
 pub mod probes;
+pub mod procedural;
 pub mod release;
 pub mod samples;
 pub mod script;

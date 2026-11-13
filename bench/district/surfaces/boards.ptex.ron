@@ -1,0 +1,16 @@
+// Timber boards, long and staggered, oiled brown. A family the district varies sets from.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 4,
+        pattern: Blocks((columns: 2, rows: 8, joint: 0.004, stagger: 0.25, bevel: 0.004)),
+        grain: (scale: 32, octaves: 5, depth: 0.35),
+        colors: [(0.0, "#5a3e2a"), (0.5, "#7a563a"), (1.0, "#96704c")],
+        joint_color: "#2e2218",
+        relief: 0.006,
+        roughness: (0.5, 0.85),
+        specular: 0.3,
+    ),
+)

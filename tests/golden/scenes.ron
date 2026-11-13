@@ -3561,6 +3561,46 @@
                 args: ["--ui-game", "notice", "--ui-locale", "ja", "--ui-text", "larger"],
                 ci_seconds: (lavapipe: 0.6, warp: 1.7),
             ),
+            // The effects pack (M5 L9), each held on `lookdev-town-hero`'s golden hour. The desaturation: the
+            // pavilion, the wall and the sky in grey at their own light, the character in color through the
+            // character mask, outlines and all.
+            (
+                name: "effects-desaturation-keeps-characters",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--post-effect", "desaturation@0.3"],
+            ),
+            // The halftone: ink dots on a turned grid, as large as the world is dark, over the world behind the
+            // character, whose lines and two-tone shading stay clean.
+            (
+                name: "effects-halftone",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--post-effect", "halftone@0.3"],
+            ),
+            // A flash a tenth of a second in, falling away: the whole frame pale and warm.
+            (
+                name: "effects-flash",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--post-effect", "flash@0.1"],
+            ),
+            // The glitch: bands torn sideways by whole pixels, red and blue read apart, the same on every
+            // frame it's held.
+            (
+                name: "effects-glitch",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--post-effect", "glitch@0.1"],
+            ),
+            // The CRT: scanlines and the grille's stripes over the whole frame, its corners rounded, the
+            // character's outlines still sharp through them.
+            (
+                name: "effects-crt",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--post-effect", "crt@0.5"],
+            ),
         ],
     ),
 )

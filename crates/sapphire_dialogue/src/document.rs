@@ -11,9 +11,10 @@
 //!         opens_on: "court_entered",
 //!         nodes: [
 //!             // A line, and the node after it. Keys are `sapphire_loc`'s, never text, and under
-//!             // `dialogue-`, which is what a panel reads.
+//!             // `dialogue-`, which is what a panel reads. `vo` is a key of the voice lines' document, and
+//!             // `mouth` (M5 C6) the role whose mouth that voice moves.
 //!             (name: "greet", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-greet",
-//!              vo: "guide_greet"), next: "ask"),
+//!              vo: "guide_greet", mouth: "foe"), next: "ask"),
 //!             // A line and up to four choices. Each shows only while its `when` holds, and one of them
 //!             // has no `when`, so a player is never left with nothing to pick.
 //!             (name: "ask", say: (speaker: "dialogue-guide-name", line: "dialogue-guide-ask"), choices: [
@@ -89,7 +90,7 @@ pub struct DialogueDocument {
 
 impl Versioned for DialogueDocument {
     /// 1: M3 Q2, with `opens_on` since M3 Q2b, which a document without needn't say. 2: M5 C5's faces on a
-    /// line, which default to none, so a version 1 document decodes as it is.
+    /// line, and M5 C6's mouth, which default to none, so a version 1 document decodes as it is.
     const VERSION: u32 = 2;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
@@ -133,13 +134,18 @@ pub struct NodeDocument {
 pub struct SayDocument {
     pub speaker: String,
     pub line: String,
-    /// A voice line's cue, by name.
+    /// What it's voiced by: a key of the voice lines' document (`guide_greet`), played in the player's
+    /// voice language as the line's shown and cut as it goes (M5 C6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vo: Option<String>,
     /// Faces the line sets as it's shown (M5 C5), each held until a later line sets that role's again or
     /// the conversation ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faces: Vec<SayFace>,
+    /// Whose mouth its voice moves (M5 C6), as a timeline's track names them: the voice's cooked mouth
+    /// curve, read where the voice has got to. Only a voiced line has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouth: Option<String>,
 }
 
 /// An expression a line sets on a character's face, as a timeline's face key does.
@@ -291,6 +297,21 @@ pub(crate) fn check_faces(
                 format!("{blend} is outside 0 to {MAX_FACE_BLEND}"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// A line's mouth (M5 C6): a role by name, on a line with a voice to move it.
+pub(crate) fn check_mouth(
+    field: impl Fn() -> String,
+    voiced: bool,
+    named: bool,
+) -> Result<(), DialogueError> {
+    if !voiced {
+        return Err(DialogueError::invalid(field(), "a line with no `vo` has no voice to move a mouth"));
+    }
+    if !named {
+        return Err(DialogueError::invalid(field(), format!("a name is 1 to {MAX_KEY} bytes")));
     }
     Ok(())
 }
@@ -527,6 +548,9 @@ fn cook_node(
     if let Some(vo) = &say.vo {
         check_cue(|| at("say.vo"), vo)?;
     }
+    if let Some(mouth) = &say.mouth {
+        check_mouth(|| at("say.mouth"), say.vo.is_some(), (1..=MAX_KEY).contains(&mouth.len()))?;
+    }
     let effect = gathered.effect(resolved.writes(&at("set"), &node.set)?);
     if node.next.is_some() && !node.choices.is_empty() {
         return Err(DialogueError::invalid(at("next"), "a node with choices goes where they lead"));
@@ -577,7 +601,13 @@ fn cook_node(
             blend: face.blend,
         })
         .collect();
-    let say = CookedSay { speaker: say.speaker.clone(), line: say.line.clone(), vo: say.vo.clone(), faces };
+    let say = CookedSay {
+        speaker: say.speaker.clone(),
+        line: say.line.clone(),
+        vo: say.vo.clone(),
+        faces,
+        mouth: say.mouth.as_deref().map(|role| Name::new(role).as_u64()),
+    };
     Ok(CookedNode { name, say: Some(say), effect, next, choices, branch: Vec::new(), otherwise: None })
 }
 

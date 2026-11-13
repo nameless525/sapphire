@@ -370,6 +370,7 @@ fn solving_ik_allocates_nothing_once_it_is_made() {
 #[test]
 fn a_face_allocates_nothing_once_it_is_bound() {
     use sapphire_anim::face::{FaceLayer, FaceOrder, Mouth};
+    use sapphire_assets::mouth::{MouthCurve, MouthFrame};
     use sapphire_assets::rig::{Expression, ExpressionOverride, ExpressionPreset, MorphTargetWeight};
     use sapphire_core::Name;
 
@@ -394,6 +395,9 @@ fn a_face_allocates_nothing_once_it_is_bound() {
     let rig = CharacterRig::read(&bytes).unwrap();
     let mut face = FaceLayer::new(rig, 4, Some((ExpressionPreset::Happy, 0.3))).unwrap();
     let names = [Name::new("happy"), Name::new("angry"), Name::new("aa"), Name::new("blink")];
+    // A voice's cooked mouth, read at its playhead as a conversation's line drives it (M5 C6).
+    let frames = (0..=120_u8).map(|frame| MouthFrame { open: frame * 2, visemes: [frame * 2, 0, 0, 0, 0] });
+    let curve = MouthCurve { frames: frames.collect() };
     let mut weights = [0.0_f32; 4];
     let (sum, counts) = alloc::count_in_scope(|| {
         let mut sum = 0.0;
@@ -410,7 +414,11 @@ fn a_face_allocates_nothing_once_it_is_bound() {
                     since: 0.0,
                 });
             }
-            face.set_mouth(Mouth::open((frame % 7) as f32 / 7.0));
+            face.set_mouth(if frame < 120 {
+                Mouth::said(curve.at(frame as f32 / 60.0))
+            } else {
+                Mouth::open((frame % 7) as f32 / 7.0)
+            });
             face.advance(1.0 / 60.0);
             weights = [0.3, 0.0, 0.0, 0.5];
             face.apply(&mut weights);

@@ -7,11 +7,16 @@
 //! or a conversation that holds the simulation, so a face changes while the fight stands still. None of this
 //! reaches the simulation: a fighter's morphs are drawn with its face over them, and its pose's own stay the
 //! simulation's.
+//!
+//! A voiced line moves one face's mouth (M5 C6): the role its `mouth` names gets the voice's cooked mouth
+//! curve, read where the audio system says the voice has got to. A pause holds the voice and so the mouth; a
+//! line cut by the next, or by the conversation's end, shuts it, as does a voice that has run out.
 
-use sapphire_anim::{FaceLayer, FaceOrder};
+use sapphire_anim::{FaceLayer, FaceOrder, Mouth};
 use sapphire_core::Name;
 use sapphire_dialogue::DialogueView;
 use sapphire_sequencer::FaceCue;
+use sapphire_stage::audio::Said;
 use sapphire_timeline::DEFAULT_FACE_BLEND;
 
 /// Set in a timeline's orders' keys, and in a conversation's, so that no key of one is ever the other's.
@@ -42,12 +47,14 @@ pub(crate) fn drive(face: &mut FaceLayer, dt: f32, order: Option<FaceOrder>) {
     }
 }
 
-/// The faces the open conversation's lines have set, by role.
+/// The faces the open conversation's lines have set, by role, and whose mouth the line shown moves.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DialogueFaces {
     held: [Option<(Name, FaceOrder)>; HELD],
     /// The line they were last followed at, by the runner's count of lines shown.
     line: Option<u64>,
+    /// The role the line shown names for its voice's mouth (M5 C6), and that line, by the same count.
+    mouth: Option<(Name, u64)>,
 }
 
 impl DialogueFaces {
@@ -62,6 +69,7 @@ impl DialogueFaces {
             return;
         }
         self.line = Some(lines_shown);
+        self.mouth = view.mouth.map(|role| (Name::from_u64(role), lines_shown));
         for (index, face) in view.faces.iter().enumerate() {
             let role = Name::from_u64(face.role);
             let order = FaceOrder {
@@ -85,6 +93,16 @@ impl DialogueFaces {
     pub(crate) fn held(&self) -> impl Iterator<Item = (Name, FaceOrder)> + '_ {
         self.held.iter().flatten().copied()
     }
+
+    /// The role whose mouth moves, and how (M5 C6): the line shown's role, with `said`'s mouth if the voice
+    /// speaking is that line's, and shut if it isn't, or there's none, as before it starts, after it ends, or
+    /// with no audio device. Every other face's mouth is shut.
+    pub(crate) fn mouth(&self, said: Option<Said>) -> Option<(Name, Mouth)> {
+        let (role, line) = self.mouth?;
+        let mouth =
+            said.filter(|said| said.serial == line).map_or(Mouth::CLOSED, |said| Mouth::said(said.mouth));
+        Some((role, mouth))
+    }
 }
 
 #[cfg(test)]
@@ -94,7 +112,7 @@ mod tests {
     use super::*;
 
     fn view(faces: &[CookedFace]) -> DialogueView<'_> {
-        DialogueView { speaker: "", line: "", vo: None, faces, choices: [None; 4], next: true }
+        DialogueView { speaker: "", line: "", vo: None, faces, mouth: None, choices: [None; 4], next: true }
     }
 
     fn face(role: &str, expression: &str) -> CookedFace {
@@ -127,6 +145,28 @@ mod tests {
         assert_eq!(faces.held().count(), 2);
         faces.follow(None, 3);
         assert_eq!(faces.held().count(), 0);
+    }
+
+    /// M5 C6: the mouth is the line shown's, and only its own voice's opens it.
+    #[test]
+    fn a_lines_voice_moves_only_its_roles_mouth_and_only_its_own() {
+        use sapphire_assets::mouth::MouthSample;
+        let open = MouthSample { open: 1.0, visemes: [0.8, 0.0, 0.0, 0.0, 0.2] };
+        let said = |serial| Some(Said { serial, mouth: open });
+        let mut faces = DialogueFaces::default();
+        let voiced = |mouth| DialogueView { mouth, ..view(&[]) };
+        faces.follow(Some(&voiced(Some(Name::new("foe").as_u64()))), 1);
+        assert_eq!(faces.mouth(said(1)), Some((Name::new("foe"), Mouth::said(open))));
+        // The line before's voice, a voice that's ended, or none: shut.
+        for heard in [said(0), None] {
+            assert_eq!(faces.mouth(heard), Some((Name::new("foe"), Mouth::CLOSED)));
+        }
+        // A line that names no mouth, or a conversation's end, moves none.
+        faces.follow(Some(&voiced(None)), 2);
+        assert_eq!(faces.mouth(said(2)), None);
+        faces.follow(Some(&voiced(Some(Name::new("foe").as_u64()))), 3);
+        faces.follow(None, 3);
+        assert_eq!(faces.mouth(said(3)), None);
     }
 
     #[test]

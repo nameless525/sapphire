@@ -46,7 +46,7 @@ use sapphire_platform::{AppInitError, ContentFs, Event, GamepadEvent, Os, Timest
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
-use sapphire_stage::audio::CueSounds;
+use sapphire_stage::audio::{CueSounds, Said};
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{ContentChanges, FrameLaps, SceneShow};
@@ -274,14 +274,21 @@ impl GameShow {
     }
 
     /// What the fight's cues ask of an app's audio this frame, with the score's phase the flow's where it has a
-    /// say ([`Self::music_phase`]): what the app's audio takes after the frame's steps.
+    /// say ([`Self::music_phase`]) and the open conversation's voice, held by a pause (M5 C6): what the app's
+    /// audio takes after the frame's steps.
     #[must_use]
     pub fn cue_sounds(&self) -> CueSounds<'_> {
-        let mut sounds = self.shown.fight.show.cue_sounds();
+        let mut sounds = self.shown.fight.cue_sounds(self.controls.is_paused());
         if let Some(phase) = self.music_phase() {
             sounds.music_phase = Some(phase);
         }
         sounds
+    }
+
+    /// What the app's audio said this frame, after it took [`Self::cue_sounds`] (M5 C6): the voice's mouth,
+    /// for the fighters' faces.
+    pub fn hear(&mut self, said: Option<Said>) {
+        self.shown.fight.hear(said);
     }
 
     /// The run a game stands first, behind its title: what [`Self::stand`] takes. Nothing for a show with no

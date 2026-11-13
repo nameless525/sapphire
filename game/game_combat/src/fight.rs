@@ -16,7 +16,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use sapphire_anim::FootContact;
-use sapphire_anim::{AnimStats, Skeleton};
+use sapphire_anim::{AnimStats, Mouth, Skeleton};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::{AssetId, Handle};
 #[cfg(feature = "dev")]
@@ -62,7 +62,7 @@ use crate::playable;
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
 use sapphire_stage::animate::{self, ClipPlayer};
-use sapphire_stage::audio::CueSounds;
+use sapphire_stage::audio::{CueSounds, Said};
 use sapphire_stage::content::{Content, GraphKey};
 use sapphire_stage::{FrameLaps, HeldWeapon, PlayableLook, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
@@ -501,6 +501,8 @@ pub struct FightShow {
     timeline_generation: u32,
     /// The faces the open conversation's lines have set (M5 C5).
     dialogue_faces: DialogueFaces,
+    /// What the audio said this frame: a conversation's voice and its mouth (M5 C6).
+    said: Option<Said>,
     /// How much of the screen effects shows, as the player's flashes and camera motion say (M4 A2).
     effect_scale: EffectScale,
 }
@@ -1056,6 +1058,12 @@ impl FightShow {
         self.dialogue_faces.follow(view, lines_shown);
     }
 
+    /// What the audio said this frame (M5 C6): the conversation's voice, whose mouth the role its line names
+    /// takes as the fighters are next animated. None, as with no audio device, shuts every mouth.
+    pub fn hear(&mut self, said: Option<Said>) {
+        self.said = said;
+    }
+
     /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
     /// The camera blends back from its next frame.
     /// A move's cinematic says no: `None`, as with nothing playing.
@@ -1553,6 +1561,7 @@ impl FightShow {
         let mut stats = AnimStats::default();
         let timeline = self.timeline.as_ref();
         let (generation, dialogue_faces) = (self.timeline_generation, &self.dialogue_faces);
+        let mouth = dialogue_faces.mouth(self.said);
         let face_dt = std::mem::take(&mut self.face_dt);
         let held_ticks = self.held_ticks;
         let kinds = &self.assets.kinds;
@@ -1589,6 +1598,10 @@ impl FightShow {
                         .map(|(_, order)| order)
                 };
                 faces::drive(face, face_dt, order.or_else(said));
+                // The voiced line's role's mouth (M5 C6); every other's shut.
+                let speaking =
+                    mouth.filter(|&(role, _)| timeline::fighter_of_role(role, arena) == Some(index));
+                face.set_mouth(speaking.map_or(Mouth::CLOSED, |(_, mouth)| mouth));
             }
             if let Some(fixed) = self.fixed_fighters.get_mut(index).and_then(Option::as_mut) {
                 let (content, _) = presentation.expect("fixed body presentation needs its source");
@@ -2349,6 +2362,19 @@ impl Fight {
             combat.skip_timeline(at_ms);
         }
         true
+    }
+
+    /// What the fight asks of an app's audio this frame: its cues' sounds ([`FightShow::cue_sounds`]) and the
+    /// open conversation's voice (M5 C6), `held` while a pause holds it.
+    #[must_use]
+    pub fn cue_sounds(&self, held: bool) -> CueSounds<'_> {
+        CueSounds { speech: self.dialogue.speech(held), ..self.show.cue_sounds() }
+    }
+
+    /// Tells the fighters' faces what the audio said this frame (M5 C6), after the audio took
+    /// [`Self::cue_sounds`]: the voice's mouth, for the role its line names.
+    pub fn hear(&mut self, said: Option<Said>) {
+        self.show.hear(said);
     }
 
     /// How many of [`Self::step_alone`]'s steps a timeline or a zone trip has held, running no tick: the frames a capture of

@@ -619,8 +619,15 @@ impl App for SandboxApp {
         let view_dt = drive_view(&mut self.scene, &mut self.show, &self.input, dt);
         let presentation = stopwatch.lap();
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, platform, self.scene.sound(), self.show.fight.show.cue_sounds());
+            audio.update(
+                dt,
+                platform,
+                self.scene.sound(),
+                self.show.fight.cue_sounds(self.input.is_paused()),
+            );
         }
+        // A conversation's voice moves its role's mouth (M5 C6): with no audio, every mouth's shut.
+        self.show.fight.hear(self.audio.as_ref().and_then(DeviceAudio::said));
         let pad = self.input.active_gamepad();
         self.show.fight.show.end_cue_frame(
             &mut self.scene,

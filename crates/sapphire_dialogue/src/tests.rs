@@ -348,6 +348,33 @@ fn faces_stay_out_of_the_digest_and_version_1_still_loads() {
     assert!(committed.contains("version: 1,") && DialogueDocument::from_ron(committed).is_ok());
 }
 
+/// M5 C6: a voiced line names whose mouth its voice moves; that's presentation's, so the digest holds, and
+/// a line with no voice, in a document or in a pack's bytes, can't name one.
+#[test]
+fn a_voiced_lines_mouth_stays_out_of_the_digest() {
+    let mut document = guide();
+    document.nodes[0].say.as_mut().unwrap().mouth = Some("foe".to_owned());
+    let dialogue = document.cook(&registry(), compile).unwrap();
+    assert_eq!(dialogue.simulation.digest(), cooked().simulation.digest());
+    let mut world = Flags::new(&[]);
+    let mut walked = DialogueWalk::begin(&dialogue, &mut world);
+    let view = walked.view(&dialogue).unwrap();
+    assert_eq!((view.vo, view.mouth), (Some("guide_greet"), Some(Name::new("foe").as_u64())));
+    walked.next(&dialogue, &mut world);
+    assert_eq!(walked.view(&dialogue).unwrap().mouth, None);
+
+    for (node, mouth) in [(1, "foe"), (0, "")] {
+        let mut document = guide();
+        document.nodes[node].say.as_mut().unwrap().mouth = Some(mouth.to_owned());
+        let error = document.cook(&registry(), compile).unwrap_err().to_string();
+        assert!(error.contains(&format!("`nodes[{node}].say.mouth`")), "{error}");
+    }
+    let mut spoiled = dialogue;
+    spoiled.presentation.nodes[1].say.as_mut().unwrap().mouth = Some(1);
+    let error = Dialogue::read(&spoiled.to_cooked().unwrap()).unwrap_err().to_string();
+    assert!(error.contains("`nodes[1].say.mouth`"), "{error}");
+}
+
 #[test]
 fn a_lines_view_has_its_faces() {
     let mut world = Flags::new(&[]);

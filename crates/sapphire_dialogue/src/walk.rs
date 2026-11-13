@@ -40,6 +40,8 @@ pub struct DialogueView<'a> {
     /// The faces the line sets (M5 C5): a game holds each until a later line sets that role's again, or the
     /// conversation ends.
     pub faces: &'a [CookedFace],
+    /// The role whose mouth the line's voice moves, by its name's hash (M5 C6).
+    pub mouth: Option<u64>,
     /// The choices shown, from the first slot, in the document's order: [`DialogueWalk::choose`] takes a
     /// slot.
     pub choices: [Option<ChoiceView<'a>>; MAX_CHOICES],
@@ -123,6 +125,7 @@ impl DialogueWalk {
             line: &say.line,
             vo: say.vo.as_deref(),
             faces: &say.faces,
+            mouth: say.mouth,
             choices,
             next: node.choices.is_empty(),
         })

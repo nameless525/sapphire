@@ -21,12 +21,15 @@
 //!   the layer takes it out before it adds what it shows: an expression replaces the face rather than
 //!   piling on it. At rest, with no mouth, the layer is idle, and [`FaceLayer::apply`] leaves the pose's
 //!   weights to the bit.
-//! - **The mouth** ([`Mouth`], M5 C6's seam): five viseme weights at a playhead, or an openness that drives
-//!   `aa`. As much as it speaks, it replaces the mouth presets the expression shows, and the expression's
-//!   mouth override turns it down as it does them.
+//! - **The mouth** ([`Mouth`]): five viseme weights at a playhead, or an openness that drives `aa`. As much
+//!   as it speaks, it replaces the mouth presets the expression shows, and the expression's mouth override
+//!   turns it down as it does them. A voice line's comes from its sound's cooked curve at the voice's
+//!   playhead (M5 C6, [`Mouth::said`]), which its owner reads and sets each frame: a playhead that doesn't
+//!   move sets the same bits, so a held line moves nothing.
 //!
 //! Binding allocates; nothing else does.
 
+use sapphire_assets::mouth::MouthSample;
 use sapphire_assets::rig::{ArchivedCharacterRig, ExpressionOverride, ExpressionPreset};
 use sapphire_core::Name;
 
@@ -87,6 +90,13 @@ impl Mouth {
     #[must_use]
     pub fn open(openness: f32) -> Self {
         Self { visemes: [openness, 0.0, 0.0, 0.0, 0.0] }.checked()
+    }
+
+    /// What a voice's cooked mouth curve says at a moment (M5 C6): its visemes, which share out its envelope.
+    #[must_use]
+    pub fn said(sample: MouthSample) -> Self {
+        const _: () = assert!(sapphire_assets::mouth::VISEMES == VISEMES);
+        Self { visemes: sample.visemes }.checked()
     }
 
     /// Each weight within 0 to 1, and anything not a number nothing.
@@ -581,6 +591,45 @@ mod tests {
             layer.show(order(1, "happy", 1.0, 0.5));
             assert!(!layer.take_moved());
             assert_eq!(bits(applied(&layer)), held);
+        }
+    }
+
+    /// A voice's cooked curve read at its playhead (M5 C6): closed, then `aa`, then `oh`, then closed.
+    #[test]
+    fn a_cooked_curve_opens_and_closes_the_mouth_at_the_playhead() {
+        use sapphire_assets::mouth::{MOUTH_RATE, MouthCurve, MouthFrame};
+        let full = MouthFrame { open: 255, visemes: [255, 0, 0, 0, 0] };
+        let round = MouthFrame { open: 255, visemes: [0, 0, 0, 0, 255] };
+        let curve = MouthCurve { frames: vec![MouthFrame::default(), full, round, MouthFrame::default()] };
+        let at = |frame: f32| Mouth::said(curve.at(frame / MOUTH_RATE as f32));
+        let mut layer = layer();
+        let said = |layer: &mut FaceLayer, frame: f32| {
+            layer.set_mouth(at(frame));
+            applied(layer)
+        };
+        assert_eq!(bits(said(&mut layer, 0.0)), bits(posed()), "closed at the start: the pose to the bit");
+        assert!(layer.is_idle());
+        let open = said(&mut layer, 1.0);
+        assert_eq!((open[usize::from(MOUTH_A)], open[usize::from(MOUTH_O)]), (1.0, 0.0));
+        let between = said(&mut layer, 1.5);
+        assert!((between[usize::from(MOUTH_A)] - 0.5).abs() < 1e-6);
+        assert!((between[usize::from(MOUTH_O)] - 0.5).abs() < 1e-6);
+        assert_eq!(said(&mut layer, 2.0)[usize::from(MOUTH_O)], 1.0);
+        // A held playhead sets the same bits, so nothing moves.
+        assert!(layer.take_moved());
+        let held = bits(applied(&layer));
+        for _ in 0..5 {
+            layer.advance(0.0);
+            assert_eq!(bits(said(&mut layer, 2.0)), held);
+            assert!(!layer.take_moved());
+        }
+        // Over an expression, as the mouth input mixes: happy at 0.6 turns it down to 0.4.
+        layer.show(order(1, "happy", 0.6, 0.0));
+        assert!((said(&mut layer, 1.0)[usize::from(MOUTH_A)] - 0.4).abs() < 1e-6);
+        layer.hand_back(0.0);
+        // Past its end, and before its start, the mouth is shut.
+        for frame in [3.0, 4.0, 100.0, -1.0, f32::NAN] {
+            assert_eq!(bits(said(&mut layer, frame)), bits(posed()), "at frame {frame}");
         }
     }
 

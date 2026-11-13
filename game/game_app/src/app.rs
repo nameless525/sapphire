@@ -324,6 +324,8 @@ impl App for GameApp {
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, stage.scene.sound(), stage.show.cue_sounds());
         }
+        // The voice's mouth, read where the mixer has the voice (M5 C6): with no audio, every mouth's shut.
+        stage.show.hear(self.audio.as_ref().and_then(DeviceAudio::said));
         let pad = stage.show.controls.input().active_gamepad().filter(|_| self.rumble);
         stage.show.shown.fight.show.end_cue_frame(
             &mut stage.scene,

@@ -235,9 +235,11 @@ impl Serving {
         }
         let dt = steps as f32 / TICK_HZ as f32;
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, stage.scene.sound(), stage.show.fight.show.cue_sounds());
+            audio.update(dt, stage.scene.sound(), stage.show.fight.cue_sounds(false));
             audio.mix(dt);
         }
+        // A conversation's voice moves its role's mouth, as in the game (M5 C6).
+        stage.show.fight.hear(self.audio.as_ref().and_then(OfflineAudio::said));
         stage.show.fight.show.end_cue_frame(&mut stage.scene, dt, dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.

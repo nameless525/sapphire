@@ -17,11 +17,14 @@
 //! **What ends one:** [`DialogueRunner::take_ended`] says once that the conversation closed, with a
 //! [`DialogueEnded`]: what a game's flow listens for to go on (G1).
 //!
-//! **Voice (A1's seam):** each line a conversation enters moves [`DialogueRunner::lines_shown`] on, and the
-//! view then has its `vo` cue: what a voice player starts a line by. Nothing here plays it.
+//! **Voice (A1's seam, M5 C6's voice):** each line a conversation enters moves [`DialogueRunner::lines_shown`]
+//! on, and the view then has its `vo`, a key of the voice lines' document. [`DialogueRunner::speech`] asks the
+//! audio system for it by that count, every frame the line's shown, so a new line, even the same line again,
+//! cuts the one before and starts from its beginning, and a conversation's end cuts it. Nothing here plays it.
 
 use std::sync::Arc;
 
+use sapphire_audio::{CueTarget, LineKey, SpeechRequest};
 use sapphire_dialogue::{ConditionId, Dialogue, DialogueView, DialogueWalk, DialogueWorld, EffectId};
 use sapphire_gameplay::replay::Recording;
 use sapphire_gameplay::zone::ZoneId;
@@ -245,6 +248,14 @@ impl DialogueRunner {
     #[must_use]
     pub const fn lines_shown(&self) -> u64 {
         self.lines
+    }
+
+    /// The voice of the line shown (M5 C6), if it has a `vo`, numbered by [`Self::lines_shown`], and `held`
+    /// while a pause holds the conversation: what the audio system's [`SpeechRequest`] takes each frame.
+    #[must_use]
+    pub fn speech(&self, held: bool) -> Option<SpeechRequest> {
+        let vo = self.view()?.vo?;
+        Some(SpeechRequest { line: LineKey::of(vo), serial: self.lines, target: CueTarget::Flat, held })
     }
 
     /// The conversation that closed since this was last asked, once.
@@ -475,6 +486,28 @@ mod tests {
         }
         walk(&mut runner, &mut run);
         assert_eq!(run.simulation().flags().get(Name::new("ward_lit")), 1, "the first answer lit the ward");
+    }
+
+    /// M5 C6: a voiced line asks for its voice by the count of lines shown, held as the caller says, and a
+    /// line with none, or no conversation, asks for nothing.
+    #[test]
+    fn a_voiced_line_asks_for_its_voice_by_its_showing() {
+        let mut run = guide_run();
+        let mut runner = DialogueRunner::new(vec![Arc::new(ward_guide())]);
+        assert_eq!(runner.speech(false), None);
+        runner.open(GUIDE, &mut run).expect("it opens");
+        assert_eq!(runner.view().and_then(|view| view.vo), Some("guide_greet"), "the guide greets first");
+        let asked = runner.speech(true).expect("a voiced line");
+        assert_eq!(
+            (asked.line, asked.serial, asked.target, asked.held),
+            (LineKey::of("guide_greet"), runner.lines_shown(), CueTarget::Flat, true)
+        );
+        assert!(!runner.speech(false).unwrap().held);
+        runner.next(&mut run).expect("goes on");
+        assert_eq!(runner.view().and_then(|view| view.vo), None);
+        assert_eq!(runner.speech(false), None);
+        walk(&mut runner, &mut run);
+        assert_eq!(runner.speech(false), None);
     }
 
     /// Conditions another run's VM bound, as a runner kept for the next run holds, are bound again in this

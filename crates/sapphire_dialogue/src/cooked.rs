@@ -25,7 +25,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::document::{
     DialogueError, MAX_ARMS, MAX_CHOICES, MAX_NODES, MAX_SOURCE, MAX_WRITES, check_cue, check_faces,
-    check_graph, check_shown_key,
+    check_graph, check_mouth, check_shown_key,
 };
 
 /// Conventional file extension for cooked dialogues.
@@ -42,8 +42,8 @@ pub struct Dialogue {
 
 impl Versioned for Dialogue {
     /// 1: M3 Q2. 2: M3 Q2b's conditions as source, not bytecode, and the trigger that opens it. 3: M5 C5's
-    /// faces on a line, in the presentation half.
-    const VERSION: u32 = 3;
+    /// faces on a line, in the presentation half. 4: M5 C6's mouth on a line, in the presentation half too.
+    const VERSION: u32 = 4;
 }
 
 /// What a dialogue can do to the simulation.
@@ -111,6 +111,8 @@ pub struct CookedSay {
     pub vo: Option<String>,
     /// The faces it sets, as it's shown (M5 C5).
     pub faces: Vec<CookedFace>,
+    /// The role whose mouth its voice moves, by its name's hash (M5 C6). Only a line with a `vo` has one.
+    pub mouth: Option<u64>,
 }
 
 /// A face a line sets, by its role's and its expression preset's names' hashes.
@@ -244,6 +246,10 @@ impl Dialogue {
                 check_shown_key(|| at("say.line"), &say.line)?;
                 if let Some(vo) = &say.vo {
                     check_cue(|| at("say.vo"), vo)?;
+                }
+                if say.mouth.is_some() {
+                    // A role's a hash, so any is a name.
+                    check_mouth(|| at("say.mouth"), say.vo.is_some(), true)?;
                 }
                 // A role's a hash, so any is a name.
                 check_faces(

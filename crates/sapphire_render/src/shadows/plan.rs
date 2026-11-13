@@ -270,7 +270,7 @@ impl ShadowPlan {
                             Some(sphere)
                         }
                         // A skinned or morphed instance that isn't a character: every cascade, as
-                        // its morphs are in no bounds and nothing has needed more.
+                        // its posed bounds aren't read here and nothing has needed more.
                         _ => None,
                     };
                     for (index, fit) in self.drawn.iter().enumerate() {

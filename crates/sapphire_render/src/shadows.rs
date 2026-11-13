@@ -59,9 +59,9 @@
 //!   next.
 //! - **Casters** are the depth-writing surfaces of environment instances (opaque and
 //!   alpha-tested, drawn solid; transparent ones cast nothing, as in the prepasses), culled per
-//!   cascade by their bounding spheres; skinned and morphed environment instances, whose posed
-//!   bounds aren't known yet, go into every cascade. Outline hulls cast nothing. Casters are
-//!   drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
+//!   cascade by their bounding spheres; skinned and morphed environment instances go into every
+//!   cascade, since the cascades don't read their posed bounds yet. Outline hulls cast nothing.
+//!   Casters are drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
 //!   (`CASTER_BIAS`).
 //! - **Foliage** (M1 W6) casts through casters of its own (the [`foliage`](crate::foliage)
 //!   module's, built with its surfaces): displaced by the wind as the main pass draws it, so
@@ -143,7 +143,8 @@
 //!
 //! - **Alpha-tested casters cut out** for the other families (hair cards), as foliage's do (W6).
 //! - **Characters shadowing each other** through their maps, which the contract allows; and
-//!   posed bounds from the joints, so skinned environment instances are culled per cascade.
+//!   skinned environment instances culled per cascade by their posed bounds (the `bounds`
+//!   module's, which only the character maps, outlines and light lists read so far).
 //! - **A static far term:** NTE's camera-anchored tiled cache or a baked shadow per time-of-day
 //!   phase past the cascades (research notes, world lighting §4), and the cascades' distance and
 //!   splits per zone.

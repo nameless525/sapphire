@@ -97,8 +97,8 @@
 //!   the character mask, scene color's alpha, from the scene color before the resolve, at the
 //!   scene's size and jittered, since the history's alpha holds the accumulation weight: right
 //!   within a pixel, which they need no better. Only an effect that needs it hard-edged at the
-//!   output's size, such as M2's character cut-ins, might carry it through the resolve in a
-//!   channel of its own.
+//!   output's size might carry it through the resolve in a channel of its own; cut-ins won't,
+//!   being views of their own that insets can draw (`sapphire_world::screen_effects`).
 //! - **Thin features in still scenes:** where a jitter phase's samples all miss a line's end,
 //!   its clip box closes on the background and the pixel flickers once a cycle; FSR 2's locks
 //!   protect such pixels.

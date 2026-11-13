@@ -5,7 +5,7 @@
 //! slope by `radius × (1/cos θ − 1)`, 4.6 cm at 30° (M2 G1). So:
 //!
 //! - **The ground comes in as data.** The caller casts where [`FootProbe`]s say and hands over what
-//!   it hit, in the world, so this crate has no physics edge and runs in `evaluate_all`'s jobs.
+//!   it hit, in the world, so this crate has no physics edge and can run in `evaluate_all`'s jobs.
 //!   Under each foot it chooses between what's under the ankle and what's under the ball of the foot
 //!   ([`FootGround`]): whichever plane the other's point isn't above, so a foot facing a step stands
 //!   on it, and one overhanging a step's edge stays on top.

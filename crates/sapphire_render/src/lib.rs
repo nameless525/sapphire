@@ -380,8 +380,10 @@
 //! cascades and the character atlas) and a comparison sampler (R4), the character prepass two
 //! (its depth and IDs) and a nearest sampler (C5), and W5's ambient the last four (the atlas, the
 //! brick table, the reflection cube, which C7's reflection add reads too, and GTAO) and a linear
-//! sampler: every sampled texture a fragment stage gets, and 10 samplers left; the other families
-//! bind 1 to 5 (the environment's
+//! sampler: every sampled texture a fragment stage gets, and 10 samplers left. Those are what the
+//! layout binds, and wgpu counts that whatever a shader reads: the frame's group 0 has one layout
+//! for every mesh family, and the anime character shader samples 13 of the 16, the reflection
+//! cube alone of W5's four. The other families bind 1 to 5 (the environment's
 //! pipelines read five textures and two samplers, and the same four storage buffers as the anime
 //! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and

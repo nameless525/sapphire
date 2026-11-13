@@ -82,10 +82,12 @@
 //! - **Decision: the depth they fade against is the scene prepass's**, where the frame has it:
 //!   the desktop tiers, whose temporal AA runs the prepass anyway, so it costs nothing more. The
 //!   main pass reads it as a texture while it writes its own depth (under temporal AA they are
-//!   different textures). Phones draw 4× MSAA in tile memory with no prepass, and reading the
-//!   main pass's depth there would cost a store and a resolve (and on Mali its early-Z), so
-//!   there cards fade near the lens alone and their maps' soft edges carry the rest: artists
-//!   keep mobile cards clear of geometry or paint their edges where they meet it.
+//!   different textures). Phones draw 4× MSAA in tile memory, and reading the main pass's depth
+//!   there would cost a store and a resolve (and on Mali its early-Z), so there cards fade near
+//!   the lens alone and their maps' soft edges carry the rest: artists keep mobile cards clear of
+//!   geometry or paint their edges where they meet it. Mobile-High does run the scene prepass,
+//!   for GTAO (M1 W5), but the thermal ladder can shed GTAO and the prepass with it, and the
+//!   depth fade follows temporal AA (`FogCards::new`), so cards there don't read it.
 //!
 //! # Later milestones
 //!
@@ -95,7 +97,8 @@
 //!   and cards lit by local lights and probes.
 //! - **One sort for every transparent surface**, with draw sorting (the crate docs); cards sort
 //!   among themselves today.
-//! - **Soft cards on Mobile-High** once a depth prepass runs there for another reader.
+//! - **Soft cards on Mobile-High,** from the scene prepass GTAO already runs there, with the
+//!   lens fade alone while the ladder has shed it.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};

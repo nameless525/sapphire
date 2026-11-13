@@ -139,7 +139,8 @@
 //!   temporal AA the fused pass reads the mask from the jittered scene color before the resolve,
 //!   bilinear; against the resolved frame no pixel falls on the wrong side of a character's edge,
 //!   and only edge pixels are partial, as with MSAA (spec §5.12's P3 note). So temporal AA's
-//!   resolve carries nothing new. Cut-ins' hard-edged character cut-outs (M2) may need it.
+//!   resolve carries nothing new. Cut-ins, still to come, won't need it either: they're views of
+//!   their own (`sapphire_world::screen_effects`), which insets can draw ([`inset`](crate::inset)).
 //! - **A held swing (M4 A3)** ([`PostEffects::swing`]): with the player's flashes reduced, every
 //!   pixel of a variant with effects stays within the swing of the relative luminance it would have
 //!   without them, mixed back toward that in linear light past it. So no effect, nor all of them
@@ -213,9 +214,9 @@
 //!
 //! - **Bloom masks (C7):** an emissive-driven bloom mask; C7's breathing emission writes the
 //!   character mask (scene color's alpha) where a character glows.
-//! - **More screen effects (M2):** halftone, desaturation keeping a color, glitches, white
-//!   flashes, and cut-ins with their hard-edged character cut-outs, which may need the mask
-//!   carried sharp through temporal AA's resolve. Effects anchored to a point in the world
+//! - **More screen effects (M2):** halftone, desaturation keeping a color, glitches and white
+//!   flashes. Cut-ins are views, not post: an inset of a character, with no need of the main
+//!   view's mask carried through temporal AA's resolve. Effects anchored to a point in the world
 //!   (a hit's position as the blur's center) are the world stack's to resolve.
 //! - **The radial blur through temporal AA:** a noise offset changing every frame would let the
 //!   history smooth the blur's grain, so the desktop tiers could take fewer taps; the history's

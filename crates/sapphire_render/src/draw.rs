@@ -172,7 +172,8 @@ impl MeshDraws<'_> {
         pipelines: &[&wgpu::RenderPipeline],
     ) {
         let mut bound = Bound::default();
-        // Only static draws are culled: skinned and morphed instances have no posed bounds.
+        // Only static draws are culled: the view's culling doesn't read skinned and morphed
+        // instances' posed bounds yet.
         let in_view =
             |slot: u32| self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn));
         for command in &self.list.commands[format_index(format)][variant.index()] {

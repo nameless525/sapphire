@@ -15,14 +15,14 @@
 //! - **Foliage** grows by the frame's wind margin (`foliage::wind_margin`), as shadow casters do.
 //! - **Not tested:** anime character surfaces (an instance with any: their outline hulls reach
 //!   past the bounds), fog cards (camera-facing ones turn about their bounds), skinned and morphed
-//!   instances (their bounds are the bind pose's), instances with a projective transform, and
-//!   bounds that aren't finite.
+//!   instances (they have posed bounds, the `bounds` module's, which this test doesn't read yet),
+//!   instances with a projective transform, and bounds that aren't finite.
 //!
 //! What else draws instances keeps its whole list: the shadow cascades and character maps (their
 //! own culling, per view), the sky cube, the ambient probes and the character prepass. No LOD is
-//! chosen here, and no posed bounds are made: those come with LOD selection (crate docs, "Later
-//! milestones"). [`RenderSettings::view_culling`](crate::RenderSettings::view_culling) turns it
-//! off, for comparisons and triage.
+//! chosen here: that comes with LOD selection (crate docs, "Later milestones").
+//! [`RenderSettings::view_culling`](crate::RenderSettings::view_culling) turns it off, for
+//! comparisons and triage.
 
 use glam::{Mat4, Vec4, Vec4Swizzles};
 

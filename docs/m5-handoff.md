@@ -339,7 +339,15 @@ A zone's look is its own since M5 M6, as it opens and when a trip arrives in it:
    fog: Some((density: 1.5, height_base: Some(0.0))),
    ```
    Wind is the way it blows, which must have a horizontal part, and a strength up to 8. `gustiness` is a share and defaults to 0. Weather is two shares, `puddles` defaulting to 0, and holds all day. No shader draws it until wet surfaces (M5 L4). Fog's `density` scales the day's near, far and height layers (0 to 16, 1 by default). `height_base` puts the height layer's floor at that height in the zone's space. Leave it out to keep the day's.
-5. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
+5. **Its reflection probes** (M5 L2): a few, by hand, where a reflection would read wrong under the open sky alone: one in each interior or covered street, and one in each open place.
+   ```ron
+   reflections: [
+       (name: "yard", position: (8.0, 1.6, 6.0), parallax: (min: (-8.0, 0.0, -8.0), max: (24.0, 12.0, 24.0))),
+       (name: "shelter", position: (-24.0, 1.6, 30.0), parallax: (min: (-27.0, 0.0, 27.7), max: (-21.0, 3.5, 32.0))),
+   ],
+   ```
+   A probe stands about eye height, and its box is the space it stands in: a room's walls, floor and ceiling, a street's two fronts, an open place's edges and a height over its roofs. The box must hold the probe, at least 0.1 m a side. Names are unique, and a zone holds at most 42. The cook bakes them under the zone's day (`day`, or the default day) from its cells, backdrop and instances, into `<zone>.sreflect` beside the `.szone`, and only the probes, the instances' places and what they see key it ([proving_ground.zone.ron](../content/zones/proving_ground/proving_ground.zone.ron)). Nothing draws them until M5 L3.
+6. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
 
 ### A dialogue, with story flags
 

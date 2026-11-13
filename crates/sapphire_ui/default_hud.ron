@@ -15,6 +15,9 @@
         skill: (offset: (-104.0, -30.0), half: 30.0, hit: 38.0),
         // The ultimate's, at the cluster's top: drawn and pressed only while there's an ultimate to show.
         ultimate: (offset: (-112.0, -112.0), half: 32.0, hit: 40.0),
+        // A party's swap, over the dodge at the cluster's top: drawn and pressed only while there's a party
+        // to show, and low enough to stay under the HUD's words in the top corner on a phone 375 points tall.
+        swap: (offset: (-6.0, -176.0), half: 26.0, hit: 34.0),
         // The left thumb's zone: its rest from the bottom left, and how much of the safe area it takes,
         // from under the bars' share of the height across the width's.
         stick: (radius: 52.0, rest: (92.0, -84.0), zone_top: 0.28, zone_width: 0.46),
@@ -69,6 +72,19 @@
                 digit_height: 16.0,
             ),
             mark_width: 2.5,
+        ),
+        // A party's slots, a row each down the left under the player's name: each member's chip, its health
+        // after `bar_gap`, and the seconds of its rest after another; the HUD's words for who comes next and
+        // who has fallen follow those (`content/ui/hud.ui.ron`'s `party`).
+        party: (
+            top: 108.0,
+            row_height: 24.0,
+            row_gap: 4.0,
+            chip_half: 12.0,
+            bar_gap: 8.0,
+            bar_width: 64.0,
+            bar_height: 6.0,
+            digit_height: 14.0,
         ),
     ),
 )

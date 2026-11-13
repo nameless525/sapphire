@@ -6,8 +6,8 @@ use sapphire_look::UiQuad;
 use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
 use sapphire_ui::{
-    CombatHud, FighterValues, HudLayout, HudValues, Insets, Rect, SkillValues, UiDrawList, UiMetrics,
-    UltimateValues,
+    CombatHud, FighterValues, HudLayout, HudValues, Insets, PartyMember, PartyValues, Rect, SkillValues,
+    UiDrawList, UiMetrics, UltimateValues,
 };
 
 use super::TouchControls;
@@ -36,6 +36,7 @@ fn frames() -> Vec<(&'static str, UiMetrics)> {
         ("iPhone 17 Pro", frame(874.0, 402.0, NOTCHED)),
         ("iPad Air", frame(1180.0, 820.0, Insets { bottom: 20.0, ..Insets::default() })),
         ("a wide Android phone", frame(914.0, 411.0, Insets { left: 32.0, ..Insets::default() })),
+        ("iPhone SE", frame(667.0, 375.0, Insets::default())),
         ("a desktop", frame(1920.0, 1080.0, Insets::default())),
         ("a tiny window", frame(320.0, 180.0, Insets::default())),
     ]
@@ -47,8 +48,19 @@ fn values() -> HudValues {
         enemy: Some(FighterValues { hp: 0.6, poise: 0.3, hp_points: None }),
         skill: SkillValues { cooldown: 0.5, seconds: Some(3) },
         ultimate: Some(UltimateValues { energy: 1.0, ready: true }),
+        party: Some(party()),
         ..HudValues::default()
     }
+}
+
+/// A party of three (M5 C9): one on the field, one next, one resting, and the swap cooling down.
+fn party() -> PartyValues {
+    let mut party = PartyValues::default();
+    party.swap = SkillValues { cooldown: 0.5, seconds: Some(1) };
+    party.push(PartyMember { hp: 0.8, on_field: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 1.0, next: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 0.3, rest: 0.4, seconds: Some(12), ..PartyMember::default() });
+    party
 }
 
 fn quad_corners(quad: &UiQuad) -> [Vec2; 4] {
@@ -76,8 +88,14 @@ fn every_quad_stays_on_the_frame_with_nothing_held_or_with_everything_held() {
         let layout = HudLayout::new(metrics);
         let held = |controls: &mut TouchControls| {
             controls.show_ultimate(true);
-            let buttons =
-                [layout.attack.center, layout.dodge.center, layout.skill.center, layout.ultimate.center];
+            controls.show_swap(true);
+            let buttons = [
+                layout.attack.center,
+                layout.dodge.center,
+                layout.skill.center,
+                layout.ultimate.center,
+                layout.swap.center,
+            ];
             for (id, position) in [layout.stick.rest].into_iter().chain(buttons).enumerate() {
                 let finger = sapphire_platform::FingerId::new(
                     sapphire_platform::TouchDeviceId::from_raw(1),

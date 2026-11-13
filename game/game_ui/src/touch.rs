@@ -6,7 +6,8 @@
 //! A finger belongs to what it landed on until it lifts:
 //!
 //! - **Buttons first.** A landing inside a button's hit circle takes the nearest such button, of those
-//!   there: the ultimate's is only while the HUD shows one ([`TouchControls::show_ultimate`]). A
+//!   there: the ultimate's is only while the HUD shows one ([`TouchControls::show_ultimate`]), and the
+//!   swap's only while it shows a party ([`TouchControls::show_swap`]). A
 //!   thumb that slides off keeps it: `over` says where the thumb is, the press holds, and sliding
 //!   back changes nothing. A second finger on a held button takes nothing.
 //! - **Then the stick,** a landing in its zone while no finger has it. The floating stick appears
@@ -97,6 +98,8 @@ pub struct TouchControls {
     actions: TouchActions,
     /// The ultimate's button takes a landing ([`Self::show_ultimate`]).
     ultimate_shown: bool,
+    /// The swap's button takes a landing ([`Self::show_swap`]).
+    swap_shown: bool,
 }
 
 impl TouchControls {
@@ -112,6 +115,7 @@ impl TouchControls {
             pending: TouchActions::default(),
             actions: TouchActions::default(),
             ultimate_shown: false,
+            swap_shown: false,
         }
     }
 
@@ -160,9 +164,20 @@ impl TouchControls {
         self.ultimate_shown = shown;
     }
 
-    /// Whether `button` takes a landing: every one but the ultimate's, and that one while it's shown.
+    /// Whether the swap's button is there to press, as the HUD draws it while it has a party
+    /// (`HudValues::party`, M5 C9): from the next landing on, as [`Self::show_ultimate`] has it.
+    pub fn show_swap(&mut self, shown: bool) {
+        self.swap_shown = shown;
+    }
+
+    /// Whether `button` takes a landing: every one but the ultimate's and the swap's, and each of those while
+    /// it's shown.
     pub fn takes(&self, button: Button) -> bool {
-        button != Button::Ultimate || self.ultimate_shown
+        match button {
+            Button::Ultimate => self.ultimate_shown,
+            Button::Swap => self.swap_shown,
+            Button::Attack | Button::Dodge | Button::Skill => true,
+        }
     }
 
     /// Takes a platform event. Returns whether it was a touch the controls took, which nothing

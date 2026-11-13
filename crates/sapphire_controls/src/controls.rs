@@ -52,6 +52,7 @@ pub const TOUCH_BUTTONS: [(Button, &str); Button::ALL.len()] = [
     (Button::Dodge, "dodge"),
     (Button::Skill, "skill"),
     (Button::Ultimate, "ultimate"),
+    (Button::Swap, "swap"),
 ];
 
 const LOOK_ACTION: &str = "look";

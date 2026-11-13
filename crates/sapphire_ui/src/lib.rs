@@ -14,7 +14,8 @@
 //! - **The atlas** ([`atlas`]): every shape as a signed distance field, painted by code at load.
 //! - **Painting** ([`paint`]): shapes into [`sapphire_look::UiQuad`]s, in points.
 //! - **What the touch zones read** ([`touch`]), as plain [`TouchActions`]: the zones themselves, fingers to
-//!   a floating stick, four buttons (the ultimate's only while there's one) and a camera drag, are `game_ui`'s (M3 S2).
+//!   a floating stick, five buttons (the ultimate's only while there's one, and the swap's only with a party)
+//!   and a camera drag, are `game_ui`'s (M3 S2).
 //! - **The combat HUD** ([`hud`]): where everything goes ([`HudLayout`], shared by what's drawn and
 //!   what's hit-tested), plain [`HudValues`] and how it all draws and animates ([`CombatHud`]).
 //!
@@ -72,8 +73,9 @@ pub use atlas::{Atlas, Sprite, Sprites};
 pub use hud::{
     BarsDesign, BarsLayout, BossBar, BossBarsDesign, ButtonDesign, ButtonLayout, CombatHud, DamageKind,
     EnemyBarsDesign, FighterValues, HudDesign, HudDesignError, HudLayout, HudStats, HudValues,
-    MAX_OTHER_FOES, MAX_PHASE_MARKS, MeterDesign, OtherFoes, PlayerBarsDesign, SkillValues, StickDesign,
-    StickLayout, UltimateValues,
+    MAX_OTHER_FOES, MAX_PARTY, MAX_PHASE_MARKS, MeterDesign, OtherFoes, PartyDesign, PartyLayout,
+    PartyMember, PartyRowLayout, PartyValues, PlayerBarsDesign, SkillValues, StickDesign, StickLayout,
+    UltimateValues,
 };
 pub use layout::{Anchor, Insets, Rect, UiMetrics};
 pub use paint::{Align, Paint, Painter};

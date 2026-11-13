@@ -28,8 +28,8 @@
 // Every verb is `DownFromPress`, so a button held as the context returns isn't a press (crate docs).
 // `Virtual` sources, named after their actions, are what on-screen controls inject
 // (`CombatControls::read_touch`, `CombatControls::set_on_screen`). On a phone the attack button is
-// `light`, the dodge button `dodge`, the skill button `skill` and the stick `move` (`TOUCH_BUTTONS`);
-// a finger dragging anywhere else is `look`.
+// `light`, the dodge button `dodge`, the skill button `skill`, the ultimate's `ultimate`, a party's swap
+// button `swap` and the stick `move` (`TOUCH_BUTTONS`); a finger dragging anywhere else is `look`.
 (
     type: "sapphire::input::InputBindings",
     version: 1,

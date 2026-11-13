@@ -90,12 +90,16 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
 use sapphire_gameplay::replay::{ZoneFight, zone_fight};
-use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, MoveSetId, Simulation};
+use sapphire_gameplay::{
+    ActorId, ActorView, Buttons, Faction, MoveLibrary, MoveSetId, PARTY_SLOTS, Simulation,
+};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::{PER_MILLE, RootSample};
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
-use sapphire_time::TICK_HZ;
-use sapphire_ui::{BossBar, FighterValues, HudValues, OtherFoes, SkillValues, UltimateValues};
+use sapphire_time::{SimDuration, TICK_HZ};
+use sapphire_ui::{
+    BossBar, FighterValues, HudValues, OtherFoes, PartyMember, PartyValues, SkillValues, UltimateValues,
+};
 
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
@@ -492,6 +496,59 @@ fn ultimate_values(view: &ActorView, cost: u32) -> Option<UltimateValues> {
     })
 }
 
+/// The party's slots and its swap's button, for the HUD (M5 C9), read from `simulation`'s party as its last
+/// step left it: nothing without one. Who comes next is who a press would bring in by the party's own rule
+/// (`sapphire_gameplay`'s `party` module), the first after whoever's on the field in the party's order who's
+/// standing and rested, and its swap's wait is the rest of the cooldown of whoever's on the field, both on
+/// that member's own clock.
+fn party_values(simulation: &Simulation) -> Option<PartyValues> {
+    let party = simulation.party();
+    let tuning = party.tuning()?;
+    let active = party.active_slot()?;
+    // A share of `whole` ticks still to go, and its whole seconds rounded up, as the skill's are.
+    let wait = |left: SimDuration, whole: u32| {
+        let whole = SimDuration::from_ticks(u64::from(whole)).as_secs_f32();
+        let seconds = left.as_secs_f32();
+        let share = if whole > 0.0 { seconds / whole } else { 0.0 };
+        (share, (left > SimDuration::ZERO).then(|| seconds.ceil() as u32))
+    };
+    let mut slots = [None; PARTY_SLOTS];
+    for (held, slot) in slots.iter_mut().zip(party.slots()) {
+        *held = Some(slot);
+    }
+    let count = party.slots().count();
+    let mut values = PartyValues::default();
+    let mut next = None;
+    for offset in 1..count {
+        let place = (active + offset) % count;
+        let Some(slot) = slots[place] else { continue };
+        let standing = simulation.actor(slot.actor).is_some_and(|view| !view.fighter.is_defeated());
+        if standing && simulation.party_ready_in(slot) == Some(SimDuration::ZERO) {
+            next = Some(place);
+            break;
+        }
+    }
+    for (place, slot) in slots.iter().flatten().enumerate() {
+        let view = simulation.actor(slot.actor);
+        let on_field = place == active;
+        let left = simulation.party_ready_in(*slot).unwrap_or(SimDuration::ZERO);
+        if on_field {
+            let (cooldown, seconds) = wait(left, tuning.swap_cooldown);
+            values.swap = SkillValues { cooldown, seconds };
+        }
+        let (rest, seconds) = if on_field { (0.0, None) } else { wait(left, tuning.rest) };
+        values.push(PartyMember {
+            hp: view.map_or(0.0, |view| fighter_values(&view, false).hp),
+            on_field,
+            down: view.is_none_or(|view| view.fighter.is_defeated()),
+            rest,
+            seconds,
+            next: next == Some(place),
+        });
+    }
+    Some(values)
+}
+
 /// A boss's bar for `actor`, if its kind of enemy is a boss: a mark where each of its phases falls (M3 B3).
 /// The HUD's words draw its kind's name over it ([`ArenaActors::foe_name`]).
 fn boss_bar(simulation: &Simulation, actor: ActorId) -> Option<BossBar> {
@@ -629,6 +686,8 @@ pub struct ArenaActors {
     fighting: bool,
     /// The foe shown is a boss, as of the last step.
     boss: Option<BossBar>,
+    /// The player's party, as of the last step: nothing without one.
+    party: Option<PartyValues>,
 }
 
 impl ArenaActors {
@@ -657,6 +716,7 @@ impl ArenaActors {
             ground,
             fighting: false,
             boss: None,
+            party: None,
         }
     }
 
@@ -932,6 +992,7 @@ impl ArenaActors {
             others,
             skill: SkillValues::default(),
             ultimate: ultimate_values(player, self.ultimate_cost),
+            party: self.party,
         })
     }
 
@@ -1024,6 +1085,7 @@ impl ArenaActors {
         came_in[1] = self.shown.zip(shown).is_some_and(|(was, is)| was != is);
         self.shown = shown;
         self.boss = shown.and_then(|shown| boss_bar(simulation, shown));
+        self.party = party_values(simulation);
         // The press rather than the hold: a button that's held stays locked, and pressing again lets go.
         let pressed = self.seen[0].is_some_and(|player| player.controls.pressed().contains(Buttons::LOCK_ON));
         if pressed {
@@ -1324,6 +1386,61 @@ mod tests {
         assert_eq!(AssetId::from_text(id), COLLIDERS);
     }
 
+    /// The HUD's party (M5 C9) is the party's own state: none in a fight without one; with one, who's on the
+    /// field, who a press of the swap brings in, each one's rest and the swap's cooldown. A press while it
+    /// shows the swap ready brings in the one marked next.
+    #[test]
+    fn the_huds_party_is_who_a_press_of_the_swap_brings_in() {
+        use sapphire_gameplay::{ActorActions, TickActions};
+
+        let fight = find_scenario(&SCENARIOS, SCENARIO).expect("listed");
+        let (sim, _) = fight.start(fight.config).expect("sets up");
+        assert_eq!(party_values(&sim), None);
+
+        let scenario = find_scenario(&SCENARIOS, PARTY_SCENARIO).expect("listed");
+        let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+        let flags = |values: &PartyValues| -> Vec<(bool, bool, bool)> {
+            values.members().iter().map(|member| (member.on_field, member.next, member.down)).collect()
+        };
+        let on_field = |values: &PartyValues| values.members().iter().position(|member| member.on_field);
+        let next = |values: &PartyValues| values.members().iter().position(|member| member.next);
+        let start = party_values(&sim).expect("a party");
+        assert_eq!(flags(&start), [(true, false, false), (false, true, false), (false, false, false)]);
+        assert_eq!(start.swap, SkillValues::default(), "ready from the start");
+        assert!(start.members().iter().all(|member| member.hp == 1.0 && member.rest == 0.0));
+
+        let mut press = TickActions::NEUTRAL;
+        press.set(cast[0], ActorActions { buttons: Buttons::SWAP, stick: Stick::CENTER }).expect("room");
+        // This presses only when the HUD shows the swap ready. A press waits in the input ring a while, so a
+        // hit's freeze can hold it a few ticks: whoever comes in is still the one marked when it was pressed,
+        // and nothing swaps unpressed.
+        let (mut brought, mut waited, mut pending) = (0, 0, None::<(usize, u32)>);
+        for tick in 0..600u32 {
+            let before = party_values(&sim).expect("a party");
+            let ready = before.swap.cooldown == 0.0 && before.has_next();
+            waited += usize::from(!ready);
+            let pressing = ready && pending.is_none();
+            if pressing {
+                pending = next(&before).map(|next| (next, tick));
+            }
+            sim.step(if pressing { &press } else { &TickActions::NEUTRAL });
+            let after = party_values(&sim).expect("a party");
+            if on_field(&after) == on_field(&before) {
+                pending = pending.filter(|&(_, at)| tick - at < 60);
+                continue;
+            }
+            let (marked, _) = pending.take().unwrap_or_else(|| panic!("tick {tick}: a swap nobody pressed"));
+            assert_eq!(on_field(&after), Some(marked), "tick {tick}");
+            let left = on_field(&before).expect("one on the field");
+            let swap = after.swap;
+            assert!(swap.cooldown > 0.95 && swap.seconds == Some(1), "tick {tick}: {swap:?}");
+            let rested = after.members()[left];
+            assert!(rested.rest > 0.99 && rested.seconds == Some(3), "tick {tick}: {rested:?}");
+            brought += 1;
+        }
+        assert!(brought >= 3 && waited > brought, "{brought} brought in, {waited} waited on the swap");
+    }
+
     #[test]
     fn the_scenario_is_listed() {
         assert!(SCENARIOS.iter().any(|scenario| scenario.name == SCENARIO));
@@ -1463,7 +1580,7 @@ mod tests {
         let mut frozen = false;
         for _ in 0..240 {
             step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
-            if sim.actor(cast[0]).expect("alive").clock_delta == sapphire_time::SimDuration::ZERO {
+            if sim.actor(cast[0]).expect("alive").clock_delta == SimDuration::ZERO {
                 frozen = true;
                 break;
             }

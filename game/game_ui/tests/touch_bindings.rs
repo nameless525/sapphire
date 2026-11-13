@@ -131,6 +131,29 @@ fn the_ultimate_s_button_presses_the_ultimate_once_it_is_shown() {
     assert_eq!(phone.rig.steps(1), [N]);
 }
 
+/// The swap's button (M5 C9), while the HUD shows a party, presses the swap as a pad's shoulder does: one
+/// press, which the party reads as the next member standing and rested. Until then a thumb there presses
+/// nothing.
+#[test]
+fn the_swap_s_button_presses_the_swap_once_there_is_a_party() {
+    let mut phone = Phone::new();
+    phone.press(1, THUMB, Button::Swap);
+    phone.frame();
+    assert_eq!(phone.rig.steps(2), [N, N], "not there yet");
+    phone.lift(1, THUMB, Button::Swap);
+    phone.frame();
+    assert_eq!(phone.presses(), 0);
+
+    phone.zones.show_swap(true);
+    phone.press(1, THUMB, Button::Swap);
+    phone.frame();
+    assert_eq!(phone.rig.steps(2), [Buttons::SWAP, Buttons::SWAP]);
+    assert_eq!(phone.presses(), 1);
+    phone.lift(1, THUMB, Button::Swap);
+    phone.frame();
+    assert_eq!(phone.rig.steps(1), [N]);
+}
+
 #[test]
 fn a_button_held_is_one_press_of_its_verb() {
     for (button, verb) in [(Button::Attack, L), (Button::Dodge, D), (Button::Skill, SKILL)] {

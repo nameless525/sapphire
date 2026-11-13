@@ -703,10 +703,10 @@ fn every_landing_inside_the_safe_area_goes_somewhere_sensible() {
             let mut controls = TouchControls::new(layout);
             controls.touch(ms(0), finger(1), TouchPhase::Down, at);
             let actions = controls.update(ms(1));
-            // The ultimate's isn't there: no ultimate was shown.
+            // The ultimate's and the swap's aren't there: no ultimate or party was shown.
             let on_button = Button::ALL
                 .into_iter()
-                .filter(|&button| button != Button::Ultimate)
+                .filter(|&button| button != Button::Ultimate && button != Button::Swap)
                 .any(|button| layout.button(button).center.distance(at) <= layout.button(button).hit);
             let any_down = Button::ALL.into_iter().any(|button| actions.button(button).down);
             assert_eq!(any_down, on_button, "{at}");
@@ -866,4 +866,47 @@ fn the_first_usable_layout_keeps_an_inactive_stick_default_and_ready_for_input()
     assert_eq!(stick.thumb, held);
     let expected = (0.5 - 0.1) / (1.0 - 0.1);
     assert!(stick.value.distance(Vec2::new(expected, 0.0)) < 1e-5);
+}
+
+/// The swap's button (M5 C9) is only there while the HUD shows a party, as the ultimate's is only while it
+/// shows an ultimate: until then a landing on it is the camera's, and once it's shown it presses and lets go
+/// as any button does, at the edge of its hit circle too, on the narrowest phone's layout.
+#[test]
+fn the_swap_takes_a_thumb_only_while_there_is_a_party() {
+    for metrics in [
+        UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()),
+        UiMetrics::new(Vec2::new(667.0, 375.0), Insets::default()),
+        UiMetrics::new(Vec2::new(874.0, 402.0), Insets { left: 62.0, top: 0.0, right: 62.0, bottom: 21.0 }),
+    ] {
+        let layout = HudLayout::new(metrics);
+        let swap = layout.swap;
+        assert!(!layout.stick.zone.contains(swap.center));
+        let mut controls = TouchControls::new(layout);
+        assert!(!controls.takes(Button::Swap));
+        controls.touch(ms(1), finger(1), TouchPhase::Down, swap.center);
+        let actions = controls.update(ms(2));
+        assert!(!actions.button(Button::Swap).down, "the camera's");
+        assert!(!controls.holds_control(finger(1)));
+        controls.touch(ms(3), finger(1), TouchPhase::Up, swap.center);
+
+        controls.show_swap(true);
+        assert!(controls.takes(Button::Swap) && !controls.takes(Button::Ultimate));
+        // Just inside its hit circle, toward the frame's top, and just outside it.
+        let inside = swap.center + Vec2::new(0.0, -(swap.hit - 1.0));
+        controls.touch(ms(10), finger(2), TouchPhase::Down, inside);
+        let actions = controls.update(ms(11));
+        assert!(actions.button(Button::Swap).down);
+        assert_eq!(
+            actions.events.iter().map(|event| (event.button, event.kind)).collect::<Vec<_>>(),
+            [(Button::Swap, ButtonEventKind::Pressed)]
+        );
+        controls.touch(ms(12), finger(2), TouchPhase::Up, inside);
+        let actions = controls.update(ms(13));
+        assert!(!actions.button(Button::Swap).down);
+        let outside = swap.center + Vec2::new(0.0, -(swap.hit + 1.0));
+        controls.touch(ms(14), finger(3), TouchPhase::Down, outside);
+        let actions = controls.update(ms(15));
+        assert!(!actions.button(Button::Swap).down, "{outside} is past it");
+        controls.touch(ms(16), finger(3), TouchPhase::Up, outside);
+    }
 }

@@ -15,10 +15,14 @@ pub enum Button {
     /// The ultimate (M3 Q3c): only there while the HUD has an ultimate to show
     /// ([`HudValues::ultimate`](crate::HudValues::ultimate)). Last, so the others keep their indices.
     Ultimate,
+    /// The party's swap (M5 C9): only there while the HUD has a party to show
+    /// ([`HudValues::party`](crate::HudValues::party)). It names no member: a press brings in the next one
+    /// standing and rested, as the simulation's one swap button does. Last, so the others keep their indices.
+    Swap,
 }
 
 impl Button {
-    pub const ALL: [Self; 4] = [Self::Attack, Self::Dodge, Self::Skill, Self::Ultimate];
+    pub const ALL: [Self; 5] = [Self::Attack, Self::Dodge, Self::Skill, Self::Ultimate, Self::Swap];
 
     pub const fn index(self) -> usize {
         self as usize

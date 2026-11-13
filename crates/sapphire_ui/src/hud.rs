@@ -25,6 +25,20 @@
 //! foe's, with an inked mark across its health where each of its phases falls (M3 B3). Its name, a key in
 //! the game's words that its kind of enemy holds, isn't drawn here yet: the HUD's words come with M3 U7.
 //!
+//! # The party (M5 C9)
+//!
+//! A fight with a party ([`HudValues::party`]) has a slot for each member down the left, under the player's
+//! name: a chip with the member's place in the party (1 to 3), the member's health beside it, and, off the
+//! field, its rest. Whoever's on the field has a lit edge and a mint pointer at its chip, and its health is
+//! the player's bars'. A member still resting has its chip darkened by a wedge closing clockwise, as the
+//! skill's is, its number dimmed, and the whole seconds left beside its health. A fallen one is struck
+//! through, its number dimmed. Who a press of the swap would bring in, and who has fallen, is said in words,
+//! by the HUD's document (`game_ui`'s `HudModel::follow_fight`), on plates beside the slots.
+//!
+//! Its swap button stands at the top of the right thumb's cluster, two arrows passing: the cooldown of
+//! whoever's on the field closes over it, with its seconds, as the skill's does, and with nobody to bring in
+//! its arrows dim. With no party nothing of either draws, and `game_ui`'s zones don't take a finger there.
+//!
 //! # Time
 //!
 //! Everything animates on the real clock: hitstop and slow motion freeze the world, never the
@@ -117,6 +131,11 @@ const BREATH_NANOS: u64 = 1_400_000_000;
 const ULTIMATE_RING: f32 = 1.18;
 /// The ready halo's size, as a share of the button's.
 const ULTIMATE_HALO: f32 = 1.36;
+/// What a wait still to go lays over a button or a chip: a wedge that closes clockwise-backward toward the
+/// top.
+const WAITING: [u8; 4] = [4, 6, 12, 210];
+/// How much of a party chip's number shows while its member rests or has fallen.
+const RESTING_NUMBER: f32 = 0.35;
 
 /// A button's place: where it draws and where a finger takes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -157,6 +176,25 @@ pub struct BarsLayout {
     pub digit_height: f32,
 }
 
+/// One party slot's row (M5 C9): the member's chip, its health beside it, and where the seconds of its rest
+/// start, on the row's vertical middle. The HUD's document puts its words just after the health too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartyRowLayout {
+    pub chip: Vec2,
+    pub hp: Rect,
+    pub digits: Vec2,
+}
+
+/// The party's slots, a row each from the top.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartyLayout {
+    pub rows: [PartyRowLayout; MAX_PARTY],
+    /// Half the chip's side.
+    pub chip_half: f32,
+    /// How tall the chip's number is, and the rest's seconds, before the player's text size.
+    pub digit_height: f32,
+}
+
 /// Where everything goes, from the frame's metrics. All in points, all inside the safe area,
 /// pinned to its corners and edges so each keeps its distance from them at any aspect ratio. It is
 /// plain data, and `game_ui`'s touch zones hit-test against the same numbers it
@@ -171,6 +209,10 @@ pub struct HudLayout {
     pub skill: ButtonLayout,
     /// Only drawn and hit-tested while the HUD has an ultimate (M3 Q3c).
     pub ultimate: ButtonLayout,
+    /// Only drawn and hit-tested while the HUD has a party (M5 C9).
+    pub swap: ButtonLayout,
+    /// The party's slots: drawn while the HUD has a party.
+    pub party: PartyLayout,
     pub player: BarsLayout,
     pub enemy: BarsLayout,
     /// Where the enemy's bars go instead, when it's a boss.
@@ -211,6 +253,7 @@ impl HudLayout {
         let dodge = around(&design.dodge);
         let skill = around(&design.skill);
         let ultimate = around(&design.ultimate);
+        let swap = around(&design.swap);
 
         // The left thumb's zone: the frame's left side, under the bars.
         let radius = points(design.stick.radius);
@@ -243,6 +286,8 @@ impl HudLayout {
             top + Vec2::new(0.0, points(design.enemy.others_top)),
             top + Vec2::new(enemy_width, points(design.enemy.others_bottom)),
         );
+        // The party's slots, down the left under the player's bars and name.
+        let party = design.party.place(Anchor::TOP_LEFT.place(safe, Vec2::new(margin, 0.0)), &points);
 
         Self {
             metrics,
@@ -252,6 +297,8 @@ impl HudLayout {
             dodge,
             skill,
             ultimate,
+            swap,
+            party,
             player,
             enemy,
             boss,
@@ -269,6 +316,7 @@ impl HudLayout {
             Button::Dodge => &self.dodge,
             Button::Skill => &self.skill,
             Button::Ultimate => &self.ultimate,
+            Button::Swap => &self.swap,
         }
     }
 }
@@ -292,6 +340,9 @@ pub struct HudDesign {
     /// The ultimate's button (M3 Q3c). A design written before it had one gets the shipped one.
     #[serde(default = "ButtonDesign::shipped_ultimate")]
     pub ultimate: ButtonDesign,
+    /// The party's swap button (M5 C9). A design written before it had one gets the shipped one.
+    #[serde(default = "ButtonDesign::shipped_swap")]
+    pub swap: ButtonDesign,
     pub stick: StickDesign,
     /// How far under the safe area's top the bars hang.
     pub bars_top: f32,
@@ -304,6 +355,9 @@ pub struct HudDesign {
     #[serde(default = "MeterDesign::shipped_energy")]
     pub energy: MeterDesign,
     pub boss: BossBarsDesign,
+    /// The party's slots (M5 C9). A design written before it had them gets the shipped ones.
+    #[serde(default = "PartyDesign::shipped")]
+    pub party: PartyDesign,
 }
 
 /// A button: where it stands from the attack's corner place, how far it's drawn and how far it takes a touch.
@@ -319,6 +373,62 @@ impl ButtonDesign {
     /// The ultimate's place in `default_hud.ron`: what a design with none gets.
     pub const fn shipped_ultimate() -> Self {
         Self { offset: [-112.0, -112.0], half: 32.0, hit: 40.0 }
+    }
+
+    /// The swap's place in `default_hud.ron`: what a design with none gets.
+    pub const fn shipped_swap() -> Self {
+        Self { offset: [-6.0, -176.0], half: 26.0, hit: 34.0 }
+    }
+}
+
+/// The party's slots, a row each down from `top` under the safe area's top, at the bars' margin from its left:
+/// each row `row_height` tall with `row_gap` between, its chip `chip_half` each way from its middle, then
+/// `bar_gap` to its health, `bar_width` by `bar_height`, then `bar_gap` again to the rest's seconds,
+/// `digit_height` tall, as is the chip's number.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartyDesign {
+    pub top: f32,
+    pub row_height: f32,
+    pub row_gap: f32,
+    pub chip_half: f32,
+    pub bar_gap: f32,
+    pub bar_width: f32,
+    pub bar_height: f32,
+    pub digit_height: f32,
+}
+
+impl PartyDesign {
+    /// The slots' place in `default_hud.ron`: what a design with none gets.
+    pub const fn shipped() -> Self {
+        Self {
+            top: 108.0,
+            row_height: 24.0,
+            row_gap: 4.0,
+            chip_half: 12.0,
+            bar_gap: 8.0,
+            bar_width: 64.0,
+            bar_height: 6.0,
+            digit_height: 14.0,
+        }
+    }
+
+    fn place(&self, corner: Vec2, points: &impl Fn(f32) -> f32) -> PartyLayout {
+        let (chip_half, bar_gap) = (points(self.chip_half), points(self.bar_gap));
+        let rows = std::array::from_fn(|index| {
+            let middle = corner.y
+                + points(self.top + (self.row_height + self.row_gap) * index as f32)
+                + points(self.row_height) * 0.5;
+            let chip = Vec2::new(corner.x + chip_half, middle);
+            let from = corner.x + 2.0 * chip_half + bar_gap;
+            let half_bar = points(self.bar_height) * 0.5;
+            let hp = Rect::new(
+                Vec2::new(from, middle - half_bar),
+                Vec2::new(from + points(self.bar_width), middle + half_bar),
+            );
+            PartyRowLayout { chip, hp, digits: Vec2::new(hp.max.x + bar_gap, middle) }
+        });
+        PartyLayout { rows, chip_half, digit_height: points(self.digit_height) }
     }
 }
 
@@ -459,6 +569,7 @@ impl HudDesign {
             dodge,
             skill,
             ultimate,
+            swap,
             stick,
             bars_top,
             bars_gap,
@@ -466,6 +577,7 @@ impl HudDesign {
             enemy,
             energy,
             boss,
+            party,
         } = self;
         let sizes = [
             ("full_size.0", full_size[0]),
@@ -478,6 +590,8 @@ impl HudDesign {
             ("skill.hit", skill.hit),
             ("ultimate.half", ultimate.half),
             ("ultimate.hit", ultimate.hit),
+            ("swap.half", swap.half),
+            ("swap.hit", swap.hit),
             ("stick.radius", stick.radius),
             ("player.max_width", player.max_width),
             ("player.hp_height", player.bars.hp_height),
@@ -489,6 +603,11 @@ impl HudDesign {
             ("boss.hp_height", boss.bars.hp_height),
             ("boss.digit_height", boss.bars.digit_height),
             ("boss.mark_width", boss.mark_width),
+            ("party.row_height", party.row_height),
+            ("party.chip_half", party.chip_half),
+            ("party.bar_width", party.bar_width),
+            ("party.bar_height", party.bar_height),
+            ("party.digit_height", party.digit_height),
         ];
         for (field, value) in sizes {
             if !value.is_finite() || value <= 0.0 {
@@ -505,6 +624,8 @@ impl HudDesign {
             ("skill.offset.1", skill.offset[1]),
             ("ultimate.offset.0", ultimate.offset[0]),
             ("ultimate.offset.1", ultimate.offset[1]),
+            ("swap.offset.0", swap.offset[0]),
+            ("swap.offset.1", swap.offset[1]),
             ("stick.rest.0", stick.rest[0]),
             ("stick.rest.1", stick.rest[1]),
             ("bars_top", *bars_top),
@@ -522,6 +643,9 @@ impl HudDesign {
             ("boss.poise_top", boss.bars.poise_top),
             ("boss.poise_bottom", boss.bars.poise_bottom),
             ("boss.digits_top", boss.bars.digits_top),
+            ("party.top", party.top),
+            ("party.row_gap", party.row_gap),
+            ("party.bar_gap", party.bar_gap),
         ];
         for (field, value) in places {
             if !value.is_finite() {
@@ -638,6 +762,58 @@ impl BossBar {
     }
 }
 
+/// How many members the party's slots have room for: the simulation's `PARTY_SLOTS`.
+pub const MAX_PARTY: usize = 3;
+
+/// One member of the player's party (M5 C9), as the simulation's party has it each step.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartyMember {
+    /// Health left, 0 to 1.
+    pub hp: f32,
+    /// On the field: the player's bars are this member's.
+    pub on_field: bool,
+    /// Fallen.
+    pub down: bool,
+    /// Off the field, the share of its rest still to go before it can come in: 0 (rested) to 1.
+    pub rest: f32,
+    /// Whole seconds of that rest still to go, drawn as digits beside its health if given.
+    pub seconds: Option<u32>,
+    /// A press of the swap brings it in, once whoever's on the field has stayed long enough.
+    pub next: bool,
+}
+
+/// The player's party (M5 C9): a slot for each member in the party's order, and the swap's button. No list:
+/// the values are copied each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartyValues {
+    members: [PartyMember; MAX_PARTY],
+    count: u8,
+    /// What's left of the cooldown of whoever's on the field, which has to stay that long before a swap.
+    pub swap: SkillValues,
+}
+
+impl PartyValues {
+    /// One more member, in the party's order. Past [`MAX_PARTY`], it isn't shown.
+    pub fn push(&mut self, member: PartyMember) {
+        if let Some(slot) = self.members.get_mut(usize::from(self.count)) {
+            *slot = member;
+            self.count += 1;
+        }
+    }
+
+    /// Each member, in the party's order.
+    #[must_use]
+    pub fn members(&self) -> &[PartyMember] {
+        &self.members[..usize::from(self.count)]
+    }
+
+    /// Whether a press of the swap has anyone to bring in.
+    #[must_use]
+    pub fn has_next(&self) -> bool {
+        self.members().iter().any(|member| member.next)
+    }
+}
+
 /// What the HUD shows, from the app each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HudValues {
@@ -652,6 +828,9 @@ pub struct HudValues {
     /// The player's ultimate, for a player with an energy meter: its meter and its button. With none
     /// (the default), neither draws, and the button takes no finger.
     pub ultimate: Option<UltimateValues>,
+    /// The player's party, for a fight with one (M5 C9): its slots and its swap's button. With none (the
+    /// default), neither draws, and the button takes no finger.
+    pub party: Option<PartyValues>,
 }
 
 /// How heavy a damage number reads.
@@ -905,6 +1084,9 @@ impl CombatHud {
             draw_marks(&mut painter, layout, boss);
         }
         self.draw_others(&mut painter, layout);
+        if let Some(party) = &self.values.party {
+            draw_party(&mut painter, &layout.party, party, self.text_scale, layout.scale);
+        }
         let scale = layout.scale;
         if self.controls_shown {
             draw_stick(&mut painter, layout, &actions.stick);
@@ -934,6 +1116,11 @@ impl CombatHud {
                 let press = self.press[Button::Ultimate.index()];
                 let state = actions.button(Button::Ultimate);
                 self.draw_ultimate(&mut painter, &layout.ultimate, state, press, ultimate, scale);
+            }
+            if let Some(party) = &self.values.party {
+                let press = self.press[Button::Swap.index()];
+                let state = actions.button(Button::Swap);
+                draw_swap(&mut painter, &layout.swap, state, press, party, scale);
             }
         }
         let mut numbers = 0;
@@ -1003,7 +1190,7 @@ impl CombatHud {
         let cooldown = self.values.skill;
         if cooldown.cooldown > 0.0 {
             // What's still to go, darkened: a wedge that closes clockwise-backward toward the top.
-            let dark = Paint::fill([4, 6, 12, 210]).swept(cooldown.cooldown);
+            let dark = Paint::fill(WAITING).swept(cooldown.cooldown);
             painter.sprite(sprites.button, skill.center, size, SLANT, dark);
             if let Some(seconds) = cooldown.seconds {
                 let digits = Paint::outlined(WHITE, OUTLINE, 1.6 * scale);
@@ -1142,6 +1329,15 @@ fn sanitized(values: &HudValues) -> HudValues {
         ultimate: values
             .ultimate
             .map(|ultimate| UltimateValues { energy: share(ultimate.energy), ..ultimate }),
+        party: values.party.map(|party| PartyValues {
+            members: party.members.map(|member| PartyMember {
+                hp: share(member.hp),
+                rest: share(member.rest),
+                ..member
+            }),
+            count: party.count.min(MAX_PARTY as u8),
+            swap: SkillValues { cooldown: share(party.swap.cooldown), ..party.swap },
+        }),
     }
 }
 
@@ -1180,13 +1376,32 @@ fn draw_button(
     icon_share: f32,
     scale: f32,
 ) {
+    let (size, glyph) = draw_button_shape(painter, layout, state, press, scale);
+    painter.sprite(icon, layout.center, size * 0.62, SLANT * 0.5, Paint::fill(faded(glyph, icon_share)));
+    if state.dragging && state.drag != Vec2::ZERO {
+        // Where the drag points, just outside the button. `drag` is +y up, the screen's +y down.
+        let up = Vec2::new(state.drag.x, -state.drag.y).normalize();
+        let center = layout.center + up * (layout.half * 1.32);
+        let wedge = Paint::outlined(AMBER, OUTLINE, 1.2 * scale);
+        painter.turned(painter.sprites().wedge, center, Vec2::splat(20.0 * scale), up, wedge);
+    }
+}
+
+/// A button's shadow and its cut shape, as `state` and its eased `press` have it, returning the size it's
+/// drawn at and its glyph's colour. Pressed, the ink lifts and the edge goes white; held past its hold, the
+/// whole shape turns amber and its glyph goes dark, which still reads with a thumb over most of it.
+fn draw_button_shape(
+    painter: &mut Painter<'_>,
+    layout: &ButtonLayout,
+    state: &ButtonState,
+    press: f32,
+    scale: f32,
+) -> (Vec2, [u8; 4]) {
     let sprites = painter.sprites();
     let shrink = 1.0 - 0.08 * press;
     let size = Vec2::splat(layout.half * 2.0 * shrink);
     let shadow = Paint::fill(SHADOW).grown(2.0 * scale).soft(4.0 * scale);
     painter.sprite(sprites.button, layout.center, size, SLANT, shadow);
-    // Pressed, the ink lifts and the edge goes white; held past its hold, the whole shape turns amber
-    // and its icon goes dark, which still reads with a thumb over most of it.
     let (ink, edge, glyph) = if state.held {
         (AMBER, WHITE, OUTLINE)
     } else if state.down {
@@ -1195,13 +1410,93 @@ fn draw_button(
         (INK, PALE, WHITE)
     };
     painter.sprite(sprites.button, layout.center, size, SLANT, Paint::outlined(ink, edge, 1.8 * scale));
-    painter.sprite(icon, layout.center, size * 0.62, SLANT * 0.5, Paint::fill(faded(glyph, icon_share)));
-    if state.dragging && state.drag != Vec2::ZERO {
-        // Where the drag points, just outside the button. `drag` is +y up, the screen's +y down.
-        let up = Vec2::new(state.drag.x, -state.drag.y).normalize();
-        let center = layout.center + up * (layout.half * 1.32);
-        let wedge = Paint::outlined(AMBER, OUTLINE, 1.2 * scale);
-        painter.turned(sprites.wedge, center, Vec2::splat(20.0 * scale), up, wedge);
+    (size, glyph)
+}
+
+/// The swap's button: the buttons' cut shape with two arrows passing, the one up on the left. Whoever's
+/// on the field still has to stay a while: the wait closes over it as the skill's cooldown does, with its
+/// seconds. With nobody to bring in, its arrows dim.
+fn draw_swap(
+    painter: &mut Painter<'_>,
+    layout: &ButtonLayout,
+    state: &ButtonState,
+    press: f32,
+    party: &PartyValues,
+    scale: f32,
+) {
+    let (size, glyph) = draw_button_shape(painter, layout, state, press, scale);
+    let cooldown = party.swap;
+    let waiting = cooldown.cooldown > 0.0;
+    let share = if waiting || !party.has_next() { COOLING_ICON } else { 1.0 };
+    let glyph = Paint::fill(faded(glyph, share));
+    let side = size.x;
+    // Along the icons' lean: their tops a half slant to the right.
+    let up = Vec2::new(SLANT * 0.5, -1.0).normalize();
+    let at = |across: f32, along: f32| layout.center + Vec2::new(across * side, 0.0) + up * (along * side);
+    let sprites = painter.sprites();
+    for (across, way) in [(-0.13, 1.0), (0.13, -1.0)] {
+        // A stem, and a head at its far end.
+        painter.bar_along(at(across, -0.11 * way), up, 0.34 * side, 0.09 * side, glyph);
+        painter.turned(sprites.wedge, at(across, 0.16 * way), Vec2::splat(0.26 * side), up * way, glyph);
+    }
+    if waiting {
+        let dark = Paint::fill(WAITING).swept(cooldown.cooldown);
+        painter.sprite(sprites.button, layout.center, size, SLANT, dark);
+        if let Some(seconds) = cooldown.seconds {
+            let digits = Paint::outlined(WHITE, OUTLINE, 1.6 * scale);
+            painter.digits(seconds, layout.center, 26.0 * scale, Align::Center, SLANT, digits);
+        }
+    }
+}
+
+/// The party's slots: for each member, a chip with its place in the party, its health beside it, and what's
+/// left of its rest. Whoever's on the field has a lit edge and a pointer; a fallen member is struck through.
+fn draw_party(
+    painter: &mut Painter<'_>,
+    layout: &PartyLayout,
+    party: &PartyValues,
+    text_scale: f32,
+    scale: f32,
+) {
+    let sprites = painter.sprites();
+    let size = Vec2::splat(layout.chip_half * 2.0);
+    for ((place, member), row) in party.members().iter().enumerate().zip(&layout.rows) {
+        let chip = row.chip;
+        let shadow = Paint::fill(SHADOW).grown(1.5 * scale).soft(3.0 * scale);
+        painter.sprite(sprites.button, chip, size, SLANT, shadow);
+        let edge = if member.on_field {
+            Paint::outlined(INK, WHITE, 2.4 * scale)
+        } else {
+            Paint::outlined(INK, faded(PALE, 0.8), 1.4 * scale)
+        };
+        painter.sprite(sprites.button, chip, size, SLANT, edge);
+        let resting = member.rest > 0.0 && !member.on_field && !member.down;
+        let shown = if member.down || resting { RESTING_NUMBER } else { 1.0 };
+        let number = Paint::outlined(faded(WHITE, shown), faded(OUTLINE, shown), 1.2 * scale);
+        painter.digits(place as u32 + 1, chip, layout.digit_height, Align::Center, SLANT, number);
+        if resting {
+            // Over its number, as the skill's wait is over its icon: on the chip's ink alone it wouldn't show.
+            painter.sprite(sprites.button, chip, size, SLANT, Paint::fill(WAITING).swept(member.rest));
+        }
+        if member.on_field {
+            // Pointing at it from the margin, in the player's colour.
+            let wedge = Paint::outlined(MINT, OUTLINE, 1.0 * scale);
+            let at = chip - Vec2::new(layout.chip_half + 9.0 * scale, 0.0);
+            painter.turned(sprites.wedge, at, Vec2::splat(11.0 * scale), Vec2::X, wedge);
+        }
+        if member.down {
+            // Struck through, leaning as everything does, so it reads without its colour.
+            let along = Vec2::new(1.0, -1.0 + SLANT).normalize();
+            let strike = Paint::outlined(ROSE, OUTLINE, 1.2 * scale);
+            painter.bar_along(chip, along, size.x * 1.3, 3.5 * scale, strike);
+        }
+        painter.bar(row.hp, SLANT, (0.0, 1.0), Paint::outlined(INK, faded(PALE, 0.7), scale));
+        painter.bar(row.hp, SLANT, (0.0, member.hp), Paint::fill(MINT));
+        if let (Some(seconds), false) = (member.seconds, member.on_field || member.down) {
+            let digits = Paint::outlined(WHITE, OUTLINE, 1.4 * scale);
+            let height = layout.digit_height * text_scale;
+            painter.digits(seconds, row.digits, height, Align::Left, SLANT, digits);
+        }
     }
 }
 

@@ -227,9 +227,11 @@ impl FightHud {
     /// there's no other clock.
     pub(crate) fn show_fight(&mut self, values: HudValues, time: Duration) {
         self.fight = Some(values);
-        // The ultimate's button takes a thumb while it's drawn: a live frame draws these values.
+        // The ultimate's and the swap's buttons take a thumb while they're drawn: a live frame draws these
+        // values.
         if self.options.mode == HudMode::Live {
             self.controls.show_ultimate(values.ultimate.is_some());
+            self.controls.show_swap(values.party.is_some());
         }
         self.stand_in = None;
         self.fight_time(time);

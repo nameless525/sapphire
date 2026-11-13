@@ -29,6 +29,8 @@ fn frames() -> Vec<(&'static str, UiMetrics)> {
         ("iPhone 17 Pro", frame(874.0, 402.0, NOTCHED)),
         ("iPad Air", frame(1180.0, 820.0, Insets { bottom: 20.0, ..Insets::default() })),
         ("a wide Android phone", frame(914.0, 411.0, Insets { left: 32.0, ..Insets::default() })),
+        // The narrowest phone a party's slots and swap stand on (M5 C9), and the smallest phone in landscape.
+        ("iPhone SE", frame(667.0, 375.0, Insets::default())),
         ("a desktop", frame(1920.0, 1080.0, Insets::default())),
         ("a tiny window", frame(320.0, 180.0, Insets::default())),
     ]
@@ -66,6 +68,11 @@ fn problems(name: &str, layout: &HudLayout) -> String {
         ("enemy's health", leaned(layout.enemy.hp)),
         ("enemy's poise", leaned(layout.enemy.poise)),
         ("the stick at rest", Rect::around(layout.stick.rest, Vec2::splat(layout.stick.radius))),
+        ("swap", leaned(layout.swap.rect())),
+        // A party's slots (M5 C9): each chip, and its health with room for two digits of seconds after it.
+        ("the party's first slot", party_row(layout, 0)),
+        ("the party's second slot", party_row(layout, 1)),
+        ("the party's third slot", party_row(layout, 2)),
     ];
     for (index, (what, rect)) in drawn.iter().enumerate() {
         if !safe.contains_rect(*rect) {
@@ -82,6 +89,7 @@ fn problems(name: &str, layout: &HudLayout) -> String {
         ("dodge", &layout.dodge),
         ("skill", &layout.skill),
         ("ultimate", &layout.ultimate),
+        ("swap", &layout.swap),
     ];
     for (index, (what, button)) in buttons.iter().enumerate() {
         if !safe.contains_rect(hit_circle(button)) {
@@ -113,6 +121,16 @@ fn problems(name: &str, layout: &HudLayout) -> String {
     problems
 }
 
+/// A party slot's row as it's drawn: its chip, leaning, to the end of two digits of its rest's seconds at
+/// the largest text after its health.
+fn party_row(layout: &HudLayout, place: usize) -> Rect {
+    let party = &layout.party;
+    let row = &party.rows[place];
+    let chip = leaned(Rect::around(row.chip, Vec2::splat(party.chip_half)));
+    let digits = row.digits.x + 2.0 * 0.71 * party.digit_height * 1.5;
+    Rect::new(chip.min, Vec2::new(digits, chip.max.y.max(row.hp.max.y)))
+}
+
 #[test]
 fn every_layout_holds_inside_the_safe_area_with_nothing_overlapping() {
     let failures: String =
@@ -137,6 +155,8 @@ fn anchors_keep_each_widget_s_distance_from_its_edge_across_aspect_ratios() {
             assert_eq!(safe.max - layout.dodge.center, first_safe.max - first.dodge.center);
             assert_eq!(safe.max - layout.skill.center, first_safe.max - first.skill.center);
             assert_eq!(safe.max - layout.ultimate.center, first_safe.max - first.ultimate.center);
+            assert_eq!(safe.max - layout.swap.center, first_safe.max - first.swap.center);
+            assert_eq!(layout.party.rows[0].chip - safe.min, first.party.rows[0].chip - first_safe.min);
             assert_eq!(layout.energy.min - safe.min, first.energy.min - first_safe.min);
             assert_eq!(layout.stick.rest - safe.min, first.stick.rest - first_safe.min);
             // The player's bars on the top left, the enemy's on the middle of the top.
@@ -586,6 +606,12 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
             others
         },
         ultimate: Some(UltimateValues { energy: f32::NAN, ready: false }),
+        party: Some({
+            let mut party =
+                PartyValues { swap: SkillValues { cooldown: -2.0, seconds: None }, ..PartyValues::default() };
+            party.push(PartyMember { hp: f32::NAN, rest: 4.0, ..PartyMember::default() });
+            party
+        }),
     };
     let good = sanitized(&bad);
     assert_eq!(good.others.bars(), &[0.0, 1.0]);
@@ -594,6 +620,8 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
     assert_eq!((enemy.hp, enemy.poise), (0.0, 1.0));
     assert_eq!(good.skill.cooldown, 0.0);
     assert_eq!(good.ultimate.map(|ultimate| ultimate.energy), Some(0.0));
+    let party = good.party.unwrap();
+    assert_eq!((party.members()[0].hp, party.members()[0].rest, party.swap.cooldown), (0.0, 1.0, 0.0));
     let full = sanitized(&HudValues {
         ultimate: Some(UltimateValues { energy: 3.0, ready: true }),
         ..HudValues::default()
@@ -797,4 +825,114 @@ fn a_health_bar_s_loss_ends_at_an_inked_edge_not_a_colour_alone() {
     let (edges, losses) = at(&mut hud, 16, 0.5);
     assert_eq!((edges - still, losses), (1, 1), "one edge, with the loss it bounds");
     assert_eq!(at(&mut hud, 3000, 0.5), (still, 0), "and none once it caught up");
+}
+
+/// A design from before the party (M5 C9) has no swap button or slots, and lays them out where the shipped
+/// one does.
+#[test]
+fn a_design_with_no_party_gets_the_shipped_one() {
+    let shipped = include_str!("../../default_hud.ron");
+    let design = HudDesign::shipped();
+    assert_eq!(design.swap, ButtonDesign::shipped_swap());
+    assert_eq!(design.party, PartyDesign::shipped());
+    let mut lines = shipped.lines();
+    let mut older = String::new();
+    // The swap's line, and the party's block to its close.
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("swap:") {
+            continue;
+        }
+        if trimmed.starts_with("party:") {
+            for inner in lines.by_ref() {
+                if inner.trim_start().starts_with("),") {
+                    break;
+                }
+            }
+            continue;
+        }
+        older.push_str(line);
+        older.push('\n');
+    }
+    assert!(!older.contains("swap:") && !older.contains("party:"), "{older}");
+    assert_eq!(&HudDesign::from_ron(&older).expect("reads"), design);
+    for (from, to, named) in [
+        (
+            "swap: (offset: (-6.0, -176.0), half: 26.0",
+            "swap: (offset: (-6.0, -176.0), half: 0.0",
+            "swap.half",
+        ),
+        ("row_height: 24.0", "row_height: -24.0", "party.row_height"),
+        ("row_gap: 4.0", "row_gap: NaN", "party.row_gap"),
+    ] {
+        let refused = HudDesign::from_ron(&shipped.replacen(from, to, 1)).expect_err(from);
+        assert!(refused.to_string().contains(named), "{from}: {refused}");
+    }
+}
+
+/// Three members: the first on the field, its swap's cooldown a quarter left; the second next, rested; the
+/// third resting, two seconds left.
+fn party() -> PartyValues {
+    let swap = SkillValues { cooldown: 0.25, seconds: Some(1) };
+    let mut party = PartyValues { swap, ..PartyValues::default() };
+    party.push(PartyMember { hp: 0.8, on_field: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 1.0, next: true, ..PartyMember::default() });
+    party.push(PartyMember { hp: 0.5, rest: 0.6, seconds: Some(2), ..PartyMember::default() });
+    party
+}
+
+/// What the HUD draws of a party (M5 C9): nothing without one, and with one a slot for each member and the
+/// swap's button, only adding to what it draws without. The slots draw with the bars, and the button only
+/// with the controls.
+#[test]
+fn a_party_draws_its_slots_and_swap_only_when_there_is_one() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(874.0, 402.0), NOTCHED));
+    let with = |party| HudValues { party, ..values() };
+    let swept = |quads: &[UiQuad]| -> Vec<f32> {
+        quads.iter().map(|quad| quad.sweep).filter(|&sweep| sweep > 0.0).collect()
+    };
+    let none = draw(&layout, &with(None)).quads;
+    let some = draw(&layout, &with(Some(party()))).quads;
+    let mut rest = some.iter();
+    assert!(none.iter().all(|quad| rest.any(|other| other == quad)), "it only adds");
+    // The third member's rest with the bars, then the skill's cooldown and the swap's with the controls.
+    assert_eq!(swept(&some), [0.6, 0.5, 0.25]);
+    let mints = |quads: &[UiQuad]| quads.iter().filter(|quad| quad.color == MINT).count();
+    assert_eq!(mints(&some) - mints(&none), 3 + 1, "three slots' health and the pointer");
+    // Everything it adds is inside its slots or its button.
+    let slots = Rect::new(
+        layout.party.rows[0].chip - Vec2::splat(layout.party.chip_half * 3.0),
+        layout.party.rows[2].digits + Vec2::new(60.0, layout.party.chip_half * 3.0),
+    );
+    let swap = Rect::around(layout.swap.center, Vec2::splat(layout.swap.half * 1.8));
+    for quad in some.iter().filter(|quad| !none.contains(quad)) {
+        let middle = quad_corners(quad).into_iter().fold(Vec2::ZERO, |sum, corner| sum + corner) / 4.0;
+        assert!(slots.contains(middle) || swap.contains(middle), "{middle} is in neither");
+    }
+
+    // A pad in use: the slots stay, the button goes.
+    let mut hud = CombatHud::new();
+    let actions = TouchActions::default();
+    hud.show_controls(false);
+    hud.update(ms(0), &with(Some(party())), &actions);
+    let mut list = UiDrawList::default();
+    hud.draw(&layout, &actions, &mut list);
+    assert_eq!(swept(&list.quads), [0.6], "the third's rest, and no skill or swap");
+}
+
+/// A fallen member is struck through, a mark of its own shape, and shows no rest; with nobody to bring in
+/// and no cooldown, the swap has no wedge and its arrows dim.
+#[test]
+fn a_fallen_member_is_struck_through_and_nobody_to_bring_in_dims_the_swap() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let mut down = PartyValues::default();
+    down.push(PartyMember { hp: 0.4, on_field: true, ..PartyMember::default() });
+    down.push(PartyMember { hp: 0.0, down: true, rest: 0.5, seconds: Some(3), ..PartyMember::default() });
+    assert!(!down.has_next());
+    let quads = draw(&layout, &HudValues { party: Some(down), ..HudValues::default() }).quads;
+    let strikes = quads.iter().filter(|quad| quad.color == ROSE).count();
+    assert_eq!(strikes, 1, "one strike, and no foe's bar");
+    assert!(quads.iter().all(|quad| quad.sweep == 0.0), "no rest drawn for the fallen, no swap's wait");
+    let dimmed = faded(WHITE, COOLING_ICON);
+    assert_eq!(quads.iter().filter(|quad| quad.color == dimmed).count(), 4, "two stems and two heads");
 }

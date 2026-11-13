@@ -44,7 +44,7 @@ A single time-of-day key moves the sky, fog, ambient light, shadow tint, the cha
 Moves are data: hit windows, hitstop, perfect-dodge slow motion, cancels, party swaps, enemies and a boss, with combat screen effects and an ultimate that cuts to its own cinematic.
 </td>
 <td width="50%" valign="top">
-<img src="docs/media/feature-story.jpg" alt="A dialogue panel with four replies in Japanese, over the character's face at golden hour">
+<img src="docs/media/feature-story.jpg" alt="The court gate's cutscene: the gate's warden, a horned skeleton with a curved blade, mid-line, with a Japanese subtitle and Skip and Pause buttons">
 <h3>Cinematics and story</h3>
 Timelines, a camera director, dialogue, subtitles and scripted encounters in Luau, all authored as documents: a new enemy, encounter, boss or cutscene needs no Rust.
 </td>
@@ -68,7 +68,7 @@ Four quality tiers with a ladder that steps down under heat, ASTC textures, a to
 <img src="docs/media/gallery-effects.jpg" width="32%" alt="A sword arc, sparks and flares around the character at night">
 <img src="docs/media/gallery-impact.jpg" width="32%" alt="A manga impact frame: ink speed lines over a posterized frame of a guard-breaking hit">
 </p>
-<p align="center"><sub>Every image here is a frame the engine drew, captured offscreen: <a href="docs/media/README.md">how each was made</a>.</sub></p>
+<p align="center"><sub>Every screenshot here is a frame the engine drew, captured offscreen: <a href="docs/media/README.md">how each was made</a>.</sub></p>
 
 ### Under the hood
 
@@ -94,18 +94,7 @@ cargo xtask run --platform desktop --release -- --look-dev hero  # the look-dev 
 
 Sixty-one crates in strict layers, which `cargo xtask check-layers` enforces: a crate depends only on the layers below it, and the shipping game never links the development tools.
 
-```mermaid
-flowchart TB
-    game["<b>Game</b> · game_app · game_flow · game_combat · game_ui"]
-    stage["<b>Composition</b> · sapphire_stage · sapphire_controls · sapphire_cues"]
-    sim["<b>Gameplay and world</b> · gameplay · world · camera · sequencer · script · save · patch"]
-    sys["<b>Systems</b> · render · anim · physics · audio · vfx · ui · input · nav · time of day"]
-    data["<b>Data</b> · assets · ecs · rhi · reflect · serialize · zone · loc · dialogue · timeline"]
-    base["<b>Foundation</b> · core · math · platform · jobs · time · crash"]
-    game --> stage --> sim --> sys --> data --> base
-    tools["<b>Tools</b> · pipeline · editor · testkit · replay · symbols · xtask"] -. cook and check .-> data
-    dev["<b>Development only</b> · debug · hot reload · live link · playtest"] -. attach in dev builds .-> stage
-```
+<p align="center"><img src="docs/media/architecture.svg" alt="The crate layers: L6 the game and its apps, L5 the stage, L4 the framework, L3 the subsystems, L2 the services, L1 the platform and L0 the foundation, with the tools and the development-only crates beside them" width="100%"></p>
 
 Each frame, the fixed step advances the simulation, then resolves everything the renderer needs into a `FramePacket`; the renderer never reads the world directly. [Architecture](docs/architecture.md) walks through the frame, the content pipeline and the test pyramid.
 

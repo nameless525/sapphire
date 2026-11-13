@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 432" width="960" height="432" role="img" aria-labelledby="title desc">
+  <title id="title">Sapphire's crate layers</title>
+  <desc id="desc">Seven runtime layers from L0 Foundation at the bottom to L6, the game and its apps, at the top, each depending only on the layers below it. Beside them, the tools that never ship and the crates only development builds link.</desc>
+  <style>
+    .band { rx: 10px; }
+    .layer { font: 700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #ffffff; opacity: .62; letter-spacing: .06em; }
+    .name { font: 700 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #ffffff; }
+    .crates { font: 500 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #ffffff; opacity: .93; }
+    .side-name { font: 700 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #ffffff; }
+    .side-note { font: 500 11.5px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #ffffff; opacity: .7; }
+    .side-crate { font: 500 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #ffffff; opacity: .93; }
+  </style>
+  <defs>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".10"/>
+      <stop offset=".55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- L6 to L0, top to bottom -->
+  <g>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#0377b8"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L6</text>
+    <text class="name" x="20" y="42">Game and apps</text>
+    <text class="crates" x="160" y="32">game_app · sandbox · game_flow · game_combat · game_ui</text>
+  </g>
+  <g transform="translate(0 62)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#0a6bb5"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L5</text>
+    <text class="name" x="20" y="42">Stage</text>
+    <text class="crates" x="160" y="32">stage · controls · cues</text>
+  </g>
+  <g transform="translate(0 124)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#135fb1"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L4</text>
+    <text class="name" x="20" y="42">Framework</text>
+    <text class="crates" x="160" y="32">gameplay · world · camera · sequencer · script · save · patch</text>
+  </g>
+  <g transform="translate(0 186)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#1b53ab"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L3</text>
+    <text class="name" x="20" y="42">Subsystems</text>
+    <text class="crates" x="160" y="23">render · tod · anim · body_pose · physics · audio</text>
+    <text class="crates" x="160" y="41">vfx · ui · text · input · nav</text>
+  </g>
+  <g transform="translate(0 248)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#2148a3"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L2</text>
+    <text class="name" x="20" y="42">Services</text>
+    <text class="crates" x="160" y="23">assets · ecs · rhi · reflect · serialize · strings · loc · look</text>
+    <text class="crates" x="160" y="41">moves · colliders · zone · navmesh · timeline · dialogue · bytecode</text>
+  </g>
+  <g transform="translate(0 310)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#233f96"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L1</text>
+    <text class="name" x="20" y="42">Platform</text>
+    <text class="crates" x="160" y="32">platform · jobs · time · crash</text>
+  </g>
+  <g transform="translate(0 372)">
+    <rect class="band" x="0" y="0" width="700" height="54" fill="#1e3a8a"/>
+    <rect class="band" x="0" y="0" width="700" height="54" fill="url(#sheen)"/>
+    <text class="layer" x="20" y="22">L0</text>
+    <text class="name" x="20" y="42">Foundation</text>
+    <text class="crates" x="160" y="32">core · math</text>
+  </g>
+
+  <!-- Beside the stack -->
+  <g transform="translate(716 0)">
+    <rect x="0" y="0" width="244" height="209" rx="10" fill="#334155"/>
+    <text class="side-name" x="18" y="30">Tools</text>
+    <text class="side-note" x="18" y="48">never shipped</text>
+    <text class="side-crate" x="18" y="76">pipeline · editor</text>
+    <text class="side-crate" x="18" y="98">testkit · replay</text>
+    <text class="side-crate" x="18" y="120">symbols · soundgen</text>
+    <text class="side-crate" x="18" y="142">xtask</text>
+  </g>
+  <g transform="translate(716 217)">
+    <rect x="1" y="1" width="242" height="207" rx="10" fill="#3b3f52" stroke="#22d3ee" stroke-opacity=".55" stroke-width="2" stroke-dasharray="6 5"/>
+    <text class="side-name" x="18" y="30">Development only</text>
+    <text class="side-note" x="18" y="48">linked by dev builds, never shipped</text>
+    <text class="side-crate" x="18" y="76">debug · livelink</text>
+    <text class="side-crate" x="18" y="98">hot_reload · watch</text>
+    <text class="side-crate" x="18" y="120">playtest</text>
+    <text class="side-crate" x="18" y="142">document</text>
+    <text class="side-crate" x="18" y="164">synthetic_zone</text>
+  </g>
+</svg>

@@ -925,7 +925,7 @@ impl Renderer {
                 }),
             }],
         });
-        let meshes = MeshPool::new(&device);
+        let meshes = MeshPool::new(&device, gpu.lost_flag());
         ambient.set_character_buffer(characters.buffer());
         let frame_bind_groups = create_frame_bind_groups(
             &device,
@@ -1299,6 +1299,15 @@ impl Renderer {
     pub fn compact_meshes(&mut self) {
         self.meshes.ask_compaction();
         self.update_pool_stats();
+    }
+
+    /// Sends mesh uploads through the mesh pool's staging ring (`true`, the default) or by
+    /// `Queue::write_buffer` alone, which the ring was measured against (M5 D9). For measurements.
+    #[doc(hidden)]
+    pub fn stage_mesh_uploads(&mut self, ring: bool) {
+        if !self.device_lost {
+            self.meshes.stage_uploads(&self.queue, ring);
+        }
     }
 
     /// Whether a compaction asked for isn't over: the last frame prepared left the pool above its floor.
@@ -2651,6 +2660,10 @@ impl Renderer {
     /// ([`PrepassTargets`]), as temporal AA does.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
+        // Meshes uploaded through the staging ring land before the frame that may draw them.
+        if !self.device_lost {
+            self.meshes.end_uploads(&self.queue);
+        }
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
         // A texture raised after `prepare` is bound already: its copies go ahead of this frame's.
         self.mip_streaming.submit(&self.queue);

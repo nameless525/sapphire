@@ -22,6 +22,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 mod insets;
 mod lost_frames;
 mod sequences;
+mod uploads;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 

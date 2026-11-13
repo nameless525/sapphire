@@ -76,6 +76,11 @@ impl GrowableBuffer {
         self.growths
     }
 
+    /// Whether [`Self::reserve`] of `needed` bytes would replace the buffer, copying what it keeps.
+    pub(crate) fn grows(&self, needed: u64) -> bool {
+        needed > self.buffer.size()
+    }
+
     /// A new buffer of this one's label and use that holds at most `max_size` bytes, starting at
     /// `capacity`, for tests of a full one. Bind groups that hold this one must be rebuilt.
     #[cfg(test)]

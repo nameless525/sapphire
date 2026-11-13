@@ -44,6 +44,10 @@
 //! Its old buffers wait for the frame fence like freed ranges, since frames already submitted read
 //! them, and a freed range still waiting in the old layout goes with them.
 //!
+//! A mesh's bytes reach the buffers through a ring of staging buffers the pool keeps, copied on the
+//! GPU before the next frame, within a budget a frame (the `uploads` module), rather than a staging
+//! buffer made for each write.
+//!
 //! # Skinned and morphed meshes (M1 R2)
 //!
 //! A mesh with a skin or morph targets is never drawn from its own positions and shading:
@@ -67,6 +71,9 @@
 //! deltas, deterministically, with no atomics and no pass per target. A vertex no target moves
 //! (all of a body, usually) costs one read of its two offsets.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use sapphire_assets::mesh::{
     ArchivedInfluences, ArchivedMesh, ArchivedSlotMaterial, MorphDelta, PositionFormat, VertexFoliage,
     VertexShading, VertexSurface,
@@ -80,6 +87,7 @@ use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
 use crate::pipelines::format_index;
 use crate::retire::{Retiring, new_generation};
+use uploads::Uploads;
 
 const SHADING_BYTES: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_BYTES: u64 = size_of::<VertexSurface>() as u64;
@@ -465,10 +473,12 @@ pub(crate) struct MeshPool {
     retired_buffers: Retiring<wgpu::Buffer>,
     /// A compaction was asked for, and the pool isn't at its floor yet.
     compacting: bool,
+    /// How meshes' bytes reach the buffers (the `uploads` module).
+    uploads: Uploads,
 }
 
 impl MeshPool {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, lost: Arc<AtomicBool>) -> Self {
         let limits = device.limits();
         let max_storage = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         Self {
@@ -517,7 +527,19 @@ impl MeshPool {
             layouts: [0; PARTS],
             retired_buffers: Retiring::default(),
             compacting: false,
+            uploads: Uploads::new(device, lost),
         }
+    }
+
+    /// Submits the uploads staged so far and starts a new frame's budget: before the frame that may
+    /// draw them is submitted.
+    pub(crate) fn end_uploads(&mut self, queue: &wgpu::Queue) {
+        self.uploads.end_frame(queue);
+    }
+
+    /// Sends uploads through the staging ring (`true`) or by `Queue::write_buffer` alone.
+    pub(crate) fn stage_uploads(&mut self, queue: &wgpu::Queue, ring: bool) {
+        self.uploads.set_ring(queue, ring);
     }
 
     /// Adds a mesh whose material slots draw with `materials`, one per slot: a static mesh's
@@ -715,9 +737,12 @@ impl MeshPool {
             Some((bytes, mut source)) => {
                 let offset = u64::from(first_vertex) * 4;
                 let end = u64::from(self.deformable_words.end()) * 4;
+                if self.deformable.grows(end) {
+                    self.uploads.flush(queue);
+                }
                 moves.deformable =
                     self.deformable.reserve(device, queue, end, u64::from(vertices_end_before) * 4);
-                write(queue, self.deformable.buffer(), offset, &bytes);
+                self.uploads.write(device, queue, self.deformable.buffer(), offset, &bytes);
                 source.offset_by(first_vertex);
                 self.deformable_used += vertex_len;
                 let identity =
@@ -735,8 +760,17 @@ impl MeshPool {
                     .zip(streams_bytes)
                     .zip(stream_data)
                 {
+                    if buffer.grows(end * stride) {
+                        self.uploads.flush(queue);
+                    }
                     buffer.reserve(device, queue, end * stride, u64::from(vertices_end_before) * stride);
-                    write(queue, buffer.buffer(), u64::from(first_vertex) * stride, bytes);
+                    self.uploads.write(
+                        device,
+                        queue,
+                        buffer.buffer(),
+                        u64::from(first_vertex) * stride,
+                        bytes,
+                    );
                 }
                 slab.used += vertex_len;
                 (
@@ -747,13 +781,21 @@ impl MeshPool {
         };
 
         let index_end = u64::from(self.index_ranges.end()) * INDEX_BYTES;
+        if self.indices.grows(index_end) {
+            self.uploads.flush(queue);
+        }
         self.indices.reserve(device, queue, index_end, u64::from(indices_end_before) * INDEX_BYTES);
-        write(queue, self.indices.buffer(), u64::from(first_index) * INDEX_BYTES, mesh.index_bytes());
+        let at = u64::from(first_index) * INDEX_BYTES;
+        self.uploads.write(device, queue, self.indices.buffer(), at, mesh.index_bytes());
         self.indices_used += index_len;
         if foliage_len > 0 {
             let end = u64::from(self.foliage_ranges.end()) * FOLIAGE_BYTES;
+            if self.foliage.grows(end) {
+                self.uploads.flush(queue);
+            }
             self.foliage.reserve(device, queue, end, u64::from(foliage_end_before) * FOLIAGE_BYTES);
-            write(queue, self.foliage.buffer(), u64::from(first_foliage) * FOLIAGE_BYTES, foliage_bytes);
+            let at = u64::from(first_foliage) * FOLIAGE_BYTES;
+            self.uploads.write(device, queue, self.foliage.buffer(), at, foliage_bytes);
             self.foliage_used += foliage_len;
         }
 
@@ -1063,13 +1105,8 @@ fn count(len: usize, what: &'static str) -> Result<u32, RenderError> {
     u32::try_from(len).map_err(|_| RenderError::MeshPoolFull(what))
 }
 
-fn write(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
-    if !bytes.is_empty() {
-        queue.write_buffer(buffer, offset, bytes);
-    }
-}
-
 mod compact;
+mod uploads;
 
 #[cfg(test)]
 mod gpu_tests;

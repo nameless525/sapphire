@@ -87,7 +87,9 @@ impl MeshPool {
             moves.get_or_insert_default().deformable |= part == DEFORMABLE;
         }
         if let Some(encoder) = encoder {
-            // Queue writes made since the last submission land first, so the copies take them.
+            // Uploads staged and queue writes made since the last submission land first, so the copies
+            // take them.
+            self.uploads.flush(queue);
             queue.submit([encoder.finish()]);
             tracing::debug!(
                 target: crate::LOG_TARGET,

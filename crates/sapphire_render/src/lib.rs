@@ -800,9 +800,7 @@
 //!
 //! # Later milestones
 //!
-//! - **M1:** mesh
-//!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
-//!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
+//! - **M1:** material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
 //!   M1 W4). The [`FramePacket`] grows with the systems that
 //!   feed it: VFX and UI, plus UI-inset views (shadow views are the renderer's own,
 //!   derived from the key light).

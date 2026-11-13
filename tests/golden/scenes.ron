@@ -1298,18 +1298,21 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--face", "happy"],
+                ci_seconds: (lavapipe: 40.9, warp: 65.7),
             ),
             (
                 name: "face-angry",
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--face", "angry"],
+                ci_seconds: (lavapipe: 37.4, warp: 81.4),
             ),
             (
                 name: "face-surprised",
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--face", "surprised"],
+                ci_seconds: (lavapipe: 49.6, warp: 81.5),
             ),
             // The seam lip-sync drives (M5 C6): the rest face with its mouth open as a voice's envelope would
             // have it, `aa` over the resting expression.
@@ -1318,6 +1321,7 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--face-mouth", "0.8"],
+                ci_seconds: (lavapipe: 40.9, warp: 79.9),
             ),
             // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
             // hero shot's dusk, every landed feature on but spring bones, which came later, at fixed ticks

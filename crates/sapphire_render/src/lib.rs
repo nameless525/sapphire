@@ -936,7 +936,7 @@ pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
-pub use mesh_pool::MeshHandle;
+pub use mesh_pool::{MeshHandle, MeshPoolStats};
 pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,
 };

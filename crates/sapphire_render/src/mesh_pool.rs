@@ -29,9 +29,20 @@
 //! Each buffer hands out ranges first fit ([`RangeAllocator`]), and what's given back goes to later
 //! uploads: a mesh freed ([`MeshPool::free`], M3 W3) gives its ranges and its record, and a mesh
 //! replaced in place (hot reload, live link: [`MeshPool::replace`]) its old ranges, under the same
-//! handle. Either way the ranges wait until no frame can be reading them (the `retire` module). The
-//! buffers themselves never shrink: what's freed is room to reuse, and [`MeshPool::capacity_bytes`]
-//! says what they hold on to.
+//! handle. Either way the ranges wait until no frame can be reading them (the `retire` module).
+//! What's freed is room to reuse: the buffers grow and never shrink on their own, and
+//! [`MeshPool::capacity_bytes`] says what they hold on to.
+//!
+//! # Giving room back (M5 D9)
+//!
+//! Asked to ([`MeshPool::ask_compaction`]: a zone trip's arrival, under its wipe), the pool compacts
+//! (the `compact` module): each of its parts, a range allocator and the buffers it hands out (a
+//! slab's three streams, the deformable buffer, the indices, the foliage stream), goes to new buffers
+//! at its floor with its live ranges packed in order, by GPU copies, a few parts a frame. A part's
+//! *floor* is the room its live ranges need, rounded up to the growth step (a power of two) and never
+//! below what it was made with ([`GrowableBuffer::floor`]): what growing from empty would have reached.
+//! Its old buffers wait for the frame fence like freed ranges, since frames already submitted read
+//! them, and a freed range still waiting in the old layout goes with them.
 //!
 //! # Skinned and morphed meshes (M1 R2)
 //!
@@ -105,6 +116,27 @@ impl MeshHandle {
     pub(crate) fn index(self) -> usize {
         self.index as usize
     }
+}
+
+/// What the mesh pool holds past what's in use, and what it's given back (M5 D9, rule R9), in
+/// [`RenderStats::mesh_pool`](crate::RenderStats::mesh_pool).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshPoolStats {
+    /// Bytes its buffers would hold at their floor: the room the meshes it holds need, each part
+    /// rounded up to its growth step (a power of two), never below what it started with. A compaction
+    /// ([`Renderer::compact_meshes`](crate::Renderer::compact_meshes)) brings
+    /// [`RenderStats::mesh_pool_capacity`](crate::RenderStats::mesh_pool_capacity) down to it.
+    pub floor: u64,
+    /// Bytes of the buffers compactions replaced that a frame not yet finished may read: on top of the
+    /// capacity until the fence lets them go.
+    pub retired: u64,
+    /// Times one of its buffers grew, since the renderer was created (also in
+    /// [`RenderStats::buffer_growths`](crate::RenderStats::buffer_growths)).
+    pub growths: u32,
+    /// Times one of its parts was compacted, since the renderer was created.
+    pub compactions: u32,
+    /// A compaction asked for isn't over.
+    pub compacting: bool,
 }
 
 /// A submesh with its indices resolved to pool-global positions and its material slot to the
@@ -184,21 +216,61 @@ pub(crate) enum MeshStreams {
     Deformable(DeformSource),
 }
 
+/// The pool's parts, each a range allocator and the buffers it hands out ranges of, which compact on
+/// their own: the slabs, by [`PositionFormat::ALL`] entry, then these.
+const DEFORMABLE: usize = 2;
+const INDICES: usize = 3;
+const FOLIAGE: usize = 4;
+const PARTS: usize = 5;
+
 /// A freed mesh's ranges, on their way back to the free lists.
 #[derive(Clone, Copy, Debug)]
 struct RetiredRanges {
     /// Its slab's format; `None` for the deformable buffer.
     slab: Option<PositionFormat>,
     placement: Placement,
+    /// Each part's layout when they were retired: a range of a part compacted since went with its old
+    /// buffers, and has nothing to go back to.
+    layouts: [u32; PARTS],
 }
 
 impl RetiredRanges {
-    fn of(record: &MeshRecord) -> Self {
+    fn of(record: &MeshRecord, layouts: [u32; PARTS]) -> Self {
         let slab = match record.streams {
             MeshStreams::Slab { format, .. } => Some(format),
             MeshStreams::Deformable(_) => None,
         };
-        Self { slab, placement: record.placement }
+        Self { slab, placement: record.placement, layouts }
+    }
+}
+
+impl MeshRecord {
+    /// The part its vertices are in.
+    fn vertex_part(&self) -> usize {
+        match self.streams {
+            MeshStreams::Slab { format, .. } => format_index(format),
+            MeshStreams::Deformable(_) => DEFORMABLE,
+        }
+    }
+
+    /// Its range of `part`, as `(start, length)`, if it has one there.
+    fn range(&self, part: usize) -> Option<(u32, u32)> {
+        let range = match part {
+            INDICES => self.placement.indices,
+            FOLIAGE => self.placement.foliage,
+            _ if part == self.vertex_part() => self.placement.vertices,
+            _ => return None,
+        };
+        (range.1 > 0).then_some(range)
+    }
+
+    /// How much of each part it holds.
+    fn lengths(&self) -> [u64; PARTS] {
+        let mut lengths = [0; PARTS];
+        lengths[self.vertex_part()] = u64::from(self.placement.vertices.1);
+        lengths[INDICES] = u64::from(self.placement.indices.1);
+        lengths[FOLIAGE] = u64::from(self.placement.foliage.1);
+        lengths
     }
 }
 
@@ -385,6 +457,14 @@ pub(crate) struct MeshPool {
     retired: Retiring<RetiredRanges>,
     /// Meshes given back since the pool was created.
     freed: u64,
+    /// Per part, what its current meshes hold of it, in its units: what its floor is made from.
+    live: [u64; PARTS],
+    /// Per part, how many times it's been compacted: which layout a retired range belongs to.
+    layouts: [u32; PARTS],
+    /// Buffers a compaction replaced, until no frame can be reading them.
+    retired_buffers: Retiring<wgpu::Buffer>,
+    /// A compaction was asked for, and the pool isn't at its floor yet.
+    compacting: bool,
 }
 
 impl MeshPool {
@@ -433,6 +513,10 @@ impl MeshPool {
             dying: Vec::new(),
             retired: Retiring::default(),
             freed: 0,
+            live: [0; PARTS],
+            layouts: [0; PARTS],
+            retired_buffers: Retiring::default(),
+            compacting: false,
         }
     }
 
@@ -450,6 +534,7 @@ impl MeshPool {
             return Err(RenderError::MeshPoolFull("meshes"));
         }
         let (record, moves) = self.place(device, queue, mesh, materials)?;
+        self.count_live(&record, true);
         let index = self.free_records.pop().unwrap_or_else(|| {
             self.records.push(MeshRecord::gone());
             self.generations.push(self.epoch);
@@ -510,7 +595,8 @@ impl MeshPool {
             let record = std::mem::replace(&mut self.records[handle.index()], MeshRecord::gone());
             self.generations[handle.index()] = new_generation();
             self.free_records.push(handle.index);
-            self.retired.push(last_read, RetiredRanges::of(&record));
+            self.count_live(&record, false);
+            self.retired.push(last_read, RetiredRanges::of(&record, self.layouts));
             self.freed += 1;
             gone(&record.slots);
             false
@@ -518,20 +604,36 @@ impl MeshPool {
         self.dying = dying;
     }
 
-    /// Hands back the ranges of what no frame up to `finished` was the last to read. Returns whether
-    /// any went.
+    /// Hands back the ranges of what no frame up to `finished` was the last to read, and gives the
+    /// buffers a compaction replaced back to the device. Returns whether any went.
     pub(crate) fn release_finished(&mut self, finished: u64) -> bool {
         let mut released = false;
         while let Some(ranges) = self.retired.pop_finished(finished) {
             self.release(ranges);
             released = true;
         }
+        while let Some(buffer) = self.retired_buffers.pop_finished(finished) {
+            // At once rather than when the last handle goes: no frame reads it, and nothing may.
+            buffer.destroy();
+            released = true;
+        }
         released
     }
 
-    /// Dying meshes and retired ranges still to go.
+    /// Dying meshes, retired ranges and replaced buffers still to go.
     pub(crate) fn retiring(&self) -> usize {
-        self.dying.len() + self.retired.len()
+        self.dying.len() + self.retired.len() + self.retired_buffers.len()
+    }
+
+    /// Counts `record`'s ranges in (`true`) or out of the parts' live room.
+    fn count_live(&mut self, record: &MeshRecord, live: bool) {
+        for (part, length) in self.live.iter_mut().zip(record.lengths()) {
+            if live {
+                *part += length;
+            } else {
+                *part -= length;
+            }
+        }
     }
 
     /// Meshes with a current handle.
@@ -558,8 +660,10 @@ impl MeshPool {
         last_read: u64,
     ) -> Result<(PoolMoves, MeshRecord), RenderError> {
         let (record, moves) = self.place(device, queue, mesh, materials)?;
+        self.count_live(&record, true);
         let old = std::mem::replace(&mut self.records[handle.index()], record);
-        self.retired.push(last_read, RetiredRanges::of(&old));
+        self.count_live(&old, false);
+        self.retired.push(last_read, RetiredRanges::of(&old, self.layouts));
         Ok((moves, old))
     }
 
@@ -751,28 +855,35 @@ impl MeshPool {
         indices && vertices
     }
 
-    /// Frees `ranges`.
+    /// Frees `ranges`, those of a part still in the layout they were retired from: a part compacted
+    /// since left them out.
     fn release(&mut self, ranges: RetiredRanges) {
         let Placement {
             vertices: (first_vertex, vertex_len),
             indices: (first_index, index_len),
             foliage: (first_foliage, foliage_len),
         } = ranges.placement;
+        let current = |part: usize| ranges.layouts[part] == self.layouts[part];
         match ranges.slab {
-            Some(format) => {
+            Some(format) if current(format_index(format)) => {
                 let slab = &mut self.slabs[format_index(format)];
                 slab.vertices.free(first_vertex, vertex_len);
                 slab.used -= vertex_len;
             }
-            None => {
+            None if current(DEFORMABLE) => {
                 self.deformable_words.free(first_vertex, vertex_len);
                 self.deformable_used -= vertex_len;
             }
+            _ => {}
         }
-        self.index_ranges.free(first_index, index_len);
-        self.indices_used -= index_len;
-        self.foliage_ranges.free(first_foliage, foliage_len);
-        self.foliage_used -= foliage_len;
+        if current(INDICES) {
+            self.index_ranges.free(first_index, index_len);
+            self.indices_used -= index_len;
+        }
+        if current(FOLIAGE) {
+            self.foliage_ranges.free(first_foliage, foliage_len);
+            self.foliage_used -= foliage_len;
+        }
     }
 
     pub(crate) fn records(&self) -> &[MeshRecord] {
@@ -811,8 +922,9 @@ impl MeshPool {
             + u64::from(self.foliage_used) * FOLIAGE_BYTES
     }
 
-    /// Bytes the pool's buffers hold, in use or not: they never shrink, so this is the most any walk
-    /// has needed, with what growing by doubling leaves over.
+    /// Bytes the pool's buffers hold, in use or not: the most any walk since the last compaction has
+    /// needed, with what growing by doubling leaves over. Buffers a compaction replaced count apart
+    /// ([`Self::retired_bytes`]).
     pub(crate) fn capacity_bytes(&self) -> u64 {
         self.slabs.iter().map(Slab::capacity_bytes).sum::<u64>()
             + self.deformable.buffer().size()
@@ -956,6 +1068,8 @@ fn write(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) 
         queue.write_buffer(buffer, offset, bytes);
     }
 }
+
+mod compact;
 
 #[cfg(test)]
 mod gpu_tests;

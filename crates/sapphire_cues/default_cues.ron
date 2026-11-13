@@ -205,7 +205,18 @@
             // crossing any named phase, so a new boss's phases are marked with no row of their own.
             (cue: "telegraph", effects: [(effect: "telegraph_mark", at: Crown)]),
             (cue: "dodge_window", effects: [(effect: "dodge_glint", at: Crown)]),
-            (cue: "named_phase", effects: [(effect: "phase_mark", at: Crown)]),
+            // A named phase tears the picture as well (M5 L9): a glitch, a full-screen flash, with a CRT's
+            // lines fading after it.
+            (
+                cue: "named_phase",
+                effects: [(effect: "phase_mark", at: Crown)],
+                screen: Some((preset: "phase_shift", center: Preset)),
+            ),
+            // The ultimate's cinematic (M5 L9), at the places its timeline names: the sword rising, the world
+            // printed in a halftone behind the character, and the chop, a white flash over the world. The
+            // blow's own hit fires its row as well.
+            (cue: "ultimate_raise", screen: Some((preset: "ultimate_raise", center: Preset))),
+            (cue: "ultimate_chop", screen: Some((preset: "ultimate_chop", center: Preset))),
         ],
     ),
 )

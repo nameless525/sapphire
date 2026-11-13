@@ -3,7 +3,8 @@
 use sapphire_math::color::mix_oklab;
 use sapphire_math::{Vec2, Vec3};
 use sapphire_render::{
-    ChromaticAberration, Duotone, EffectCoverage, Inversion, PostEffects, RadialBlur, SpeedLines,
+    ChromaticAberration, Crt, Desaturation, Duotone, EffectCoverage, Flash, Glitch, Halftone, Inversion,
+    PostEffects, RadialBlur, SpeedLines,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,11 @@ pub enum ScreenEffect {
     Inversion(InversionEffect),
     Duotone(DuotoneEffect),
     SpeedLines(SpeedLinesEffect),
+    Desaturation(DesaturationEffect),
+    Halftone(HalftoneEffect),
+    Flash(FlashEffect),
+    Glitch(GlitchEffect),
+    Crt(CrtEffect),
 }
 
 /// What [`ScreenEffect`] is, for stats and the overlay.
@@ -29,6 +35,11 @@ pub enum EffectKind {
     Inversion,
     Duotone,
     SpeedLines,
+    Desaturation,
+    Halftone,
+    Flash,
+    Glitch,
+    Crt,
 }
 
 impl EffectKind {
@@ -39,7 +50,21 @@ impl EffectKind {
             Self::Inversion => "inversion",
             Self::Duotone => "duotone",
             Self::SpeedLines => "speed lines",
+            Self::Desaturation => "desaturation",
+            Self::Halftone => "halftone",
+            Self::Flash => "flash",
+            Self::Glitch => "glitch",
+            Self::Crt => "CRT",
         }
+    }
+
+    /// Whether it changes the whole frame at once, which the cue dispatcher counts as a full-screen flash (M4
+    /// A3): an inversion, a duotone, and the effects pack's (M5 L9) flash, glitch and desaturation. The
+    /// desaturation keeps the light, but it turns a saturated red grey, which is WCAG 2.3.1's red flash, so
+    /// it counts too (without it the ward's walk read a red flash at default). The halftone and the CRT
+    /// darken the frame as looks that fade in over tenths of a second; post's held swing covers them all.
+    pub fn flashes(self) -> bool {
+        matches!(self, Self::Inversion | Self::Duotone | Self::Flash | Self::Glitch | Self::Desaturation)
     }
 }
 
@@ -51,6 +76,11 @@ impl ScreenEffect {
             Self::Inversion(_) => EffectKind::Inversion,
             Self::Duotone(_) => EffectKind::Duotone,
             Self::SpeedLines(_) => EffectKind::SpeedLines,
+            Self::Desaturation(_) => EffectKind::Desaturation,
+            Self::Halftone(_) => EffectKind::Halftone,
+            Self::Flash(_) => EffectKind::Flash,
+            Self::Glitch(_) => EffectKind::Glitch,
+            Self::Crt(_) => EffectKind::Crt,
         }
     }
 
@@ -62,7 +92,13 @@ impl ScreenEffect {
             Self::RadialBlur(blur) => blur.center = center,
             Self::ChromaticAberration(aberration) => aberration.center = center,
             Self::SpeedLines(lines) => lines.center = center,
-            Self::Inversion(_) | Self::Duotone(_) => {}
+            Self::Inversion(_)
+            | Self::Duotone(_)
+            | Self::Desaturation(_)
+            | Self::Halftone(_)
+            | Self::Flash(_)
+            | Self::Glitch(_)
+            | Self::Crt(_) => {}
         }
         self
     }
@@ -130,16 +166,80 @@ impl ScreenEffect {
                     return Err(("speed_lines.rate", "must be within 0..=120 redraws a second"));
                 }
             }
+            Self::Desaturation(desaturation) => {
+                if !unit(desaturation.amount) {
+                    return Err(("desaturation.amount", "must be within 0..=1"));
+                }
+                if !color(desaturation.tint) {
+                    return Err(("desaturation.tint", "must be finite and not negative"));
+                }
+            }
+            Self::Halftone(halftone) => {
+                if !unit(halftone.amount) {
+                    return Err(("halftone.amount", "must be within 0..=1"));
+                }
+                if !(0.002..=0.25).contains(&halftone.cell) {
+                    return Err(("halftone.cell", "must be within 0.002..=0.25 frame heights"));
+                }
+                if !(-360.0..=360.0).contains(&halftone.angle_degrees) {
+                    return Err(("halftone.angle_degrees", "must be within -360..=360"));
+                }
+                if !color(halftone.ink) {
+                    return Err(("halftone.ink", "must be finite and not negative"));
+                }
+            }
+            Self::Flash(flash) => {
+                if !unit(flash.amount) {
+                    return Err(("flash.amount", "must be within 0..=1"));
+                }
+                if !color(flash.color) {
+                    return Err(("flash.color", "must be finite and not negative"));
+                }
+            }
+            Self::Glitch(glitch) => {
+                if !unit(glitch.amount) {
+                    return Err(("glitch.amount", "must be within 0..=1"));
+                }
+                if !(1..=512).contains(&glitch.bands) {
+                    return Err(("glitch.bands", "must be within 1..=512"));
+                }
+                if !unit(glitch.share) {
+                    return Err(("glitch.share", "must be within 0..=1"));
+                }
+                if !(0.0..=0.5).contains(&glitch.shift) {
+                    return Err(("glitch.shift", "must be within 0..=0.5 frame widths"));
+                }
+                if !(0.0..=0.1).contains(&glitch.split) {
+                    return Err(("glitch.split", "must be within 0..=0.1 frame widths"));
+                }
+                if !(0.0..=60.0).contains(&glitch.rate) {
+                    return Err(("glitch.rate", "must be within 0..=60 jumps a second"));
+                }
+            }
+            Self::Crt(crt) => {
+                if !unit(crt.amount) {
+                    return Err(("crt.amount", "must be within 0..=1"));
+                }
+                if !(16.0..=2160.0).contains(&crt.lines) {
+                    return Err(("crt.lines", "must be within 16..=2160 a frame height"));
+                }
+                if !(unit(crt.depth) && unit(crt.grille)) {
+                    return Err(("crt", "`depth` and `grille` must be within 0..=1"));
+                }
+                if !(0.0..=0.5).contains(&crt.corner) {
+                    return Err(("crt.corner", "must be within 0..=0.5 frame heights"));
+                }
+            }
         }
         Ok(())
     }
 
     /// Blends this effect over the same kind of effect in `effects` (what the layers under it
-    /// resolved to) by `weight`, its speed lines drawn by `seed`: its strength, amount or opacity
+    /// resolved to) by `weight`, its speed lines or glitch drawn by `seed`: its strength, amount or opacity
     /// mixes linearly from what was there; its other values mix by the two layers' shares of the
     /// result (weight times amount), so an effect fading in over none keeps its own center and
     /// colors throughout, and one at full weight replaces what was under it. Speed lines' count
-    /// and seed are the larger share's.
+    /// and seed are the larger share's, and so are a glitch's bands and seed.
     pub(crate) fn blend_over(&self, effects: &mut PostEffects, weight: f32, seed: u32) {
         let lerp2 = |a: Vec2, b: [f32; 2], t: f32| a.lerp(Vec2::from(b), t);
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
@@ -194,6 +294,59 @@ impl ScreenEffect {
                     color: mix_oklab(base.color, Vec3::from(lines.color), t),
                     seed,
                     coverage: coverage(base.coverage, lines.mask, t),
+                };
+            }
+            Self::Desaturation(desaturation) => {
+                let base = effects.desaturation;
+                let (amount, t) = shares(base.amount, desaturation.amount, weight);
+                effects.desaturation = Desaturation {
+                    amount,
+                    tint: mix_oklab(base.tint, Vec3::from(desaturation.tint), t),
+                    coverage: coverage(base.coverage, desaturation.mask, t),
+                };
+            }
+            Self::Halftone(halftone) => {
+                let base = effects.halftone;
+                let (amount, t) = shares(base.amount, halftone.amount, weight);
+                effects.halftone = Halftone {
+                    amount,
+                    cell: lerp(base.cell, halftone.cell, t),
+                    angle: lerp(base.angle, halftone.angle_degrees.to_radians(), t),
+                    ink: mix_oklab(base.ink, Vec3::from(halftone.ink), t),
+                    coverage: coverage(base.coverage, halftone.mask, t),
+                };
+            }
+            Self::Flash(flash) => {
+                let base = effects.flash;
+                let (amount, t) = shares(base.amount, flash.amount, weight);
+                effects.flash = Flash {
+                    amount,
+                    color: mix_oklab(base.color, Vec3::from(flash.color), t),
+                    coverage: coverage(base.coverage, flash.mask, t),
+                };
+            }
+            Self::Glitch(glitch) => {
+                let base = effects.glitch;
+                let (amount, t) = shares(base.amount, glitch.amount, weight);
+                let (bands, seed) = if t >= 0.5 { (glitch.bands, seed) } else { (base.bands, base.seed) };
+                effects.glitch = Glitch {
+                    amount,
+                    bands,
+                    share: lerp(base.share, glitch.share, t),
+                    shift: lerp(base.shift, glitch.shift, t),
+                    split: lerp(base.split, glitch.split, t),
+                    seed,
+                };
+            }
+            Self::Crt(crt) => {
+                let base = effects.crt;
+                let (amount, t) = shares(base.amount, crt.amount, weight);
+                effects.crt = Crt {
+                    amount,
+                    lines: lerp(base.lines, crt.lines, t),
+                    depth: lerp(base.depth, crt.depth, t),
+                    grille: lerp(base.grille, crt.grille, t),
+                    corner: lerp(base.corner, crt.corner, t),
                 };
             }
         }
@@ -338,6 +491,98 @@ impl Default for SpeedLinesEffect {
     }
 }
 
+/// A world drained of color ([`Desaturation`], M5 L9): the tint is linear RGB the grey leans toward at its
+/// own luminance, white for plain grey.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DesaturationEffect {
+    pub amount: f32,
+    pub tint: Rgb,
+    pub mask: EffectMask,
+}
+
+impl Default for DesaturationEffect {
+    /// The world in grey, characters kept in their colors.
+    fn default() -> Self {
+        Self { amount: 1.0, tint: [1.0; 3], mask: EffectMask::World }
+    }
+}
+
+/// A halftone's ink dots ([`Halftone`], M5 L9): the cell is in frame heights, the ink linear RGB.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HalftoneEffect {
+    pub amount: f32,
+    /// The distance between dots, 0.002 to 0.25 frame heights.
+    pub cell: f32,
+    /// The grid's turn, in degrees.
+    pub angle_degrees: f32,
+    pub ink: Rgb,
+    pub mask: EffectMask,
+}
+
+impl Default for HalftoneEffect {
+    fn default() -> Self {
+        Self { amount: 1.0, cell: 0.012, angle_degrees: 45.0, ink: [0.0; 3], mask: EffectMask::Everywhere }
+    }
+}
+
+/// A flash ([`Flash`], M5 L9): the color is linear RGB.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FlashEffect {
+    pub amount: f32,
+    pub color: Rgb,
+    pub mask: EffectMask,
+}
+
+impl Default for FlashEffect {
+    fn default() -> Self {
+        Self { amount: 1.0, color: [1.0; 3], mask: EffectMask::Everywhere }
+    }
+}
+
+/// A glitch ([`Glitch`], M5 L9): shifts are in frame widths.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GlitchEffect {
+    pub amount: f32,
+    /// Bands per frame height, 1 to 512.
+    pub bands: u32,
+    /// The share of bands displaced, 0 to 1.
+    pub share: f32,
+    /// The farthest a band moves, 0 to 0.5 frame widths.
+    pub shift: f32,
+    /// Red's and blue's split, 0 to 0.1 frame widths.
+    pub split: f32,
+    /// How often the bands jump, per second of the effect's time; 0 keeps one drawing.
+    pub rate: f32,
+}
+
+impl Default for GlitchEffect {
+    fn default() -> Self {
+        Self { amount: 1.0, bands: 24, share: 0.3, shift: 0.04, split: 0.004, rate: 12.0 }
+    }
+}
+
+/// A CRT ([`Crt`], M5 L9): scanlines per frame height, and the corners' radius in frame heights.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CrtEffect {
+    pub amount: f32,
+    /// 16 to 2160.
+    pub lines: f32,
+    pub depth: f32,
+    pub grille: f32,
+    pub corner: f32,
+}
+
+impl Default for CrtEffect {
+    fn default() -> Self {
+        Self { amount: 1.0, lines: 240.0, depth: 0.35, grille: 0.15, corner: 0.05 }
+    }
+}
+
 /// Which clock an effect plays on (the screen effects module's docs, "Clocks").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectClock {
@@ -397,6 +642,16 @@ struct LayerDocument {
     duotone: Option<DuotoneEffect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     speed_lines: Option<SpeedLinesEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desaturation: Option<DesaturationEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    halftone: Option<HalftoneEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    flash: Option<FlashEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glitch: Option<GlitchEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crt: Option<CrtEffect>,
     envelope: Option<Envelope>,
     #[serde(default, skip_serializing_if = "is_zero")]
     delay: f32,
@@ -416,7 +671,8 @@ fn is_world(clock: &EffectClock) -> bool {
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum LayerError {
     #[error(
-        "a layer sets exactly one effect: radial_blur, chromatic_aberration, inversion, duotone or speed_lines"
+        "a layer sets exactly one effect: radial_blur, chromatic_aberration, inversion, duotone, speed_lines, \
+         desaturation, halftone, flash, glitch or crt"
     )]
     EffectCount,
     #[error("a layer needs an envelope")]
@@ -433,6 +689,11 @@ impl TryFrom<LayerDocument> for EffectLayer {
             inversion,
             duotone,
             speed_lines,
+            desaturation,
+            halftone,
+            flash,
+            glitch,
+            crt,
             envelope,
             delay,
             clock,
@@ -443,6 +704,11 @@ impl TryFrom<LayerDocument> for EffectLayer {
             inversion.map(ScreenEffect::Inversion),
             duotone.map(ScreenEffect::Duotone),
             speed_lines.map(ScreenEffect::SpeedLines),
+            desaturation.map(ScreenEffect::Desaturation),
+            halftone.map(ScreenEffect::Halftone),
+            flash.map(ScreenEffect::Flash),
+            glitch.map(ScreenEffect::Glitch),
+            crt.map(ScreenEffect::Crt),
         ];
         let mut set = effects.into_iter().flatten();
         let (Some(effect), None) = (set.next(), set.next()) else { return Err(LayerError::EffectCount) };
@@ -465,6 +731,11 @@ impl From<EffectLayer> for LayerDocument {
             ScreenEffect::Inversion(effect) => document.inversion = Some(effect),
             ScreenEffect::Duotone(effect) => document.duotone = Some(effect),
             ScreenEffect::SpeedLines(effect) => document.speed_lines = Some(effect),
+            ScreenEffect::Desaturation(effect) => document.desaturation = Some(effect),
+            ScreenEffect::Halftone(effect) => document.halftone = Some(effect),
+            ScreenEffect::Flash(effect) => document.flash = Some(effect),
+            ScreenEffect::Glitch(effect) => document.glitch = Some(effect),
+            ScreenEffect::Crt(effect) => document.crt = Some(effect),
         }
         document
     }

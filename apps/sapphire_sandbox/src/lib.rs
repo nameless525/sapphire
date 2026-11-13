@@ -320,7 +320,8 @@
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--post-effect <preset>[@<seconds>]`, repeatable: push a screen effect preset (M1 P3:
 //!   `radial_blur`, `chromatic_aberration`, `inversion`, `duotone`, `speed_lines`,
-//!   `impact_frame`) at the start, playing, or held that many seconds into it for captures and
+//!   `impact_frame`, and M5 L9's `desaturation`, `halftone`, `flash`, `glitch` and `crt`) at the
+//!   start, playing, or held that many seconds into it for captures and
 //!   benches. An unknown name fails with the presets' names. The renderer prewarms the post
 //!   variants of the presets pushed (`Renderer::prewarm_post`), or in `dev` builds of every
 //!   preset, which the overlay fires, so a scene without effects builds none of theirs.

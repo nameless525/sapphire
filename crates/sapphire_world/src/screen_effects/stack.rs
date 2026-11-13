@@ -371,14 +371,15 @@ impl EffectStack {
     }
 }
 
-/// How many times speed lines have been redrawn `time` seconds into their layer.
+/// How many times speed lines have been redrawn, or a glitch's bands have jumped, `time` seconds into their
+/// layer: the layer's own time on its clock, so the drawing follows the presentation and nothing else.
 fn redraws(layer: &EffectLayer, time: f32) -> u32 {
-    match layer.effect {
-        super::layer::ScreenEffect::SpeedLines(lines) if lines.rate > 0.0 => {
-            (time.max(0.0) * lines.rate) as u32
-        }
-        _ => 0,
-    }
+    let rate = match layer.effect {
+        super::layer::ScreenEffect::SpeedLines(lines) => lines.rate,
+        super::layer::ScreenEffect::Glitch(glitch) => glitch.rate,
+        _ => 0.0,
+    };
+    if rate > 0.0 { (time.max(0.0) * rate) as u32 } else { 0 }
 }
 
 fn seconds(duration: SimDuration) -> f32 {

@@ -10,7 +10,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use super::envelope::Envelope;
-use super::layer::{EffectKind, EffectLayer};
+use super::layer::EffectLayer;
 
 /// The shipped presets (see [`EffectLibrary::default_effects`]).
 const DEFAULT_EFFECTS: &str = include_str!("../../default_screen_effects.ron");
@@ -40,14 +40,12 @@ impl EffectPreset {
     }
 
     /// How long a push of it changes the whole frame's light, in its layers' seconds, if it does (M4 A3): what
-    /// a full-screen flash is, an inversion or a duotone, to the last one's end after its delay. A sustained
-    /// one counts its attack and release, the most of it that's known at a push.
+    /// a full-screen flash is, an inversion, a duotone, a flash, a glitch or a desaturation
+    /// ([`EffectKind::flashes`](super::EffectKind::flashes)), to the last one's end after its delay. A
+    /// sustained one counts its attack and release, the most of it that's known at a push.
     #[must_use]
     pub fn flash_seconds(&self) -> Option<f32> {
-        let flashes = self
-            .layers
-            .iter()
-            .filter(|layer| matches!(layer.effect.kind(), EffectKind::Inversion | EffectKind::Duotone));
+        let flashes = self.layers.iter().filter(|layer| layer.effect.kind().flashes());
         flashes
             .map(|layer| {
                 let length = match layer.envelope {
@@ -149,7 +147,10 @@ impl EffectLibrary {
     /// compiled in: one per effect (`radial_blur`, `chromatic_aberration`, `inversion`,
     /// `duotone`, `speed_lines`) and `impact_frame`, all of them at once as a heavy hit lands;
     /// then combat's own (M2 E3), which `sapphire_cues`' table pushes: `light_hit`, `medium_hit`,
-    /// `heavy_hit`, `poise_break`, `finish`, `perfect_dodge` and `skill_flash`.
+    /// `heavy_hit`, `poise_break`, `finish`, `perfect_dodge` and `skill_flash`; then the effects pack's
+    /// (M5 L9), one per effect (`desaturation`, `halftone`, `flash`, `glitch`, `crt`) and the game's:
+    /// `ultimate_raise` and `ultimate_chop`, which the ultimate's timeline fires, and `phase_shift`, a boss
+    /// crossing a named phase.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped presets are checked by this module's tests")
     }

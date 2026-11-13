@@ -2,10 +2,12 @@
 // `EffectLibrary::default_effects`, whose module docs (`screen_effects`) say how a preset plays.
 // One per effect, and `impact_frame`, all of them at once as a heavy hit lands; then combat's own
 // (M2 E3), which `sapphire_cues`' table pushes: `light_hit`, `medium_hit`, `heavy_hit`, `poise_break`,
-// `finish` and `perfect_dodge`. Packs (A4) will carry presets as content.
+// `finish` and `perfect_dodge`; then the effects pack's (M5 L9), one per effect and the game's
+// `ultimate_raise`, `ultimate_chop` and `phase_shift`. Packs (A4) will carry presets as content.
 //
 // - A layer sets exactly one effect: `radial_blur`, `chromatic_aberration`, `inversion`,
-//   `duotone` or `speed_lines`. Fields it leaves out take the effect's defaults.
+//   `duotone`, `speed_lines`, `desaturation`, `halftone`, `flash`, `glitch` or `crt`. Fields it leaves
+//   out take the effect's defaults.
 // - Envelopes are in seconds: `Pulse(attack, hold, release)`, `Sustain(attack, release)` held
 //   until gameplay releases it, or `Keys([(seconds, weight), ...])`, linear between keys, where
 //   two keys at one time cut. A layer may start after a `delay`.
@@ -292,19 +294,13 @@
                 ],
             ),
             (
-                // Time drawn out: the world cooled and pale behind characters in color, with thin
-                // lines rushing past, held on real time as long as slow motion usually runs.
+                // Time drawn out: the world drained of its color and cooled behind characters kept in
+                // theirs (M5 L9), with thin lines rushing past, held on real time as long as slow motion
+                // usually runs. Its light stays, but its reds turn grey, so it counts as a flash.
                 name: "perfect_dodge",
                 layers: [
                     (
-                        duotone: (
-                            amount: 0.65,
-                            dark: (0.015, 0.03, 0.07),
-                            light: (0.62, 0.78, 0.95),
-                            threshold: 0.35,
-                            softness: 0.75,
-                            mask: World,
-                        ),
+                        desaturation: (amount: 0.85, tint: (0.78, 0.88, 1.0), mask: World),
                         envelope: Pulse(attack: 0.05, hold: 0.45, release: 0.25),
                         clock: Real,
                     ),
@@ -354,6 +350,117 @@
                     (
                         chromatic_aberration: (center: (0.5, 0.5), strength: 0.005),
                         envelope: Pulse(hold: 0.033, release: 0.1),
+                    ),
+                ],
+            ),
+            // The effects pack (M5 L9): a sample of each, then the game's. A flash, a glitch and a
+            // desaturation (whose reds turn grey) are full-screen flashes to the cue dispatcher, as an
+            // inversion and a duotone are; the halftone and the CRT are looks, which fade in over tenths
+            // of a second.
+            (
+                // The world in grey behind characters kept in their colors.
+                name: "desaturation",
+                layers: [
+                    (
+                        desaturation: (amount: 1.0, tint: (1.0, 1.0, 1.0), mask: World),
+                        envelope: Pulse(attack: 0.05, hold: 0.5, release: 0.3),
+                    ),
+                ],
+            ),
+            (
+                // A comic print's screen over the world's shadows, the characters left clean.
+                name: "halftone",
+                layers: [
+                    (
+                        halftone: (
+                            amount: 0.9,
+                            cell: 0.012,
+                            angle_degrees: 45.0,
+                            ink: (0.01, 0.01, 0.03),
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.1, hold: 0.5, release: 0.2),
+                    ),
+                ],
+            ),
+            (
+                // A warm white burst, two frames full, then falling away.
+                name: "flash",
+                layers: [
+                    (
+                        flash: (amount: 0.85, color: (1.0, 0.96, 0.88)),
+                        envelope: Keys([(0.0, 1.0), (0.033, 1.0), (0.25, 0.0)]),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // A signal breaking up: bands torn sideways and the colors read apart, jumping twelve
+                // times a second.
+                name: "glitch",
+                layers: [
+                    (
+                        glitch: (bands: 24, share: 0.3, shift: 0.04, split: 0.004, rate: 12.0),
+                        envelope: Keys([(0.0, 1.0), (0.2, 1.0)]),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // The frame on an old television: scanlines, the grille's stripes, rounded corners.
+                name: "crt",
+                layers: [
+                    (
+                        crt: (lines: 240.0, depth: 0.35, grille: 0.15, corner: 0.05),
+                        envelope: Pulse(attack: 0.15, hold: 0.8, release: 0.3),
+                    ),
+                ],
+            ),
+            (
+                // The ultimate's sword rising and held (its timeline's cue): the world printed in ink
+                // dots behind the character, a comic panel, gone as the blade comes down. On real time,
+                // since the ultimate slows the world to a fifth.
+                name: "ultimate_raise",
+                layers: [
+                    (
+                        halftone: (
+                            amount: 0.75,
+                            cell: 0.011,
+                            angle_degrees: 30.0,
+                            ink: (0.01, 0.012, 0.04),
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.3, hold: 0.32, release: 0.1),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // The ultimate's chop (its timeline's cue): the world burnt white behind the character,
+                // falling away with the landing.
+                name: "ultimate_chop",
+                layers: [
+                    (
+                        flash: (amount: 0.7, color: (1.0, 0.96, 0.88), mask: World),
+                        envelope: Keys([(0.0, 1.0), (0.05, 1.0), (0.35, 0.0)]),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // A boss crossing into a named phase: the picture tears for a fifth of a second, and the
+                // television's lines fade out after it, Zenless Zone Zero's broadcast look.
+                name: "phase_shift",
+                layers: [
+                    (
+                        glitch: (bands: 18, share: 0.35, shift: 0.05, split: 0.006, rate: 15.0),
+                        envelope: Keys([(0.0, 1.0), (0.2, 1.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        crt: (lines: 240.0, depth: 0.4, grille: 0.2, corner: 0.05),
+                        envelope: Pulse(attack: 0.05, hold: 0.2, release: 0.45),
+                        clock: Real,
                     ),
                 ],
             ),

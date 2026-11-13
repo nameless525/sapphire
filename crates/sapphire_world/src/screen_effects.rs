@@ -6,7 +6,8 @@
 //! # Data
 //!
 //! - **[`ScreenEffect`]**: one effect at full weight: a radial blur, chromatic aberration, an
-//!   inversion, a duotone or speed lines, each with its parameters (the renderer's
+//!   inversion, a duotone or speed lines, or the effects pack's (M5 L9) desaturation, halftone,
+//!   flash, glitch or CRT, each with its parameters (the renderer's
 //!   [`PostEffects`](sapphire_render::PostEffects) as authored), and for those drawn over the
 //!   frame an [`EffectMask`]: everywhere, the world alone (an impact frame that keeps characters
 //!   colored, lines behind characters), or characters alone.
@@ -96,8 +97,6 @@
 //!   stage of its own) and comic panels are views, not post (the research notes' §10).
 //! - **Curves on parameters:** envelopes scale an effect's strength; keyed centers (a blur
 //!   sweeping across the frame) and keyed colors.
-//! - **More effects:** halftone, a world desaturation that keeps characters colored for perfect
-//!   dodges, CRT and glitch transitions (ZZZ's TV look), screen flashes.
 //! - **Presets as content** loaded from packs (A4) and pushed by live link (A9) through
 //!   [`EffectLibrary::from_ron`], as desktop hot reload already reloads the shipped document.
 //! - **Cutscene tracks** (`sapphire_sequencer`) pushing and seeking presets on a shot's clock.
@@ -114,8 +113,9 @@ mod tests;
 
 pub use envelope::{Envelope, EnvelopeError, EnvelopeKeys, MAX_ENVELOPE_KEYS, MAX_ENVELOPE_SECONDS};
 pub use layer::{
-    ChromaticAberrationEffect, DuotoneEffect, EffectClock, EffectKind, EffectLayer, EffectMask,
-    InversionEffect, LayerError, RadialBlurEffect, ScreenEffect, SpeedLinesEffect,
+    ChromaticAberrationEffect, CrtEffect, DesaturationEffect, DuotoneEffect, EffectClock, EffectKind,
+    EffectLayer, EffectMask, FlashEffect, GlitchEffect, HalftoneEffect, InversionEffect, LayerError,
+    RadialBlurEffect, ScreenEffect, SpeedLinesEffect,
 };
 pub use library::{EffectLibrary, EffectLibraryError, EffectPreset, EffectPresetId, MAX_PRESET_LAYERS};
 pub use stack::{

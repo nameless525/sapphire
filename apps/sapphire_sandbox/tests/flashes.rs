@@ -2,8 +2,10 @@
 //! it at 60 fps with the fight's cues drawing their screen effects, passes WCAG 2.3.1's general and red flash
 //! tests as `sapphire_testkit::flashes` reads them, with flashes reduced and, since A3, at the default too; and
 //! since M4 A7 so do the player's ultimate with its cinematic (`arena-ultimate`) and the stress fight
-//! (`arena-skirmish`, eight fighters), each with no red transition. The ward's fights, as the game plays them,
-//! are `game_app`'s `flashes_in_the_ward`.
+//! (`arena-skirmish`, eight fighters), each with no red transition; and since M5 L9 the boss fight
+//! (`arena-boss`), whose captain's enraged phase fires the effects pack's glitch and CRT (`phase_shift`), as the
+//! ultimate fires its halftone and flash. The ward's fights, as the game plays them, are `game_app`'s
+//! `flashes_in_the_ward`.
 //!
 //! The run draws, so it needs a GPU and cooked content and is `#[ignore]`d: `cargo xtask content`, then
 //! `cargo test -p sapphire_sandbox --test flashes -- --ignored --nocapture`, a test for each fight and setting
@@ -32,6 +34,8 @@ const ULTIMATE: Fight =
     Fight { name: "the ultimate", replay: "tests/replays/arena-ultimate.sreplay", ticks: 450 };
 const STRESS: Fight =
     Fight { name: "the stress fight", replay: "tests/replays/arena-skirmish.sreplay", ticks: 2400 };
+/// The captain taken under half its health, crossing into its named phase, `enraged` (M5 L9).
+const BOSS: Fight = Fight { name: "the boss fight", replay: "tests/replays/arena-boss.sreplay", ticks: 1700 };
 /// The capture's rate: a frame a step.
 const RATE: u32 = 60;
 
@@ -59,7 +63,9 @@ impl Drop for Temp {
 
 /// Every frame of `fight` at `flashes` (`normal` or `reduced`), as the analyser reads them.
 fn the_fight_at(fight: &Fight, flashes: &str) -> FlashReport {
-    let temp = Temp::new(&format!("{}_{flashes}", fight.ticks));
+    // By the replay, since two fights can be as long (the scripted fight and the boss fight).
+    let stem = Path::new(fight.replay).file_stem().and_then(|stem| stem.to_str()).expect("a replay's name");
+    let temp = Temp::new(&format!("{stem}_{flashes}"));
     let frames = temp.0.join("frames");
     fs::create_dir_all(&frames).expect("the frames' directory");
     let capture = temp.0.join("last.png");
@@ -177,4 +183,16 @@ fn the_stress_fight_passes_wcag_2_3_1_with_flashes_reduced() {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn the_stress_fight_passes_wcag_2_3_1_by_default() {
     passes_at(&STRESS, "normal");
+}
+
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_boss_fight_passes_wcag_2_3_1_with_flashes_reduced() {
+    passes_at(&BOSS, "reduced");
+}
+
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_boss_fight_passes_wcag_2_3_1_by_default() {
+    passes_at(&BOSS, "normal");
 }

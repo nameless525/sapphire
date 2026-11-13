@@ -79,6 +79,14 @@ fn the_sample_presets_load_and_round_trip() {
             "finish",
             "perfect_dodge",
             "skill_flash",
+            "desaturation",
+            "halftone",
+            "flash",
+            "glitch",
+            "crt",
+            "ultimate_raise",
+            "ultimate_chop",
+            "phase_shift",
         ]
     );
     let kinds = |name: &str| -> Vec<EffectKind> {
@@ -112,8 +120,24 @@ fn presets_say_which_post_variants_they_draw_through() {
     let color = PostVariants { color_effects: true, ..PostVariants::NONE };
     assert_eq!(variants("radial_blur"), lens);
     assert_eq!(variants("chromatic_aberration"), lens);
-    for name in ["inversion", "duotone", "speed_lines"] {
-        assert_eq!(variants(name), color, "{name}");
+    for name in [
+        "inversion",
+        "duotone",
+        "speed_lines",
+        "desaturation",
+        "halftone",
+        "flash",
+        "glitch",
+        "crt",
+        "ultimate_raise",
+        "ultimate_chop",
+        "phase_shift",
+        "perfect_dodge",
+    ] {
+        // The effects pack (M5 L9) is all in the color variant, so no pipeline is new.
+        let lens_too = name == "perfect_dodge";
+        let want = if lens_too { PostVariants::SCREEN_EFFECTS } else { color };
+        assert_eq!(variants(name), want, "{name}");
     }
     assert_eq!(variants("impact_frame"), PostVariants::SCREEN_EFFECTS);
     assert_eq!(library.post_variants(), PostVariants::SCREEN_EFFECTS);
@@ -420,6 +444,72 @@ fn colors_and_masks_blend_and_centers_follow_the_push() {
     assert_eq!(effects.inversion, PostEffects::NONE.inversion, "the preset has none");
 }
 
+/// The effects pack (M5 L9) blends as the others do: amounts from what was under them, colors and the rest by
+/// their share, and a glitch's bands and seed by the larger share.
+#[test]
+fn the_effects_packs_layers_blend_kind_by_kind() {
+    let layer = |effect| EffectLayer { effect, ..blur(0.0, [0.5, 0.5], pulse(0.0, 1.0, 0.0)) };
+    let (_, mut stack) = stack();
+    let library = EffectLibrary::default_effects();
+    let dodge = library.preset(library.find("perfect_dodge").expect("shipped")).expect("there");
+    // Past its attack, on its hold.
+    let held = stack.push(dodge);
+    stack.hold(held, Some(0.2));
+    let effects = stack.resolve(1.0);
+    assert_eq!(effects.desaturation.coverage, EffectCoverage::WORLD, "characters keep their colors");
+    assert!(close(effects.desaturation.amount, 0.85) && effects.duotone.amount == 0.0);
+
+    let (_, mut stack) = self::stack();
+    stack.push(&preset(&[layer(ScreenEffect::Halftone(HalftoneEffect {
+        angle_degrees: 90.0,
+        ..HalftoneEffect::default()
+    }))]));
+    let halftone = stack.resolve(1.0).halftone;
+    assert!(close(halftone.angle, std::f32::consts::FRAC_PI_2) && close(halftone.cell, 0.012));
+    stack.push(&preset(&[layer(ScreenEffect::Flash(FlashEffect { amount: 0.5, ..FlashEffect::default() }))]));
+    stack.push(&preset(&[layer(ScreenEffect::Crt(CrtEffect::default()))]));
+    let effects = stack.resolve(1.0);
+    assert_eq!((effects.flash.amount, effects.crt.amount, effects.halftone.amount), (0.5, 1.0, 1.0));
+
+    // Two glitches: the top one's bands and seed at full weight, and its own share of the rest.
+    let glitch = |bands, shift| {
+        layer(ScreenEffect::Glitch(GlitchEffect { bands, shift, rate: 0.0, ..GlitchEffect::default() }))
+    };
+    let (_, mut stack) = self::stack();
+    stack.push(&preset(&[glitch(8, 0.1)]));
+    let under = stack.resolve(1.0).glitch;
+    stack.push(&preset(&[glitch(40, 0.02)]));
+    let over = stack.resolve(1.0).glitch;
+    assert_eq!((under.bands, over.bands), (8, 40));
+    assert_ne!(under.seed, over.seed, "another push, another tearing");
+    assert!(close(over.shift, 0.02) && close(over.amount, 1.0));
+}
+
+/// A glitch's bands jump at its rate, on the layer's own time: the presentation's clock, nothing else.
+#[test]
+fn a_glitch_jumps_at_its_rate() {
+    let (mut world, mut stack) = stack();
+    let glitch = EffectLayer {
+        effect: ScreenEffect::Glitch(GlitchEffect { rate: 15.0, ..GlitchEffect::default() }),
+        ..blur(0.0, [0.5, 0.5], pulse(0.0, 5.0, 0.0))
+    };
+    stack.push(&preset(&[glitch]));
+    let mut seeds = Vec::new();
+    for _ in 0..59 {
+        run(&mut world, &mut stack, 1);
+        let seed = stack.resolve(1.0).glitch.seed;
+        if seeds.last() != Some(&seed) {
+            seeds.push(seed);
+        }
+    }
+    assert_eq!(seeds.len(), 15, "fifteen tearings a second: {seeds:?}");
+    // Held at a time, it shows one tearing however often it's resolved.
+    let (_, mut held) = self::stack();
+    let handle = held.push(&preset(&[glitch]));
+    held.hold(handle, Some(0.1));
+    assert_eq!(held.resolve(0.0).glitch.seed, held.resolve(1.0).glitch.seed);
+}
+
 #[test]
 fn speed_lines_are_redrawn_at_their_rate() {
     let (mut world, mut stack) = stack();
@@ -722,21 +812,35 @@ fn sustained_layers_wait_for_their_release_and_handles_stop_and_hold() {
     assert!(stack.is_empty());
 }
 
-/// What the cue dispatcher counts as a full-screen flash (M4 A3): a preset with an inversion or a duotone, for
-/// as long as its last one lasts after its delay. Blurs, splits and lines aren't.
+/// What the cue dispatcher counts as a full-screen flash (M4 A3): a preset with an inversion, a duotone, or
+/// (M5 L9) a flash, a glitch or a desaturation, for as long as its last one lasts after its delay. Blurs,
+/// splits and lines aren't, nor are the halftone and the CRT, looks that fade in.
 #[test]
-fn a_flash_is_an_inversion_or_a_duotone_for_as_long_as_its_last() {
+fn a_flash_is_an_inversion_a_duotone_a_flash_a_glitch_or_a_desaturation_for_as_long_as_its_last() {
     let library = EffectLibrary::default_effects();
     let seconds = |name: &str| library.preset(library.find(name).expect(name)).expect(name).flash_seconds();
-    for quiet in
-        ["radial_blur", "chromatic_aberration", "speed_lines", "light_hit", "medium_hit", "skill_flash"]
-    {
+    for quiet in [
+        "radial_blur",
+        "chromatic_aberration",
+        "speed_lines",
+        "light_hit",
+        "medium_hit",
+        "skill_flash",
+        "halftone",
+        "crt",
+        "ultimate_raise",
+    ] {
         assert_eq!(seconds(quiet), None, "{quiet}");
     }
     assert!(close(seconds("heavy_hit").expect("a flash"), 0.05));
     assert!(close(seconds("poise_break").expect("a flash"), 0.1), "the longer of its duotone and inversion");
     assert!(close(seconds("finish").expect("a flash"), 0.7), "to the end of its fall");
-    assert!(close(seconds("perfect_dodge").expect("a flash"), 0.75));
+    assert!(close(seconds("flash").expect("a flash"), 0.25));
+    assert!(close(seconds("ultimate_chop").expect("a flash"), 0.35));
+    assert!(close(seconds("glitch").expect("a flash"), 0.2));
+    assert!(close(seconds("phase_shift").expect("a flash"), 0.2), "its glitch, not its CRT's fade");
+    assert!(close(seconds("perfect_dodge").expect("a flash"), 0.75), "its reds turn grey: a red flash");
+    assert!(close(seconds("desaturation").expect("a flash"), 0.85));
 
     let invert = |delay, envelope| EffectLayer {
         effect: ScreenEffect::Inversion(InversionEffect::default()),

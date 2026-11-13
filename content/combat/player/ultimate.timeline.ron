@@ -48,6 +48,9 @@
             (at: 0.0, per_mille: 200, ramp: 0.1),
             (at: 1.9, per_mille: 1000, ramp: 0.45),
         ],
+        // Screen effects (M5 L9), through the cue table: the world in a halftone as the sword rises, and a
+        // white flash over it on the chop.
+        cues: [(at: 0.3, cue: "ultimate_raise"), (at: 1.0, cue: "ultimate_chop")],
         post: [
             // A frame closing in for the length of it, gone by the time the fight's back.
             (parameter: Vignette, keys: [(at: 0.0, value: 0.0), (at: 0.4, value: 0.3), (at: 1.9, value: 0.3), (at: 2.4, value: 0.0)]),

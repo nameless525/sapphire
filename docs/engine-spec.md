@@ -4156,7 +4156,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 | Command | Does |
 |---|---|
 | `cargo xtask check-layers` | Enforces §4.1 and rule R8 from `cargo metadata`, and holds the simulation's crates to their dependency and clippy rules (§5.22) |
-| `cargo xtask cook --cook desktop\|mobile [--only <guid/zone>]` | Runs `sapphire_pipeline` with the content-hash cache |
+| `cargo xtask content [--cook desktop\|mobile\|editor]` | Runs `sapphire_pipeline` with the content-hash cache, then packs the cook into `target/content/<cook>/` |
 | `cargo xtask run --platform desktop\|ios-sim\|ios\|android` | Builds, cooks, deploys and launches, with live link enabled |
 | `cargo xtask package --platform ios\|ios-sim\|android\|macos\|windows\|linux [--out <dir>] [--dev]` | Builds the game in the `shipping` profile with its platform's cook, one version and build number, its identity and its icon, and stages what each store's package starts from, with the split symbols beside it; Android's AAB is held to release lint and checked with bundletool, aapt2 and zipalign. Steam's desktop packages are checked offline as §6.7 says. Signs for a store only with Android's upload key from the environment, and uploads nothing |
 | `cargo xtask symbols [--package <dir>]... [--store <dir>]` | Writes the Breakpad `.sym` of every module the packages under `target/package/` (or each `<dir>`) shipped into `target/symbols/` (or `--store`), from the symbols kept beside each (§5.2); `symbolicate` reads crashes with the same store |

@@ -325,6 +325,22 @@ The worked examples are [content/zones/lantern_ward/](../content/zones/lantern_w
    ```
    Until then the build warns, and a scenario that shelves the zone fails its setup, saying how. `zone_baked` holds every copy to its documents. A trip in the game itself is data. A new zone is otherwise documents, held by the cook's checks. On the Lantern Ward, `zone_ward.rs` reads its checkpoints from the document (Z5e): each is a walk from the start, and no two share a name.
 
+### A zone's look: its weather, sky, wind and fog
+
+A zone's look is its own since M5 M6, as it opens and when a trip arrives in it: what it names replaces the stage's, and what it leaves out gives the stage's own back. It's all in the zone's presentation, so no replay moves. The worked example is [proving_hub.zone.ron](../content/zones/proving_hub/proving_hub.zone.ron), which the `zone-trip-hub` golden shows. Spec §5.21 ("As built (M5 M6)") is the reference.
+
+1. **Its day and rigs:** `day: Some("<file>.ron")` and `rigs: Some("<file>.ron")`, paths relative to the zone, a complete `TodTimeline` and a `LightRigLibrary` ([proving_hub_day.ron](../content/zones/proving_hub/proving_hub_day.ron) holds one hour all day). The cook checks both.
+2. **Its probe grid:** `probes: Some("<id>")`, a `.probes.ron` with a `ProbeGrid` sidecar listing the zone's meshes as they're placed, its `timeline` the zone's day ([proving_hub.probes.ron](../content/zones/proving_hub/proving_hub.probes.ron)). A prefab whose mesh the grid lists must cook: no `cook: false` in its sidecar. Exits lead into and out of a zone with a grid.
+3. **Its sky:** `sky: Some("<id>")`, a `.material.ron` of type `sapphire::render::SkyMaterial` with a `Material` sidecar, under the zone's folder so it packs with the zone. The cook refuses any other kind of material.
+4. **Its weather, wind and fog:**
+   ```ron
+   wind: Some((direction: (-0.6, 0.0, 0.8), strength: 1.6, gustiness: 0.5)),
+   weather: Some((wetness: 0.7, puddles: 0.3)),
+   fog: Some((density: 1.5, height_base: Some(0.0))),
+   ```
+   Wind is the way it blows, which must have a horizontal part, and a strength up to 8. `gustiness` is a share and defaults to 0. Weather is two shares, `puddles` defaulting to 0, and holds all day. No shader draws it until wet surfaces (M5 L4). Fog's `density` scales the day's near, far and height layers (0 to 16, 1 by default). `height_base` puts the height layer's floor at that height in the zone's space. Leave it out to keep the day's.
+5. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
+
 ### A dialogue, with story flags
 
 The worked example is [ward_guide.dialogue.ron](../content/dialogue/ward_guide.dialogue.ron). Spec §5.23 is the reference.
@@ -506,7 +522,7 @@ Each item names the package and its hand-back or row, and why it waits.
 - **A tier build the graphics row drops runs to its end** (H9): a player stepping across the row compiles a whole tier (89–95 pipelines) for each value they stay on, off the frame. Fix: cancel it between its parts.
 - **The ladder's tier rung under heat** is walked by `follows_the_ladder` from Desktop-High and from Mobile-High, and on the emulator from Mobile-High (H9). `zero_hitches` holds the chosen tier and runs on lavapipe at Desktop-Low, Mobile-Low and Mobile-High.
 - **A restart on a scenario with no flow** (the stock arena) still prepares its fight on the frame, since its setup reads content (H4).
-- **A trip carries no probe grid,** so no zone with one may have an exit (Z3e's cook check) until trips load their own (H4).
+- **A trip carries no probe grid,** so no zone with one may have an exit (Z3e's cook check) until trips load their own (H4). Done in M5 M6: a trip brings its zone's grid and the check is gone ("A zone's look").
 - **The Simulator's and the emulator's boot frames reach 63 to 106 ms** (Z1): neither is a phone's GPU, so exit test 1 is judged on the Mac, and a phone's own boot frames are unknown. A cold emulator's boot screen stalls for far longer ("Known limits and risks").
 - **A lane run without `--ignored` can pass having played nothing** (Z2's final run): `zero_hitches` now fails when asked to run timed (`SAPPHIRE_HITCH_TIMED=1`) and skipping (H6), and untimed it still skips and exits 0; `zone_trip` uses libtest's `#[ignore]`, so a timed run of it without `--ignored` reports it ignored and exits 0.
 - **§3 sets no budget for a start** (Z1): 3.97 s cold to the title on the Mac's Metal, mostly the packs' pipelines, has nothing to be held to. A phone's cold start would set one.

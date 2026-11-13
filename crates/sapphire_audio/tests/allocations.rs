@@ -51,6 +51,7 @@ fn frame<'a>(emitters: &'a [Emitter], cues: &'a [CueRequest]) -> AudioFrame<'a> 
         emitters,
         cues,
         lines: &[],
+        speech: None,
         music: None,
     }
 }

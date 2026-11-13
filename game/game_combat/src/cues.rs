@@ -462,6 +462,7 @@ impl CueShow {
         CueSounds {
             requests: self.dispatcher.sounds(),
             lines: self.dispatcher.lines(),
+            speech: None,
             emitters: &self.emitters,
             world_time_scale: self.world_time_scale,
             started_over: self.started_over,

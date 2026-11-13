@@ -88,6 +88,7 @@
 //!         emitters: &[],
 //!         cues: cues.sounds(),
 //!         lines: cues.lines(),
+//!         speech: None,
 //!         music: None, // A score's phase, if the table names a score.
 //!     },
 //!     &mut random,

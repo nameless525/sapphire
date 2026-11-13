@@ -184,6 +184,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
             emitters: &sinks.emitters,
             cues: cues.sounds(),
             lines: cues.lines(),
+            speech: None,
             music: None,
         };
         let timer = Stopwatch::start();

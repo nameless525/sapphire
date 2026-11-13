@@ -28,6 +28,10 @@
 //!   [`VoiceLines`](sapphire_assets::voice::VoiceLines) and answers a [`LineKey`] in the voice
 //!   language the player chose, which is not the text's; the music goes down by the score's
 //!   `duck_db` while a line plays.
+//! - **A conversation's line** (M5 C6): one [`SpeechRequest`] at a time, started, held by a pause and cut
+//!   by the next or by none, with its playhead counted here in the real seconds its voice has played
+//!   ([`AudioSystem::speaking`]), so a face can read the sound's mouth curve at it without asking the
+//!   audio thread anything.
 //! - **Stats** ([`AudioStats`], rule R9): the update's time against spec §3.2's budget, voices,
 //!   dropped cues, lines and phase changes, and what the device has done ([`DeviceStatus`]).
 //!
@@ -73,7 +77,7 @@ pub use rng::{CueRandom, CueRng};
 pub use snapshot::{ClockSnapshot, SnapshotMix, SnapshotTuning};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
-    MAX_VOICES, Volumes,
+    MAX_VOICES, Speaking, SpeechRequest, Volumes,
 };
 pub use voice::{LineKey, VoiceRoute, VoiceRouteError};
 

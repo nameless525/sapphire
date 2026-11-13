@@ -20,20 +20,26 @@
 //! (M3 Z5a, [`CueSounds::boss_phase`]), and the lines are spoken in the voice language
 //! ([`DeviceAudio::set_voice_language`]), which starts as `LocaleSettings`' default and is the
 //! player's to change, apart from the text's.
+//!
+//! A conversation's line with a voice (M5 C6) comes as [`CueSounds::speech`]: the mixer starts it, holds it
+//! through a pause and cuts it at the next line, and [`DeviceAudio::said`] reads the sound's cooked mouth
+//! curve at the voice's playhead, which the mixer's caller counts in real seconds. With no device there's no
+//! voice, and so no mouth: a face never moves to a line nobody can hear played.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
+use sapphire_assets::mouth::{MouthCurve, MouthSample};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{DecodedSound, Sound};
 use sapphire_assets::voice::VoiceLines;
 pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
-    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput,
+    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, SpeechRequest,
 };
 use sapphire_core::Name;
 use sapphire_loc::LocaleSettings;
@@ -60,6 +66,8 @@ pub struct CueSounds<'a> {
     pub requests: &'a [CueRequest],
     /// Voice lines, by key, spoken in the voice language.
     pub lines: &'a [LineRequest],
+    /// The line a conversation says now, if it has a voice (M5 C6).
+    pub speech: Option<SpeechRequest>,
     pub emitters: &'a [Emitter],
     /// The world clock's speed where they fire, which a slow motion turns down.
     pub world_time_scale: f32,
@@ -78,6 +86,7 @@ impl CueSounds<'_> {
     pub const NONE: CueSounds<'static> = CueSounds {
         requests: &[],
         lines: &[],
+        speech: None,
         emitters: &[],
         world_time_scale: 1.0,
         started_over: false,
@@ -97,6 +106,27 @@ pub struct ShowSounds {
     pub score: Option<AssetId>,
     /// One `VoiceLines` a language.
     pub voices: Vec<AssetId>,
+}
+
+/// What a conversation's line says this frame (M5 C6): its sound's mouth curve at the voice's playhead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Said {
+    /// The [`SpeechRequest::serial`] that asked for the line.
+    pub serial: u64,
+    pub mouth: MouthSample,
+}
+
+/// The mouth curves of the sounds a show's voice lines play, by sound: load-time data a frame only reads.
+#[derive(Debug, Default)]
+struct Mouths(HashMap<AssetId, MouthCurve>);
+
+impl Mouths {
+    /// What `system`'s conversation line says now, if it's saying one. Allocates nothing.
+    fn said<B: AudioBackend>(&self, system: &AudioSystem<B>) -> Option<Said> {
+        let speaking = system.speaking()?;
+        let curve = self.0.get(&speaking.sound)?;
+        Some(Said { serial: speaking.serial, mouth: curve.at(speaking.seconds) })
+    }
 }
 
 /// The emitter cues play on: the scene's character.
@@ -157,6 +187,7 @@ pub struct DeviceAudio {
     emitters: Vec<Emitter>,
     /// Seconds until the next stats line.
     report_in: f32,
+    mouths: Mouths,
 }
 
 impl DeviceAudio {
@@ -214,7 +245,7 @@ impl DeviceAudio {
         let ReadySounds { loaded, score } = ready;
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
-        add_loaded(&mut system, loaded)?;
+        let mouths = add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
@@ -222,7 +253,15 @@ impl DeviceAudio {
             repeating: None,
             emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
+            mouths,
         })
+    }
+
+    /// What the conversation's line says as of the last [`Self::update`] (M5 C6): its sound's mouth curve at
+    /// its voice's playhead, until the voice ends or is cut. Allocates nothing.
+    #[must_use]
+    pub fn said(&self) -> Option<Said> {
+        self.mouths.said(&self.system)
     }
 
     /// One frame, `dt` real seconds after the last: plays `--cue`'s cue when it's due and what a fight
@@ -254,6 +293,7 @@ impl DeviceAudio {
             emitters: &self.emitters,
             cues: requests.as_ref().map_or(fight.requests, |requests| requests.as_slice()),
             lines: fight.lines,
+            speech: fight.speech,
             music: music(self.score, &fight),
         };
         self.system.update(&frame, &mut self.random);
@@ -504,10 +544,14 @@ impl Read {
                 })
                 .collect::<Result<Vec<_>, String>>()
         };
+        let mut mouths = Mouths::default();
         let cues = self
             .cues
             .into_iter()
-            .map(|(id, cue, sounds)| Ok((id, cue, decode(sounds)?)))
+            .map(|(id, cue, mut sounds)| {
+                mouths.0.extend(sounds.iter_mut().filter_map(|(id, sound)| Some((*id, sound.mouth.take()?))));
+                Ok((id, cue, decode(sounds)?))
+            })
             .collect::<Result<Vec<_>, String>>()?;
         let score =
             self.score.map(|(id, score, stems)| Ok::<_, String>((id, score, decode(stems)?))).transpose()?;
@@ -527,12 +571,12 @@ impl Read {
             ?decode,
             "sounds ready"
         );
-        Ok(Loaded { cues, score, voices: self.voices })
+        Ok(Loaded { cues, score, voices: self.voices, mouths })
     }
 }
 
-/// Gives `system` what [`load`] loaded.
-fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> Result<(), AppInitError> {
+/// Gives `system` what [`load`] loaded, and hands back the mouth curves, which a frame reads beside it.
+fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> Result<Mouths, AppInitError> {
     for (id, cue, sounds) in loaded.cues {
         system.add_cue(id, cue);
         for (id, sound) in &sounds {
@@ -549,7 +593,7 @@ fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> R
         system.add_voice_lines(lines).map_err(|error| AppInitError::msg(format!("voice lines: {error}")))?;
     }
     system.set_voice_language(&LocaleSettings::default().voice);
-    Ok(())
+    Ok(loaded.mouths)
 }
 
 /// What [`load`] loaded.
@@ -557,6 +601,8 @@ struct Loaded {
     cues: Vec<LoadedCue>,
     score: Option<LoadedScore>,
     voices: Vec<VoiceLines>,
+    /// The voice sounds' mouth curves, out of their sounds.
+    mouths: Mouths,
 }
 
 /// A cue and those of its sounds no cue before it brought, decoded.
@@ -584,6 +630,7 @@ pub struct OfflineAudio {
     emitters: Vec<Emitter>,
     /// A frame's samples, interleaved, which nothing reads.
     block: Vec<f32>,
+    mouths: Mouths,
 }
 
 impl OfflineAudio {
@@ -594,17 +641,27 @@ impl OfflineAudio {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Self, AppInitError> {
-        let loaded = load(sounds, content, renderer, gpu)?;
+        Self::with_loaded(load(sounds, content, renderer, gpu)?, sounds.score)
+    }
+
+    fn with_loaded(loaded: Loaded, score: Option<AssetId>) -> Result<Self, AppInitError> {
         let Ok(backend) = KiraBackend::<OfflineOutput>::new(OFFLINE_RATE);
         let mut system = AudioSystem::new(backend);
-        add_loaded(&mut system, loaded)?;
+        let mouths = add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
-            score: sounds.score,
+            score,
             emitters: Vec::with_capacity(8),
             block: vec![0.0; OFFLINE_RATE as usize],
+            mouths,
         })
+    }
+
+    /// As [`DeviceAudio::said`].
+    #[must_use]
+    pub fn said(&self) -> Option<Said> {
+        self.mouths.said(&self.system)
     }
 
     /// One frame, `dt` seconds after the last, as [`DeviceAudio::update`] plays a fight's.
@@ -622,6 +679,7 @@ impl OfflineAudio {
             emitters: &self.emitters,
             cues: fight.requests,
             lines: fight.lines,
+            speech: fight.speech,
             music: music(self.score, &fight),
         };
         self.system.update(&frame, &mut self.random);
@@ -759,8 +817,12 @@ mod tests {
             lines: vec![VoiceLine { key: "perfect-dodge".to_owned(), cue }],
         });
         let mut system = AudioSystem::new(MockBackend::new());
-        let fight =
-            Loaded { cues: vec![line(english), line(japanese)], score: None, voices: voices.to_vec() };
+        let fight = Loaded {
+            cues: vec![line(english), line(japanese)],
+            score: None,
+            voices: voices.to_vec(),
+            mouths: Mouths::default(),
+        };
         add_loaded(&mut system, fight).unwrap();
         assert_eq!(system.voice_route().language(), Some("en"), "the default until the player's is read");
 
@@ -773,6 +835,7 @@ mod tests {
             emitters: &[],
             cues: &[],
             lines: &dodge,
+            speech: None,
             music: None,
         };
         system.backend_mut().take_calls();
@@ -783,5 +846,121 @@ mod tests {
         });
         assert_eq!(spoken, Some(japanese), "the line is in the voice language, not the text's");
         assert_eq!(loaded.value.locale.text, "en");
+    }
+
+    /// M5 C6, through the real mixer with no device: a conversation's voiced line, the committed `guide_greet`
+    /// with its cooked curve, sounds from the frame that asks for it, its mouth is read at the voice's own
+    /// playhead, and the curve's loudest moment is the mix's within a frame. A pause holds both.
+    #[test]
+    fn a_conversations_voice_plays_where_its_line_says_and_its_mouth_keeps_time() {
+        use sapphire_assets::cue::{Bus, HitstopResponse};
+        use sapphire_assets::voice::VoiceLine;
+        use sapphire_audio::LineKey;
+
+        const DT: f32 = 1.0 / 60.0;
+        const ASKED: usize = 10;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/audio/generated/voice/en/guide_greet.ogg");
+        let sound = Sound::from_vorbis(std::fs::read(path).unwrap()).unwrap().with_mouth().unwrap();
+        let curve = sound.mouth.clone().unwrap();
+        let [sound_id, cue_id] =
+            ["5c0e0000-0000-4000-8000-0000000000c6", "5c0e0000-0000-4000-8000-0000000000c7"]
+                .map(AssetId::from_text);
+        let cue = Cue {
+            sounds: vec![sound_id],
+            volume_db: [-4.0, -4.0],
+            pitch: [1.0, 1.0],
+            attenuation: None,
+            bus: Bus::Voice,
+            hitstop: HitstopResponse::Ignore,
+        };
+        let decoded = sound.decode().unwrap();
+        let length = curve.frames.len();
+        let scene = SceneSound {
+            listener: Listener::default(),
+            world_time_scale: 1.0,
+            character: Vec3::ZERO,
+            hitstop: false,
+        };
+        // Each frame: what the mouth read after the update, and the mix's power over the frame after it, for a
+        // line asked for from `ASKED` on and held over `held`.
+        let play = |held: std::ops::Range<usize>| {
+            let loaded = Loaded {
+                cues: vec![(cue_id, cue.clone(), vec![(sound_id, decoded.clone())])],
+                score: None,
+                voices: vec![VoiceLines {
+                    locale: "en".to_owned(),
+                    lines: vec![VoiceLine { key: "guide_greet".to_owned(), cue: cue_id }],
+                }],
+                mouths: Mouths(HashMap::from([(sound_id, curve.clone())])),
+            };
+            let mut audio = OfflineAudio::with_loaded(loaded, None).unwrap();
+            let mut heard = Vec::new();
+            for frame in 0..ASKED + length + held.len() + 10 {
+                let speech = (frame >= ASKED).then(|| SpeechRequest {
+                    line: LineKey::of("guide_greet"),
+                    serial: 1,
+                    target: CueTarget::Flat,
+                    held: held.contains(&frame),
+                });
+                audio.update(DT, scene, CueSounds { speech, ..CueSounds::NONE });
+                let said = audio.said();
+                audio.mix(DT);
+                let samples = (DT * OFFLINE_RATE as f32) as usize * 2;
+                let power =
+                    audio.block[..samples].iter().map(|&sample| f64::from(sample).powi(2)).sum::<f64>();
+                heard.push((said, power / samples as f64));
+            }
+            heard
+        };
+        let heard = play(0..0);
+        // The line starts with a little silence, so the mix is first heard that far after the asking.
+        let lead =
+            decoded.samples.iter().position(|&sample| sample != 0.0).unwrap() / decoded.channels as usize;
+        let lead = lead * sapphire_assets::mouth::MOUTH_RATE as usize / decoded.sample_rate as usize;
+        let first = heard.iter().position(|&(_, power)| power > 0.0).unwrap();
+        assert!(
+            (ASKED + lead).abs_diff(first) <= 1,
+            "the voice sounds from frame {first}, asked at {ASKED} with {lead} frames of silence first"
+        );
+        assert!(heard[..ASKED].iter().all(|(said, _)| said.is_none()));
+        for (frame, (said, _)) in heard.iter().enumerate().skip(ASKED).take(length - 2) {
+            let said = said.unwrap_or_else(|| panic!("frame {frame} says nothing"));
+            assert_eq!(said.serial, 1);
+            // The playhead is a sum of frames' seconds, so it may be an ulp from a product of them.
+            let expected = curve.at((frame - ASKED) as f32 * DT);
+            let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+            assert!(near(said.mouth.open, expected.open), "frame {frame}: {said:?} against {expected:?}");
+            assert!(
+                said.mouth.visemes.iter().zip(expected.visemes).all(|(&a, b)| near(a, b)),
+                "frame {frame}"
+            );
+        }
+        assert!(heard.last().unwrap().0.is_none(), "played out, the mouth's shut");
+        let loudest = |of: &dyn Fn(usize) -> f64| {
+            (ASKED..heard.len()).max_by(|&a, &b| of(a).total_cmp(&of(b))).unwrap()
+        };
+        let mouth_peak = loudest(&|frame| heard[frame].0.map_or(0.0, |said| f64::from(said.mouth.open)));
+        let mix_peak = loudest(&|frame| heard[frame].1);
+        assert!(
+            mouth_peak.abs_diff(mix_peak) <= 1,
+            "the mouth peaks at frame {mouth_peak}, the mix at {mix_peak}"
+        );
+
+        // Again, held by a pause partway: the mouth stays where it was, the mix falls silent, and both go on
+        // from there.
+        const HELD: std::ops::Range<usize> = ASKED + 30..ASKED + 50;
+        let paused = play(HELD);
+        let at_pause = paused[HELD.start].0.unwrap().mouth;
+        assert_eq!(at_pause, heard[HELD.start].0.unwrap().mouth);
+        for frame in HELD {
+            assert_eq!(paused[frame].0.unwrap().mouth, at_pause, "frame {frame}");
+        }
+        assert!(
+            paused[HELD.start + 5..HELD.end].iter().all(|&(_, power)| power == 0.0),
+            "a held voice is silent"
+        );
+        let after = HELD.end + 1;
+        assert_eq!(paused[after].0.unwrap().mouth, heard[after - HELD.len()].0.unwrap().mouth);
     }
 }

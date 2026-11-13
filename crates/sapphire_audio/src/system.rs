@@ -97,6 +97,30 @@ pub struct LineRequest {
     pub target: CueTarget,
 }
 
+/// The line a conversation says now (M5 C6), asked for every frame it's shown: one at a time, spoken in the
+/// chosen voice language as a [`LineRequest`] is, and cut when another is asked for or none is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeechRequest {
+    pub line: LineKey,
+    /// Which showing of a line this is, however the caller counts: a new number starts its line from the
+    /// beginning, even the same line again, and the same number goes on with the one speaking.
+    pub serial: u64,
+    pub target: CueTarget,
+    /// Held where it is, as a pause holds a conversation: the voice waits, and its playhead with it.
+    pub held: bool,
+}
+
+/// What a conversation's line is saying (M5 C6): the sound its voice plays, and how far into it the voice
+/// is, by the system's own count of the real seconds it has played, never asked of the audio thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Speaking {
+    /// The [`SpeechRequest::serial`] it was asked by.
+    pub serial: u64,
+    pub sound: AssetId,
+    /// Seconds into the sound.
+    pub seconds: f32,
+}
+
 /// Everything a frame tells the audio system.
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame<'a> {
@@ -111,6 +135,8 @@ pub struct AudioFrame<'a> {
     pub cues: &'a [CueRequest],
     /// The voice lines to start this frame, after the cues.
     pub lines: &'a [LineRequest],
+    /// The line a conversation says, after the lines: none, and what one was saying is cut.
+    pub speech: Option<SpeechRequest>,
     /// The score and phase to play, or none: what played fades out.
     pub music: Option<MusicRequest<'a>>,
 }
@@ -187,8 +213,20 @@ struct Voice {
     /// What the backend was last told.
     sent: VoiceParams,
     frozen: bool,
+    /// Held by its speech's caller ([`SpeechRequest::held`]), whatever hitstop says.
+    held: bool,
     /// Told to end, and only waiting to.
     stopped: bool,
+}
+
+/// The conversation's line, as asked and as spoken.
+#[derive(Clone, Copy, Debug)]
+struct Speech {
+    serial: u64,
+    /// The voice saying it and its sound, until it ends or is cut: none if it never started.
+    voice: Option<(VoiceSlot, AssetId)>,
+    /// How far in, in seconds of the sound.
+    seconds: f64,
 }
 
 /// A tracked emitter.
@@ -212,6 +250,8 @@ pub struct AudioSystem<B: AudioBackend> {
     mix: SnapshotMix,
     music: Music,
     voice: VoiceRoute,
+    /// The conversation's line (M5 C6).
+    speech: Option<Speech>,
     /// The music bus's gain, as last sent: the player's volume, and down under a voice line.
     music_gain_db: f32,
     background: bool,
@@ -243,6 +283,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             mix: SnapshotMix::NEUTRAL,
             music: Music::default(),
             voice: VoiceRoute::new(),
+            speech: None,
             music_gain_db: 0.0,
             background: false,
             interrupted: false,
@@ -355,6 +396,19 @@ impl<B: AudioBackend> AudioSystem<B> {
             voice.stopped = true;
             self.backend.stop_voice(voice.slot);
         }
+        // A conversation's line is cut too, and not started again while it's asked for by the same serial.
+        if let Some(speech) = &mut self.speech {
+            speech.voice = None;
+        }
+    }
+
+    /// What the conversation's line is saying, as of the last [`Self::update`]: none once it has ended or
+    /// been cut, or if it never started (no such line in the voice language, no output).
+    #[must_use]
+    pub fn speaking(&self) -> Option<Speaking> {
+        let speech = self.speech?;
+        let (_, sound) = speech.voice?;
+        Some(Speaking { serial: speech.serial, sound, seconds: speech.seconds as f32 })
     }
 
     /// The counters, as of the last [`Self::update`].
@@ -384,11 +438,12 @@ impl<B: AudioBackend> AudioSystem<B> {
         if state == DeviceState::Running {
             self.reap_voices();
         }
+        self.advance_speech(frame.dt, state);
         self.track_emitters(frame.emitters);
         self.step_snapshot(frame);
         for request in frame.cues {
             if state.plays() {
-                self.start_cue(request, &frame.listener, random);
+                self.start_cue(request, &frame.listener, random, false);
             } else {
                 self.stats.dropped_no_output += 1;
                 if !self.warned_no_output {
@@ -404,11 +459,12 @@ impl<B: AudioBackend> AudioSystem<B> {
             };
             self.stats.lines_asked += 1;
             if state.plays() {
-                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random);
+                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random, false);
             } else {
                 self.stats.dropped_no_output += 1;
             }
         }
+        self.follow_speech(frame.speech, state, &frame.listener, random);
         self.music.update(frame.music, state.plays(), &mut self.backend);
         self.stats.music_phase_changes = self.music.counts.phase_changes;
         self.stats.music_unknown_phases = self.music.counts.unknown_phases;
@@ -475,9 +531,74 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.mix = mix;
     }
 
-    fn start_cue(&mut self, request: &CueRequest, listener: &Listener, random: &mut impl CueRandom) {
+    /// Moves the conversation's line on by the real seconds since the last update, as fast as its voice plays,
+    /// unless the voice waits (held, frozen, or the output not running). A voice that has finished ends it.
+    fn advance_speech(&mut self, dt: f32, state: DeviceState) {
+        let Some(speech) = &mut self.speech else { return };
+        let Some((slot, _)) = speech.voice else { return };
+        let Some(voice) = self.voices.iter().find(|voice| voice.slot == slot && !voice.stopped) else {
+            speech.voice = None;
+            return;
+        };
+        if state == DeviceState::Running && !voice.frozen && dt > 0.0 && dt.is_finite() {
+            speech.seconds += f64::from(dt) * f64::from(voice.sent.pitch);
+        }
+    }
+
+    /// Starts the line a conversation asks for, cutting the one it said before, or holds or lets go of the
+    /// one it's saying.
+    fn follow_speech(
+        &mut self,
+        asked: Option<SpeechRequest>,
+        state: DeviceState,
+        listener: &Listener,
+        random: &mut impl CueRandom,
+    ) {
+        if let (Some(speech), Some(asked)) = (&self.speech, asked)
+            && speech.serial == asked.serial
+        {
+            if let Some((slot, _)) = speech.voice
+                && let Some(voice) = self.voices.iter_mut().find(|voice| voice.slot == slot)
+            {
+                voice.held = asked.held;
+            }
+            return;
+        }
+        if let Some((slot, _)) = self.speech.take().and_then(|speech| speech.voice)
+            && let Some(voice) = self.voices.iter_mut().find(|voice| voice.slot == slot && !voice.stopped)
+        {
+            voice.stopped = true;
+            self.backend.stop_voice(slot);
+        }
+        let Some(asked) = asked else { return };
+        let mut speech = Speech { serial: asked.serial, voice: None, seconds: 0.0 };
+        match self.voice.line(asked.line) {
+            None => self.stats.lines_missing += 1,
+            Some(cue) => {
+                self.stats.lines_asked += 1;
+                if state.plays() {
+                    let request = CueRequest { cue, target: asked.target };
+                    speech.voice = self.start_cue(&request, listener, random, asked.held);
+                } else {
+                    self.stats.dropped_no_output += 1;
+                }
+            }
+        }
+        self.speech = Some(speech);
+    }
+
+    /// Starts `request`, held from the start if `held`: the voice's slot and the sound it picked, if it
+    /// started.
+    fn start_cue(
+        &mut self,
+        request: &CueRequest,
+        listener: &Listener,
+        random: &mut impl CueRandom,
+        held: bool,
+    ) -> Option<(VoiceSlot, AssetId)> {
         let Some(cue) = self.cues.get(&request.cue) else {
-            return self.count_unknown(|| format!("cue {} isn't loaded", request.cue));
+            self.count_unknown(|| format!("cue {} isn't loaded", request.cue));
+            return None;
         };
         // Always the same three numbers, so a change in one cue's ranges moves no other's picks.
         let (pick, volume, pitch) = (random.next_u32(), random.next_unit(), random.next_unit());
@@ -490,11 +611,12 @@ impl<B: AudioBackend> AudioSystem<B> {
         if let Place::On(id) = place
             && !self.emitters.iter().any(|tracked| tracked.emitter.id == id)
         {
-            return self.count_unknown(|| format!("emitter {id:?} isn't in this frame"));
+            self.count_unknown(|| format!("emitter {id:?} isn't in this frame"));
+            return None;
         }
         let Some(slot) = self.free_slots.pop() else {
             self.stats.dropped_voice_limit += 1;
-            return;
+            return None;
         };
         let [quiet, loud] = cue.volume_db;
         let [slow, fast] = cue.pitch;
@@ -508,15 +630,16 @@ impl<B: AudioBackend> AudioSystem<B> {
             pitch: slow + (fast - slow) * pitch,
             sent: VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 },
             frozen: false,
+            held,
             stopped: false,
         };
-        let in_hitstop = self.in_hitstop(&voice);
-        voice.frozen = in_hitstop && voice.hitstop == HitstopResponse::Freeze;
+        voice.frozen = self.is_frozen(&voice);
         voice.sent = self.params_of(&voice, listener);
         match self.backend.start_voice(slot, sound, voice.bus, voice.sent, voice.frozen) {
             Ok(()) => {
                 self.voices.push(voice);
                 self.stats.cues_played += 1;
+                Some((slot, sound))
             }
             Err(error) => {
                 self.free_slots.push(slot);
@@ -524,8 +647,14 @@ impl<B: AudioBackend> AudioSystem<B> {
                     StartError::UnknownSound(_) => self.count_unknown(|| error.to_string()),
                     StartError::MixerFull => self.stats.dropped_voice_limit += 1,
                 }
+                None
             }
         }
+    }
+
+    /// Whether `voice` should wait where it is: held by its speech, or frozen by its emitter's hitstop.
+    fn is_frozen(&self, voice: &Voice) -> bool {
+        voice.held || (self.in_hitstop(voice) && voice.hitstop == HitstopResponse::Freeze)
     }
 
     fn count_unknown(&mut self, message: impl FnOnce() -> String) {
@@ -543,7 +672,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             if voice.stopped {
                 continue;
             }
-            let frozen = self.in_hitstop(&voice) && voice.hitstop == HitstopResponse::Freeze;
+            let frozen = self.is_frozen(&voice);
             if frozen != voice.frozen {
                 self.backend.freeze_voice(voice.slot, frozen);
                 self.voices[index].frozen = frozen;
@@ -689,6 +818,7 @@ mod tests {
             emitters,
             cues,
             lines: &[],
+            speech: None,
             music: None,
         }
     }
@@ -1271,5 +1401,115 @@ mod tests {
         assert!(stats.update_peak >= stats.update);
         assert_eq!(system.take_peak(), stats.update_peak);
         assert_eq!(system.stats().update_peak, Duration::ZERO);
+    }
+
+    /// A system that speaks `greet` in English as [`CUE`], a voice at `pitch`.
+    fn speaker(pitch: f32) -> AudioSystem<MockBackend> {
+        let mut system = system_with(Cue { pitch: [pitch, pitch], bus: Bus::Voice, ..plain_cue() });
+        let line = sapphire_assets::voice::VoiceLine { key: "greet".to_owned(), cue: CUE };
+        system.add_voice_lines(&VoiceLines { locale: "en".to_owned(), lines: vec![line] }).unwrap();
+        assert!(system.set_voice_language("en"));
+        system
+    }
+
+    fn say(system: &mut AudioSystem<MockBackend>, speech: Option<SpeechRequest>, rng: &mut CueRng) {
+        system.update(&AudioFrame { speech, ..frame(&[], &[]) }, rng);
+    }
+
+    fn greet(serial: u64, held: bool) -> Option<SpeechRequest> {
+        Some(SpeechRequest { line: LineKey::of("greet"), serial, target: CueTarget::Flat, held })
+    }
+
+    fn seconds(system: &AudioSystem<MockBackend>) -> Option<f32> {
+        system.speaking().map(|speaking| speaking.seconds)
+    }
+
+    /// M5 C6: a line starts once, its playhead runs with the real seconds at the voice's pitch, a pause holds
+    /// both, and the next line, or none, cuts it.
+    #[test]
+    fn a_conversations_line_speaks_once_holds_on_a_pause_and_is_cut_by_the_next() {
+        let mut system = speaker(1.25);
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert!(matches!(
+            calls[..],
+            [MockCall::StartVoice { slot: VoiceSlot(0), sound: SOUND_A, frozen: false, .. }]
+        ));
+        let speaking = system.speaking().unwrap();
+        assert_eq!((speaking.serial, speaking.sound, speaking.seconds), (1, SOUND_A, 0.0));
+        for _ in 0..30 {
+            say(&mut system, greet(1, false), &mut rng);
+        }
+        assert!(
+            system.backend_mut().take_calls().iter().all(|call| !matches!(call, MockCall::StartVoice { .. }))
+        );
+        let played = seconds(&system).unwrap();
+        assert!((played - 30.0 * FRAME * 1.25).abs() < 1e-5, "{played}");
+
+        // A pause: the voice waits, and so does its playhead, over the frames it's held.
+        say(&mut system, greet(1, true), &mut rng);
+        assert!(
+            system.backend().calls().contains(&MockCall::FreezeVoice { slot: VoiceSlot(0), frozen: true })
+        );
+        let held = seconds(&system).unwrap();
+        for _ in 0..10 {
+            say(&mut system, greet(1, true), &mut rng);
+        }
+        assert_eq!(seconds(&system), Some(held));
+        say(&mut system, greet(1, false), &mut rng);
+        assert!(
+            system.backend().calls().contains(&MockCall::FreezeVoice { slot: VoiceSlot(0), frozen: false })
+        );
+        assert_eq!(seconds(&system), Some(held));
+        system.backend_mut().take_calls();
+
+        // The same line again, as a new showing: the old voice stops and a new one starts from nothing.
+        say(&mut system, greet(2, false), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert!(calls.contains(&MockCall::StopVoice { slot: VoiceSlot(0) }));
+        assert!(calls.iter().any(|call| matches!(call, MockCall::StartVoice { .. })));
+        assert_eq!(system.speaking().map(|speaking| (speaking.serial, speaking.seconds)), Some((2, 0.0)));
+        // The conversation's end cuts it.
+        say(&mut system, None, &mut rng);
+        assert!(
+            system.backend_mut().take_calls().iter().any(|call| matches!(call, MockCall::StopVoice { .. }))
+        );
+        assert_eq!(system.speaking(), None);
+        assert_eq!((system.stats().lines_asked, system.stats().lines_missing), (2, 0));
+    }
+
+    /// A suspended output holds the playhead; a voice played out, or stopped by a start over, ends the line,
+    /// and the same showing never starts again. A line with no voice is counted, once.
+    #[test]
+    fn a_line_ends_with_its_voice_and_waits_out_a_suspension() {
+        let mut system = speaker(1.0);
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        say(&mut system, greet(1, false), &mut rng);
+        let before = seconds(&system).unwrap();
+        system.backend_mut().set_state(DeviceState::Suspended);
+        for _ in 0..5 {
+            say(&mut system, greet(1, false), &mut rng);
+        }
+        assert_eq!(seconds(&system), Some(before));
+        system.backend_mut().set_state(DeviceState::Running);
+        say(&mut system, greet(1, false), &mut rng);
+        system.backend_mut().finish(VoiceSlot(0));
+        say(&mut system, greet(1, false), &mut rng);
+        assert_eq!(system.speaking(), None);
+        say(&mut system, greet(1, false), &mut rng);
+        assert_eq!((system.speaking(), system.stats().lines_asked), (None, 1));
+
+        say(&mut system, greet(2, false), &mut rng);
+        assert!(system.speaking().is_some());
+        system.stop_voices();
+        say(&mut system, greet(2, false), &mut rng);
+        assert_eq!((system.speaking(), system.stats().lines_asked), (None, 2));
+
+        let missing = Some(SpeechRequest { line: LineKey::of("farewell"), ..greet(3, false).unwrap() });
+        say(&mut system, missing, &mut rng);
+        say(&mut system, missing, &mut rng);
+        assert_eq!((system.speaking(), system.stats().lines_missing), (None, 1));
     }
 }

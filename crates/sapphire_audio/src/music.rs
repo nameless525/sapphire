@@ -319,6 +319,7 @@ mod tests {
             emitters: &[],
             cues: &[],
             lines,
+            speech: None,
             music,
         };
         system.update(&frame, &mut CueRng::new(1));

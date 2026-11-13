@@ -384,6 +384,7 @@ mod through_the_system {
                     emitters: &[],
                     cues,
                     lines: &[],
+                    speech: None,
                     music: None,
                 },
                 &mut rng,

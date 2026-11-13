@@ -171,6 +171,7 @@ impl Fight {
                 emitters: &self.emitters,
                 cues: self.cues.sounds(),
                 lines: self.cues.lines(),
+                speech: None,
                 music: None,
             },
             &mut self.random,

@@ -67,6 +67,7 @@ fn frame_at<'a>(tick: usize, emitters: &'a mut [Emitter; 1], cues: &'a [CueReque
         emitters,
         cues,
         lines: &[],
+        speech: None,
         music: None,
     }
 }

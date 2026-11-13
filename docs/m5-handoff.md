@@ -219,6 +219,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 - **`cargo xtask package --platform ios|ios-sim|android|macos|windows|linux`** (S1–S4, C1, C2): a shipping build with its cook, icon, symbols, `checks/` and `package.json`. The build number is the count of commits on `main`.
 - **`cargo xtask steampipe`**, **`store-shots`**, **`symbols`** and **`symbolicate <report>…`**. A forced crash is `--crash fault|panic`, or on Android `adb shell setprop debug.sapphire.crash fault`.
 - **`.github/workflows/packages.yml`** (I2) builds all five nightly at 11:43 UTC, on dispatch, and on pull requests touching what packaging reads.
+- **Owed (0.1.0):** a packaged Windows build is a GUI program, so its `--version` line reaches no console; it would need to attach to its parent's (`AttachConsole`) in `sapphire_platform` before printing.
 
 ### Playtests
 

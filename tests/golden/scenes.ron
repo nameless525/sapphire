@@ -135,9 +135,11 @@
     data: (
         bases: {
             // A game screen's golden (M3 U7): on a flat color, so it stays cheap and moves only for what it
-            // shows, with its screen (`--ui-game`) and language (`--ui-locale`) after it.
+            // shows, with its screen (`--ui-game`) and language (`--ui-locale`) after it. The title's version
+            // label is pinned (0.1.0), a packaged build's longer form, so a new version moves no golden.
             "game-screen": ["--tier", "desktop-high", "--plain-sky", "--plain-post", "--aa", "msaa",
-                            "--ao", "off", "--shadows", "off", "--fog", "off", "--ui-plain"],
+                            "--ao", "off", "--shadows", "off", "--fog", "off", "--ui-plain",
+                            "--ui-version", "v0.1.0 (1234)"],
             // The court gate's cutscene in the game as it ships (M3 Q4), with its language
             // (`--game-language`) after it: a continue from `ward-gate.progress.ron` walks back through the
             // gate, into the cutscene at frame 17, and tick 251, 3.9 s on, falls mid-way through the warden's
@@ -2314,12 +2316,13 @@
             // The game's own show on its flow (M3 G1) in the Lantern Ward, through the sandbox's `--game`,
             // which stands the game as it ships, its look unpinned but for its tier, which a device would
             // choose (CI's Metal runner Desktop-Low, a Mac Desktop-High): its title over the run it would
-            // continue, and a continue from a save at the court's checkpoint, a second and a half in.
+            // continue, and a continue from a save at the court's checkpoint, a second and a half in. The
+            // title's version label is pinned, as the game screens' is (0.1.0).
             (
                 name: "game-ward-title",
                 size: "640x360",
                 ticks: 30,
-                args: ["--tier", "desktop-high", "--game", "title"],
+                args: ["--tier", "desktop-high", "--game", "title", "--ui-version", "v0.1.0 (1234)"],
                 ci_seconds: (lavapipe: 52.6, warp: 116.9),
             ),
             (

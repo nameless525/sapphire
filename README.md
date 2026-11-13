@@ -110,7 +110,7 @@ Each frame, the fixed step advances the simulation, then resolves everything the
 | **M3** World and tools | Zones, navigation, the sequencer and dialogue, Luau, UI and menus, saves, localization and the editor's documents: the Lantern Ward |
 | **M4** Ship readiness | Pipeline warm-up, signed patches, quality tiers and heat, crash symbols, accessibility, store packages and playtests |
 
-The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M5 handoff](docs/m5-handoff.md) says where the next one starts.
+The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M5 handoff](docs/m5-handoff.md) says where the next one starts. That next one is M5, fidelity at scale: [its plan](docs/m5-plan.md) is under way.
 
 ## Documentation
 

@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_assets::rig::ExpressionPreset;
 use sapphire_timeline::{TimelineDocument, TimelineError};
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +16,9 @@ use crate::cache::Stage;
 /// Reads and checks the document. Bump the version whenever that changes output for the same document.
 pub const IMPORTER: Stage = Stage { name: "timeline document", version: 1 };
 
-/// The `.stimeline` writer. Bump the version whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "stimeline", version: 1 };
+/// The `.stimeline` writer. Bump the version whenever it changes output for the same document. 2: M5 C5's
+/// faces and looks (`Timeline` version 2).
+pub const COOKER: Stage = Stage { name: "stimeline", version: 2 };
 
 /// What a timeline source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".timeline.ron";
@@ -34,6 +36,8 @@ pub enum TimelineCookError {
     Encoding(#[from] std::str::Utf8Error),
     #[error(transparent)]
     Timeline(#[from] TimelineError),
+    #[error("`{field}`: {name:?} is no VRM 1.0 expression preset")]
+    Expression { field: String, name: String },
 }
 
 /// Whether `path` names a timeline source.
@@ -50,9 +54,18 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
     relative.with_file_name(format!("{stem}.{extension}"))
 }
 
-/// Cooks a document's bytes.
+/// Cooks a document's bytes. A face key's expression must be a preset ([`ExpressionPreset`]), which the
+/// timeline's own checks can't say: that crate is beneath the one that knows them.
 pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, TimelineCookError> {
     let document = TimelineDocument::from_ron(std::str::from_utf8(bytes)?)?;
+    for (index, track) in document.characters.iter().enumerate() {
+        for (at, key) in track.faces.iter().enumerate() {
+            if ExpressionPreset::from_name(&key.expression).is_none() {
+                let field = format!("characters[{index}].faces[{at}].expression");
+                return Err(TimelineCookError::Expression { field, name: key.expression.clone() });
+            }
+        }
+    }
     Ok(document.cook()?.to_cooked()?.into_vec())
 }
 
@@ -96,5 +109,15 @@ mod tests {
         let text = std::str::from_utf8(CUTSCENE).unwrap().replacen("length: 6.0", "length: -1.0", 1);
         let message = cook(text.as_bytes()).unwrap_err().to_string();
         assert!(message.contains("`length`"), "{message}");
+    }
+
+    /// M5 C5: a face is a VRM preset, by the name VRM gives it.
+    #[test]
+    fn a_face_that_is_no_preset_is_refused_with_its_field() {
+        let text = std::str::from_utf8(CUTSCENE).unwrap();
+        assert!(cook(text.replacen("\"surprised\"", "\"blinkLeft\"", 1).as_bytes()).is_ok());
+        let message =
+            cook(text.replacen("\"surprised\"", "\"Surprised\"", 1).as_bytes()).unwrap_err().to_string();
+        assert!(message.contains("`characters[0].faces[1].expression`"), "{message}");
     }
 }

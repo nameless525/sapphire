@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_assets::rig::ExpressionPreset;
 use sapphire_dialogue::{Dialogue, DialogueDocument, DialogueError, FlagRegistry};
 use sapphire_strings::{StringTable, key_shows};
 use serde::{Deserialize, Serialize};
@@ -22,8 +23,9 @@ use crate::cache::Stage;
 /// Reads and checks the document. Bump the version whenever that changes output for the same document.
 pub const IMPORTER: Stage = Stage { name: "dialogue document", version: 1 };
 
-/// The `.sdialogue` writer. Bump the version whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "sdialogue", version: 1 };
+/// The `.sdialogue` writer. Bump the version whenever it changes output for the same document. 2: M5 C5's
+/// faces on a line (`Dialogue` version 3).
+pub const COOKER: Stage = Stage { name: "sdialogue", version: 2 };
 
 /// What a dialogue source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".dialogue.ron";
@@ -44,6 +46,8 @@ pub enum DialogueCookError {
     Encoding(#[from] std::str::Utf8Error),
     #[error(transparent)]
     Dialogue(#[from] DialogueError),
+    #[error("`{field}`: {name:?} is no VRM 1.0 expression preset")]
+    Expression { field: String, name: String },
 }
 
 /// A flag registry that can't be read, or holds more than the simulation can.
@@ -107,6 +111,15 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
 /// Cooks a document's bytes against the registry, read back through the runtime's check.
 pub fn cook(bytes: &[u8], registry: &FlagRegistry) -> Result<Vec<u8>, DialogueCookError> {
     let document = DialogueDocument::from_ron(std::str::from_utf8(bytes)?)?;
+    // A face is a preset by its VRM name, which `sapphire_dialogue` is beneath knowing (M5 C5).
+    for (index, node) in document.nodes.iter().enumerate() {
+        for (at, face) in node.say.iter().flat_map(|say| say.faces.iter()).enumerate() {
+            if ExpressionPreset::from_name(&face.expression).is_none() {
+                let field = format!("nodes[{index}].say.faces[{at}].expression");
+                return Err(DialogueCookError::Expression { field, name: face.expression.clone() });
+            }
+        }
+    }
     let dialogue = document.cook(registry, |source| {
         sapphire_bytecode::cook(source).map(drop).map_err(|error| error.to_string())
     })?;
@@ -185,6 +198,13 @@ mod tests {
         assert!(Dialogue::read(&aligned).unwrap().needs_scripts());
         assert_eq!(AssetKind::Dialogue.references(&aligned).unwrap(), []);
         assert_eq!(crate::pack::kind(Path::new("guide.sdialogue")), Some(AssetKind::Dialogue));
+    }
+
+    #[test]
+    fn a_face_that_is_no_preset_stops_the_cook_naming_the_field() {
+        let text = std::str::from_utf8(GUIDE).unwrap().replacen("\"happy\"", "\"grin\"", 1);
+        let error = cook(text.as_bytes(), &registry()).unwrap_err().to_string();
+        assert!(error.contains("`nodes[2].say.faces[0].expression`"), "{error}");
     }
 
     #[test]

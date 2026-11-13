@@ -1115,6 +1115,7 @@ Each module below follows the same template:
   - Binding arrays (bindless).
   - `shader-f16`.
   - Pipeline-cache support.
+  - Cube array textures (`GpuCaps::cube_array_textures`, M5 L0), wgpu's `CUBE_ARRAY_TEXTURES` downlevel flag: every desktop backend, Vulkan with `imageCubeArray`, Metal from iOS family 4, so never the iOS Simulator. Without it wgpu 30 refuses any shader module that declares a `texture_cube_array`, used or not (naga's capability), though not the view, so a program that declares one is assembled only where the flag is set.
   - Limits.
   - The renderer selects passes by `GpuCaps` plus the tier table, never by OS.
 - **Uploads:** per-frame data goes through a `wgpu::util::StagingBelt`: mapped staging buffers reused across frames and copied in the frame's own encoder. `queue.write_buffer` creates a new staging buffer per call (it was most of the M0 frame's CPU time), so it's for one-off uploads such as meshes.

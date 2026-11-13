@@ -82,6 +82,13 @@ pub struct GpuCaps {
     pub pipeline_cache: bool,
     /// `Depth32FloatStencil8` is supported: the renderer's debug views' replays use it.
     pub depth32float_stencil8: bool,
+    /// Cube array textures (`TextureViewDimension::CubeArray`, WGSL `texture_cube_array`): the
+    /// reflection probes' runtime array (M5 L0). Every desktop backend has them, and so does
+    /// Vulkan with `imageCubeArray`; Metal needs iOS GPU family 4, which the iOS Simulator
+    /// doesn't report. Without them wgpu 30 refuses any shader module that declares a
+    /// `texture_cube_array`, used or not (naga's `CUBE_ARRAY_TEXTURES` capability), though not a
+    /// cube array view: a program that declares one is assembled only where this is set.
+    pub cube_array_textures: bool,
     /// Limits the device was created with: a fixed floor rather than everything the adapter
     /// offers, so code that quietly depends on a desktop-only limit fails on the developer's
     /// machine instead of on a phone. The floor is wgpu's `downlevel_defaults` (the Vulkan 1.1
@@ -138,6 +145,7 @@ impl GpuCaps {
             shader_f16: features.contains(Features::SHADER_F16),
             pipeline_cache: features.contains(Features::PIPELINE_CACHE),
             depth32float_stencil8: features.contains(Features::DEPTH32FLOAT_STENCIL8),
+            cube_array_textures: downlevel.contains(DownlevelFlags::CUBE_ARRAY_TEXTURES),
             features,
             downlevel,
             limits,
@@ -194,6 +202,7 @@ impl GpuCaps {
             shader_f16 = self.shader_f16,
             pipeline_cache = self.pipeline_cache,
             depth32float_stencil8 = self.depth32float_stencil8,
+            cube_arrays = self.cube_array_textures,
             transient_saves_memory = ?info.transient_saves_memory,
             max_texture_2d = self.limits.max_texture_dimension_2d,
             adapter_max_storage_binding = self.adapter_limits.max_storage_buffer_binding_size,
@@ -282,6 +291,9 @@ pub(crate) fn required_limits(adapter: &Limits, features: Features) -> Limits {
     }
     limits
 }
+
+#[cfg(test)]
+mod gpu_tests;
 
 #[cfg(test)]
 mod tests {
@@ -428,6 +440,23 @@ mod tests {
         );
         assert!(caps.limits.check_limits(&adapter_limits));
         assert!(!caps.base_vertex_first_instance && !caps.multi_draw_indirect);
+        // So reflection probes take their fallback there (M5 L0).
+        assert!(!caps.cube_array_textures);
+    }
+
+    #[test]
+    fn cube_arrays_follow_the_downlevel_flag() {
+        let caps = |downlevel| {
+            GpuCaps::from_parts(
+                AdapterInfo::new(wgpu::DeviceType::IntegratedGpu, Backend::Vulkan),
+                Features::empty(),
+                downlevel,
+                vulkan_1_1_minimum(),
+            )
+        };
+        assert!(caps(DownlevelFlags::all()).cube_array_textures);
+        // A Vulkan device without `imageCubeArray`.
+        assert!(!caps(DownlevelFlags::all() - DownlevelFlags::CUBE_ARRAY_TEXTURES).cube_array_textures);
     }
 
     #[test]

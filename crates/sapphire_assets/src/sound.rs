@@ -10,6 +10,9 @@
 //! Decoding is load-time work (under 1/300 of a sound's length on an Apple M5 core, by
 //! `sapphire_audio`'s `tests/costs.rs`), done before the first play, and never on the audio callback.
 //! A mixer holds the decoded [`DecodedSound`], so playing costs no decoding at all.
+//!
+//! A voice sound also carries its mouth curve (M5 C6, [`Sound::mouth`]): what a face says it with, cooked
+//! from the decoded samples by [`MouthCurve::analyze`] when its sidecar asks, and read with the sound.
 
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -19,6 +22,8 @@ use lewton::inside_ogg::OggStreamReader;
 use lewton::samples::InterleavedSamples;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
+
+use crate::mouth::{ArchivedMouthCurve, MouthCurve};
 
 /// Conventional file extension for cooked sounds.
 pub const SOUND_EXTENSION: &str = "ssound";
@@ -47,10 +52,13 @@ pub struct Sound {
     pub frames: u32,
     /// The Ogg Vorbis file, byte for byte.
     pub vorbis: Vec<u8>,
+    /// A voice's mouth through it (M5 C6), [`MouthCurve::frames_for`] its length. None for any other sound.
+    pub mouth: Option<MouthCurve>,
 }
 
 impl Versioned for Sound {
-    const VERSION: u32 = 1;
+    /// 1: M2 E1. 2: M5 C6's mouth curve.
+    const VERSION: u32 = 2;
 }
 
 /// A sound as a mixer takes it: interleaved samples, nominally within -1 to 1.
@@ -97,6 +105,8 @@ pub enum SoundError {
     ChannelsMismatch { expected: u32, found: u32 },
     #[error("decoded {found} frames, but the cooked sound says {expected}")]
     Length { expected: u32, found: u64 },
+    #[error("the mouth curve has {found} frames, and a sound this long has {expected}")]
+    MouthLength { expected: usize, found: usize },
 }
 
 impl Sound {
@@ -108,7 +118,14 @@ impl Sound {
             channels: decoded.channels,
             frames: decoded.frames,
             vorbis,
+            mouth: None,
         })
+    }
+
+    /// The sound with its mouth curve, from decoding it again: what a cook does with a voice's.
+    pub fn with_mouth(self) -> Result<Self, SoundError> {
+        let mouth = MouthCurve::analyze(&self.decode()?);
+        Ok(Self { mouth: Some(mouth), ..self })
     }
 
     /// Decodes the stream as [`ArchivedSound::decode`] does, for a sound copied out of its pack
@@ -133,6 +150,12 @@ impl Sound {
         if frames > MAX_SOUND_FRAMES {
             return Err(SoundError::TooLong { frames: u64::from(frames) });
         }
+        if let Some(mouth) = sound.mouth.as_ref() {
+            let expected = MouthCurve::frames_for(frames, sound.sample_rate.to_native());
+            if mouth.frames.len() != expected {
+                return Err(SoundError::MouthLength { expected, found: mouth.frames.len() });
+            }
+        }
         Ok(sound)
     }
 }
@@ -154,6 +177,7 @@ impl ArchivedSound {
             channels: self.channels.to_native(),
             frames: self.frames.to_native(),
             vorbis: self.vorbis.to_vec(),
+            mouth: self.mouth.as_ref().map(ArchivedMouthCurve::to_curve),
         }
     }
 }
@@ -541,5 +565,12 @@ mod tests {
         let short = cooked(|sound| sound.frames += 1);
         let error = Sound::read(&short).unwrap().decode().unwrap_err();
         assert!(matches!(error, SoundError::Length { .. }));
+        // A voice's curve comes back out of its pack, and one a frame short is refused.
+        let voiced = good.clone().with_mouth().unwrap();
+        assert_eq!(Sound::read(&voiced.to_cooked().unwrap()).unwrap().to_sound(), voiced);
+        let mut curve = voiced.mouth.clone().unwrap();
+        curve.frames.pop();
+        let cut = Sound { mouth: Some(curve), ..voiced }.to_cooked().unwrap();
+        assert!(matches!(Sound::read(&cut), Err(SoundError::MouthLength { .. })));
     }
 }

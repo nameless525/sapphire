@@ -1,0 +1,33 @@
+// `guide_greet` in Japanese (M5 C6): the guide's first line at the Lantern Ward, as the conversation's `vo`
+// names it. No words, only a voice's shape, in even morae, high after the first and falling to the end.
+// Spoken by `content/audio/generated/voice/ja/guide_greet.cue.ron`.
+(
+    type: "sapphire::soundgen::Sound",
+    version: 1,
+    data: (
+        path: "audio/generated/voice/ja/guide_greet.ogg",
+        sound: Line((
+            // The guide's pitch, lower than the character's, in both languages.
+            speaker_hz: 175.0,
+            syllables: [
+                (vowel: E, seconds: 0.1, pitch: 1.0, burst: true),
+                (vowel: A, seconds: 0.1, pitch: 1.15, burst: true),
+                (vowel: I, seconds: 0.1, pitch: 1.15, burst: false),
+                (vowel: O, seconds: 0.1, pitch: 1.12, burst: true),
+                (vowel: O, seconds: 0.1, pitch: 1.1, burst: true),
+                (vowel: O, seconds: 0.1, pitch: 1.0, burst: true),
+                (vowel: A, seconds: 0.1, pitch: 0.95, burst: true),
+                (vowel: I, seconds: 0.1, pitch: 1.1, burst: true),
+                (vowel: E, seconds: 0.1, pitch: 1.05, burst: false),
+                (vowel: E, seconds: 0.1, pitch: 1.0, burst: true),
+                (vowel: I, seconds: 0.1, pitch: 0.97, burst: true),
+                (vowel: A, seconds: 0.1, pitch: 0.94, burst: true),
+                (vowel: I, seconds: 0.1, pitch: 0.92, burst: false),
+                (vowel: A, seconds: 0.1, pitch: 0.9, burst: true),
+                (vowel: I, seconds: 0.1, pitch: 0.88, burst: true),
+                (vowel: A, seconds: 0.18, pitch: 0.84, burst: true),
+            ],
+            seed: 0x0B0E_5EED_0000_0003,
+        )),
+    ),
+)

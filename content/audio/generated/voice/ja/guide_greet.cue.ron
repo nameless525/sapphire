@@ -1,0 +1,12 @@
+// `guide_greet` in Japanese: the ward guide's greeting (M5 C6), a placeholder voice `sapphire_soundgen`
+// synthesized, with no words.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: ["ac3761db-59af-4faa-9a6f-f72e6c7dd684"],
+        volume_db: (-4.0, -4.0),
+        pitch: (1.0, 1.0),
+        bus: Voice,
+    ),
+)

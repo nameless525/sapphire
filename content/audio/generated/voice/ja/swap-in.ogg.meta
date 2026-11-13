@@ -3,6 +3,6 @@
     version: 1,
     data: (
         id: "8b3529b7-72fd-4c9a-b105-a0665d2999fc",
-        importer: Sound(()),
+        importer: Sound((mouth: true)),
     ),
 )

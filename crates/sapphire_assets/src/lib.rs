@@ -48,7 +48,8 @@
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
 //!   linking a mixer (`sapphire_audio`, which plays them). Music and voice (M3 A1) likewise: [`score`],
-//!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`).
+//!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`). A voice
+//!   sound's [`mouth`] curve (M5 C6) is cooked into its `.ssound`, for a face to say it with.
 //! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
 //!   how a character's clips play: which layers, which states, what plays for which move. Plain
 //!   data, with its clips as dependencies; `sapphire_anim` runs it.
@@ -123,6 +124,7 @@ mod kind;
 pub mod manifest;
 pub mod material;
 pub mod mesh;
+pub mod mouth;
 pub mod pack;
 mod pipeline_key;
 pub mod probes;

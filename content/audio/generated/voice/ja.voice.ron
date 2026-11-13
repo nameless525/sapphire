@@ -1,4 +1,5 @@
-// The fight's voice lines in Japanese (M3 A1), by the keys the cue table's rows speak.
+// The voice lines in Japanese (M3 A1), by the keys the fight's cue table's rows and a dialogue line's
+// `vo` (M5 C6) speak.
 (
     type: "sapphire::assets::VoiceLines",
     version: 1,
@@ -7,6 +8,7 @@
         lines: [
             (key: "perfect-dodge", cue: "d5b27c43-edcd-49af-86a0-d2fc9de08440"), // ja/perfect-dodge
             (key: "swap-in", cue: "89a1fa3b-c243-4a85-a8ee-27ccebdbf5ed"), // ja/swap-in
+            (key: "guide_greet", cue: "4c7eed8f-e8c2-4c2b-9344-512f29c31b31"), // ja/guide_greet
         ],
     ),
 )

@@ -33,9 +33,12 @@ here: the tests check that this table names every file a spec makes.
 | `voice/en/swap-in.ogg` | The `swap-in` line's English placeholder | `753abb716222b6afd638e28d0314c2aa127ee1e7ad1536d8b7aac5363d7c2d98` |
 | `voice/ja/perfect-dodge.ogg` | The `perfect-dodge` line's Japanese placeholder | `21eadfb5bd0f709d9e4a5787baa51e917cd5a77bfe9007a288100aa66a035150` |
 | `voice/ja/swap-in.ogg` | The `swap-in` line's Japanese placeholder | `4cd63a88077b1581c5a39162b12c1dd9ff4867206e7f281127734d7df0b9a916` |
+| `voice/en/guide_greet.ogg` | The ward guide's greeting, `guide_greet`, in English: a conversation's voiced line (M5 C6), made 2026-11-13 | `5fcdf276ae53bf44aa04e654884b76678bba210d55fa36ddcdbbf77b08d6b9f0` |
+| `voice/ja/guide_greet.ogg` | The same greeting's Japanese placeholder, made 2026-11-13 | `0bd96beb4143df0930556582537af91b567c712266151cf49b60cbe74ac1ea27` |
 
 The `.ron` documents beside them (the score, the line cues and each language's voice lines) and every
-`.meta` sidecar are written by hand or by the cook, not by the generator.
+`.meta` sidecar are written by hand or by the cook, not by the generator. Each voice's sidecar asks the
+cook for its mouth curve (`Sound((mouth: true))`, M5 C6), which the voice lines' cook requires.
 
 Nobody has listened to these. They prove the music and voice paths with numbers; every level, note
 and timbre is a guess for someone who can hear them, and a real score and real voices replace them.

@@ -172,7 +172,7 @@ use sapphire_zone::{ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone,
 
 use crate::anim_graph::{self, AnimGraphCookError};
 use crate::assembly::{self, AssemblyError};
-use crate::audio::{self, AudioCookError};
+use crate::audio::{self, AudioCookError, SoundSettings};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
@@ -719,6 +719,11 @@ pub enum CookError {
     NotAStem { path: PathBuf, stem: String, id: AssetId },
     #[error("voice lines {} say `{key}` with {id}, which is not a cue of this content tree that cooks", path.display())]
     NotALine { path: PathBuf, key: String, id: AssetId },
+    #[error(
+        "voice lines {} say `{key}` with sound {id}, which has no mouth curve: its sidecar needs `importer: Sound((mouth: true))`",
+        path.display()
+    )]
+    LineWithoutMouth { path: PathBuf, key: String, id: AssetId },
     #[error("failed to cook zone {}", path.display())]
     Zone {
         path: PathBuf,
@@ -2540,7 +2545,7 @@ fn cook_source(
             .map_err(|source| CookError::Timeline { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Dialogue(_) => dialogue::cook(bytes, &assets.flags.flags)
             .map_err(|source| CookError::Dialogue { path: path.to_owned(), source: Box::new(source) }),
-        ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
+        ImportSettings::Sound(settings) => audio::cook_sound(bytes, *settings).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Score(_) => audio::cook_score(bytes).map_err(audio_error(path)),
         ImportSettings::VoiceLines(_) => audio::cook_voice_lines(bytes).map_err(audio_error(path)),
@@ -3181,7 +3186,8 @@ fn source_dependencies(
             }
             Ok(Vec::new())
         }
-        // Voice lines hold only their cues' IDs, but each cue is held to the voice bus, from its source.
+        // Voice lines hold only their cues' IDs, but each cue is held to the voice bus, from its source, and
+        // each of its sounds to having a mouth curve (M5 C6), from its sidecar.
         ImportSettings::VoiceLines(_) => {
             let lines = audio::read_voice_lines(bytes).map_err(audio_error(path))?;
             for line in &lines.lines {
@@ -3194,6 +3200,21 @@ fn source_dependencies(
                 };
                 let cue = read_source(&planned.asset.path)?;
                 audio::check_line(&line.key, &cue).map_err(audio_error(path))?;
+                for sound in audio::read_cue(&cue).map_err(audio_error(path))?.sounds {
+                    let voiced = assets.get(sound).is_some_and(|planned| {
+                        matches!(
+                            planned.asset.meta.importer,
+                            ImportSettings::Sound(SoundSettings { mouth: true })
+                        )
+                    });
+                    if !voiced {
+                        return Err(CookError::LineWithoutMouth {
+                            path: path.to_owned(),
+                            key: line.key.clone(),
+                            id: sound,
+                        });
+                    }
+                }
             }
             Ok(Vec::new())
         }

@@ -57,8 +57,8 @@
 //! Key-pose documents (`swing.keypose.ron`, M2 N1) have `importer: KeyPose((rig: "<id>"))`, naming
 //! the source with a skeleton and a humanoid map they cook for.
 //!
-//! Ogg Vorbis sounds (`.ogg`, M2 E1) have `importer: Sound(())` and cue documents (`hit.cue.ron`)
-//! `importer: Cue(())`.
+//! Ogg Vorbis sounds (`.ogg`, M2 E1) have `importer: Sound(())`, or `Sound((mouth: true))` for a voice's,
+//! which cooks its mouth curve (M5 C6), and cue documents (`hit.cue.ron`) `importer: Cue(())`.
 //!
 //! Fluent sources (`.ftl`, M3 V2) have `importer: Fluent((locale: "ja"))`, the locale they're part of,
 //! and locale documents (`ja.locale.ron`) `importer: Locale(())`.

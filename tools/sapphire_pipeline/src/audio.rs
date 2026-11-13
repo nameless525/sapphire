@@ -30,7 +30,8 @@ pub const SOUND_IMPORTER: Stage = Stage { name: "ogg (lewton 0.10.2)", version: 
 /// The sound cooker. Bump it whenever it changes output for the same file.
 // Version 2 preserves complete same-format Ogg chains; version 1 could cache truncated PCM
 // frame counts from the decoder's chained-stream granule handling. The archive layout is unchanged.
-pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 2 };
+// Version 3 writes a voice's mouth curve (M5 C6): a change to its analysis bumps it again.
+pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 3 };
 /// The cue importer as cache keys know it.
 pub const CUE_IMPORTER: Stage = Stage { name: "cue document", version: 1 };
 /// The cue cooker. Bump it whenever it changes output for the same document.
@@ -52,11 +53,15 @@ const SCORE_SOURCE_SUFFIX: &str = ".score.ron";
 /// What a voice-line document's file name ends with.
 const VOICE_SOURCE_SUFFIX: &str = ".voice.ron";
 
-/// Import settings for sounds, none yet: an empty struct rather than `()`, so settings can join
-/// without changing existing sidecars.
+/// Import settings for sounds: `importer: Sound(())` for most, and `Sound((mouth: true))` for a voice's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SoundSettings {}
+#[serde(default, deny_unknown_fields)]
+pub struct SoundSettings {
+    /// Cook a mouth curve into it (M5 C6): what a face says it with. Every sound a voice line's cue plays
+    /// needs one, which the voice lines' cook holds.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mouth: bool,
+}
 
 /// Import settings for cues, as for sounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,9 +210,11 @@ pub fn check_line(key: &str, cue: &[u8]) -> Result<(), AudioCookError> {
 }
 
 /// The bytes of a sound's cooked file, decoded whole on the way and read back through the runtime's
-/// check.
-pub fn cook_sound(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
-    let cooked = Sound::from_vorbis(bytes.to_vec())?.to_cooked()?;
+/// check, with its mouth curve if `settings` ask.
+pub fn cook_sound(bytes: &[u8], settings: SoundSettings) -> Result<Vec<u8>, AudioCookError> {
+    let sound = Sound::from_vorbis(bytes.to_vec())?;
+    let sound = if settings.mouth { sound.with_mouth()? } else { sound };
+    let cooked = sound.to_cooked()?;
     Sound::read(&cooked)?;
     Ok(cooked.into_vec())
 }
@@ -411,6 +418,7 @@ mod tests {
         fs::write(tree.content().join("stem.ogg"), stem_ogg()).unwrap();
         tree.cook().unwrap();
         let sound = tree.id_of("stem.ogg");
+        set_mouth(&tree, "stem.ogg", true);
         fs::write(
             tree.content().join("line.cue.ron"),
             cue_document(&[sound]).replace("bus: Ui", "bus: Voice"),
@@ -421,6 +429,74 @@ mod tests {
         let cue = tree.id_of("line.cue.ron");
         fs::write(tree.content().join("ja.voice.ron"), voice_document("perfect-dodge", cue)).unwrap();
         (tree, sound, cue)
+    }
+
+    /// Asks the cook for `source`'s mouth curve, or not, in its sidecar.
+    fn set_mouth(tree: &Tree, source: &str, mouth: bool) {
+        let sidecar = meta::sidecar_path(&tree.content().join(source));
+        let (plain, voiced) = ("importer: Sound(())", "importer: Sound((mouth: true))");
+        let text = fs::read_to_string(&sidecar).unwrap();
+        let (from, to) = if mouth { (plain, voiced) } else { (voiced, plain) };
+        assert!(text.contains(from), "{text}");
+        fs::write(&sidecar, text.replace(from, to)).unwrap();
+    }
+
+    /// M5 C6: every sound a line's cue plays carries a mouth curve, so a face can say it.
+    #[test]
+    fn a_line_whose_sound_has_no_mouth_fails_the_cook_naming_it() {
+        let (tree, sound, _) = music_tree("audio_line_mouth");
+        tree.cook().unwrap();
+        set_mouth(&tree, "stem.ogg", false);
+        let error = tree.cook().unwrap_err();
+        assert!(matches!(error, CookError::LineWithoutMouth { .. }), "{error}");
+        let error = error.to_string();
+        assert!(
+            error.contains("ja.voice.ron")
+                && error.contains("`perfect-dodge`")
+                && error.contains(&sound.to_string()),
+            "{error}"
+        );
+    }
+
+    /// M5 C6's cook byte test: the committed voices' sounds cook to the same bytes twice, and their mouth
+    /// curves to the bytes pinned here, on every machine CI cooks on. A change to the analysis moves them, and
+    /// bumps [`SOUND_COOKER`].
+    #[test]
+    fn the_generated_lines_mouths_cook_to_pinned_bytes() {
+        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated/voice");
+        let pinned: [(&str, usize, u64); 6] = [
+            ("en/perfect-dodge", 52, 4565562129575115727),
+            ("en/swap-in", 49, 3905336652525319422),
+            ("en/guide_greet", 193, 1843938029179445591),
+            ("ja/perfect-dodge", 65, 5414503529634744099),
+            ("ja/swap-in", 56, 8243626753512071208),
+            ("ja/guide_greet", 142, 12031829780209364577),
+        ];
+        let mut found = Vec::new();
+        for (line, _, _) in pinned {
+            let ogg = fs::read(voices.join(format!("{line}.ogg"))).unwrap();
+            let cooked = cook_sound(&ogg, SoundSettings { mouth: true }).unwrap();
+            assert_eq!(cook_sound(&ogg, SoundSettings { mouth: true }).unwrap(), cooked, "{line}");
+            let plain = cook_sound(&ogg, SoundSettings::default()).unwrap();
+            assert!(Sound::read(&read_aligned_bytes(&plain)).unwrap().mouth.is_none(), "{line}");
+            let curve = Sound::read(&read_aligned_bytes(&cooked)).unwrap().to_sound().mouth.unwrap();
+            // FNV-1a over each frame's six bytes.
+            let hash = curve
+                .frames
+                .iter()
+                .flat_map(|frame| [&[frame.open][..], &frame.visemes].concat())
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                });
+            found.push((line, curve.frames.len(), hash));
+        }
+        assert_eq!(found, pinned);
+    }
+
+    fn read_aligned_bytes(bytes: &[u8]) -> sapphire_serialize::cooked::AlignedVec {
+        let mut aligned = sapphire_serialize::cooked::AlignedVec::with_capacity(bytes.len());
+        aligned.extend_from_slice(bytes);
+        aligned
     }
 
     #[test]

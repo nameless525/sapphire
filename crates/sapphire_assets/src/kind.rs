@@ -21,6 +21,7 @@ use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
 use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
 use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use crate::probes::{PROBE_GRID_EXTENSION, ProbeGrid, ProbeGridError};
+use crate::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes, ReflectionProbesError};
 use crate::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use crate::score::{SCORE_EXTENSION, Score, ScoreError};
 use crate::skeleton::{SKELETON_EXTENSION, Skeleton, SkeletonError};
@@ -100,11 +101,14 @@ pub enum AssetKind {
     /// One level of a texture above its tail (`.smip`, M5 M3): [`TextureLevel`], depending on its
     /// tail, the texture's own asset.
     TextureLevel = 26,
+    /// A zone's reflection probes (`.sreflect`, M5 L2): [`ReflectionProbes`], their cubes per time-of-day
+    /// key, uploaded to the renderer.
+    ReflectionProbes = 27,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -131,6 +135,7 @@ impl AssetKind {
         Self::Score,
         Self::VoiceLines,
         Self::TextureLevel,
+        Self::ReflectionProbes,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -168,6 +173,7 @@ impl AssetKind {
             Self::Score => SCORE_EXTENSION,
             Self::VoiceLines => VOICE_LINES_EXTENSION,
             Self::TextureLevel => TEXTURE_LEVEL_EXTENSION,
+            Self::ReflectionProbes => REFLECTIONS_EXTENSION,
         }
     }
 
@@ -200,6 +206,7 @@ impl AssetKind {
             Self::Score => "score",
             Self::VoiceLines => "voice lines",
             Self::TextureLevel => "texture level",
+            Self::ReflectionProbes => "reflection probes",
         }
     }
 
@@ -234,8 +241,9 @@ impl AssetKind {
         )
     }
 
-    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures and
-    /// texture levels are GPU data, so their bytes go once uploaded (a new renderer has them read again).
+    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures,
+    /// texture levels and reflection probes are GPU data, so their bytes go once uploaded (a new renderer
+    /// has them read again).
     /// Materials are small and CPU code reads them (live link, the editor). A probe grid is read on the CPU
     /// after its upload: the renderer holds one, so a zone coming next keeps its grid aside until a trip
     /// arrives in it, and a tier's new renderer takes the grid on stage from its bytes (M5 M6). Rigs,
@@ -284,7 +292,8 @@ impl AssetKind {
     /// materials on textures, texture levels on their textures, clips on skeletons, cues and scores on sounds, voice lines on cues, animation
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
-    /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts and dialogues on nothing. A zone's meshes and probes and an enemy's look aren't
+    /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues and reflection
+    /// probes on nothing. A zone's meshes and probes and an enemy's look aren't
     /// dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -332,6 +341,7 @@ impl AssetKind {
             24 => Some(Self::Score),
             25 => Some(Self::VoiceLines),
             26 => Some(Self::TextureLevel),
+            27 => Some(Self::ReflectionProbes),
             _ => None,
         }
     }
@@ -341,7 +351,8 @@ impl AssetKind {
     /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
     /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
-    /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`), and
+    /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
+    /// `ReflectionProbes::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -445,6 +456,11 @@ impl AssetKind {
             Self::Enemy => vec![Enemy::from_cooked(bytes)?.moves],
             // A level is written into its texture, which comes first.
             Self::TextureLevel => vec![TextureLevel::read(bytes)?.texture()],
+            // Probes are baked from a zone's meshes and materials, but read none of them.
+            Self::ReflectionProbes => {
+                ReflectionProbes::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -552,4 +568,6 @@ pub enum AssetError {
     Enemy(#[from] EnemyError),
     #[error("invalid texture level")]
     TextureLevel(#[from] TextureLevelError),
+    #[error("invalid reflection probes")]
+    ReflectionProbes(#[from] ReflectionProbesError),
 }

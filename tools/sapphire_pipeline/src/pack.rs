@@ -161,7 +161,11 @@ pub fn group(kind: Option<AssetKind>) -> &'static str {
 /// The codec a kind's blocks are compressed with (see the [module docs](self)).
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
-        AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid | AssetKind::Font => Codec::Zstd,
+        AssetKind::Mesh
+        | AssetKind::Texture
+        | AssetKind::TextureLevel
+        | AssetKind::ProbeGrid
+        | AssetKind::Font => Codec::Zstd,
         AssetKind::Material
         | AssetKind::Rig
         | AssetKind::Skeleton

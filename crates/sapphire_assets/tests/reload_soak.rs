@@ -137,6 +137,7 @@ impl Gpu {
             AssetKind::Score | AssetKind::VoiceLines => {
                 unreachable!("music and voice never go to the uploader")
             }
+            AssetKind::TextureLevel => unreachable!("these textures stay whole"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -236,7 +237,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         upload_per_frame: 32 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

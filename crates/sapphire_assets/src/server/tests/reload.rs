@@ -129,6 +129,33 @@ fn a_changed_asset_reloads_behind_its_handle_and_its_dependents_follow() {
     assert!(server.take_changes().is_empty());
 }
 
+/// A split texture's tail and levels each reload behind their handles, in the slots they were uploaded
+/// for, the tail before its level (M5 M3).
+#[test]
+fn a_split_texture_reloads_its_tail_then_its_levels() {
+    let (mut server, source) = serve(split_texture(10), unlimited());
+    let (_mesh, slots) = loaded_character(&mut server);
+    let level = TextureLevel::id(id(TEXTURE), 0);
+    assert!(slots.contains_key(&level), "the level was uploaded with the character");
+
+    source.insert("shared", write_pack(split_texture(40)).unwrap());
+    let report = server.remount("shared").unwrap();
+    assert_eq!((report.changed, report.removed), (2, 0), "the tail and its level");
+    let mut uploads = Vec::new();
+    settle(&mut server, |upload| {
+        assert_eq!(slots[&upload.id()], upload.slot(), "the same slot, so the app replaces its copy");
+        if let Some(level) = upload.get::<TextureLevel>() {
+            assert_eq!(level.data()[0], 40, "the new version");
+        }
+        uploads.push((upload.kind(), upload.id(), upload.generation()));
+        Ok(())
+    });
+    let at = |upload| uploads.iter().position(|seen| *seen == upload);
+    let tail = at((AssetKind::Texture, id(TEXTURE), 1)).expect("the tail reloads");
+    let level = at((AssetKind::TextureLevel, level, 1)).expect("its level reloads");
+    assert!(tail < level, "{uploads:?}");
+}
+
 #[test]
 fn a_new_version_loads_its_new_dependencies_first_and_releases_the_old_ones() {
     let (mut server, source) = serve(character(), unlimited());

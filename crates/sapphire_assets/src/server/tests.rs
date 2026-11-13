@@ -8,7 +8,7 @@ use crate::mesh::{
     MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack};
-use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
+use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat, TextureTail};
 
 mod lifetime;
 mod moves;
@@ -212,11 +212,92 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Score | AssetKind::VoiceLines => {
                     unreachable!("music and voice never go to the uploader")
                 }
+                AssetKind::TextureLevel => unreachable!("these assets include no texture level"),
             }
             Ok(())
         })
         .unwrap();
     assert_eq!(seen, 3);
+}
+
+/// The character with its texture at 16 × 16 RGBA8, cooked as an 8 × 8 tail and its level 0 (M5 M3), each
+/// level's bytes `fill` and its place.
+fn split_texture(fill: u8) -> Vec<PackAsset> {
+    let whole = |level: u32| vec![fill + level as u8; ((16 >> level) * (16 >> level) * 4) as usize];
+    let levels: Vec<Vec<u8>> = (0..5).map(whole).collect();
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 8,
+        height: 8,
+        mip_level_count: 4,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let tail = TextureTail {
+        texture: Texture { desc, levels: levels[1..].iter().map(Vec::as_slice).collect() },
+        above: 1,
+    };
+    let level = TextureLevel {
+        texture: id(TEXTURE),
+        level: 0,
+        format: TextureFormat::Rgba8UnormSrgb.vk_format(),
+        width: 16,
+        height: 16,
+        data: levels[0].clone(),
+    };
+    vec![
+        packed(id(TEXTURE), AssetKind::Texture, &tail.to_ktx2().unwrap()),
+        packed(TextureLevel::id(id(TEXTURE), 0), AssetKind::TextureLevel, &level.to_cooked().unwrap()),
+        packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE)))),
+        packed(id(MESH), AssetKind::Mesh, &mesh_bytes(id(MATERIAL))),
+    ]
+}
+
+/// What holds a texture holds its levels, so a material is ready only once its textures are whole: tail,
+/// then levels, then the material. A texture loaded on its own is its tail alone, which M4 builds on.
+#[test]
+fn a_split_texture_is_whole_before_its_material_is_ready() {
+    let level = TextureLevel::id(id(TEXTURE), 0);
+    let (mut server, _) = serve(split_texture(10), unlimited());
+    let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    let mut order = Vec::new();
+    server
+        .finish(&mesh, |upload| {
+            if let Some(level) = upload.get::<TextureLevel>() {
+                assert_eq!(
+                    (level.texture(), level.level(), level.extent(), level.data()[0]),
+                    (id(TEXTURE), 0, (16, 16), 10)
+                );
+            }
+            order.push((upload.kind(), upload.id()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        order,
+        [
+            (AssetKind::Texture, id(TEXTURE)),
+            (AssetKind::TextureLevel, level),
+            (AssetKind::Material, id(MATERIAL)),
+            (AssetKind::Mesh, id(MESH)),
+        ]
+    );
+    // The material holds the level, so it isn't unused while the mesh is held.
+    server.update();
+    assert_eq!(server.stats().unused, 0);
+    drop(mesh);
+    server.update();
+    server.unload_unused();
+    assert_eq!(server.stats().assets, 0, "no cycle keeps a level or its tail");
+
+    let (mut server, _) = serve(split_texture(10), unlimited());
+    let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
+    let mut order = Vec::new();
+    server.finish(&texture, record(&mut order)).unwrap();
+    assert_eq!(order, [(AssetKind::Texture, id(TEXTURE))]);
+    let level: Handle<TextureLevel> = server.load(level).unwrap();
+    let mut order = Vec::new();
+    server.finish(&level, record(&mut order)).unwrap();
+    assert_eq!(order, [(AssetKind::TextureLevel, TextureLevel::id(id(TEXTURE), 0))]);
 }
 
 #[test]

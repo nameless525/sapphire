@@ -26,6 +26,7 @@ use crate::score::{SCORE_EXTENSION, Score, ScoreError};
 use crate::skeleton::{SKELETON_EXTENSION, Skeleton, SkeletonError};
 use crate::sound::{SOUND_EXTENSION, Sound, SoundError};
 use crate::texture::{TEXTURE_EXTENSION, Texture, TextureFormatError};
+use crate::texture_level::{TEXTURE_LEVEL_EXTENSION, TextureLevel, TextureLevelError};
 use crate::ui::{UI_EXTENSION, UiDocument, UiError};
 use crate::voice::{VOICE_LINES_EXTENSION, VoiceLines, VoiceLinesError};
 
@@ -96,11 +97,14 @@ pub enum AssetKind {
     Score = 24,
     /// One language's voice lines (`.svoice`, M3 A1): [`VoiceLines`], naming the cues they play.
     VoiceLines = 25,
+    /// One level of a texture above its tail (`.smip`, M5 M3): [`TextureLevel`], depending on its
+    /// tail, the texture's own asset.
+    TextureLevel = 26,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -126,6 +130,7 @@ impl AssetKind {
         Self::Enemy,
         Self::Score,
         Self::VoiceLines,
+        Self::TextureLevel,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -162,6 +167,7 @@ impl AssetKind {
             Self::Enemy => ENEMY_EXTENSION,
             Self::Score => SCORE_EXTENSION,
             Self::VoiceLines => VOICE_LINES_EXTENSION,
+            Self::TextureLevel => TEXTURE_LEVEL_EXTENSION,
         }
     }
 
@@ -193,6 +199,7 @@ impl AssetKind {
             Self::Enemy => "enemy",
             Self::Score => "score",
             Self::VoiceLines => "voice lines",
+            Self::TextureLevel => "texture level",
         }
     }
 
@@ -227,8 +234,8 @@ impl AssetKind {
         )
     }
 
-    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures and probe
-    /// grids are GPU data, so their bytes go once uploaded (a new renderer has them read again). Materials
+    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes, textures, texture
+    /// levels and probe grids are GPU data, so their bytes go once uploaded (a new renderer has them read again). Materials
     /// are small and CPU code reads them (live link, the editor), and rigs, skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores and voice lines are read on
@@ -270,7 +277,7 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and skeletons,
-    /// materials on textures, clips on skeletons, cues and scores on sounds, voice lines on cues, animation
+    /// materials on textures, texture levels on their textures, clips on skeletons, cues and scores on sounds, voice lines on cues, animation
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts and dialogues on nothing. A zone's meshes and probes and an enemy's look aren't
@@ -281,6 +288,7 @@ impl AssetKind {
             (self, kind),
             (Self::Mesh, Self::Material | Self::Skeleton)
                 | (Self::Material, Self::Texture)
+                | (Self::TextureLevel, Self::Texture)
                 | (Self::Clip, Self::Skeleton)
                 | (Self::Cue | Self::Score, Self::Sound)
                 | (Self::VoiceLines, Self::Cue)
@@ -319,6 +327,7 @@ impl AssetKind {
             23 => Some(Self::Enemy),
             24 => Some(Self::Score),
             25 => Some(Self::VoiceLines),
+            26 => Some(Self::TextureLevel),
             _ => None,
         }
     }
@@ -328,9 +337,9 @@ impl AssetKind {
     /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
     /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
-    /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`), and returns the assets
-    /// they reference, sorted and without repeats: a mesh's material slots bound to material assets and its
-    /// skeleton, a material's textures, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
+    /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`), and
+    /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
+    /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
     /// set. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
     /// references exactly what its pack says it does.
@@ -430,6 +439,8 @@ impl AssetKind {
             }
             // Its brains press its set's intents, so the set comes first. Its look is the stage's to load.
             Self::Enemy => vec![Enemy::from_cooked(bytes)?.moves],
+            // A level is written into its texture, which comes first.
+            Self::TextureLevel => vec![TextureLevel::read(bytes)?.texture()],
         };
         references.sort_unstable();
         references.dedup();
@@ -535,4 +546,6 @@ pub enum AssetError {
     Dialogue(#[from] DialogueError),
     #[error("invalid enemy")]
     Enemy(#[from] EnemyError),
+    #[error("invalid texture level")]
+    TextureLevel(#[from] TextureLevelError),
 }

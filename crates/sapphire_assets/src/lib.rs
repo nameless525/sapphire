@@ -8,7 +8,8 @@
 //! - Cooked formats shared by the cooker (`sapphire_pipeline`, which writes them) and the
 //!   runtime (which reads them): [`mesh`], `.smesh` meshes with quantized vertex streams,
 //!   LODs, skins, morph targets and material slots, read in place (M1 A5); [`texture`], KTX2
-//!   files whose levels the renderer uploads as they are (M1 A2); and [`material`], `.smat`
+//!   files whose levels the renderer uploads as they are (M1 A2), cut into a tail and
+//!   [`texture_level`]s (`.smip`) since M5 M3; and [`material`], `.smat`
 //!   materials holding their family's GPU parameter block and texture references (M1 A3). The
 //!   mesh element encodings and the material blocks live here too, both directions, so cooker
 //!   and runtime can't drift apart.
@@ -107,9 +108,10 @@
 //! - Letting packs a signed release manifest names skip bytecheck (spec §5.9).
 //! - Memory-mapped packs, so raw blocks are read in place; cancelling the reads of assets dropped
 //!   before they load; pinning by group (party, encounter) rather than by handle.
-//! - Texture mip streaming within the upload budget, so a large texture uploads over several
-//!   frames, lowest mips first: a [`texture::Texture`] already exposes each level on its own,
-//!   smallest last in the list and first in the file.
+//! - Texture mip streaming (M5 M4, M5): a large texture is already a tail and levels, each an asset
+//!   (M5 M3), but the server loads every level with whatever holds the texture
+//!   ([`AssetServer`]'s "Texture levels"); raising and lowering levels by distance and budget replaces
+//!   that.
 
 pub mod character_maps;
 pub mod clip;
@@ -130,6 +132,7 @@ mod server;
 pub mod skeleton;
 pub mod sound;
 pub mod texture;
+pub mod texture_level;
 pub mod ui;
 pub mod voice;
 

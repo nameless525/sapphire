@@ -151,6 +151,7 @@ fn round(
                     AssetKind::Score | AssetKind::VoiceLines => {
                         unreachable!("music and voice never go to the uploader")
                     }
+                    AssetKind::TextureLevel => unreachable!("these textures stay whole"),
                 }
                 Ok(())
             })
@@ -176,7 +177,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         upload_per_frame: 64 << 10,
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source, budgets);

@@ -26,6 +26,7 @@ use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
 use crate::manifest::{Manifest, ReleasedPack};
 use crate::pack::{Decoder, Entry, PackError, PackMetadataBudget, PackMetadataRead, Toc};
+use crate::texture_level::{MAX_LEVELS, TextureLevel};
 use crate::{AssetId, AssetKind, PipelineKey};
 
 const LOG_TARGET: &str = "sapphire::assets";
@@ -47,7 +48,9 @@ impl AssetBudgets {
     /// collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets 16 MiB, animation graphs 1 MiB, zones 16
     /// MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB, navmeshes 16 MiB, timelines 4 MiB, UI
     /// documents 4 MiB, encounters 1 MiB, scripts 4 MiB, dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice
-    /// lines 1 MiB. The numbers besides the texture pool's are proposals, to set by measuring zones (M2, M3).
+    /// lines 1 MiB, texture levels 2.5 GiB. The numbers besides the texture pool's are proposals, to set by
+    /// measuring zones (M2, M3). Texture levels take the pool's number too until the pool counts tails and
+    /// levels as one (M5).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         resident: Self::by_kind([
@@ -78,13 +81,14 @@ impl AssetBudgets {
             MIB,
             MIB,
             MIB,
+            2560 * MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame; meshes 192 MiB, textures 600 MiB, materials 8 MiB, rigs
     /// 16 MiB, probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB, sounds 16 MiB,
     /// cues 1 MiB, move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB,
     /// font chains 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB,
-    /// scripts 2 MiB, dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB.
+    /// scripts 2 MiB, dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 600 MiB.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         resident: Self::by_kind([
@@ -113,6 +117,7 @@ impl AssetBudgets {
             MIB,
             MIB,
             MIB,
+            600 * MIB,
         ]),
     };
 
@@ -131,7 +136,8 @@ impl AssetBudgets {
 
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
     /// skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string tables,
-    /// fonts, font chains, navmeshes, timelines, UI documents, encounters, scripts, enemies.
+    /// fonts, font chains, navmeshes, timelines, UI documents, encounters, scripts, dialogues, enemies,
+    /// scores, voice lines, texture levels.
     const fn by_kind(budgets: [u64; AssetKind::ALL.len()]) -> [u64; AssetKind::ALL.len()] {
         budgets
     }
@@ -500,6 +506,15 @@ enum Completion {
 ///   (rigs, [`AssetKind::uploads`]) are ready as soon as their dependencies are, without the
 ///   queue.
 ///
+/// # Texture levels
+///
+/// A large texture is cooked as a tail and levels ([`crate::texture_level`], M5 M3): the texture's own
+/// asset is its tail, and each level above it is a [`TextureLevel`] that depends on the tail. For now,
+/// whatever loads a texture as a dependency also loads every level of it the mounted packs hold, as
+/// children of its own, after the tail: so a material is ready only once its textures are whole, and the
+/// picture is what it was before textures split. Raising and lowering a texture a level at a time, by
+/// distance and budget, replaces this (M5 M4, M5).
+///
 /// # Handles
 ///
 /// A [`Handle`] is strong: one pointer, cloned by bumping an atomic count. A [`WeakHandle`] is an
@@ -822,7 +837,8 @@ impl AssetServer {
 
     /// Requests an asset's dependencies, which its pack lists, then its own read, so the
     /// dependencies' reads queue first. Dependencies must be of a lower kind
-    /// ([`AssetKind::may_depend_on`]), so this recursion is at most three deep. Dependencies it
+    /// ([`AssetKind::may_depend_on`]), so this recursion is at most three deep, and four through a
+    /// texture's levels, which depend only on their texture ("Texture levels"). Dependencies it
     /// already holds are kept, failed ones are tried again, and ones its entry no longer lists
     /// (after a remount) are released.
     fn resolve(&mut self, key: SlotKey) {
@@ -863,7 +879,21 @@ impl AssetServer {
                 Some(_) => self.load_untyped(dependency, priority),
             };
             match child {
-                Ok(child) => children.push(child),
+                Ok(child) => {
+                    // What holds a texture holds its levels too, for now: see "Texture levels". A level
+                    // holds only its tail.
+                    let texture = child.kind() == AssetKind::Texture && kind != AssetKind::TextureLevel;
+                    children.push(child);
+                    for level in if texture { self.levels_of(dependency) } else { Vec::new() } {
+                        match self.load_untyped(level, priority) {
+                            Ok(level) => children.push(level),
+                            Err(error) => {
+                                tracing::warn!(target: LOG_TARGET, %id, dependency = %level, %error, "texture level failed to load");
+                                return Err(LoadError::Dependency { id, dependency: level });
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, %id, %dependency, %error, "dependency failed to load");
                     return Err(match error {
@@ -874,6 +904,15 @@ impl AssetServer {
             }
         }
         Ok(children)
+    }
+
+    /// The levels a mounted pack holds of texture `texture` above its tail, from its top: levels 0, 1
+    /// and so on while there's one ([`TextureLevel::id`]).
+    fn levels_of(&self, texture: AssetId) -> Vec<AssetId> {
+        (0..MAX_LEVELS)
+            .map(|level| TextureLevel::id(texture, level))
+            .take_while(|&level| self.kind_of(level) == Some(AssetKind::TextureLevel))
+            .collect()
     }
 
     /// Makes `children` the dependencies of the asset in `key`, releasing those it had and no

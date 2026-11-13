@@ -10,11 +10,27 @@
 //! - One of the [`TextureFormat`]s, with the data format descriptor the `ktx2` crate generates
 //!   for it, and no supercompression: packs compress their blocks (M1 A4).
 //! - Key/value data, sorted by key: `KTXswizzle` when the stored channels aren't the
-//!   texture's logical ones ([`Swizzle`]), `KTXwriter`, and `SapphireTextureVersion`, which
-//!   must be [`TEXTURE_VERSION`].
+//!   texture's logical ones ([`Swizzle`]), `KTXwriter`, `SapphireLevelsAbove` when the file is a
+//!   tail (below), and `SapphireTextureVersion`, which must be [`TEXTURE_VERSION`].
 //!
 //! Standard tools read these files (`ktx info`). [`Texture`] borrows its levels from the file's
 //! bytes, so reading copies nothing and the renderer uploads the levels as they are.
+//!
+//! # Tails (M5 M3)
+//!
+//! The cook splits a texture whose chain reaches above [`TAIL_SIZE`] into a tail and levels, so a
+//! texture's top levels can come and go on their own. The tail is the texture's own asset: a file
+//! of this format holding the levels from its top down, which any reader takes as the smaller
+//! texture it is, and which says in `SapphireLevelsAbove` how many levels above its level 0 the
+//! texture has ([`TextureTail::above`]). Each of those is an asset of its own
+//! ([`crate::texture_level`]). A texture too small to split, or whose levels can't be tops, stays
+//! whole, and its file has no such entry.
+//!
+//! A texture's top must be whole blocks, as WebGPU asks of level 0, so level k can be a top only
+//! when the block's size times 2^k divides both of the base's sides ([`can_be_top`], M5 M0). The
+//! tail's top ([`tail_top`]) is the first level of [`TAIL_SIZE`] or less on its longer side, or
+//! the deepest level that can be a top where that's larger: a 1000 × 600 BC7 map's tail is its
+//! 500 × 300 level and down.
 //!
 //! **Decision (M1 A2):** KTX2 rather than an engine format. It already is a plain-data
 //! container of GPU-ready levels with a self-describing format, tools exist for it, and A4's
@@ -46,6 +62,13 @@ const WRITER_KEY: &str = "KTXwriter";
 const WRITER: &str = "sapphire_pipeline";
 /// The standard key for a component mapping, as four characters from `rgba01`.
 const SWIZZLE_KEY: &str = "KTXswizzle";
+/// Key/value entry holding a tail's [`TextureTail::above`] as decimal text, written only when
+/// it isn't 0.
+const LEVELS_ABOVE_KEY: &str = "SapphireLevelsAbove";
+
+/// The longest side a tail's top may have, unless no smaller level can be a top
+/// ([`tail_top`]).
+pub const TAIL_SIZE: u32 = 128;
 
 // Level data is written and read as little-endian bytes, which KTX2 specifies.
 const _: () = assert!(cfg!(target_endian = "little"), "cooked textures assume a little-endian target");
@@ -315,8 +338,35 @@ impl fmt::Display for Swizzle {
 }
 
 /// The number of levels in a full mip chain for a `width × height` image, down to 1×1.
-pub fn full_mip_count(width: u32, height: u32) -> u32 {
-    u32::BITS - width.max(height).max(1).leading_zeros()
+pub const fn full_mip_count(width: u32, height: u32) -> u32 {
+    let longer = if width > height { width } else { height };
+    let longer = if longer == 0 { 1 } else { longer };
+    u32::BITS - longer.leading_zeros()
+}
+
+/// Whether level `level` of a texture of shape `desc` can be the top of a texture: the block's
+/// size times 2^`level` divides both of the base's sides, so the level is whole blocks and
+/// every level below it is the base's halved as many times again (M5 M0).
+pub fn can_be_top(desc: &TextureDesc, level: u32) -> bool {
+    let (block_width, block_height) = desc.format.block_dimensions();
+    let divides =
+        |block: u32, side: u32| block.checked_shl(level).is_some_and(|step| side.is_multiple_of(step));
+    level < desc.mip_level_count && divides(block_width, desc.width) && divides(block_height, desc.height)
+}
+
+/// The level a texture of shape `desc` splits at: the top of its tail, and so how many of its
+/// levels lie above the tail. It is the first level of [`TAIL_SIZE`] or less on its longer side
+/// (the last level, if none is), unless a level before that is the deepest that can be a top
+/// ([`can_be_top`]). 0 means the texture stays whole.
+pub fn tail_top(desc: &TextureDesc) -> u32 {
+    let small = (0..desc.mip_level_count)
+        .find(|&level| {
+            let (width, height) = desc.level_extent(level);
+            width.max(height) <= TAIL_SIZE
+        })
+        .unwrap_or(desc.mip_level_count.saturating_sub(1));
+    // Whatever can be a top, every level before it can be too.
+    (0..=small).take_while(|&level| can_be_top(desc, level)).last().unwrap_or(0)
 }
 
 /// A texture's shape: everything except its texel data.
@@ -398,6 +448,10 @@ pub enum TextureFormatError {
     InvalidLevelCount { count: u32, max: u32 },
     #[error("mip level {level} has {found} bytes, expected {expected}")]
     LevelSize { level: u32, expected: u64, found: u64 },
+    #[error("invalid {LEVELS_ABOVE_KEY} value {0:?}")]
+    InvalidLevelsAboveText(String),
+    #[error("{0} levels above this texture don't make a texture a cook could have split here")]
+    InvalidLevelsAbove(u32),
 }
 
 impl<'a> Texture<'a> {
@@ -421,11 +475,16 @@ impl<'a> Texture<'a> {
     /// Writes the texture as a KTX2 file. The bytes depend only on the texture, so equal
     /// textures write equal files.
     pub fn to_ktx2(&self) -> Result<Vec<u8>, TextureFormatError> {
+        self.write_ktx2(0)
+    }
+
+    /// Writes the texture as a KTX2 file whose texture has `above` levels above it.
+    fn write_ktx2(&self, above: u32) -> Result<Vec<u8>, TextureFormatError> {
         self.validate()?;
         let desc = &self.desc;
         let (dfd, type_size) = desc.format.dfd();
         let dfd = dfd_section(dfd);
-        let kvd = key_value_data(desc.swizzle);
+        let kvd = key_value_data(desc.swizzle, above);
 
         let level_count = self.levels.len();
         let dfd_offset = Header::LENGTH + level_count * LevelIndex::LENGTH;
@@ -481,8 +540,14 @@ impl<'a> Texture<'a> {
     }
 
     /// Parses and validates a cooked KTX2 file. The levels borrow from `bytes`, which needs no
-    /// particular alignment.
+    /// particular alignment. A tail reads as the smaller texture it is ([`TextureTail`]).
     pub fn from_ktx2(bytes: &'a [u8]) -> Result<Self, TextureFormatError> {
+        TextureTail::from_ktx2(bytes).map(|tail| tail.texture)
+    }
+
+    /// [`Self::from_ktx2`], with the levels above the file's texture that its key/value data
+    /// names.
+    fn read_ktx2(bytes: &'a [u8]) -> Result<(Self, u32), TextureFormatError> {
         let truncated = || TextureFormatError::Container(ktx2::ParseError::UnexpectedEnd);
         let header = bytes.first_chunk::<{ Header::LENGTH }>().ok_or_else(truncated)?;
         let header = Header::from_bytes(header).map_err(TextureFormatError::Container)?;
@@ -518,6 +583,7 @@ impl<'a> Texture<'a> {
         let kvd = bytes.get(kvd_start..kvd_end).unwrap_or_default();
         let mut version = None;
         let mut swizzle = Swizzle::IDENTITY;
+        let mut above = 0;
         for (key, value) in ktx2::KeyValueDataIterator::new(kvd) {
             // String values end with a NUL.
             let value = value.strip_suffix(&[0]).unwrap_or(value);
@@ -528,6 +594,7 @@ impl<'a> Texture<'a> {
                         TextureFormatError::InvalidSwizzle(String::from_utf8_lossy(value).into_owned())
                     })?;
                 }
+                LEVELS_ABOVE_KEY => above = levels_above(value)?,
                 _ => {}
             }
         }
@@ -562,8 +629,82 @@ impl<'a> Texture<'a> {
             .collect::<Result<_, _>>()?;
         let texture = Self { desc, levels };
         texture.validate()?;
-        Ok(texture)
+        Ok((texture, above))
     }
+}
+
+/// A cooked texture as its file holds it: its levels from its top down, and how many of the
+/// texture's levels above that are assets of their own ("Tails" in the [module docs](self)). A
+/// texture that stays whole is a tail with none above.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureTail<'a> {
+    pub texture: Texture<'a>,
+    /// The texture's levels above [`Self::texture`]'s level 0: the whole texture's levels 0 to
+    /// `above - 1`, each a [`TextureLevel`](crate::texture_level::TextureLevel).
+    pub above: u32,
+}
+
+impl<'a> TextureTail<'a> {
+    /// The shape of the whole texture, its levels above the tail's included.
+    pub fn whole(&self) -> TextureDesc {
+        let desc = self.texture.desc;
+        TextureDesc {
+            width: desc.width << self.above,
+            height: desc.height << self.above,
+            mip_level_count: desc.mip_level_count + self.above,
+            ..desc
+        }
+    }
+
+    /// Checks the texture, and that a cook could have split a whole one at it: the whole texture
+    /// fits the size limit and its tail holds every level down to 1 × 1. The tail's top is whole
+    /// blocks, as every texture's is, so it can be a top ([`can_be_top`]).
+    pub fn validate(&self) -> Result<(), TextureFormatError> {
+        self.texture.validate()?;
+        if self.above == 0 {
+            return Ok(());
+        }
+        let desc = self.texture.desc;
+        let invalid = || TextureFormatError::InvalidLevelsAbove(self.above);
+        let fits = |side: u32| u64::from(side) << self.above <= u64::from(MAX_TEXTURE_DIMENSION);
+        if self.above >= full_mip_count(MAX_TEXTURE_DIMENSION, MAX_TEXTURE_DIMENSION)
+            || !fits(desc.width)
+            || !fits(desc.height)
+        {
+            return Err(invalid());
+        }
+        self.whole().validate()?;
+        if desc.mip_level_count != full_mip_count(desc.width, desc.height) {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    /// Writes the tail as a KTX2 file, as [`Texture::to_ktx2`] does, with its levels above in its
+    /// key/value data. The bytes depend only on the tail.
+    pub fn to_ktx2(&self) -> Result<Vec<u8>, TextureFormatError> {
+        self.validate()?;
+        self.texture.write_ktx2(self.above)
+    }
+
+    /// Parses and validates a cooked KTX2 file, a tail or a whole texture. The levels borrow from
+    /// `bytes`, which needs no particular alignment.
+    pub fn from_ktx2(bytes: &'a [u8]) -> Result<Self, TextureFormatError> {
+        let (texture, above) = Texture::read_ktx2(bytes)?;
+        let tail = Self { texture, above };
+        tail.validate()?;
+        Ok(tail)
+    }
+}
+
+/// The value of a `SapphireLevelsAbove` entry, written as the writer writes it: decimal digits
+/// with no leading zero, and never 0, which isn't written.
+fn levels_above(value: &[u8]) -> Result<u32, TextureFormatError> {
+    let invalid = || TextureFormatError::InvalidLevelsAboveText(String::from_utf8_lossy(value).into_owned());
+    if value.first().is_none_or(|&first| first == b'0') || !value.iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    std::str::from_utf8(value).ok().and_then(|text| text.parse().ok()).ok_or_else(invalid)
 }
 
 /// The key/value data section: every entry, sorted by key as KTX2 requires, each padded to 4
@@ -576,13 +717,17 @@ fn dfd_section(dfd: dfd::Basic) -> Vec<u8> {
     section
 }
 
-fn key_value_data(swizzle: Swizzle) -> Vec<u8> {
+fn key_value_data(swizzle: Swizzle, above: u32) -> Vec<u8> {
     let version = TEXTURE_VERSION.to_string();
     let swizzle = swizzle.to_ktx();
+    let above_text = above.to_string();
     let mut entries: Vec<(&str, &[u8])> =
         vec![(VERSION_KEY, version.as_bytes()), (WRITER_KEY, WRITER.as_bytes())];
     if swizzle != Swizzle::IDENTITY.to_ktx() {
         entries.push((SWIZZLE_KEY, &swizzle));
+    }
+    if above != 0 {
+        entries.push((LEVELS_ABOVE_KEY, above_text.as_bytes()));
     }
     entries.sort_by_key(|&(key, _)| key.as_bytes());
     let mut out = Vec::new();
@@ -673,6 +818,110 @@ mod tests {
             assert!(offsets.windows(2).all(|pair| pair[0] > pair[1]), "{format:?}: {offsets:?}");
             let alignment = format.block_bytes().max(4) as usize;
             assert!(offsets.iter().all(|offset| offset % alignment == 0), "{format:?}: {offsets:?}");
+        }
+    }
+
+    /// The tail's top for a base `width × height` in `format` with every level.
+    fn top(format: TextureFormat, width: u32, height: u32) -> u32 {
+        tail_top(&desc(format, width, height))
+    }
+
+    #[test]
+    fn a_texture_splits_at_its_first_small_level_that_can_be_a_top() {
+        use TextureFormat::*;
+        let astc = |block| Astc { block, srgb: true };
+        // Powers of two split at their first level of 128 or less on the longer side.
+        assert_eq!(top(Bc7RgbaUnormSrgb, 2048, 2048), 4);
+        assert_eq!(top(Bc7RgbaUnormSrgb, 1024, 256), 3);
+        assert_eq!(top(Bc5RgUnorm, 256, 1024), 3);
+        assert_eq!(top(astc(AstcBlock::B4x4), 128, 128), 0, "already small: it stays whole");
+        assert_eq!(top(Bc7RgbaUnormSrgb, 256, 8), 1, "a top may be as small as one block");
+        // Not a power of two: 1000 × 600 halves once in whole 4 × 4 blocks, so its tail is 500 × 300.
+        assert_eq!(top(Bc7RgbaUnormSrgb, 1000, 600), 1);
+        assert_eq!(top(Bc7RgbaUnormSrgb, 1004, 600), 0, "1004 halves to 502, not whole blocks");
+        // Every ASTC block the cook allows: block × 2^k must divide both sides.
+        assert_eq!(top(astc(AstcBlock::B4x4), 1024, 1024), 3);
+        assert_eq!(top(astc(AstcBlock::B5x5), 640, 320), 3, "80 × 40, 5 × 2^3 divides both");
+        assert_eq!(top(astc(AstcBlock::B5x5), 500, 500), 2, "125 × 125 is small, and 5 × 2^2 divides 500");
+        assert_eq!(top(astc(AstcBlock::B5x5), 330, 330), 1, "5 × 2^2 doesn't divide 330, so not 82 × 82");
+        assert_eq!(top(astc(AstcBlock::B6x6), 768, 384), 3);
+        assert_eq!(top(astc(AstcBlock::B6x6), 1536, 1536), 4, "96 × 96: 6 × 2^4 divides 1536");
+        assert_eq!(top(astc(AstcBlock::B8x8), 2048, 1024), 4);
+        assert_eq!(top(astc(AstcBlock::B8x8), 1000, 1000), 0, "16 doesn't divide 1000");
+        // Uncompressed levels are whole one-texel blocks, so halving exactly is the rule.
+        assert_eq!(top(R16Unorm, 1024, 1024), 3);
+        assert_eq!(top(Rgba8UnormSrgb, 768, 300), 2, "192 × 75: 2^3 doesn't divide 300");
+        // A texture of one level never splits.
+        let single = TextureDesc { mip_level_count: 1, ..desc(Bc7RgbaUnormSrgb, 2048, 2048) };
+        assert_eq!(tail_top(&single), 0);
+        // A level at or past the last can't be a top, nor can a step past 32 bits.
+        assert!(!can_be_top(&desc(Bc7RgbaUnormSrgb, 8, 8), 4));
+        assert!(!can_be_top(&desc(Bc7RgbaUnormSrgb, 8, 8), 40));
+        // The tail holds every level from its top down.
+        for (format, width, height) in [(Bc7RgbaUnormSrgb, 1000, 600), (astc(AstcBlock::B6x6), 768, 384)] {
+            let d = desc(format, width, height);
+            let top = tail_top(&d);
+            let (tail_width, tail_height) = d.level_extent(top);
+            assert_eq!(full_mip_count(tail_width, tail_height), d.mip_level_count - top);
+        }
+    }
+
+    #[test]
+    fn a_tail_names_its_levels_above_and_reads_as_a_texture() {
+        let whole = desc(TextureFormat::Bc7RgbaUnormSrgb, 64, 32);
+        let levels = levels_for(&whole);
+        let tail_desc = TextureDesc { width: 16, height: 8, mip_level_count: 5, ..whole };
+        let tail = TextureTail {
+            texture: Texture { desc: tail_desc, levels: levels[2..].iter().map(Vec::as_slice).collect() },
+            above: 2,
+        };
+        assert_eq!(tail.whole(), whole);
+        let bytes = tail.to_ktx2().unwrap();
+        assert_eq!(TextureTail::from_ktx2(&bytes).unwrap(), tail);
+        // Any reader takes it as the 16 × 8 texture it holds.
+        assert_eq!(Texture::from_ktx2(&bytes).unwrap(), tail.texture);
+        let reader = ktx2::Reader::new(&bytes[..]).unwrap();
+        assert!(reader.key_value_data().any(|(key, value)| key == LEVELS_ABOVE_KEY && value == b"2\0"));
+        // A whole texture is a tail with none above, and writes as it always has.
+        let plain = TextureTail { texture: tail.texture.clone(), above: 0 };
+        assert_eq!(plain.to_ktx2().unwrap(), tail.texture.to_ktx2().unwrap());
+        assert!(
+            ktx2::Reader::new(&plain.to_ktx2().unwrap()[..])
+                .unwrap()
+                .key_value_data()
+                .all(|(key, _)| key != LEVELS_ABOVE_KEY)
+        );
+
+        // What no cook writes: a tail missing its lower levels, a top that can't be one, a whole texture
+        // too large, and other spellings of the count.
+        let short = TextureTail {
+            texture: Texture {
+                desc: TextureDesc { mip_level_count: 4, ..tail_desc },
+                levels: levels[2..6].iter().map(Vec::as_slice).collect(),
+            },
+            above: 2,
+        };
+        assert!(matches!(short.validate(), Err(TextureFormatError::InvalidLevelsAbove(2))));
+        assert!(matches!(
+            TextureTail { above: 11, ..tail.clone() }.validate(),
+            Err(TextureFormatError::InvalidLevelsAbove(11))
+        ));
+        for text in ["02", "0", "", "-1", "+1", "two", "99999999999"] {
+            assert!(levels_above(text.as_bytes()).is_err(), "{text:?}");
+        }
+        assert_eq!(levels_above(b"12").unwrap(), 12);
+        let at =
+            bytes.windows(LEVELS_ABOVE_KEY.len()).position(|w| w == LEVELS_ABOVE_KEY.as_bytes()).unwrap();
+        for (value, error) in [(b'0', true), (b'x', true), (b'3', false)] {
+            let mut patched = bytes.clone();
+            patched[at + LEVELS_ABOVE_KEY.len() + 1] = value;
+            let read = TextureTail::from_ktx2(&patched);
+            if error {
+                assert!(matches!(read, Err(TextureFormatError::InvalidLevelsAboveText(_))), "{read:?}");
+            } else {
+                // Three above a 16 × 8 tail of every level is a 128 × 64 texture, which a cook could have split.
+                assert_eq!(read.unwrap().whole().width, 128);
+            }
         }
     }
 

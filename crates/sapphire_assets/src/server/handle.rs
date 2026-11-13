@@ -26,6 +26,7 @@ use crate::score::{ArchivedScore, Score};
 use crate::skeleton::{ArchivedSkeleton, Skeleton};
 use crate::sound::{ArchivedSound, Sound};
 use crate::texture::Texture;
+use crate::texture_level::{ArchivedTextureLevel, TextureLevel};
 use crate::ui::{ArchivedUiDocument, UiDocument};
 use crate::voice::{ArchivedVoiceLines, VoiceLines};
 use crate::{AssetId, AssetKind};
@@ -82,6 +83,7 @@ mod sealed {
     impl Sealed for crate::font::FontChains {}
     impl Sealed for crate::ui::UiDocument {}
     impl Sealed for super::TextureAsset {}
+    impl Sealed for crate::texture_level::TextureLevel {}
 }
 
 impl Asset for CharacterRig {
@@ -235,6 +237,17 @@ impl Asset for Score {
         // SAFETY: as for meshes: `Score::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Score>(bytes) }
             .expect("the envelope was checked when the score was decoded")
+    }
+}
+
+impl Asset for TextureLevel {
+    const KIND: AssetKind = AssetKind::TextureLevel;
+    type View<'a> = &'a ArchivedTextureLevel;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedTextureLevel {
+        // SAFETY: as for meshes: `TextureLevel::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<TextureLevel>(bytes) }
+            .expect("the envelope was checked when the texture level was decoded")
     }
 }
 

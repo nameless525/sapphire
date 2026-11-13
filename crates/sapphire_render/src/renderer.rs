@@ -3260,9 +3260,11 @@ impl Renderer {
     /// it (`None`). The next frame relights all of it, later ones as the light changes; the
     /// environment shader reads it in place of the ambient hemisphere where it reaches, and
     /// characters read their ambient from it (see the [`ambient`](crate::ambient) module). The
-    /// environment's pipelines are built again with the grid's constants on (or off), and the
-    /// first grid builds the ambient pass's light pipelines and the reflection cube, on this
-    /// thread: a load-time cost.
+    /// environment's pipelines are built again with the grid's constants on, unless a load
+    /// expected it, and the first grid builds the ambient pass's light pipelines and the
+    /// reflection cube, on this thread: a load-time cost. Removing a grid keeps its constants,
+    /// whose pipelines read the hemisphere exactly where there's no grid, so it builds nothing
+    /// (M5 M6: a trip into a zone without one).
     ///
     /// Fails, keeping no grid, if the grid is larger than the device's atlas, buffers or
     /// dispatches allow.

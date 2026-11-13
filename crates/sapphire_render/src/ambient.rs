@@ -1488,18 +1488,24 @@ impl Ambient {
     /// builds the light work's pipelines from `sources` and, with environment specular on, makes
     /// the reflection cube, all kept for the grids after it. The frame group and the environment
     /// pipelines must then be rebuilt ([`Self::frame_entries`], [`Self::constants`]).
+    ///
+    /// A grid's leaving keeps its constants, as if the next were expected: the pipelines built for
+    /// one read the hemisphere where there's none, exactly, and turning them off would build every
+    /// environment and foliage surface again on this thread, as a trip into a zone without a grid
+    /// arrives (M5 M6). Only a renderer that never had or expected a grid builds without them.
     pub(crate) fn set_grid(
         &mut self,
         queue: &wgpu::Queue,
         grid: Option<&ArchivedProbeGrid>,
         sources: &ShaderSources,
     ) -> Result<(), RenderError> {
-        self.grid_expected = false;
+        let keep_constants = grid.is_none() && (self.grid.is_some() || self.grid_expected);
         self.grid = grid
             .map(|grid| {
                 GpuGrid::new(&self.device, queue, &self.layouts, &self.sky_light, &self.uniform_buffer, grid)
             })
             .transpose()?;
+        self.grid_expected = keep_constants;
         if self.grid.is_some() {
             let prefilter = self.environment_reflects;
             self.prepare_work(

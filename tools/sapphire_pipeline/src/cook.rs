@@ -118,14 +118,16 @@
 //! the plan read a source, since what it took from the file holds for that version alone, and a save of
 //! a clip's source after the clip cooked and before a move set bakes from it.
 //!
-//! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5, in encoders that
-//! run a level on one thread. astcenc shares two things: it rewrites its angle tables with the same
-//! values at every context, so a reader sees the same value either way, though it's a race as C++
-//! counts them; and a pointer to the preset table of a block size, whose value does reach the output,
-//! so levels of different tables never encode at once ([`texture`]'s `encode`). Six cold cooks of each
-//! target on four workers under load matched one thread's bytes. Medians of six alternating rounds at a
-//! load of 13 to 20 take the desktop cook from 25.4 s to 12.2 s and the mobile cook from 12.3 s to 5.6 s,
-//! for the same CPU.
+//! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5. Each worker's
+//! encoders cut a large level into strips of whole block rows and encode them on threads of their own
+//! (`texture::kernels::strips`, M5 B1), the same bytes as one thread, since every block is fitted from
+//! its own texels; four workers alone left most of a ten-core machine idle on the benchmark's 2K maps.
+//! astcenc shares two things: it rewrites its angle tables with the same values at every context, a
+//! race as C++ counts them, and a pointer to the preset table of a block size, whose value does reach
+//! the output; so configs and contexts are made under a write lock, and compression runs under a read
+//! lock ([`texture`]'s `encode`). Six cold cooks of each target on four workers under load matched one
+//! thread's bytes. Medians of six alternating rounds at a load of 13 to 20 take the desktop cook from
+//! 25.4 s to 12.2 s and the mobile cook from 12.3 s to 5.6 s, for the same CPU (OPT-025).
 //!
 //! What it costs is memory: a texture's cook holds several expanded copies of its image, so besides the
 //! worker count what they hold at once is limited (`COOK_MEMORY`). Peak resident size goes from about

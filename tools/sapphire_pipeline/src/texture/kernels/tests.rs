@@ -100,12 +100,34 @@ fn the_cook_encodes_bc7_with_its_architectures_encoder() {
     let texels = eight_blocks(true);
     let image = Blocks { texels: &texels, width: 16, height: 8, bytes_per_texel: 4 };
     check_cpu().unwrap();
-    let cooked = bc7(&image, false);
+    let cooked = bc7(&image, false, 1);
     if cfg!(target_arch = "x86_64") {
         assert_eq!(cooked, intel_bc7(&image));
     } else {
         assert_ne!(cooked, intel_bc7(&image), "AArch64 keeps bc7e");
     }
+}
+
+#[test]
+fn intels_bc7_in_strips_keeps_the_whole_levels_preset() {
+    // 64 rows of blocks, so up to four strips; only the last strip's texels are translucent, so the
+    // other three are opaque on their own and would pick the opaque preset, which encodes otherwise.
+    let (width, height) = (8u32, 256u32);
+    let texels: Vec<u8> = (0..width * height)
+        .flat_map(|i| {
+            let (x, y) = (i % width, i / width);
+            let alpha = if y >= 192 { 128 } else { u8::MAX };
+            [(x * 29 + y * 7) as u8, (y * 3) as u8, (x * y) as u8, alpha]
+        })
+        .collect();
+    let image = Blocks { texels: &texels, width, height, bytes_per_texel: 4 };
+    check_cpu().unwrap();
+    let whole = intel_bc7(&image);
+    for threads in [1, 2, 4] {
+        assert!(intel_bc7_in_strips(&image, threads) == whole, "{threads} threads");
+    }
+    let opaque_rows = intel_bc7(&image.rows(0..48));
+    assert!(opaque_rows[..] != whole[..opaque_rows.len()], "the opaque preset encodes these rows otherwise");
 }
 
 /// The other x86-64 builds of the BC7 kernels, for the probe below.
@@ -221,7 +243,7 @@ fn prints_this_machines_bc7_encodings() {
         let image = Blocks { texels: &texels, width, height, bytes_per_texel: 4 };
         let words = image.tiled_words();
         let mut encoders: Vec<Encoder<'_>> =
-            vec![("cook", Box::new(|| bc7(&image, true))), ("intel", Box::new(|| intel_bc7(&image)))];
+            vec![("cook", Box::new(|| bc7(&image, true, 1))), ("intel", Box::new(|| intel_bc7(&image)))];
         #[cfg(target_arch = "x86_64")]
         {
             encoders.push(("bc7e-avx2", Box::new(|| x86_64::bc7e(&words, x86_64::BC7E_AVX2))));

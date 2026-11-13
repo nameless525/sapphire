@@ -30,6 +30,10 @@
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("the texture kernels are pinned for x86-64 and AArch64 only");
 
+use std::convert::Infallible;
+use std::ops::Range;
+use std::thread;
+
 #[cfg(any(target_arch = "x86_64", test))]
 use ctt_intel_texture_compressor::bindings::kernel::bc7_enc_settings;
 use ctt_intel_texture_compressor::bindings::kernel::{bc6h_enc_settings, rgba_surface};
@@ -107,20 +111,80 @@ mod ffi {
     }
 }
 
+/// The fewest rows of blocks a strip holds (but a level's last): a level under two strips tall
+/// encodes on the calling thread, where a thread would cost more than it saves.
+const STRIP_BLOCK_ROWS: u32 = 16;
+
+/// The strips a level of `block_rows` rows of blocks encodes in, in row order: at most `threads`,
+/// and none under [`STRIP_BLOCK_ROWS`] rows but the last.
+///
+/// Every encoder here fits each block from its own texels alone, so the bytes are the same however
+/// many strips a level is cut into (`a_level_encodes_the_same_in_strips`), and a cook stays the
+/// same on every machine of an architecture whatever its core count.
+pub fn strips(block_rows: u32, threads: usize) -> Vec<Range<u32>> {
+    let count = (block_rows / STRIP_BLOCK_ROWS).clamp(1, u32::try_from(threads.max(1)).unwrap_or(u32::MAX));
+    let per_strip = block_rows.div_ceil(count).max(1);
+    (0..block_rows)
+        .step_by(per_strip as usize)
+        .map(|first| first..(first + per_strip).min(block_rows))
+        .collect()
+}
+
+/// Encodes `strips` at once, each on a thread of its own (one alone on the calling thread), and
+/// joins their bytes in order; the first failure in order is the result.
+pub fn on_threads<T: Send, E: Send>(
+    strips: Vec<T>,
+    encode: impl Fn(T) -> Result<Vec<u8>, E> + Sync,
+) -> Result<Vec<u8>, E> {
+    if strips.len() <= 1 {
+        return strips.into_iter().map(&encode).collect::<Result<Vec<_>, _>>().map(|bytes| bytes.concat());
+    }
+    thread::scope(|scope| {
+        let encode = &encode;
+        let strips: Vec<_> = strips.into_iter().map(|strip| scope.spawn(move || encode(strip))).collect();
+        let mut out = Vec::new();
+        for strip in strips {
+            out.extend(strip.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))?);
+        }
+        Ok(out)
+    })
+}
+
+/// `encode` over `image`'s rows of blocks in strips on up to `threads` threads.
+fn blocks_in_strips(
+    image: &Blocks<'_>,
+    threads: usize,
+    encode: impl Fn(&Blocks<'_>) -> Vec<u8> + Sync,
+) -> Vec<u8> {
+    let encoded =
+        on_threads(strips(image.height / 4, threads), |rows| Ok::<_, Infallible>(encode(&image.rows(rows))));
+    match encoded {
+        Ok(bytes) => bytes,
+    }
+}
+
 /// BC7 blocks (16 bytes each) from an RGBA8 image (R first), at the architecture's pinned encoder:
-/// Intel's kernel on x86-64, `bc7e` on AArch64. `perceptual` weighs colour error by BT.601 luma, as
-/// suits colours and is wrong for data; only `bc7e` can, so x86-64 ignores it. Call [`check_cpu`]
-/// first.
-pub fn bc7(image: &Blocks<'_>, perceptual: bool) -> Vec<u8> {
+/// Intel's kernel on x86-64, `bc7e` on AArch64, in strips on up to `threads` threads
+/// ([`strips`]). `perceptual` weighs colour error by BT.601 luma, as suits colours and is wrong
+/// for data; only `bc7e` can, so x86-64 ignores it. Call [`check_cpu`] first.
+pub fn bc7(image: &Blocks<'_>, perceptual: bool, threads: usize) -> Vec<u8> {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = perceptual;
-        intel_bc7(image)
+        intel_bc7_in_strips(image, threads)
     }
     #[cfg(target_arch = "aarch64")]
     {
-        bc7e(image, perceptual)
+        blocks_in_strips(image, threads, |strip| bc7e(strip, perceptual))
     }
+}
+
+/// Intel's BC7 in strips, at the preset the whole image picks: one strip opaque in an image that
+/// isn't keeps the alpha preset, as the image whole would.
+#[cfg(any(target_arch = "x86_64", test))]
+fn intel_bc7_in_strips(image: &Blocks<'_>, threads: usize) -> Vec<u8> {
+    let settings = bc7_basic(opaque(image));
+    blocks_in_strips(image, threads, |strip| intel_bc7_with(strip, settings))
 }
 
 /// `bc7e`'s tables, built once by the pinned build before any of its blocks encode.
@@ -153,8 +217,8 @@ fn bc7e(image: &Blocks<'_>, perceptual: bool) -> Vec<u8> {
 }
 
 /// BC7 through Intel's kernel at its "basic" preset: the opaque one when every texel's alpha is
-/// 255, so alpha costs no bits, and the alpha one otherwise.
-#[cfg(any(target_arch = "x86_64", test))]
+/// 255, so alpha costs no bits, and the alpha one otherwise: the image whole, on this thread.
+#[cfg(test)]
 fn intel_bc7(image: &Blocks<'_>) -> Vec<u8> {
     intel_bc7_with(image, bc7_basic(opaque(image)))
 }
@@ -250,6 +314,17 @@ impl Blocks<'_> {
         (self.width / 4) as usize * (self.height / 4) as usize
     }
 
+    /// The image's rows of blocks `rows`, as an image of their own.
+    fn rows(&self, rows: Range<u32>) -> Blocks<'_> {
+        let row_bytes = self.width as usize * self.bytes_per_texel as usize * 4;
+        Blocks {
+            texels: &self.texels[rows.start as usize * row_bytes..rows.end as usize * row_bytes],
+            width: self.width,
+            height: (rows.end - rows.start) * 4,
+            bytes_per_texel: self.bytes_per_texel,
+        }
+    }
+
     /// An RGBA8 image as whole 4 × 4 blocks in row order, each block's 16 texels in row order, as
     /// packed little-endian words: what `bc7e` reads.
     #[cfg(any(target_arch = "aarch64", test))]
@@ -271,8 +346,26 @@ impl Blocks<'_> {
     }
 }
 
-/// BC4 blocks (8 bytes each) from an R8 image. Call [`check_cpu`] first.
-pub fn bc4(image: &Blocks<'_>) -> Vec<u8> {
+/// BC4 blocks (8 bytes each) from an R8 image, in strips on up to `threads` threads. Call
+/// [`check_cpu`] first.
+pub fn bc4(image: &Blocks<'_>, threads: usize) -> Vec<u8> {
+    blocks_in_strips(image, threads, bc4_whole)
+}
+
+/// BC5 blocks (16 bytes each) from an RG8 image, in strips on up to `threads` threads. Call
+/// [`check_cpu`] first.
+pub fn bc5(image: &Blocks<'_>, threads: usize) -> Vec<u8> {
+    blocks_in_strips(image, threads, bc5_whole)
+}
+
+/// BC6H unsigned-float blocks (16 bytes each) from an RGBA16F image with no negative halves, at
+/// the kernel's "basic" settings, in strips on up to `threads` threads. Call [`check_cpu`] first.
+pub fn bc6h(image: &Blocks<'_>, threads: usize) -> Vec<u8> {
+    blocks_in_strips(image, threads, bc6h_whole)
+}
+
+/// BC4 of the image whole, on this thread.
+fn bc4_whole(image: &Blocks<'_>) -> Vec<u8> {
     assert_eq!(image.bytes_per_texel, 1);
     let mut surface = image.surface();
     let mut out = vec![0u8; image.block_count() * 8];
@@ -282,8 +375,8 @@ pub fn bc4(image: &Blocks<'_>) -> Vec<u8> {
     out
 }
 
-/// BC5 blocks (16 bytes each) from an RG8 image. Call [`check_cpu`] first.
-pub fn bc5(image: &Blocks<'_>) -> Vec<u8> {
+/// BC5 of the image whole, on this thread.
+fn bc5_whole(image: &Blocks<'_>) -> Vec<u8> {
     assert_eq!(image.bytes_per_texel, 2);
     let mut surface = image.surface();
     let mut out = vec![0u8; image.block_count() * 16];
@@ -292,9 +385,8 @@ pub fn bc5(image: &Blocks<'_>) -> Vec<u8> {
     out
 }
 
-/// BC6H unsigned-float blocks (16 bytes each) from an RGBA16F image with no negative halves, at
-/// the kernel's "basic" settings. Call [`check_cpu`] first.
-pub fn bc6h(image: &Blocks<'_>) -> Vec<u8> {
+/// BC6H of the image whole, on this thread.
+fn bc6h_whole(image: &Blocks<'_>) -> Vec<u8> {
     assert_eq!(image.bytes_per_texel, 8);
     let mut surface = image.surface();
     // Intel's "basic" preset (`ctt_intel_texture_compressor::bc6h::basic_settings`).

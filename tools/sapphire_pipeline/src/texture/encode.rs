@@ -18,7 +18,8 @@
 //! Block formats take edge texels for the texels past a level's last whole block (a mip smaller
 //! than a block), as ctt's encoders did.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{PoisonError, RwLock};
+use std::thread;
 
 use ctt_astcenc as astc;
 use half::f16;
@@ -56,16 +57,31 @@ pub(super) enum AstcUsage {
     Normal,
 }
 
-/// The pinned astcenc writes a function-local static preset pointer during config initialization.
-/// Even calls choosing the same table conflict in C++, so the complete conversion boundary is
-/// serialized until the dependency owns that pointer per invocation.
-static ASTC_PRESETS: Mutex<()> = Mutex::new(());
+/// The pinned astcenc's process-wide state. Config initialization writes a function-local static
+/// preset pointer, whose value reaches the output, and every new context rewrites the angle tables
+/// that compression reads, with the same values, which is still a race as C++ counts them. So
+/// configs and contexts are made under the write lock, until the dependency owns that state per
+/// invocation, and compression, which reads only its context and those tables, runs under the read
+/// lock, any number at once.
+static ASTC_TABLES: RwLock<()> = RwLock::new(());
 
-/// Encodes one level. `level`'s texels are linear and carry the format's channels first.
+/// Encodes one level, a block format's in strips on as many threads as the machine has
+/// ([`kernels::strips`]): the same bytes as on one. `level`'s texels are linear and carry the
+/// format's channels first.
 pub(super) fn encode_level(
     level: &Level,
     format: TextureFormat,
     encoding: Encoding,
+) -> Result<Vec<u8>, EncodeError> {
+    encode_level_on(level, format, encoding, thread::available_parallelism().map_or(1, usize::from))
+}
+
+/// [`encode_level`] on up to `threads` threads.
+fn encode_level_on(
+    level: &Level,
+    format: TextureFormat,
+    encoding: Encoding,
+    threads: usize,
 ) -> Result<Vec<u8>, EncodeError> {
     let (width, height) = (level.width, level.height);
     let bytes = match (encoding, format) {
@@ -74,19 +90,19 @@ pub(super) fn encode_level(
             kernels::check_cpu()?;
             let texels = rgba8(level, format.is_srgb());
             let (texels, width, height) = pad_to_blocks(bytemuck::cast_slice(&texels), width, height, 4);
-            kernels::bc7(&Blocks { texels: &texels, width, height, bytes_per_texel: 4 }, perceptual)
+            kernels::bc7(&Blocks { texels: &texels, width, height, bytes_per_texel: 4 }, perceptual, threads)
         }
         (Encoding::Ispc, TextureFormat::Bc4RUnorm) => {
             kernels::check_cpu()?;
             let texels = channels8(level, 1);
             let (texels, width, height) = pad_to_blocks(&texels, width, height, 1);
-            kernels::bc4(&Blocks { texels: &texels, width, height, bytes_per_texel: 1 })
+            kernels::bc4(&Blocks { texels: &texels, width, height, bytes_per_texel: 1 }, threads)
         }
         (Encoding::Ispc, TextureFormat::Bc5RgUnorm) => {
             kernels::check_cpu()?;
             let texels = channels8(level, 2);
             let (texels, width, height) = pad_to_blocks(&texels, width, height, 2);
-            kernels::bc5(&Blocks { texels: &texels, width, height, bytes_per_texel: 2 })
+            kernels::bc5(&Blocks { texels: &texels, width, height, bytes_per_texel: 2 }, threads)
         }
         (Encoding::Ispc, TextureFormat::Bc6hRgbUfloat) => {
             kernels::check_cpu()?;
@@ -102,13 +118,12 @@ pub(super) fn encode_level(
                 })
                 .collect();
             let (texels, width, height) = pad_to_blocks(&texels, width, height, 8);
-            kernels::bc6h(&Blocks { texels: &texels, width, height, bytes_per_texel: 8 })
+            kernels::bc6h(&Blocks { texels: &texels, width, height, bytes_per_texel: 8 }, threads)
         }
         (Encoding::Ispc, _) => unreachable!("the plan gives Intel's kernels BC4, BC5 and BC6H only"),
         (Encoding::Astc(usage), TextureFormat::Astc { block, srgb }) => {
             kernels::check_cpu()?;
-            let _presets = ASTC_PRESETS.lock().unwrap_or_else(PoisonError::into_inner);
-            astc(level, block.dimensions(), srgb, usage)?
+            astc(level, block.dimensions(), srgb, usage, threads)?
         }
         (Encoding::Astc(_), _) => unreachable!("the plan gives astcenc ASTC formats only"),
     };
@@ -236,12 +251,15 @@ fn pad_to_blocks(texels: &[u8], width: u32, height: u32, bytes_per_texel: usize)
     (out, padded_width, padded_height)
 }
 
-/// The level through astcenc at its "medium" preset, single-threaded, from RGBA8 texels.
+/// The level through astcenc at its "medium" preset from RGBA8 texels, in strips of whole block
+/// rows on up to `threads` threads, each strip a single-threaded context's image of its own. A
+/// partial block takes edge texels from its own strip, which is the level's last.
 fn astc(
     level: &Level,
     (block_x, block_y): (u32, u32),
     srgb: bool,
     usage: AstcUsage,
+    threads: usize,
 ) -> Result<Vec<u8>, EncodeError> {
     let (profile, flags, swizzle) = match usage {
         AstcUsage::Color => (
@@ -256,30 +274,80 @@ fn astc(
     };
     // The context only ever compresses.
     let flags = flags | astc::Flags::SELF_DECOMPRESS_ONLY;
-    let config = astc::config_init(profile, block_x, block_y, 1, astc::Preset::Medium, flags)?;
-    let mut context = astc::Context::new(&config)?;
-    let mut texels = rgba8(level, srgb);
-    let mut data = texels.as_mut_ptr().cast::<std::ffi::c_void>();
-    let mut image = astc::bindings::astcenc_image {
-        dim_x: level.width,
-        dim_y: level.height,
-        dim_z: 1,
-        data_type: astc::bindings::astcenc_type_ASTCENC_TYPE_U8,
-        data: &mut data,
+    let strips = kernels::strips(level.height.div_ceil(block_y), threads);
+    let contexts = {
+        let _tables = ASTC_TABLES.write().unwrap_or_else(PoisonError::into_inner);
+        let config = astc::config_init(profile, block_x, block_y, 1, astc::Preset::Medium, flags)?;
+        strips.iter().map(|_| astc::Context::new(&config)).collect::<Result<Vec<_>, _>>()?
     };
-    let blocks = level.width.div_ceil(block_x) as usize * level.height.div_ceil(block_y) as usize;
-    let mut out = vec![0; blocks * 16];
-    context.compress(&mut image, swizzle, &mut out)?;
-    Ok(out)
+    let texels = rgba8(level, srgb);
+    let row_words = level.width as usize;
+    let _tables = ASTC_TABLES.read().unwrap_or_else(PoisonError::into_inner);
+    let jobs = strips.into_iter().zip(contexts).collect();
+    kernels::on_threads(jobs, |(rows, mut context)| -> Result<Vec<u8>, EncodeError> {
+        let first = rows.start * block_y;
+        let height = (rows.end * block_y).min(level.height) - first;
+        // astcenc only reads the image, through a mutable pointer of the C header's; each strip
+        // copies its rows so no two threads share one.
+        let mut strip = texels[first as usize * row_words..][..height as usize * row_words].to_vec();
+        let mut data = strip.as_mut_ptr().cast::<std::ffi::c_void>();
+        let mut image = astc::bindings::astcenc_image {
+            dim_x: level.width,
+            dim_y: height,
+            dim_z: 1,
+            data_type: astc::bindings::astcenc_type_ASTCENC_TYPE_U8,
+            data: &mut data,
+        };
+        let blocks = level.width.div_ceil(block_x) as usize * height.div_ceil(block_y) as usize;
+        let mut out = vec![0; blocks * 16];
+        context.compress(&mut image, swizzle, &mut out)?;
+        Ok(out)
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use sapphire_assets::texture::AstcBlock;
+
     use super::*;
 
     #[test]
+    fn a_level_encodes_the_same_in_strips() {
+        // Tall enough for several strips, and neither size a whole number of blocks, so the last
+        // strip holds partial blocks; one strip has translucent texels and the rest are opaque.
+        let (width, height) = (38, 301);
+        let level = Level {
+            width,
+            height,
+            pixels: (0..width * height)
+                .map(|i| {
+                    let (x, y) = ((i % width) as f32, (i / width) as f32);
+                    let alpha = if (100.0..120.0).contains(&y) { 0.5 } else { 1.0 };
+                    [(x * 0.37 + y * 0.11).sin() * 0.5 + 0.5, x / width as f32, y / height as f32, alpha]
+                })
+                .collect(),
+        };
+        let encodings = [
+            (TextureFormat::Bc7RgbaUnormSrgb, Encoding::Bc7 { perceptual: true }),
+            (TextureFormat::Bc7RgbaUnorm, Encoding::Bc7 { perceptual: false }),
+            (TextureFormat::Bc4RUnorm, Encoding::Ispc),
+            (TextureFormat::Bc5RgUnorm, Encoding::Ispc),
+            (TextureFormat::Bc6hRgbUfloat, Encoding::Ispc),
+            (TextureFormat::Astc { block: AstcBlock::B4x4, srgb: true }, Encoding::Astc(AstcUsage::Color)),
+            (TextureFormat::Astc { block: AstcBlock::B6x6, srgb: false }, Encoding::Astc(AstcUsage::Normal)),
+            (TextureFormat::Astc { block: AstcBlock::B8x8, srgb: false }, Encoding::Astc(AstcUsage::Data)),
+        ];
+        for (format, encoding) in encodings {
+            let whole = encode_level_on(&level, format, encoding, 1).unwrap();
+            for threads in [2, 3, 7] {
+                let strips = encode_level_on(&level, format, encoding, threads).unwrap();
+                assert!(strips == whole, "{format:?} on {threads} threads");
+            }
+        }
+    }
+
+    #[test]
     fn concurrent_astc_conversions_match_serial_output_for_all_tables() {
-        use sapphire_assets::texture::AstcBlock;
         let level = Level {
             width: 8,
             height: 8,
@@ -289,7 +357,7 @@ mod tests {
             .map(|block| TextureFormat::Astc { block, srgb: true });
         let serial =
             formats.map(|format| encode_level(&level, format, Encoding::Astc(AstcUsage::Color)).unwrap());
-        std::thread::scope(|scope| {
+        thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
                 .map(|i| {
                     let level = &level;

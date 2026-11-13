@@ -345,6 +345,17 @@ The worked example is [court_gate.timeline.ron](../content/zones/lantern_ward/co
 4. **Look at it:** `--arena --timeline <id>` plays one on the sandbox, and the editor's sequencer pane scrubs it.
 5. **Starting it:** the run's scenario lists it in `timelines`, and a beat in [game.flow.ron](../content/game.flow.ron) plays it (`when: Started("<encounter>")`, `then: Timeline("<id>")`, with an optional `align` checkpoint the player is brought back to first), as the gate's does. `ward_flow` holds the shipped flow to what its scenario loads, and each timeline it names to its sidecar's ID and its place; the whole walk counts at least one cutscene (Z5e). A beat's timeline is recorded into the run's file, so the whole walk's replay holds it with no scripted input. A replay that plays it on a scenario with no flow is a scripted input document with a `PlayTimeline` at a tick (`content/inputs/`, M4 R2), which takes no Rust. Its goldens, if you want them, are rows in `tests/golden/scenes.ron` ("A golden").
 
+### A face track (M5 C5)
+
+Faces and looks are keys on a timeline's character track, and a conversation's line can set a face the same way. Spec §5.13's "As built (M5 C5)" is the reference. No step edits Rust, and no replay moves: faces and looks are presentation, and the timeline's simulation digest doesn't see them.
+
+1. **The version:** a timeline document with faces or looks says `version: 2`. A version 1 document still loads, as one with none.
+2. **Who:** a track's `role` is `hero` (the player), `foe` (who they face), or a kind of enemy by its document's `name` (`enemy-warrior`, `boss-captain`), which binds the first fighter of that kind on the stage.
+3. **Faces:** `faces: [(at: 1.0, expression: "happy", weight: 0.8, blend: 0.3), (at: 3.0, expression: "surprised")]`. An expression is a VRM 1.0 preset by its VRM name (`happy`, `angry`, `sad`, `relaxed`, `surprised`, `aa`, `ih`, `ou`, `ee`, `oh`, `blink`, `blinkLeft`, `blinkRight`, `lookUp`, `lookDown`, `lookLeft`, `lookRight`, `neutral`). The cook refuses any other, naming the field. `weight` is 0 to 1 (1 if it doesn't say), and `blend` is in seconds from the face before (0.2 if it doesn't say). Each key holds until the next, and when the timeline ends the face blends back to its own resting face. The character's VRM decides what a preset does, its overrides too: `happy` on the shipped character turns the blink and the mouth down by its weight.
+4. **Looks:** `looks: [(at: 0.5, look_at: Some((0.0, 1.5, 2.0))), (at: 1.5, look_at: Some((2.0, 1.5, 2.0)), ease: Smooth), (at: 4.5, look_at: None)]`. Points are in the timeline's own space, as its camera keys are. `None` hands the look back to who it was fighting. A fighter the simulation poses (the hero and their first foe in a fight with bodies) keeps its own look, as it keeps its own rows (spec §5.23's "As built (M5 C5)", "Can't do"); it still takes the faces.
+5. **In a conversation:** a line's `say` takes `faces: [(role: "hero", expression: "happy", weight: 0.7)]`, up to four roles, in a `version: 2` dialogue document. The face holds until a later line sets that role's again, or the conversation ends. A timeline's face key for the same fighter comes first.
+6. **Look at it:** `--look-dev face --face <preset>[:<weight>] --face-mouth <openness>` holds the character's close-up with a face, as the `face-*` goldens show it, and `--arena --timeline <id>` plays a timeline's faces on the fighters.
+
 ### A game screen
 
 The worked examples are the six documents in [content/ui/](../content/ui/). Spec §5.17 is the reference.

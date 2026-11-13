@@ -11,6 +11,8 @@ license.workspace = true
 # The cooked `Skeleton` and `Clip` formats, which the asset server checks by kind.
 sapphire_assets.workspace = true
 sapphire_body_pose.workspace = true
+# Expression names, by hash, from timelines and conversations (M5 C5).
+sapphire_core.workspace = true
 # One job per character (spec §5.13).
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
@@ -20,10 +22,6 @@ sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-# Names and the per-thread allocation counter used by integration tests.
-sapphire_core.workspace = true
 
 [lints]
 workspace = true

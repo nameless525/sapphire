@@ -366,3 +366,60 @@ fn solving_ik_allocates_nothing_once_it_is_made() {
         assert_eq!(counts.allocations, 0, "{counts:?}");
     }
 }
+
+#[test]
+fn a_face_allocates_nothing_once_it_is_bound() {
+    use sapphire_anim::face::{FaceLayer, FaceOrder, Mouth};
+    use sapphire_assets::rig::{Expression, ExpressionOverride, ExpressionPreset, MorphTargetWeight};
+    use sapphire_core::Name;
+
+    let expressions =
+        [ExpressionPreset::Happy, ExpressionPreset::Angry, ExpressionPreset::Aa, ExpressionPreset::Blink]
+            .into_iter()
+            .enumerate()
+            .map(|(target, preset)| Expression {
+                name: preset.name().to_owned(),
+                preset: Some(preset),
+                binary: false,
+                override_blink: ExpressionOverride::Blend,
+                override_look_at: ExpressionOverride::None,
+                override_mouth: ExpressionOverride::Block,
+                morph_targets: vec![MorphTargetWeight { target: target as u32, weight: 1.0 }],
+                material_colors: Vec::new(),
+                texture_transforms: Vec::new(),
+            })
+            .collect();
+    let bytes =
+        CharacterRig { morph_target_count: 4, expressions, ..CharacterRig::default() }.to_cooked().unwrap();
+    let rig = CharacterRig::read(&bytes).unwrap();
+    let mut face = FaceLayer::new(rig, 4, Some((ExpressionPreset::Happy, 0.3))).unwrap();
+    let names = [Name::new("happy"), Name::new("angry"), Name::new("aa"), Name::new("blink")];
+    let mut weights = [0.0_f32; 4];
+    let (sum, counts) = alloc::count_in_scope(|| {
+        let mut sum = 0.0;
+        for frame in 0..240_u64 {
+            let key = frame / 40;
+            if key % 3 == 2 {
+                face.hand_back(0.2);
+            } else {
+                face.show(FaceOrder {
+                    key,
+                    expression: names[(key % 4) as usize],
+                    weight: 1.0,
+                    blend: 0.2,
+                    since: 0.0,
+                });
+            }
+            face.set_mouth(Mouth::open((frame % 7) as f32 / 7.0));
+            face.advance(1.0 / 60.0);
+            weights = [0.3, 0.0, 0.0, 0.5];
+            face.apply(&mut weights);
+            sum += weights.iter().sum::<f32>();
+        }
+        sum
+    });
+    assert!(sum.is_finite() && weights.iter().all(|weight| (0.0..=1.0).contains(weight)));
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+}

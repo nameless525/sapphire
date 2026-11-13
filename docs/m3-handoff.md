@@ -181,7 +181,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 - **G7:** no HUD slot for party members (`Simulation::party_ready_in` is what one would read), no touch button for swap, and recolors made at load. A decision from the review: once someone saves away `swap_in`, a running party fight goes on, and the next fight won't start until it's restored, as a build with that document would do.
 - **G5:** sequencer takeovers are a pose slot with nothing driving it. A step reads a soft lock's choice since M3 B1, by the simulation's `TargetingTuning`, which `tables_hash` holds, and the director frames that choice.
 - **N3:** `Jump_Start` and the side dodges cook and aren't played. The arena's two fighters animate in turn on one thread, with no list and no allocation, and a crowd would want `evaluate_all`'s jobs with a retained list ([scene.rs](../crates/sapphire_stage/src/scene.rs), `animate_fighters`). Breathing adds on top of O2's `idle`, which may already breathe: nobody has judged whether that doubles.
-- **N4:** no get-up clip, so a knockdown rises by a decay alone. Hands on a weapon are tested, and the graph's grip hasn't been looked at.
+- **N4:** no get-up clip, so a knockdown rises by a decay alone (**corrected (M5 X2, 2026-11-13):** stale since #213 in M3, when the hero's `reaction_knockdown` key pose came to rise on its own and the warrior got `recover`, which its brain's `rise` presses; spec §5.13, N4's note). Hands on a weapon are tested, and the graph's grip hasn't been looked at.
 - **N5:** a clip's root-motion loop teleports with no view cut, which may leave a one-frame velocity streak (unverified). Limits beat colliders, so an arm can pass through a strand by up to 7.2 cm. Springs have no floor, so hair passes through paving. `AnimStats` isn't in the overlay.
 - **O2's verdicts, owed to a person:** walk plain and 0.72 m/s at 1× against the controller's 2 m/s; strafes hold the body turned 60°; side dodges stiff; `Jump_Idle` holds its arms out; both idles and deaths written without an animator; the run over-splits its legs.
 - **O3's reads, owed to a person:** finisher and skill's coil strongest, dodge weakest, `light_2` has weak anticipation. Their other read, that the dash attack's hit needs a trail, is answered: every cut has one (spec §5.16), but it's a thrust, so a thin line and a low crescent, and a person should say if that reads. The sleeve opens at the armpit, shorts push through the shirt's back past about 12° of hips pitch, and a black patch shows at the shirt's hem.
@@ -197,7 +197,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - Decide parallel recording against one encoder on a phone (`PARALLEL_MIN_PASSES`, [executor.rs](../crates/sapphire_render/src/graph/executor.rs)).
   - Give §3.3's post row a screen-effects share.
   - Per-cook texture size in the cooker, because `Body_00`, `Body_00_nml` and `Tops_01` stay over §3.4's 1K a part on the mobile cook.
-  - Bring the character toward §3.4's 4 opaque materials (it has 11), or exempt it.
+  - Bring the character toward §3.4's 4 opaque materials (it has 11), or exempt it. (**Corrected (M5 X2, 2026-11-13):** §3.4's row counts every material, 6 on desktop and 4 on mobile, and the character has 13, 11 of them opaque, so it's over on both.)
   - Add footprint to the windowed `frame stats` (Z3 added live heap, not footprint).
 - **CPU rows move together** by ×2.6–3 between runs on identical code, and nobody has shown why (spec §3.5). `sim_dropped_ms` read 33–199 on rebuilds under load. Paused captures differ on 0.6% of pixels, also unexplained.
 - **Smaller code notes:**
@@ -210,7 +210,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 
 - **Toolchain:** wgpu 30, because 31 isn't out (reassess at this boundary). SDL 3.4.18, pinned exactly. WESL and `encase` were never used.
 - **Reflection probes** were to come in early M2 and didn't (spec §5.12, W5's note). SSR for the characters' reflection add.
-- **Screen effects M2 didn't author:** cut-ins, which may need the character mask carried through TAA; halftone; C7's screen pattern and SDF reveal.
+- **Screen effects M2 didn't author:** cut-ins, which may need the character mask carried through TAA; halftone; C7's screen pattern and SDF reveal. (**Corrected (M5 X2, 2026-11-13):** cut-ins are views of their own, which M3's insets can draw, so they don't need the main view's mask; [m5-plan.md](m5-plan.md)'s L10.)
 - **Renderer:** PSO warm-up (M4) growing from `shader_builds`, LOD selection and GPU culling, upscalers, local-light shadows, characters shadowing each other, the performance hunt's deferred costs.
 - **The look gaps X1 found:** depth of field, light shafts, water.
 - **Assets:** group packs beyond `audio.spack`, memory-mapped packs, mip streaming, a shared cache, a cook-on-save watch mode.
@@ -223,9 +223,9 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 - **Feel is unknown.** All of M2 could be well built and still not fun. This is the largest risk, and [m2-go-no-go.md](m2-go-no-go.md) is about it.
 - **More bugs are likely.** The review found 31 past every gate, a later read of the camera's framing pass found six more, an outside review found 48 more after that, reading those 48 fixes found five, and nobody can say how many are left. Its fuzz (51,678 swaps and the rest, in [m2-go-no-go.md](m2-go-no-go.md)) ran on arm64 only. The two windows nobody has opened are the likeliest place.
 - **No phone has run anything,** after three milestones. Every mobile number is an M5 at the Mobile tiers' settings, the iOS Simulator or the Android emulator. §3's budgets are still proposals.
-- **Motion without an animator** (plan §6). The player's moves are solved from poses set by target, the enemy's and locomotion's are retargeted chibi clips, and nobody has said whether they're good enough to judge the fight by. The fallback is a commissioned animator or a bought pack, and a pack that bars redistribution can't go in a public repo.
+- **Motion without an animator** (plan §6). The player's moves are solved from poses set by target, the enemy's and locomotion's are retargeted chibi clips, and nobody has said whether they're good enough to judge the fight by. (**Corrected (M5 X2, 2026-11-13):** since #213 in M3 they're generated key-pose documents too; only the hero's two dodges are still retargeted from KayKit.) The fallback is a commissioned animator or a bought pack, and a pack that bars redistribution can't go in a public repo.
 - **Tools and scenes are single-example:** one character, one enemy, one stage, one set of moves. What's data today has one consumer, so "authored with no Rust changes" is untested.
 - **The town doesn't scale as built:** one mesh, drawn whole wherever it shows (M2's handoff has this too).
 - **A moved checksum costs two CI rounds,** because no machine here runs x86-64 ([development-iteration.md](development-iteration.md)).
 - **GitHub's macOS runners were out** from about 12:30 to about 23:20 UTC on 2026-11-02. Landings in that window were verified on Metal, tests, replays and iOS builds by a local stand-in, not by CI's macOS jobs. Landings after it ran CI's own again.
-- **Software rasterizers aren't GPUs,** and the character shader is full: all eight permutation bits and all 16 sampled textures are taken (M2's handoff).
+- **Software rasterizers aren't GPUs,** and the character shader is full: all eight permutation bits and all 16 sampled textures are taken (M2's handoff). (**Corrected (M5 X2, 2026-11-13):** the 16 are the shared group 0 layout's, and the shader samples 13; the eight bits are the renderer's own cap. M2's handoff has the note.)

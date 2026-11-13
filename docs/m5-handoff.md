@@ -4,7 +4,7 @@ What M5 inherits from M4, for whoever starts it. Like [m4-handoff.md](m4-handoff
 
 **Written on 2026-11-11 and 12** (M4 Z4) on 83dc6273, the landing line's head with every M4 package on it, the reviews (Z3a–Z3e), the shipping benches (Z1) and the fixes this file's first draft found (X4) among them. Z2's final exit run took all eight exit tests on that head on 2026-11-11 and 12, and `main` fast-forwarded to it on 2026-11-12 (#292).
 
-**M5 is fidelity at scale** ([m5-plan.md](m5-plan.md), approved by the maintainer on 2026-11-13). When this file was written spec §10 named no milestone after M4, and what M5 would be was the maintainer's to choose. This file is what M5 starts from, and its "Before a first upload" is still what the maintainer acts on first before a release to a store. The plan's "What the surveys corrected" lists where this file was wrong.
+**M5 is fidelity at scale** ([m5-plan.md](m5-plan.md), approved by the maintainer on 2026-11-13). When this file was written spec §10 named no milestone after M4, and what M5 would be was the maintainer's to choose. This file is what M5 starts from, and its "Before a first upload" is still what the maintainer acts on first before a release to a store. The plan's "What the surveys corrected" lists where the documents were wrong. M5 X2 corrected them: this file and the spec in place, the older handoffs by dated notes beside what they said.
 
 **M4 is release 0.1.0** (tag `v0.1.0`, [CHANGELOG.md](../CHANGELOG.md)). Whatever M5 is, it starts from that tag, and its release is 0.2.0: raise the workspace version in the change that finishes it ([spec §7.4](engine-spec.md#74-xtask-commands), "Releases").
 
@@ -558,7 +558,7 @@ Each item names the package and its hand-back or row, and why it waits.
 
 ### Waiting since M3
 
-[m4-handoff.md](m4-handoff.md)'s "Known to the run" and "From the spec's 'Can't do' lines" have each; M4 took none of them (m4-plan §3, "Waiting"): voice in conversations; Progress v1's one zone; `tables_hash` at a zone entry; the script VM's heap in replays; one board for every script; no production path loading a `.sscript`; the editor's scenario choice and live tuning of kinds; post's gradient packing; the "Can't do" lines for zones, navigation, kinds, encounters, timelines, dialogue, music and scripts; memory-mapped packs and mip streaming; live link's pairing token; nightly device runs and gate 5. The renderer's "warm-up blocks a load" is closed (H1, H2).
+[m4-handoff.md](m4-handoff.md)'s "Known to the run" and "From the spec's 'Can't do' lines" have each; M4 took none of them (m4-plan §3, "Waiting"): voice in conversations; Progress v1's one zone; `tables_hash` at a zone entry; the script VM's heap in replays; one board for every script; no production path loading a `.sscript`; the editor's scenario choice and live tuning of kinds; post's gradient packing; the "Can't do" lines for zones, navigation, kinds, encounters, timelines, dialogue, music and scripts; memory-mapped packs, which M5 decides against ([m5-plan.md](m5-plan.md) §3, "No memory mapping"), and mip streaming; live link's pairing token; nightly device runs and gate 5. The renderer's "warm-up blocks a load" is closed (H1, H2).
 
 ### Not in M4
 

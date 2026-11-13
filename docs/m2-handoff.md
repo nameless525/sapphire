@@ -152,11 +152,11 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
   - Prewarming could move off the loading thread through the same path.
   - See spec §5.12 ("Materials, shaders and PSOs", the A8 follow-up 2) and the renderer's crate docs.
 - **Still on the frame thread:** the debug views' replay copies, rebuilt after a swap while a view is shown (`debug_view.rs`), and the fallback to the compiled-in shaders when a pipeline built later fails under edited ones (spec §5.12).
-- **Culling and LODs:** static instances outside the main frustum skip the main pass and the scene prepass (#96), but shadows still test every sector and draws use LOD0. LOD selection, GPU culling and multi-draw-indirect come with culling (X1 part 2d; the renderer's crate docs).
+- **Culling and LODs:** static instances outside the main frustum skip the main pass and the scene prepass (#96), but shadows still test every sector and draws use LOD0. LOD selection, GPU culling and multi-draw-indirect come with culling (X1 part 2d; the renderer's crate docs). **Corrected (M5 X2, 2026-11-13):** shadow casters were already culled per cascade by their spheres (M1 R4); what holds is that every instance is tested against every cascade each frame, and each pass walks the whole draw list.
 - **Reflection probes:** relightable reflection probes slipped from W5 to early M2. Reflections read the prefiltered sky cube today (plan W5; spec §5.12, W5's note). SSR for the characters' reflection add on desktop (C7).
 - **Upscalers:** a spatial upscaler on phones, and DLSS or MetalFX on desktop. TAA's inputs are already what they take (R7; spec §5.12, "Anti-aliasing and upscaling").
 - **Effects on P3's hooks:**
-  - cut-ins, which may need the character mask carried through TAA;
+  - cut-ins, which may need the character mask carried through TAA (**corrected (M5 X2, 2026-11-13):** cut-ins are views of their own, as `sapphire_world::screen_effects` says and M3's insets made possible, so they don't read the main view's mask; [m5-plan.md](m5-plan.md)'s L10 builds them as insets);
   - finish freeze and halftone;
   - C7's screen-pattern and SDF-reveal effects.
   - See spec §4.6 and §5.12 ("Post-processing"), and plan C7.
@@ -166,7 +166,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 - **Fog and environment:** volumetric fog on desktop, the wet surface model, and screen-space edges for the environment (spec §5.12, "Environment").
 - **Local lights:** cluster occupancy on the GPU, light layers and local-light shadows (the `lights` module docs).
 - **Characters' remaining items** are listed in spec §5.12, in C5's, C6's and C7's "What remains" (alpha-tested eye parts in the prepasses, the eye mask under MSAA, and more).
-- **Items the crate docs still file under "M1":** mesh residency with generational handles, a staging ring for mesh uploads, and draw sorting by material and mesh within a pipeline's group ([lib.rs](../crates/sapphire_render/src/lib.rs), "Later milestones").
+- **Items the crate docs still file under "M1":** mesh residency with generational handles, a staging ring for mesh uploads, and draw sorting by material and mesh within a pipeline's group ([lib.rs](../crates/sapphire_render/src/lib.rs), "Later milestones"). **Corrected (M5 X2, 2026-11-13):** mesh residency with generational handles landed in M3 W3 (the renderer's `retire` module); the other two are still open.
 - **Costs the performance hunt measured and left (#114):**
   - Sampling Desktop-High's 9-tap shadow filter at its corners first: 5–8% of the frame, but it moves 19 goldens, foliage scenes up to 5% of pixels and 41 code values.
   - Chunking the town so a cascade draws less of it: at most 6% on Desktop-High, a content and culling design.
@@ -210,6 +210,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
   - all eight permutation bits are taken (C8);
   - its fragment stage binds all 16 sampled textures and its 4 storage buffers (W5, C2).
   - So a new feature is a uniform branch, shares a texture slot, or joins `CharacterData`.
+  - **Corrected (M5 X2, 2026-11-13):** the 16 textures are group 0's layout, which every mesh family shares and wgpu counts whatever a shader reads; the shader samples 13, and of W5's four only the reflection cube, so a layout per family would free slots. The eight bits are the renderer's own cap (`Permutation(u8)`), not a GPU's.
 - **The look-dev town doesn't scale as built:** one mesh, drawn whole wherever it shows, which also puts nearly all of it in every shadow cascade (X1 parts 2b and 2d; the performance hunt below).
 - **Pinned dependencies** (wgpu 30, SDL 3.4.18) each need a deliberate upgrade (above).
 - **M2 is the go/no-go gate.** If tuning still feels slow, the off-ramp moves gameplay and tools to Godot with gdext and keeps the Rust systems (spec §10).

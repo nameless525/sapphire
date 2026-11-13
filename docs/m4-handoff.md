@@ -117,7 +117,7 @@ From the bottom up, on M2's ([m3-handoff.md](m3-handoff.md)). Spec §5.19 and §
 ### World and streaming
 
 - **`sapphire_world::streaming`** (W2) activates cells by distance within a budget of N entities or M µs a frame. A hold (`Streamer::hold`) freezes it while an encounter runs, and takes only once the zone has caught up, so a fight that starts at once still gets its ground.
-- **Memory comes back** (W3): `AssetServer::unmount`, `Renderer::free_mesh` and `free_material` after the frames that read them, and generational handles.
+- **Memory comes back** (W3): `AssetServer::unmount`, `Renderer::free_mesh` and `free_material` after the frames that read them, and generational handles. (**Corrected (M5 X2, 2026-11-13):** within limits. The mesh pool's buffers never shrink, so what's freed is room to reuse, and a cell let go stays cached in the asset server until its kind is over budget; spec §5.12, W3's note, and §5.21, W2's.)
 - **Trips between zones** (W4): a zone's `exits`, a wipe that hides the load, and a prefetch from a hub. The simulation enters the next zone between steps, at a recorded tick, with its triggers, encounters and checkpoints.
 - **Encounter volumes** (W5): spares of each kind stand before a trigger fires, so a wave's arrival builds nothing.
 - **The pipeline inventory** (K1): `PipelineKey` per material slot, `Renderer::prewarm`, and `PipelineBuilds` counting every build. A bench fails on a first use.
@@ -364,9 +364,9 @@ Each is in its section, with what it would take:
 [m3-handoff.md](m3-handoff.md), "Everything deferred", has the detail:
 
 - **Compile-time iteration:** no hot-patched Rust. **Sound** isn't hot-reloaded.
-- **D3, D4 and N3–N5's limits:** statics fixed once built, a crossing judged by its end pose, `Jump_Start` and side dodges unplayed, no get-up clip, limits beating colliders, springs with no floor.
+- **D3, D4 and N3–N5's limits:** statics fixed once built, a crossing judged by its end pose, `Jump_Start` and side dodges unplayed, no get-up clip, limits beating colliders, springs with no floor. (**Corrected (M5 X2, 2026-11-13):** the get-up clips came with #213 in M3: the hero's knockdown rises in its own key pose, and the warrior's `recover` rises from one.)
 - **O2's and O3's reads, owed to a person.** **Camera framing,** counted not judged. **Balance:** mashing `light`. **Phone UX:** an iPhone has no Back, and nothing auto-pauses on return.
-- **Z1's M2 recommendations:** parallel recording on a phone, a screen-effects share in §3.3's post row, per-cook texture size, the character's 11 opaque materials against 4, and footprint in `frame stats`.
+- **Z1's M2 recommendations:** parallel recording on a phone, a screen-effects share in §3.3's post row, per-cook texture size, the character's 11 opaque materials against 4, and footprint in `frame stats`. (**Corrected (M5 X2, 2026-11-13):** 13 materials, 11 of them opaque, against §3.4's 6 on desktop and 4 on mobile.)
 - **CPU rows moving together ×2.6–3 between runs,** unexplained. **Toolchain:** wgpu stays on 30 and SDL on 3.4.18; reassess at this boundary.
 - **Renderer:** reflection probes for characters, and SSR; cut-ins, halftone, C7's patterns; full PSO warm-up (M4), upscalers, local-light shadows, characters shadowing each other; depth of field, light shafts, water.
 - **Assets:** memory-mapped packs, mip streaming, a shared cache, a cook-on-save watch. **Live link's pairing token.** **Store and signing (M4),** crash upload, weather per zone, the entity inspector, nightly device runs, and gate 5.

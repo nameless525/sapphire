@@ -531,11 +531,12 @@ Each item names the package and its hand-back or row, and why it waits.
 - **The sandbox's party is told apart by tint alone** (A5): the sandbox's, not the game's.
 - **No screen reader or audio description** (m4-plan §3).
 
-**Playtests** (F1, F2, F3):
+**Playtests** (F1, F2, F3, F4):
 
 - **A label typed by a player:** the format takes one, the pause has no text field (F1, F3).
 - **The report can't see** a move started and cut off within one step (it needs the simulation to publish each move's start), and its damage is the attack's number, not health lost (F2, F3). Hits landed and damage dealt are counted since F3.
 - **A kill inside a keep on a phone's file system** is proved only by host SIGKILLs and fault injection (`keep_kill`, `keep_faults`): the emulator's kills fell between keeps (F3). Since F3 a keep appends only its new ticks (about 6–10 KB near the 4-hour cap, from 7–13 MB) and a capture's session clock runs at the game's rate.
+- **A session past its four hours still keeps the runs that end** (F4 noticed): `frame`, `mark` and `settings` stop at `MAX_SECONDS`, but `Session::run_ended` doesn't check `document.ended`, so runs after the end are kept, up to `MAX_RUNS` (1,024), though the log says it keeps nothing more. Decide whether the run standing at the end should be the last kept. Also, after a writer job's panic (`Writer::lost`) each journal is rewritten from its start, and a kill during that rewrite reads as short until the next document lands.
 
 **The game and content** (X1, X2, S6):
 

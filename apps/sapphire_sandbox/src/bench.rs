@@ -256,6 +256,18 @@ pub(crate) fn run(
     if options.zone.is_some() {
         check_first_uses(&stage)?;
     }
+    // What the loads held before the GPU took them, and the texture pool's most, against their budgets (M5 M2).
+    let assets = stage.content.stats();
+    let texture = sapphire_assets::AssetKind::Texture.index();
+    tracing::info!(
+        target: LOG_TARGET,
+        admitted_peak = assets.admitted_peak,
+        admission = assets.budgets.admission,
+        held_back = assets.held_back,
+        texture_peak = assets.resident_peak[texture],
+        texture_pool = assets.budgets.resident[texture],
+        "asset budgets"
+    );
     if let Some(stream) = stage.scene.stream_stats() {
         tracing::info!(
             target: LOG_TARGET,

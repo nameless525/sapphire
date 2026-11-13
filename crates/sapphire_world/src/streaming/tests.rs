@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_assets::{AssetBudgets, AssetKind, MemoryPackSource, MountState};
+use sapphire_assets::{AssetBudgets, MemoryPackSource, MountState};
 use sapphire_synthetic_zone::SyntheticZone;
 
 use super::*;
@@ -63,7 +63,7 @@ fn accept(_: Upload<'_>) -> Result<(), UploadError> {
 }
 
 fn unlimited() -> AssetBudgets {
-    AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] }
+    AssetBudgets::UNLIMITED
 }
 
 fn server_over(zone: SyntheticZone) -> (AssetServer, Arc<MemoryPackSource>) {

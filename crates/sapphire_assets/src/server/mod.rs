@@ -1,12 +1,13 @@
 //! The asset server (spec §5.10): pack mounting, handles, the load pipeline, the GPU upload
 //! queue and residency, all of which [`AssetServer`]'s docs describe.
 
+mod admission;
 mod handle;
 mod mounts;
 mod reload;
 mod source;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -17,6 +18,7 @@ use sapphire_core::target::FormFactor;
 use sapphire_serialize::cooked::AlignedVec;
 use slotmap::SlotMap;
 
+use self::admission::ReadOrder;
 pub use self::handle::{Asset, Handle, TextureAsset, UntypedHandle, WeakHandle};
 use self::handle::{HandleInner, SlotKey};
 use self::mounts::{Mount, MountKey, OpenPack, PendingMount};
@@ -32,27 +34,33 @@ use crate::{AssetId, AssetKind, PipelineKey};
 const LOG_TARGET: &str = "sapphire::assets";
 const MIB: u64 = 1 << 20;
 
-/// Per-frame upload and per-kind residency budgets.
+/// Per-frame upload, load admission and per-kind residency budgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssetBudgets {
     /// Bytes handed to the GPU per frame. One asset always goes, however large: splitting an
     /// asset across frames waits for texture mip streaming (later).
     pub upload_per_frame: u64,
+    /// Bytes that may be read or decoded and not yet on the GPU at once ([admission](AssetServer#admission)):
+    /// what a burst of loads can hold in memory before the uploads catch up. One read always goes, however
+    /// large.
+    pub admission: u64,
     /// Bytes of each kind resident, decoded, indexed by [`AssetKind::index`].
     pub resident: [u64; AssetKind::ALL.len()],
 }
 
 impl AssetBudgets {
-    /// Desktop (spec §5.10, §3.4): 16 MiB of uploads a frame; meshes 384 MiB, textures 2.5 GiB (the zone
-    /// texture pool), materials 32 MiB, rigs 64 MiB, probe grids 64 MiB, skeletons 16 MiB, clips 128 MiB,
-    /// collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets 16 MiB, animation graphs 1 MiB, zones 16
-    /// MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB, navmeshes 16 MiB, timelines 4 MiB, UI
-    /// documents 4 MiB, encounters 1 MiB, scripts 4 MiB, dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice
-    /// lines 1 MiB, texture levels 2.5 GiB. The numbers besides the texture pool's are proposals, to set by
-    /// measuring zones (M2, M3). Texture levels take the pool's number too until the pool counts tails and
-    /// levels as one (M5).
+    /// Desktop (spec §5.10, §3.4): 16 MiB of uploads a frame and 256 MiB admitted, sixteen frames of them;
+    /// meshes 384 MiB, textures 2.5 GiB (the zone texture pool), materials 32 MiB, rigs 64 MiB, probe grids
+    /// 64 MiB, skeletons 16 MiB, clips 128 MiB, collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets
+    /// 16 MiB, animation graphs 1 MiB, zones 16 MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB,
+    /// navmeshes 16 MiB, timelines 4 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 4 MiB, dialogues 1
+    /// MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 2.5 GiB. The numbers besides the
+    /// texture pool's are proposals, to set by measuring zones (M2, M3). Texture levels take the pool's
+    /// number too until the pool counts tails and levels as one (M5). A quality tier sets its own texture
+    /// pool on top ([`Self::with_resident`]; `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
+        admission: 256 * MIB,
         resident: Self::by_kind([
             // What the pool holds under the device floor's 256 MiB a buffer: indices fill first, at a
             // bit over half a mesh's bytes (M3 W3).
@@ -84,13 +92,15 @@ impl AssetBudgets {
             2560 * MIB,
         ]),
     };
-    /// Mobile: 4 MiB of uploads a frame; meshes 192 MiB, textures 600 MiB, materials 8 MiB, rigs
-    /// 16 MiB, probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB, sounds 16 MiB,
-    /// cues 1 MiB, move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB,
-    /// font chains 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB,
-    /// scripts 2 MiB, dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 600 MiB.
+    /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
+    /// textures 600 MiB (Mobile-High's pool: Mobile-Low's tier sets 400), materials 8 MiB, rigs 16 MiB,
+    /// probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB, sounds 16 MiB, cues 1 MiB,
+    /// move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB, font chains
+    /// 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 2 MiB,
+    /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB, texture levels 600 MiB.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
+        admission: 64 * MIB,
         resident: Self::by_kind([
             192 * MIB,
             600 * MIB,
@@ -121,6 +131,11 @@ impl AssetBudgets {
         ]),
     };
 
+    /// No limits at all: every upload goes in one frame, every read is admitted and nothing is evicted. For
+    /// tools and tests that load everything and measure nothing.
+    pub const UNLIMITED: Self =
+        Self { upload_per_frame: u64::MAX, admission: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+
     /// The defaults for a form factor.
     pub const fn for_form_factor(form_factor: FormFactor) -> Self {
         match form_factor {
@@ -132,6 +147,13 @@ impl AssetBudgets {
     /// The residency budget of `kind`.
     pub const fn resident(&self, kind: AssetKind) -> u64 {
         self.resident[kind.index()]
+    }
+
+    /// These budgets with `kind`'s residency budget `bytes`: a quality tier's texture pool, say.
+    #[must_use]
+    pub const fn with_resident(mut self, kind: AssetKind, bytes: u64) -> Self {
+        self.resident[kind.index()] = bytes;
+        self
     }
 
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
@@ -359,7 +381,16 @@ pub struct AssetStats {
     pub pinned: u32,
     /// Bytes resident or on their way, by [`AssetKind::index`].
     pub resident: [u64; AssetKind::ALL.len()],
+    /// The most each kind held at an [`AssetServer::update`] since the server started, before that update
+    /// trimmed it: the texture pool's high-water mark against its budget, for one.
+    pub resident_peak: [u64; AssetKind::ALL.len()],
     pub budgets: AssetBudgets,
+    /// Bytes read or decoded and not yet on the GPU ([admission](AssetServer#admission)), against
+    /// [`AssetBudgets::admission`], and the most there have been since the server started.
+    pub admitted: u64,
+    pub admitted_peak: u64,
+    /// Reads waiting for admission: loading, but not yet asked of the source.
+    pub held_back: u32,
     pub reads_in_flight: u32,
     /// Packs mounted, and packs still having their header read ([`AssetServer::mount`]).
     pub mounts: u32,
@@ -412,6 +443,11 @@ struct Slot {
     /// The assets that depend on it, which may be waiting for it, or bind it.
     parents: Vec<SlotKey>,
     pins: u32,
+    /// The bytes its main state holds against [admission](AssetServer#admission), from its read's admission
+    /// until it's on the GPU or gone.
+    admitted: Option<u64>,
+    /// Where its read waits for admission, the main state's or the next version's, whichever is loading.
+    held: Option<ReadOrder>,
     /// The last update that saw it in use, for LRU eviction.
     last_used: u64,
     /// Versions that replaced the first one behind its handles (see [`Upload::generation`]).
@@ -476,13 +512,16 @@ enum Completion {
 /// # The load pipeline
 ///
 /// ```text
-/// load(id) ─► dependencies first ─► IO read (PackSource, by priority) ─► decode job (worker)
+/// load(id) ─► dependencies first ─► admission (bytes waiting for the GPU, by priority)
+///          ─► IO read (PackSource, by priority) ─► decode job (worker)
 ///          ─► waits for its dependencies ─► upload queue (per-frame budget) ─► ready
 /// ```
 ///
 /// - **Request.** [`AssetServer::load`] looks the ID up in the mounted packs' tables of contents
 ///   and returns a [`Handle`] at once. The asset's dependencies, which its pack lists, are
 ///   requested first, so their reads queue ahead of its own.
+/// - **Admission.** A read of a kind that goes to the GPU waits its turn until the bytes it will
+///   decode to fit under [`AssetBudgets::admission`] (see [admission](AssetServer#admission)).
 /// - **Read.** One read per asset, of its blocks' range, through the app's [`PackSource`]: the
 ///   platform's IO thread, which serves reads by [`LoadPriority`].
 /// - **Decode job.** The read's completion starts a job on the async compute pool
@@ -514,6 +553,35 @@ enum Completion {
 /// children of its own, after the tail: so a material is ready only once its textures are whole, and the
 /// picture is what it was before textures split. Raising and lowering a texture a level at a time, by
 /// distance and budget, replaces this (M5 M4, M5).
+///
+/// # Admission
+///
+/// A burst of loads (a zone's open, a new renderer's [`AssetServer::reupload_all`], a streamer
+/// catching up) would otherwise read and decode everything at once and hold it all until the GPU
+/// takes it a frame's budget at a time. So an asset of a kind that goes to the GPU holds its
+/// decoded size against [`AssetBudgets::admission`] from the moment its read is asked of the source
+/// until it's uploaded, fails or goes ([`AssetStats::admitted`]). A read that doesn't fit is held
+/// back ([`AssetStats::held_back`]), and held reads are admitted as uploads give bytes back, most
+/// urgent first, oldest first within a priority. One read is always admitted when nothing else is,
+/// however large. Kinds that never go to the GPU aren't held: their decoded bytes are what stays
+/// resident, and nothing waits on a frame's uploads to take them.
+///
+/// Admission can't stall a load behind what it waits for:
+///
+/// - **Dependencies first.** A read is admitted only once no dependency of its asset, at any depth, is
+///   still held back, so an admitted asset never holds bytes while waiting for a read that can't be
+///   admitted. Everything admitted reaches the GPU without anything more being admitted, and gives its
+///   bytes back. A dependency read again while something admitted waits for it (a remount, hot reload)
+///   is admitted at once, over the cap if it must be, and so is one an admitted asset comes to depend
+///   on when it's read again with other bytes, though it was held back for another load.
+/// - **Priority.** An asset's dependencies load at least as urgently as it does: asking for an asset
+///   at a higher priority, by loading it again ([`AssetServer::load_with`]) or by
+///   [`AssetServer::raise_priority`], raises it and every dependency it has, and a held read moves up
+///   the queue with it, keeping its age. So a high-priority load waits for no low-priority read that
+///   isn't admitted yet, and for an admitted one's bytes only: at most the cap, which the uploads drain
+///   in [`AssetBudgets::admission`] over [`AssetBudgets::upload_per_frame`] frames. A read already asked
+///   of the source keeps the priority it went with, and the upload queue stays in the order assets
+///   decoded in.
 ///
 /// # Handles
 ///
@@ -642,6 +710,16 @@ pub struct AssetServer {
     slots: SlotMap<SlotKey, Slot>,
     by_id: HashMap<AssetId, SlotKey>,
     upload_queue: VecDeque<(SlotKey, Version)>,
+    /// Reads waiting for admission, in the order they're admitted.
+    held_back: BTreeMap<ReadOrder, SlotKey>,
+    /// Numbers held reads, so they're admitted oldest first within a priority.
+    read_sequence: u64,
+    /// Bytes admitted and not yet on the GPU, and the most there have been.
+    admitted: u64,
+    admitted_peak: u64,
+    /// Reused while choosing what to admit.
+    admission_scratch: Vec<ReadOrder>,
+    resident_peak: [u64; AssetKind::ALL.len()],
     sender: Sender<Completion>,
     receiver: Receiver<Completion>,
     reads_in_flight: u32,
@@ -697,6 +775,12 @@ impl AssetServer {
             slots: SlotMap::with_key(),
             by_id: HashMap::new(),
             upload_queue: VecDeque::new(),
+            held_back: BTreeMap::new(),
+            read_sequence: 0,
+            admitted: 0,
+            admitted_peak: 0,
+            admission_scratch: Vec::new(),
+            resident_peak: [0; AssetKind::ALL.len()],
             sender,
             receiver,
             reads_in_flight: 0,
@@ -779,8 +863,9 @@ impl AssetServer {
     }
 
     /// Loads asset `id` as a `T`, with its dependencies, and returns a handle to it at once. An
-    /// asset already loaded or loading is shared. Fails here only if no mounted pack has `id` or
-    /// it isn't a `T`; later failures show in [`Self::state`].
+    /// asset already loaded or loading is shared, and loads at the more urgent of its priority and
+    /// `priority` from then on ([`Self::raise_priority`]). Fails here only if no mounted pack has `id`
+    /// or it isn't a `T`; later failures show in [`Self::state`].
     pub fn load_with<T: Asset>(
         &mut self,
         id: AssetId,
@@ -801,8 +886,9 @@ impl AssetServer {
             slot.last_used = self.frame;
             let handle = slot.handle.clone();
             // One that no mounted pack holds has nothing to try again.
-            if matches!(slot.state, SlotState::Failed(_)) && slot.entry.is_some() {
-                slot.priority = priority;
+            let retry = matches!(slot.state, SlotState::Failed(_)) && slot.entry.is_some();
+            self.raise(key, priority);
+            if retry {
                 self.resolve(key);
             }
             return Ok(handle);
@@ -823,6 +909,8 @@ impl AssetServer {
             children: Vec::new(),
             parents: Vec::new(),
             pins: 0,
+            admitted: None,
+            held: None,
             last_used: self.frame,
             generation: 0,
             loaded: false,
@@ -1059,8 +1147,8 @@ impl AssetServer {
         self.slots.get(handle.key()).filter(|slot| Arc::ptr_eq(&slot.handle.inner, &handle.inner))
     }
 
-    /// Applies finished reads and decodes, then trims kinds over budget. Call once a frame,
-    /// outside the fixed step, before [`Self::upload`].
+    /// Applies finished reads and decodes, trims kinds over budget, then admits what fits of the reads
+    /// held back. Call once a frame, outside the fixed step, before [`Self::upload`].
     pub fn update(&mut self) {
         profiling::scope!("AssetServer::update");
         self.frame += 1;
@@ -1068,11 +1156,13 @@ impl AssetServer {
             self.complete(completion);
         }
         self.collect();
+        self.admit();
     }
 
     /// Blocks until a read or decode in flight finishes, or `timeout` passes, and applies it.
     /// Returns whether one finished. For load screens and tools; frames use [`Self::update`].
     pub fn wait(&mut self, timeout: Duration) -> bool {
+        self.admit();
         if self.reads_in_flight == 0 {
             return false;
         }
@@ -1088,7 +1178,8 @@ impl AssetServer {
     /// Hands queued assets to `upload`, oldest first, until the frame's upload budget is spent
     /// (see [the load pipeline](AssetServer#the-load-pipeline)). An asset `upload` accepts is
     /// ready, and may let assets that depend on it join the queue, in this call too; one it
-    /// rejects fails, with every asset waiting on it.
+    /// rejects fails, with every asset waiting on it. Then reads held back are admitted into the
+    /// bytes that went.
     pub fn upload(&mut self, mut upload: impl FnMut(Upload<'_>) -> Result<(), UploadError>) -> UploadReport {
         profiling::scope!("AssetServer::upload");
         let mut report = UploadReport::default();
@@ -1127,6 +1218,8 @@ impl AssetServer {
         }
         report.pending = self.upload_queue.len() as u32;
         self.last_upload = report;
+        // What went gave its bytes back.
+        self.admit();
         report
     }
 
@@ -1185,7 +1278,13 @@ impl AssetServer {
     /// no longer holds at all fails, unless it kept its bytes.
     pub fn reupload_all(&mut self) {
         self.upload_queue.clear();
-        let keys: Vec<SlotKey> = self.slots.keys().collect();
+        // Dependencies first, so their reads are held back ahead of the assets waiting for them, and
+        // admission never lets in an asset whose dependency it can't yet (see [admission](AssetServer#admission)).
+        let mut keys = Vec::with_capacity(self.slots.len());
+        let mut seen = HashSet::with_capacity(self.slots.len());
+        for key in self.slots.keys() {
+            self.dependencies_first(key, &mut seen, &mut keys);
+        }
         for &key in &keys {
             let slot = &mut self.slots[key];
             if !(slot.handle.kind().uploads() && matches!(slot.state, SlotState::Ready | SlotState::Queued)) {
@@ -1206,6 +1305,19 @@ impl AssetServer {
         for key in keys {
             self.try_queue(key);
         }
+    }
+
+    /// Adds the asset in `key` to `order` after its dependencies, at any depth, each once.
+    fn dependencies_first(&self, key: SlotKey, seen: &mut HashSet<SlotKey>, order: &mut Vec<SlotKey>) {
+        if !seen.insert(key) {
+            return;
+        }
+        let slot = &self.slots[key];
+        let next_children = slot.next.iter().flat_map(|next| &next.children);
+        for child in slot.children.iter().chain(next_children) {
+            self.dependencies_first(child.key(), seen, order);
+        }
+        order.push(key);
     }
 
     /// Unloads every asset nothing uses or pins, dependencies freed by that included: the
@@ -1236,6 +1348,10 @@ impl AssetServer {
         let mut stats = AssetStats {
             assets: self.slots.len() as u32,
             budgets: self.budgets,
+            resident_peak: self.resident_peak,
+            admitted: self.admitted,
+            admitted_peak: self.admitted_peak,
+            held_back: self.held_back.len() as u32,
             reads_in_flight: self.reads_in_flight,
             mounts: self.mounts.len() as u32,
             mounting: self.pending_mounts.len() as u32,
@@ -1270,11 +1386,10 @@ impl AssetServer {
         self.read(key);
     }
 
-    /// Starts reading and decoding the asset in `key` from where its pack holds it, superseding
-    /// any read of it in flight. The caller says which version waits for it.
-    fn read(&mut self, key: SlotKey) {
-        let slot = &mut self.slots[key];
-        slot.request = slot.request.wrapping_add(1);
+    /// Asks the source for the read of the asset in `key` that [`Self::read`] admitted, as its current
+    /// request, and decodes it on a job.
+    fn issue(&mut self, key: SlotKey) {
+        let slot = &self.slots[key];
         let (request, priority) = (slot.request, slot.priority);
         let mount = &self.mounts[slot.mount];
         let (file, toc) = (mount.file.file(), mount.toc.clone());
@@ -1370,6 +1485,9 @@ impl AssetServer {
         let slot = &mut self.slots[key];
         slot.state = SlotState::Ready;
         slot.loaded = true;
+        let admitted = slot.admitted.take();
+        self.release(admitted);
+        let slot = &mut self.slots[key];
         if !slot.handle.kind().keeps_bytes() {
             slot.data = None;
         }
@@ -1388,9 +1506,13 @@ impl AssetServer {
         tracing::warn!(target: LOG_TARGET, id = %slot.handle.id(), kind = %slot.handle.kind(), %error, "asset failed to load");
         slot.state = SlotState::Failed(error);
         slot.data = None;
+        let admitted = slot.admitted.take();
+        self.release(admitted);
         self.failures += 1;
         // A failed asset has no version to replace.
         self.cancel_next(key);
+        // A read still held back was its own.
+        self.unhold(key);
         let child = self.slots[key].handle.clone();
         for parent in self.parents(key) {
             let Some(parent_slot) = self.slots.get(parent) else { continue };
@@ -1430,6 +1552,9 @@ impl AssetServer {
                 _ if evictable && slot.entry.is_none() => failed.push(key),
                 _ => resident[slot.handle.kind().index()] += slot.resident_size(),
             }
+        }
+        for (peak, &bytes) in self.resident_peak.iter_mut().zip(&resident) {
+            *peak = (*peak).max(bytes);
         }
         // Removal can drop the last dependency handle, which makes a candidate of what wasn't one, so
         // any removal keeps the scans going. A handle dropped concurrently after the snapshot may
@@ -1564,7 +1689,10 @@ impl AssetServer {
     /// Unloads an asset nothing uses. Its dependencies lose a user, and go in a later collection
     /// if that was their last.
     fn remove(&mut self, key: SlotKey) {
+        self.unhold(key);
         let slot = self.slots.remove(key).expect("removing a live slot");
+        self.release(slot.admitted);
+        self.release(slot.next.as_ref().and_then(|next| next.admitted));
         let next_children = slot.next.iter().flat_map(|next| &next.children);
         for child in slot.children.iter().chain(next_children) {
             self.slots[child.key()].parents.retain(|&parent| parent != key);

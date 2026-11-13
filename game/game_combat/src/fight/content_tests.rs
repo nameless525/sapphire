@@ -374,7 +374,7 @@ impl Stage {
         let source = Arc::new(MemoryPackSource::new());
         source.insert(PACK, pack);
         let live_packs = Arc::new(LivePacks::new(source.clone()));
-        let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+        let budgets = AssetBudgets::UNLIMITED;
         let mut server = AssetServer::new(live_packs.clone(), budgets);
         server.mount_now(PACK).expect("the pack");
         let character = server.load_with(heroine_look().mesh, LoadPriority::Critical).expect("loading");

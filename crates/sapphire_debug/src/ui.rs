@@ -735,9 +735,25 @@ fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             row(
                 ui,
                 &format!("  {kind}s"),
-                format!("{} of {}{over}", format_bytes(resident), format_bytes(budget)),
+                format!(
+                    "{} of {}{over}, at most {}",
+                    format_bytes(resident),
+                    format_bytes(budget),
+                    format_bytes(assets.resident_peak[kind.index()])
+                ),
             );
         }
+        row(
+            ui,
+            "Admitted",
+            format!(
+                "{} of {}, at most {}, {} held back",
+                format_bytes(assets.admitted),
+                format_bytes(assets.budgets.admission),
+                format_bytes(assets.admitted_peak),
+                assets.held_back
+            ),
+        );
         let upload = assets.last_upload;
         row(
             ui,

@@ -10,6 +10,7 @@ use crate::mesh::{
 use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat, TextureTail};
 
+mod admission;
 mod lifetime;
 mod moves;
 mod reload;
@@ -94,7 +95,7 @@ fn serve(assets: Vec<PackAsset>, budgets: AssetBudgets) -> (AssetServer, Arc<Mem
 }
 
 fn unlimited() -> AssetBudgets {
-    AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] }
+    AssetBudgets::UNLIMITED
 }
 
 /// An uploader that accepts everything and records what it saw.

@@ -172,9 +172,10 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
     assert!(alloc::is_installed());
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", pack());
-    // Tight budgets, so residency evicts all the time.
+    // Tight budgets, so residency evicts all the time and admission holds reads back.
     let budgets = AssetBudgets {
         upload_per_frame: 64 << 10,
+        admission: 16 << 10,
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
@@ -225,10 +226,11 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
     let _ = server.take_unloaded();
     let stats = server.stats();
     assert_eq!(
-        (stats.assets, stats.resident, stats.reads_in_flight),
-        (0, [0; AssetKind::ALL.len()], 0),
+        (stats.assets, stats.resident, stats.reads_in_flight, stats.admitted, stats.held_back),
+        (0, [0; AssetKind::ALL.len()], 0, 0, 0),
         "{stats:?}"
     );
+    assert!(stats.admitted_peak > 0, "{stats:?}");
     assert!(weak.iter().all(|&weak| server.upgrade(weak).is_none()), "a weak handle outlived its asset");
     weak.clear();
     weak.shrink_to_fit();

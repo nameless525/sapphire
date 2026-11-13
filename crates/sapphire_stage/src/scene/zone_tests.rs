@@ -119,7 +119,7 @@ impl Walk {
         keys: Vec<PipelineKey>,
         left_out: Option<String>,
     ) -> Self {
-        let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+        let budgets = AssetBudgets::UNLIMITED;
         Self::over(zone, settings, start, budgets, keys, left_out)
     }
 
@@ -666,7 +666,7 @@ fn closing_a_zone_takes_its_instances_away_and_lets_its_pack_go() {
 
 /// Budgets of next to nothing, so that a server unloads whatever nothing holds as soon as nothing does.
 fn nothing_cached() -> AssetBudgets {
-    AssetBudgets { upload_per_frame: u64::MAX, resident: [1; AssetKind::ALL.len()] }
+    AssetBudgets { resident: [1; AssetKind::ALL.len()], ..AssetBudgets::UNLIMITED }
 }
 
 /// What a visit to one place holds on the renderer: the same on each visit, or something's leaking.
@@ -979,7 +979,7 @@ fn a_walk_across_a_zone_stays_on_its_budget() {
 }
 
 fn no_limits() -> AssetBudgets {
-    AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] }
+    AssetBudgets::UNLIMITED
 }
 
 /// A zone coming next costs a hub no change on screen: nothing's placed until it's arrived in, and its pack

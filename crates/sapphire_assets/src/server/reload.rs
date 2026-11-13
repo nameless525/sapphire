@@ -52,6 +52,9 @@ pub(super) struct Next {
     pub children: Vec<UntypedHandle>,
     pub size: u64,
     pub hash: [u8; 32],
+    /// The bytes it holds against admission, from its read's admission until it's swapped in or
+    /// dropped. A rebinding, which reads nothing, holds none.
+    pub admitted: Option<u64>,
 }
 
 /// Where a [`Next`] version is.
@@ -326,6 +329,7 @@ impl AssetServer {
                     children,
                     size: entry.size,
                     hash: entry.hash,
+                    admitted: None,
                 };
                 self.slots[key].next = Some(next);
                 self.read(key);
@@ -373,6 +377,7 @@ impl AssetServer {
         slot.data = if slot.handle.kind().keeps_bytes() { next.data } else { None };
         (slot.size, slot.hash) = (next.size, next.hash);
         let old = std::mem::replace(&mut slot.children, next.children);
+        self.release(next.admitted);
         self.unlink(key, &old);
         self.replaced(key);
     }
@@ -407,6 +412,7 @@ impl AssetServer {
                         children: slot.children.clone(),
                         size: slot.size,
                         hash: slot.hash,
+                        admitted: None,
                     });
                 }
                 SlotState::Loading | SlotState::Waiting | SlotState::Queued => slot.replaces = true,
@@ -439,9 +445,13 @@ impl AssetServer {
     }
 
     /// Drops the next version of the asset in `key`, if any, releasing the dependencies only it
-    /// had. A read of it in flight is ignored when it completes.
+    /// had and the bytes it was admitted with. A read of it in flight is ignored when it completes,
+    /// and one still held back is dropped.
     pub(super) fn cancel_next(&mut self, key: SlotKey) {
         if let Some(next) = self.slots[key].next.take() {
+            // Only a ready asset has a next version, so a read held back was the next version's.
+            self.unhold(key);
+            self.release(next.admitted);
             self.unlink(key, &next.children);
         }
     }
@@ -454,6 +464,10 @@ impl AssetServer {
         let next = slot.next.take().expect("only a slot with a next version is promoted");
         (slot.size, slot.hash) = (next.size, next.hash);
         slot.replaces = true;
+        // Its admission, or its place among the reads held back, carries over: the main state now
+        // reads, decodes or waits for what it was admitted for.
+        debug_assert!(slot.admitted.is_none(), "a ready asset holds no admission of its own");
+        slot.admitted = next.admitted;
         match next.stage {
             // Its read in flight now completes the main state.
             NextStage::Loading => {

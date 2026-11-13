@@ -147,7 +147,9 @@ impl Gpu {
 
 /// Frames until nothing is in flight: loads and reloads alike.
 fn settle(server: &mut AssetServer, gpu: &mut Gpu) {
-    loop {
+    for frames in 0.. {
+        // A stall fails here rather than spinning until the run's limit.
+        assert!(frames < 20_000, "loads stalled: {:?}", server.stats());
         server.update();
         let report = server.upload(|upload| gpu.upload(upload));
         let stats = server.stats();
@@ -232,9 +234,10 @@ fn hot_reload_leaks_no_handles_or_memory() {
     let packs: [Arc<[u8]>; 2] = [pack(0).into(), pack(1).into()];
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", packs[0].clone());
-    // Tight budgets, so residency evicts all the time.
+    // Tight budgets, so residency evicts all the time and admission holds reads back.
     let budgets = AssetBudgets {
         upload_per_frame: 32 << 10,
+        admission: 8 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
@@ -275,8 +278,8 @@ fn hot_reload_leaks_no_handles_or_memory() {
     follow(&mut server, &mut gpu);
     let stats = server.stats();
     assert_eq!(
-        (stats.assets, stats.resident, stats.reads_in_flight),
-        (0, [0; AssetKind::ALL.len()], 0),
+        (stats.assets, stats.resident, stats.reads_in_flight, stats.admitted, stats.held_back),
+        (0, [0; AssetKind::ALL.len()], 0, 0, 0),
         "{stats:?}"
     );
     assert!(gpu.0.is_empty(), "the app was told to free every copy it uploaded");

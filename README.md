@@ -52,7 +52,7 @@ Timelines, a camera director, dialogue, subtitles and scripted encounters in Lua
 </tr>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/media/feature-game.jpg" alt="The title menu in Japanese beside the character, at dusk">
+<img src="docs/media/feature-game.jpg" alt="The title menu in Japanese beside the character at dusk, with the version, v0.1.0, in the corner">
 <h3>A whole game around it</h3>
 Title, saves, settings with remapping, subtitles, reduced flashes and larger text, in English and Japanese: the Lantern Ward, a slice from the title to the boss.
 </td>

@@ -48,6 +48,7 @@ cargo xtask run --platform desktop --app game_app --release
 - **Arguments after `--`** go to the app. For example:
   - `-- --look-dev hero` shows the look-dev stage, the town at golden hour; its other shots are `wide`, `sky`, `street` and `face`.
   - `-- --frames 600` exits after 600 frames.
+  - `-- --version` prints the build's version (`Sapphire 0.1.0`, with the build number in a packaged build) and exits; the title screen shows the same in its corner.
 
   `cargo run -p sapphire_sandbox -- --help` lists the rest. The crate's `Arguments` docs (`cargo doc -p sapphire_sandbox --open`) list every scene, capture, benchmark, animation, HUD and development option.
 - **On each platform:**

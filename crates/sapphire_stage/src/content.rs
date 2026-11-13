@@ -100,12 +100,14 @@ use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{AUDIO_PACK, Sound};
+use sapphire_assets::texture::TextureTail;
+use sapphire_assets::texture_level::TextureLevel;
 use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::voice::VoiceLines;
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
-    LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, ReadDone, TextureAsset, Unloaded,
-    Upload, UploadError,
+    LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, ReadDone, Unloaded, Upload,
+    UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, RemountReport};
@@ -247,6 +249,9 @@ struct GpuAssets {
     textures: HashMap<AssetId, Held<GpuTexture>>,
     /// The bytes of [`Self::textures`], against the zone texture pool's budget (spec §3.4).
     texture_bytes: u64,
+    /// The levels above textures' tails written into [`Self::textures`] (M5 M3), as what they were
+    /// uploaded for: their bytes are their texture's.
+    levels: HashMap<AssetId, Held<()>>,
     materials: HashMap<AssetId, Held<MaterialHandle>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
@@ -281,6 +286,7 @@ impl GpuAssets {
         Self {
             textures: HashMap::new(),
             texture_bytes: 0,
+            levels: HashMap::new(),
             materials: HashMap::new(),
             meshes: HashMap::new(),
             character,
@@ -310,6 +316,7 @@ impl GpuAssets {
             kept
         });
         self.texture_bytes = texture_bytes;
+        self.levels.retain(|&id, _| resident(id));
         let stale_materials = &mut self.stale_materials;
         self.materials.retain(|&id, held| {
             let kept = resident(id);
@@ -371,15 +378,42 @@ impl GpuAssets {
         gpu: &GpuContext,
     ) -> Result<(), UploadError> {
         let (id, slot, generation) = (upload.id(), upload.slot(), upload.generation());
-        if let Some(texture) = upload.get::<TextureAsset>() {
+        if upload.kind() == AssetKind::Texture {
             if self.textures.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
                 return Ok(());
             }
-            let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
+            // The whole texture, its levels above the tail written as they arrive (M5 M3).
+            let tail = TextureTail::from_ktx2(upload.bytes())?;
+            if tail.above > 0
+                && let Some(held) = self.textures.get_mut(&id).filter(|held| held.slot == slot)
+                && held.object.desc() == tail.whole()
+            {
+                // A new version of a split texture of the same shape, written in place: the levels above
+                // stay, and are sent again only if they changed. A whole texture is replaced, as ever.
+                let before = held.object.bytes();
+                held.object.write_tail(gpu, &tail)?;
+                held.generation = generation;
+                self.texture_bytes = self.texture_bytes - before + held.object.bytes();
+                return Ok(());
+            }
+            let object = GpuTexture::upload_tail(gpu, &tail, "texture asset")?;
             self.texture_bytes += object.bytes();
             if let Some(old) = self.textures.insert(id, Held { slot, generation, object }) {
                 self.texture_bytes -= old.object.bytes();
             }
+        } else if let Some(level) = upload.get::<TextureLevel>() {
+            if self.levels.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
+                return Ok(());
+            }
+            // A level depends on its tail, which is uploaded first.
+            let texture = level.texture();
+            let held = self.textures.get_mut(&texture).ok_or_else(|| {
+                format!("texture level {} came before its texture {texture}", level.level())
+            })?;
+            let before = held.object.bytes();
+            held.object.write_level(gpu, level)?;
+            self.texture_bytes = self.texture_bytes - before + held.object.bytes();
+            self.levels.insert(id, Held { slot, generation, object: () });
         } else if let Some(material) = upload.get::<Material>() {
             if self.materials.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation)
             {
@@ -529,6 +563,10 @@ impl GpuAssets {
             && let Some(held) = self.textures.remove(&id)
         {
             self.texture_bytes -= held.object.bytes();
+        }
+        // A level stays written in its texture, which goes when its tail does: a level depends on it.
+        if self.levels.get(&id).is_some_and(|held| held.slot == slot) {
+            self.levels.remove(&id);
         }
         if self.materials.get(&id).is_some_and(|held| held.slot == slot)
             && let Some(held) = self.materials.remove(&id)

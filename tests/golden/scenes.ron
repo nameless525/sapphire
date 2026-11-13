@@ -129,6 +129,11 @@
 // street, pinned as those are, the smaller two from the glyph pages and the larger two from the face's cooked
 // field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's capture is. They alone
 // run `--display-text`, and they draw the interface as the HUD scenes do.
+//
+// The driven material scenes (M5 L11) alone drive a character's materials (`--dissolve`, `--flash`,
+// `--emission-scale`; nothing driven, every other scene's, draws exactly as before) or place the glass
+// samples (`--glass`; no earlier material has a see-through region or glass), in the courtyard under temporal
+// AA at Desktop-High with AO and fog off, as the fade scenes stand.
 (
     type: "sapphire::testkit::GoldenScenes",
     version: 1,
@@ -1296,6 +1301,26 @@
                 args: ["--fade", "0.5", "--environment", "--plain-post", "--fog", "off",
                        "--tier", "mobile-low", "--ao", "off"],
                 ci_seconds: (lavapipe: 1.3, warp: 4.6),
+            ),
+            // The character dissolving partway in the courtyard (M5 L11): a value noise over its UVs
+            // cuts it away in every pass, its outlines too, and the points just above the cut glow
+            // orange, unlit, blooming as the world's light; it takes no rim, and its shadow stays whole.
+            (
+                name: "dissolve-partway",
+                ticks: 90,
+                args: ["--dissolve", "0.45", "--environment", "--fog", "off",
+                       "--tier", "desktop-high", "--aa", "taa", "--ao", "off", "--capture-frames", "32"],
+            ),
+            // The glass samples beside a flashing character (M5 L11): the lens's band draws about a
+            // third of its pixels, reflecting the sky by Fresnel over them, and the veil's half,
+            // temporal AA resolving both into blends with the courtyard behind. The emission scale
+            // finds no glow on this character to double: `layers::` GPU tests prove the scale.
+            (
+                name: "dissolve-glass-flash",
+                ticks: 90,
+                args: ["--glass", "--flash", "0.3,0.25,0.2", "--emission-scale", "2", "--environment",
+                       "--fog", "off", "--tier", "desktop-high", "--aa", "taa", "--ao", "off",
+                       "--capture-frames", "32"],
             ),
             // The look-dev character's face close-up (X1 part 2c) at midday, pinned as the other
             // look-dev scenes are: the face's SDF shadow in its peach ramp with a light blush, the

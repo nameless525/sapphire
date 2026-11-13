@@ -12,15 +12,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sapphire_anim::{
-    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, FeetInput, FootGround,
-    GraphBinding, GraphInput, GraphPlayer, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
-    JointTransform, LocomotionInput, LookInput, PackedRotation, RotationTrack, Skeleton, Transform,
-    VectorRange, VectorTrack, WeaponPlace, add, blend, make_delta, sample,
+    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, ClothSheet, CombatInput, FeetInput,
+    FootGround, GraphBinding, GraphInput, GraphPlayer, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint,
+    JointMask, JointTransform, LocomotionInput, LookInput, PackedRotation, RotationTrack, Skeleton,
+    SpringBones, SpringFrame, Substeps, Transform, VectorRange, VectorTrack, WeaponPlace, add, blend,
+    make_delta, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::DEFAULT_RATE;
 use sapphire_assets::mesh::SkinBind;
-use sapphire_assets::rig::{AimAxis, Axis, Constraint, ConstraintKind};
+use sapphire_assets::rig::{
+    AimAxis, Axis, CharacterRig, Collider as RigCollider, ColliderGroup, ColliderShape, Constraint,
+    ConstraintKind, Spring, SpringJoint, SpringTip,
+};
 use sapphire_core::Name;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 
@@ -346,4 +350,120 @@ fn ik_stage_by_stage() {
         hands - prepare,
         all - plain,
     );
+}
+
+/// What chain cloth costs a sub-step, on the sheet M5 C3 reports: a skirt of eight chains of eight
+/// swinging joints round the hips as one closed sheet, with two leg capsules, on a walk at 60 frames a
+/// second and two sub-steps a tick. The same chains as springs alone (0 iterations) beside 4, 2 and 1, in
+/// interleaved rounds, the least round of each.
+#[test]
+#[ignore = "prints what cloth costs; run it in release"]
+fn a_cloth_sheet_by_iterations() {
+    const CHAINS: usize = 8;
+    const DEPTH: usize = 8;
+    const FRAMES: u32 = 1_200;
+    const LAPS: u32 = 7;
+    let joint = |name: String, parent: usize, translation: [f32; 3]| Joint {
+        name,
+        parent: Some(parent as u16),
+        rest: JointTransform { translation, ..JointTransform::IDENTITY },
+    };
+    let mut joints = vec![
+        Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY },
+        joint("hips".into(), 0, [0.0, 1.0, 0.0]),
+        joint("left leg".into(), 1, [0.09, 0.0, 0.0]),
+        joint("right leg".into(), 1, [-0.09, 0.0, 0.0]),
+    ];
+    for chain in 0..CHAINS {
+        let (sin, cos) = (std::f32::consts::TAU * chain as f32 / CHAINS as f32).sin_cos();
+        joints.push(joint(format!("skirt {chain} 0"), 1, [0.18 * cos, -0.05, 0.18 * sin]));
+        for at in 1..DEPTH {
+            let parent = joints.len() - 1;
+            joints.push(joint(format!("skirt {chain} {at}"), parent, [0.015 * cos, -0.06, 0.015 * sin]));
+        }
+    }
+    let leg = |joint: u16| RigCollider {
+        joint,
+        shape: ColliderShape::Capsule { offset: [0.0; 3], radius: 0.07, tail: [0.0, -0.8, 0.0] },
+    };
+    let rig = CharacterRig {
+        joint_count: joints.len() as u32,
+        springs: (0..CHAINS)
+            .map(|chain| Spring {
+                name: format!("skirt {chain}"),
+                joints: (0..DEPTH)
+                    .map(|at| SpringJoint {
+                        joint: (4 + chain * DEPTH + at) as u16,
+                        hit_radius: 0.02,
+                        stiffness: 0.3,
+                        gravity_power: 0.5,
+                        gravity_dir: [0.0, -1.0, 0.0],
+                        drag_force: 0.2,
+                    })
+                    .collect(),
+                tip: SpringTip::Extended { length: 0.06 },
+                collider_groups: vec![0],
+                center: None,
+            })
+            .collect(),
+        colliders: vec![leg(2), leg(3)],
+        collider_groups: vec![ColliderGroup { name: "legs".into(), colliders: vec![0, 1] }],
+        ..CharacterRig::default()
+    };
+    let rig_bytes = rig.to_cooked().expect("cooked");
+    let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
+    let skeleton_bytes = Skeleton::new(&joints).to_cooked().expect("cooked");
+    let sheet = ClothSheet {
+        chains: (0..CHAINS).map(|chain| format!("skirt {chain}")).collect(),
+        closed: true,
+        lateral_compliance: 1e-6,
+        bend_compliance: 1e-4,
+    };
+
+    let counts = [0, 4, 2, 1];
+    let mut least = [f64::MAX; 4];
+    let mut substeps = 0;
+    for _ in 0..LAPS {
+        for (index, &iterations) in counts.iter().enumerate() {
+            let skeleton = Skeleton::read(&skeleton_bytes).expect("a valid skeleton");
+            let mut pose = CharacterPose::new(skeleton, &[], &[], Vec::new());
+            let mut springs = SpringBones::new(rig, &pose).expect("it has springs");
+            springs.set_substeps(Substeps::Two);
+            springs.set_cloth(rig, std::slice::from_ref(&sheet)).expect("its chains");
+            springs.set_cloth_iterations(iterations);
+            let mut spent = 0.0;
+            substeps = 0;
+            for frame in 0..FRAMES {
+                let seconds = frame as f32 / 60.0;
+                let wave = (seconds * std::f32::consts::TAU).sin();
+                pose.reset();
+                let locals = pose.locals_mut();
+                locals[1].rotation = Quat::from_rotation_y(wave * 0.2);
+                locals[2].rotation = Quat::from_rotation_x(-wave * 0.5);
+                locals[3].rotation = Quat::from_rotation_x(wave * 0.5);
+                pose.finish();
+                let frame = SpringFrame {
+                    world_from_model: Affine3A::from_translation(Vec3::new(0.0, 0.0, seconds * 1.4)),
+                    ticks: f64::from(frame),
+                    pose_moved: true,
+                    active: true,
+                };
+                let started = Instant::now();
+                let work = springs.update(&mut pose, &frame);
+                spent += started.elapsed().as_secs_f64();
+                substeps += work.substeps;
+                black_box(pose.model());
+            }
+            least[index] = least[index].min(spent * 1e6 / f64::from(substeps));
+        }
+    }
+    println!(
+        "{CHAINS} chains of {DEPTH} swinging joints as one closed sheet, two capsules, {substeps} sub-steps a round:"
+    );
+    for (iterations, micros) in counts.iter().zip(least) {
+        println!(
+            "{iterations} iterations: {micros:6.2} µs a sub-step, {:6.2} of it the cloth's",
+            micros - least[0]
+        );
+    }
 }

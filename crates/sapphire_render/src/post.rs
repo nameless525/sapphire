@@ -148,6 +148,30 @@
 //!   second time in the same pass, under a branch every pixel takes alike, so a held frame costs
 //!   about a plain composite more, and only while an effect plays.
 //!
+//! **The effects pack (M5 L9)** is all in the color effects' variant, so it built no pipeline:
+//!
+//! - **The desaturation** ([`Desaturation`]): first of the color effects, a grey of the pixel's own
+//!   relative luminance (in linear light, so it never changes the light), leaning toward a tint at that
+//!   luminance. With [`EffectCoverage::WORLD`] it keeps characters in color by the character mask, as the
+//!   duotone does: one bilinear tap of scene color's alpha, which is 0 on the instances the packet lists as
+//!   characters and their outline hulls, 1 elsewhere (effects' sparks count as world), partial along
+//!   edges.
+//! - **The halftone** ([`Halftone`]): ink dots on a turned square grid, each covering as much of its
+//!   cell as the display value is dark, squared, so shadows take the screen and lit color stays nearly
+//!   clean; edges box-filtered over a pixel, and nothing resampled, so lines stay where they are, in ink.
+//! - **The flash** ([`Flash`]): the display values toward a color, last of the color effects.
+//! - **The glitch** ([`Glitch`]): bands of rows read a whole number of output pixels to one side, and
+//!   red and blue read apart by a whole number more, from the seed the world's stack moves at the
+//!   preset's rate (the layer's own time, never the OS clock or the simulation). It moves where the pass
+//!   reads the scene, the composite and the color effects following, and replaces sharpening as the lens
+//!   effects do; under the lens effects, the lens reads at the moved pixel and the split is theirs.
+//! - **The CRT** ([`Crt`]): over everything, fixed to the screen: scanlines (a cosine box-filtered over
+//!   each pixel, so lines finer than about two pixels fade to their mean), an aperture grille of one
+//!   channel per output column, and rounded corners. No bend, so nothing is resampled, and no flicker.
+//!
+//! Reduced flashes' held swing covers them all, since the frame without effects is drawn from the
+//! pixel's own place. The cue dispatcher counts a preset with a flash, a glitch or a desaturation as a full-screen flash.
+//!
 //! **Variants, chosen by their cost on Mobile-Low's settings.** Two more constants pick the fused
 //! pass's variant: `POST_LENS_EFFECTS` and `POST_COLOR_EFFECTS`. That makes 12 composite
 //! variants (the lens effects replace sharpening), 16 post pipelines in all; the effects' are
@@ -214,8 +238,7 @@
 //!
 //! - **Bloom masks (C7):** an emissive-driven bloom mask; C7's breathing emission writes the
 //!   character mask (scene color's alpha) where a character glows.
-//! - **More screen effects (M2):** halftone, desaturation keeping a color, glitches and white
-//!   flashes. Cut-ins are views, not post: an inset of a character, with no need of the main
+//! - **Cut-ins** are views, not post: an inset of a character, with no need of the main
 //!   view's mask carried through temporal AA's resolve. Effects anchored to a point in the world
 //!   (a hit's position as the blur's center) are the world stack's to resolve.
 //! - **The radial blur through temporal AA:** a noise offset changing every frame would let the
@@ -278,9 +301,10 @@ use layers::{FLARE_ELEMENTS, FLARE_VISIBLE_SHARE, GpuFlareElement, GpuGradient, 
 pub(crate) use layers::{SunDisc, SunOnScreen};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use sapphire_look::post::{
-    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,
-    EffectScale, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS,
-    PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
+    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, Duotone,
+    EffectCoverage, EffectScale, Flash, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
+    Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve,
+    Vignette,
 };
 pub use variants::PostVariants;
 use variants::{Builder, Pipelines, Slot};

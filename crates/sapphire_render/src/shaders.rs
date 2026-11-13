@@ -1831,6 +1831,17 @@ mod tests {
             lines_shape,
             lines_color,
             flags,
+            desaturation,
+            desaturation_tint,
+            halftone,
+            halftone_ink,
+            halftone_turn,
+            flash,
+            flash_color,
+            glitch,
+            glitch_split,
+            crt,
+            crt_corner,
         });
         assert_eq!(fields("PostEffects"), owned(effects), "PostEffects: WGSL vs Rust fields");
         assert_eq!(

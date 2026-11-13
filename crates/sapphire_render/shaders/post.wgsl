@@ -26,7 +26,9 @@
 // passes run the code they ran before the layers. The screen effects (M1 P3) are two more in the
 // composite: `POST_LENS_EFFECTS` (the radial blur and chromatic aberration, reading the scene in
 // place of sharpening) and `POST_COLOR_EFFECTS` (the inversion, the duotone and speed lines over
-// the display values), each effect in them behind a branch every pixel takes alike;
+// the display values, and M5 L9's pack: the desaturation, the halftone, the flash, the CRT, and the
+// glitch, which moves where the scene is read by whole pixels), each effect in them behind a branch
+// every pixel takes alike;
 // `POST_RADIAL_TAPS` is the tier's radial blur taps. Reduced flashes (M4 A3) hold both kinds
 // within a swing of relative luminance, a uniform in those variants.
 
@@ -92,8 +94,32 @@ struct PostEffects {
     lines_shape: vec4<f32>,
     // rgb: the lines' color, sRGB-encoded; w: how far past the clear radius their tips scatter.
     lines_color: vec4<f32>,
-    // x: the lines' seed; y: 1 when an effect reads the character mask.
+    // x: the lines' seed; y: 1 when an effect reads the character mask; z: the glitch's seed.
     flags: vec4<u32>,
+    // The effects pack's (M5 L9), appended.
+    // x: the desaturation's amount; y: its weight on the world; z: on characters.
+    desaturation: vec4<f32>,
+    // rgb: what the grey's light is multiplied by, linear, over its own relative luminance.
+    desaturation_tint: vec4<f32>,
+    // x: the halftone's amount; y: its weight on the world; z: on characters; w: its cell, in frame heights.
+    halftone: vec4<f32>,
+    // rgb: its ink, sRGB-encoded.
+    halftone_ink: vec4<f32>,
+    // xy: the grid's turn, its cosine and sine.
+    halftone_turn: vec4<f32>,
+    // x: the flash's amount; y: its weight on the world; z: on characters.
+    flash: vec4<f32>,
+    // rgb: its color, sRGB-encoded.
+    flash_color: vec4<f32>,
+    // x: the glitch's amount; y: bands per frame height; z: the share displaced; w: the farthest shift, in
+    // frame widths.
+    glitch: vec4<f32>,
+    // x: the red and blue split, in frame widths.
+    glitch_split: vec4<f32>,
+    // x: the CRT's amount; y: scanlines per frame height; z: their gaps' depth; w: the grille's.
+    crt: vec4<f32>,
+    // x: the corners' radius, in frame heights.
+    crt_corner: vec4<f32>,
 }
 
 // Mirrors `post::layers::GpuGradient`.
@@ -148,6 +174,7 @@ const BLOOM_MAX: f32 = 65024.0;
 // FSR 1's RCAS limit, 1/4 - 1/16: the strongest negative lobe sharpening uses.
 const RCAS_LIMIT: f32 = 0.1875;
 
+const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
 // How far past its tip a speed line reaches its full width, in frame heights.
 const LINE_TAPER: f32 = 0.5;
@@ -797,17 +824,49 @@ fn speed_line(uv: vec2<f32>) -> f32 {
     return saturate(covered / pixel);
 }
 
-// The color effects over the frame's display values, in order: the inversion, the duotone (of
-// the inverted values, if both), then speed lines in their own color over both. Each is a branch
-// every pixel takes alike. `world` is the pixel's world share, the character mask, read only when
-// an effect covers the world and characters differently; an effect's weight on the pixel blends
-// its weights on characters and on the world by it.
+// How much of a halftone's dot covers the pixel at `uv`, whose display value is `display`, 0 to 1. The dots
+// sit on a grid turned by the halftone's angle, one a cell, each covering as much of its cell as the display
+// is dark, squared, so shadows take the screen and lit color stays nearly clean. On a square grid the nearest
+// dot's center is always the cell's own, so dots grown into each other need no neighbors. Edges are
+// box-filtered across an output pixel, and a dot smaller than one fades with its area rather than
+// flickering.
+fn halftone_ink(display: vec3<f32>, uv: vec2<f32>) -> f32 {
+    let cell = post.effects.halftone.w;
+    let turn = post.effects.halftone_turn.xy;
+    let centered = (uv - 0.5) * vec2<f32>(post.frame.x, 1.0);
+    let turned = vec2<f32>(turn.x * centered.x + turn.y * centered.y, turn.x * centered.y - turn.y * centered.x) / cell;
+    let distance = length(fract(turned) - 0.5);
+    // A dot of radius dark / √π covers dark² of its cell.
+    let radius = (1.0 - saturate(dot(display, LUMA))) * 0.5641896;
+    let pixel = post.frame.z / cell;
+    // Under a pixel across, a dot's share of its pixel falls with its area.
+    let fade = saturate(2.0 * radius / pixel);
+    return saturate((radius - distance) / pixel + 0.5) * fade * fade;
+}
+
+// The color effects over the frame's display values, in order: the desaturation and the halftone (M5 L9),
+// the inversion, the duotone (of the inverted values, if both), speed lines in their own color over
+// them, then the flash (M5 L9) over everything. Each is a branch every pixel takes alike. `world` is
+// the pixel's world share, the character mask, read only when an effect covers the world and
+// characters differently; an effect's weight on the pixel blends its weights on characters and on
+// the world by it.
 fn effect_colors(display: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     var world = 1.0;
     if post.effects.flags.y != 0u {
         world = saturate(textureSampleLevel(mask_source, linear_clamp, uv, 0.0).a);
     }
     var color = display;
+    let desaturation = post.effects.desaturation;
+    if desaturation.x > 0.0 {
+        // Grey of the pixel's own relative luminance, in linear light, so it never changes the light.
+        let grey = linear_to_srgb(dot(srgb_to_linear(color), LUMA) * post.effects.desaturation_tint.rgb);
+        color = mix(color, grey, desaturation.x * mix(desaturation.z, desaturation.y, world));
+    }
+    let halftone = post.effects.halftone;
+    if halftone.x > 0.0 {
+        let cover = halftone.x * halftone_ink(color, uv) * mix(halftone.z, halftone.y, world);
+        color = mix(color, post.effects.halftone_ink.rgb, cover);
+    }
     let inversion = post.effects.inversion;
     if inversion.x > 0.0 {
         color = mix(color, 1.0 - color, inversion.x * mix(inversion.z, inversion.y, world));
@@ -824,7 +883,55 @@ fn effect_colors(display: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         let cover = lines.x * speed_line(uv) * mix(lines.z, lines.y, world);
         color = mix(color, post.effects.lines_color.rgb, cover);
     }
+    let flash = post.effects.flash;
+    if flash.x > 0.0 {
+        color = mix(color, post.effects.flash_color.rgb, flash.x * mix(flash.z, flash.y, world));
+    }
     return color;
+}
+
+// How far the glitch moves the pixel at `uv`, in whole output pixels: x its band's shift, y the red and blue
+// split. The frame is cut into bands, their grid moved by the seed so one drawing's edges aren't the next's,
+// and the seed picks which bands move and how far either way (PCG, as speed lines are picked).
+fn glitch_offsets(uv: vec2<f32>) -> vec2<f32> {
+    let glitch = post.effects.glitch;
+    let seed = hash(post.effects.flags.z);
+    let band = u32(max(uv.y * glitch.y + f32(seed & 1023u) / 1024.0, 0.0));
+    let bits = hash(band ^ seed);
+    let random = vec2<f32>(vec2<u32>(bits, bits >> 10u) & vec2<u32>(1023u)) / 1023.0;
+    let moved = select(0.0, (random.y * 2.0 - 1.0) * glitch.w, random.x < glitch.z);
+    return round(vec2<f32>(moved, post.effects.glitch_split.x) * glitch.x / post.frame.y);
+}
+
+// The exposed scene at the pixel through the glitch's split: red read `split` output pixels to the right,
+// blue as far to the left, green the pixel's own. Whole pixels, so nothing is resampled.
+fn glitch_scene(position: vec2<f32>, uv: vec2<f32>, split: f32) -> vec3<f32> {
+    let red = scene_tap(position, uv, vec2<f32>(split, 0.0)).r;
+    let blue = scene_tap(position, uv, vec2<f32>(-split, 0.0)).b;
+    return vec3<f32>(red, scene_at(position, uv).g, blue) * post.composite.x;
+}
+
+// The CRT (M5 L9) over the finished display values at output pixel `position`, `uv` (the screen's, which
+// the glitch doesn't move): scanlines, a cosine across each line box-filtered over the pixel, so lines finer
+// than about two pixels fade to their mean rather than alias; an aperture grille lighting one channel of
+// each pixel column in turn and dimming the other two; and the corners rounded off, their edge filtered
+// across a pixel. Nothing is resampled, so lines and edges stay where they were.
+fn crt(display: vec3<f32>, position: vec2<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let tv = post.effects.crt;
+    let across = tv.y * post.frame.z;
+    let taper = select(sin(PI * across) / (PI * across), 1.0, across < 1e-4);
+    let gap = 0.5 - 0.5 * cos(TAU * uv.y * tv.y) * max(taper, 0.0);
+    let column = u32(position.x) % 3u;
+    let grille = select(vec3<f32>(1.0 - tv.w), vec3<f32>(1.0), vec3<u32>(0u, 1u, 2u) == vec3<u32>(column));
+    var television = display * (1.0 - tv.z * gap) * grille;
+    let corner = post.effects.crt_corner.x;
+    if corner > 0.0 {
+        let extent = vec2<f32>(0.5 * post.frame.x, 0.5);
+        let from_middle = abs((uv - 0.5) * vec2<f32>(post.frame.x, 1.0));
+        let outside = length(max(from_middle - (extent - corner), vec2<f32>(0.0))) - corner;
+        television *= saturate(0.5 - outside / post.frame.z);
+    }
+    return mix(display, television, tv.x);
 }
 
 // The display values the fused pass composites from `scene`, the exposed scene at the pixel: the
@@ -879,16 +986,36 @@ fn held_swing(light: vec3<f32>, plain: vec3<f32>, swing: f32) -> vec3<f32> {
 @fragment
 fn fs_composite(in: CompositeVaryings) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(texture0));
+    // Where the frame is read: the pixel, or with the glitch (M5 L9) its band's shift away, by whole output
+    // pixels, the composite and the color effects with it. The CRT stays on the screen.
+    var at = in;
+    var split = 0.0;
+    let glitched = POST_COLOR_EFFECTS && post.effects.glitch.x > 0.0;
+    if glitched {
+        let offsets = glitch_offsets(in.uv);
+        // Held inside the frame, so a band moved past its edge repeats the edge's pixel rather than
+        // reading outside the scene's texture.
+        let moved = clamp(in.position.x + offsets.x, 0.5, 1.0 / post.frame.y - 0.5);
+        at.position.x = moved;
+        at.uv.x += (moved - in.position.x) * post.frame.y;
+        split = offsets.y;
+    }
     var scene: vec3<f32>;
-    // The lens effects replace sharpening: a streaked or split frame has nothing to sharpen.
+    // The lens effects replace sharpening: a streaked or split frame has nothing to sharpen. So does
+    // the glitch's split.
     if POST_LENS_EFFECTS {
-        scene = lens_scene(in.position.xy, in.uv) * post.composite.x;
+        scene = lens_scene(at.position.xy, at.uv) * post.composite.x;
+    } else if glitched {
+        scene = glitch_scene(at.position.xy, at.uv, split);
     } else {
         scene = plain_scene(in.position.xy, in.uv);
     }
-    var display = composited(scene, in, size);
+    var display = composited(scene, at, size);
     if POST_COLOR_EFFECTS {
-        display = effect_colors(display, in.uv);
+        display = effect_colors(display, at.uv);
+        if post.effects.crt.x > 0.0 {
+            display = crt(display, in.position.xy, in.uv);
+        }
     }
     let light = srgb_to_linear(display);
     // A branch every pixel takes alike, and only a variant with effects has.

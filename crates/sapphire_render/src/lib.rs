@@ -934,10 +934,11 @@ pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,
 };
 pub use post::{
-    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, DrawnEffects, Duotone,
-    EffectCoverage, EffectScale, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare,
-    MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams,
-    PostStats, PostVariants, RadialBlur, SpeedLines, ToneCurve, Vignette,
+    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, DrawnEffects,
+    Duotone, EffectCoverage, EffectScale, Flash, Glitch, GradientBlend, GradientLayer, GradientShape,
+    Halftone, Inversion, LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS,
+    PostEffectSettings, PostEffects, PostParams, PostStats, PostVariants, RadialBlur, SpeedLines, ToneCurve,
+    Vignette,
 };
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.

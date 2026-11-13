@@ -1110,6 +1110,11 @@ fn effects_text(
         (drawn.inversion, "inversion"),
         (drawn.duotone, "duotone"),
         (drawn.speed_lines, "speed lines"),
+        (drawn.desaturation, "desaturation"),
+        (drawn.halftone, "halftone"),
+        (drawn.flash, "flash"),
+        (drawn.glitch, "glitch"),
+        (drawn.crt, "CRT"),
     ]
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))

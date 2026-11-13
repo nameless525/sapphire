@@ -369,7 +369,8 @@ impl LensFlare {
 }
 
 /// Combat's screen effects for one frame (M1 P3; look pillar 8, "combat screen grammar"): the
-/// radial blurs, impact frames and speed lines of Wuthering Waves' and Zenless Zone Zero's hits,
+/// radial blurs, impact frames and speed lines of Wuthering Waves' and Zenless Zone Zero's hits, and
+/// (M5 L9) a world drained of color, a halftone, a flash, a glitch and a CRT,
 /// drawn in the fused pass on every tier, over the compositing layers. They are resolved values:
 /// the world's effect stack (`sapphire_world::screen_effects`) plays each effect gameplay pushed
 /// over its own timeline and writes what shows this frame here (rule R4).
@@ -384,6 +385,12 @@ pub struct PostEffects {
     pub inversion: Inversion,
     pub duotone: Duotone,
     pub speed_lines: SpeedLines,
+    /// The effects pack's (M5 L9), drawn with the color effects.
+    pub desaturation: Desaturation,
+    pub halftone: Halftone,
+    pub flash: Flash,
+    pub glitch: Glitch,
+    pub crt: Crt,
     /// The most these effects together may move a pixel's relative luminance from the frame without them
     /// (M4 A3): post holds each pixel within it, so with it under WCAG 2.3.1's general flash threshold none
     /// of them can flash ([`EffectScale::flash_swing`]). 1, [`Self::NONE`]'s, holds nothing, since relative
@@ -399,6 +406,11 @@ impl PostEffects {
         inversion: Inversion::NONE,
         duotone: Duotone::NONE,
         speed_lines: SpeedLines::NONE,
+        desaturation: Desaturation::NONE,
+        halftone: Halftone::NONE,
+        flash: Flash::NONE,
+        glitch: Glitch::NONE,
+        crt: Crt::NONE,
         swing: 1.0,
     };
 }
@@ -430,7 +442,8 @@ impl PostEffects {
 /// resolved values pass through last ([`PostEffects::scaled`]).
 ///
 /// - **Flashes** are what swings the frame's light: an impact frame's inversion and duotone, speed lines
-///   redrawn several times a second over the whole frame, and a blur streaking light across the dark. WCAG
+///   redrawn several times a second over the whole frame, a blur streaking light across the dark, and the
+///   effects pack's (M5 L9) flash, glitch, halftone and CRT, which post holds as it holds the rest. WCAG
 ///   2.3.1 counts a flash by its change in relative luminance, so flashes are a swing here, from 0 to 1: the
 ///   most the effects together may move a pixel's relative luminance, which post holds every pixel to
 ///   ([`PostEffects::swing`]). 1 lets them swing as authored; [`Self::SAFE_FLASH_SWING`] is reduced flashes.
@@ -587,6 +600,110 @@ impl SpeedLines {
     };
 }
 
+/// The frame toward a grey of each pixel's own relative luminance (M5 L9): a perfect dodge's world drained of
+/// color behind characters kept in theirs ([`EffectCoverage::WORLD`]), as time slows. The light stays, short
+/// of a tint's clipping, so it never flashes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Desaturation {
+    /// 0 is none and 1 grey.
+    pub amount: f32,
+    /// Linear RGB the grey leans toward, at the grey's own luminance, so a drained world can lean cool or
+    /// warm: white is plain grey.
+    pub tint: Vec3,
+    pub coverage: EffectCoverage,
+}
+
+impl Desaturation {
+    pub const NONE: Self = Self { amount: 0.0, tint: Vec3::ONE, coverage: EffectCoverage::EVERYWHERE };
+}
+
+/// A halftone (M5 L9): a comic print's screen of ink dots over the frame, on a grid turned by `angle`, each dot
+/// as large as the display value under it is dark, so shadows take the screen and light stays clean. Nothing
+/// is resampled: an outline under a dot stays where it was, in ink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Halftone {
+    /// 0 is none and 1 the dots in their full ink.
+    pub amount: f32,
+    /// The distance between dots, in frame heights.
+    pub cell: f32,
+    /// The grid's turn, in radians: a print's 45° by default.
+    pub angle: f32,
+    /// Linear RGB.
+    pub ink: Vec3,
+    pub coverage: EffectCoverage,
+}
+
+impl Halftone {
+    pub const NONE: Self = Self {
+        amount: 0.0,
+        cell: 0.012,
+        angle: std::f32::consts::FRAC_PI_4,
+        ink: Vec3::ZERO,
+        coverage: EffectCoverage::EVERYWHERE,
+    };
+}
+
+/// A flash (M5 L9): the frame's display values toward a color, a white burst as a blow lands. It changes the
+/// frame's light at once, so the cue dispatcher counts it as a full-screen flash and reduced flashes hold it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flash {
+    /// 0 is none and 1 the color alone.
+    pub amount: f32,
+    /// Linear RGB.
+    pub color: Vec3,
+    pub coverage: EffectCoverage,
+}
+
+impl Flash {
+    pub const NONE: Self = Self { amount: 0.0, color: Vec3::ONE, coverage: EffectCoverage::EVERYWHERE };
+}
+
+/// A glitch (M5 L9): horizontal bands of the frame displaced sideways and its red and blue read apart, a
+/// television losing its signal (Zenless Zone Zero's transitions). Every shift is a whole output pixel, so the
+/// frame is moved, never resampled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glitch {
+    /// 0 is none and 1 the shifts and split in full.
+    pub amount: f32,
+    /// Bands per frame height (1 to 512).
+    pub bands: u32,
+    /// The share of bands displaced, 0 to 1.
+    pub share: f32,
+    /// The farthest a displaced band moves, in frame widths.
+    pub shift: f32,
+    /// How far red is read to one side and blue to the other, in frame widths.
+    pub split: f32,
+    /// Picks which bands move, and how far: the effect stack moves it at the preset's rate, so the bands
+    /// jump, by the presentation's clock alone.
+    pub seed: u32,
+}
+
+impl Glitch {
+    pub const NONE: Self = Self { amount: 0.0, bands: 24, share: 0.3, shift: 0.04, split: 0.004, seed: 0 };
+}
+
+/// A CRT (M5 L9): the frame as a television shows it, scanlines across it, an aperture grille's red, green and
+/// blue stripes, and rounded corners. There's no bend, so lines and edges stay where they are, and it doesn't
+/// flicker.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crt {
+    /// 0 is none and 1 the television in full.
+    pub amount: f32,
+    /// Scanlines per frame height. Finer than about two output pixels, they fade to their mean rather than
+    /// alias.
+    pub lines: f32,
+    /// How dark a scanline's gap goes, 0 to 1.
+    pub depth: f32,
+    /// How far each output pixel's other two channels dim under the grille, 0 to 1.
+    pub grille: f32,
+    /// The corners' radius, in frame heights: 0 keeps them square.
+    pub corner: f32,
+}
+
+impl Crt {
+    pub const NONE: Self = Self { amount: 0.0, lines: 240.0, depth: 0.35, grille: 0.15, corner: 0.05 };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,7 +716,9 @@ mod tests {
             inversion: Inversion { amount: 0.9, coverage: EffectCoverage::WORLD },
             duotone: Duotone { amount: 0.7, threshold: 0.72, ..Duotone::NONE },
             speed_lines: SpeedLines { opacity: 0.6, seed: 7, ..SpeedLines::NONE },
-            swing: 1.0,
+            flash: Flash { amount: 0.8, ..Flash::NONE },
+            glitch: Glitch { amount: 1.0, seed: 3, ..Glitch::NONE },
+            ..PostEffects::NONE
         }
     }
 
@@ -627,6 +746,11 @@ mod tests {
         assert_eq!(still.radial_blur.center, all.radial_blur.center);
         assert_eq!((still.inversion, still.duotone, still.swing), (all.inversion, all.duotone, 1.0));
         assert_eq!(still.speed_lines, all.speed_lines);
+        assert_eq!(
+            (still.flash, still.glitch),
+            (all.flash, all.glitch),
+            "the pack's are flashes, held by swing"
+        );
 
         let past = all.scaled(EffectScale { flash_swing: 3.0, motion: -1.0 });
         assert_eq!(past.swing, 1.0, "a share past 1 reads as 1");

@@ -7,8 +7,9 @@ use glam::{Vec2, Vec3};
 use super::{Harness, composited, flat, linear_to_srgb, max_step, mean_step, passthrough, srgb_to_linear};
 use crate::quality::{TierId, TierTable};
 use crate::{
-    ChromaticAberration, Duotone, EffectCoverage, Inversion, Msaa, PostEffectSettings, PostEffects,
-    PostParams, PostVariants, RadialBlur, RenderSettings, SkyGradient, SpeedLines,
+    ChromaticAberration, Crt, Desaturation, Duotone, EffectCoverage, Flash, Glitch, Halftone, Inversion,
+    Msaa, PostEffectSettings, PostEffects, PostParams, PostVariants, RadialBlur, RenderSettings, SkyGradient,
+    SpeedLines,
 };
 
 fn grey_sky(value: f32) -> SkyGradient {
@@ -49,6 +50,12 @@ fn no_effects_draw_exactly_the_frame_from_before_effects() {
         inversion: Inversion { amount: 0.0, coverage: EffectCoverage::WORLD },
         duotone: Duotone { amount: 0.0, ..Duotone::NONE },
         speed_lines: SpeedLines { opacity: 0.0, ..SpeedLines::NONE },
+        // The effects pack (M5 L9) at 0, every other parameter far from its default.
+        desaturation: Desaturation { amount: 0.0, tint: Vec3::X, coverage: EffectCoverage::WORLD },
+        halftone: Halftone { amount: 0.0, cell: 0.1, ink: Vec3::ONE, ..Halftone::NONE },
+        flash: Flash { amount: 0.0, color: Vec3::Y, coverage: EffectCoverage::CHARACTERS },
+        glitch: Glitch { amount: 0.0, share: 1.0, shift: 0.3, split: 0.05, seed: 9, ..Glitch::NONE },
+        crt: Crt { amount: 0.0, depth: 1.0, grille: 1.0, corner: 0.3, ..Crt::NONE },
         swing: 1.0,
     };
     let inverted =
@@ -516,19 +523,260 @@ fn a_held_swing_keeps_every_pixel_within_it() {
         duotone: Duotone { amount: 0.6, threshold: 0.5, ..Duotone::NONE },
         speed_lines: SpeedLines { opacity: 1.0, ..SpeedLines::NONE },
         swing: 1.0,
+        ..PostEffects::NONE
     };
+    // The effects pack (M5 L9), each past the worst its presets author, alone: the flash, the glitch, the
+    // halftone and the CRT, which change the light (the desaturation doesn't: its own test holds that).
+    let pack = [
+        ("flash", PostEffects { flash: Flash { amount: 1.0, ..Flash::NONE }, ..PostEffects::NONE }),
+        (
+            "glitch",
+            PostEffects {
+                glitch: Glitch { amount: 1.0, share: 1.0, shift: 0.1, split: 0.02, seed: 5, ..Glitch::NONE },
+                ..PostEffects::NONE
+            },
+        ),
+        (
+            "halftone",
+            PostEffects {
+                halftone: Halftone { amount: 1.0, cell: 0.08, ..Halftone::NONE },
+                ..PostEffects::NONE
+            },
+        ),
+        (
+            "crt",
+            PostEffects {
+                crt: Crt { amount: 1.0, depth: 1.0, grille: 1.0, ..Crt::NONE },
+                ..PostEffects::NONE
+            },
+        ),
+    ];
     // One 8-bit step at the top of the range, where a step is largest in linear light.
     let rounding = 1.0 - srgb_to_linear(254);
     for params in [passthrough(), composited()] {
         let plain = harness.render(params);
-        let full = harness.render(PostParams { effects: impact, ..params });
-        let held = harness.render(PostParams { effects: PostEffects { swing: 0.08, ..impact }, ..params });
-        let (swung, kept) = (largest_swing(&full, &plain), largest_swing(&held, &plain));
-        eprintln!("as authored, a pixel swings {swung:.3}; held to 0.08, {kept:.3}");
-        assert!(swung > 0.5, "{swung}");
-        assert!(kept <= 0.08 + rounding, "{kept}");
-        assert!(mean_step(&held, &plain) > 2.0, "held, the effects still show");
-        let unheld = PostEffects { swing: 1.0, ..impact };
-        assert_eq!(harness.render(PostParams { effects: unheld, ..params }), full);
+        for (name, effects) in [("an impact", impact)].into_iter().chain(pack) {
+            let full = harness.render(PostParams { effects, ..params });
+            let held =
+                harness.render(PostParams { effects: PostEffects { swing: 0.08, ..effects }, ..params });
+            let (swung, kept) = (largest_swing(&full, &plain), largest_swing(&held, &plain));
+            eprintln!("{name}: as authored, a pixel swings {swung:.3}; held to 0.08, {kept:.3}");
+            assert!(swung > 0.2, "{name}: {swung}");
+            assert!(kept <= 0.08 + rounding, "{name}: {kept}");
+            assert!(mean_step(&held, &plain) > 0.5, "{name}: held, the effects still show");
+            let unheld = PostEffects { swing: 1.0, ..effects };
+            assert_eq!(harness.render(PostParams { effects: unheld, ..params }), full, "{name}");
+        }
     }
+}
+
+/// A pixel's display luma, 0 to 1, from its 8-bit sRGB code (the effects' own measure).
+fn display_luma(texel: [u8; 4]) -> f32 {
+    (0.2126 * f32::from(texel[0]) + 0.7152 * f32::from(texel[1]) + 0.0722 * f32::from(texel[2])) / 255.0
+}
+
+/// The desaturation (M5 L9) takes the world to its own luma and keeps characters in their colors, by the
+/// character mask; a tint multiplies the grey.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_desaturation_greys_the_world_and_keeps_characters() {
+    let size = (320, 180);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = grey_sky(0.3);
+    harness.sphere(Vec3::new(-1.0, 0.0, 0.0), 0.5, flat([0.8, 0.3, 0.1]), true);
+    harness.sphere(Vec3::new(1.0, 0.0, 0.0), 0.5, flat([0.8, 0.3, 0.1]), false);
+    let (left, right) = (harness.project(Vec3::new(-1.0, 0.0, 0.0)), harness.project(Vec3::X));
+    let plain = harness.render(passthrough());
+    let drained = |tint| PostEffects {
+        desaturation: Desaturation { amount: 1.0, tint, coverage: EffectCoverage::WORLD },
+        ..PostEffects::NONE
+    };
+    let image = harness.render(with(drained(Vec3::ONE)));
+    let stats = harness.renderer.stats().post.effects;
+    assert!(stats.desaturation && stats.character_mask && !stats.lens());
+    let at = |image: &[[u8; 4]], point: Vec2| texel(image, size, point.x as u32, point.y as u32);
+    let (kept, was) = (at(&image, left), at(&plain, left));
+    assert!(
+        (0..3).all(|c| kept[c].abs_diff(was[c]) <= 1),
+        "the character keeps its colors: {kept:?} {was:?}"
+    );
+    let (grey, colored) = (at(&image, right), at(&plain, right));
+    assert!(
+        grey[0].abs_diff(grey[1]) <= 1 && grey[1].abs_diff(grey[2]) <= 1,
+        "the world goes grey: {grey:?}"
+    );
+    // One 8-bit step at the grey, in linear light.
+    let step = srgb_to_linear(grey[1].saturating_add(1)) - srgb_to_linear(grey[1]);
+    assert!((luminance(grey) - luminance(colored)).abs() <= step, "and keeps its light");
+    let cool = harness.render(with(drained(Vec3::new(0.5, 0.5, 1.0))));
+    let tinted = at(&cool, right);
+    assert!(tinted[2] > grey[2] && tinted[0] < grey[0], "a tint leans the grey: {tinted:?}");
+    assert!((luminance(tinted) - luminance(colored)).abs() <= 2.0 * step, "at its light");
+}
+
+/// The flash (M5 L9) mixes the display values toward its color.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_flash_mixes_toward_its_color() {
+    let size = (64, 36);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = grey_sky(0.2);
+    let plain = harness.render(passthrough());
+    let flash = |amount| PostEffects { flash: Flash { amount, ..Flash::NONE }, ..PostEffects::NONE };
+    let full = harness.render(with(flash(1.0)));
+    assert!(full.iter().all(|texel| texel[..3] == [255; 3]), "all the way to white");
+    let half = harness.render(with(flash(0.5)));
+    let base = |index: usize, channel: usize| f32::from(plain[index][channel]);
+    each_within(&half, |index, channel| 0.5 * (base(index, channel) + 255.0), 1.0).expect("halfway to white");
+    assert!(harness.renderer.stats().post.effects.flash);
+}
+
+/// The halftone (M5 L9) prints ink dots as large as the display is dark, squared, on its turned grid, and
+/// leaves white clean: a dark grey's share of ink comes out at its darkness squared.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_halftone_prints_dots_as_large_as_the_frame_is_dark() {
+    let size = (320, 180);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    let halftone = |cell| PostEffects {
+        halftone: Halftone {
+            amount: 1.0,
+            cell,
+            angle: 0.4,
+            ink: Vec3::ZERO,
+            coverage: EffectCoverage::EVERYWHERE,
+        },
+        ..PostEffects::NONE
+    };
+    for sky in [0.05, 0.2] {
+        harness.sky = grey_sky(sky);
+        let plain = harness.render(passthrough());
+        let dark = 1.0 - display_luma(plain[0]);
+        let image = harness.render(with(halftone(0.1)));
+        // Each pixel is ink, untouched, or an edge between them.
+        let ink: f32 =
+            image.iter().map(|texel| 1.0 - f32::from(texel[1]) / f32::from(plain[0][1])).sum::<f32>()
+                / image.len() as f32;
+        eprintln!(
+            "display darkness {dark:.3}: ink covers {ink:.3} of the frame (expected {:.3})",
+            dark * dark
+        );
+        assert!((ink - dark * dark).abs() < 0.03, "{ink} vs {}", dark * dark);
+        let untouched = image.iter().filter(|texel| texel[..3] == plain[0][..3]).count();
+        let inked = image.iter().filter(|texel| texel[..3] == [0; 3]).count();
+        assert!(untouched + inked > image.len() * 3 / 4, "dots with crisp edges: {untouched} + {inked}");
+    }
+    harness.sky = grey_sky(4.0);
+    let white = harness.render(passthrough());
+    assert_eq!(harness.render(with(halftone(0.1))), white, "white takes no ink");
+    assert!(harness.renderer.stats().post.effects.halftone);
+}
+
+/// The glitch (M5 L9) moves each band of rows sideways by whole output pixels, so a row comes out as the plain
+/// frame's row, shifted, exactly: nothing resampled. Its seed picks the bands, and its split reads red and blue
+/// apart while green stays the pixel's own.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_glitch_shifts_bands_by_whole_pixels() {
+    let size = (320, 180);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = grey_sky(0.3);
+    harness.sphere(Vec3::new(-0.6, 0.2, 0.0), 0.7, flat([0.9, 0.6, 0.2]), false);
+    harness.sphere(Vec3::new(1.2, -0.3, 0.0), 0.4, flat([0.2, 0.5, 0.9]), false);
+    let plain = harness.render(passthrough());
+    let glitch = |seed, split| PostEffects {
+        glitch: Glitch { amount: 1.0, bands: 12, share: 1.0, shift: 0.05, split, seed },
+        ..PostEffects::NONE
+    };
+    let image = harness.render(with(glitch(3, 0.0)));
+    assert!(harness.renderer.stats().post.effects.glitch);
+    let width = size.0 as i32;
+    let reach = (0.05 * size.0 as f32).round() as i32;
+    let row = |image: &[[u8; 4]], y: u32| image[(y * size.0) as usize..((y + 1) * size.0) as usize].to_vec();
+    let mut moved = 0;
+    for y in 0..size.1 {
+        let (out, source) = (row(&image, y), row(&plain, y));
+        let shifted = |shift: i32| {
+            (0..width).map(|x| source[(x + shift).clamp(0, width - 1) as usize]).collect::<Vec<_>>()
+        };
+        let shift = (-reach..=reach).find(|&shift| shifted(shift) == out);
+        let shift = shift.unwrap_or_else(|| panic!("row {y} isn't the plain row moved by whole pixels"));
+        moved += usize::from(shift != 0);
+    }
+    assert!(moved > size.1 as usize / 2, "most bands moved: {moved} rows");
+    assert_eq!(harness.render(with(glitch(3, 0.0))), image, "the same seed, the same tearing");
+    assert!(max_step(&harness.render(with(glitch(4, 0.0))), &image) > 50, "another seed, another");
+
+    let split = PostEffects {
+        glitch: Glitch { share: 0.0, split: 0.02, ..glitch(3, 0.0).glitch },
+        ..PostEffects::NONE
+    };
+    let image = harness.render(with(split));
+    let green = |image: &[[u8; 4]]| image.iter().map(|texel| texel[1]).collect::<Vec<_>>();
+    assert_eq!(green(&image), green(&plain), "green is the pixel's own");
+    let offset = (0.02 * size.0 as f32).round() as i32;
+    for y in [40, 90, 140] {
+        let (out, source) = (row(&image, y), row(&plain, y));
+        for x in 0..width {
+            let from = |dx: i32| source[(x + dx).clamp(0, width - 1) as usize];
+            // The grade's table reads a channel by itself under a neutral grade, but interpolates in three.
+            let (red, blue) = (out[x as usize][0], out[x as usize][2]);
+            assert!(
+                red.abs_diff(from(offset)[0]) <= 1 && blue.abs_diff(from(-offset)[2]) <= 1,
+                "row {y}, {x}"
+            );
+        }
+    }
+}
+
+/// The CRT (M5 L9) draws scanlines, an aperture grille and rounded corners over the frame, moving nothing: each
+/// pixel is the plain one scaled, its middle row of a scanline as bright as plain, and its corners black.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_crt_scans_stripes_and_rounds_the_frame_in_place() {
+    let size = (320, 180);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = grey_sky(0.5);
+    let plain = harness.render(passthrough());
+    let grey = plain[0];
+    // Scanlines four pixels apart, their gaps black, and no grille or corners.
+    let crt = |depth, grille, corner| PostEffects {
+        crt: Crt { amount: 1.0, lines: size.1 as f32 / 4.0, depth, grille, corner },
+        ..PostEffects::NONE
+    };
+    let scanned = harness.render(with(crt(1.0, 0.0, 0.0)));
+    let column: Vec<u8> = (0..size.1).map(|y| texel(&scanned, size, 160, y)[1]).collect();
+    eprintln!("a scanline column runs {:?} (plain {})", &column[..4], grey[1]);
+    // A row's share of the light: the cosine across a line, box-filtered over a pixel, a quarter of a line.
+    let filter = (std::f32::consts::PI * 0.25).sin() / (std::f32::consts::PI * 0.25);
+    for (y, &value) in column.iter().enumerate() {
+        let phase = (y as f32 + 0.5) / 4.0;
+        let gap = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos() * filter;
+        let want = f32::from(grey[1]) * (1.0 - gap);
+        assert!((f32::from(value) - want).abs() <= 1.0, "row {y}: {value} vs {want}");
+    }
+    assert_eq!(&column[..8], &column[4..12], "every four rows alike");
+    assert!(
+        scanned.chunks(size.0 as usize).all(|row| row.iter().all(|texel| *texel == row[0])),
+        "rows are flat"
+    );
+
+    // The grille: each column keeps one channel and dims the others, in turn.
+    let striped = harness.render(with(crt(0.0, 1.0, 0.0)));
+    for x in 0..6 {
+        let texel = texel(&striped, size, x, 90);
+        let lit = (x % 3) as usize;
+        for channel in 0..3 {
+            let want = if channel == lit { grey[channel] } else { 0 };
+            assert_eq!(texel[channel], want, "column {x} channel {channel}");
+        }
+    }
+    // Rounded corners: black at the corner, the edges' middles and the middle untouched.
+    let rounded = harness.render(with(crt(0.0, 0.0, 0.1)));
+    assert_eq!(texel(&rounded, size, 0, 0)[..3], [0; 3]);
+    assert_eq!(texel(&rounded, size, size.0 - 1, size.1 - 1)[..3], [0; 3]);
+    for (x, y) in [(160, 0), (0, 90), (160, 90), (319, 90)] {
+        assert_eq!(texel(&rounded, size, x, y), grey, "({x}, {y})");
+    }
+    assert!(harness.renderer.stats().post.effects.crt);
 }

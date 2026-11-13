@@ -341,9 +341,9 @@ jobs:
             "$RUNNER_TEMP/windows/golden-bundle.tar.gz"
 
   # Linux's cook (x86-64) against the Metal job's (AArch64): every asset but the block-compressed
-  # textures, which each architecture's own kernels encode, must be the same bytes (M4 C6). A mesh
-  # that differs names a cook step whose arithmetic rounds by architecture: glam's SIMD types, or C++
-  # built with contraction.
+  # textures and texture levels, which each architecture's own kernels encode, must be the same bytes
+  # (M4 C6, M5 M3). A mesh that differs names a cook step whose arithmetic rounds by architecture:
+  # glam's SIMD types, or C++ built with contraction.
   cooks-agree-architectures:
     name: Cooks agree (Linux, macOS)
     needs: [golden-build-linux, golden-metal]

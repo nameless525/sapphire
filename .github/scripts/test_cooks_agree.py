@@ -1,4 +1,5 @@
-"""Cooks agree: same-architecture cooks must match whole, and across architectures all but textures."""
+"""Cooks agree: same-architecture cooks must match whole, and across architectures all but textures and
+their levels."""
 
 from contextlib import redirect_stdout
 import io
@@ -9,7 +10,7 @@ import unittest
 
 import cooks_agree
 
-MESH, TEXTURE = 1, 2
+MESH, TEXTURE, TEXTURE_LEVEL = 1, 2, 26
 
 
 def pack(assets: dict) -> bytes:
@@ -36,6 +37,7 @@ class CooksAgreeTests(unittest.TestCase):
         self.enterContext(redirect_stdout(io.StringIO()))
         self.mesh = ("11" * 16, (MESH, 10, "aa" * 32))
         self.texture = ("22" * 16, (TEXTURE, 20, "bb" * 32))
+        self.level = ("33" * 16, (TEXTURE_LEVEL, 40, "ee" * 32))
 
     def cook(self, name: str, assets: dict) -> cooks_agree.Cook:
         directory = self.root / name
@@ -56,6 +58,13 @@ class CooksAgreeTests(unittest.TestCase):
         self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 0)
         self.assertGreater(cooks_agree.compare(first, second, across_architectures=False), 0)
 
+    def test_a_texture_level_may_differ_only_across_architectures(self):
+        level_id, (kind, size, _) = self.level
+        first = self.cook("x86-64", dict([self.mesh, self.texture, self.level]))
+        second = self.cook("aarch64", dict([self.mesh, self.texture, (level_id, (kind, size, "ff" * 32))]))
+        self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 0)
+        self.assertGreater(cooks_agree.compare(first, second, across_architectures=False), 0)
+
     def test_a_mesh_never_differs(self):
         mesh_id, (kind, size, _) = self.mesh
         first = self.cook("x86-64", dict([self.mesh, self.texture]))
@@ -68,6 +77,12 @@ class CooksAgreeTests(unittest.TestCase):
         self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 1)
         (self.root / "x86-64" / "zone.spack").write_bytes(pack(dict([self.mesh])))
         self.assertEqual(cooks_agree.compare(cooks_agree.Cook(self.root / "x86-64"), second, True), 2)
+
+    def test_a_texture_level_in_one_cook_only_counts(self):
+        first = self.cook("x86-64", dict([self.mesh, self.texture, self.level]))
+        second = self.cook("aarch64", dict([self.mesh, self.texture]))
+        self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 1)
+        self.assertEqual(cooks_agree.compare(second, first, across_architectures=True), 1)
 
 
 if __name__ == "__main__":

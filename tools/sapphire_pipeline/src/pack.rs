@@ -102,6 +102,7 @@ use sapphire_assets::font::{FONTS_PACK, Font};
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
+use sapphire_assets::texture_level::{self, TextureLevel};
 use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey, SlotMaterial};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
@@ -471,6 +472,18 @@ fn groups<'a>(
         let reaches = kind(&asset.output).filter(|&of| AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
         if let Some(of) = reaches {
             reach.insert(asset.id, reach_of(asset, of, cache)?);
+        }
+        // A texture's levels go where it goes: what reaches a texture reaches its levels (M5 M3).
+        if kind(&asset.output) == Some(AssetKind::Texture) {
+            let levels: Vec<AssetId> = (0..texture_level::MAX_LEVELS)
+                .map(|level| TextureLevel::id(asset.id, level))
+                .take_while(|id| {
+                    by_id.get(id).is_some_and(|level| kind(&level.output) == Some(AssetKind::TextureLevel))
+                })
+                .collect();
+            if !levels.is_empty() {
+                reach.insert(asset.id, levels);
+            }
         }
     }
     let walk = |from: Vec<AssetId>| -> Result<HashSet<AssetId>, PackError> {

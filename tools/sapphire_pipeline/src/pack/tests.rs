@@ -480,6 +480,74 @@ fn sub_assets_are_packed_and_load_by_their_own_ids() {
     assert_eq!(server.get(&rig).unwrap().joint_count.to_native() as usize, joints);
 }
 
+/// The albedo at 512 × 256, which cooks to a tail and two levels (M5 M3); with `swapped`, its first two
+/// texels change places, which changes level 0 and no other: every level averages them together.
+fn write_large_albedo(scratch: &Scratch, swapped: bool) {
+    let path = scratch.source().join("albedo.png");
+    let mut image = ::image::RgbaImage::from_fn(512, 256, |x, y| {
+        ::image::Rgba([(x / 2) as u8, y as u8, (x ^ y) as u8, 255])
+    });
+    let (red, blue) = (::image::Rgba([255, 0, 0, 255]), ::image::Rgba([0, 0, 255, 255]));
+    let (first, second) = if swapped { (blue, red) } else { (red, blue) };
+    image.put_pixel(0, 0, first);
+    image.put_pixel(1, 0, second);
+    image.save_with_format(&path, ::image::ImageFormat::Png).unwrap();
+}
+
+/// Each block's hash of each asset in `pack`, by ID.
+fn blocks_in(pack: &[u8]) -> HashMap<AssetId, Vec<[u8; 32]>> {
+    let reader = PackReader::new(pack).unwrap();
+    let toc = reader.toc();
+    toc.entries()
+        .iter()
+        .map(|entry| (entry.id, toc.blocks(entry).iter().map(|block| block.hash).collect()))
+        .collect()
+}
+
+/// A texture's levels are packed with it, load with whatever binds it, and are patched apart from it.
+#[test]
+fn a_textures_levels_go_with_it_and_patch_alone() {
+    let scratch = Scratch::new("pack_texture_levels");
+    write_large_albedo(&scratch, false);
+    let (report, _) = scratch.pack(Cook::Desktop, true);
+    let levels = [TextureLevel::id(id(ALBEDO), 0), TextureLevel::id(id(ALBEDO), 1)];
+    assert_eq!(report.assets.len(), 5, "the mesh, its material, the tail and two levels");
+    let bytes = scratch.shared(Cook::Desktop);
+    {
+        let reader = PackReader::new(&bytes).unwrap();
+        let toc = reader.toc();
+        for level in levels {
+            let entry = toc.find(level).expect("packed with its texture");
+            assert_eq!((entry.kind, entry.codec), (AssetKind::TextureLevel, Codec::Zstd));
+            assert_eq!(toc.dependencies(entry), [id(ALBEDO)], "a level depends on its tail");
+        }
+    }
+
+    // The mesh loads its material, the tail, then the levels, before the material.
+    let source = Arc::new(MemoryPackSource::new());
+    source.insert(SHARED, bytes.clone());
+    let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
+    server.mount_now(SHARED).unwrap();
+    let mesh: Handle<Mesh> = server.load(id(MANNEQUIN)).unwrap();
+    let mut order = Vec::new();
+    server
+        .finish(&mesh, |upload| {
+            order.push(upload.kind());
+            Ok(())
+        })
+        .unwrap();
+    use AssetKind::{Material as M, Mesh as Me, Texture as T, TextureLevel as L};
+    assert_eq!(order, [T, L, L, M, Me]);
+
+    // A change to level 0 alone moves level 0's blocks and no other asset's.
+    let before = blocks_in(&bytes);
+    write_large_albedo(&scratch, true);
+    scratch.pack(Cook::Desktop, true);
+    let after = blocks_in(&scratch.shared(Cook::Desktop));
+    let changed: Vec<AssetId> = before.keys().copied().filter(|id| before[id] != after[id]).collect();
+    assert_eq!(changed, [levels[0]]);
+}
+
 /// A prop's mesh, for a zone's instances, in `wood`.
 fn write_prop(scratch: &Scratch, name: &str, prop: AssetId, material: AssetId) {
     let path = scratch.source().join(format!("{name}.assembly.ron"));

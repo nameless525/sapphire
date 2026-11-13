@@ -156,6 +156,7 @@ use sapphire_assets::score::{SCORE_EXTENSION, Score};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
+use sapphire_assets::texture_level::{TEXTURE_LEVEL_EXTENSION, TextureLevel};
 use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::voice::{VOICE_LINES_EXTENSION, VoiceLines};
 use sapphire_assets::{AssetId, AssetKind};
@@ -198,7 +199,7 @@ use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::script::{self, ScriptCookError};
-use crate::texture::{self, TextureError};
+use crate::texture::{self, CookedTexture, TextureError, TextureSettings};
 use crate::timeline::{self, TimelineCookError};
 use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
@@ -460,6 +461,11 @@ impl Recipe {
             format: Skeleton::VERSION,
             extension: SKELETON_EXTENSION,
         }
+    }
+
+    /// The recipe of a level above a texture's tail, beside the texture cooked with this recipe.
+    fn texture_level(self) -> Self {
+        Self { format: TextureLevel::VERSION, extension: TEXTURE_LEVEL_EXTENSION, ..self }
     }
 
     /// The recipe of a zone's merged mesh for a place.
@@ -1033,7 +1039,15 @@ fn cook_dir_through(
         // Which sub-assets there are may take reading the file, which could panic in a crate.
         let planned_from = Cell::new(None);
         let parts = guarded(&asset.path, || {
-            sub_assets(&asset, &planned_from, &prefabs, &mut zones, cache.as_ref(), options.editor)
+            sub_assets(
+                &asset,
+                &planned_from,
+                &prefabs,
+                &mut zones,
+                cache.as_ref(),
+                options.cook,
+                options.editor,
+            )
         })?;
         let planned_from = planned_from.get();
         let skeleton =
@@ -1073,6 +1087,10 @@ fn cook_dir_through(
                     source_relative.with_file_name(file)
                 }
                 Part::Navigation => zone::output_path(&source_relative, recipe.extension),
+                Part::Level { level, .. } => {
+                    let file = format!("{}.mip{level}.{}", file_stem(&source_relative), recipe.extension);
+                    source_relative.with_file_name(file)
+                }
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
@@ -1426,6 +1444,9 @@ enum Part {
     FontSubset { index: usize, pack: String },
     /// A zone's navmesh.
     Navigation,
+    /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
+    /// from its base.
+    Level { texture: AssetId, level: u32 },
 }
 
 /// A part of a source, its ID and its recipe.
@@ -1444,6 +1465,7 @@ fn sub_assets(
     prefabs: &HashMap<AssetId, SourceAsset>,
     zones: &mut HashMap<PathBuf, ZonePlan>,
     cache: Option<&Cache>,
+    cook: Cook,
     editor: bool,
 ) -> Result<Vec<PlannedPart>, CookError> {
     let SourceAsset { path, meta } = asset;
@@ -1552,8 +1574,18 @@ fn sub_assets(
                 })
                 .collect())
         }
-        ImportSettings::Texture(_)
-        | ImportSettings::CharacterMap(_)
+        // A large texture's levels above its tail, by its header and the cook's format (M5 M3).
+        ImportSettings::Texture(settings) => {
+            let above = texture::planned_levels(path, &read()?, settings, cook);
+            Ok((0..above)
+                .map(|level| PlannedPart {
+                    id: TextureLevel::id(meta.id, level),
+                    part: Part::Level { texture: meta.id, level },
+                    recipe: own.texture_level(),
+                })
+                .collect())
+        }
+        ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::Colliders(_)
@@ -1827,6 +1859,7 @@ impl<'a> PlannedTree<'a> {
             cache: self.cache,
             clip_sources: &remembered.clip_sources,
             last_source: &remembered.last_source,
+            textures: &remembered.last_texture,
             memory: self.memory,
             fluent: self.fluent,
             flags: self.flags,
@@ -1852,6 +1885,7 @@ impl<'a> PlannedTree<'a> {
 struct Remembered {
     clip_sources: ClipSources,
     last_source: LastSource,
+    last_texture: LastTexture,
 }
 
 /// The content tree's assets by ID, with what has cooked so far.
@@ -1866,6 +1900,8 @@ struct Assets<'a> {
     cache: Option<&'a Cache>,
     clip_sources: &'a ClipSources,
     last_source: &'a LastSource,
+    /// The texture chain this thread cooked last.
+    textures: &'a LastTexture,
     memory: &'a CookMemory,
     fluent: &'a FluentFiles,
     flags: &'a Registry,
@@ -2172,6 +2208,38 @@ impl LastSource {
     }
 }
 
+/// The texture cooked last: a texture's tail and its levels above (M5 M3) cook one after another from
+/// one chain, so it's cooked once rather than once a part. Only one texture's chain is ever held.
+#[derive(Default)]
+struct LastTexture(RefCell<Option<(PathBuf, blake3::Hash, Rc<CookedTexture>)>>);
+
+impl LastTexture {
+    /// The chain of the texture source `bytes` read from `path`, cooked for `cook`.
+    fn cook(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        settings: &TextureSettings,
+        cook: Cook,
+        memory: &CookMemory,
+    ) -> Result<Rc<CookedTexture>, CookError> {
+        let hash = blake3::hash(bytes);
+        if let Some((last, last_hash, chain)) = &*self.0.borrow()
+            && last == path
+            && *last_hash == hash
+        {
+            return Ok(Rc::clone(chain));
+        }
+        *self.0.borrow_mut() = None;
+        let _held = memory.hold(texture::cook_memory(path, bytes));
+        let chain = texture::cook_chain(path, bytes, settings, cook)
+            .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) })?;
+        let chain = Rc::new(chain);
+        *self.0.borrow_mut() = Some((path.to_owned(), hash, Rc::clone(&chain)));
+        Ok(chain)
+    }
+}
+
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
 /// cookers report what they find wrong themselves; this is the last line of defence, for what
 /// slips past them or panics inside a crate they call, so that the file is named all the same.
@@ -2343,6 +2411,10 @@ fn part_dependencies(
     if let Part::FontSubset { index, .. } = part {
         dependencies.push(marker(format!("#subset {index}")));
     }
+    // A texture's levels differ by their place, and each holds its texture's ID.
+    if let Part::Level { texture, level } = part {
+        dependencies.push(marker(format!("#level {level} of {texture}")));
+    }
     // A key-pose clip takes its name from its file, which a key doesn't otherwise hold.
     if matches!(settings, ImportSettings::KeyPose(_)) {
         dependencies.push(marker(format!("#name {}", keypose::stem(path))));
@@ -2377,6 +2449,17 @@ fn cook_source(
             return cook_shape(path, shape, settings, cook, assets);
         }
         Part::Navigation => return cook_navigation(path, assets),
+        Part::Level { texture, level } => {
+            let ImportSettings::Texture(settings) = settings else {
+                unreachable!("only textures plan levels");
+            };
+            let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
+            let level = chain.level(*texture, *level).map_err(|source| CookError::Texture {
+                path: path.to_owned(),
+                source: Box::new(TextureError::Cooked(source)),
+            })?;
+            return Ok(level.into_vec());
+        }
         Part::Skeleton => {
             let joints = if settings.is_animation_only() {
                 assets.clip_sources.get(path, bytes, settings).map_err(clip_error)?.joints.clone()
@@ -2425,10 +2508,10 @@ fn cook_source(
         ImportSettings::GltfClips(_) | ImportSettings::FbxClips(_) | ImportSettings::Vrma(_) => {
             unreachable!("animation sources have their clips and skeleton, and nothing of their own")
         }
+        // The texture's own asset is its tail, below the levels it plans as assets of their own (M5 M3).
         ImportSettings::Texture(settings) => {
-            let _held = assets.memory.hold(texture::cook_memory(path, bytes));
-            texture::cook_source(path, bytes, settings, cook)
-                .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) })
+            let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
+            Ok(chain.tail(chain.levels_above(settings)))
         }
         ImportSettings::CharacterMap(settings) => {
             let _held = assets.memory.hold(map_memory(path, bytes, settings));

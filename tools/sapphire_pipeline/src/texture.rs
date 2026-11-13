@@ -42,6 +42,20 @@
 //! Block-compressed textures need sizes that are whole blocks (multiples of 4, or of the ASTC
 //! block), which WebGPU requires of level 0; other sizes fail the cook with that reason.
 //!
+//! # Tails and levels (M5 M3)
+//!
+//! A texture of a class that [streams](TextureClass::streams) (color, normal, mask, HDR) with mips
+//! splits into a **tail** and its **levels** above it: the tail, the source's own asset, is a whole
+//! KTX2 holding the levels from its top down, and each level above it is an asset of its own
+//! (`.smip`, `sapphire_assets::texture_level`), beside the texture's (`albedo.mip0.smip`). The tail's
+//! top is the first level of 128 px or less on its longer side, or a larger one where no smaller
+//! level can be a texture's top: one whose size is whole blocks, with block × 2^k dividing both of the
+//! base's sides (M5 M0; `sapphire_assets::texture::tail_top`). A texture already that small, or with
+//! no mips, stays whole. The cook plans the split from the source's header ([`planned_levels`]),
+//! before anything cooks, and the chain it cooks must split the same way. Tail and levels together
+//! are the chain a whole cook writes, level for level ([`CookedTexture::tail`],
+//! [`CookedTexture::level`]). Ramps, ILM and SDF maps stay whole: they decide a character's tones.
+//!
 //! # Determinism
 //!
 //! A cook's output depends only on its inputs, on every machine of an architecture (spec §5.27,
@@ -76,10 +90,14 @@ pub use self::kernels::EncodeError;
 
 use std::path::Path;
 
+use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::face_sdf;
 use sapphire_assets::texture::{
-    AstcBlock, Component, Swizzle, Texture, TextureDesc, TextureFormat, TextureFormatError, full_mip_count,
+    AstcBlock, Component, Swizzle, Texture, TextureDesc, TextureFormat, TextureFormatError, TextureTail,
+    full_mip_count, tail_top,
 };
+use sapphire_assets::texture_level::TextureLevel;
+use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use serde::{Deserialize, Serialize};
 
 use self::encode::{AstcUsage, Encoding};
@@ -97,7 +115,8 @@ use crate::import::image::{
 /// and `ktx2`, whose generated descriptors the reader compares byte for byte. 4: x86-64 encodes BC7
 /// with Intel's kernel (M4 C4). 5: astcenc builds without floating-point contraction on AArch64, as
 /// every C++ dependency there does (M4 C6), which moved AArch64's ASTC blocks and nothing on x86-64.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 5 };
+/// 6: a large texture's own asset is its tail, and its levels above are assets of their own (M5 M3).
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 6 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;
@@ -181,6 +200,16 @@ impl TextureClass {
             Self::Ilm(s) => s.mips,
             Self::Sdf(s) => s.mips,
             Self::Hdr(s) => s.mips,
+        }
+    }
+
+    /// Whether its textures split into a tail and levels ("Tails and levels" in the [module docs](self)):
+    /// colors, normals, masks and HDR. Ramps, ILM and SDF maps decide a character's tones, so they stay
+    /// whole, as every generated character map does.
+    pub fn streams(&self) -> bool {
+        match self {
+            Self::Color(_) | Self::Normal(_) | Self::Mask(_) | Self::Hdr(_) => true,
+            Self::Ramp(_) | Self::Ilm(_) | Self::Sdf(_) => false,
         }
     }
 }
@@ -345,6 +374,12 @@ pub enum TextureError {
         #[source]
         source: EncodeError,
     },
+    #[error(
+        "the cook planned {planned} levels above the texture's tail from its header, but its chain has {found}"
+    )]
+    PlannedLevels { planned: u32, found: u32 },
+    #[error("can't write a texture level")]
+    Cooked(#[source] CookedError),
 }
 
 /// How a cook stores a class: chosen from the class, the cook and the source's channels.
@@ -527,6 +562,30 @@ impl CookedTexture {
     pub fn to_ktx2(&self) -> Vec<u8> {
         self.texture().to_ktx2().expect("cooked textures are validated before encoding")
     }
+
+    /// How many of its levels a cook of `settings` stores above its tail ([`tail_top`]).
+    pub fn levels_above(&self, settings: &TextureSettings) -> u32 {
+        if settings.class.streams() { tail_top(&self.desc) } else { 0 }
+    }
+
+    /// Its tail, below its first `above` levels: the texture's own asset, a KTX2 file.
+    pub fn tail(&self, above: u32) -> Vec<u8> {
+        let (width, height) = self.desc.level_extent(above);
+        let desc =
+            TextureDesc { width, height, mip_level_count: self.desc.mip_level_count - above, ..self.desc };
+        let levels = self.levels[above as usize..].iter().map(Vec::as_slice).collect();
+        TextureTail { texture: Texture { desc, levels }, above }
+            .to_ktx2()
+            .expect("a split at the tail's top makes a valid tail")
+    }
+
+    /// Its level `level`, above its tail, as the asset of its own it cooks to: a level of `texture`.
+    pub fn level(&self, texture: AssetId, level: u32) -> Result<AlignedVec, CookedError> {
+        let (width, height) = self.desc.level_extent(level);
+        let format = self.desc.format.vk_format();
+        let data = self.levels[level as usize].clone();
+        TextureLevel { texture, level, format, width, height, data }.to_cooked()
+    }
 }
 
 /// Plans `image` for `cook` and builds its mip chain.
@@ -628,15 +687,59 @@ pub fn cook_memory(path: &Path, bytes: &[u8]) -> u64 {
     })
 }
 
-/// Imports and cooks one texture source: the bytes of its cooked KTX2 file.
+/// Imports and cooks one texture source: the bytes of its cooked KTX2 file, whole.
 pub fn cook_source(
     path: &Path,
     bytes: &[u8],
     settings: &TextureSettings,
     cook: Cook,
 ) -> Result<Vec<u8>, TextureError> {
+    Ok(cook_chain(path, bytes, settings, cook)?.to_ktx2())
+}
+
+/// Imports and cooks one texture source: its whole mip chain, which [`CookedTexture::tail`] and
+/// [`CookedTexture::level`] split as the cook stores it.
+pub fn cook_chain(
+    path: &Path,
+    bytes: &[u8],
+    settings: &TextureSettings,
+    cook: Cook,
+) -> Result<CookedTexture, TextureError> {
     let image = import(path, bytes, settings)?;
-    Ok(prepare_owned(image, settings, cook)?.encode()?.to_ktx2())
+    let cooked = prepare_owned(image, settings, cook)?.encode()?;
+    // The plan split the texture by its source's header, before anything cooked.
+    let (planned, found) = (planned_levels(path, bytes, settings, cook), cooked.levels_above(settings));
+    if planned != found {
+        return Err(TextureError::PlannedLevels { planned, found });
+    }
+    Ok(cooked)
+}
+
+/// How many levels above its tail a texture of `settings`, cooked for `cook` from a source of
+/// `width × height`, splits off ([`tail_top`]): 0 for a texture that stays whole. What the cook plans
+/// with, before any texel is read.
+pub fn levels_above(settings: &TextureSettings, cook: Cook, width: u32, height: u32) -> u32 {
+    if !settings.class.streams() || !settings.class.mips() {
+        return 0;
+    }
+    // A class's block doesn't depend on the source's channels (only whether there are enough), so
+    // the plan for four stands for every source.
+    let Ok(plan) = plan(&settings.class, cook, ChannelLayout::Rgba) else {
+        return 0;
+    };
+    let mip_level_count = full_mip_count(width, height);
+    let desc = TextureDesc { format: plan.format, width, height, mip_level_count, swizzle: plan.swizzle };
+    if desc.validate().is_err() {
+        return 0;
+    }
+    tail_top(&desc)
+}
+
+/// [`levels_above`] for the texture source `bytes` read from `path`, by its header: 0 if that doesn't
+/// read, since neither will the rest of it.
+pub fn planned_levels(path: &Path, bytes: &[u8], settings: &TextureSettings, cook: Cook) -> u32 {
+    let size = SourceFormat::from_path(path).and_then(|format| image_import::header_size(bytes, format));
+    size.map_or(0, |(width, height)| levels_above(settings, cook, width, height))
 }
 
 fn prepare_texel(texel: Texel, layout: ChannelLayout, pixel: [f32; 4]) -> [f32; 4] {
@@ -1197,6 +1300,124 @@ mod tests {
         let error = texture_error(tree.try_cook(Cook::Desktop, false).unwrap_err());
         assert!(matches!(error, TextureError::Import(ImageImportError::Decode(_))), "{error:?}");
     }
+    /// A large texture splits at its tail's top by M5 M0's rule, on both cooks, at every block size a
+    /// texture may choose and at sizes that aren't powers of two, and its tail and levels hold the whole
+    /// cook's levels, level for level. What the plan says from the size alone is what the cook does.
+    #[test]
+    fn a_large_texture_splits_into_a_tail_and_levels_that_reassemble_to_the_whole_cook() {
+        use AstcBlock::*;
+        let color = |astc_block| TextureClass::Color(ColorSettings { mips: true, astc_block });
+        let normal =
+            |astc_block| TextureClass::Normal(NormalSettings { astc_block, ..NormalSettings::default() });
+        let hdr = TextureClass::Hdr(HdrSettings::default());
+        // (class, cook, size, levels above the tail).
+        let cases = [
+            (color(B4x4), Cook::Desktop, (512, 256), 2),
+            // 1000 × 600 halves once in whole 4 × 4 blocks; 250 × 150 isn't.
+            (color(B4x4), Cook::Desktop, (1000, 600), 1),
+            (color(B4x4), Cook::Mobile, (512, 512), 2),
+            (color(B5x5), Cook::Mobile, (640, 320), 3),
+            (color(B6x6), Cook::Mobile, (768, 384), 3),
+            // 5 × 2^2 doesn't divide 330, so the tail is 165 × 165, over 128.
+            (color(B5x5), Cook::Mobile, (330, 330), 1),
+            (normal(B8x8), Cook::Mobile, (512, 256), 2),
+            (hdr, Cook::Desktop, (256, 256), 1),
+            // RGB9E5, one texel a block: halving exactly is the rule, down to 75 × 50.
+            (hdr, Cook::Mobile, (300, 200), 2),
+            // What stays whole: small, without mips, or a class that decides tones.
+            (color(B4x4), Cook::Desktop, (128, 128), 0),
+            (
+                TextureClass::Color(ColorSettings { mips: false, ..ColorSettings::default() }),
+                Cook::Desktop,
+                (512, 512),
+                0,
+            ),
+            (TextureClass::Ilm(IlmSettings::default()), Cook::Desktop, (512, 512), 0),
+            (TextureClass::Sdf(SdfSettings::default()), Cook::Mobile, (512, 512), 0),
+        ];
+        let texture = AssetId::from_bytes([3; 16]);
+        for (class, cook, (width, height), above) in cases {
+            let name = format!("{} {cook:?} {width}x{height}", class.name());
+            let settings = settings(class);
+            let cooked = super::cook(&gradient(width, height), &settings, cook).unwrap();
+            assert_eq!(cooked.levels_above(&settings), above, "{name}");
+            assert_eq!(levels_above(&settings, cook, width, height), above, "{name}: the plan agrees");
+
+            let whole_file = cooked.to_ktx2();
+            let whole = Texture::from_ktx2(&whole_file).unwrap();
+            let tail_file = cooked.tail(above);
+            let tail = TextureTail::from_ktx2(&tail_file).unwrap();
+            assert_eq!((tail.above, tail.whole()), (above, cooked.desc), "{name}");
+            if above == 0 {
+                assert!(tail_file == whole_file, "{name}: a texture that stays whole cooks as it did");
+            }
+            // The top is the first level of 128 or less, or the deepest that can be a top before it.
+            if above > 0 {
+                let longer = |level| {
+                    let (width, height) = cooked.desc.level_extent(level);
+                    width.max(height)
+                };
+                assert!(longer(above - 1) > 128, "{name}: no deeper than the first small level");
+                assert!(longer(above) <= 128 || !can_split_deeper(&cooked.desc, above), "{name}");
+            }
+            let mut levels = Vec::new();
+            for level in 0..above {
+                let bytes = cooked.level(texture, level).unwrap();
+                let read = TextureLevel::read(&bytes).unwrap();
+                assert_eq!(
+                    (read.texture(), read.level(), read.extent(), read.format()),
+                    (texture, level, cooked.desc.level_extent(level), cooked.desc.format),
+                    "{name}"
+                );
+                levels.push(read.data().to_vec());
+            }
+            levels.extend(tail.texture.levels.iter().map(|level| level.to_vec()));
+            let expected: Vec<Vec<u8>> = whole.levels.iter().map(|level| level.to_vec()).collect();
+            assert!(levels == expected, "{name}: tail and levels are the whole cook's levels");
+        }
+    }
+
+    /// Whether the texture of shape `desc` could have split deeper than `above` and still had a top
+    /// over 128 px: the rule stops at the first small level, or the deepest that can be a top.
+    fn can_split_deeper(desc: &TextureDesc, above: u32) -> bool {
+        sapphire_assets::texture::can_be_top(desc, above + 1)
+    }
+
+    /// A content tree's large texture cooks to its tail and levels, each with its derived ID, and cooks
+    /// again to the same bytes.
+    #[test]
+    fn content_trees_cook_large_textures_into_tails_and_levels() {
+        let tree = Tree::new("texture_levels");
+        let rgba = ::image::RgbaImage::from_fn(512, 256, |x, y| {
+            ::image::Rgba([(x / 2) as u8, y as u8, (x ^ y) as u8, 255])
+        });
+        let png = tree.source().join("characters/large.png");
+        write_image(&png, rgba.into(), ::image::ImageFormat::Png);
+        for cook in [Cook::Desktop, Cook::Mobile] {
+            let report = tree.cook(cook, true);
+            let id = meta::read(&sidecar_path(&png)).unwrap().id;
+            let out = tree.out(cook);
+            let output =
+                |id| report.assets.iter().find(|asset| asset.id == id).map(|asset| asset.output.clone());
+            assert_eq!(output(id), Some(out.join("characters/large.ktx2")));
+            assert_eq!(output(TextureLevel::id(id, 0)), Some(out.join("characters/large.mip0.smip")));
+            assert_eq!(output(TextureLevel::id(id, 1)), Some(out.join("characters/large.mip1.smip")));
+            assert_eq!(output(TextureLevel::id(id, 2)), None, "the tail's top is 128 × 64");
+            assert_eq!(report.assets.len(), 6, "the three small textures stay whole");
+            let tail = fs::read(out.join("characters/large.ktx2")).unwrap();
+            assert_eq!(TextureTail::from_ktx2(&tail).unwrap().above, 2);
+            let bytes: Vec<Vec<u8>> =
+                report.assets.iter().map(|asset| fs::read(&asset.output).unwrap()).collect();
+            // Without the cache, every part cooks again, to the same bytes.
+            let again = tree.cook(cook, false);
+            assert_eq!(statuses(&again), [CookStatus::Cooked; 6]);
+            let rewritten: Vec<Vec<u8>> =
+                again.assets.iter().map(|asset| fs::read(&asset.output).unwrap()).collect();
+            assert!(rewritten == bytes, "{cook:?}");
+            assert_eq!(statuses(&tree.cook(cook, true)), [CookStatus::UpToDate; 6]);
+        }
+    }
+
     #[test]
     fn owned_preparation_preserves_every_planned_level() {
         for class in [

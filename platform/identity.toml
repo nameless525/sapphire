@@ -8,7 +8,8 @@
 # identity"). A placeholder bundle ID stays under `com.example`, which RFC 2606 reserves, so nobody can take
 # it for a chosen one: xtask refuses a placeholder outside it, and an identity not marked as a placeholder
 # inside it. To choose, replace bundle-id and the display names, and delete `placeholder = true`. A bundle
-# ID is permanent once a store has seen it. The icon is platform/icon/icon.png.
+# ID is permanent once a store has seen it. The icon is chosen: platform/icon/icon.png, the maintainer's own
+# (platform/icon/README.md).
 
 [game_app]
 placeholder = true

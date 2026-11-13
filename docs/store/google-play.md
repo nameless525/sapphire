@@ -31,7 +31,7 @@
 | 16 | The drafts read well to a Japanese player. | m4-plan §7 | | Owed: a native reader |
 | 17 | Screenshots: 2 to 8 per device type, JPEG or 24-bit PNG with no alpha, 320 to 3840 px a side, the long side at most twice the short. Large screens: at least 4, 1080 to 7680 px, 16:9. A game's recommendations want at least 3 landscape at 1920×1080 or more. | "Add preview assets", answer/9866151, 2026-11-10 | `cargo xtask store-shots`: six RGB PNGs per size in [Screenshots](#screenshots); `store_shots::tests` holds the sizes to this doc and Play's bounds | Met |
 | 18 | A feature graphic, 1024×500, to publish. | same | Not made: it's key art | Owed: the maintainer's art |
-| 19 | A 512×512 icon, 32-bit PNG. | same | S1's `icons` makes Play's 512 px icon from `platform/icon/icon.png` | Met (the icon itself is a placeholder) |
+| 19 | A 512×512 icon, 32-bit PNG. | same | S1's `icons` makes Play's 512 px icon from `platform/icon/icon.png` | Met: the icon is the maintainer's own (2026-11-13) |
 | 20 | Games declare their category, which also keeps Android 16's large-screen orientation rules off them. | "Android 16 behaviour changes" and the adaptive-apps guide, as the scouts' note gives them (2026-11-10) | `android:appCategory="game"` in the manifest | Met |
 | 21 | Edge to edge and Back at target API 36. | "Behavior changes: apps targeting Android 16", 2026-11-10 (S3) | S3 on the emulator: drawn edge to edge with a cutout emulated; `KEYCODE_BACK` reaches the game | Met on the emulator; a phone's back gesture owed (S3) |
 | 22 | Release lint passes; the bundle and APKs are valid and aligned. | S0, S3 | Lint fails the package on error; `bundletool validate`, `build-apks --local-testing`, `zipalign`, `aapt2 dump badging` (S3) | Met |
@@ -45,7 +45,7 @@
 
 ## Owed to the maintainer
 
-1. **The identity:** the app ID (permanent once uploaded), the name and the icon.
+1. **The identity:** the app ID (permanent once uploaded) and the name. The icon is the maintainer's own since 2026-11-13.
 2. **The account:** Play Console, the app record, Play App Signing and the upload key, which enters `package` through `SAPPHIRE_UPLOAD_KEYSTORE` (rules 5, 23).
 3. **The privacy policy's URL** (rule 6), from [privacy-policy.md](privacy-policy.md), once the patch host's logs are settled, and the same address as `privacy-url` in the game's strings (rule 8, [apple.md](apple.md#owed-to-the-maintainer) item 4).
 4. **Play Console's App content page:** the data safety form, the content rating questionnaire, target audience, ads and app access, from the drafts below (rules 9–12).

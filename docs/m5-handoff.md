@@ -74,7 +74,7 @@ Everything here needs the maintainer's accounts, keys or judgement, which no age
 
 ### For every store
 
-1. **Choose the identity.** In `platform/identity.toml`, set `game_app`'s `bundle-id` (permanent once a store has seen it), `bundle-name` and display names in both languages, and delete `placeholder = true`. Replace `platform/icon/icon.png`, the master every store's icon is made from by `package`, if the generated one won't do (S1). Put the game's name into the store drafts in [docs/store/](store/).
+1. **Choose the identity.** In `platform/identity.toml`, set `game_app`'s `bundle-id` (permanent once a store has seen it), `bundle-name` and display names in both languages, and delete `placeholder = true`. The icon is chosen: `platform/icon/icon.png`, the master every store's icon is made from by `package`, is the maintainer's own since 2026-11-13 (`platform/icon/README.md` says what a replacement must meet). Put the game's name into the store drafts in [docs/store/](store/).
 2. **Host the privacy policy.** Fill in [privacy-policy.md](store/privacy-policy.md)'s bracketed names and host it at a public URL. Set that URL as `privacy-url` in `content/loc/en/game_ui.ftl` and `content/loc/ja/game_ui.ftl`; once the identity is chosen, `package` refuses the placeholder address. "Collects nothing" holds only if the patch host keeps no access logs that identify a device: choose the host with that in mind.
 3. **Make a release key and choose a patch host,** or ship a build that can never be patched: a build trusts only the keys and host compiled into it.
    - The key is an ed25519 seed in a file, kept offline and never in the repository (X4):

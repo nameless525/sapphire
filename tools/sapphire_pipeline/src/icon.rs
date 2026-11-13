@@ -1,7 +1,7 @@
 //! The app's icon (M4 S1): every platform's icon set, made from one master.
 //!
 //! The master, `platform/icon/icon.png`, is Sapphire's icon: the maintainer's own artwork, given on
-//! 2026-11-13, a cluster of four faceted blue gems with a cyan outline around a white four-pointed glint, on
+//! 2026-11-13: three faceted blue gems and a hollow cyan diamond around a white four-pointed glint, on
 //! white. It's authored, not generated: a new icon replaces the file, byte for byte as it's given.
 //!
 //! A master must be square, at least [`MASTER_SIZE`] px, and opaque, as App Store icons must be

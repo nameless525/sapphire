@@ -485,8 +485,8 @@ fn fill_template(
     Ok(filled)
 }
 
-/// The project's icon: a square, opaque PNG of at least 1024 px, drawn by `sapphire_pipeline gen-icon`
-/// until the maintainer replaces it with the game's own.
+/// The project's icon: the maintainer's own artwork, a square, opaque PNG of at least 1024 px with its art
+/// inside the middle circle every platform's mask keeps (`platform/icon/README.md`).
 pub const ICON_FILE: &str = "platform/icon/icon.png";
 
 /// Makes every platform's icon set from [`ICON_FILE`] under `out`, replacing what was there

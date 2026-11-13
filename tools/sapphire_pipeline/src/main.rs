@@ -45,9 +45,6 @@ Usage:
       Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
       tools/figures) under the content directory --out, in the folder each spec names. Missing
       files only, as gen-samples, unless --force.
-  sapphire_pipeline gen-icon --out <DIR> [--force]
-      Write the app's icon, drawn in code, as DIR/icon.png (platform/icon/ is the committed one): a
-      1024 px opaque square. Missing files only, as gen-samples, unless --force.
   sapphire_pipeline icons --source <PNG> --out <DIR>
       Make every platform's icon set from a square, opaque master of at least 1024 px under DIR:
       Apple's asset catalogs (ios/, macos/), Android's adaptive icon and Play's listing icon
@@ -103,7 +100,7 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
-  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures, gen-icon: also replace generated files that
+  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
@@ -144,10 +141,6 @@ enum Command {
     },
     GenFigures {
         specs: PathBuf,
-        out: PathBuf,
-        force: bool,
-    },
-    GenIcon {
         out: PathBuf,
         force: bool,
     },
@@ -239,11 +232,6 @@ fn run(command: Command) -> anyhow::Result<()> {
                 format!("failed to write the figures from {} to {}", specs.display(), out.display())
             })?;
             print_generated(&generated, "gen-figures");
-        }
-        Command::GenIcon { out, force } => {
-            let generated = icon::write_all(&out, existing(force))
-                .with_context(|| format!("failed to write the icon to {}", out.display()))?;
-            print_generated(&generated, "gen-icon");
         }
         Command::Icons { source, out } => {
             let written = icon::write_sets(&source, &out)?;
@@ -512,7 +500,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             out: options.required("--out")?,
             force: options.flag("--force"),
         },
-        "gen-icon" => Command::GenIcon { out: options.required("--out")?, force: options.flag("--force") },
         "icons" => Command::Icons { source: options.required("--source")?, out: options.required("--out")? },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
@@ -652,10 +639,6 @@ mod tests {
         assert_eq!(
             parse(&["gen-combat", "--out", "dir"]).unwrap(),
             Command::GenCombat { out: "dir".into(), force: false }
-        );
-        assert_eq!(
-            parse(&["gen-icon", "--out", "dir"]).unwrap(),
-            Command::GenIcon { out: "dir".into(), force: false }
         );
         assert_eq!(
             parse(&["icons", "--source", "icon.png", "--out", "dir"]).unwrap(),

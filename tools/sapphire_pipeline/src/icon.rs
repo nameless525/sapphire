@@ -1,19 +1,21 @@
-//! The app's icon (M4 S1): a master drawn in code, and every platform's icon set made from it.
+//! The app's icon (M4 S1): every platform's icon set, made from one master.
 //!
-//! `sapphire_pipeline gen-icon` writes the master, `platform/icon/icon.png`: a 1024 px square with no alpha,
-//! as App Store icons must be. It's a cut sapphire in flat, cel-shaded facets under a dark line, lit from the
-//! upper left with its shadow side tinted violet, on a deep indigo-to-violet ground with a glow behind it and
-//! two four-pointed glints. Everything it draws sits inside the middle two thirds, which every platform's
-//! mask keeps: Android's adaptive icons show the middle 72 of 108 dp, and iOS rounds the corners. Drawn from
-//! polygons and distances, 4×4 samples a pixel, with nothing but arithmetic and square roots, so it's the
-//! same bytes on every platform. The maintainer replaces it with the game's own (m4-plan §7, "The
-//! identity"): any square opaque PNG of at least 1024 px.
+//! The master, `platform/icon/icon.png`, is Sapphire's icon: the maintainer's own artwork, given on
+//! 2026-11-13, a cluster of four faceted blue gems with a cyan outline around a white four-pointed glint, on
+//! white. It's authored, not generated: a new icon replaces the file, byte for byte as it's given.
+//!
+//! A master must be square, at least [`MASTER_SIZE`] px, and opaque, as App Store icons must be
+//! ([`read_master`] refuses anything else). Its art must sit inside the middle circle, of a diameter 72/108
+//! of the side, on a flat ground that fills the rest: Android's adaptive icons show the middle 72 of 108 dp,
+//! masked to a circle at their smallest, and iOS rounds the corners. A test holds the committed master to
+//! these rules.
 //!
 //! `sapphire_pipeline icons --source <png> --out <dir>` makes every platform's set from a master, resized
 //! with Lanczos3 ([`write_sets`]). Phones mask the icon themselves, so they take the square as it is.
 //! Desktops show an icon unmasked, so theirs is the master on Apple's macOS grid: an 824 px rounded square,
 //! corner radius 185, centered on a transparent 1024 px canvas ([`desktop_master`]). xtask compiles the Apple
-//! catalogs with `actool`; the rest are used as written.
+//! catalogs with `actool` (and `package` makes the sets from the committed master); the rest are used as
+//! written.
 
 use std::fs;
 use std::io;
@@ -22,176 +24,12 @@ use std::path::Path;
 use image::imageops::{self, FilterType};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
 
-use crate::generators::Output;
-use crate::samples::{self, Existing, Generated};
-
 /// The master's file name, in the icon directory (`platform/icon/`).
 pub const MASTER_FILE_NAME: &str = "icon.png";
 /// The master's side, and the least a replacement may have: App Store Connect's icon is 1024 px.
 pub const MASTER_SIZE: u32 = 1024;
-/// Samples per pixel along each axis.
+/// Samples per pixel along each axis, for the desktop body's antialiased edge.
 const SAMPLES: u32 = 4;
-
-/// What `gen-icon` writes.
-pub fn outputs() -> Vec<Output> {
-    vec![Output::new(MASTER_FILE_NAME, master_png)]
-}
-
-/// Writes the master into `dir`, as the other generators write theirs: only when it's missing, unless
-/// `existing` says to replace it.
-pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
-    samples::write_files(dir, outputs(), existing)
-}
-
-/// The master as a PNG.
-pub fn master_png() -> io::Result<Vec<u8>> {
-    encode(master(), ImageFormat::Png)
-}
-
-/// An sRGB color from its 8-bit hex triple, as floats in 0..=1.
-const fn hex(rgb: u32) -> [f32; 3] {
-    [((rgb >> 16) & 0xff) as f32 / 255.0, ((rgb >> 8) & 0xff) as f32 / 255.0, (rgb & 0xff) as f32 / 255.0]
-}
-
-/// A point in the icon's unit square: x right, y down.
-type Point = [f32; 2];
-
-/// The gem's corners. The table's top edge, the girdle's ends, where the crown's side facets meet the
-/// table's lower edge, and the pavilion's tip.
-const TABLE_LEFT: Point = [0.35, 0.33];
-const TABLE_RIGHT: Point = [0.65, 0.33];
-const GIRDLE_LEFT: Point = [0.22, 0.46];
-const GIRDLE_RIGHT: Point = [0.78, 0.46];
-const CROWN_LEFT: Point = [0.42, 0.46];
-const CROWN_RIGHT: Point = [0.58, 0.46];
-const TIP: Point = [0.5, 0.82];
-
-/// The facets, each convex, in flat colors: light from the upper left, and the shadow side tinted violet
-/// rather than darkened, as the game's characters are.
-const FACETS: [(&[Point], u32); 6] = [
-    (&[GIRDLE_LEFT, TABLE_LEFT, CROWN_LEFT], 0x9fd3ff),
-    (&[TABLE_LEFT, TABLE_RIGHT, CROWN_RIGHT, CROWN_LEFT], 0xdcf2ff),
-    (&[TABLE_RIGHT, GIRDLE_RIGHT, CROWN_RIGHT], 0x5c9be8),
-    (&[GIRDLE_LEFT, CROWN_LEFT, TIP], 0x3f7be0),
-    (&[CROWN_LEFT, CROWN_RIGHT, TIP], 0x2a56c6),
-    (&[CROWN_RIGHT, GIRDLE_RIGHT, TIP], 0x34308f),
-];
-
-/// The gem's outline, and the lines between its facets, thinner and lighter.
-const SILHOUETTE: [Point; 5] = [TABLE_LEFT, TABLE_RIGHT, GIRDLE_RIGHT, TIP, GIRDLE_LEFT];
-const OUTLINE: (f32, u32) = (0.011, 0x0f1440);
-const FACET_LINES: [(Point, Point); 5] = [
-    (GIRDLE_LEFT, GIRDLE_RIGHT),
-    (TABLE_LEFT, CROWN_LEFT),
-    (TABLE_RIGHT, CROWN_RIGHT),
-    (CROWN_LEFT, TIP),
-    (CROWN_RIGHT, TIP),
-];
-const FACET_LINE: (f32, u32) = (0.0045, 0x24317c);
-
-/// The ground: a vertical gradient, and a glow behind the gem.
-const GROUND_TOP: u32 = 0x1c2670;
-const GROUND_BOTTOM: u32 = 0x5a2c8c;
-const GLOW: (Point, f32, u32, f32) = ([0.5, 0.56], 0.42, 0x6fa8ff, 0.45);
-
-/// Four-pointed glints: center, radius, color.
-const GLINTS: [(Point, f32, u32); 2] = [([0.73, 0.27], 0.095, 0xffffff), ([0.27, 0.71], 0.045, 0xcfe6ff)];
-
-/// Draws the master.
-pub fn master() -> RgbImage {
-    let size = MASTER_SIZE;
-    let step = 1.0 / (size * SAMPLES) as f32;
-    RgbImage::from_fn(size, size, |x, y| {
-        let mut sum = [0.0f32; 3];
-        for sy in 0..SAMPLES {
-            for sx in 0..SAMPLES {
-                let p = [((x * SAMPLES + sx) as f32 + 0.5) * step, ((y * SAMPLES + sy) as f32 + 0.5) * step];
-                let color = shade(p);
-                for (total, channel) in sum.iter_mut().zip(color) {
-                    *total += channel;
-                }
-            }
-        }
-        let n = (SAMPLES * SAMPLES) as f32;
-        Rgb(sum.map(|total| ((total / n).clamp(0.0, 1.0) * 255.0).round() as u8))
-    })
-}
-
-/// The icon's color at `p`, topmost layer first.
-fn shade(p: Point) -> [f32; 3] {
-    for &(center, radius, color) in &GLINTS {
-        if in_glint(p, center, radius) {
-            return hex(color);
-        }
-    }
-    if near_any(p, SILHOUETTE.iter().zip(SILHOUETTE.iter().cycle().skip(1)).map(|(&a, &b)| (a, b)), OUTLINE.0)
-    {
-        return hex(OUTLINE.1);
-    }
-    if let Some(&(_, color)) = FACETS.iter().find(|(corners, _)| inside(p, corners)) {
-        if near_any(p, FACET_LINES.iter().copied(), FACET_LINE.0) {
-            return hex(FACET_LINE.1);
-        }
-        return hex(color);
-    }
-    ground(p)
-}
-
-fn ground(p: Point) -> [f32; 3] {
-    let (top, bottom) = (hex(GROUND_TOP), hex(GROUND_BOTTOM));
-    let mut color = [0.0; 3];
-    for i in 0..3 {
-        color[i] = top[i] + (bottom[i] - top[i]) * p[1];
-    }
-    let (center, radius, glow, strength) = GLOW;
-    let distance = length([p[0] - center[0], p[1] - center[1]]);
-    if distance < radius {
-        let falloff = 1.0 - distance / radius;
-        let weight = falloff * falloff * strength;
-        let glow = hex(glow);
-        for i in 0..3 {
-            color[i] += (glow[i] - color[i]) * weight;
-        }
-    }
-    color
-}
-
-fn length(v: Point) -> f32 {
-    (v[0] * v[0] + v[1] * v[1]).sqrt()
-}
-
-/// Whether `p` is inside the convex polygon `corners`, wound either way.
-fn inside(p: Point, corners: &[Point]) -> bool {
-    let mut sign = 0.0f32;
-    for (i, a) in corners.iter().enumerate() {
-        let b = corners[(i + 1) % corners.len()];
-        let cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-        if cross != 0.0 {
-            if sign != 0.0 && cross.signum() != sign {
-                return false;
-            }
-            sign = cross.signum();
-        }
-    }
-    true
-}
-
-/// Whether `p` lies within `width / 2` of any of `segments`.
-fn near_any(p: Point, mut segments: impl Iterator<Item = (Point, Point)>, width: f32) -> bool {
-    segments.any(|(a, b)| distance_to_segment(p, a, b) <= width * 0.5)
-}
-
-fn distance_to_segment(p: Point, a: Point, b: Point) -> f32 {
-    let (ab, ap) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
-    let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1])).clamp(0.0, 1.0);
-    length([ap[0] - ab[0] * t, ap[1] - ab[1] * t])
-}
-
-/// Whether `p` is inside a four-pointed star: an astroid, √|x| + √|y| ≤ √r.
-fn in_glint(p: Point, center: Point, radius: f32) -> bool {
-    let (dx, dy) = ((p[0] - center[0]).abs(), (p[1] - center[1]).abs());
-    dx <= radius && dy <= radius && dx.sqrt() + dy.sqrt() <= radius.sqrt()
-}
 
 /// Why a master can't make icons.
 #[derive(Debug, thiserror::Error)]
@@ -478,45 +316,37 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platform/icon")
     }
 
-    /// The committed master is what `gen-icon` draws, pixel for pixel, so the generator and the icon can't
-    /// drift apart. When the maintainer replaces the icon with the game's own, this test goes with it.
+    /// The committed master is one every store takes, and no platform's mask cuts its art: every pixel
+    /// whose center lies outside the circle Android keeps at its smallest (the middle 72 of 108 dp, so a
+    /// diameter of 2/3 of the side) is exactly the ground, the color of the corner pixel.
     #[test]
-    fn the_committed_icon_is_generated() {
-        let committed = read_master(&icon_dir().join(MASTER_FILE_NAME)).unwrap();
-        let drawn = master();
-        assert_eq!(committed.dimensions(), drawn.dimensions());
-        let differing = committed.pixels().zip(drawn.pixels()).filter(|(a, b)| a != b).count();
-        assert_eq!(
-            differing, 0,
-            "platform/icon/icon.png differs from what gen-icon draws: rerun it with --force"
-        );
-    }
-
-    #[test]
-    fn the_master_is_square_opaque_and_kept_inside_every_mask() {
-        let image = master();
+    fn the_committed_master_is_taken_by_every_store_and_kept_whole_by_every_mask() {
+        let image = read_master(&icon_dir().join(MASTER_FILE_NAME)).unwrap();
+        let side = image.width();
         assert_eq!(image.dimensions(), (MASTER_SIZE, MASTER_SIZE));
-        // Android shows the middle 72 of 108 dp, in a circle at its smallest: the gem and the glints are in it.
-        let radius = 72.0 / 108.0 / 2.0;
-        for point in SILHOUETTE.iter().chain(GLINTS.iter().map(|(center, _, _)| center)) {
-            assert!(
-                length([point[0] - 0.5, point[1] - 0.5]) < radius,
-                "{point:?} is outside the safe circle"
-            );
-        }
-        // The ground shows at the corners, and the gem at the middle.
-        assert_ne!(image.get_pixel(4, 4), image.get_pixel(512, 420));
-    }
-
-    #[test]
-    fn draws_flat_facets_under_a_line() {
-        let image = master();
-        let at = |p: Point| {
-            *image.get_pixel((p[0] * MASTER_SIZE as f32) as u32, (p[1] * MASTER_SIZE as f32) as u32)
+        let ground = *image.get_pixel(0, 0);
+        // In half pixels from the center, so the test is exact in integers: a pixel center is at
+        // (2x + 1 - side) / 2, and the circle's radius is side / 3, so outside is 9 d² > 4 side².
+        let outside = |x: u32, y: u32| {
+            let (dx, dy) = (i64::from(2 * x + 1) - i64::from(side), i64::from(2 * y + 1) - i64::from(side));
+            9 * (dx * dx + dy * dy) > 4 * i64::from(side) * i64::from(side)
         };
-        assert_eq!(at([0.5, 0.38]), Rgb([0xdc, 0xf2, 0xff]), "the table, flat");
-        assert_eq!(at([0.5, 0.33]), Rgb([0x0f, 0x14, 0x40]), "the outline along the table's top");
-        assert_eq!(at([0.73, 0.27]), Rgb([0xff, 0xff, 0xff]), "the glint's heart");
+        let (mut cut, mut art) = (Vec::new(), 0);
+        for (x, y, pixel) in image.enumerate_pixels() {
+            if *pixel != ground {
+                art += 1;
+                if outside(x, y) {
+                    cut.push((x, y));
+                }
+            }
+        }
+        assert!(
+            cut.is_empty(),
+            "{} art pixels lie outside the circle every mask keeps, such as {:?}",
+            cut.len(),
+            &cut[..cut.len().min(8)]
+        );
+        assert!(art > 0, "the master is all ground");
     }
 
     #[test]

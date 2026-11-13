@@ -1289,6 +1289,36 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 35.4, warp: 77.9),
             ),
+            // The face layer (M5 C5), on `lookdev-face`'s close-up: a VRM expression preset at full, through
+            // the character's face layer, in place of the soft rest face. `happy` turns the blink and the mouth
+            // down by its own weight, as the VRM's overrides say; `angry` overrides nothing; `surprised` turns
+            // the mouth down. Metal only.
+            (
+                name: "face-happy",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--face", "happy"],
+            ),
+            (
+                name: "face-angry",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--face", "angry"],
+            ),
+            (
+                name: "face-surprised",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--face", "surprised"],
+            ),
+            // The seam lip-sync drives (M5 C6): the rest face with its mouth open as a voice's envelope would
+            // have it, `aa` over the resting expression.
+            (
+                name: "face-speaking",
+                ticks: 90,
+                args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--face-mouth", "0.8"],
+            ),
             // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
             // hero shot's dusk, every landed feature on but spring bones, which came later, at fixed ticks
             // through the swing, each drawn playing up to its tick so temporal AA's history is a player's.

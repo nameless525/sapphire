@@ -42,14 +42,14 @@ fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
 ";
 
 /// The immutable sampling pipeline shared by the cases in one test.
-struct LevelSampler {
+pub(crate) struct LevelSampler {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     sampler: wgpu::Sampler,
 }
 
 impl LevelSampler {
-    fn new(gpu: &GpuContext) -> Self {
+    pub(crate) fn new(gpu: &GpuContext) -> Self {
         let device = gpu.device();
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -117,10 +117,10 @@ impl LevelSampler {
         Self { layout, pipeline, sampler }
     }
 
-    /// Every level of `texture`, as the GPU samples it.
-    fn sample(&self, gpu: &GpuContext, texture: &GpuTexture) -> Vec<Vec<[f32; 4]>> {
+    /// Every level of `raw`, as the GPU samples it.
+    pub(crate) fn sample(&self, gpu: &GpuContext, raw: &wgpu::Texture) -> Vec<Vec<[f32; 4]>> {
         let device = gpu.device();
-        let raw = texture.texture();
+        let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         let mut readbacks = Vec::new();
         for level in 0..raw.mip_level_count() {
@@ -149,10 +149,7 @@ impl LevelSampler {
                 label: None,
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(texture.view()),
-                    },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
@@ -379,7 +376,7 @@ fn every_class_samples_back_within_tolerance() {
             }
             Err(error) => panic!("{}: {error}", case.name),
         };
-        let sampled = sampler.sample(&gpu, &uploaded);
+        let sampled = sampler.sample(&gpu, uploaded.texture());
         assert!(pollster::block_on(scope.pop()).is_none(), "{}: validation error", case.name);
         assert_eq!(sampled.len(), prepared.levels.len(), "{}", case.name);
         // Every level, down to 1×1, which ctt's own BC7 chains got wrong (its issue #114).

@@ -304,16 +304,23 @@ mod tests {
 
         let dir = Dir::new("player");
         let writes = Arc::new(AtomicU32::new(0));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let (mut kept, loaded) =
-            Kept::<SettingsFile<PlayerSettings>>::load_settings(&dir.0, "settings", counted(&writes));
+            Kept::<SettingsFile<PlayerSettings>>::load_settings(&dir.0, "settings", held(&writes, &gate));
         assert_eq!(loaded, PlayerSettings::default(), "nothing there yet");
 
+        // 10 goes to a job and is held there; 20 waits for it, and 30 overtakes 20.
         let settings = |sound| PlayerSettings { sound, ..PlayerSettings::default() };
         for sound in [10, 20, 30] {
             kept.keep(&settings(sound));
         }
+        assert!(kept.busy());
+        *gate.0.lock().expect("the gate's lock") = true;
+        gate.1.notify_all();
         kept.finish();
-        assert!(writes.load(Ordering::Relaxed) <= 2, "what was overtaken isn't written");
+        let stats = kept.stats();
+        assert_eq!((stats.asked, stats.written, stats.overtaken, stats.failed), (3, 2, 1, 0), "{stats:?}");
+        assert_eq!(writes.load(Ordering::Relaxed), 2, "what was overtaken isn't written");
 
         let (_, loaded) =
             Kept::<SettingsFile<PlayerSettings>>::load_settings(&dir.0, "settings", |_: &Path, _: &[u8]| {

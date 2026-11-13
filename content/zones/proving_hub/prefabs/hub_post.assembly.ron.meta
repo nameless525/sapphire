@@ -6,6 +6,5 @@
         importer: Assembly((
             materials: {"stone": "30ccc7f0-62ba-410e-9d3d-1d3e77ee1d1e"},
         )),
-        cook: false,
     ),
 )

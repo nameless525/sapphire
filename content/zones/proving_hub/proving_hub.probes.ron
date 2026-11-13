@@ -1,0 +1,25 @@
+// What the proving hub's probe grid sees (M5 M6): `proving_hub.zone.ron`'s four posts and its ground, as they're
+// placed there, lit by the hub's own day (`proving_hub_day.ron`), whose one key is the grid's one key. A trip
+// into the hub brings it, and one out of it takes it off the renderer.
+(
+    type: "sapphire::pipeline::ProbeGridDocument",
+    version: 1,
+    data: (
+        bounds: (min: (-24.0, -1.0, -24.0), max: (24.0, 6.0, 24.0)),
+        spacing: (desktop: 3.0, mobile: 6.0),
+        visibility: (desktop: L2, mobile: L1),
+        rays: (desktop: 128, mobile: 64),
+        surfel_rays: 32,
+        surfel_spacing: 1.0,
+        bounces: 2,
+        bounce_strength: 1.0,
+        timeline: Document("proving_hub_day.ron"),
+        meshes: [
+            (mesh: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", translation: (-6.0, 0.0, -6.0), yaw: 0.0),
+            (mesh: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", translation: (6.0, 0.0, -6.0), yaw: 0.0),
+            (mesh: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", translation: (-6.0, 0.0, 6.0), yaw: 0.0),
+            (mesh: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", translation: (6.0, 0.0, 6.0), yaw: 0.0),
+            (mesh: "3c9d1f62-8e47-4ab3-a1d6-60f2b57e9c18", translation: (0.0, 0.0, 0.0), yaw: 0.0),
+        ],
+    ),
+)

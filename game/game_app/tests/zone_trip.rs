@@ -6,6 +6,8 @@
 //! where its scenario starts, rather than being carried through the rest of the trip (M3 Z3f), the stage taken
 //! back there by a trip of its own under the same wipe (M3 G1b). And a game's run restarted in the hub after its
 //! trip there goes home the same way, its run waiting at its first tick until the stage is there (M3 G1b).
+//! Each trip brings its zone's look (M5 M6): the hub's day, rigs and probe grid in it, and the stage's day and
+//! no grid again in the proving ground, which names the look-dev day.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -51,6 +53,8 @@ const FLOW: &str = r#"(type: "sapphire::game::FlowDocument", version: 1, data: (
     music: (title: "waiting", victory: "cleared", defeat: "waiting"),
     holds: (banner: 2.0, defeat: 3.0, victory: 5.0),
 ))"#;
+/// The hour of the hub's day's one key, and of its probe grid's.
+const HUB_HOUR: f32 = 19.75;
 /// Longer than a tier's renderer takes to build off the frame, even on lavapipe.
 const MOST_CHANGE: Duration = Duration::from_secs(600);
 /// More frames than a trip and a restart's wipe take.
@@ -76,6 +80,21 @@ fn wipe_state(stage: &Stage<GameShow>) -> String {
     wipe.tree().state().unwrap_or_default().to_owned()
 }
 
+/// Whether the stage has the hub's look (M5 M6): its one-key day and its grid of that key on the renderer,
+/// or the proving ground's, the look-dev day of ten keys and no grid.
+fn hub_look(stage: &Stage<GameShow>) -> bool {
+    let keys = stage.scene.time_of_day().timeline().keys().len();
+    let hours = stage.content.probe_hours();
+    let on_renderer = stage.renderer.stats().ambient.grid;
+    match (keys, hours, on_renderer) {
+        (1, [HUB_HOUR], true) => true,
+        (10, [], false) => false,
+        _ => panic!(
+            "neither zone's look: {keys} keys, a grid of {hours:?}, one on the renderer: {on_renderer}"
+        ),
+    }
+}
+
 /// What one trip looked like, frame by frame.
 #[derive(Default)]
 struct Seen {
@@ -91,13 +110,13 @@ struct Seen {
 }
 
 /// The tier changed to the other desktop one at a pause after the trips (M4 H4): its renderer is built for the
-/// zone they brought, with no probe grid of the zone they left, so nothing it draws is built on the frame.
+/// zone they brought, with no probe grid of the hub they left, so nothing it draws is built on the frame.
 fn tier_change_after_the_trips(stage: &mut Stage<GameShow>) -> Result<(), AppInitError> {
     let to = match stage.quality.active().id {
         TierId::DesktopHigh => TierId::DesktopLow,
         _ => TierId::DesktopHigh,
     };
-    assert!(stage.content.zone_probe_grid().is_none(), "the trips' zones have no probe grid");
+    assert!(stage.content.zone_probe_grid().is_none(), "the trips end in the proving ground, with no grid");
     stage.quality.set_settings(QualitySettings { tier: Some(to), ..stage.quality.settings() });
     stage.show.controls.set_paused(true);
     let waited = Stopwatch::start();
@@ -179,6 +198,8 @@ impl App for OutsideCaller {
         let mut trips: Vec<Seen> = Vec::new();
         let mut zone = stage.scene.zone_on_stage();
         let mut frames = 0;
+        // Frames after the first trip, in the hub it brought, with the hub's look (M5 M6).
+        let mut in_hub = 0;
         while tick(&stage) < TICKS {
             stage.step();
             stage.show.drive_view(Duration::from_millis(16));
@@ -212,8 +233,16 @@ impl App for OutsideCaller {
             } else {
                 assert_eq!(on_stage, zone, "the zone changed with no trip");
             }
+            // The first trip brings the hub, the second the proving ground.
+            if phase.is_none() && !trips.is_empty() {
+                let in_the_hub = trips.len() == 1;
+                assert_eq!(hub_look(&stage), in_the_hub, "the look of the zone on stage, {on_stage:?}");
+                in_hub += u32::from(in_the_hub);
+            }
             zone = on_stage;
         }
+        assert!(in_hub > 0, "frames in the hub after its trip");
+        assert!(!hub_look(&stage), "the proving ground's look after the trip out of the hub");
 
         assert_eq!(trips.len(), 2, "two entries by tick {TICKS}");
         for (index, seen) in trips.iter().enumerate() {

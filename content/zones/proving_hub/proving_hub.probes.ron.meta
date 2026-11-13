@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "3d0efdb0-bb5d-4245-92a2-367504ef1ac8",
+        importer: ProbeGrid(()),
+    ),
+)

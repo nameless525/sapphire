@@ -790,6 +790,10 @@ mod tests {
             let pinned = |flag: &str, value: &str| scene.args.windows(2).any(|pair| pair == [flag, value]);
             if scene.name.starts_with("ambient-") {
                 assert!(pinned("--fog", "off"), "{}", scene.name);
+            } else if scene.name.starts_with("zone-trip-") {
+                // A trip's zones bring their grids, a replay's trips taking them there (M5 M6).
+                assert!(scene.has("--capture-through-trips") && pinned("--ao", "off"), "{}", scene.name);
+                assert!(!scene.has("--probes"), "{}", scene.name);
             } else if scene.name.starts_with("zone-") {
                 assert!(scene.has("--zone"), "{}", scene.name);
             } else if scene.name.starts_with("game-ward-") {

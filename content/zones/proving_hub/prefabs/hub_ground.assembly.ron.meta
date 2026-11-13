@@ -6,6 +6,5 @@
         importer: Assembly((
             materials: {"paving": "ee6d89ed-81cf-4e0a-bffc-ab3e2be262eb"},
         )),
-        cook: false,
     ),
 )

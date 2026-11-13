@@ -1061,6 +1061,24 @@
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 10.8, warp: 32.6),
             ),
+            // Zones bring their look (M5 M6): `zone-trip`'s replay past its first trip, counted in the replay's
+            // ticks through the trip's hold, in the proving hub, under the hub's own look whatever hour is asked
+            // for: its blue hour, its rigs, its probe grid, its wind and its thicker haze. The hub's look is all
+            // the trip brought: the arena's midday is gone.
+            (
+                name: "zone-trip-hub",
+                ticks: 225,
+                args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+            ),
+            // Past its second trip, in the proving ground, which names the look-dev day and rigs and no grid: the
+            // hub's look gone with the hub, midday again, and no grid on the renderer.
+            (
+                name: "zone-trip-ground",
+                ticks: 290,
+                args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+            ),
             // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
             // the enemy's stand-in past the player's shoulder, the pavilion on the left and the market on the
             // right, the street's moon gate between them. The frame the combat slice is judged in.

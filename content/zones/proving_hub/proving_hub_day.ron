@@ -1,0 +1,56 @@
+// The proving hub's day (M5 M6): one key, the look-dev day's blue hour after sunset (19:45 in
+// `content/lookdev/lookdev_day.ron`, which says what each group does), held at every hour, so the hub
+// looks the same whatever hour a scene asks for, and a trip into it and out again shows the zone's day
+// coming and going. A `TodTimeline` document (`sapphire_world::tod`) that `proving_hub.zone.ron` names, and
+// its probe grid's bake reads for its one key. The cooker reads it through the zone: no importer reads a
+// bare `.ron`.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                // The look-dev day's blue hour after sunset, as it is there.
+                time: 19.75,
+                sun: (direction: (0.58, 0.12, 0.8), color: (1.0, 0.42, 0.3), intensity: 0.0),
+                moon: (direction: (-0.82, -0.18, -0.55), color: (0.62, 0.72, 1.0), intensity: 0.14),
+                sky: (zenith: (0.025, 0.07, 0.26), horizon: (0.22, 0.38, 0.62), ground: (0.04, 0.06, 0.1)),
+                ambient: (sky: (0.24, 0.42, 0.82), ground: (0.06, 0.1, 0.16), intensity: 0.22),
+                fog: (
+                    near: (color: (0.2, 0.36, 0.62), density: 0.003, start: 25.0),
+                    far: (color: (0.95, 1.0, 1.0), density: 0.002, start: 45.0),
+                    height: (color: (0.22, 0.38, 0.64), density: 0.003, falloff: 0.012),
+                    sun_inscatter: (0.04, 0.04, 0.07),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.2, 0.32, 0.62),
+                character: (color: (0.85, 0.8, 1.0), intensity: 0.18),
+                day_night: 0.7,
+                exposure: 0.7,
+                grade: (temperature: -0.1, saturation: 1.12, lift: (0.0, 0.015, 0.045), gain: (1.0, 1.0, 1.02)),
+                bloom: (threshold: 0.8, knee: 0.5, intensity: 0.35, scatter: 0.78),
+                vignette: (intensity: 0.26, start: 0.42, color: (0.05, 0.05, 0.16)),
+                discs: (
+                    sun: (color: (1.0, 0.45, 0.3), intensity: 0.0, glow: (0.3, 0.12, 0.18), glow_size: 55.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.4, glow: (0.05, 0.06, 0.12), glow_size: 12.0),
+                ),
+                stars: 0.35,
+                nebula: (clouds: (0.01, 0.015, 0.04), wisps: (0.01, 0.06, 0.07), accents: (0.03, 0.012, 0.05)),
+                clouds: (
+                    lit: (0.3, 0.36, 0.6), shade: (0.1, 0.14, 0.3), rim: (0.45, 0.42, 0.62),
+                    coverage: 0.7, cirrus: 0.5,
+                ),
+                diffusion: (intensity: 1.0, threshold: 0.06, color: (0.7, 0.8, 1.0)),
+                character_bloom: (threshold: 1.3, strength: 0.6),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.6, 0.68, 0.94), opacity: 0.28, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.55, 0.6, 0.85), opacity: 0.25, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.78, 0.84, 1.0), opacity: 0.12, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+                emission: 1.0,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.3),
+            ),
+        ],
+    ),
+)

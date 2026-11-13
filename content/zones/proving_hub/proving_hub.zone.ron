@@ -2,6 +2,12 @@
 // until M3 C1's zone. It leads to the proving ground, whose pack comes in ahead of time while anyone's here:
 // what makes a zone a hub. Its pack is `zone_proving_hub`: its materials are the town's, which stay shared, and
 // its pieces are its own, so that no piece two zones share leaves their packs for `shared`.
+//
+// It has a look of its own (M5 M6), which a trip into it brings and one out of it takes away: the blue hour
+// after sunset at every hour (`proving_hub_day.ron`), its rigs' stronger camera rim (`proving_hub_rigs.ron`), a
+// probe grid of its posts and ground (`proving_hub.probes.ron`, whose meshes are the prefabs, cooked for it),
+// a gustier breeze than the stage's, wet paving after rain (which no shader draws until M5 L4's wet surfaces),
+// and haze half again as thick as the day's, its height layer on the paving. The `zone-trip-hub` golden shows it.
 (
     type: "sapphire::zone::ZoneDocument",
     version: 1,
@@ -16,6 +22,12 @@
             (prefab: "3c9d1f62-8e47-4ab3-a1d6-60f2b57e9c18", at: (0.0, 0.0, 0.0), backdrop: true),
         ],
         colliders: Some("b27e4d19-63a8-4c55-8e0f-12d9f7a6c340"),
+        probes: Some("3d0efdb0-bb5d-4245-92a2-367504ef1ac8"),
+        day: Some("proving_hub_day.ron"),
+        rigs: Some("proving_hub_rigs.ron"),
+        wind: Some((direction: (-0.6, 0.0, 0.8), strength: 1.6, gustiness: 0.5)),
+        weather: Some((wetness: 0.7, puddles: 0.3)),
+        fog: Some((density: 1.5, height_base: Some(0.0))),
         // The ground's whole square.
         navigation: Some((min: (-24.0, -24.0), max: (24.0, 24.0))),
         spawners: [

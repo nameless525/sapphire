@@ -197,6 +197,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask check-layers                                  # crate layering, xtask/layers.toml
 cargo deny check
 cargo xtask content --cook desktop                        # cook content/ into target/content/
+cargo xtask bench-content --preset ci                     # generate and cook the benchmark into target/bench/
 cargo xtask bundle --platform android --release
 ```
 

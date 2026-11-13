@@ -32,6 +32,7 @@ A Rust engine for 3D **anime-aesthetic** action games, the look of Wuthering Wav
 | `tools/` | Never-shipped crates (pipeline, editor, replay runner, testkit, symbols, soundgen, `sapphire_document`) and plain scripts: `blender/`, `motion/` (Python posing), `figures/`, `sounds/` (placeholder sound specs) |
 | `xtask/` | `cargo xtask`: layer checks, cooking, bundling, goldens, replays, packaging. `xtask/layers.toml` is the crate layering |
 | `content/` | Source assets and documents (RON), each with a `.meta` sidecar; `third_party/` holds downloaded content with its provenance |
+| `bench/` | The benchmark's documents only (a district, prefabs, procedural texture specs, figure specs): `cargo xtask bench-content` generates and cooks them under `target/bench/`, never committed or shipped ([bench/README.md](bench/README.md)) |
 | `tests/` | `golden/` (scenes.ron and reference PNGs per backend), `replays/` (`.sreplay` files and per-architecture checksums), `saves/` (save fixtures) |
 | `platform/` | Per-platform packaging: `android/` (Gradle), `ios/`, `macos/`, `windows/`, the icon, `identity.toml`, `patch.toml`, `steam.toml` |
 | `docs/` | Spec, plans, runbooks, handoffs, ADRs, store checklists ([index](docs/README.md)) |

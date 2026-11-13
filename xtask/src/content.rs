@@ -159,24 +159,53 @@ pub fn cook_copy(source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyho
 
 /// Runs the pipeline's cook of `source` into `loose` and `packs`.
 fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyhow::Result<()> {
+    let code = workspace::root();
+    let run = CookRun {
+        source,
+        loose,
+        packs,
+        cook,
+        cache: &cache_dir(),
+        code: Some(&code),
+        locked: workspace::locked(),
+    };
+    run_pipeline_cook(pipeline, &run)
+}
+
+/// A pipeline cook of a source tree: where it reads and writes, and how.
+pub struct CookRun<'a> {
+    pub source: &'a Path,
+    pub loose: &'a Path,
+    pub packs: &'a Path,
+    pub cook: Cook,
+    pub cache: &'a Path,
+    /// The Rust code whose named assets must stay in the shared packs, if any names them.
+    pub code: Option<&'a Path>,
+    /// Fail on a source without a sidecar.
+    pub locked: bool,
+}
+
+/// Runs the pipeline's `cook` as `run` says.
+pub fn run_pipeline_cook(pipeline: &Path, run: &CookRun<'_>) -> anyhow::Result<()> {
     let mut command = Command::new(pipeline);
     command
         .arg("cook")
         .arg("--source")
-        .arg(source)
+        .arg(run.source)
         .arg("--out")
-        .arg(loose)
+        .arg(run.loose)
         .arg("--packs")
-        .arg(packs)
-        .arg("--code")
-        .arg(workspace::root())
-        .args(["--cook", cook.target()])
+        .arg(run.packs)
+        .args(["--cook", run.cook.target()])
         .arg("--cache")
-        .arg(cache_dir());
-    if workspace::locked() {
+        .arg(run.cache);
+    if let Some(code) = run.code {
+        command.arg("--code").arg(code);
+    }
+    if run.locked {
         command.arg("--locked");
     }
-    if cook == Cook::Editor {
+    if run.cook == Cook::Editor {
         command.arg("--editor");
     }
     workspace::run(&mut command)

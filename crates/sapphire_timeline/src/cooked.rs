@@ -18,9 +18,9 @@ use sapphire_serialize::cooked::AlignedVec;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::document::{
-    CameraTrack, MAX_LENGTH, MAX_PER_MILLE, PlaceKey, PostTrack, SubtitleKey, TimelineClock, TimelineError,
-    check_camera, check_count, check_places, check_position, check_post, check_subtitles, check_times,
-    tick_of,
+    CameraTrack, LookKey, MAX_LENGTH, MAX_PER_MILLE, PlaceKey, PostTrack, SubtitleKey, TimelineClock,
+    TimelineError, check_camera, check_count, check_face, check_looks, check_places, check_position,
+    check_post, check_subtitles, check_times, tick_of,
 };
 
 /// Conventional file extension for cooked timelines.
@@ -40,8 +40,8 @@ pub struct Timeline {
 }
 
 impl Versioned for Timeline {
-    /// 1: M3 Q1.
-    const VERSION: u32 = 1;
+    /// 1: M3 Q1. 2: M5 C5's faces and looks, in the presentation half.
+    const VERSION: u32 = 2;
 }
 
 /// All the simulation reads of a timeline. Everything here is in a replay's digest.
@@ -95,6 +95,18 @@ pub struct CookedCharacter {
     pub role: u64,
     pub plays: Vec<CookedPlay>,
     pub places: Vec<PlaceKey>,
+    pub faces: Vec<CookedFace>,
+    pub looks: Vec<LookKey>,
+}
+
+/// An expression a face shows from a time on, by its preset's name's hash.
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedFace {
+    pub at: f32,
+    pub expression: u64,
+    pub weight: f32,
+    pub blend: f32,
 }
 
 /// A row of a graph, played from its start.
@@ -170,6 +182,13 @@ impl Timeline {
                 last = Some(play.to);
             }
             check_places(&format!("characters[{index}].places"), &character.places, length)?;
+            let faces = format!("characters[{index}].faces");
+            check_count(&faces, character.faces.len())?;
+            check_times(&faces, character.faces.iter().map(|key| key.at), length, false)?;
+            for (at, key) in character.faces.iter().enumerate() {
+                check_face(&format!("{faces}[{at}]"), key.weight, key.blend)?;
+            }
+            check_looks(&format!("characters[{index}].looks"), &character.looks, length)?;
         }
         check_count("cues", presentation.cues.len())?;
         check_times("cues", presentation.cues.iter().map(|cue| cue.at), length, true)?;
@@ -368,6 +387,43 @@ mod tests {
         let digest = cook(CINEMATIC).simulation.digest();
         let moved = with(CINEMATIC, "fov_degrees: 35.0", "fov_degrees: 36.0").unwrap();
         assert_eq!(moved.cook().unwrap().simulation.digest(), digest);
+        // M5 C5: faces and looks are presentation's, so a cutscene with none has the digest it has with them.
+        let mut plain = TimelineDocument::from_ron(CUTSCENE).unwrap();
+        assert!(!plain.characters[0].faces.is_empty() && !plain.characters[0].looks.is_empty());
+        let digest = plain.cook().unwrap().simulation.digest();
+        plain.characters[0].faces.clear();
+        plain.characters[0].looks.clear();
+        assert_eq!(plain.cook().unwrap().simulation.digest(), digest);
+    }
+
+    /// M5 C5: a version 1 document loads as a version 2 one with no faces or looks, which is how every
+    /// committed timeline before C5 still loads; a version past this build's, or before the first, doesn't.
+    #[test]
+    fn a_version_1_document_loads_and_others_are_refused() {
+        assert!(CINEMATIC.contains("version: 1,"), "the cinematic is the version 1 document the tests keep");
+        let old = TimelineDocument::from_ron(CINEMATIC).expect("version 1 loads");
+        assert!(old.characters.iter().all(|track| track.faces.is_empty() && track.looks.is_empty()));
+        let current = with(CINEMATIC, "version: 1,", "version: 2,").expect("and is a version 2 document");
+        assert_eq!(current, old);
+        for version in ["version: 0,", "version: 3,"] {
+            let error = with(CINEMATIC, "version: 1,", version).unwrap_err();
+            assert!(matches!(error, TimelineError::Document(_)), "{version}: {error}");
+        }
+        // Writing it out says version 2, and leaves out the empty tracks a version 1 reader wouldn't know.
+        let text = sapphire_serialize::to_ron(&old).unwrap();
+        assert!(text.contains("version: 2") && !text.contains("faces") && !text.contains("looks"), "{text}");
+        assert_eq!(TimelineDocument::from_ron(&text).unwrap(), old);
+    }
+
+    #[test]
+    fn a_face_key_has_a_full_weight_and_the_usual_blend_unless_it_says() {
+        let document = TimelineDocument::from_ron(CUTSCENE).unwrap();
+        let faces = &document.characters[0].faces;
+        assert_eq!((faces[0].weight, faces[0].blend), (0.8, 0.4));
+        assert_eq!((faces[1].weight, faces[1].blend), (1.0, crate::DEFAULT_FACE_BLEND));
+        let cooked = cook(CUTSCENE);
+        let face = cooked.presentation.characters[0].faces[1];
+        assert_eq!(face.expression, sapphire_core::Name::new("surprised").as_u64());
     }
 
     /// Each row: what to change in a test document, and the field the refusal must name.
@@ -408,6 +464,12 @@ mod tests {
             (CUTSCENE, "parameter: Vignette", "parameter: Exposure", "post[1].parameter"),
             (CUTSCENE, "at: 1.0, cue", "at: 9.0, cue", "cues[0].at"),
             (CUTSCENE, "cue: \"bell\"", "cue: \"\"", "cues[0].cue"),
+            (CUTSCENE, "(at: 3.0, expression", "(at: 1.0, expression", "characters[0].faces[1].at"),
+            (CUTSCENE, "expression: \"surprised\"", "expression: \"\"", "characters[0].faces[1].expression"),
+            (CUTSCENE, "weight: 0.8", "weight: 1.5", "characters[0].faces[0].weight"),
+            (CUTSCENE, "blend: 0.4", "blend: -0.1", "characters[0].faces[0].blend"),
+            (CUTSCENE, "(at: 4.5, look_at", "(at: 9.0, look_at", "characters[0].looks[2].at"),
+            (CUTSCENE, "Some((2.0, 1.5, 2.0))", "Some((2.0, 9e9, 2.0))", "characters[0].looks[1].look_at"),
         ];
         for &(text, from, to, field) in cases {
             let error = with(text, from, to).expect_err(to);
@@ -481,6 +543,26 @@ mod tests {
         for &(field, tamper) in cases {
             let mut tampered = good.clone();
             tamper(&mut tampered);
+            let bytes = tampered.to_cooked().unwrap();
+            assert_eq!(field_of(Timeline::read(&bytes).unwrap_err()), field);
+        }
+    }
+
+    /// M5 C5's faces and looks, as bytes might have them and no document can.
+    #[test]
+    fn a_face_or_look_a_document_cant_hold_a_pack_cant_either() {
+        let good = cook(CUTSCENE);
+        type Case = (&'static str, fn(&mut CookedCharacter));
+        let cases: &[Case] = &[
+            ("characters[0].faces[0].weight", |c| c.faces[0].weight = f32::NAN),
+            ("characters[0].faces[1].blend", |c| c.faces[1].blend = f32::INFINITY),
+            ("characters[0].faces[1].at", |c| c.faces[1].at = 0.0),
+            ("characters[0].looks[0].look_at", |c| c.looks[0].look_at = Some([0.0, f32::NAN, 0.0])),
+            ("characters[0].looks[2].at", |c| c.looks[2].at = 60.0),
+        ];
+        for &(field, tamper) in cases {
+            let mut tampered = good.clone();
+            tamper(&mut tampered.presentation.characters[0]);
             let bytes = tampered.to_cooked().unwrap();
             assert_eq!(field_of(Timeline::read(&bytes).unwrap_err()), field);
         }

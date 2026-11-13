@@ -45,6 +45,6 @@
 mod player;
 
 pub use player::{
-    CameraTerms, CharacterCue, FiredCue, Origin, Placed, Playing, SequencerStats, Shot, StepClock, Subtitle,
-    TimelinePlayer,
+    CameraTerms, CharacterCue, FaceCue, FiredCue, Origin, Placed, Playing, SequencerStats, Shot, StepClock,
+    Subtitle, TimelinePlayer,
 };

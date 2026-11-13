@@ -51,11 +51,11 @@ pub mod cooked;
 pub mod document;
 
 pub use cooked::{
-    ArchivedTimeline, Beat, BeatKind, CookedCharacter, CookedCue, CookedPlay, MAX_BEATS, TIMELINE_EXTENSION,
-    Timeline, TimelinePresentation, TimelineSimulation,
+    ArchivedTimeline, Beat, BeatKind, CookedCharacter, CookedCue, CookedFace, CookedPlay, MAX_BEATS,
+    TIMELINE_EXTENSION, Timeline, TimelinePresentation, TimelineSimulation,
 };
 pub use document::{
-    CameraKey, CameraTrack, CharacterTrack, CueKey, Ease, EventKey, EyeRule, PlaceKey, PlayRange,
-    PostParameter, PostTrack, ScalarKey, ScaleKey, SubtitleKey, TimelineClock, TimelineDocument,
-    TimelineError,
+    CameraKey, CameraTrack, CharacterTrack, CueKey, DEFAULT_FACE_BLEND, Ease, EventKey, EyeRule, FaceKey,
+    LookKey, PlaceKey, PlayRange, PostParameter, PostTrack, ScalarKey, ScaleKey, SubtitleKey, TimelineClock,
+    TimelineDocument, TimelineError,
 };

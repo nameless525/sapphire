@@ -1,8 +1,9 @@
 // A synthetic cutscene, for the tests of a skip and of each track: it holds the simulation at a step's edge.
-// Q3 brings a real one.
+// Q3 brings a real one. Version 2 (M5 C5): the hero's face and look. `cinematic.timeline.ron` stays at version
+// 1, which is how the tests know a version 1 document still loads.
 (
     type: "sapphire::timeline::TimelineDocument",
-    version: 1,
+    version: 2,
     data: (
         length: 6.0,
         clock: Real,
@@ -23,6 +24,12 @@
                 places: [
                     (at: 0.0, position: (0.0, 0.0, 0.0), yaw_degrees: 180.0),
                     (at: 4.0, position: (1.0, 0.0, 0.0), yaw_degrees: 90.0, ease: Smooth),
+                ],
+                faces: [(at: 1.0, expression: "happy", weight: 0.8, blend: 0.4), (at: 3.0, expression: "surprised")],
+                looks: [
+                    (at: 0.5, look_at: Some((0.0, 1.5, 2.0))),
+                    (at: 1.5, look_at: Some((2.0, 1.5, 2.0)), ease: Smooth),
+                    (at: 4.5, look_at: None),
                 ],
             ),
             (role: "villain", plays: [(row: "stand", from: 0.0, to: 6.0)]),

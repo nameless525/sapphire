@@ -3,7 +3,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::timeline::TimelineDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         // Where the simulation is let go, in seconds. A blend out runs on past it.
 //!         length: 6.0,
@@ -27,6 +27,11 @@
 //!             // A row of the character's animation graph, played from its start at `from`.
 //!             plays: [(row: "bow", from: 0.5, to: 2.0)],
 //!             places: [(at: 0.0, position: (0.0, 0.0, 0.0), yaw_degrees: 180.0)],
+//!             // An expression preset of the character's VRM, by its name, held until the next key and
+//!             // blended to over `blend` seconds. Once the timeline lets go, the face is its own again.
+//!             faces: [(at: 1.0, expression: "happy", weight: 0.8, blend: 0.3)],
+//!             // Where it looks, in the timeline's space: `None` hands the look back.
+//!             looks: [(at: 0.5, look_at: Some((0.0, 1.5, 2.0))), (at: 4.0, look_at: None)],
 //!         )],
 //!         // A row of the cue table: its effects, sounds, shake and screen effect, all at once.
 //!         cues: [(at: 1.0, cue: "bell", place: Some((0.0, 2.0, 0.0)))],
@@ -42,7 +47,21 @@
 //! ```
 //!
 //! [`TimelineDocument::check`] names the field of everything wrong (`camera.keys[2].at`), and unknown
-//! fields are errors. Everything is plain and reflected, so the editor can edit a document by a
+//! fields are errors.
+//!
+//! # Versions
+//!
+//! - **1** (M3 Q1): everything but a character's faces and looks.
+//! - **2** (M5 C5): a character's `faces` and `looks`. Its `role` may name any character a game can find.
+//!
+//! Every addition so far is to the presentation half, as a field that defaults to nothing, so an older
+//! document is a newer one with nothing in it, and [`TimelineDocument`]'s upgrade decodes it as it is.
+//! The next such field (a shot's focus) costs the same: the field with `#[serde(default)]`, the version
+//! up by one, and the upgrade's arm taking the number before it. The simulation half's digest
+//! ([`crate::TimelineSimulation::digest`]) is what holds a committed timeline's replays whatever the
+//! version, and `tests/digests.rs` pins every committed timeline's.
+//!
+//! Everything is plain and reflected, so the editor can edit a document by a
 //! reflection path (`camera.keys[1].eye[1]`) and splice the text. Every position is in the timeline's own
 //! space, which whoever plays it places: a cutscene at the zone's origin, a cinematic on who cast it.
 
@@ -50,14 +69,14 @@ use std::collections::BTreeSet;
 
 use bevy_reflect::Reflect;
 use sapphire_core::Name;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::{CookedError, DocumentError};
 use sapphire_time::TICK_HZ;
 use serde::{Deserialize, Serialize};
 
 use crate::cooked::{
-    Beat, BeatKind, CookedCharacter, CookedCue, CookedPlay, MAX_BEATS, Timeline, TimelinePresentation,
-    TimelineSimulation,
+    Beat, BeatKind, CookedCharacter, CookedCue, CookedFace, CookedPlay, MAX_BEATS, Timeline,
+    TimelinePresentation, TimelineSimulation,
 };
 
 /// The most entries any list of a timeline may hold.
@@ -195,8 +214,16 @@ pub struct TimelineDocument {
 }
 
 impl Versioned for TimelineDocument {
-    /// 1: M3 Q1.
-    const VERSION: u32 = 1;
+    /// 1: M3 Q1. 2: M5 C5's faces and looks. See the [module docs](self).
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            // A version 1 document is a version 2 one with no faces or looks.
+            1 => data.decode().map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 /// The camera's shots, and how they blend with the gameplay camera.
@@ -272,6 +299,68 @@ pub struct CharacterTrack {
     /// By strictly later times. With none it stays where it is.
     #[serde(default)]
     pub places: Vec<PlaceKey>,
+    /// Expressions its face shows, by strictly later times (M5 C5). Each holds until the next; before the
+    /// first, and once the timeline lets go, the face is its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faces: Vec<FaceKey>,
+    /// Where it looks, by strictly later times (M5 C5). Before the first, and once the timeline lets go,
+    /// it looks where it would have.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub looks: Vec<LookKey>,
+}
+
+/// How long a face takes to change when its key doesn't say, in seconds.
+pub const DEFAULT_FACE_BLEND: f32 = 0.2;
+
+fn full() -> f32 {
+    1.0
+}
+
+fn default_face_blend() -> f32 {
+    DEFAULT_FACE_BLEND
+}
+
+/// An expression a character's face shows from a time on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::timeline"]
+#[serde(deny_unknown_fields)]
+pub struct FaceKey {
+    pub at: f32,
+    /// A VRM 1.0 expression preset, by its name: `happy`, `angry`, `sad`, `relaxed`, `surprised`, `aa`,
+    /// `ih`, `ou`, `ee`, `oh`, `blink`, `blinkLeft`, `blinkRight`, `neutral` or a look. The cook refuses
+    /// any other.
+    pub expression: String,
+    /// 0 to 1: 1 with none.
+    #[serde(default = "full")]
+    pub weight: f32,
+    /// Seconds from the face before to this one, eased; 0 is at once. [`DEFAULT_FACE_BLEND`] with none.
+    #[serde(default = "default_face_blend")]
+    pub blend: f32,
+}
+
+/// Where a character looks from a time on: its eyes and head, as its look-at turns them toward a foe.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[type_path = "sapphire::timeline"]
+#[serde(deny_unknown_fields)]
+pub struct LookKey {
+    pub at: f32,
+    /// In the timeline's space. `None` hands the look back to whatever had it, from this key's time.
+    pub look_at: Option<[f32; 3]>,
+    /// How it gets here from the key before, when both look somewhere.
+    #[serde(default)]
+    pub ease: Ease,
 }
 
 /// A row of a character's animation graph, played from its start.
@@ -597,6 +686,23 @@ pub(crate) fn check_places(field: &str, places: &[PlaceKey], length: f32) -> Res
     Ok(())
 }
 
+/// A face's weight and blend, wherever they come from.
+pub(crate) fn check_face(field: &str, weight: f32, blend: f32) -> Result<(), TimelineError> {
+    check_time(|| format!("{field}.weight"), weight, 1.0)?;
+    check_time(|| format!("{field}.blend"), blend, MAX_BLEND)
+}
+
+pub(crate) fn check_looks(field: &str, looks: &[LookKey], length: f32) -> Result<(), TimelineError> {
+    check_count(field, looks.len())?;
+    check_times(field, looks.iter().map(|key| key.at), length, false)?;
+    for (index, key) in looks.iter().enumerate() {
+        if let Some(look_at) = key.look_at {
+            check_position(|| format!("{field}[{index}].look_at"), look_at)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_post(post: &[PostTrack], length: f32) -> Result<(), TimelineError> {
     check_count("post", post.len())?;
     for (index, track) in post.iter().enumerate() {
@@ -731,6 +837,14 @@ impl TimelineDocument {
                 last = Some(play.to);
             }
             check_places(&format!("characters[{index}].places"), &track.places, self.length)?;
+            let faces = format!("characters[{index}].faces");
+            check_count(&faces, track.faces.len())?;
+            check_times(&faces, track.faces.iter().map(|key| key.at), self.length, false)?;
+            for (at, key) in track.faces.iter().enumerate() {
+                check_name(|| format!("{faces}[{at}].expression"), &key.expression)?;
+                check_face(&format!("{faces}[{at}]"), key.weight, key.blend)?;
+            }
+            check_looks(&format!("characters[{index}].looks"), &track.looks, self.length)?;
         }
         Ok(())
     }
@@ -835,6 +949,17 @@ impl TimelineDocument {
                             })
                             .collect(),
                         places: track.places.clone(),
+                        faces: track
+                            .faces
+                            .iter()
+                            .map(|key| CookedFace {
+                                at: key.at,
+                                expression: Name::new(&key.expression).as_u64(),
+                                weight: key.weight,
+                                blend: key.blend,
+                            })
+                            .collect(),
+                        looks: track.looks.clone(),
                     })
                     .collect(),
                 cues: self

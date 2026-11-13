@@ -8,8 +8,8 @@ use sapphire_core::Name;
 use sapphire_look::PostParams;
 use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_timeline::{
-    CameraKey, CameraTrack, CookedCharacter, CookedCue, Ease, EyeRule, PlaceKey, PostParameter, ScalarKey,
-    Timeline, TimelineClock,
+    CameraKey, CameraTrack, CookedCharacter, CookedCue, Ease, EyeRule, LookKey, PlaceKey, PostParameter,
+    ScalarKey, Timeline, TimelineClock,
 };
 
 /// Where a timeline's own space sits in the world: a cutscene's is the zone's own, and a cinematic's sits on
@@ -100,6 +100,26 @@ pub struct CharacterCue {
     pub position_ticks: f64,
     /// `None` if its track has no places, so it stands where it is.
     pub placed: Option<Placed>,
+    /// The expression its face shows, from the last face key the playhead has passed: `None` before the
+    /// first, and the face is its own (M5 C5).
+    pub face: Option<FaceCue>,
+    /// Where it looks, in the world: `None` before its first look key or from one that hands the look back
+    /// (M5 C5).
+    pub look: Option<Vec3>,
+}
+
+/// A face key at the playhead: what a face layer (`sapphire_anim::FaceLayer`) is asked to show.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceCue {
+    /// The expression preset, by its VRM name's hash.
+    pub expression: Name,
+    pub weight: f32,
+    /// Seconds to blend to it.
+    pub blend: f32,
+    /// Which of the track's face keys it is, from 1: a new one is a new expression to blend to.
+    pub key: u32,
+    /// Seconds since the playhead passed its key: how far into its blend a face should be.
+    pub since: f32,
 }
 
 /// A cue the playhead reached since the last advance.
@@ -338,14 +358,28 @@ impl TimelinePlayer {
             let (position, yaw) = sample_place(&character.places, at);
             Placed { position: self.origin.point(position), yaw: self.origin.yaw + yaw.to_radians() }
         });
+        let faces = &character.faces;
+        let face = faces.partition_point(|key| key.at <= at).checked_sub(1).map(|index| {
+            let key = &faces[index];
+            FaceCue {
+                expression: Name::from_u64(key.expression),
+                weight: key.weight,
+                blend: key.blend,
+                key: index as u32 + 1,
+                since: at - key.at,
+            }
+        });
+        let look = sample_look(&character.looks, at).map(|local| self.origin.point(local));
         match playing {
             Some((index, play)) => CharacterCue {
                 row: Some(Name::from_u64(play.row)),
                 serial: index as u32 + 1,
                 position_ticks: f64::from(at - play.from) * f64::from(TICK_HZ),
                 placed,
+                face,
+                look,
             },
-            None => CharacterCue { row: None, serial: 0, position_ticks: 0.0, placed },
+            None => CharacterCue { row: None, serial: 0, position_ticks: 0.0, placed, face, look },
         }
     }
 
@@ -402,6 +436,17 @@ fn sample_scalar(keys: &[ScalarKey], at: f32) -> f32 {
 fn sample_place(keys: &[PlaceKey], at: f32) -> ([f32; 3], f32) {
     let (from, to, share) = between(keys, at, |key| key.at, |key| key.ease);
     (lerp3(from.position, to.position, share), lerp(from.yaw_degrees, to.yaw_degrees, share))
+}
+
+/// Where a look track looks at `at`: nothing before its first key, or from a key that hands the look back.
+/// Between two keys that look somewhere it moves by the second's ease; up to one that hands back, it holds.
+fn sample_look(keys: &[LookKey], at: f32) -> Option<[f32; 3]> {
+    let index = keys.partition_point(|key| key.at <= at).checked_sub(1)?;
+    let from = keys[index].look_at?;
+    let Some(next) = keys.get(index + 1) else { return Some(from) };
+    let Some(to) = next.look_at else { return Some(from) };
+    let share = ((at - keys[index].at) / (next.at - keys[index].at)).clamp(0.0, 1.0);
+    Some(lerp3(from, to, next.ease.eased(share)))
 }
 
 /// The rotation that turns +Z to `eye`'s way to `at`, with `roll` degrees about it, as a camera pose's does.
@@ -638,6 +683,37 @@ mod tests {
         assert_eq!((villain.row, villain.placed), (Some(Name::new("stand")), None));
         assert_eq!(at(1.0).character(Name::new("nobody")), None);
         assert_eq!(at(1.0).roles().collect::<Vec<_>>(), [hero, Name::new("villain")]);
+    }
+
+    /// M5 C5: a face key holds from its time on, with how long ago it was passed; a look moves between keys
+    /// and is handed back by one that looks nowhere.
+    #[test]
+    fn a_characters_face_and_look_follow_their_keys() {
+        let hero = Name::new("hero");
+        let cue = |seconds| at(seconds).character(hero).unwrap();
+        assert_eq!(cue(0.9).face, None, "before the first key the face is its own");
+        let happy = cue(1.25).face.unwrap();
+        assert_eq!(
+            (happy.expression, happy.weight, happy.blend, happy.key),
+            (Name::new("happy"), 0.8, 0.4, 1)
+        );
+        assert!((happy.since - 0.25).abs() < 1e-5);
+        let surprised = cue(5.0).face.unwrap();
+        assert_eq!((surprised.expression, surprised.weight, surprised.key), (Name::new("surprised"), 1.0, 2));
+        assert_eq!(at(1.0).character(Name::new("villain")).unwrap().face, None);
+
+        assert_eq!(cue(0.4).look, None);
+        assert!(close(cue(0.5).look.unwrap(), Vec3::new(0.0, 1.5, 2.0)));
+        assert!(close(cue(1.0).look.unwrap(), Vec3::new(1.0, 1.5, 2.0)), "smooth: half-way at half-time");
+        assert!(close(cue(4.4).look.unwrap(), Vec3::new(2.0, 1.5, 2.0)), "held up to the hand back");
+        assert_eq!(cue(4.5).look, None);
+        // Through the origin, as everything else is.
+        let origin = Origin { position: Vec3::new(10.0, 0.0, 0.0), yaw: std::f32::consts::FRAC_PI_2 };
+        let mut player = TimelinePlayer::new(timeline(CUTSCENE), origin);
+        player.advance(0.5, None);
+        assert!(close(player.character(hero).unwrap().look.unwrap(), Vec3::new(12.0, 1.5, 0.0)));
+        // And once it's over, the character's handed back, face and look with the rest.
+        assert_eq!(at(6.0).character(hero), None);
     }
 
     #[test]

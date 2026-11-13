@@ -553,6 +553,15 @@ impl ArenaCamera {
     }
 }
 
+/// What draws a fighter on the stage, which what poses it finds its clips and its versions by (M5 C7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FighterKind {
+    /// The scene's character, as whichever playable kind it draws as (`Content::character_kind`).
+    Playable,
+    /// A warrior, as the kind of enemy at this place among the stage's.
+    Enemy(usize),
+}
+
 /// One who fights on the stage: the character, or a warrior.
 #[derive(Clone, Copy, Debug)]
 struct StageFighter {
@@ -563,8 +572,8 @@ struct StageFighter {
     /// A warrior's blade, which is drawn on its own, and the joint that holds it and where that is in the
     /// warrior's model space. The character's is `crate::blade`'s.
     blade: Option<(Entity, enemy::Grip)>,
-    /// A warrior's kind of enemy, by its place among the stage's: 0 for the character, who has none.
-    kind: usize,
+    /// What draws it.
+    kind: FighterKind,
     /// How big a warrior draws. The character draws as it is.
     sizes: enemy::Sizes,
 }
@@ -577,7 +586,7 @@ impl StageFighter {
             root: Root::standing(Vec3::ZERO, 0.0),
             signals: FighterSignals::default(),
             blade: parts.blade,
-            kind: parts.kind,
+            kind: FighterKind::Enemy(parts.kind),
             sizes: parts.sizes,
         }
     }
@@ -631,7 +640,7 @@ impl ArenaActors {
             root: Root::at(spawns.player),
             signals: FighterSignals::default(),
             blade: None,
-            kind: 0,
+            kind: FighterKind::Playable,
             sizes: enemy.sizes,
         };
         let warrior = StageFighter { root: Root::at(spawns.enemy), ..StageFighter::of(enemy) };
@@ -670,11 +679,11 @@ impl ArenaActors {
     /// How many warriors of the kind at `kind` stand here with no actor yet.
     pub(crate) fn free_warriors_of(&self, kind: usize) -> usize {
         let free = self.seen.iter().zip(&self.fighters).skip(1).filter(|(seen, _)| seen.is_none());
-        free.filter(|(_, fighter)| fighter.kind == kind).count()
+        free.filter(|(_, fighter)| fighter.kind == FighterKind::Enemy(kind)).count()
     }
 
-    /// The kind of enemy `fighter` draws as, the player being 0, who has none.
-    pub(crate) fn kind(&self, fighter: usize) -> usize {
+    /// What draws `fighter`.
+    pub(crate) fn kind(&self, fighter: usize) -> FighterKind {
         self.fighters[fighter].kind
     }
 
@@ -758,7 +767,7 @@ impl ArenaActors {
         while let Some(free) = self.seen.iter().skip(1).position(Option::is_none) {
             let actor = self.unseated(simulation, cast)?;
             let place = free + 1;
-            if self.fighters[place].kind != self.kind_of(&actor) {
+            if self.fighters[place].kind != FighterKind::Enemy(self.kind_of(&actor)) {
                 return Some(self.take_off(place));
             }
             self.seen[place] = Some(actor);
@@ -860,7 +869,7 @@ impl ArenaActors {
     /// held pose.
     pub(crate) fn follow_new_kind(&mut self, kind: usize, grip: Option<enemy::Grip>) {
         let Some(grip) = grip else { return };
-        for fighter in self.fighters.iter_mut().skip(1).filter(|fighter| fighter.kind == kind) {
+        for fighter in self.fighters.iter_mut().filter(|fighter| fighter.kind == FighterKind::Enemy(kind)) {
             if let Some((_, held)) = &mut fighter.blade {
                 *held = grip;
             }

@@ -8,13 +8,15 @@ use sapphire_gameplay::{
     body::{BodyAssets, BodyGraphAssets},
 };
 use sapphire_moves::Enemy;
-use sapphire_stage::{Content, lookdev};
+use sapphire_stage::{Content, PlayableLook, lookdev};
 use sapphire_time::Stopwatch;
 
 use super::{HERO_HEAD, PLAYER_EYES, overhead_profile};
 use crate::enemy;
 
 pub(super) struct StockArenaAssets {
+    /// The playable kind the player stands as, whose body the simulation binds.
+    playable: PlayableLook,
     heroine_mesh: CpuResident<Mesh>,
     heroine: BodyAssets,
     warrior: BodyGraphAssets,
@@ -24,7 +26,7 @@ pub(super) struct StockArenaAssets {
 }
 
 impl StockArenaAssets {
-    pub(super) fn load(content: &mut Content) -> Result<Self, String> {
+    pub(super) fn load(content: &mut Content, playable: PlayableLook) -> Result<Self, String> {
         let stopwatch = Stopwatch::start();
         let remaining = || Duration::from_secs(15).saturating_sub(stopwatch.elapsed());
         let kind =
@@ -34,22 +36,23 @@ impl StockArenaAssets {
         // The first renderer upload may drain this preload before the arena reads the warrior skin.
         content.keep_mesh_copy(look.mesh);
         let heroine_mesh =
-            content.preload_cpu::<Mesh>(lookdev::CHARACTER, &remaining).map_err(|error| error.to_string())?;
+            content.preload_cpu::<Mesh>(playable.mesh, &remaining).map_err(|error| error.to_string())?;
         let warrior_mesh =
             content.preload_cpu::<Mesh>(look.mesh, &remaining).map_err(|error| error.to_string())?;
         let hero_skeleton = skin_skeleton(&heroine_mesh, "the heroine")?;
         let warrior_skeleton = skin_skeleton(&warrior_mesh, "the warrior")?;
         let heroine_graph = content
-            .preload_body_graph(lookdev::GRAPH, hero_skeleton, &remaining)
+            .preload_body_graph(playable.graph, hero_skeleton, &remaining)
             .map_err(|error| error.to_string())?;
         let warrior = content
             .preload_body_graph(look.graph, warrior_skeleton, &remaining)
             .map_err(|error| error.to_string())?;
         let rig = content
-            .preload_cpu::<CharacterRig>(lookdev::RIG, &remaining)
+            .preload_cpu::<CharacterRig>(playable.rig, &remaining)
             .map_err(|error| error.to_string())?;
         let weapon = content.preload_cpu::<Mesh>(blade, &remaining).map_err(|error| error.to_string())?;
-        Ok(Self { heroine_mesh, heroine: BodyAssets { graph: heroine_graph, rig }, warrior, weapon, look })
+        let heroine = BodyAssets { graph: heroine_graph, rig };
+        Ok(Self { playable, heroine_mesh, heroine, warrior, weapon, look })
     }
 
     /// Installs both owners and the private contact route before recording or checking a table hash.
@@ -64,6 +67,7 @@ impl StockArenaAssets {
         let heroine = lookdev::arena_body_profile(
             self.heroine.clone(),
             self.heroine_mesh.view(),
+            &self.playable,
             self.look.eyes,
             HERO_HEAD,
             tuning,

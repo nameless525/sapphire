@@ -3,7 +3,7 @@
 //!
 //! Assets are named by ID only (rule R5): the character is [`CHARACTER`], the mannequin's ID
 //! from its sidecar (`content/samples/mannequin.glb.meta`), or the one the scene asks for
-//! (`--look-dev`'s VRM, [`lookdev::CHARACTER`]). The asset server loads it with the
+//! (`--look-dev`'s VRM, a playable kind's mesh: [`crate::playable`]). The asset server loads it with the
 //! materials its slots name and their textures, dependencies first, and hands each to
 //! [`GpuAssets`], which uploads it with the renderer's own calls and keeps the renderer's handles
 //! by asset ID: a material's textures and a mesh's materials resolve through what is already
@@ -42,13 +42,13 @@
 //! What a game loads beside these, it holds itself ([`Content::hold`]): `game_combat`'s enemy and blade are
 //! that, the enemy's mesh copied as it uploads since its held pose derives from it ([`Content::keep_mesh_copy`]).
 //!
-//! With `--look-dev` it loads the town's plants ([`lookdev::Plant`]), whose
-//! sidecars bind theirs to the look-dev foliage materials, and its far mountains
-//! ([`lookdev::MOUNTAINS`], whose sidecars bind them to the mountains' environment material;
-//! [`Content::town`]), the courtyard's fog cards, and the character's rig ([`lookdev::RIG`],
-//! [`Content::rig`]) and skeleton ([`Content::skeleton`]), which stay on the CPU. The town itself is a
-//! zone ([`lookdev::TOWN_ZONE`]), which the scene streams ([`crate::scene::ZoneStage`]): this holds
-//! none of its cells' handles, only the means to load them ([`Content::open_zone`]).
+//! With `--look-dev` it loads the town's plants ([`lookdev::Plant`]), whose sidecars bind theirs to the
+//! look-dev foliage materials, and its far mountains ([`lookdev::MOUNTAINS`], whose sidecars bind them to the
+//! mountains' environment material; [`Content::town`]), the courtyard's fog cards, and the character's
+//! playable kind: its rig and skeleton, which stay on the CPU, kept by the kind ([`Content::load_playable`],
+//! [`Content::rig_of`]). The town itself is a zone ([`lookdev::TOWN_ZONE`]), which the scene streams
+//! ([`crate::scene::ZoneStage`]): this holds none of its cells' handles, only the means to load them
+//! ([`Content::open_zone`]).
 //!
 //! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
 //! derives the character without its pedestal and the look-dev stage its held pose
@@ -136,6 +136,7 @@ use crate::lookdev::{self, Plant, TownMeshes};
 use crate::material_overrides::MaterialOverrides;
 #[cfg(feature = "samples")]
 use crate::outlines;
+use crate::playable::PlayableLook;
 use crate::rims::{self, RimRigMeshes};
 use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
@@ -665,7 +666,8 @@ struct HeldGraph {
     graph: Handle<AnimGraph>,
     clips: Vec<(AssetId, Handle<Clip>)>,
     source_revision: RefCell<SourceRevision>,
-    /// What it binds against, for anyone but the character, who has a rig and a mesh besides.
+    /// What it binds against, for anyone but a playable kind, which has a rig and a mesh besides
+    /// ([`GraphKey::playable`]).
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     skeleton: Option<Handle<Skeleton>>,
     /// The graph live tuning took as a document, over the cooked one until a cook lands
@@ -773,13 +775,10 @@ pub struct Content {
     zone_prewarm_time: std::time::Duration,
     /// How far the renderer's warm-up had got at the last update: [`Self::warm_up`].
     warm_up: WarmUpProgress,
-    /// A character rig, once asked for (`--look-dev`'s).
-    rig: Option<Handle<CharacterRig>>,
-    /// The skeleton of the character's mesh, with the rig.
-    skeleton: Option<Handle<Skeleton>>,
-    /// The versions of the character's mesh, rig and skeleton the scene last knew of
-    /// ([`Self::take_character_changed`]), once there is a rig.
-    character_versions: Option<(u32, u32, u32)>,
+    /// The playable kinds loaded, each with its rig and skeleton ([`Self::load_playable`]).
+    playables: Vec<HeldPlayable>,
+    /// The kind the character draws as, once one is ([`Self::draw_character_as`]).
+    character_kind: Option<AssetId>,
     /// The clip the character plays, once asked for (`--clip`), and the version the scene last
     /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
@@ -806,38 +805,70 @@ pub struct Content {
     stock_inputs_locked: bool,
 }
 
-/// Whose graph it is, by a name its owner gives (M2 T2), and a number for an owner with several, as a fight
-/// has a graph for each kind of enemy (M3 B3b): each binds against its own skeleton.
+/// Whose graph it is: a playable kind's, by the kind (M5 C7), or another's by a name its owner gives (M2 T2),
+/// and a number for an owner with several, as a fight has a graph for each kind of enemy (M3 B3b). Each binds
+/// against its own skeleton.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphKey {
-    name: &'static str,
-    number: u16,
+pub struct GraphKey(GraphOwner);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphOwner {
+    Named { name: &'static str, number: u16 },
+    Playable(AssetId),
 }
 
 impl GraphKey {
-    /// The scene's character's, which [`Content::load_graph`] loads.
-    pub const CHARACTER: Self = Self::new("character");
-
     /// The graph named `name`, its owner's first.
     #[must_use]
     pub const fn new(name: &'static str) -> Self {
-        Self { name, number: 0 }
+        Self(GraphOwner::Named { name, number: 0 })
     }
 
-    /// Its owner's graph number `number`, 0 being this one.
+    /// The graph of the playable kind `kind`, which [`Content::load_graph`] loads and binds against the
+    /// kind's rig and skeleton ([`Content::load_playable`]).
+    #[must_use]
+    pub const fn playable(kind: AssetId) -> Self {
+        Self(GraphOwner::Playable(kind))
+    }
+
+    /// Its owner's graph number `number`, 0 being this one. A playable kind's graph is its alone, and takes
+    /// no number.
     #[must_use]
     pub const fn numbered(self, number: u16) -> Self {
-        Self { name: self.name, number }
+        match self.0 {
+            GraphOwner::Named { name, .. } => Self(GraphOwner::Named { name, number }),
+            GraphOwner::Playable(_) => self,
+        }
+    }
+
+    /// The playable kind whose graph it is, if it's one's.
+    #[must_use]
+    pub const fn kind(self) -> Option<AssetId> {
+        match self.0 {
+            GraphOwner::Playable(kind) => Some(kind),
+            GraphOwner::Named { .. } => None,
+        }
     }
 }
 
 impl std::fmt::Display for GraphKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.number {
-            0 => formatter.write_str(self.name),
-            number => write!(formatter, "{} {number}", self.name),
+        match self.0 {
+            GraphOwner::Named { name, number: 0 } => formatter.write_str(name),
+            GraphOwner::Named { name, number } => write!(formatter, "{name} {number}"),
+            GraphOwner::Playable(kind) => write!(formatter, "playable kind {kind}"),
         }
     }
+}
+
+/// A playable kind [`Content::load_playable`] loaded: its look, its rig and skeleton, and the versions of its
+/// mesh, rig and skeleton the scene last knew of ([`Content::take_character_changed`]).
+struct HeldPlayable {
+    look: PlayableLook,
+    rig: Handle<CharacterRig>,
+    /// The skeleton its kept mesh's skin names, if it has one.
+    skeleton: Option<Handle<Skeleton>>,
+    versions: (u32, u32, u32),
 }
 
 /// What the newest of `owner`'s `files` says its graph is, if there's one and it reads: what binds, once a
@@ -979,9 +1010,8 @@ impl Content {
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
             warm_up: WarmUpProgress::default(),
-            rig: None,
-            skeleton: None,
-            character_versions: None,
+            playables: Vec::new(),
+            character_kind: None,
             clip: None,
             clip_version: 0,
             graphs: Vec::new(),
@@ -1108,19 +1138,52 @@ impl Content {
         std::mem::take(&mut self.gpu.meshes_replaced)
     }
 
-    /// Whether the character's mesh, rig or skeleton has a new version since the last call or since
-    /// [`Self::load_rig`], whichever way it came; they may land frames apart. Always false without
-    /// a rig.
+    /// Whether the mesh, rig or skeleton of the kind the character draws as has a new version since the last
+    /// call or since [`Self::load_playable`], whichever way it came; they may land frames apart. Always false
+    /// while it draws as no kind.
     pub(crate) fn take_character_changed(&mut self) -> bool {
-        let versions = self.current_character_versions();
-        std::mem::replace(&mut self.character_versions, versions) != versions
+        let Some(kind) = self.character_kind else { return false };
+        let Some(versions) = self.playable_versions(kind) else { return false };
+        let Some(held) = self.playables.iter_mut().find(|held| held.look.kind == kind) else { return false };
+        std::mem::replace(&mut held.versions, versions) != versions
     }
 
-    /// The versions the character's mesh, rig and skeleton are at, if it has a rig.
-    pub fn current_character_versions(&self) -> Option<(u32, u32, u32)> {
-        let rig = self.rig.as_ref()?;
-        let skeleton = self.skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
-        Some((self.server.generation(&self.character), self.server.generation(rig), skeleton))
+    /// The versions the playable kind `kind`'s mesh, rig and skeleton are at, once it's loaded.
+    pub fn playable_versions(&self, kind: AssetId) -> Option<(u32, u32, u32)> {
+        let held = self.held_playable(kind)?;
+        let skeleton = held.skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
+        Some((self.server.generation(&self.character), self.server.generation(&held.rig), skeleton))
+    }
+
+    /// The playable kind `kind`, once [`Self::load_playable`] has loaded it.
+    fn held_playable(&self, kind: AssetId) -> Option<&HeldPlayable> {
+        self.playables.iter().find(|held| held.look.kind == kind)
+    }
+
+    /// What draws the playable kind `kind`, once [`Self::load_playable`] has loaded it.
+    #[must_use]
+    pub fn playable(&self, kind: AssetId) -> Option<&PlayableLook> {
+        self.held_playable(kind).map(|held| &held.look)
+    }
+
+    /// The playable kind the character draws as, once [`Self::draw_character_as`] has said.
+    #[must_use]
+    pub fn character_kind(&self) -> Option<AssetId> {
+        self.character_kind
+    }
+
+    /// What draws the character, once it draws as a playable kind.
+    #[must_use]
+    pub fn character_look(&self) -> Option<&PlayableLook> {
+        self.playable(self.character_kind?)
+    }
+
+    /// Makes the character draw as the playable kind `kind` from now on, which [`Self::load_playable`] has
+    /// loaded: what everything that poses it looks it up by.
+    pub(crate) fn draw_character_as(&mut self, kind: AssetId) -> Result<(), String> {
+        let held = self.held_playable(kind).ok_or_else(|| format!("no playable kind {kind} is loaded"))?;
+        self.character_kind = Some(held.look.kind);
+        Ok(())
     }
 
     /// Loads the shader swatches' materials, with the textures they name, until they are on
@@ -1716,36 +1779,49 @@ impl Content {
         self.gpu.kept_meshes.iter().find(|(kept, _)| *kept == id)?.1.as_ref()
     }
 
-    /// Loads the character rig `id` until it is resident, and the skeleton the character's kept
-    /// mesh names ([`Self::keep_character_mesh`]): CPU data, which nothing uploads ([`Self::rig`]
-    /// and [`Self::skeleton`] read them). They stay loaded from then on.
-    pub(crate) fn load_rig(
+    /// Loads the playable kind `look` (M5 C7): its rig until it is resident, and the skeleton the character's
+    /// kept mesh names ([`Self::keep_character_mesh`]), CPU data, which nothing uploads ([`Self::rig_of`] and
+    /// [`Self::skeleton_of`] read them). They stay loaded from then on, kept by the kind; loading it again
+    /// replaces them. Its mesh is the character's ([`Self::new`]): the content holds one character's mesh,
+    /// which any kind loaded here draws with.
+    pub(crate) fn load_playable(
         &mut self,
-        id: AssetId,
+        look: &PlayableLook,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
+        if look.mesh != self.character_id {
+            return Err(AppInitError::msg(format!(
+                "the playable kind {} draws with the mesh {}, and the character is {}",
+                look.kind, look.mesh, self.character_id
+            )));
+        }
         // Asking again tries a rig that failed before, as the character does.
-        let rig = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let rig = self.server.load_with(look.rig, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&rig, |upload| assets.upload(upload, renderer, gpu));
-        self.rig = Some(rig);
         let skeleton = self.character_mesh().and_then(|mesh| mesh.skin.as_ref()?.skeleton);
-        let skeleton_loaded = match skeleton {
+        let (skeleton, skeleton_loaded) = match skeleton {
             Some(id) => {
                 let skeleton =
                     self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
                 let assets = &mut self.gpu;
                 let loaded = self.server.finish(&skeleton, |upload| assets.upload(upload, renderer, gpu));
-                self.skeleton = Some(skeleton);
-                loaded
+                (Some(skeleton), loaded)
             }
-            None => Ok(()),
+            None => (None, Ok(())),
         };
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
-        self.character_versions = self.current_character_versions();
+        let skeleton_version = skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
+        let versions =
+            (self.server.generation(&self.character), self.server.generation(&rig), skeleton_version);
+        let held = HeldPlayable { look: look.clone(), rig, skeleton, versions };
+        match self.playables.iter_mut().find(|held| held.look.kind == look.kind) {
+            Some(loaded) => *loaded = held,
+            None => self.playables.push(held),
+        }
         loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))?;
         skeleton_loaded
             .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))
@@ -2112,18 +2188,23 @@ impl Content {
         std::mem::replace(&mut self.clip_version, version) != version
     }
 
-    /// Loads the graph `id` until it and the clips it names are resident: CPU data, which nothing
-    /// uploads ([`Self::graph_document`] and [`Self::graph_clips`] read them). They stay loaded from then on.
+    /// Loads the graph of the playable kind `kind`, which [`Self::load_playable`] has loaded, until it and
+    /// the clips it names are resident: CPU data, which nothing uploads ([`Self::graph_document_of`] and
+    /// [`Self::graph_clips_of`] read them, by [`GraphKey::playable`]). They stay loaded from then on.
     pub fn load_graph(
         &mut self,
-        id: AssetId,
+        kind: AssetId,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        self.load_graph_of(GraphKey::CHARACTER, None, id, renderer, gpu)
+        let graph = self
+            .playable(kind)
+            .map(|look| look.graph)
+            .ok_or_else(|| AppInitError::msg(format!("no playable kind {kind} is loaded")))?;
+        self.load_graph_of(GraphKey::playable(kind), None, graph, renderer, gpu)
     }
 
-    /// Loads the graph `id` as [`Self::load_graph`] does the character's, for `key`, who binds it against
+    /// Loads the graph `id` as [`Self::load_graph`] does a playable kind's, for `key`, who binds it against
     /// `skeleton` ([`Self::graph_clips_of`] reads it).
     pub fn load_graph_of(
         &mut self,
@@ -2199,9 +2280,10 @@ impl Content {
         held_all
     }
 
-    /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
-    pub fn graph_document(&self) -> Result<AnimGraph, String> {
-        self.graph_document_of(GraphKey::CHARACTER)
+    /// The graph the character binds: the graph of the kind it draws as ([`Self::character_kind`]).
+    pub fn character_graph(&self) -> Result<AnimGraph, String> {
+        let kind = self.character_kind.ok_or("the character draws as no playable kind")?;
+        self.graph_document_of(GraphKey::playable(kind))
     }
 
     /// The graph `key` binds: the one live tuning took, or the one it loaded.
@@ -2267,12 +2349,12 @@ impl Content {
     #[cfg(feature = "dev")]
     fn never_fits(&self, owner: GraphKey, graph: &AnimGraph) -> Option<GraphBindError> {
         let clips = self.graph_clips_of(owner);
-        let (skeleton, rig, morph_targets) = match self.held_graph(owner)?.skeleton.as_ref() {
-            None => {
+        let (skeleton, rig, morph_targets) = match owner.kind() {
+            Some(kind) => {
                 let morph_targets = self.character_mesh()?.morph_targets.len();
-                (self.skeleton.as_ref()?, Some(self.rig()?), morph_targets)
+                (self.held_playable(kind)?.skeleton.as_ref()?, Some(self.rig_of(kind)?), morph_targets)
             }
-            Some(skeleton) => (skeleton, None, 0),
+            None => (self.held_graph(owner)?.skeleton.as_ref()?, None, 0),
         };
         let error = GraphBinding::new(graph, self.server.get(skeleton)?, rig, morph_targets, &clips).err()?;
         let could_land = match &error {
@@ -2306,12 +2388,15 @@ impl Content {
         let_go
     }
 
-    /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
-    pub fn graph_clips(&self) -> ClipTable<'_> {
-        self.graph_clips_of(GraphKey::CHARACTER)
+    /// The clips the graph of the kind the character draws as names, as a frame's evaluation reads them: none
+    /// while it draws as none. Allocates nothing.
+    pub fn character_clips(&self) -> ClipTable<'_> {
+        self.character_kind
+            .map_or_else(ClipTable::empty, |kind| self.graph_clips_of(GraphKey::playable(kind)))
     }
 
-    /// The clips `key`'s graph names, likewise.
+    /// The clips `key`'s graph names, as a frame's evaluation reads them: none while it's not loaded.
+    /// Allocates nothing.
     pub fn graph_clips_of(&self, key: GraphKey) -> ClipTable<'_> {
         self.held_graph(key)
             .map_or_else(ClipTable::empty, |held| held.table(&self.server, &self.source_revision_clock))
@@ -2386,24 +2471,30 @@ impl Content {
         std::mem::replace(&mut self.graph_version, version) != version
     }
 
-    /// The rig [`Self::load_rig`] loaded.
-    pub(crate) fn rig(&self) -> Option<&ArchivedCharacterRig> {
-        self.rig.as_ref().and_then(|rig| self.server.get(rig))
+    /// The rig of the playable kind `kind`, which [`Self::load_playable`] loaded.
+    pub(crate) fn rig_of(&self, kind: AssetId) -> Option<&ArchivedCharacterRig> {
+        self.server.get(&self.held_playable(kind)?.rig)
     }
 
-    /// The skeleton [`Self::load_rig`] loaded.
-    pub(crate) fn skeleton(&self) -> Option<&ArchivedSkeleton> {
-        self.skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton))
+    /// The skeleton of the playable kind `kind`, which [`Self::load_playable`] loaded.
+    pub(crate) fn skeleton_of(&self, kind: AssetId) -> Option<&ArchivedSkeleton> {
+        self.server.get(self.held_playable(kind)?.skeleton.as_ref()?)
     }
 
-    /// The rig [`Self::load_rig`] loaded, shared, for a worker to read.
-    pub(crate) fn rig_resident(&self) -> Option<CpuResident<CharacterRig>> {
-        self.rig.as_ref().and_then(|rig| self.server.cpu_resident(rig))
+    /// The mesh of the playable kind `kind` as last uploaded: the character's ([`Self::load_playable`]).
+    pub(crate) fn mesh_of(&self, kind: AssetId) -> Option<&Mesh> {
+        self.held_playable(kind)?;
+        self.character_mesh()
     }
 
-    /// The skeleton [`Self::load_rig`] loaded, shared, for a worker to read.
-    pub(crate) fn skeleton_resident(&self) -> Option<CpuResident<Skeleton>> {
-        self.skeleton.as_ref().and_then(|skeleton| self.server.cpu_resident(skeleton))
+    /// [`Self::rig_of`], shared, for a worker to read.
+    pub(crate) fn rig_resident_of(&self, kind: AssetId) -> Option<CpuResident<CharacterRig>> {
+        self.server.cpu_resident(&self.held_playable(kind)?.rig)
+    }
+
+    /// [`Self::skeleton_of`], shared, for a worker to read.
+    pub(crate) fn skeleton_resident_of(&self, kind: AssetId) -> Option<CpuResident<Skeleton>> {
+        self.server.cpu_resident(self.held_playable(kind)?.skeleton.as_ref()?)
     }
 
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
@@ -2766,6 +2857,32 @@ mod tests {
     const OTHER_RIG: AssetId = AssetId::from_bytes([0x63; 16]);
     /// [`SWING`], for another rig.
     const OTHER_RIGS_SWING: AssetId = AssetId::from_bytes([0x64; 16]);
+    /// The test character's mesh.
+    const MESH: AssetId = AssetId::from_bytes([0x5b; 16]);
+    /// The test character's rig.
+    const RIG: AssetId = AssetId::from_bytes([0x5c; 16]);
+    /// The playable kind the test character draws as.
+    const KIND: AssetId = AssetId::from_bytes([0x5d; 16]);
+    /// A second playable kind, which draws with the same mesh, rig and graph as [`KIND`].
+    const OTHER_KIND: AssetId = AssetId::from_bytes([0x5a; 16]);
+
+    /// What draws the playable kind [`KIND`]: the test character, its rig and [`GRAPH`].
+    fn look() -> PlayableLook {
+        look_of(KIND)
+    }
+
+    /// What draws the playable kind `kind` with the test character, its rig and [`GRAPH`].
+    fn look_of(kind: AssetId) -> PlayableLook {
+        PlayableLook {
+            kind,
+            mesh: MESH,
+            rig: RIG,
+            graph: GRAPH,
+            seed: 1,
+            held: None,
+            body_contacts: Vec::new(),
+        }
+    }
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
@@ -2859,13 +2976,8 @@ mod tests {
             ..CharacterRig::default()
         };
         vec![
-            packed_with(
-                lookdev::CHARACTER,
-                AssetKind::Mesh,
-                &mesh.to_cooked().expect("cooked"),
-                vec![SKELETON],
-            ),
-            packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
+            packed_with(MESH, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![SKELETON]),
+            packed(RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
             packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
             packed_with(SWING, AssetKind::Clip, &playing.to_cooked().expect("cooked"), vec![SKELETON]),
             packed_with(OTHER_SWING, AssetKind::Clip, &playing.to_cooked().expect("cooked"), vec![SKELETON]),
@@ -2965,11 +3077,18 @@ mod tests {
         /// draw it.
         fn mannequin_of(mesh: &Mesh) -> Self {
             let bytes = mesh.to_cooked().expect("cooked");
-            let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("a pack");
+            let pack = write_pack(vec![packed(MESH, AssetKind::Mesh, &bytes)]).expect("a pack");
             Self::over_pack_with(pack, |_, _, _, mesh, bounds| Scene::with_character(mesh, bounds, false))
         }
 
-        /// The look-dev stage around the character.
+        /// The look-dev stage around the character, held as the playable kind `kind`.
+        fn held_as(kind: AssetId) -> Self {
+            Self::over_pack_with(pack(0.0, 0), move |content, renderer, gpu, mesh, bounds| {
+                Self::in_town_as(&look_of(kind), content, renderer, gpu, mesh, bounds)
+            })
+        }
+
+        /// The look-dev stage around the character, held as [`KIND`].
         fn in_town(
             content: &mut Content,
             renderer: &mut Renderer,
@@ -2977,7 +3096,19 @@ mod tests {
             mesh: MeshHandle,
             bounds: [[f32; 3]; 2],
         ) -> Scene {
-            let (pose, figure) = lookdev::hold(content, renderer, gpu).expect("the character's pose");
+            Self::in_town_as(&look(), content, renderer, gpu, mesh, bounds)
+        }
+
+        /// The look-dev stage around the character, held as the playable kind `look`.
+        fn in_town_as(
+            look: &PlayableLook,
+            content: &mut Content,
+            renderer: &mut Renderer,
+            gpu: &GpuContext,
+            mesh: MeshHandle,
+            bounds: [[f32; 3]; 2],
+        ) -> Scene {
+            let (pose, figure) = lookdev::hold(content, look, renderer, gpu).expect("the character's pose");
             // What the town draws doesn't matter here.
             let bytes = triangle(0.0).to_cooked().expect("cooked");
             let plain = Mesh::read(&bytes).expect("a valid mesh");
@@ -3003,8 +3134,8 @@ mod tests {
                 AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
             let mut server = AssetServer::new(live_packs.clone(), budgets);
             server.mount_now(PACK).expect("the pack");
-            let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
-            let mut content = Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
+            let character = server.load_with(MESH, LoadPriority::Critical).expect("loading");
+            let mut content = Content::over_server(server, MESH, character, SKY, live_packs);
             content.keep_character_mesh();
             let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
             let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
@@ -3046,14 +3177,14 @@ mod tests {
         /// Plays the swing on the character, framed so its triangle is in view whichever way it swings.
         fn play_swing(&mut self) {
             self.content.load_clip(SWING, &mut self.renderer, &self.gpu).expect("the clip");
-            self.scene.play_clip(lookdev::player(&self.content).expect("a player"));
+            self.scene.play_clip(lookdev::player(&self.content, KIND).expect("a player"));
             self.frame_on_character();
         }
 
         /// Plays the graph on the character, from a script that stands still.
         fn play_graph(&mut self) {
-            self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
-            let driver = lookdev::graph_driver(&self.content).expect("a driver");
+            self.content.load_graph(KIND, &mut self.renderer, &self.gpu).expect("the graph");
+            let driver = lookdev::graph_driver(&self.content, KIND).expect("a driver");
             self.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
             self.frame_on_character();
         }
@@ -3129,7 +3260,7 @@ mod tests {
 
         /// The versions the character's mesh, rig and skeleton are at.
         fn versions(&self) -> (u32, u32, u32) {
-            self.content.current_character_versions().expect("a rig")
+            self.content.playable_versions(KIND).expect("a rig")
         }
 
         /// Frames until the character's mesh, rig and skeleton are at `versions`, and what the last
@@ -3164,6 +3295,42 @@ mod tests {
         assert_eq!(replaced.palette_bytes, posed.palette_bytes, "posed: {replaced:?}");
         let after = stage.frame();
         assert_eq!((after.skinned, after.palette_bytes), (0, 0), "and sent once");
+    }
+
+    /// The character is whichever playable kind it was held as, and everything that poses it finds it by that
+    /// kind (M5 C7): held as a second kind, which draws with the same mesh, rig and graph, its graph loads,
+    /// binds and plays by that kind, and nothing answers to the first, which was never held.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_character_is_found_by_the_kind_it_was_held_as() {
+        let mut stage = Stage::held_as(OTHER_KIND);
+        assert_eq!(stage.content.character_kind(), Some(OTHER_KIND));
+        assert_eq!(stage.content.character_look(), Some(&look_of(OTHER_KIND)));
+        assert!(stage.content.playable(KIND).is_none(), "the first kind was never held");
+        assert!(stage.content.load_graph(KIND, &mut stage.renderer, &stage.gpu).is_err(), "nor its graph");
+        assert!(lookdev::player(&stage.content, KIND).is_err());
+        assert!(stage.content.character_graph().is_err(), "no graph is loaded yet");
+
+        stage
+            .content
+            .load_graph(OTHER_KIND, &mut stage.renderer, &stage.gpu)
+            .expect("the second kind's graph");
+        assert!(stage.content.graph_document_of(GraphKey::playable(KIND)).is_err(), "it's keyed by its kind");
+        let graph = stage.content.graph_document_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
+        assert_eq!(stage.content.character_graph().expect("the character's"), graph);
+        assert!(
+            stage.content.character_clips().clip(SWING).is_some(),
+            "the character's clips are its kind's"
+        );
+        assert!(lookdev::graph_driver(&stage.content, KIND).is_err());
+        let driver = lookdev::graph_driver(&stage.content, OTHER_KIND).expect("a driver by the second kind");
+        stage.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
+        stage.frame_on_character();
+        let frame = stage.frame();
+        assert!(stage.scene.anim_stats().evaluated > 0 && frame.palette_bytes > 0, "it plays: {frame:?}");
+        assert_eq!(stage.joints(), HumanBone::REQUIRED.len());
+        assert!(stage.content.playable_versions(KIND).is_none());
+        assert!(stage.content.playable_versions(OTHER_KIND).is_some());
     }
 
     /// What a load leaves for after its screen (M4 C7, a fighter's fade) warms off the frame while frames go on,
@@ -3235,7 +3402,7 @@ mod tests {
                     };
                     stage.versions() == versions
                         && if graph {
-                            stage.content.graph_clips().clip(SWING).is_some_and(matches)
+                            stage.content.character_clips().clip(SWING).is_some_and(matches)
                         } else {
                             stage.content.clip().is_some_and(|(clip, _)| matches(clip))
                         }
@@ -3446,7 +3613,7 @@ mod tests {
     fn land_mannequin(stage: &mut Stage, mesh: &Mesh) {
         let generation = stage.content.server.generation(&stage.content.character);
         let bytes = mesh.to_cooked().expect("cooked");
-        let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("a pack");
+        let pack = write_pack(vec![packed(MESH, AssetKind::Mesh, &bytes)]).expect("a pack");
         stage.source.insert(PACK, pack);
         stage.content.remount(PACK).expect("the new pack");
         for _ in 0..10_000 {
@@ -3590,7 +3757,7 @@ mod tests {
         let calls = Arc::new(AtomicU32::new(0));
         stage.content.watch_uploads(Box::new(Reject(calls.clone())));
         let bytes = changed.to_cooked().expect("cooked");
-        let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("pack");
+        let pack = write_pack(vec![packed(MESH, AssetKind::Mesh, &bytes)]).expect("pack");
         stage.source.insert(PACK, pack);
         stage.content.remount(PACK).expect("remounted");
         let timer = Stopwatch::start();
@@ -3790,7 +3957,7 @@ mod tests {
             .expect_err("another skeleton's clip");
         assert!(error.contains("clip 63"), "{error}");
 
-        let table = content.graph_clips();
+        let table = content.character_clips();
         assert!(table.clip(SWING).is_some(), "the graph playing's");
         assert!(table.clip(OTHER_SWING).is_some(), "the graph waiting's");
         let mut furthest = 0.0f32;
@@ -3803,7 +3970,7 @@ mod tests {
         // A good edit takes the waiting graph's place, and nothing reads what the bad one named.
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         scene.replace_graph_document(graph_naming(&others[..1]), content, renderer, gpu).expect("it binds");
-        let table = content.graph_clips();
+        let table = content.character_clips();
         assert!(table.clip(SWING).is_some(), "the graph playing's");
         assert!(table.clip(others[0]).is_some(), "the new one's");
         assert!(table.clip(others[1]).is_none(), "nothing reads what the bad edit named");
@@ -3811,7 +3978,7 @@ mod tests {
         // Nor, by the next edit, the graph that one took the place of. However many come before a state
         // starts, what's held is what three graphs name.
         scene.replace_graph_document(graph_naming(&others[1..2]), content, renderer, gpu).expect("it binds");
-        let table = content.graph_clips();
+        let table = content.character_clips();
         assert!(table.clip(SWING).is_some(), "the graph playing's");
         assert!(table.clip(others[1]).is_some(), "the new one's");
         assert!(table.clip(OTHER_SWING).is_none(), "no one's");
@@ -3830,14 +3997,14 @@ mod tests {
             std::env::temp_dir().join(format!("sapphire_sandbox_landing_graph_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
-        stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
+        stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
 
         let text = swing_document(4).replace(&SWING.to_string(), &OTHER_SWING.to_string());
         std::fs::write(&file, text).expect("the save");
         stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
         stage.content.remount(PACK).expect("the new pack");
         stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4);
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4);
         let wanted: Vec<AssetId> = stage.scene.graph_player().expect("playing").clips_in_use().collect();
         assert_eq!(wanted, [SWING, OTHER_SWING], "the graph playing's, and the save's");
         std::fs::remove_dir_all(&folder).expect("cleaned up");
@@ -3863,7 +4030,7 @@ mod tests {
 
         scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("it binds");
         assert!(scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
+        assert_eq!(content.character_graph().expect("a graph").combat.decay, 4);
         assert!(scene.graph_player().expect("playing").has_replacement());
         assert!(!content.take_graph_changed(), "its own clips are nothing new");
 
@@ -3871,7 +4038,7 @@ mod tests {
         stage.content.remount(PACK).expect("the new pack");
         for _ in 0..1000 {
             stage.frame();
-            if stage.content.graph_document().expect("a graph").combat.decay == 9 {
+            if stage.content.character_graph().expect("a graph").combat.decay == 9 {
                 return;
             }
         }
@@ -3893,8 +4060,8 @@ mod tests {
             std::env::temp_dir().join(format!("sapphire_sandbox_older_graph_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
-        stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
-        let bound = |stage: &Stage| stage.content.graph_document().expect("a graph").combat.decay;
+        stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
+        let bound = |stage: &Stage| stage.content.character_graph().expect("a graph").combat.decay;
         let land = |stage: &mut Stage, decay: u32| {
             let versions = stage.content.graph_versions();
             stage.source.insert(PACK, pack_with_decay(0.0, 0, decay));
@@ -3944,7 +4111,7 @@ mod tests {
             std::env::temp_dir().join(format!("sapphire_sandbox_unbound_graph_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
-        stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
+        stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
 
         let nothing_cooked = AssetId::from_bytes([0x33; 16]);
         let text = swing_document(4).replace(&SWING.to_string(), &nothing_cooked.to_string());
@@ -3954,7 +4121,7 @@ mod tests {
         stage.content.remount(PACK).expect("the new pack");
         stage.frames_until(|stage| stage.content.graph_versions() != versions);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "the cook's");
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "the cook's");
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
     }
 
@@ -3994,14 +4161,14 @@ mod tests {
                 std::env::temp_dir().join(format!("sapphire_sandbox_unfit_graph_{}", std::process::id()));
             std::fs::create_dir_all(&folder).expect("a folder");
             let file = folder.join("character.animgraph.ron");
-            stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
+            stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
             std::fs::write(&file, save).expect("the save");
 
             stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
             stage.content.remount(PACK).expect("the new pack");
             stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
             std::fs::remove_dir_all(&folder).expect("cleaned up");
-            assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "{why}");
+            assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "{why}");
         }
     }
 
@@ -4019,7 +4186,7 @@ mod tests {
             std::env::temp_dir().join(format!("sapphire_sandbox_unfit_waiting_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
-        stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
+        stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
         std::fs::write(&file, blinking_document(4)).expect("the save");
 
         stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
@@ -4027,7 +4194,7 @@ mod tests {
         stage.frames_until(|stage| stage.joints() != joints);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
         assert_eq!(stage.joints(), joints + 1);
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "the cook's");
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "the cook's");
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("nothing's landing");
@@ -4047,7 +4214,7 @@ mod tests {
         stage.source.insert(PACK, pack_of_graph(0.0, 1, blinking_graph(7), SWING, 0));
         stage.content.remount(PACK).expect("the new pack");
         stage.frames_until(|stage| {
-            stage.versions() == (1, 1, 1) && stage.content.graph_document().is_ok_and(|g| g.blink.is_some())
+            stage.versions() == (1, 1, 1) && stage.content.character_graph().is_ok_and(|g| g.blink.is_some())
         });
         for _ in 0..30 {
             stage.frame();
@@ -4064,7 +4231,7 @@ mod tests {
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("that one does");
         assert_eq!(stage.joints(), joints + 1, "it started over on the new joints");
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4);
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4);
         stage.frame();
         assert_eq!(stage.joints(), joints + 1);
     }
@@ -4083,23 +4250,23 @@ mod tests {
             std::env::temp_dir().join(format!("sapphire_sandbox_early_graph_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
-        stage.content.read_graphs_from(vec![(GraphKey::CHARACTER, file.clone())]);
+        stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
         std::fs::write(&file, swing_document(4)).expect("the save");
 
         stage.recook_all_but(&[SWING, OTHER_SWING], 1, 7);
         stage.until((1, 1, 1));
-        stage.frames_until(|stage| stage.content.graph_document().is_ok_and(|g| g.combat.decay == 4));
+        stage.frames_until(|stage| stage.content.character_graph().is_ok_and(|g| g.combat.decay == 4));
         for _ in 0..30 {
             stage.frame();
         }
         assert_eq!(stage.joints(), joints, "its clips aren't here yet");
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4, "still the save");
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4, "still the save");
 
         stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
         stage.content.remount(PACK).expect("the rest of it");
         stage.frames_until(|stage| stage.joints() != joints);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
-        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4, "and it binds");
+        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4, "and it binds");
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.
@@ -4108,15 +4275,15 @@ mod tests {
     #[ignore = "needs a GPU"]
     fn a_fighters_graph_takes_an_edit() {
         let mut stage = Stage::new();
-        stage.content.load_graph(GRAPH, &mut stage.renderer, &stage.gpu).expect("the graph");
-        let driver = lookdev::graph_driver(&stage.content).expect("a driver");
+        stage.content.load_graph(KIND, &mut stage.renderer, &stage.gpu).expect("the graph");
+        let driver = lookdev::graph_driver(&stage.content, KIND).expect("a driver");
         stage.scene.pose_character_by_graph(driver);
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         scene
             .replace_graph_document(swing_graph(4), content, renderer, gpu)
             .expect("a fighter plays a graph");
         assert!(scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
+        assert_eq!(content.character_graph().expect("a graph").combat.decay, 4);
     }
 
     /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the
@@ -4188,10 +4355,10 @@ mod tests {
         stage.frame();
         let joints = stage.joints();
 
-        stage.recook_all_but(&[lookdev::CHARACTER, SWING, OTHER_SWING], 1, 5);
+        stage.recook_all_but(&[MESH, SWING, OTHER_SWING], 1, 5);
         stage.until((0, 1, 1));
         let versions = stage.content.graph_versions();
-        stage.recook_all_but(&[lookdev::CHARACTER], 1, 5);
+        stage.recook_all_but(&[MESH], 1, 5);
         stage.frames_until(|stage| stage.content.graph_versions() != versions);
         assert_eq!(stage.joints(), joints, "it keeps what it has");
         let waiting = stage.scene.graph_player().expect("playing");
@@ -4334,8 +4501,7 @@ mod tests {
                     AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
                 let mut server = AssetServer::new(live_packs.clone(), budgets);
                 server.mount_now(PACK).expect("mounted");
-                let character =
-                    server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("character");
+                let character = server.load_with(MESH, LoadPriority::Critical).expect("character");
                 let mut mesh = None;
                 server
                     .finish(&character, |upload| {
@@ -4345,15 +4511,15 @@ mod tests {
                         Ok(())
                     })
                     .expect("CPU character decode");
-                let mut content =
-                    Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
+                let mut content = Content::over_server(server, MESH, character, SKY, live_packs);
                 content.gpu.character_mesh = mesh;
-                let rig = content.server.load_with(lookdev::RIG, LoadPriority::Critical).expect("rig");
+                let rig = content.server.load_with(RIG, LoadPriority::Critical).expect("rig");
                 content.server.finish(&rig, |_| Ok(())).expect("rig ready");
-                content.rig = Some(rig);
                 let skeleton = content.server.load_with(SKELETON, LoadPriority::Critical).expect("skeleton");
                 content.server.finish(&skeleton, |_| Ok(())).expect("skeleton ready");
-                content.skeleton = Some(skeleton);
+                let held = HeldPlayable { look: look(), rig, skeleton: Some(skeleton), versions: (0, 0, 0) };
+                content.playables.push(held);
+                content.character_kind = Some(KIND);
                 let graph = content.server.load_with(GRAPH, LoadPriority::Critical).expect("graph");
                 content.server.finish(&graph, |_| Ok(())).expect("graph ready");
                 let mut held = Vec::new();
@@ -4365,7 +4531,7 @@ mod tests {
                     held.push((id, handle));
                 }
                 content.graphs.push((
-                    GraphKey::CHARACTER,
+                    GraphKey::playable(KIND),
                     HeldGraph {
                         graph,
                         clips: held,
@@ -4415,10 +4581,10 @@ mod tests {
         #[test]
         fn content_residency_at_generation_zero_invalidates_a_frozen_driver() {
             let mut cpu = Cpu::new(true);
-            let mut driver = lookdev::graph_driver(&cpu.content).expect("driver");
+            let mut driver = lookdev::graph_driver(&cpu.content, KIND).expect("driver");
             let input = GraphInput { ticks: 5.0, ..GraphInput::default() };
             let before_revision = {
-                let before = cpu.content.graph_clips();
+                let before = cpu.content.character_clips();
                 assert!(before.clip(OTHER_SWING).is_none());
                 assert!(driver.pose_frame(&input, &before, Mat4::IDENTITY));
                 assert!(!driver.pose_frame(&input, &before, Mat4::IDENTITY));
@@ -4428,7 +4594,7 @@ mod tests {
             let revision = cpu.content.graph_versions();
             assert!(cpu.content.take_graph_changed(), "observing a revision must not acknowledge it");
             assert!(!cpu.content.take_graph_changed());
-            let after = cpu.content.graph_clips();
+            let after = cpu.content.character_clips();
             assert!(after.version() > before_revision);
             assert_eq!(cpu.content.graph_versions(), revision);
             assert!(after.clip(OTHER_SWING).is_some());
@@ -4448,10 +4614,10 @@ mod tests {
                     .all(|(_, clip)| cpu.content.server.generation(clip) == 1)
             );
             assert!(cpu.content.take_graph_changed());
-            let mut driver = lookdev::graph_driver(&cpu.content).expect("driver");
+            let mut driver = lookdev::graph_driver(&cpu.content, KIND).expect("driver");
             let input = GraphInput { ticks: 5.0, ..GraphInput::default() };
-            let before_revision = cpu.content.graph_clips().version();
-            assert!(driver.pose_frame(&input, &cpu.content.graph_clips(), Mat4::IDENTITY));
+            let before_revision = cpu.content.character_clips().version();
+            assert!(driver.pose_frame(&input, &cpu.content.character_clips(), Mat4::IDENTITY));
             let before = driver.player.pose().model()[1].translation.x;
             cpu.remount(4.0);
             cpu.content.graphs[0].1.clips.retain(|(id, _)| *id == SWING);
@@ -4459,7 +4625,7 @@ mod tests {
             assert!(cpu.content.graph_versions() > before_revision, "old sums: 1+1 and 2");
             assert!(cpu.content.take_graph_changed(), "graph_versions must not consume the change");
             assert!(!cpu.content.take_graph_changed());
-            let after = cpu.content.graph_clips();
+            let after = cpu.content.character_clips();
             assert!(driver.pose_frame(&input, &after, Mat4::IDENTITY));
             assert!(!driver.pose_frame(&input, &after, Mat4::IDENTITY));
             for tick in 6..=35 {

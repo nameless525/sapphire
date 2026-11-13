@@ -742,7 +742,7 @@ impl Boot {
                 })
             }
             Remade::Run(show, content, combat, planned) => match planned.try_recv() {
-                Ok(Ok(plan)) => Ok(Remade::Planned(show, content, combat, plan)),
+                Ok(Ok(plan)) => Ok(Remade::Planned(show, content, combat, Box::new(plan))),
                 Ok(Err(error)) => Err(AppInitError::msg(error)),
                 Err(mpsc::TryRecvError::Empty) => Ok(Remade::Run(show, content, combat, planned)),
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -757,7 +757,7 @@ impl Boot {
                 let Remaking { host, stopwatch, .. } = *self.remaking.take().expect("taken on above");
                 let zone = plan.zone_stem();
                 (self.show, self.content, self.combat) = (Some(show), Some(*content), Some(combat));
-                (self.planned, self.plan) = (None, Some(plan));
+                (self.planned, self.plan) = (None, Some(*plan));
                 self.host = host;
                 self.report.updated = true;
                 tracing::info!(
@@ -925,7 +925,7 @@ enum Remade {
     /// The run, prepared, with its plan reading on the warm-up pool.
     Run(Box<GameShow>, Box<Content>, Combat, mpsc::Receiver<Result<StandPlan, String>>),
     /// All of it.
-    Planned(Box<GameShow>, Box<Content>, Combat, StandPlan),
+    Planned(Box<GameShow>, Box<Content>, Combat, Box<StandPlan>),
 }
 
 impl Remade {

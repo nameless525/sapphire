@@ -81,7 +81,7 @@ impl Rails {
     }
 
     /// Where a table's reading of its path has them, with the root at `view`. The path's transform is the
-    /// mesh's in the root's space, by which a hit sweeps what's drawn (`blade::socket`).
+    /// mesh's in the root's space, by which a hit sweeps what's drawn (its playable kind's socket).
     fn in_table(self, sample: PathSample, view: &ActorView) -> Sockets {
         let turn = Quat::from_rotation_y(view.yaw);
         let rotation = Quat::from_array(sample.rotation);

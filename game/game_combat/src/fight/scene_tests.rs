@@ -24,6 +24,11 @@ use sapphire_stage::turntable::Turntable;
 
 const HIPS: [f32; 3] = [0.0, 0.8, 0.0];
 
+/// Where the heroine's playable kind holds its sword, in the hand's space.
+fn socket() -> Mat4 {
+    playable::heroine().held.expect("the heroine holds a sword").socket
+}
+
 /// A warrior's body and blade, for one whose kind holds a blade.
 fn pair(warrior: &Warrior) -> (Entity, Entity) {
     (warrior.body, warrior.blade.expect("it holds a blade"))
@@ -97,7 +102,7 @@ impl Staged {
     }
 
     pub(super) fn spawn_blade(&mut self, mesh: MeshHandle, held_hand: Mat4) {
-        self.show.spawn_blade(&mut self.scene, mesh, held_hand);
+        self.show.hold_blade(&mut self.scene, mesh, held_hand, socket());
     }
 
     pub(super) fn set_blade_mesh(&mut self, mesh: MeshHandle) {
@@ -372,7 +377,7 @@ fn each_kind_of_enemy_draws_as_itself() {
         let entity = arena.entity(place);
         let warrior = scene.show.warriors.iter().find(|warrior| warrior.body == entity).expect("drawn");
         assert_eq!(warrior.kind, kind, "{place}");
-        assert_eq!(arena.kind(place), kind, "{place}");
+        assert_eq!(arena.kind(place), FighterKind::Enemy(kind), "{place}");
         let mesh = world.get::<RenderMesh>(entity).expect("drawn").0;
         assert_eq!(mesh == captain_mesh, kind == 1, "{place}");
         assert_eq!(warrior.blade.is_some(), kind == 0, "only the warrior holds a blade");
@@ -731,7 +736,7 @@ fn the_blade_follows_the_hand_and_adds_no_body() {
     // Held: the held pose's hand.
     let packet = scene.frame_packet(1.0, Some((1920, 1080)));
     let drawn = packet.instances.changed.iter().find(|instance| instance.id == id).expect("it draws");
-    assert!(drawn.transform.abs_diff_eq(held_hand * blade::socket(), 1e-5), "{:?}", drawn.transform);
+    assert!(drawn.transform.abs_diff_eq(held_hand * socket(), 1e-5), "{:?}", drawn.transform);
     let listed = |id| packet.characters.iter().find(|entry| entry.id == id).expect("listed");
     assert!(!listed(id).body.casts(), "it adds no capsule");
     let (own, holder) = (listed(id).lighting.key, listed(character).lighting.key);
@@ -753,8 +758,7 @@ fn the_blade_follows_the_hand_and_adds_no_body() {
         scene.step();
         frame(&mut scene, clip, 1.0, id);
         let holder = scene.world().get::<ClipPlayer>(scene.character()).expect("playing");
-        let expected =
-            transform(&scene, scene.character()) * holder.right_hand().expect("found") * blade::socket();
+        let expected = transform(&scene, scene.character()) * holder.right_hand().expect("found") * socket();
         let place = transform(&scene, entity);
         assert!(place.abs_diff_eq(expected, 1e-4), "{place:?} against {expected:?}");
         places.push(place.transform_point3(Vec3::ZERO));

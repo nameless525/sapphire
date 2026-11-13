@@ -91,6 +91,11 @@ const SWING_TICKS: u16 = 30;
 /// A graph for the character that plays [`SWING`].
 const GRAPH: AssetId = AssetId::from_bytes([0x60; 16]);
 
+/// What draws the test character: the heroine's playable kind, mesh, rig and sword, with [`GRAPH`].
+fn heroine_look() -> PlayableLook {
+    PlayableLook { graph: GRAPH, ..playable::heroine() }
+}
+
 /// A cooked set of moves, as the graph show plays.
 const MOVES: AssetId = AssetId::from_bytes([0x61; 16]);
 
@@ -205,8 +210,8 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         ..CharacterRig::default()
     };
     vec![
-        packed_with(lookdev::CHARACTER, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![SKELETON]),
-        packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
+        packed_with(heroine_look().mesh, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![SKELETON]),
+        packed(heroine_look().rig, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
         packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
         packed_with(SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
         packed_with(OTHER_SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
@@ -348,7 +353,8 @@ impl Stage {
         mesh: MeshHandle,
         bounds: [[f32; 3]; 2],
     ) -> Scene {
-        let (pose, figure) = lookdev::hold(content, renderer, gpu).expect("the character's pose");
+        let (pose, figure) =
+            lookdev::hold(content, &heroine_look(), renderer, gpu).expect("the character's pose");
         // What the town draws doesn't matter here.
         let bytes = triangle(0.0).to_cooked().expect("cooked");
         let plain = Mesh::read(&bytes).expect("a valid mesh");
@@ -371,8 +377,8 @@ impl Stage {
         let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
         let mut server = AssetServer::new(live_packs.clone(), budgets);
         server.mount_now(PACK).expect("the pack");
-        let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
-        let mut content = Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
+        let character = server.load_with(heroine_look().mesh, LoadPriority::Critical).expect("loading");
+        let mut content = Content::over_server(server, heroine_look().mesh, character, SKY, live_packs);
         content.keep_character_mesh();
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
@@ -422,8 +428,8 @@ impl Stage {
 
     /// Plays the graph on the character, from a script that stands still.
     fn play_graph(&mut self) {
-        self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
-        let driver = lookdev::graph_driver(&self.content).expect("a driver");
+        self.content.load_graph(playable::KIND, &mut self.renderer, &self.gpu).expect("the graph");
+        let driver = lookdev::graph_driver(&self.content, playable::KIND).expect("a driver");
         self.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
         self.frame_on_character();
     }
@@ -432,13 +438,13 @@ impl Stage {
     fn play_fighters(&mut self) {
         let enemy =
             self.show.load_enemy(&mut self.content, &mut self.renderer, &self.gpu).expect("the enemy");
-        self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
+        self.content.load_graph(playable::KIND, &mut self.renderer, &self.gpu).expect("the graph");
         self.show
             .load_enemy_graph(&mut self.content, &mut self.renderer, &self.gpu)
             .expect("the enemy's graph");
         let (mesh, bounds) = self.content.character(&mut self.renderer, &self.gpu).expect("the character");
-        let (pose, figure) =
-            lookdev::hold(&mut self.content, &mut self.renderer, &self.gpu).expect("the character's pose");
+        let (pose, figure) = lookdev::hold(&mut self.content, &heroine_look(), &mut self.renderer, &self.gpu)
+            .expect("the character's pose");
         let bytes = triangle(0.0).to_cooked().expect("cooked");
         let plain = Mesh::read(&bytes).expect("a valid mesh");
         let materials = self.renderer.upload_embedded_materials(plain).expect("materials");
@@ -454,7 +460,7 @@ impl Stage {
         let look = LookDev { town, fog_cards: None, pose, figure };
         let mut scene = Scene::with_character(mesh, bounds, false);
         self.show.spawn_arena(&mut scene, Arena { enemy, held, shot, look, ground });
-        let player = lookdev::graph_driver(&self.content).expect("the player's driver");
+        let player = lookdev::graph_driver(&self.content, playable::KIND).expect("the player's driver");
         let enemy = self.show.enemy_driver(&self.content, world).expect("the enemy's driver");
         self.show.play_fighters(&mut scene, player, enemy);
         self.scene = scene;
@@ -540,7 +546,7 @@ impl Stage {
 
     /// The versions the character's mesh, rig and skeleton are at.
     fn versions(&self) -> (u32, u32, u32) {
-        self.content.current_character_versions().expect("a rig")
+        self.content.playable_versions(playable::KIND).expect("a rig")
     }
 }
 
@@ -610,11 +616,11 @@ fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
     stage.recook_all_but(&[look().mesh], 1, 7);
     // Revisions identify changed views; readiness is the actual new graph and clip data.
     stage.frames_until(|stage| {
-        stage.content.graph_document().is_ok_and(|graph| graph.combat.decay == 7)
+        stage.content.character_graph().is_ok_and(|graph| graph.combat.decay == 7)
             && stage.content.graph_document_of(ENEMY_GRAPH).is_ok_and(|graph| graph.combat.decay == 7)
             && stage
                 .content
-                .graph_clips()
+                .character_clips()
                 .clip(SWING)
                 .is_some_and(|clip| clip.joint_count.to_native() as usize == HumanBone::REQUIRED.len() + 1)
             && stage
@@ -688,7 +694,7 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
     show.replace_graph_document(scene, ENEMY_GRAPH, edited, content, renderer, gpu).expect("it binds");
     assert!(player(scene, show));
     assert_eq!(content.graph_document_of(ENEMY_GRAPH).expect("a graph").combat.decay, 4);
-    assert_eq!(content.graph_document().expect("a graph").combat.decay, 5, "the character's stays");
+    assert_eq!(content.character_graph().expect("a graph").combat.decay, 5, "the character's stays");
     assert!(!content.take_graph_changed(), "its own clips are nothing new");
 
     stage.source.insert(PACK, pack_with_decay(0.0, 0, 9));
@@ -870,20 +876,20 @@ fn a_clip_one_fighter_cant_hold_leaves_the_others_held() {
     let content = &mut stage.content;
 
     content.set_live_graph(ENEMY_GRAPH, Some(graph_naming(&[nothing_cooked])));
-    content.set_live_graph(GraphKey::CHARACTER, Some(graph_naming(&[OTHER_SWING])));
+    content.set_live_graph(GraphKey::playable(playable::KIND), Some(graph_naming(&[OTHER_SWING])));
     let error = content
-        .hold_graph_clips(&[(ENEMY_GRAPH, &[]), (GraphKey::CHARACTER, &[])])
+        .hold_graph_clips(&[(ENEMY_GRAPH, &[]), (GraphKey::playable(playable::KIND), &[])])
         .expect_err("nothing cooked it");
     assert_eq!(error, LoadError::NotFound(nothing_cooked));
     assert!(
-        content.holds_graph_clip(GraphKey::CHARACTER, OTHER_SWING),
+        content.holds_graph_clip(GraphKey::playable(playable::KIND), OTHER_SWING),
         "the character's, past the enemy's failure"
     );
 
     content.set_live_graph(ENEMY_GRAPH, Some(graph_naming(&[OTHER_SWING])));
-    content.set_live_graph(GraphKey::CHARACTER, Some(graph_naming(&[nothing_cooked])));
+    content.set_live_graph(GraphKey::playable(playable::KIND), Some(graph_naming(&[nothing_cooked])));
     let error = content
-        .hold_graph_clips(&[(ENEMY_GRAPH, &[]), (GraphKey::CHARACTER, &[])])
+        .hold_graph_clips(&[(ENEMY_GRAPH, &[]), (GraphKey::playable(playable::KIND), &[])])
         .expect_err("nothing cooked it");
     assert_eq!(error, LoadError::NotFound(nothing_cooked));
     assert!(content.holds_graph_clip(ENEMY_GRAPH, OTHER_SWING), "the enemy's, past the character's failure");

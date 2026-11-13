@@ -341,7 +341,7 @@ pub struct TunedRun<'a> {
     pub extra_documents: &'a [PathBuf],
 }
 
-/// The animation graph's document (`lookdev::GRAPH`).
+/// The heroine's animation graph's document (`playable::heroine`'s graph).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
 /// The enemy's animation graph's document (`enemy::Look::graph`).
 const ENEMY_GRAPH_PATH: &str = "content/combat/enemy/warrior.animgraph.ron";
@@ -888,7 +888,7 @@ pub fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
 /// replace a fighter's graph, and any other would bind to the wrong character or fail for its clips.
 fn graph_of(origin: &str) -> Result<(GraphKey, &'static str), String> {
     let document = document_file_name(origin);
-    let graphs = [(GraphKey::CHARACTER, GRAPH_PATH), (ENEMY_GRAPH, ENEMY_GRAPH_PATH)];
+    let graphs = [(GraphKey::playable(crate::playable::KIND), GRAPH_PATH), (ENEMY_GRAPH, ENEMY_GRAPH_PATH)];
     graphs.into_iter().find(|(_, path)| document == document_file_name(path)).ok_or_else(|| {
         let (character, enemy) = (document_file_name(GRAPH_PATH), document_file_name(ENEMY_GRAPH_PATH));
         format!("only `{character}` and `{enemy}` take edits, and a cook brings any other graph")
@@ -1485,7 +1485,8 @@ mod tests {
         assert_eq!(graphs(TunedRun { arena_fight: true, ..QUIET }), [GRAPH_PATH, ENEMY_GRAPH_PATH]);
         assert_eq!(graphs(TunedRun { graph_show: true, ..QUIET }), [GRAPH_PATH]);
         assert_eq!(graphs(QUIET), Vec::<String>::new());
-        assert_eq!(graph_of("x/character.animgraph.ron").map(|(owner, _)| owner), Ok(GraphKey::CHARACTER));
+        let heroine = GraphKey::playable(crate::playable::KIND);
+        assert_eq!(graph_of("x/character.animgraph.ron").map(|(owner, _)| owner), Ok(heroine));
         assert_eq!(graph_of("warrior.animgraph.ron").map(|(owner, _)| owner), Ok(ENEMY_GRAPH));
         let refused = graph_of("slime.animgraph.ron").expect_err("nobody plays it");
         assert!(refused.contains("warrior.animgraph.ron"), "{refused}");

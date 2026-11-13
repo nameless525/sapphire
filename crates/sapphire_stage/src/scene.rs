@@ -1211,7 +1211,7 @@ impl Scene {
             && self.ecs.world().get::<ClipPlayer>(self.character).is_none()
             && self.ecs.world().get::<GraphDriver>(self.character).is_none()
         {
-            match lookdev::held(content) {
+            match lookdev::character_kind(content).and_then(|kind| lookdev::held(content, kind)) {
                 Ok((mut pose, figure)) => {
                     if let Some(face) = self.held_face {
                         face.apply(content, &mut pose);
@@ -1299,7 +1299,7 @@ impl Scene {
         pose: &sapphire_anim::CharacterPose,
     ) -> Result<IkDriver, String> {
         let (motion, body) = (content.character_motion(), content.body_tuning());
-        let rig = lookdev::ik_rig(content, pose)?;
+        let rig = lookdev::ik_rig(content, lookdev::character_kind(content)?, pose)?;
         let driver = IkDriver::new(rig, ground.clone(), IkControls::of(motion), motion, body);
         self.ik_ground = Some(ground);
         self.ik_look = look;
@@ -1316,15 +1316,18 @@ impl Scene {
     /// A clip player for the character's new mesh, rig or skeleton: its clip plays on from where it was,
     /// with what its IK was told.
     fn replace_player(&mut self, content: &Content) {
-        let replacement = lookdev::player(content);
+        let kind = lookdev::character_kind(content);
+        let replacement = kind.clone().and_then(|kind| lookdev::player(content, kind));
         let character = self.character;
         let ground = self.ik_ground.clone();
         let Some(mut playing) = self.ecs.world_mut().get_mut::<ClipPlayer>(character) else { return };
         match replacement {
             Ok(mut player) => {
                 player.continue_from(&playing);
-                if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls())) {
-                    match lookdev::ik_rig(content, player.pose()) {
+                if let (Some(ground), Some(controls), Ok(kind)) =
+                    (ground, playing.ik_mut().map(|ik| ik.controls()), kind)
+                {
+                    match lookdev::ik_rig(content, kind, player.pose()) {
                         Ok(rig) => {
                             let (motion, body) = (content.character_motion(), content.body_tuning());
                             player = player.with_ik(IkDriver::new(rig, ground, controls, motion, body));
@@ -1403,9 +1406,10 @@ impl Scene {
                  have one"
                 .to_owned());
         }
-        let owner = GraphKey::CHARACTER;
+        let kind = lookdev::character_kind(content)?;
+        let owner = GraphKey::playable(kind);
         content.hold_clips_of(owner, &graph, &self.clips_in_use(Some(self.character)), renderer, gpu)?;
-        let binding = lookdev::graph_binding_of(content, &graph);
+        let binding = lookdev::graph_binding_of(content, kind, &graph);
         if self.character_waits {
             return content.end_wait_on(owner, graph, binding.map(drop), |content| {
                 self.replace_graph(content, false);
@@ -1435,8 +1439,15 @@ impl Scene {
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     fn replace_graph(&mut self, content: &mut Content, character_changed: bool) {
+        let kind = match lookdev::character_kind(content) {
+            Ok(kind) => kind,
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, error, "the character keeps the graph it has");
+                return;
+            }
+        };
         let in_use = self.clips_in_use(Some(self.character));
-        if let Err(error) = content.hold_graph_clips(&[(GraphKey::CHARACTER, &in_use)]) {
+        if let Err(error) = content.hold_graph_clips(&[(GraphKey::playable(kind), &in_use)]) {
             tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
         }
         let character = self.character;
@@ -1444,13 +1455,13 @@ impl Scene {
         let start_over = character_changed || self.character_waits;
         let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) else { return };
         if start_over {
-            match lookdev::graph_driver(content) {
+            match lookdev::graph_driver(content, kind) {
                 Ok(mut driver) => {
                     self.character_waits = false;
                     driver.continue_from(&playing);
                     if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls()))
                     {
-                        match lookdev::ik_rig(content, driver.player.pose()) {
+                        match lookdev::ik_rig(content, kind, driver.player.pose()) {
                             Ok(rig) => {
                                 let (motion, body) = (content.character_motion(), content.body_tuning());
                                 driver = driver.with_ik(IkDriver::new(rig, ground, controls, motion, body));
@@ -1470,7 +1481,7 @@ impl Scene {
                 }
             }
         } else {
-            match lookdev::graph_binding(content) {
+            match lookdev::graph_binding(content, kind) {
                 Ok(binding) => playing.player.replace(Arc::new(binding)),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, error, "the character keeps the graph it has")
@@ -1491,7 +1502,7 @@ impl Scene {
             self.animate_clip(content.clip(), alpha);
         }
         if self.graph_show.is_some() {
-            self.animate_graph(&content.graph_clips(), alpha);
+            self.animate_graph(&content.character_clips(), alpha);
         }
         show.animate(self, content, alpha);
     }
@@ -1793,7 +1804,7 @@ impl Scene {
         {
             return;
         }
-        match lookdev::held(content) {
+        match lookdev::character_kind(content).and_then(|kind| lookdev::held(content, kind)) {
             Ok((mut pose, figure)) => {
                 if let Some(face) = face {
                     face.apply(content, &mut pose);

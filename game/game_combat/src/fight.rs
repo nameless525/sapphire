@@ -47,23 +47,24 @@ use sapphire_world::screen_effects::EffectLibrary;
 
 use crate::LOG_TARGET;
 use crate::arena::{
-    ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, PLAYER_EYES, RosterChange,
-    StagedKind,
+    ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, FighterKind, PLAYER_EYES,
+    RosterChange, StagedKind,
 };
-use crate::blade::{self, HeldBlade};
+use crate::blade::HeldBlade;
 #[cfg(feature = "dev")]
 use crate::combat::SessionRecorder;
 use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes, Look};
+use crate::playable;
 #[cfg(feature = "dev")]
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
 use sapphire_stage::animate::{self, ClipPlayer};
 use sapphire_stage::audio::CueSounds;
 use sapphire_stage::content::{Content, GraphKey};
-use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
+use sapphire_stage::{FrameLaps, HeldWeapon, PlayableLook, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::documents::FightDocuments;
@@ -110,10 +111,12 @@ pub struct Arena {
 const CUT_LOOKAHEAD: f32 = 1.5;
 
 /// What a fight's stand needs of its scenario, and nothing of its run: the scenario checked, where it stands,
-/// and its kinds of enemy. Reading the documents they come from is a third of a stand on the frame's thread, so a
-/// boot reads them on a worker while its renderer builds (M4 H4).
+/// the playable kind its player stands as, and its kinds of enemy. Reading the documents they come from is a
+/// third of a stand on the frame's thread, so a boot reads them on a worker while its renderer builds (M4
+/// H4).
 pub struct StandPlan {
     place: FightPlace,
+    playable: PlayableLook,
     kinds: Vec<KindOfEnemy>,
 }
 
@@ -126,8 +129,9 @@ impl StandPlan {
     pub fn of(scenario: &str, party: bool) -> Result<Self, String> {
         crate::arena::check_scenario_named(scenario, party)?;
         let place = FightPlace::of(scenario).map_err(|error| error.to_string())?;
+        let playable = playable::of_scenario(scenario)?;
         let kinds = crate::combat::kinds_of_enemy_in(scenario)?;
-        Ok(Self { place, kinds })
+        Ok(Self { place, playable, kinds })
     }
 
     /// The plan for `combat`'s scenario.
@@ -278,8 +282,8 @@ struct FightAssets {
     /// The kinds of enemy (`--look-dev enemy`, `--arena`): the warrior first, which a fight always has
     /// ([`FightShow::load_enemy`]), then those the fight names ([`FightShow::load_kinds`]).
     kinds: Vec<KindAssets>,
-    /// The player's sword (`--blade on`).
-    sword: Option<Handle<Mesh>>,
+    /// The weapon the character's playable kind holds (`--blade on`).
+    blade: Option<Handle<Mesh>>,
     /// The arena's colliders (`--arena`'s).
     colliders: Option<Handle<ColliderSet>>,
 }
@@ -702,19 +706,21 @@ impl FightShow {
         sapphire_anim::GraphBinding::new(graph, skeleton, None, 0, &clips).map_err(|error| error.to_string())
     }
 
-    /// Loads until the player's sword is on `renderer`, with its material and the maps it names, and
-    /// returns its mesh: the load screen of `--blade on`. It stays loaded from then on.
+    /// Loads until the weapon the playable kind `look` holds is on `renderer`, with its material and the maps
+    /// it names, and returns its mesh: the load screen of `--blade on`. It stays loaded from then on.
     pub fn load_sword(
         &mut self,
+        look: &PlayableLook,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<MeshHandle, AppInitError> {
-        let sword = content
-            .hold(blade::SWORD, renderer, gpu)
-            .map_err(|error| AppInitError::msg(format!("the sword didn't load: {error}")))?;
-        self.assets.sword = Some(sword);
-        Ok(content.mesh_on_renderer(blade::SWORD).expect("a ready mesh was uploaded here"))
+        let held = weapon_of(look).map_err(AppInitError::msg)?;
+        let blade = content
+            .hold(held.mesh, renderer, gpu)
+            .map_err(|error| AppInitError::msg(format!("the blade didn't load: {error}")))?;
+        self.assets.blade = Some(blade);
+        Ok(content.mesh_on_renderer(held.mesh).expect("a ready mesh was uploaded here"))
     }
 
     /// Loads the arena's colliders until they're resident, and builds what the stage stands on from
@@ -1154,12 +1160,26 @@ impl FightShow {
         }
     }
 
-    /// Puts the player's blade in the character's right hand (`--blade on`, M2 O3): `held_hand` is where
-    /// the character's held pose has that hand, for when no clip plays. It follows the hand each frame
-    /// ([`Self::follow_hand`]).
-    pub fn spawn_blade(&mut self, scene: &mut Scene, mesh: MeshHandle, held_hand: Mat4) {
+    /// Puts the weapon the character's playable kind holds, drawn by `mesh` ([`Self::load_sword`]), in the
+    /// character's right hand (`--blade on`, M2 O3), where the kind's socket has it. It follows the hand each
+    /// frame ([`Self::follow_hand`]).
+    pub fn spawn_blade(
+        &mut self,
+        scene: &mut Scene,
+        mesh: MeshHandle,
+        content: &Content,
+    ) -> Result<(), String> {
+        let socket = weapon_of(content.character_look().ok_or(NO_KIND)?)?.socket;
+        let held_hand = lookdev::held_hand(content, content.character_kind().ok_or(NO_KIND)?)?;
+        self.hold_blade(scene, mesh, held_hand, socket);
+        Ok(())
+    }
+
+    /// Puts a blade drawn by `mesh` in the character's right hand at `socket`, in the hand's space:
+    /// `held_hand` is where the character's held pose has that hand, for when no clip plays.
+    fn hold_blade(&mut self, scene: &mut Scene, mesh: MeshHandle, held_hand: Mat4, socket: Mat4) {
         let rig = LightRigId::DEFAULT;
-        let figure = scene.figure().of_item_at(held_hand * blade::socket());
+        let figure = scene.figure().of_item_at(held_hand * socket);
         let holder = scene.character();
         let entity = scene
             .world_mut()
@@ -1171,7 +1191,7 @@ impl FightShow {
                 NearFade::With(holder),
             ))
             .id();
-        self.blade = Some(HeldBlade { entity, held_hand });
+        self.blade = Some(HeldBlade { entity, held_hand, socket });
     }
 
     /// Sets the mesh the blade draws again: after GPU device loss.
@@ -1195,7 +1215,7 @@ impl FightShow {
             .or_else(|| character.get::<GraphDriver>().and_then(GraphDriver::right_hand))
             .unwrap_or(held.held_hand);
         let holder = character.get::<Figure>().copied().unwrap_or(scene_figure);
-        let item = hand * blade::socket();
+        let item = hand * held.socket;
         let figure = holder.of_item_at(item);
         let mut blade = world.entity_mut(held.entity);
         if let Some(mut transform) = blade.get_mut::<RenderTransform>() {
@@ -1373,7 +1393,9 @@ impl FightShow {
             .collect();
         let mut graphs: Vec<(GraphKey, &[AssetId])> =
             warriors.iter().map(|(key, clips)| (*key, clips.as_slice())).collect();
-        graphs.push((GraphKey::CHARACTER, &character));
+        if let Some(kind) = content.character_kind() {
+            graphs.push((GraphKey::playable(kind), &character));
+        }
         content.hold_graph_clips(&graphs)
     }
 
@@ -1545,10 +1567,11 @@ impl FightShow {
             else {
                 continue;
             };
-            let clips = match index {
-                0 => player,
-                _ => {
-                    let slot = kinds.get(arena.kind(index)).map_or(0, |kind| kind.graph_slot);
+            let drawn = arena.kind(index);
+            let clips = match drawn {
+                FighterKind::Playable => player,
+                FighterKind::Enemy(kind) => {
+                    let slot = kinds.get(kind).map_or(0, |kind| kind.graph_slot);
                     enemies.get(slot).unwrap_or(&enemies[0])
                 }
             };
@@ -1569,8 +1592,12 @@ impl FightShow {
             }
             if let Some(fixed) = self.fixed_fighters.get_mut(index).and_then(Option::as_mut) {
                 let (content, _) = presentation.expect("fixed body presentation needs its source");
-                let versions =
-                    if index == 0 { content.current_character_versions() } else { warrior_versions };
+                let versions = match drawn {
+                    FighterKind::Playable => {
+                        content.character_kind().and_then(|kind| content.playable_versions(kind))
+                    }
+                    FighterKind::Enemy(_) => warrior_versions,
+                };
                 fixed.renderer.check_source(clips, versions);
                 let simulation = simulation.expect("simulation body presentation needs its producer");
                 let ready = if let Some(impact) = &mut self.impact
@@ -1695,7 +1722,7 @@ impl FightShow {
             });
             self.animate_fighters(
                 scene,
-                &content.graph_clips(),
+                &content.character_clips(),
                 &enemies,
                 alpha,
                 Some((content, simulation)),
@@ -1794,7 +1821,10 @@ impl FightShow {
         if content.stock_inputs_locked() {
             return Err("editing a bound stock graph requires an unconfigured fight".to_owned());
         }
-        if owner == GraphKey::CHARACTER {
+        if let Some(kind) = owner.kind() {
+            if content.character_kind() != Some(kind) {
+                return Err(format!("no character here draws as the playable kind {kind}"));
+            }
             return scene.replace_graph_document(graph, content, renderer, gpu);
         }
         let slot = self.graph_slots().find(|&slot| ENEMY_GRAPH.numbered(slot as u16) == owner);
@@ -1963,8 +1993,8 @@ impl SceneShow for FightShow {
         if let Err(error) = self.hold_graph_clips(scene, content) {
             tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
         }
-        // A new character is the player's alone, and may have come in the same frame as a new graph. An
-        // enemy waiting for the rest of it has the joints it had, which a new binding's aren't.
+        // A new character is the scene's character's alone, and may have come in the same frame as a new
+        // graph. An enemy waiting for the rest of it has the joints it had, which a new binding's aren't.
         if !changes.graphs || self.warriors.is_empty() {
             return;
         }
@@ -2039,16 +2069,25 @@ impl SceneShow for FightShow {
     }
 }
 
-/// `desc`, as [`Fight::stand`] asks of a stage: the town's character and sky, the copy of its mesh its held
-/// pose comes from, and the packs' pipelines built before anything's uploaded.
+/// `desc`, as [`Fight::stand`] asks of a stage: the town's sky, the mesh of the playable kind a player stands
+/// as ([`playable::heroine`], whom every scenario's player is), the copy of that mesh its held pose comes
+/// from, and the packs' pipelines built before anything's uploaded.
 pub fn fight_stage(desc: StageDesc) -> StageDesc {
     StageDesc {
-        character: lookdev::CHARACTER,
+        character: playable::heroine().mesh,
         sky: lookdev::SKY,
         keep_character_mesh: true,
         prewarm_packs: true,
         ..desc
     }
+}
+
+/// What's said when the character draws as no playable kind.
+const NO_KIND: &str = "the character draws as no playable kind";
+
+/// The weapon the playable kind `look` holds.
+fn weapon_of(look: &PlayableLook) -> Result<HeldWeapon, String> {
+    look.held.ok_or_else(|| format!("playable kind {} holds no weapon", look.kind))
 }
 
 /// A fight beside the simulation it follows.
@@ -2115,7 +2154,8 @@ impl Fight {
             }
             let content = content().map_err(|error| error.to_string())?;
             if self.stock_arena.is_none() {
-                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content)?);
+                let look = playable::of_scenario(scenario.name)?;
+                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content, look)?);
             }
             self.stock_arena
                 .as_ref()
@@ -2274,8 +2314,9 @@ impl Fight {
         };
         drop(fighters);
         let warrior_versions = self.show.enemy_versions(content).map(|(mesh, skeleton)| (mesh, 0, skeleton));
+        let hero_versions = content.character_kind().and_then(|kind| content.playable_versions(kind));
         let sources = [
-            (hero, content.graph_clips(), content.current_character_versions()),
+            (hero, content.character_clips(), hero_versions),
             (warrior, content.graph_clips_of(ENEMY_GRAPH), warrior_versions),
         ];
         let mut fixed = [None, None];
@@ -2400,9 +2441,10 @@ impl Fight {
                 content.set_body_tuning(self.documents.body);
                 let show = &mut self.show;
                 let place = &stand.plan.place;
-                let (pose, figure) = lookdev::hold(content, renderer, gpu)?;
+                let kind = stand.plan.playable.kind;
+                let (pose, figure) = lookdev::hold(content, &stand.plan.playable, renderer, gpu)?;
                 if stand.off_frame {
-                    stand.fit = Some(lookdev::ClearanceFit::start(content).map_err(AppInitError::msg)?);
+                    stand.fit = Some(lookdev::ClearanceFit::start(content, kind).map_err(AppInitError::msg)?);
                 }
                 let ground = show.load_fight_ground(place, content, renderer, gpu)?;
                 stand.world = Some(ground.share());
@@ -2478,7 +2520,7 @@ impl Fight {
                 self.dialogue.bind(combat);
                 let show = &mut self.show;
                 show.set_zone_streaming(stream_settings(tier));
-                content.load_graph(lookdev::GRAPH, renderer, gpu)?;
+                content.load_graph(stand.plan.playable.kind, renderer, gpu)?;
                 show.load_enemy_graph(content, renderer, gpu)?;
                 stand.part = StandPart::Fighters;
                 Ok(None)
@@ -2492,8 +2534,9 @@ impl Fight {
                 let combat = stand.combat.take().expect("a stand has its combat until it's attached");
                 let world = stand.world.take().expect("the ground stood in the first part");
                 let show = &mut self.show;
-                let player =
-                    lookdev::graph_driver_fitted(content, stand.fit.take()).map_err(AppInitError::msg)?;
+                let kind = stand.plan.playable.kind;
+                let player = lookdev::graph_driver_fitted(content, kind, stand.fit.take())
+                    .map_err(AppInitError::msg)?;
                 let solver = scene
                     .ik_on(world.clone(), None, content, player.player.pose())
                     .map_err(AppInitError::msg)?;
@@ -2502,9 +2545,8 @@ impl Fight {
                 show.load_kinds(&stand.plan.kinds, content, renderer, gpu)?;
                 scene.set_spring_quality(animate::spring_quality(tier));
 
-                let sword = show.load_sword(content, renderer, gpu)?;
-                let hand = lookdev::held_hand(content).map_err(AppInitError::msg)?;
-                show.spawn_blade(scene, sword, hand);
+                let blade = show.load_sword(&stand.plan.playable, content, renderer, gpu)?;
+                show.spawn_blade(scene, blade, content).map_err(AppInitError::msg)?;
                 scene.set_day(DEFAULT_TIME_OF_DAY, None);
                 show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
                     .map_err(AppInitError::msg)?;

@@ -1112,8 +1112,8 @@ mod tests {
         );
     }
 
-    /// The look-dev stage loads the character's rig by this ID (`sapphire_stage`'s
-    /// `lookdev::RIG`), derived from the VRM's sidecar ID.
+    /// The look-dev stage loads the character's rig by this ID (`game_combat`'s
+    /// heroine's playable kind), derived from the VRM's sidecar ID.
     #[test]
     fn the_character_rig_id_is_the_vrm_sub_asset() {
         let vrm = sapphire_assets::AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");

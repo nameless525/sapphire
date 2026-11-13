@@ -167,7 +167,7 @@ impl App for SandboxApp {
             .as_ref()
             .map(|option| {
                 if options.arena.is_some()
-                    && options.character() == lookdev::CHARACTER
+                    && options.character() == options.playable().mesh
                     && options.character_rig.is_none()
                 {
                     show.fight.prepare_stock_combat(option, &mut content)
@@ -268,8 +268,9 @@ impl App for SandboxApp {
         if let Some(mesh) = renderer.hard_edges {
             scene.spawn_hard_edges(mesh);
         }
+        let playable = options.playable();
         if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
-            let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
+            let (pose, figure) = lookdev::hold(&mut content, &playable, &mut renderer.renderer, &device.gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
             if options.face.is_some() {
                 scene.set_held_face(options.face, &content);
@@ -279,11 +280,11 @@ impl App for SandboxApp {
             }
             if let Some(clip) = &options.clip {
                 content.load_clip(
-                    clip.resolve(&content).map_err(AppInitError::msg)?,
+                    clip.resolve(&content, &playable).map_err(AppInitError::msg)?,
                     &mut renderer.renderer,
                     &device.gpu,
                 )?;
-                let mut player = lookdev::player(&content)
+                let mut player = lookdev::player(&content, playable.kind)
                     .map_err(AppInitError::msg)?
                     .with_root_motion(!options.clip_in_place)
                     .with_springs_on(options.springs != Some(false));
@@ -296,8 +297,8 @@ impl App for SandboxApp {
                 scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if let Some(script) = options.graph {
-                content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
-                let mut driver = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
+                let mut driver = lookdev::graph_driver(&content, playable.kind).map_err(AppInitError::msg)?;
                 if let (Some(ik), Some(block)) = (&options.ik, renderer.ik_block) {
                     let solver = scene
                         .start_ik(ik, block, &content, driver.player.pose())
@@ -320,7 +321,7 @@ impl App for SandboxApp {
             }
         }
         if let (Some(shot), Some(town), Some(enemy)) = (options.arena, renderer.town, renderer.enemy) {
-            let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
+            let (pose, figure) = lookdev::hold(&mut content, &playable, &mut renderer.renderer, &device.gpu)?;
             let ground =
                 show.fight.show.load_arena_ground(&mut content, &mut renderer.renderer, &device.gpu)?;
             let world = ground.share();
@@ -339,11 +340,11 @@ impl App for SandboxApp {
             }
             if let Some(clip) = &options.clip {
                 content.load_clip(
-                    clip.resolve(&content).map_err(AppInitError::msg)?,
+                    clip.resolve(&content, &playable).map_err(AppInitError::msg)?,
                     &mut renderer.renderer,
                     &device.gpu,
                 )?;
-                let mut player = lookdev::player(&content)
+                let mut player = lookdev::player(&content, playable.kind)
                     .map_err(AppInitError::msg)?
                     .with_root_motion(false)
                     .with_springs_on(options.springs != Some(false));
@@ -358,9 +359,9 @@ impl App for SandboxApp {
                 scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if options.combat.is_some() {
-                content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
+                content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
                 show.fight.show.load_enemy_graph(&mut content, &mut renderer.renderer, &device.gpu)?;
-                let player = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                let player = lookdev::graph_driver(&content, playable.kind).map_err(AppInitError::msg)?;
                 let solver = scene
                     .ik_on(world.clone(), None, &content, player.player.pose())
                     .map_err(AppInitError::msg)?;
@@ -374,8 +375,7 @@ impl App for SandboxApp {
             }
         }
         if let Some(sword) = renderer.sword {
-            let hand = lookdev::held_hand(&content).map_err(AppInitError::msg)?;
-            show.fight.show.spawn_blade(&mut scene, sword, hand);
+            show.fight.show.spawn_blade(&mut scene, sword, &content).map_err(AppInitError::msg)?;
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -1442,7 +1442,7 @@ pub(crate) struct SceneRenderer {
     town: Option<TownMeshes>,
     /// The enemy, with `--look-dev enemy` or `--arena`.
     enemy: Option<EnemyMeshes>,
-    /// The player's sword, with `--blade on`.
+    /// The weapon the character's playable kind holds, with `--blade on`.
     sword: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StudioMeshes>,
@@ -1600,7 +1600,10 @@ pub(crate) fn create_renderer(
             || options.arena.is_some())
         .then(|| fight.load_enemy(content, &mut renderer, gpu))
         .transpose()?;
-        let sword = options.blade().then(|| fight.load_sword(content, &mut renderer, gpu)).transpose()?;
+        let sword = options
+            .blade()
+            .then(|| fight.load_sword(&options.playable(), content, &mut renderer, gpu))
+            .transpose()?;
         let stage = options.stage.map(|_| content.studio_meshes(&mut renderer)).transpose()?;
         let ik_block = options
             .ik

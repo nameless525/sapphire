@@ -14,7 +14,7 @@ use sapphire_gameplay::Simulation;
 use sapphire_sequencer::{CharacterCue, Origin, StepClock, TimelinePlayer};
 use sapphire_timeline::{EyeRule, Timeline};
 
-use crate::arena::ArenaActors;
+use crate::arena::{ArenaActors, FighterKind};
 
 /// The roles a fight's timelines name for its two fighters.
 const HERO: Name = Name::new("hero");
@@ -23,19 +23,20 @@ const FOE: Name = Name::new("foe");
 /// Set in a staged row's serial, which no simulation move's reaches.
 const STAGED_SERIAL: u32 = 1 << 31;
 
-/// The fighter a timeline's or a conversation's role names, the player being 0: `hero` is the fight's player
-/// and `foe` whoever they face, the second fighter, as since M3 Q3; and since M5 C5 any other role names a
-/// kind of enemy by its name (`enemy-warrior`, `boss-captain`), and binds the first fighter of that kind.
+/// The fighter a timeline's or a conversation's role names: `hero` is the fight's player, the fighter drawn as
+/// its playable kind (M5 C7), and `foe` whoever they face, the second fighter, as since M3 Q3; and since M5 C5
+/// any other role names a kind of enemy by its name (`enemy-warrior`, `boss-captain`), and binds the first
+/// fighter of that kind.
 pub(crate) fn fighter_of_role(role: Name, arena: &ArenaActors) -> Option<usize> {
     let count = arena.fighter_count();
     if role == HERO {
-        return (count > 0).then_some(0);
+        return (0..count).find(|&fighter| arena.kind(fighter) == FighterKind::Playable);
     }
     if role == FOE {
         return (count > 1).then_some(1);
     }
-    let kind = arena.kind_named(role)?;
-    (1..count).find(|&fighter| arena.kind(fighter) == kind)
+    let kind = FighterKind::Enemy(arena.kind_named(role)?);
+    (0..count).find(|&fighter| arena.kind(fighter) == kind)
 }
 
 /// What a fighter's graph plays in its combat slot for `cue`: its track's row there, if any.

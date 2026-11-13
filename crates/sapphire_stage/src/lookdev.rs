@@ -10,14 +10,14 @@
 //!   Fantasy Town Kit's rocks as the hills, whose slots its sidecar binds to the town's environment
 //!   materials. It cooks as a zone, cut into cells ([`TOWN_ZONE`], M3 W2), so its cells are ordinary
 //!   entities the zone's streaming places and takes away ([`crate::scene::ZoneStage`]).
-//! - **The character** is pixiv's VRM sample (A6, [`CHARACTER`]) in place of the mannequin. VRM
-//!   characters rest in a T-pose, so the stage holds a standing pose ([`held_pose`]): humanoid
-//!   bones turned from rest, the rig's twist and aim constraints followed ([`crate::pose`]), and a
-//!   soft expression. Its figure (head, feet and body capsule, its face's basis) comes from the
-//!   posed skeleton. With `--clip` it plays a clip instead ([`ClipName`], [`crate::animate`]), and
-//!   its figure follows the skeleton every frame. Its look-dev materials (`content/lookdev/character/`, bound by the VRM's
-//!   sidecar) say which parts are face, hair and eyes, as MToon doesn't, so the character
-//!   prepass's IDs tell them apart.
+//! - **The character** draws as whichever playable kind [`hold`] is handed ([`crate::playable`]): a game's is
+//!   pixiv's VRM sample (A6), in place of the mannequin. VRM characters rest in a T-pose, so the stage holds
+//!   a standing pose ([`held_pose`]): humanoid bones turned from rest, the rig's twist and aim constraints
+//!   followed ([`crate::pose`]), and a soft expression. Its figure (head, feet and body capsule, its face's
+//!   basis) comes from the posed skeleton. With `--clip` it plays a clip instead ([`ClipName`],
+//!   [`crate::animate`]), and its figure follows the skeleton every frame. Its look-dev materials
+//!   (`content/lookdev/character/`, bound by the VRM's sidecar) say which parts are face, hair and eyes, as
+//!   MToon doesn't, so the character prepass's IDs tell them apart.
 //! - **Shots** ([`Shot`]): a wide establishing shot across the square, a three-quarter hero shot
 //!   of the character, a low angle up past it toward the sky and the rooftops, and the street
 //!   out of the square with the character standing in it, its face up close, and the enemy squaring
@@ -64,7 +64,6 @@ use sapphire_anim::{
 };
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::rig::{ArchivedCharacterRig, ExpressionPreset, HumanBone};
-use sapphire_assets::skeleton::SKELETON_SUB_ASSET;
 use sapphire_assets::{AssetId, AssetKind, NamedAsset};
 use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, BodyTuning, HeadAuthority};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
@@ -76,10 +75,11 @@ use sapphire_world::tod::TodTimeline;
 
 use crate::anim_graph::GraphDriver;
 use crate::animate::ClipPlayer;
-use crate::content::Content;
+use crate::content::{Content, GraphKey};
 use crate::environment::{CardPlace, HAZE, MIST};
 use crate::extract::RenderPose;
 use crate::orbit::OrbitCamera;
+use crate::playable::PlayableLook;
 use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
@@ -89,17 +89,6 @@ pub mod model;
 pub const TOWN_ZONE: AssetId = AssetId::from_text("c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13");
 /// The stem of its source, which names its pack.
 pub const TOWN_STEM: &str = "town";
-/// The character: pixiv's `VRM1_Constraint_Twist_Sample` with Sapphire's correctives, by its
-/// sidecar's ID (`content/lookdev/character/character.vrm.meta`).
-pub const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
-/// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
-/// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
-pub const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
-/// How the character's clips play (`--graph`), by its sidecar's ID
-/// (`content/lookdev/character/character.animgraph.ron.meta`).
-pub const GRAPH: AssetId = AssetId::from_text("b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68");
-/// What sets the character's blinks apart from another's. Any number: a golden pins this one's.
-const GRAPH_SEED: u32 = 1;
 /// A clip the character can play (`--clip`, `--contact-sheet`): what its source calls it, among the clips
 /// the packs hold for the character's skeleton, or any clip by its ID. A key-pose document's name is its
 /// file's, and a clip of a file of many is its name there.
@@ -125,9 +114,10 @@ impl ClipName {
         raw.parse().map_or_else(|_| Self::Named(raw.to_owned()), Self::Id)
     }
 
-    /// The clip this names among those `content`'s packs hold for the character.
-    pub fn resolve(&self, content: &Content) -> Result<AssetId, ClipNameError> {
-        self.among(content.named_assets(AssetKind::Clip), CHARACTER.sub_asset(SKELETON_SUB_ASSET))
+    /// The clip this names among those `content`'s packs hold for the skeleton of `look`, the character's
+    /// kind.
+    pub fn resolve(&self, content: &Content, look: &PlayableLook) -> Result<AssetId, ClipNameError> {
+        self.among(content.named_assets(AssetKind::Clip), look.skeleton())
     }
 
     fn among<'a>(
@@ -592,12 +582,12 @@ fn turns() -> [(HumanBone, Quat); 7] {
 /// ([`face_layer`]).
 const EXPRESSION: (&str, f32) = ("relaxed", 0.35);
 
-/// The character's face layer (M5 C5): its rig's expression presets over its morphs, resting on its soft
-/// expression. `None` if the character or its rig isn't in, or the rig has no presets.
+/// The face layer of the playable kind `kind` (M5 C5): its rig's expression presets over its mesh's morphs,
+/// resting on its soft expression. `None` if the kind isn't loaded, or its rig has no presets.
 #[must_use]
-pub fn face_layer(content: &Content) -> Option<FaceLayer> {
-    let mesh = content.character_mesh()?;
-    let rig = content.rig()?;
+pub fn face_layer(content: &Content, kind: AssetId) -> Option<FaceLayer> {
+    let mesh = content.mesh_of(kind)?;
+    let rig = content.rig_of(kind)?;
     face_layer_of(mesh, rig)
 }
 
@@ -618,10 +608,12 @@ pub struct HeldFace {
 }
 
 impl HeldFace {
-    /// Puts it on `pose`, the character's held pose as `content` has it, through its face layer.
+    /// Puts it on `pose`, the character's held pose as `content` has it, through the face layer of the kind
+    /// it draws as ([`Content::character_kind`]).
     pub(crate) fn apply(&self, content: &Content, pose: &mut RenderPose) {
-        let Some(mut face) = face_layer(content) else { return };
-        if pose.morph_weights.len() != content.character_mesh().map_or(0, |mesh| mesh.morph_targets.len()) {
+        let Some(kind) = content.character_kind() else { return };
+        let Some(mut face) = face_layer(content, kind) else { return };
+        if pose.morph_weights.len() != content.mesh_of(kind).map_or(0, |mesh| mesh.morph_targets.len()) {
             return;
         }
         if let Some((preset, weight)) = self.expression {
@@ -643,37 +635,65 @@ const BODY_RADIUS: f32 = 0.16;
 /// From the head joint (the top of the neck) to the middle of the head, in meters.
 const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.09, 0.01);
 
-/// Loads the character's rig and skeleton and holds the character in its pose ([`held_pose`]), from
-/// the copy of its mesh `content` kept ([`Content::keep_character_mesh`]).
+/// Loads the playable kind `look` and makes the character draw as it ([`crate::playable`]): its rig and
+/// skeleton, and the character held in its pose ([`held_pose`]), from the copy of its mesh `content` kept
+/// ([`Content::keep_character_mesh`]).
 pub fn hold(
     content: &mut Content,
+    look: &PlayableLook,
     renderer: &mut Renderer,
     gpu: &GpuContext,
 ) -> Result<(RenderPose, Figure), AppInitError> {
-    content.load_rig(RIG, renderer, gpu)?;
-    held(content).map_err(AppInitError::msg)
+    content.load_playable(look, renderer, gpu)?;
+    content.draw_character_as(look.kind).map_err(AppInitError::msg)?;
+    held(content, look.kind).map_err(AppInitError::msg)
 }
 
-/// [`held_pose`] for the character as `content` has it now: at the start, and again whenever its
-/// mesh, rig or skeleton gets a new version ([`Content::take_character_changed`]), whose joints may
-/// be others.
-pub(crate) fn held(content: &Content) -> Result<(RenderPose, Figure), String> {
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+/// What the playable kind `kind` is made of as `content` has it now: its look, mesh, rig and skeleton.
+struct Parts<'a> {
+    look: &'a PlayableLook,
+    mesh: &'a Mesh,
+    rig: &'a ArchivedCharacterRig,
+    skeleton: &'a ArchivedSkeleton,
+}
+
+impl<'a> Parts<'a> {
+    /// The kind `kind`'s parts, or which of them isn't loaded.
+    fn of(content: &'a Content, kind: AssetId) -> Result<Self, String> {
+        let look = content.playable(kind).ok_or_else(|| format!("no playable kind {kind} is loaded"))?;
+        let mesh =
+            content.mesh_of(kind).ok_or_else(|| format!("playable kind {kind}'s mesh isn't loaded"))?;
+        let rig = content.rig_of(kind).ok_or_else(|| format!("playable kind {kind}'s rig isn't loaded"))?;
+        let skeleton = content
+            .skeleton_of(kind)
+            .ok_or_else(|| format!("playable kind {kind}'s skeleton isn't loaded"))?;
+        Ok(Self { look, mesh, rig, skeleton })
+    }
+}
+
+/// The kind the character draws as, which whatever poses it looks it up by.
+pub(crate) fn character_kind(content: &Content) -> Result<AssetId, String> {
+    content.character_kind().ok_or_else(|| "the character draws as no playable kind".to_owned())
+}
+
+/// [`held_pose`] for the playable kind `kind` as `content` has it now: at the start, and again whenever its
+/// mesh, rig or skeleton gets a new version ([`Content::take_character_changed`]), whose joints may be
+/// others.
+pub(crate) fn held(content: &Content, kind: AssetId) -> Result<(RenderPose, Figure), String> {
+    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
     held_pose(mesh, rig, skeleton)
 }
 
-/// Where the character's held pose has its right hand, in its own space: what a blade is placed by
-/// when no clip plays.
-pub fn held_hand(content: &Content) -> Result<Mat4, String> {
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+/// Where the held pose of the playable kind `kind` has its right hand, in its own space: what a weapon is
+/// placed by when no clip plays.
+pub fn held_hand(content: &Content, kind: AssetId) -> Result<Mat4, String> {
+    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
     let (mut pose, _) = character_pose(mesh, rig, skeleton)?;
     let joints = RigJoints::new(rig);
     pose::hold(&mut pose, &joints, &turns());
-    let hand = joints.joint(HumanBone::RightHand).ok_or("the look-dev character's rig has no right hand")?;
+    let hand = joints
+        .joint(HumanBone::RightHand)
+        .ok_or_else(|| format!("playable kind {kind}'s rig has no right hand"))?;
     Ok(Mat4::from(pose.model()[hand]))
 }
 
@@ -694,13 +714,11 @@ pub(crate) fn held_pose(
     Ok((RenderPose { palette, morph_weights: pose.weights().to_vec() }, figure))
 }
 
-/// A clip player for the character as `content` has it now, with the clip's own tracks over its
-/// rest pose and its soft expression. Fails where [`held`] does, or if the clip isn't loaded or was
-/// cooked for another skeleton.
-pub fn player(content: &Content) -> Result<ClipPlayer, String> {
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+/// A clip player for the playable kind `kind` as `content` has it now, with the clip's own tracks over its
+/// rest pose and its soft expression. Fails where [`held`] does, or if the clip isn't loaded or was cooked
+/// for another skeleton.
+pub fn player(content: &Content, kind: AssetId) -> Result<ClipPlayer, String> {
+    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
     let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
@@ -709,40 +727,45 @@ pub fn player(content: &Content) -> Result<ClipPlayer, String> {
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
-/// The graph as `content` has it now, bound to the character as `content` has it now. Fails where
-/// [`held`] does, or if the graph isn't loaded or doesn't fit the character.
-pub(crate) fn graph_binding(content: &Content) -> Result<GraphBinding, String> {
-    graph_binding_of(content, &content.graph_document()?)
+/// The graph of the playable kind `kind` as `content` has it now, bound to the kind as `content` has it now.
+/// Fails where [`held`] does, or if the graph isn't loaded or doesn't fit the kind.
+pub(crate) fn graph_binding(content: &Content, kind: AssetId) -> Result<GraphBinding, String> {
+    graph_binding_of(content, kind, &content.graph_document_of(GraphKey::playable(kind))?)
 }
 
 /// [`graph_binding`], for `graph` rather than the one `content` holds.
-pub(crate) fn graph_binding_of(content: &Content, graph: &AnimGraph) -> Result<GraphBinding, String> {
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
-    GraphBinding::new(graph, skeleton, Some(rig), mesh.morph_targets.len(), &content.graph_clips())
+pub(crate) fn graph_binding_of(
+    content: &Content,
+    kind: AssetId,
+    graph: &AnimGraph,
+) -> Result<GraphBinding, String> {
+    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
+    let clips = content.graph_clips_of(GraphKey::playable(kind));
+    GraphBinding::new(graph, skeleton, Some(rig), mesh.morph_targets.len(), &clips)
         .map_err(|error| error.to_string())
 }
 
-/// A graph driver for the character as `content` has it now, over its rest pose and its soft
+/// A graph driver for the playable kind `kind` as `content` has it now, over its rest pose and its soft
 /// expression. Fails where [`graph_binding`] does.
-pub fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
-    graph_driver_fitted(content, None)
+pub fn graph_driver(content: &Content, kind: AssetId) -> Result<GraphDriver, String> {
+    graph_driver_fitted(content, kind, None)
 }
 
 /// [`graph_driver`], with the hair and shirt's clearance `fit` fitted beforehand, off the frame
 /// ([`ClearanceFit`]), rather than on this one: it's most of the driver's making (M4 H4).
-pub fn graph_driver_fitted(content: &Content, fit: Option<ClearanceFit>) -> Result<GraphDriver, String> {
-    let binding = graph_binding(content)?;
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+pub fn graph_driver_fitted(
+    content: &Content,
+    kind: AssetId,
+    fit: Option<ClearanceFit>,
+) -> Result<GraphDriver, String> {
+    let binding = graph_binding(content, kind)?;
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
     let springs = springs_of(content, rig, &pose).map(|springs| match fit {
         Some(fit) => springs.with_clearance(fit.take()),
         None => springs.with_heroine_clearance(mesh, skeleton, rig),
     });
-    Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints)
+    Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, look.seed), joints)
         .with_springs(springs)
         .with_face(face_layer_of(mesh, rig)))
 }
@@ -756,15 +779,21 @@ pub struct ClearanceFit {
 }
 
 impl ClearanceFit {
-    /// Starts fitting the character `content` has now: its mesh copied, its skeleton and rig shared.
+    /// Starts fitting the playable kind `kind` as `content` has it now: its mesh copied, its skeleton and rig
+    /// shared.
     ///
     /// # Errors
     ///
-    /// If the character, its skeleton or its rig isn't in.
-    pub fn start(content: &Content) -> Result<Self, String> {
-        let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?.clone();
-        let rig = content.rig_resident().ok_or("the look-dev character's rig isn't loaded")?;
-        let skeleton = content.skeleton_resident().ok_or("the look-dev character's skeleton isn't loaded")?;
+    /// If the kind, its skeleton or its rig isn't in.
+    pub fn start(content: &Content, kind: AssetId) -> Result<Self, String> {
+        let Parts { mesh, .. } = Parts::of(content, kind)?;
+        let mesh = mesh.clone();
+        let rig = content
+            .rig_resident_of(kind)
+            .ok_or_else(|| format!("playable kind {kind}'s rig isn't loaded"))?;
+        let skeleton = content
+            .skeleton_resident_of(kind)
+            .ok_or_else(|| format!("playable kind {kind}'s skeleton isn't loaded"))?;
         let (sender, fitted) = mpsc::channel();
         sapphire_jobs::spawn_warm_up(move || {
             // Nobody's waiting if the stand ended first.
@@ -799,10 +828,9 @@ fn springs_of(content: &Content, rig: &ArchivedCharacterRig, pose: &CharacterPos
     Some(springs)
 }
 
-/// What IK reads of the character as `content` has it now, for `pose`, a pose of it.
-pub(crate) fn ik_rig(content: &Content, pose: &CharacterPose) -> Result<IkRig, String> {
-    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
-    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+/// What IK reads of the playable kind `kind` as `content` has it now, for `pose`, a pose of it.
+pub(crate) fn ik_rig(content: &Content, kind: AssetId, pose: &CharacterPose) -> Result<IkRig, String> {
+    let Parts { mesh, rig, .. } = Parts::of(content, kind)?;
     Ok(IkRig::from_cooked(pose, rig, mesh.streams.bounds.min[1].max(0.0)))
 }
 
@@ -820,42 +848,22 @@ fn body_rest_weights(count: usize, rig: &ArchivedCharacterRig) -> Vec<f32> {
     morph_weights
 }
 
-const HERO_BODY_CONTACTS: &[&str] = &[
-    "J_Bip_C_Hips",
-    "J_Bip_C_Spine",
-    "J_Bip_C_UpperChest",
-    "J_Bip_C_Neck",
-    "J_Bip_C_Head",
-    "J_Bip_L_UpperLeg",
-    "J_Bip_L_LowerLeg",
-    "J_Bip_L_Foot",
-    "J_Bip_L_ToeBase",
-    "J_Bip_R_UpperLeg",
-    "J_Bip_R_LowerLeg",
-    "J_Bip_R_Foot",
-    "J_Bip_R_ToeBase",
-    "J_Bip_L_UpperArm",
-    "J_Bip_L_LowerArm",
-    "J_Bip_L_Hand",
-    "J_Bip_R_UpperArm",
-    "J_Bip_R_LowerArm",
-    "J_Bip_R_Hand",
-];
-
-/// Binds the stock arena heroine before any render driver or IK scene exists, on `tuning`, the table of the
-/// simulation it's for.
+/// Binds the stock arena's player, of the playable kind `look`, before any render driver or IK scene exists,
+/// on `tuning`, the table of the simulation it's for: its seed and the joints its body touches by are the
+/// kind's.
 pub fn arena_body_profile(
     assets: BodyAssets,
     mesh: &ArchivedMesh,
+    look: &PlayableLook,
     look_height: f32,
     head_authority: HeadAuthority,
     tuning: BodyTuning,
 ) -> Result<BodyProfile, String> {
-    let skin = mesh.skin.as_ref().ok_or("the stock heroine mesh has no skin")?;
+    let skin = mesh.skin.as_ref().ok_or("the stock player's mesh has no skin")?;
     if skin.skeleton.as_ref() != Some(&assets.graph.skeleton_id)
         || skin.joint_count.to_native() as usize != assets.graph.skeleton.view().len()
     {
-        return Err("the stock heroine mesh and skeleton differ".to_owned());
+        return Err("the stock player's mesh and skeleton differ".to_owned());
     }
     let morphs: Vec<_> = mesh
         .morph_targets
@@ -863,6 +871,7 @@ pub fn arena_body_profile(
         .map(|target| target.name.as_str().to_owned())
         .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view()))
         .collect();
+    let contacts: Vec<&str> = look.body_contacts.iter().map(String::as_str).collect();
     BodyProfile::bind(
         assets,
         BodyProfileOptions {
@@ -870,8 +879,8 @@ pub fn arena_body_profile(
             floor: mesh.streams.bounds.to_native().min[1].max(0.0),
             scale: 1.0,
             morphs: &morphs,
-            contact_joints: HERO_BODY_CONTACTS,
-            seed: GRAPH_SEED,
+            contact_joints: &contacts,
+            seed: look.seed,
             ground_turn: true,
             grounded_gather: true,
             look_height,
@@ -897,7 +906,7 @@ fn character_pose(
         .with_morph_names(mesh.morph_targets.iter().map(|target| target.name.clone()).collect());
     let head = rig_joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
     let floor = mesh.streams.bounds.min[1].max(0.0);
-    let joints = FigureJoints::new(&pose, &rig_joints, head, floor, CHARACTER_SHAPE);
+    let joints = FigureJoints::new(&pose, &rig_joints, head, floor, PLAYABLE_SHAPE);
     Ok((pose, joints))
 }
 
@@ -911,8 +920,8 @@ pub struct FigureShape {
     pub expression: FaceExpression,
 }
 
-/// The character's.
-const CHARACTER_SHAPE: FigureShape =
+/// A playable kind's, as every enemy kind's is `game_combat`'s `enemy::SHAPE`: a person's proportions.
+const PLAYABLE_SHAPE: FigureShape =
     FigureShape { head_center: HEAD_CENTER, body_radius: BODY_RADIUS, expression: FACE_EXPRESSION };
 
 /// Where a posed character's [`Figure`] finds its parts: what follows the skeleton every frame.
@@ -969,7 +978,7 @@ impl FigureJoints {
             feet: Some((feet, ankle - floor)),
             right_hand: None,
             spine: None,
-            shape: CHARACTER_SHAPE,
+            shape: PLAYABLE_SHAPE,
         }
     }
 

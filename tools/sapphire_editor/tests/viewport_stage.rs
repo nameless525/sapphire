@@ -708,7 +708,8 @@ fn simulated(view: &mut StageView) -> &Simulation {
 /// The fight with no renderer, editor or anything else: what `moves` and the script come to by themselves, set up
 /// from the cook's CPU content as the game's is.
 fn headless(moves: &LiveMoves, ticks: u64) -> u64 {
-    let mut content = Content::new(&host(), lookdev::CHARACTER, lookdev::SKY).expect("the cook");
+    let mut content =
+        Content::new(&host(), game_combat::playable::heroine().mesh, lookdev::SKY).expect("the cook");
     let option = CombatOption::Fight { script: Some(SCRIPT.to_owned()), party: false };
     let mut fight = Fight::default();
     fight.documents = FightDocuments::read(host().content()).expect("the cook's documents");

@@ -1,10 +1,10 @@
 //! A fight's app side: what stands a simulation on a stage and plays it there.
 //!
 //! The simulation is `sapphire_gameplay`'s and knows no renderer. This crate owns what a frame needs from a
-//! fight: the arena and its camera ([`arena`]), the enemy and the blades ([`enemy`]), a fight's run and its file
-//! ([`combat`]), the cues it fires ([`cues`]), the views that draw its volumes ([`combat_views`]), the party's
-//! looks ([`party_looks`]), a timeline played over it (`timeline`), the conversations a run holds ([`dialogue`]),
-//! and live tuning in `dev` builds (`tuning`).
+//! fight: the arena and its camera ([`arena`]), the enemy and the blades ([`enemy`]), the playable kinds
+//! ([`playable`]), a fight's run and its file ([`combat`]), the cues it fires ([`cues`]), the views that draw
+//! its volumes ([`combat_views`]), the party's looks ([`party_looks`]), a timeline played over it
+//! (`timeline`), the conversations a run holds ([`dialogue`]), and live tuning in `dev` builds (`tuning`).
 //!
 //! [`fight::Fight`] holds it all, and it's a `sapphire_stage::SceneShow`: the caller owns it and passes it to
 //! the scene's frame. A stage knows nothing of a fight.
@@ -23,6 +23,7 @@ pub mod enemy;
 mod faces;
 pub mod fight;
 pub mod party_looks;
+pub mod playable;
 mod timeline;
 mod trails;
 #[cfg(feature = "dev")]

@@ -173,7 +173,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         .map(|option| {
             if !tooling
                 && options.arena.is_some()
-                && options.character() == sapphire_stage::lookdev::CHARACTER
+                && options.character() == options.playable().mesh
                 && options.character_rig.is_none()
             {
                 let pending = &mut content;
@@ -274,10 +274,11 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.hard_edges {
         scene.spawn_hard_edges(content.hard_edges(renderer, gpu)?);
     }
+    let playable = options.playable();
     if let Some(shot) = options.look_dev {
         let town = content.town(renderer, gpu)?;
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
-        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, &playable, renderer, gpu)?;
         scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
         if options.face.is_some() {
             scene.set_held_face(options.face, content);
@@ -286,8 +287,12 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             scene.open_town_zone(content, settings, renderer, gpu)?;
         }
         if let Some(clip) = &options.clip {
-            content.load_clip(clip.resolve(&*content).map_err(AppInitError::msg)?, renderer, gpu)?;
-            let mut player = sapphire_stage::lookdev::player(content)
+            content.load_clip(
+                clip.resolve(&*content, &playable).map_err(AppInitError::msg)?,
+                renderer,
+                gpu,
+            )?;
+            let mut player = sapphire_stage::lookdev::player(content, playable.kind)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(!options.clip_in_place)
                 .with_springs_on(options.springs != Some(false));
@@ -300,8 +305,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
         if let Some(script) = options.graph {
-            content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
-            let mut driver = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            content.load_graph(playable.kind, renderer, gpu)?;
+            let mut driver =
+                sapphire_stage::lookdev::graph_driver(content, playable.kind).map_err(AppInitError::msg)?;
             if let Some(ik) = &options.ik {
                 let block = sapphire_stage::studio::upload_block(renderer)?;
                 let solver =
@@ -327,7 +333,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         // A fight's scenario says where it stands: the town's square, or a zone (M3 Q3).
         let scenario = combat.as_ref().map_or(game_combat::arena::FIGHT_SCENARIO, Combat::scenario);
         let place = game_combat::arena::FightPlace::of(scenario).map_err(AppInitError::msg)?;
-        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, &playable, renderer, gpu)?;
         let ground = fight.load_fight_ground(&place, content, renderer, gpu)?;
         let world = ground.share();
         let enemy = fight.load_enemy(content, renderer, gpu)?;
@@ -361,8 +367,12 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             fight.set_party_meshes(scene, meshes);
         }
         if let Some(clip) = &options.clip {
-            content.load_clip(clip.resolve(&*content).map_err(AppInitError::msg)?, renderer, gpu)?;
-            let mut player = sapphire_stage::lookdev::player(content)
+            content.load_clip(
+                clip.resolve(&*content, &playable).map_err(AppInitError::msg)?,
+                renderer,
+                gpu,
+            )?;
+            let mut player = sapphire_stage::lookdev::player(content, playable.kind)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(false)
                 .with_springs_on(options.springs != Some(false));
@@ -376,9 +386,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
         if options.combat.is_some() {
-            content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
+            content.load_graph(playable.kind, renderer, gpu)?;
             fight.load_enemy_graph(content, renderer, gpu)?;
-            let player = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            let player =
+                sapphire_stage::lookdev::graph_driver(content, playable.kind).map_err(AppInitError::msg)?;
             let solver =
                 scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
             let enemy = fight.enemy_driver(content, world)?;
@@ -391,7 +402,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         }
     }
     if let Some((stem, at)) = &options.zone {
-        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, &playable, renderer, gpu)?;
         let walk = options.zone_walk.as_ref().map(|(spline, speed)| (spline.as_str(), *speed));
         let settings = options
             .stream
@@ -405,9 +416,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         )?;
     }
     if options.blade() {
-        let sword = fight.load_sword(content, renderer, gpu)?;
-        let hand = sapphire_stage::lookdev::held_hand(content).map_err(AppInitError::msg)?;
-        fight.spawn_blade(scene, sword, hand);
+        let sword = fight.load_sword(&playable, content, renderer, gpu)?;
+        fight.spawn_blade(scene, sword, content).map_err(AppInitError::msg)?;
     }
     // The day, the sky options, the starting view and the turntable's speed, last so `--view`
     // holds whatever framing the scene chose.

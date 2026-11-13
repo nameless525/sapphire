@@ -57,6 +57,9 @@
 //! - **What loads:** the caller holds its own assets by [`Content::hold`] and reads them by [`Content::read`], and
 //!   [`Content::load_graph_of`] keys a graph by a [`content::GraphKey`] the game names. A recolor is an
 //!   [`content::UploadWatcher`].
+//! - **Who's playable:** the caller hands the stage each playable kind's [`PlayableLook`]
+//!   ([`lookdev::hold`]), and the stage finds everything of a character by its kind from then on
+//!   ([`playable`]). It names no character.
 //!
 //! The sandbox's sample scenes, which a game never names, build only with the `samples` feature: the
 //! swatches, the material, garment and face rigs, the courtyard with its plants and arcade, the outline scenes,
@@ -92,6 +95,7 @@ mod material_overrides;
 pub mod orbit;
 #[cfg(feature = "samples")]
 mod outlines;
+pub mod playable;
 pub mod pose;
 mod readback;
 pub mod rims;
@@ -112,6 +116,7 @@ pub use frame::{
     headless_gpu,
 };
 pub use material_overrides::MaterialOverrides;
+pub use playable::{HeldWeapon, PlayableLook};
 pub use readback::Readback;
 pub use scene::Scene;
 pub use show::{ContentChanges, SceneShow};

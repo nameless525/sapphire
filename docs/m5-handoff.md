@@ -235,7 +235,7 @@ M3's first pillar is that a new enemy, encounter, stage, boss, cutscene or scree
 
 Every recipe ends the same way: `cargo xtask content` to cook, `cargo xtask replay` for the replays, the sandbox's replay lane for the app, and a commit. Then come x86-64's checksums from CI's artifact for any replay that's new or moved ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), which costs two CI rounds.
 
-**What's left of Rust:** one step, a screen showing a value no model holds, which is code by design. A remappable binding's glyph is data since M4 X4 ("A game screen", step 3). A golden is a row in `tests/golden/scenes.ron` and its PNG since M4 R1 ("A golden"). A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder ([m4-handoff.md](m4-handoff.md), "Tools"), which is data.
+**What's left of Rust:** two steps: a screen showing a value no model holds, which is code by design, and driving a character's dissolve, emission or flash from the game (M5 L11), which no document does yet. A remappable binding's glyph is data since M4 X4 ("A game screen", step 3). A golden is a row in `tests/golden/scenes.ron` and its PNG since M4 R1 ("A golden"). A zone a scenario shelves needs no row since M4 R3: the build finds it. A replay's scripted input is a document since M4 R2 (`content/inputs/`), and a placeholder sound is a spec since M4 R4 (`tools/sounds/`). No test pins the shipped Lantern Ward's content any more (M3 Z5e): the tests that held its counts and lists read them from its documents, so a checkpoint, an encounter's fighter, a cutscene or a conversation added to the ward or its run passes them with only `content/` changed. Such a change still moves the ward's replays, and a fight that plays differently needs `ward-whole-walk` recorded again by its recorder ([m4-handoff.md](m4-handoff.md), "Tools"), which is data.
 
 **Walked for real.** The enemy-kind and boss recipes were followed end to end on a scratch branch on 2026-11-09, with no Rust edit:
 
@@ -406,6 +406,14 @@ The worked examples are `content/audio/generated/music/lantern.score.ron` and `c
 4. **A placeholder sound,** until a recording replaces it, is a spec, `tools/sounds/<name>.sound.ron`, which takes no Rust: a stem of the score's tempo, beats and bars playing one of the generator's instruments (a pad's chords, a pulse's notes, a drum pattern, a bell tune or a toll), or a line's syllables at a speaker's pitch (`tools/sapphire_soundgen`'s docs). `cargo run -p sapphire_soundgen` from the workspace root writes each missing `.ogg` to the `path` its spec names; add its row to the `SOURCE.md` beside it, which the generator's tests hold, and name it from the score or the line's cue. A recorded `.ogg` needs no spec.
 5. **Rust steps:** a line spoken on anything but a published cue needs code, and a conversation's lines aren't voiced (see "Everything deferred").
 
+### A dissolve, a flash or glass on a character
+
+Since M5 L11 ([engine-spec.md](engine-spec.md) §5.12, "As built (M5 L11)").
+
+1. **The look is the material's:** in a character's material document, a region's `opacity` (the share of its pixels drawn, 1 by default) and `glass` (a sky reflection over them, 0 by default), for a veil or a visor's lens; and the material's `dissolve: (scale, edge, edge_color)`, for how its dissolve breaks up and glows. Only a body's regions see through, and a blended material refuses them. `cargo xtask content` cooks it.
+2. **Try it:** the sandbox's `--dissolve <0..1>`, `--emission-scale <scale>` and `--flash <r>,<g>,<b>` drive the character's materials, and `--glass` places two samples beside it.
+3. **Rust step: driving it from the game.** `CharacterInstance::drive` takes a `sapphire_render::MaterialDrive` each frame, and only the stage's flags fill it: no document says "dissolve when defeated" or "flash on a hit" yet. A game that dissolves a character must also declare `fades` among its pipelines, as the stage does.
+
 ### A golden
 
 A golden is a row and its PNG (M4 R1). The scenes are `tests/golden/scenes.ron`, whose header says what each field means and why each family of scenes pins what it pins.
@@ -505,6 +513,7 @@ A setting is code by design, not a pillar recipe: it's a field of `PlayerSetting
 M3's first pillar counts each of these as a bug.
 
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust, which is code by design.
+- **Driving a character's materials** (M5 L11): `CharacterInstance::drive` takes a dissolve, an emission scale and a flash, and only the stage's sandbox flags fill it. A document saying when a fighter dissolves or flashes (on defeat, on a hit) is owed to a later package.
 - **A remappable binding's glyph** (A4) was a field of a Rust struct. **Fixed in M4 X4:** the menus fill a glyph for every binding the document lets a player remap.
 
 ### By area

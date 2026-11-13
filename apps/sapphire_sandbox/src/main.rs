@@ -12,18 +12,10 @@ fn main() -> ExitCode {
     // minidump requests here and never returns.
     sapphire_crash::run_monitor_if_requested();
     if let Some(help) = sapphire_sandbox::command_help() {
-        let result = {
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "{help}").and_then(|()| stdout.flush())
-        };
-        return match result {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-            Err(error) => {
-                let _ = writeln!(std::io::stderr().lock(), "could not write help: {error}");
-                ExitCode::FAILURE
-            }
-        };
+        return print(help, "help");
+    }
+    if let Some(line) = sapphire_sandbox::command_version() {
+        return print(&line, "the version");
     }
     sapphire_sandbox::startup();
     let exit = if sapphire_sandbox::offscreen_requested() {
@@ -35,4 +27,20 @@ fn main() -> ExitCode {
     };
     sapphire_sandbox::shutdown();
     exit
+}
+
+/// Writes `text` and a newline to stdout: a closed pipe (`| head`) isn't a failure.
+fn print(text: &str, what: &str) -> ExitCode {
+    let result = {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{text}").and_then(|()| stdout.flush())
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "could not write {what}: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }

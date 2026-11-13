@@ -11,6 +11,7 @@ title-continue = つづきから
 title-new = はじめから
 title-settings = 設定
 title-leave = 終了
+title-version = { $label }
 
 pause-title = 一時停止
 pause-resume = 再開

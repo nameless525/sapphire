@@ -55,6 +55,8 @@
 //!
 //! # Arguments
 //!
+//! - `--version`: prints `Sapphire Sandbox 0.1.0` and exits before platform initialization, as `--help` does
+//!   (0.1.0). The sandbox is never packaged, so it has no build number.
 //! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
 //!   presented in time.
 //! - `--tier desktop-high|desktop-low|mobile-high|mobile-low`: the player's quality tier
@@ -200,6 +202,8 @@
 //! - `--game title|new-game|continue` (with `--capture`): the game's own show, as `game_app` stands it, on the
 //!   flow the content names (M3 G1, `game_flow::capture`): its title, or past it as that row would, with no
 //!   save kept. `--capture-ticks` frames, a tick each, and `--size`; the scene's flags don't reach it.
+//! - `--ui-version <label>` (with `--ui-game` or `--game`): the title's version label, in place of this build's
+//!   (`v0.1.0`), so a golden of the title stays still when the version moves (0.1.0). Empty shows none.
 //! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). A name is what a clip's source calls it among those the packs hold for the character (M3 S3), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
@@ -456,6 +460,14 @@ pub fn startup() {
 /// before startup or platform initialization, so help needs neither content nor a display.
 pub fn command_help() -> Option<&'static str> {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_help_flag)).then_some(options::USAGE)
+}
+
+/// `--version`'s line, if the process's arguments ask for it: the desktop entry point prints it before startup
+/// or platform initialization, as it does help.
+pub fn command_version() -> Option<String> {
+    std::env::args_os()
+        .any(|arg| arg.to_str().is_some_and(game_ui::version::is_version_flag))
+        .then(options::version_line)
 }
 
 /// Whether the process's arguments ask for an offscreen mode (`--capture`, `--bench` or

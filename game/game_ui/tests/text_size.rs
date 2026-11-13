@@ -12,8 +12,9 @@ use game_ui::menus::{
     GameMenus, HudModel, MenuScreen, MenuSetup, PlayerSettings, SubtitleSize, Subtitles, TextSize,
 };
 use sapphire_look::UiDrawList;
+use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
-use sapphire_ui::{Atlas, HudDesign, HudLayout, Insets, UiMetrics};
+use sapphire_ui::{Atlas, HudDesign, HudLayout, Insets, Rect, UiMetrics};
 use support::assets;
 
 /// The frames measured: their size in points, and pixels per point at the display's own scale. A phone's is an
@@ -65,6 +66,7 @@ fn menus_with(settings: PlayerSettings) -> GameMenus {
             can_leave: true,
             can_mark: true,
             pseudo: false,
+            version: support::VERSION.to_owned(),
         },
     )
     .unwrap()
@@ -218,6 +220,61 @@ fn every_screen_fits_at_the_largest_interface_size_at_every_aspect() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The title's version label (0.1.0) shows what the app handed it, in its corner, inside the frame and clear of
+/// the menu: at every aspect a screen ships at, in both languages, at the default sizes, the smallest, the
+/// largest text and the largest interface. Where there's no room beside the menu it wraps under it.
+#[test]
+fn the_titles_version_shows_clear_of_its_menu_at_every_size() {
+    let mut wrong = Vec::new();
+    let mut beside = 0;
+    for language in ["en", "ja"] {
+        let default = PlayerSettings { language: language.to_owned(), ..PlayerSettings::default() };
+        let large = PlayerSettings { size: "large".to_owned(), ..default.clone() };
+        for (sizes, settings) in [
+            ("default", default),
+            ("smallest", smallest(language)),
+            ("largest text", largest(language)),
+            ("large", large),
+        ] {
+            let mut menus = menus_with(settings);
+            menus.open(MenuScreen::TITLE);
+            let mut list = UiDrawList::default();
+            for size in SIZES {
+                for frame in 1..=30u64 {
+                    menus.update(Timestamp::from_nanos(1_000_000_000 + frame * 16_666_667));
+                    list.reset();
+                    menus.draw(size, &mut list);
+                }
+                let at = format!("{language}, {sizes} sizes, {size:?}");
+                let tree = menus.tree(MenuScreen::TITLE).expect("open");
+                let node = |name| tree.find(name).unwrap_or_else(|| panic!("the title has a {name}"));
+                let (version, menu) = (node("version"), node("menu"));
+                let label = tree.strings().find(|(name, _)| *name == "version-text").map(|(_, text)| text);
+                if label != Some(support::VERSION) {
+                    wrong.push(format!("{at}: the label says {label:?}"));
+                }
+                let (version, menu) = (tree.rect(version), tree.rect(menu));
+                let frame = Rect { min: Vec2::ZERO, max: tree.size() };
+                if !frame.contains_rect(version) {
+                    wrong.push(format!("{at}: the label's at {version:?}, outside {frame:?}"));
+                }
+                if version.overlaps(menu) {
+                    wrong.push(format!("{at}: the label at {version:?} meets the menu at {menu:?}"));
+                }
+                // In the bottom corner: below the menu's top, and beside it unless there's no room.
+                if version.max.y < menu.min.y {
+                    wrong.push(format!("{at}: the label at {version:?} is above the menu at {menu:?}"));
+                }
+                if version.min.x >= menu.max.x {
+                    beside += 1;
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(beside > 0, "the label never stood beside the menu");
 }
 
 /// Every line a subtitle shows, a cutscene's and a fight's voice lines' (M4 A2), stays on the screen at the

@@ -579,6 +579,7 @@ fn a_platform_with_no_way_out_offers_none() {
         can_leave: false,
         can_mark: false,
         pseudo: false,
+        version: support::VERSION.to_owned(),
     };
     let menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
     let mut walk = Walk {

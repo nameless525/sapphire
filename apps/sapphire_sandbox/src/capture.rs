@@ -93,12 +93,19 @@ fn step(
 /// drawn `ticks` frames with no window on the player's `quality` settings (`--tier` and the rest of the
 /// command line's) and written as any capture is (M3 G1). In `language` if one's given, and walking forward
 /// into a cutscene if `forward` (M3 Q4), drawing from frame `draw_from` (`GameCapture::draw_from`), its menus
-/// and HUD as `display` shows them (M4 S5). It keeps no run's file, and the save only in a scratch directory it
+/// and HUD as `display` shows them (M4 S5), and the title's version labelled `version` (0.1.0). It keeps no run's file, and the save only in a scratch directory it
 /// takes away after.
 pub(crate) fn game(
     platform: &Platform,
     path: &Path,
-    (start, progress, forward, language, draw_from): (GameStart, Option<&Path>, bool, Option<&str>, u32),
+    (start, progress, forward, language, draw_from, version): (
+        GameStart,
+        Option<&Path>,
+        bool,
+        Option<&str>,
+        u32,
+        String,
+    ),
     (ticks, size, display): (u32, (u32, u32), OffscreenDisplay),
     quality: QualitySettings,
 ) -> Result<(), AppInitError> {
@@ -109,7 +116,8 @@ pub(crate) fn game(
     if let Some(language) = language {
         language.clone_into(&mut settings.language);
     }
-    let (show, first) = GameShow::from_content(platform.content(), settings, setup)?;
+    let (mut show, first) = GameShow::from_content(platform.content(), settings, setup)?;
+    show.show_version(version);
     let capture = GameCapture {
         choose: start.command(),
         size,

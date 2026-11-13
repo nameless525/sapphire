@@ -96,6 +96,9 @@ pub struct ScreenOptions {
     /// `--ui-subtitle <size>:<background>:fight`: the sample says two of a fight's voice lines at once, the
     /// earlier above, in place of a cutscene's (M4 A8).
     pub fight_lines: bool,
+    /// The title's version label (0.1.0): this build's, `v0.1.0`, or `--ui-version`'s, which a golden pins so
+    /// it stays still when the version moves. A menu's model shows it; empty shows none.
+    pub version: String,
 }
 
 /// `--ui-text`'s size, by its name in the settings (`normal`, `large`, `larger`).
@@ -154,6 +157,7 @@ impl ScreenOptions {
             text: TextSize::Normal,
             subtitle: None,
             fight_lines: false,
+            version: crate::options::build_version().label(),
         }
     }
 
@@ -236,10 +240,13 @@ impl ScreenOptions {
                     hud.follow_subtitle_look(subtitles);
                     Box::new(hud)
                 }
-                // A menu says what text size it's drawn at.
-                None if model == ScreenModel::Menu && self.text != TextSize::Normal => {
+                // A menu says what text size it's drawn at, and the build's version, as the app hands it.
+                None if model == ScreenModel::Menu => {
                     let settings = PlayerSettings { text_size: self.text, ..PlayerSettings::default() };
-                    Box::new(MenuModel::of(&settings, true, false, true))
+                    let mut menu = MenuModel::of(&settings, true, false, true);
+                    menu.version.clone_from(&self.version);
+                    menu.shows_version = !self.version.is_empty();
+                    Box::new(menu)
                 }
                 None => model.sample(),
             },

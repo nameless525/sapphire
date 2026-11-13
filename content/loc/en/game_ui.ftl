@@ -26,6 +26,7 @@ title-continue = Continue
 title-new = New game
 title-settings = Settings
 title-leave = Quit
+title-version = { $label }
 
 pause-title = Paused
 pause-resume = Resume

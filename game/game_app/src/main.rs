@@ -6,6 +6,7 @@
 
 #![cfg_attr(sapphire_packaged, windows_subsystem = "windows")]
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use game_app::{GameApp, OffscreenGame};
@@ -15,6 +16,10 @@ fn main() -> ExitCode {
     // Must come first: when this process was relaunched as the crash monitor, it serves
     // minidump requests here and never returns.
     sapphire_crash::run_monitor_if_requested();
+    // `--version`: one line, before logging, crash capture or SDL.
+    if let Some(line) = game_app::version_requested() {
+        return print_line(&line);
+    }
     game_app::startup();
     let exit = if game_app::offscreen_requested() {
         // `--capture`: no window or display at all, and the process never comes to the foreground.
@@ -24,4 +29,20 @@ fn main() -> ExitCode {
     };
     game_app::shutdown();
     exit
+}
+
+/// Writes `line` to stdout: a closed pipe (`| head`) isn't a failure.
+fn print_line(line: &str) -> ExitCode {
+    let result = {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{line}").and_then(|()| stdout.flush())
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "could not write the version: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }

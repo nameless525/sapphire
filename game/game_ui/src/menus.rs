@@ -273,6 +273,11 @@ pub struct MenuModel {
     pub remap: RemapModel,
     /// The key of the timing assist's step (M4 A6).
     pub timing_assist: String,
+    /// The build's version as the title labels it, `v0.1.0` or `v0.1.0 (1234)` (0.1.0): what the app hands
+    /// the menus ([`MenuSetup::version`]), never read here, so a pinned label keeps a golden still.
+    pub version: String,
+    /// Whether there's a label to show: none where the app gave none.
+    pub shows_version: bool,
 }
 
 impl MenuModel {
@@ -557,6 +562,9 @@ pub struct MenuSetup {
     pub can_mark: bool,
     /// Whether under pseudo-localization.
     pub pseudo: bool,
+    /// The build's version as the title shows it (0.1.0): [`BuildVersion::label`](crate::version::BuildVersion::label)
+    /// in an app, or a fixed label a golden pins. Empty shows none.
+    pub version: String,
 }
 
 /// What the menus ask of whoever holds them. A game's flow takes most of them as its own commands
@@ -640,6 +648,8 @@ pub struct GameMenus {
     can_leave: bool,
     can_mark: bool,
     can_continue: bool,
+    /// The title's label of the build's version: [`MenuModel::version`].
+    version: String,
     commands: Vec<MenuCommand>,
     events: Vec<UiEvent>,
     /// The name of a focus timeline, kept to be written into.
@@ -652,7 +662,7 @@ impl GameMenus {
     /// HUD. Nothing shows until something [`Self::open`]s. The screens have to have those that are
     /// [`OPENED_BY_CODE`].
     pub fn new(assets: ScreenAssets, atlas: Atlas, setup: MenuSetup) -> Result<Self, String> {
-        let MenuSetup { screens, settings, bindings: base, can_leave, can_mark, pseudo } = setup;
+        let MenuSetup { screens, settings, bindings: base, can_leave, can_mark, pseudo, version } = setup;
         screens.require(&OPENED_BY_CODE)?;
         if assets.documents.len() != screens.screens.len() {
             return Err(format!(
@@ -688,6 +698,7 @@ impl GameMenus {
             can_leave,
             can_mark,
             can_continue: false,
+            version,
             commands: Vec::with_capacity(8),
             events: Vec::with_capacity(8),
             timeline: String::with_capacity(32),
@@ -726,6 +737,8 @@ impl GameMenus {
                     can_mark,
                     can_continue,
                     remap: self.remap_model.clone(),
+                    version: self.version.clone(),
+                    shows_version: !self.version.is_empty(),
                     ..MenuModel::default()
                 };
                 model.show_settings(&self.settings);

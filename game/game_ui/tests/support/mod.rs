@@ -16,6 +16,9 @@ use sapphire_pipeline::loc::{self, FluentFile};
 use sapphire_stage::content::ScreenAssets;
 use sapphire_timeline::TimelineDocument;
 
+/// The title's version label in every test: a packaged build's, the longer form (0.1.0).
+pub const VERSION: &str = "v0.1.0 (1234)";
+
 pub fn content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content")
 }

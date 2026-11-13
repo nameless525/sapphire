@@ -44,6 +44,7 @@ fn menus(over: Option<MenuScreen>) -> (GameMenus, UiDrawList) {
         can_leave: true,
         can_mark: false,
         pseudo: false,
+        version: support::VERSION.to_owned(),
     };
     let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
     menus.open(MenuScreen::HUD);

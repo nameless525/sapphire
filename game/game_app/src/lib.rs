@@ -20,6 +20,10 @@
 //!
 //! # Arguments
 //!
+//! - `--version`: prints `Sapphire 0.1.0`, with the build number after it in a packaged build
+//!   (`Sapphire 0.1.0 (1234)`), and exits before any platform, window or GPU work (0.1.0). The title shows the
+//!   same build as `v0.1.0 (1234)` in its corner ([`build_version`]).
+//!
 //! For runs nobody's playing:
 //! - `--new-game` or `--continue`: past the title at once, as its row would. `--open-fight` is `--new-game`.
 //! - `--script <name>`: each run plays this script, not whoever's there, and logs how it's going.
@@ -94,6 +98,7 @@ use std::sync::{Mutex, Once};
 
 use game_combat::combat::CombatOption;
 use game_combat::fight::fight_stage;
+use game_ui::version::{BuildVersion, is_version_flag};
 use sapphire_core::alloc::EngineAllocator;
 use sapphire_core::log::{LogConfig, LogSink};
 use sapphire_crash::{CrashConfig, CrashGuard, ForcedCrash};
@@ -166,6 +171,25 @@ pub fn stand_game(
     Ok(stage)
 }
 
+/// What this build is (0.1.0): the workspace's version, and the number `cargo xtask package` gave it, if it
+/// made this build. The title's label and `--version`'s line both say it.
+#[must_use]
+pub fn build_version() -> BuildVersion<'static> {
+    BuildVersion { version: env!("CARGO_PKG_VERSION"), build: build_info::BUILD_NUMBER }
+}
+
+/// `--version`'s line, if the process's arguments ask for it: `main` prints it and exits before anything
+/// starts.
+pub fn version_requested() -> Option<String> {
+    let args: Vec<String> = std::env::args_os().filter_map(|arg| arg.into_string().ok()).collect();
+    version_asked(&args)
+}
+
+/// [`version_requested`] for `args`, the program's name first.
+fn version_asked(args: &[String]) -> Option<String> {
+    args.iter().skip(1).any(|arg| is_version_flag(arg)).then(|| build_version().line(GameApp::METADATA.name))
+}
+
 /// Whether the arguments ask for [`OffscreenGame`] in the background, not the window.
 pub fn offscreen_requested() -> bool {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
@@ -212,7 +236,7 @@ sapphire_platform::export_android_main!(
 
 #[cfg(test)]
 mod tests {
-    use super::asks_offscreen;
+    use super::{asks_offscreen, build_info, build_version, version_asked};
 
     /// Android's entry picks the app by this: a capture runs offscreen and ends, and anything else is
     /// the window's.
@@ -223,5 +247,27 @@ mod tests {
         assert!(asks_offscreen(&args(&["--capture=title.png"])));
         assert!(!asks_offscreen(&args(&["--open-fight", "--script", "fight-back"])));
         assert!(!asks_offscreen(&[]));
+    }
+
+    /// `--version` says the game's name and this build's version, and its number only where `cargo xtask
+    /// package` made it; the title's label says the same build.
+    #[test]
+    fn version_says_the_game_and_its_build() {
+        let args = |list: &[&str]| list.iter().map(|&arg| arg.to_owned()).collect::<Vec<_>>();
+        let version = env!("CARGO_PKG_VERSION");
+        let line = version_asked(&args(&["game_app", "--version"])).expect("asked");
+        let label = build_version().label();
+        match build_info::BUILD_NUMBER {
+            None => {
+                assert_eq!(line, format!("Sapphire {version}"));
+                assert_eq!(label, format!("v{version}"));
+            }
+            Some(number) => {
+                assert_eq!(line, format!("Sapphire {version} ({number})"));
+                assert_eq!(label, format!("v{version} ({number})"));
+            }
+        }
+        assert_eq!(version_asked(&args(&["game_app", "--capture", "a.png"])), None);
+        assert_eq!(version_asked(&args(&["--version"])), None, "the program's name isn't an argument");
     }
 }

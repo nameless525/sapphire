@@ -81,6 +81,7 @@ impl App for OffscreenApp {
                     options.game_forward,
                     options.game_language.as_deref(),
                     options.game_draw_from,
+                    options.ui_version.clone().unwrap_or_else(|| crate::options::build_version().label()),
                 );
                 let frame = (*ticks, (width, height), options.display);
                 crate::capture::game(platform, path, game, frame, quality)?;

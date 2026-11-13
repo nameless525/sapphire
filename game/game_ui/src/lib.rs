@@ -4,6 +4,7 @@
 //! the title, the pause and the rest, on documents, over it. [`dialogue::DialoguePanel`] puts the dialogue
 //! screen up on a fight's conversation.
 //! [`boot::BootScreen`] is what the game shows from its first frame until the title (M4 H2).
+//! [`version::BuildVersion`] is what a build says it is: the title's label and `--version`'s line (0.1.0).
 
 // These docs are read with `--document-private-items`, as CI renders them.
 #![allow(rustdoc::private_intra_doc_links)]
@@ -14,6 +15,7 @@ pub mod hud;
 pub mod menus;
 pub mod screen;
 pub mod touch;
+pub mod version;
 pub mod wipe;
 
 /// Log target for the interface.

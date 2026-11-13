@@ -21,6 +21,8 @@
 //! which [`GameShow::offer_marks`] puts on the pause and [`GameShow::take_mark`] hears, and each run's file and
 //! checksums as it ends, which [`GameShow::keep_ended_runs`] keeps for [`GameShow::take_ended_runs`]. A store
 //! build asks neither, and its pause has no mark.
+//!
+//! **The build's version (0.1.0)** is the app's to give: [`GameShow::show_version`] puts its label on the title.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -186,6 +188,7 @@ impl GameShow {
             can_leave: Os::CURRENT != Os::Ios,
             can_mark: false,
             pseudo: false,
+            version: String::new(),
         };
         Ok(Self {
             shown,
@@ -327,6 +330,13 @@ impl GameShow {
     /// [`Self::stand`], which makes the menus.
     pub fn offer_marks(&mut self) {
         self.setup.can_mark = true;
+    }
+
+    /// Labels the build's version on the title (0.1.0): `label` is
+    /// [`BuildVersion::label`](game_ui::version::BuildVersion::label) for the app's build, or a fixed one a
+    /// golden pins. With none the title shows no version. Before [`Self::stand`], which makes the menus.
+    pub fn show_version(&mut self, label: String) {
+        self.setup.version = label;
     }
 
     /// Whether the pause's mark was chosen since this last asked. The run is where it was marked: the pause

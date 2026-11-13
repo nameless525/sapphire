@@ -43,6 +43,7 @@ Modes (offscreen modes never open a window):
 
 Common options:
   --help, -h                Print this help and exit before platform initialization
+  --version                 Print the version and exit before platform initialization
   --frames <count>          Exit after this many frames
   --size <width>x<height>    Offscreen image size
   --tier <tier>             desktop-high, desktop-low, mobile-high or mobile-low
@@ -60,6 +61,18 @@ benchmark, animation, HUD and development options (cargo doc -p sapphire_sandbox
 
 pub(crate) fn is_help_flag(arg: &str) -> bool {
     matches!(arg, "--help" | "-h")
+}
+
+/// This build as the sandbox is one: the workspace's version, and never a build number, since `cargo xtask
+/// package` makes only the game (0.1.0).
+pub(crate) fn build_version() -> game_ui::version::BuildVersion<'static> {
+    game_ui::version::BuildVersion { version: env!("CARGO_PKG_VERSION"), build: None }
+}
+
+/// `--version`'s line: `Sapphire Sandbox 0.1.0`.
+pub(crate) fn version_line() -> String {
+    use sapphire_platform::App as _;
+    build_version().line(crate::SandboxApp::METADATA.name)
 }
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
@@ -261,6 +274,9 @@ pub(crate) struct Options {
     /// it are drawn a tenth as wide and high (`GameCapture::draw_from`), so a golden on a software rasterizer
     /// pays for few pixels until its last camera cut.
     pub game_draw_from: u32,
+    /// `--ui-version <label>` (with `--ui-game` or `--game`): the title's version label in place of this build's,
+    /// as a golden pins it (0.1.0). Empty shows none.
+    pub ui_version: Option<String>,
     /// `--display-scale <pixels per point>` and `--no-touch-controls` (with `--game` or `--hud`): the screen an
     /// offscreen frame stands for, a phone's or a desktop's, as the store screenshots draw them (M4 S5). The
     /// default draws as captures always have: a point a pixel, on a touch screen.
@@ -926,6 +942,7 @@ impl Options {
                     ui_walk = value("--ui-walk")?.split(',').map(str::to_owned).collect();
                 }
                 "--ui-locale" => ui_locale = Some(value("--ui-locale")?),
+                "--ui-version" => options.ui_version = Some(value("--ui-version")?),
                 "--ui-pseudo" => ui_pseudo = true,
                 "--ui-plain" => ui_plain = true,
                 "--ui-scale" => {
@@ -1246,6 +1263,7 @@ impl Options {
                 text: ui_text.unwrap_or(shown.text),
                 subtitle: ui_subtitle.as_ref().map(|(subtitles, _)| subtitles.clone()),
                 fight_lines: ui_subtitle.as_ref().is_some_and(|(_, fight)| *fight),
+                version: options.ui_version.clone().unwrap_or(shown.version),
                 ..shown
             }
         });
@@ -1433,6 +1451,9 @@ impl Options {
             return Err(
                 "--game continue continues the save --progress names, and keeps none of its own".to_owned()
             );
+        }
+        if options.ui_version.is_some() && options.game.is_none() && options.ui_screen.is_none() {
+            return Err("--ui-version labels the title's version: it needs --ui-game or --game".to_owned());
         }
         if options.progress.is_some() && options.game.is_none() {
             return Err("--progress is the save the game's own show starts over: it needs --game".to_owned());
@@ -2278,6 +2299,33 @@ mod tests {
         ] {
             assert!(parse(args).is_err(), "{args:?}");
         }
+    }
+
+    /// The title's version label is this build's, `v` and the workspace's version with no build number, as
+    /// the sandbox is never packaged, unless `--ui-version` pins one, as the title's goldens do, for the
+    /// screen or for the game's own show (0.1.0).
+    #[test]
+    fn the_titles_version_is_this_builds_unless_pinned() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(ScreenOptions::of("title").version, format!("v{version}"));
+        let (options, _) = parse(&["--ui-game", "title", "--ui-version", "v0.1.0 (1234)"]).unwrap();
+        assert_eq!(options.ui_screen.unwrap().version, "v0.1.0 (1234)");
+        let (options, _) = parse(&["--ui-game", "title", "--ui-version", ""]).unwrap();
+        assert_eq!(options.ui_screen.unwrap().version, "", "empty shows none");
+        let (options, _) =
+            parse(&["--game", "title", "--capture", "x", "--ui-version", "v0.1.0 (1234)"]).unwrap();
+        assert_eq!(options.ui_version.as_deref(), Some("v0.1.0 (1234)"));
+        let refused = parse(&["--ui-version", "v1"]).expect_err("nothing to label");
+        assert!(refused.contains("--ui-game or --game"), "{refused}");
+        assert!(parse(&["--ui-game", "title", "--ui-version"]).is_err(), "it needs a label");
+    }
+
+    /// `--version` says the sandbox's name and the workspace's version, and is no scene's flag.
+    #[test]
+    fn version_says_the_sandbox_and_its_version() {
+        assert_eq!(version_line(), format!("Sapphire Sandbox {}", env!("CARGO_PKG_VERSION")));
+        assert!(game_ui::version::is_version_flag("--version"));
+        assert!(!is_offscreen_flag("--version") && !is_help_flag("--version"));
     }
 
     #[test]

@@ -77,6 +77,7 @@ impl Walk {
             can_leave: true,
             can_mark,
             pseudo,
+            version: super::VERSION.to_owned(),
         };
         let mut menus = GameMenus::new(assets, Atlas::paint(), setup).unwrap();
         let at = Timestamp::from_nanos(1);

@@ -13,8 +13,21 @@
 //! their [`Swizzle`], which wgpu views can't, from the material's block. Handles, residency and
 //! the per-frame upload budget are the asset server's (`sapphire_assets`, M1 A4): it hands the
 //! app the textures to upload here, and the app drops a [`GpuTexture`] the server unloads.
+//!
+//! # Tails and levels (M5 M3)
+//!
+//! A large texture is cooked as a tail and the levels above it, each an asset of its own
+//! (`sapphire_assets::texture`'s "Tails"). [`GpuTexture::upload`] takes a tail as the smaller texture
+//! it holds. For now the app makes the whole texture instead: [`GpuTexture::upload_tail`] creates it at
+//! full size and writes the tail's levels, then [`GpuTexture::write_level`] writes each level above
+//! in place as it arrives, so no material rebinds, and once every level is written the texture is
+//! the one a whole upload makes. Raising and lowering a texture a level at a time by copies
+//! (m5-plan §3, M5 M4) starts from a tail uploaded alone.
 
-use sapphire_assets::texture::{AstcBlock, Swizzle, Texture, TextureFormat, TextureFormatError};
+use sapphire_assets::texture::{
+    AstcBlock, Swizzle, Texture, TextureDesc, TextureFormat, TextureFormatError, TextureTail,
+};
+use sapphire_assets::texture_level::ArchivedTextureLevel;
 use sapphire_rhi::{FormatSupport, GpuContext, wgpu};
 
 /// A cooked texture on the GPU: every mip level, viewed as one 2D texture.
@@ -22,8 +35,13 @@ use sapphire_rhi::{FormatSupport, GpuContext, wgpu};
 pub struct GpuTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    swizzle: Swizzle,
-    /// Every level's bytes.
+    /// The texture's shape on the GPU.
+    desc: TextureDesc,
+    /// How many of its levels, from 0, lie above the tail it was made from.
+    above: u32,
+    /// Which of those [`Self::write_level`] hasn't written yet, a bit each.
+    missing: u32,
+    /// Every written level's bytes.
     bytes: u64,
 }
 
@@ -36,56 +54,143 @@ pub enum TextureError {
     Unsupported { format: TextureFormat, adapter: String, reason: &'static str },
     #[error("{width}x{height} is larger than this device's {max}-texel limit")]
     TooLarge { width: u32, height: u32, max: u32 },
+    #[error(
+        "level {level} ({width}x{height} {format:?}) isn't a level above this texture's tail ({texture:?})"
+    )]
+    NotALevel { level: u32, width: u32, height: u32, format: TextureFormat, texture: TextureDesc },
+    #[error("a tail of {tail:?} can't replace this texture's ({texture:?}) in place")]
+    OtherShape { tail: TextureDesc, texture: TextureDesc },
 }
 
 impl GpuTexture {
     /// Validates `texture`, checks the device supports its format and size, and uploads every
-    /// level. `label` names the texture in GPU captures when object labels are on.
+    /// level. `label` names the texture in GPU captures when object labels are on. A tail uploads as
+    /// the smaller texture it holds.
     pub fn upload(gpu: &GpuContext, texture: &Texture<'_>, label: &str) -> Result<Self, TextureError> {
         profiling::scope!("GpuTexture::upload");
         texture.validate()?;
-        let desc = texture.desc;
+        Self::create(gpu, &TextureTail { texture: texture.clone(), above: 0 }, label)
+    }
+
+    /// Validates `tail`, checks the device supports its format and its whole texture's size, and
+    /// creates the whole texture, writing the tail's levels. The levels above the tail are
+    /// [missing](Self::is_whole) until [`Self::write_level`] writes them. A texture that stays whole
+    /// uploads as [`Self::upload`] uploads it.
+    pub fn upload_tail(gpu: &GpuContext, tail: &TextureTail<'_>, label: &str) -> Result<Self, TextureError> {
+        profiling::scope!("GpuTexture::upload_tail");
+        tail.validate()?;
+        Self::create(gpu, tail, label)
+    }
+
+    /// The whole texture `tail` is the tail of, with the tail's levels written.
+    fn create(gpu: &GpuContext, tail: &TextureTail<'_>, label: &str) -> Result<Self, TextureError> {
+        let desc = tail.whole();
         check_format(gpu, desc.format)?;
         let max = gpu.device().limits().max_texture_dimension_2d;
         if desc.width > max || desc.height > max {
             return Err(TextureError::TooLarge { width: desc.width, height: desc.height, max });
         }
 
-        let format = wgpu_format(desc.format);
         let raw = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: gpu.instance().debug().object_labels.then_some(label),
             size: wgpu::Extent3d { width: desc.width, height: desc.height, depth_or_array_layers: 1 },
             mip_level_count: desc.mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: wgpu_format(desc.format),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let (block_width, block_height) = desc.format.block_dimensions();
-        for (level, data) in (0..).zip(&texture.levels) {
-            let (width, height) = desc.level_extent(level);
-            let extent = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
-            gpu.queue().write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &raw,
-                    mip_level: level,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(width.div_ceil(block_width) * desc.format.block_bytes()),
-                    rows_per_image: Some(height.div_ceil(block_height)),
-                },
-                // Levels smaller than a block still copy whole blocks.
-                extent.physical_size(format),
-            );
-        }
         let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
-        let bytes = texture.levels.iter().map(|level| level.len() as u64).sum();
-        Ok(Self { texture: raw, view, swizzle: desc.swizzle, bytes })
+        let missing = (1 << tail.above) - 1;
+        let mut uploaded = Self { texture: raw, view, desc, above: tail.above, missing, bytes: 0 };
+        uploaded.write_tail_levels(gpu, &tail.texture);
+        Ok(uploaded)
+    }
+
+    /// Writes `tail`'s levels over this texture's below the levels above it, and counts the bytes.
+    fn write_tail_levels(&mut self, gpu: &GpuContext, tail: &Texture<'_>) {
+        for (level, data) in (self.above..).zip(&tail.levels) {
+            self.write(gpu, level, data);
+        }
+        let above: u64 = (0..self.above)
+            .filter(|&level| self.missing & (1 << level) == 0)
+            .map(|level| {
+                let (width, height) = self.desc.level_extent(level);
+                self.desc.format.image_byte_len(width, height)
+            })
+            .sum();
+        self.bytes = above + tail.levels.iter().map(|level| level.len() as u64).sum::<u64>();
+    }
+
+    /// Writes `data`, level `level`'s blocks, as it is.
+    fn write(&self, gpu: &GpuContext, level: u32, data: &[u8]) {
+        let desc = self.desc;
+        let (block_width, block_height) = desc.format.block_dimensions();
+        let (width, height) = desc.level_extent(level);
+        let extent = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        gpu.queue().write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width.div_ceil(block_width) * desc.format.block_bytes()),
+                rows_per_image: Some(height.div_ceil(block_height)),
+            },
+            // Levels smaller than a block still copy whole blocks.
+            extent.physical_size(wgpu_format(desc.format)),
+        );
+    }
+
+    /// Writes `level`, one of the levels above the tail this texture was made from
+    /// ([`Self::upload_tail`]), in place. Writing a level again replaces it, as hot reload does.
+    pub fn write_level(
+        &mut self,
+        gpu: &GpuContext,
+        level: &ArchivedTextureLevel,
+    ) -> Result<(), TextureError> {
+        profiling::scope!("GpuTexture::write_level");
+        let (index, (width, height), format) = (level.level(), level.extent(), level.format());
+        if index >= self.above
+            || self.desc.level_extent(index) != (width, height)
+            || format != self.desc.format
+        {
+            return Err(TextureError::NotALevel { level: index, width, height, format, texture: self.desc });
+        }
+        self.write(gpu, index, level.data());
+        if self.missing & (1 << index) != 0 {
+            self.missing &= !(1 << index);
+            self.bytes += level.data().len() as u64;
+        }
+        Ok(())
+    }
+
+    /// Replaces the tail's levels in place with `tail`'s, a new version of the same shape, as hot
+    /// reload does; the levels above stay as written. A tail of another shape needs a new texture.
+    pub fn write_tail(&mut self, gpu: &GpuContext, tail: &TextureTail<'_>) -> Result<(), TextureError> {
+        profiling::scope!("GpuTexture::write_tail");
+        tail.validate()?;
+        if tail.whole() != self.desc || tail.above != self.above {
+            return Err(TextureError::OtherShape { tail: tail.whole(), texture: self.desc });
+        }
+        self.write_tail_levels(gpu, &tail.texture);
+        Ok(())
+    }
+
+    /// The texture's shape on the GPU: for a tail's whole texture, its levels above included.
+    pub fn desc(&self) -> TextureDesc {
+        self.desc
+    }
+
+    /// Whether every level is written: always, but for a texture made from a tail whose levels
+    /// above haven't all arrived.
+    pub fn is_whole(&self) -> bool {
+        self.missing == 0
     }
 
     pub fn texture(&self) -> &wgpu::Texture {
@@ -104,7 +209,7 @@ impl GpuTexture {
 
     /// How shaders read the texture's logical channels from what sampling it returns.
     pub fn swizzle(&self) -> Swizzle {
-        self.swizzle
+        self.desc.swizzle
     }
 }
 

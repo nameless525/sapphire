@@ -21,7 +21,9 @@
 
 use std::f32::consts::TAU;
 
-use sapphire_assets::texture::{AstcBlock, Texture, TextureDesc, TextureFormat};
+use sapphire_assets::AssetId;
+use sapphire_assets::texture::{AstcBlock, Texture, TextureDesc, TextureFormat, TextureTail};
+use sapphire_assets::texture_level::TextureLevel;
 use sapphire_pipeline::cook::Cook;
 use sapphire_pipeline::import::image::{ChannelLayout, SourceImage};
 use sapphire_pipeline::texture::{self, ColorSettings, CookedTexture, TextureClass, TextureSettings};
@@ -458,5 +460,81 @@ fn raising_a_2k_texture_by_one_level_keeps_every_block() {
             median(3),
             median(4),
         );
+    }
+}
+
+/// Whether `a` and `b` sample alike at every level, bit for bit.
+fn sample_alike(gpu: &GpuContext, sampler: &LevelSampler, a: &wgpu::Texture, b: &wgpu::Texture) -> bool {
+    let (a, b) = (sampler.sample(gpu, a), sampler.sample(gpu, b));
+    a.len() == b.len()
+        && a.iter().flatten().map(|v| v.map(f32::to_bits)).eq(b.iter().flatten().map(|v| v.map(f32::to_bits)))
+}
+
+/// M5 M3's entry for the app: a texture cooked as a tail and levels, uploaded as its tail with the whole
+/// texture made at once ([`GpuTexture::upload_tail`]) and its levels written in place as they arrive, in
+/// any order, samples bit for bit as the whole texture uploaded at once. A new version of the same shape
+/// (hot reload) is written over it in place, and what isn't one of its levels is refused.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_tail_and_its_levels_written_in_place_sample_as_the_whole_texture() {
+    let gpu = gpu();
+    let sampler = LevelSampler::new(&gpu);
+    let id = AssetId::from_bytes([5; 16]);
+    let mut skipped = Vec::new();
+    for case in cases() {
+        let settings = TextureSettings {
+            class: TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }),
+        };
+        let (width, height) = case.size;
+        let cooked = texture::cook(&image(width, height), &settings, case.cook).expect("cook");
+        if let Err(error @ TextureError::Unsupported { .. }) = check_format(&gpu, cooked.desc.format) {
+            skipped.push(format!("{}: {error}", case.name));
+            continue;
+        }
+        let above = cooked.levels_above(&settings);
+        assert!(above >= 1, "{}: the case should split", case.name);
+        let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let tail_file = cooked.tail(above);
+        let tail = TextureTail::from_ktx2(&tail_file).expect("a tail");
+        let mut split = GpuTexture::upload_tail(&gpu, &tail, case.name).expect("upload the tail");
+        assert_eq!((split.desc(), split.is_whole()), (cooked.desc, false), "{}", case.name);
+        // The levels arrive deepest first, as a streamer raises a texture.
+        for level in (0..above).rev() {
+            let bytes = cooked.level(id, level).expect("a level");
+            split.write_level(&gpu, TextureLevel::read(&bytes).expect("valid")).expect("write the level");
+        }
+        let whole = GpuTexture::upload(&gpu, &cooked.texture(), case.name).expect("upload whole");
+        assert!(split.is_whole(), "{}", case.name);
+        assert_eq!(split.bytes(), whole.bytes(), "{}", case.name);
+        assert!(sample_alike(&gpu, &sampler, split.texture(), whole.texture()), "{}: differs", case.name);
+
+        // A new version of the same shape, written over it in place: the tail, then its levels again.
+        let mut source = image(width, height);
+        source.pixels.reverse();
+        let next = texture::cook(&source, &settings, case.cook).expect("cook");
+        let next_tail_file = next.tail(above);
+        split.write_tail(&gpu, &TextureTail::from_ktx2(&next_tail_file).expect("a tail")).expect("in place");
+        for level in 0..above {
+            let bytes = next.level(id, level).expect("a level");
+            split.write_level(&gpu, TextureLevel::read(&bytes).expect("valid")).expect("write the level");
+        }
+        let next_whole = GpuTexture::upload(&gpu, &next.texture(), case.name).expect("upload whole");
+        assert_eq!(split.bytes(), whole.bytes(), "{}: rewriting counts nothing twice", case.name);
+        assert!(sample_alike(&gpu, &sampler, split.texture(), next_whole.texture()), "{}: reload", case.name);
+
+        // The tail's top isn't a level above it, and a whole texture isn't this one's tail.
+        let top = cooked.level(id, above).expect("a level");
+        let refused = split.write_level(&gpu, TextureLevel::read(&top).expect("valid"));
+        assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
+        let refused = split.write_tail(&gpu, &TextureTail { texture: cooked.texture(), above: 0 });
+        assert!(matches!(refused, Err(TextureError::OtherShape { .. })), "{}: {refused:?}", case.name);
+        assert!(pollster::block_on(scope.pop()).is_none(), "{}: validation error", case.name);
+    }
+    for skip in &skipped {
+        eprintln!("skipped {skip}");
+    }
+    if gpu.caps().adapter.device_type == wgpu::DeviceType::Cpu {
+        assert!(!skipped.iter().any(|skip| skip.starts_with("BC7")), "{skipped:?}");
     }
 }

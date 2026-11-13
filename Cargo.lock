@@ -5074,6 +5074,7 @@ dependencies = [
  "sapphire_assets",
  "sapphire_serialize",
  "sapphire_zone",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

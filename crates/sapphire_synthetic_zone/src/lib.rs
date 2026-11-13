@@ -7,6 +7,11 @@
 //!
 //! It's written as a cooked pack, as a cook would, because a cooker can't be linked from here (R1). The
 //! proof that a real cook makes the same shape is `sapphire_pipeline`'s `large_zone` test and the town.
+//!
+//! [`district`] is the other zone built here: the benchmark district's simulation half (M5 B2), which a fight
+//! on the generated district builds in code, as simulation data stays compiled in.
+
+pub mod district;
 
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{

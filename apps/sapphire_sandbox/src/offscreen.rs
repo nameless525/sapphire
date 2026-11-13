@@ -250,6 +250,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.two_sided {
         scene.spawn_garments(sapphire_stage::garments::upload_samples(renderer)?);
     }
+    if options.glass {
+        scene.spawn_glass(sapphire_stage::glass::upload_samples(renderer)?);
+    }
     if let Some(layout) = options.faces {
         scene.spawn_face_rig(content.face_head(renderer, gpu)?, layout);
     }

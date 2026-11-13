@@ -9,8 +9,8 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings,
-    Wind,
+    ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants,
+    RenderSettings, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -223,6 +223,11 @@ pub(crate) struct Options {
     pub fade: Option<f32>,
     /// `--proximity-fade`: fade the characters as the camera nears their bodies (M1 C7).
     pub proximity_fade: bool,
+    /// `--dissolve <0..1>`, `--emission-scale <scale>` and `--flash <r>,<g>,<b>`: what the
+    /// characters' materials are driven by (M5 L11).
+    pub drive: MaterialDrive,
+    /// `--glass`: place the see-through and glass samples on the character's left (M5 L11).
+    pub glass: bool,
     /// `--faces [--face-layout <layout>]`: show the face look-dev rig instead of the character,
     /// in this layout (`lights` without `--face-layout`; the layouts are `FaceLayout::NAMES`:
     /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze and blink).
@@ -525,6 +530,7 @@ impl Options {
         if self.fade.is_some() || self.proximity_fade {
             scene.set_fade(self.fade());
         }
+        scene.set_material_drive(self.drive);
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }
@@ -851,6 +857,32 @@ impl Options {
                     options.fade = Some(opacity);
                 }
                 "--proximity-fade" => options.proximity_fade = true,
+                "--dissolve" => {
+                    let dissolve: f32 = number(&value("--dissolve")?, "--dissolve")?;
+                    if !(0.0..=1.0).contains(&dissolve) {
+                        return Err(format!("--dissolve expects a share from 0 to 1, got {dissolve}"));
+                    }
+                    options.drive.dissolve = dissolve;
+                }
+                "--emission-scale" => {
+                    let scale: f32 = number(&value("--emission-scale")?, "--emission-scale")?;
+                    if !(scale.is_finite() && scale >= 0.0) {
+                        return Err(format!("--emission-scale expects a scale, at least 0, got {scale}"));
+                    }
+                    options.drive.emission = scale;
+                }
+                "--flash" => {
+                    let raw = value("--flash")?;
+                    let flash: Vec<f32> = number_list(&raw, "--flash")?;
+                    let &[r, g, b] = flash.as_slice() else {
+                        return Err(format!("--flash expects R,G,B, got {raw:?}"));
+                    };
+                    if ![r, g, b].iter().all(|c| c.is_finite() && *c >= 0.0) {
+                        return Err(format!("--flash expects linear R,G,B, none negative, got {raw:?}"));
+                    }
+                    options.drive.flash = sapphire_math::Vec3::new(r, g, b);
+                }
+                "--glass" => options.glass = true,
                 "--faces" => faces = true,
                 "--face-layout" => {
                     let raw = value("--face-layout")?;
@@ -1318,6 +1350,12 @@ impl Options {
         if options.two_sided && options.swatches {
             return Err(
                 "--two-sided and --swatches are exclusive: both stand on the character's left".to_owned()
+            );
+        }
+        if options.glass && (options.two_sided || options.swatches) {
+            return Err(
+                "--glass is exclusive with --two-sided and --swatches: they stand on the character's left"
+                    .to_owned(),
             );
         }
         if options.faces.is_some() && options.rim_rig.is_some() {
@@ -2287,6 +2325,31 @@ mod tests {
         assert!(parse(&["--fade", "1.5"]).is_err());
         assert!(parse(&["--fade", "NaN"]).is_err());
         assert!(parse(&["--fade", "0.5", "--proximity-fade"]).is_err(), "exclusive");
+    }
+
+    #[test]
+    fn material_drive_options_parse_and_glass_stands_alone_on_the_left() {
+        let (options, unknown) =
+            parse(&["--dissolve", "0.4", "--emission-scale", "2", "--flash", "1,0.5,0", "--glass"]).unwrap();
+        assert!(unknown.is_empty());
+        let drive =
+            MaterialDrive { dissolve: 0.4, emission: 2.0, flash: sapphire_math::Vec3::new(1.0, 0.5, 0.0) };
+        assert_eq!(options.drive, drive);
+        assert!(options.glass);
+        assert_eq!(Options::default().drive, MaterialDrive::NONE);
+        assert!(!Options::default().glass);
+        for bad in [
+            &["--dissolve", "1.5"][..],
+            &["--dissolve", "NaN"],
+            &["--emission-scale", "-1"],
+            &["--flash", "1,1"],
+            &["--flash", "1,-1,0"],
+            &["--flash", "inf,0,0"],
+            &["--glass", "--two-sided"],
+            &["--glass", "--swatches"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

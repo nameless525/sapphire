@@ -110,6 +110,12 @@
 //!   (M1 C7), which temporal AA resolves into a blend and MSAA covers as a share of samples.
 //! - `--proximity-fade`: fade the characters as the camera comes within half a meter of their
 //!   bodies (M1 C7; `sapphire_world::fade::ProximityFade`'s defaults).
+//! - `--dissolve <0..1>`, `--emission-scale <scale>`, `--flash <r>,<g>,<b>`: drive the
+//!   characters' materials (M5 L11, `sapphire_render::MaterialDrive`): dissolved this far, their
+//!   emission scaled, a linear flash added over them.
+//! - `--glass`: place the see-through and glass samples on the character's left (M5 L11): a
+//!   glass lens and a tinted veil, each a band of a sphere between opaque caps. Exclusive with
+//!   `--two-sided` and `--swatches`.
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).

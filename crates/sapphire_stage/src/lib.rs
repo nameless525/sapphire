@@ -87,6 +87,8 @@ pub mod foliage;
 mod frame;
 #[cfg(feature = "samples")]
 pub mod garments;
+#[cfg(feature = "samples")]
+pub mod glass;
 pub mod ik;
 #[cfg(feature = "samples")]
 pub mod layers;

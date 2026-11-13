@@ -24,6 +24,9 @@
 //! - **The garment samples** (`--two-sided`, M1 C8): a collar, a skirt and a ribbon on the
 //!   character's left, each one-sided and two-sided, static, each with a [`RenderMesh`] and its
 //!   placement ([`Scene::spawn_garments`], [`crate::garments`]).
+//! - **The glass samples** (`--glass`, M5 L11): a lens and a veil on the character's left, where
+//!   the garments stand, static, each with a [`RenderMesh`] and its placement
+//!   ([`Scene::spawn_glass`], [`crate::glass`]).
 //! - **The face rig** (`--faces`, `--face-layout`): rows of the face test head well beside the
 //!   character, static, each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which
 //!   the camera frames instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
@@ -82,6 +85,8 @@
 //!   face rig's heads take the scene's fade (M1 C7, [`Fade`]): whole, a fixed opacity (`--fade`),
 //!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`), which a
 //!   character's [`NearFade`] can measure from a wider capsule or take from its holder (M4 C7).
+//!   They take the scene's material drive too (M5 L11, [`MaterialDrive`]): `--dissolve`,
+//!   `--emission-scale` and `--flash`.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -136,6 +141,8 @@ use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 #[cfg(feature = "samples")]
 use crate::garments;
+#[cfg(feature = "samples")]
+use crate::glass;
 use crate::ik::{IkControls, IkDriver, IkGround, IkLook, IkOptions};
 #[cfg(feature = "samples")]
 use crate::layers::{self, SAMPLES};
@@ -415,6 +422,9 @@ pub struct Scene {
     /// The garment samples, with `--two-sided`.
     #[cfg(feature = "samples")]
     garments: Option<[Entity; garments::SAMPLES]>,
+    /// The glass samples, with `--glass`.
+    #[cfg(feature = "samples")]
+    glass: Option<[Entity; glass::SAMPLES]>,
     /// The face rig's heads, with `--faces`, and their layout.
     #[cfg(feature = "samples")]
     faces: Vec<Entity>,
@@ -539,6 +549,9 @@ pub struct Scene {
     sharpening: Option<f32>,
     /// How the characters fade (`--fade`, `--proximity-fade`).
     fade: Fade,
+    /// What the characters' materials are driven by (`--dissolve`, `--emission-scale`,
+    /// `--flash`; M5 L11).
+    drive: MaterialDrive,
     /// The post variants of the presets [`Self::push_effect`] pushed (`--post-effect`).
     pushed_effects: PostVariants,
     /// The effects `--vfx` plays (M2 E2).
@@ -605,6 +618,8 @@ impl Scene {
             #[cfg(feature = "samples")]
             garments: None,
             #[cfg(feature = "samples")]
+            glass: None,
+            #[cfg(feature = "samples")]
             faces: Vec::new(),
             #[cfg(feature = "samples")]
             face_layout: FaceLayout::default(),
@@ -670,6 +685,7 @@ impl Scene {
             debug_draw_demo: None,
             sharpening: None,
             fade: Fade::Off,
+            drive: MaterialDrive::NONE,
             pushed_effects: PostVariants::NONE,
             vfx: None,
             view_aspect: 16.0 / 9.0,
@@ -801,6 +817,12 @@ impl Scene {
     /// Fades the characters (but the face rig's heads) as `fade` says (M1 C7).
     pub fn set_fade(&mut self, fade: Fade) {
         self.fade = fade;
+    }
+
+    /// Drives the characters' materials (but the face rig heads') by `drive` (M5 L11): how far
+    /// they have dissolved, their emission's scale and a flash.
+    pub fn set_material_drive(&mut self, drive: MaterialDrive) {
+        self.drive = drive;
     }
 
     /// Pushes the screen effect preset called `name` onto the effect stack (M1 P3): playing from
@@ -947,6 +969,29 @@ impl Scene {
     pub fn set_garment_meshes(&mut self, meshes: [MeshHandle; garments::SAMPLES]) {
         debug_assert!(self.garments.is_some(), "no garment samples were spawned");
         for (entity, mesh) in self.garments.into_iter().flatten().zip(meshes) {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the glass samples (`--glass`, M5 L11) on the character's left, drawing `meshes` in
+    /// [`glass::SAMPLES`] order. They never move, so they are extracted once.
+    #[cfg(feature = "samples")]
+    pub fn spawn_glass(&mut self, meshes: [MeshHandle; glass::SAMPLES]) {
+        let bounds = self.bounds;
+        let world = self.ecs.world_mut();
+        let mut index = 0;
+        self.glass = Some(meshes.map(|mesh| {
+            let place = RenderTransform(glass::placement(bounds, index));
+            index += 1;
+            world.spawn((RenderMesh(mesh), place)).id()
+        }));
+    }
+
+    /// Sets the meshes the glass samples draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
+    pub fn set_glass_meshes(&mut self, meshes: [MeshHandle; glass::SAMPLES]) {
+        debug_assert!(self.glass.is_some(), "no glass samples were spawned");
+        for (entity, mesh) in self.glass.into_iter().flatten().zip(meshes) {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
         }
     }
@@ -2087,8 +2132,9 @@ impl Scene {
     }
 
     /// What this scene and `show` may draw through that no pack's table can say (M3 K1): the post variants of the
-    /// screen effects it may push, its effects if it plays any, its sky, its characters' fades if they fade, its
-    /// debug lines if it draws any, and what the show declares.
+    /// screen effects it may push, its effects if it plays any, its sky, its characters' fades if they fade or
+    /// dissolve (M5 L11: a dissolve draws through the fades' pipelines), its debug lines if it draws any, and what
+    /// the show declares.
     pub fn declared_pipelines(&self, show: &impl SceneShow) -> PipelineInventory {
         #[cfg(feature = "samples")]
         let demo = self.debug_draw_demo.is_some();
@@ -2098,7 +2144,7 @@ impl Scene {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
-            fades: self.fade != Fade::Off,
+            fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
             debug_draw: demo || debug_draw::enabled(),
             color_vision: COLOR_VISION.get().dichromacy().into_iter().collect(),
             ..PipelineInventory::default()
@@ -2191,7 +2237,7 @@ impl Scene {
         self.follow_showcases();
         self.ecs.extract();
         let scene_figure = self.figure;
-        let fade = self.fade;
+        let (fade, drive) = (self.fade, self.drive);
         #[cfg(feature = "samples")]
         let face_layout = self.face_layout;
         let (mut extract, time_of_day, rigs, characters, heads) = self
@@ -2238,7 +2284,7 @@ impl Scene {
                     face,
                     body,
                     opacity,
-                    drive: MaterialDrive::NONE,
+                    drive,
                 });
             }
             // What fades with its holder takes the holder's opacity, once every holder's is known: the

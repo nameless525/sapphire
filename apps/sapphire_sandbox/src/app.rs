@@ -46,7 +46,7 @@ use sapphire_stage::rims::RimRigMeshes;
 use sapphire_stage::scene::{LookDev, Scene};
 use sapphire_stage::studio::StudioMeshes;
 use sapphire_stage::swatches::SWATCHES;
-use sapphire_stage::{SceneShow, garments, layers, lookdev, skinned, studio, swatches};
+use sapphire_stage::{SceneShow, garments, glass, layers, lookdev, skinned, studio, swatches};
 use sapphire_ui::Atlas;
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
@@ -244,6 +244,9 @@ impl App for SandboxApp {
         }
         if let Some(meshes) = renderer.garments {
             scene.spawn_garments(meshes);
+        }
+        if let Some(meshes) = renderer.glass {
+            scene.spawn_glass(meshes);
         }
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head, options.faces.unwrap_or_default());
@@ -1433,6 +1436,8 @@ pub(crate) struct SceneRenderer {
     layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
     /// The garment samples, with `--two-sided`.
     garments: Option<[MeshHandle; garments::SAMPLES]>,
+    /// The glass samples, with `--glass`.
+    glass: Option<[MeshHandle; glass::SAMPLES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
     /// The rim rig's figure and backdrop, with `--rim-rig`.
@@ -1486,6 +1491,9 @@ pub(crate) fn set_meshes(
     }
     if let Some(meshes) = renderer.garments {
         scene.set_garment_meshes(meshes);
+    }
+    if let Some(meshes) = renderer.glass {
+        scene.set_glass_meshes(meshes);
     }
     if let Some(head) = renderer.face_head {
         scene.set_face_mesh(head);
@@ -1553,6 +1561,7 @@ struct SceneMeshes {
     swatches: Option<[MeshHandle; SWATCHES]>,
     layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
     garments: Option<[MeshHandle; garments::SAMPLES]>,
+    glass: Option<[MeshHandle; glass::SAMPLES]>,
     face_head: Option<MeshHandle>,
     rim_rig: Option<RimRigMeshes>,
     courtyard: Option<MeshHandle>,
@@ -1595,6 +1604,7 @@ pub(crate) fn create_renderer(
         let layer_samples =
             options.materials.then(|| layers::upload_samples(content, gpu, &mut renderer)).transpose()?;
         let garments = options.two_sided.then(|| garments::upload_samples(&mut renderer)).transpose()?;
+        let glass = options.glass.then(|| glass::upload_samples(&mut renderer)).transpose()?;
         let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
         let rim_rig = options.rim_rig.map(|_| content.rim_rig_meshes(&mut renderer)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
@@ -1626,6 +1636,7 @@ pub(crate) fn create_renderer(
             swatches,
             layer_samples,
             garments,
+            glass,
             face_head,
             rim_rig,
             courtyard,
@@ -1655,6 +1666,7 @@ pub(crate) fn create_renderer(
                 swatches,
                 layer_samples,
                 garments,
+                glass,
                 face_head,
                 rim_rig,
                 courtyard,
@@ -1677,6 +1689,7 @@ pub(crate) fn create_renderer(
                 swatches,
                 layer_samples,
                 garments,
+                glass,
                 face_head,
                 rim_rig,
                 courtyard,

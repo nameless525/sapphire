@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_math::{Vec2, Vec3};
-use sapphire_render::{CameraData, CharacterBody, CharacterFace, CharacterInstance, FramePacket, InstanceId};
+use sapphire_render::{
+    CameraData, CharacterBody, CharacterFace, CharacterInstance, FramePacket, InstanceId, MaterialDrive,
+};
 use sapphire_time::ScaledClock;
 use sapphire_world::light_rig::{LightRigId, LightRigLibrary};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
@@ -68,6 +70,7 @@ fn ticking_and_resolving_allocate_nothing() {
                     face,
                     body,
                     opacity: 1.0,
+                    drive: MaterialDrive::NONE,
                 });
             }
         }

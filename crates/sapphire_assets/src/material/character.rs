@@ -72,6 +72,12 @@ use crate::texture::Swizzle;
 ///   emission ([`Emission`], the region's `emission`). A body's `layer_mask` paints where each
 ///   shows.
 /// - **Sides** (M1 C8): `double_sided` draws back faces too, lit as the side the camera sees.
+/// - **See-through regions and glass** (M5 L11): a body region's `opacity` below 1 keeps that
+///   share of its pixels through the proximity fade's dither, so its material draws through the
+///   alpha-tested variant (give lenses and veils a material of their own, so the rest of a body
+///   keeps the opaque one); its `glass` adds the sky's reflection by Fresnel, a layer.
+/// - **Dissolve** (M5 L11): [`Dissolve`], how the material looks as the game dissolves its
+///   character.
 ///
 /// Colors are linear RGB(A), as glTF factors are. Textures are referenced by [`AssetId`]; see
 /// [`AnimeCharacterMaterial::TEXTURE_SLOTS`] for what each must hold.
@@ -119,6 +125,10 @@ pub struct AnimeCharacterMaterial {
     /// before it read and write as they did.
     #[serde(skip_serializing_if = "is_false")]
     pub double_sided: bool,
+    /// How it looks as its character dissolves (M5 L11). Written only when it isn't the
+    /// default, so documents from before it read and write as they did.
+    #[serde(skip_serializing_if = "Dissolve::is_default")]
+    pub dissolve: Dissolve,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -156,6 +166,7 @@ impl Default for AnimeCharacterMaterial {
             stockings: Stockings::default(),
             emission: Emission::default(),
             double_sided: false,
+            dissolve: Dissolve::default(),
         }
     }
 }
@@ -735,6 +746,34 @@ pub struct CharacterRegion {
     /// The region's glow, linear RGB × intensity, × the layer mask's B (M1 C7): unlit, breathing
     /// as the material's [`Emission`] says. Black for none.
     pub emission: [f32; 3],
+    /// How much of the region draws (M5 L11), 0 to 1: below 1 it is see-through, keeping that
+    /// share of its pixels through the proximity fade's dither in every pass that draws it (a
+    /// veil, a hood's lining, a lens). Bodies that don't blend alone. Written only below 1.
+    #[serde(skip_serializing_if = "is_one")]
+    pub opacity: f32,
+    /// How strongly the region reflects as glass (M5 L11), 0 to 1: the sky's light along the
+    /// reflected view ray by Schlick's Fresnel, at the region's `roughness`, over the share it
+    /// draws ([`GLASS_MIN_COVER`]). Bodies alone. Written only when set.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub glass: f32,
+}
+
+fn is_one(value: &f32) -> bool {
+    *value == 1.0
+}
+
+/// The least share of a glass region's pixels its reflection is spread over (M5 L11): a region
+/// that draws `opacity` of its pixels shows its reflection divided by `max(opacity, this)`, so
+/// what the dither averages to is the whole reflection over the glass's own share and what lies
+/// behind it, and a nearly clear lens doesn't make its few pixels flare (the anime character
+/// shader's `GLASS_MIN_COVER`).
+pub const GLASS_MIN_COVER: f32 = 0.25;
+
+impl CharacterRegion {
+    /// Whether it is see-through: it draws less than all of its pixels.
+    pub fn sees_through(&self) -> bool {
+        self.opacity < 1.0
+    }
 }
 
 impl Default for CharacterRegion {
@@ -759,6 +798,8 @@ impl Default for CharacterRegion {
             roughness: 0.3,
             stocking: 0.0,
             emission: [0.0; 3],
+            opacity: 1.0,
+            glass: 0.0,
         }
     }
 }
@@ -1140,6 +1181,48 @@ impl Emission {
     }
 }
 
+/// How the material dissolves when its character does (M5 L11; spec §5.12 "Dissolve"): the
+/// game drives how far a character has dissolved (`sapphire_render::MaterialDrive::dissolve`, a
+/// defeat or a party swap), and each of its materials says what that looks like. A value noise
+/// over the surface's UVs, `scale` cells to a UV unit, cuts away every point whose noise is below
+/// how far the character has dissolved, in every pass that draws it, and the points within
+/// `edge` above the cut glow in `edge_color`, unlit, brightest at the cut, blooming as the
+/// world's light. So the pattern follows the mesh's UV layout: give a character's materials
+/// scales that make their cells alike in size on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct Dissolve {
+    /// The noise's cells to a UV unit, above 0.
+    pub scale: f32,
+    /// How far above the cut, in noise (0 to 1), the edge glows; 0 for no edge.
+    pub edge: f32,
+    /// The edge's glow, linear RGB × intensity, display-relative as effects' are (about 1 is
+    /// white); black for none.
+    pub edge_color: [f32; 3],
+}
+
+impl Default for Dissolve {
+    /// Cells about a twentieth of a UV unit across, and a thin warm edge that blooms.
+    fn default() -> Self {
+        Self { scale: 20.0, edge: 0.08, edge_color: [1.6, 0.8, 0.3] }
+    }
+}
+
+impl Dissolve {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn validate(&self) -> Result<(), MaterialError> {
+        if !(self.scale.is_finite() && self.scale > 0.0) {
+            return Err(invalid("dissolve.scale", "must be finite and above 0"));
+        }
+        unit("dissolve.edge", self.edge)?;
+        color("dissolve.edge_color", &self.edge_color)
+    }
+}
+
 /// The inverted-hull outline (outlines v2, M1 C4; spec §5.12 "Outlines"): the anime line art
 /// around the silhouette and over overlapping parts, at an art-directed width that holds at any
 /// distance and field of view, in a color the character's light reaches.
@@ -1362,11 +1445,16 @@ pub struct AnimeCharacterParams {
     pub stocking_sheen: [f32; 4],
     /// x: the weave's strength; y: 1 for fabric along UV v, 0 along u; z, w: zero.
     pub stocking_weave: [f32; 4],
-    /// Per region: its layers (M1 C7).
+    /// Per region: its layers (M1 C7), and whether it sees through (M5 L11).
     pub layer_regions: [CharacterLayerRegion; AnimeCharacterParams::MAX_REGIONS],
+    /// The dissolve ([`Dissolve`], M5 L11): x the noise's cells to a UV unit; y the edge's
+    /// width in noise; z, w: zero.
+    pub dissolve: [f32; 4],
+    /// rgb: the dissolve edge's glow × intensity; w: zero.
+    pub dissolve_edge: [f32; 4],
 }
 
-/// One region's layers in [`AnimeCharacterParams`] (M1 C7; WGSL `CharacterLayerRegion`). 48
+/// One region's layers in [`AnimeCharacterParams`] (M1 C7; WGSL `CharacterLayerRegion`). 64
 /// bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -1379,6 +1467,9 @@ pub struct CharacterLayerRegion {
     pub surface: [f32; 4],
     /// rgb: emission × intensity; a: zero.
     pub emission: [f32; 4],
+    /// M5 L11: x how much of the region the dither leaves out, 1 − its opacity (0 for all of
+    /// it); y its glass reflection's strength; z, w: zero.
+    pub see_through: [f32; 4],
 }
 
 /// One region of [`AnimeCharacterParams`] (WGSL `AnimeCharacterRegion`). 96 bytes.
@@ -1412,7 +1503,8 @@ impl GpuBlock for AnimeCharacterParams {
         let c5 = [self.rim, self.hair_shadow, self.through_hair];
         let c7 =
             [self.layers, self.stocking_color, self.stocking_shape, self.stocking_sheen, self.stocking_weave];
-        let layer_regions = self.layer_regions.iter().flat_map(|r| [r.matcap, r.surface, r.emission]);
+        let layer_regions =
+            self.layer_regions.iter().flat_map(|r| [r.matcap, r.surface, r.emission, r.see_through]);
         header
             .into_iter()
             .chain(regions)
@@ -1421,6 +1513,7 @@ impl GpuBlock for AnimeCharacterParams {
             .chain(self.rim_regions)
             .chain(c7)
             .chain(layer_regions)
+            .chain([self.dissolve, self.dissolve_edge])
             .flatten()
             .all(f32::is_finite)
     }
@@ -1455,14 +1548,20 @@ impl AnimeCharacterParams {
     pub const FLAG_REFLECTION: u32 = 1 << 14;
     /// a region wears the stockings;
     pub const FLAG_STOCKINGS: u32 = 1 << 15;
-    /// a region glows.
+    /// a region glows;
     pub const FLAG_EMISSION: u32 = 1 << 16;
+    /// a region reflects as glass (M5 L11).
+    pub const FLAG_GLASS: u32 = 1 << 17;
     /// Every layer's flag.
     pub const FLAG_LAYERS: u32 = Self::FLAG_SPECULAR
         | Self::FLAG_MATCAP
         | Self::FLAG_REFLECTION
         | Self::FLAG_STOCKINGS
-        | Self::FLAG_EMISSION;
+        | Self::FLAG_EMISSION
+        | Self::FLAG_GLASS;
+    /// A region sees through (M5 L11): every pass that cuts the material's pixels looks its
+    /// region up and dithers by it. Not a layer: it sets the coverage, which the prepasses share.
+    pub const FLAG_SEE_THROUGH: u32 = 1 << 18;
 
     pub const SURFACE_BODY: u32 = 0;
     pub const SURFACE_FACE: u32 = 1;
@@ -1607,8 +1706,13 @@ impl AnimeCharacterMaterial {
                 matcap: rgb_w(region.matcap.color, region.matcap.channel.code()),
                 surface: [region.metallic, region.roughness, region.stocking, blend],
                 emission: rgb_w(region.emission, 0.0),
+                see_through: [1.0 - region.opacity, region.glass, 0.0, 0.0],
             };
         }
+        if self.regions.iter().any(CharacterRegion::sees_through) {
+            flags |= AnimeCharacterParams::FLAG_SEE_THROUGH;
+        }
+        let dissolve = &self.dissolve;
         let (stockings, emission) = (&self.stockings, &self.emission);
         let breaths = emission.breaths();
         let along_v = match stockings.direction {
@@ -1654,6 +1758,8 @@ impl AnimeCharacterMaterial {
             stocking_sheen: rgb_w(stockings.sheen, stockings.sheen_sharpness),
             stocking_weave: [stockings.weave_strength, along_v, 0.0, 0.0],
             layer_regions,
+            dissolve: [dissolve.scale, dissolve.edge, 0.0, 0.0],
+            dissolve_edge: rgb_w(dissolve.edge_color, 0.0),
         }
     }
 
@@ -1674,6 +1780,7 @@ impl AnimeCharacterMaterial {
             (any(&|r| r.metallic > layer_mask::REFLECTS), AnimeCharacterParams::FLAG_REFLECTION),
             (stockings && any(&|r| r.stocking > 0.0), AnimeCharacterParams::FLAG_STOCKINGS),
             (any(&|r| lit(r.emission)), AnimeCharacterParams::FLAG_EMISSION),
+            (any(&|r| r.glass > 0.0), AnimeCharacterParams::FLAG_GLASS),
         ]
         .into_iter()
         .filter(|&(on, _)| on)
@@ -1744,7 +1851,18 @@ impl MaterialDocument for AnimeCharacterMaterial {
             unit(&field("roughness"), region.roughness)?;
             unit(&field("stocking"), region.stocking)?;
             color(&field("emission"), &region.emission)?;
+            unit(&field("opacity"), region.opacity)?;
+            unit(&field("glass"), region.glass)?;
+            if (region.sees_through() || region.glass > 0.0)
+                && !matches!(self.surface, CharacterSurface::Body)
+            {
+                return Err(invalid(&field("opacity"), "see-through and glass regions are for bodies"));
+            }
+            if region.sees_through() && matches!(self.alpha, AlphaMode::Blend) {
+                return Err(invalid(&field("opacity"), "a blended material sees through by its alpha"));
+            }
         }
+        self.dissolve.validate()?;
         self.rim.validate()?;
         non_negative("specular.softness", self.specular.softness)?;
         unit("specular.albedo", self.specular.albedo)?;
@@ -1822,6 +1940,12 @@ impl MaterialDocument for AnimeCharacterMaterial {
             AlphaMode::Mask { .. } => flags |= MaterialFlags::ALPHA_TEST,
             AlphaMode::Blend => flags |= MaterialFlags::TRANSPARENT,
         }
+        // A see-through region's pixels are cut by the dither (M5 L11), so the material draws
+        // through the alpha-tested variant, as a fading character's opaque ones do; its block's
+        // own alpha test stays off (`AnimeCharacterParams::FLAG_ALPHA_TEST`).
+        if self.regions.iter().any(CharacterRegion::sees_through) {
+            flags |= MaterialFlags::ALPHA_TEST;
+        }
         if self.outline.width > 0.0 {
             flags |= MaterialFlags::OUTLINE;
         }
@@ -1871,6 +1995,7 @@ impl From<v1::AnimeCharacterMaterial> for AnimeCharacterMaterial {
             stockings: Stockings::default(),
             emission: Emission::default(),
             double_sided: false,
+            dissolve: Dissolve::default(),
         }
     }
 }

@@ -14,7 +14,8 @@ use super::reference;
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
-    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, SkinningStats, ViewData,
+    InstanceId, MaterialDrive, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, SkinningStats,
+    ViewData,
 };
 
 /// `material` embedded in a mesh's material slot, as the glTF importer embeds one.
@@ -499,6 +500,7 @@ fn prepass_depth_equals_the_main_pass_depth() {
         face: CharacterFace::default(),
         body: CharacterBody::default(),
         opacity: 1.0,
+        drive: MaterialDrive::NONE,
     });
     renderer.prepare(&gpu, packets.current());
 

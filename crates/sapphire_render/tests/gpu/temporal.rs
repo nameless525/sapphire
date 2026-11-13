@@ -19,9 +19,9 @@ use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::temporal::{jitter, jitter_phases};
 use sapphire_render::{
     BloomParams, CameraData, Celestial, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
-    ColorGrade, DirectionalLight, FramePacketRing, HistoryReset, InstanceId, MeshHandle, MeshInstance, Msaa,
-    PostParams, PrepassTargets, RenderSettings, Renderer, ShaderError, ShaderFile, ShaderSources,
-    ShaderUpdate, SkyDisc, SkyGradient, SkyLayers, ToneCurve, ViewData, Vignette, scaled_size,
+    ColorGrade, DirectionalLight, FramePacketRing, HistoryReset, InstanceId, MaterialDrive, MeshHandle,
+    MeshInstance, Msaa, PostParams, PrepassTargets, RenderSettings, Renderer, ShaderError, ShaderFile,
+    ShaderSources, ShaderUpdate, SkyDisc, SkyGradient, SkyLayers, ToneCurve, ViewData, Vignette, scaled_size,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -300,6 +300,7 @@ impl Frames {
             face: CharacterFace::default(),
             body: CharacterBody::default(),
             opacity: self.character_opacity,
+            drive: MaterialDrive::NONE,
         }));
 
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);

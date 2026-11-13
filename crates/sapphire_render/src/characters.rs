@@ -7,8 +7,8 @@
 //!   key light with unstyled GI ([`CharacterLighting::unstyled`]), a face at rest
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
 //!   changes (while the hour runs, the camera moves for a rig whose key, GI or camera rim
-//!   depends on it, or a head, an expression, a body or an opacity changes, or the frame's
-//!   ambient light changes): 272 bytes a character. With shadows on, the face pass (M1 R4)
+//!   depends on it, or a head, an expression, a body, an opacity or a drive changes, or the
+//!   frame's ambient light changes): 304 bytes a character. With shadows on, the face pass (M1 R4)
 //!   writes each entry's `shadow.visibility` on the GPU, after the upload, in every frame where a
 //!   face or an eye draws; with a probe grid, the character ambient pass (M1 W5) writes its
 //!   `ambient`.
@@ -18,7 +18,7 @@
 //!   uploaded again; one that moves in the list, joins it or leaves it is uploaded once.
 //! - **A character's parts share its entry** (M1 review RS-001). A character drawn as several
 //!   instances (body, face, hair, a weapon) lists each with one state: equal lighting, face,
-//!   body and opacity, and a body that casts. A listing in the state of an earlier one points
+//!   body, opacity and drive, and a body that casts. A listing in the state of an earlier one points
 //!   its instance at that entry, so the parts are one character wherever the shaders tell
 //!   characters apart: the character prepass's IDs (the eye layers' mask, eyes through hair,
 //!   the bangs' shadow, the rim and the camera rim's gating), the fade's dither and capsule AO.
@@ -61,13 +61,25 @@
 //!   holes. Its shadow stays whole (casters draw it unfaded), and transparent surfaces discard
 //!   whole pixels by the same dither.
 //!
+//! # Driven materials (M5 L11)
+//!
+//! A character's [`MaterialDrive`] fills its entry's [`GpuCharacterDrive`]: how far it has
+//! dissolved, its emission's scale and its flash, which the anime character shader reads; the
+//! dissolve goes into its instance data too (`InstanceData::dissolve`), for the masked prepasses.
+//! A dissolving instance is cut as a fading one is ([`InstanceSlots::set_cut`]), so its opaque
+//! draws take the same alpha-tested variants and masked prepasses, which cut by the dissolve's
+//! noise (`dissolve_noise` in `materials.wgsl`) where they dither by the fade, and it takes no
+//! rim. Its shadow stays whole until it is gone: a character dissolved all the way
+//! ([`MaterialDrive::gone`]) belongs to no body group, so it casts no shadow nor capsule AO.
+//!
 //! # Per-character data of later packages
 //!
 //! Each package's per-character data is a struct of its own inside [`GpuCharacter`] (WGSL
 //! `CharacterData` in `frame.wgsl`): C2's is the rig, C3's the face beside it, R4's the shadow
 //! (where the face pass samples the environment's shadow over the head, and what it found), W5's
 //! the ambient light its stylized GI reads ([`GpuCharacterAmbient`]: the frame's hemisphere, the
-//! other characters' capsule AO, and where a probe grid reads it from).
+//! other characters' capsule AO, and where a probe grid reads it from), C7's the fade, C8's the
+//! style and M5 L11's the drive.
 //! Later ones (C4's outline lighting) add theirs the same way. A character's data is then found
 //! through one index and one binding: the fragment stage's fourth and last storage buffer (see
 //! the crate docs, "Binding budget").
@@ -83,7 +95,7 @@ use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{
     AmbientLight, CameraRim, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
-    CharacterShade, FramePacket, InsetView, InstanceId,
+    CharacterShade, FramePacket, InsetView, InstanceId, MaterialDrive,
 };
 
 /// The radius of the sphere around a character's head that the face pass samples the
@@ -102,6 +114,7 @@ pub(crate) struct GpuCharacter {
     pub ambient: GpuCharacterAmbient,
     pub fade: GpuCharacterFade,
     pub style: GpuCharacterStyle,
+    pub drive: GpuCharacterDrive,
 }
 
 /// A character's light rig as the shader reads it (WGSL `CharacterRig`). 80 bytes.
@@ -247,6 +260,28 @@ pub(crate) struct GpuCharacterStyle {
     pub camera_rim: [f32; 4],
 }
 
+/// What the game drives on a character's materials as the shaders read it (WGSL
+/// `CharacterDrive`, M5 L11, [`MaterialDrive`]). 32 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuCharacterDrive {
+    /// x: how far it has dissolved, 0 to 1; y: its emission's scale, 1 as authored; zw: 0.
+    pub levels: [f32; 4],
+    /// rgb: the flash, color × intensity; w: 1 while it flashes, else 0.
+    pub flash: [f32; 4],
+}
+
+impl GpuCharacterDrive {
+    /// `drive` packed.
+    fn new(drive: &MaterialDrive) -> Self {
+        let flashes = drive.flash.cmpgt(Vec3::ZERO).any();
+        Self {
+            levels: [drive.dissolved(), drive.emission.max(0.0), 0.0, 0.0],
+            flash: drive.flash.max(Vec3::ZERO).extend(if flashes { 1.0 } else { 0.0 }).to_array(),
+        }
+    }
+}
+
 impl GpuCharacterStyle {
     /// The style of a character lit with `shade` and `camera_rim`.
     fn new(shade: &CharacterShade, camera_rim: &CameraRim) -> Self {
@@ -294,13 +329,14 @@ impl GpuFace {
 
 impl GpuCharacter {
     /// The entry of a character lit by `lighting`, with `face` and `body`, under the frame's
-    /// `ambient` light, faded by `fade`.
+    /// `ambient` light, faded by `fade` and its materials driven by `drive`.
     fn new(
         lighting: &CharacterLighting,
         face: &CharacterFace,
         body: &CharacterBody,
         ambient: &AmbientLight,
         fade: f32,
+        drive: &MaterialDrive,
     ) -> Self {
         let CharacterLighting { key, rim, local_light_ceiling, gi, shade, camera_rim } = *lighting;
         let toward_key = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
@@ -327,12 +363,19 @@ impl GpuCharacter {
             ),
             fade: GpuCharacterFade { amount: [fade, 0.0, 0.0, 0.0] },
             style: GpuCharacterStyle::new(&shade, &camera_rim),
+            drive: GpuCharacterDrive::new(drive),
         }
     }
 
     /// The entry of `character`, under the frame's `ambient` light.
     fn of(character: &CharacterInstance, ambient: &AmbientLight) -> Self {
-        Self::new(&character.lighting, &character.face, &character.body, ambient, character.fade())
+        let CharacterInstance { lighting, face, body, drive, .. } = character;
+        Self::new(lighting, face, body, ambient, character.fade(), drive)
+    }
+
+    /// Whether its character is gone: dissolved all the way (M5 L11).
+    fn gone(&self) -> bool {
+        self.drive.levels[0] >= 1.0
     }
 }
 
@@ -403,13 +446,14 @@ impl Characters {
         self.list.lit
     }
 
-    /// Instances the last frame with a view drew faded (M1 C7).
+    /// Instances the last frame with a view drew faded (M1 C7) or dissolving (M5 L11).
     pub(crate) fn faded(&self) -> u32 {
         self.list.faded
     }
 
-    /// Whether this frame started or stopped fading any instance: the draw list, which draws
-    /// fading instances through other variants, must be rebuilt. Never on a frame without a view.
+    /// Whether this frame started or stopped fading or dissolving any instance: the draw list,
+    /// which draws such instances through other variants, must be rebuilt. Never on a frame
+    /// without a view.
     pub(crate) fn fading_changed(&self) -> bool {
         self.list.fading_changed
     }
@@ -518,11 +562,16 @@ fn body_key(body: &CharacterBody) -> BodyKey {
     [base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits())
 }
 
-/// Whether `a` and `b` list one character's parts: its lighting, face, body and fade, all
+/// Whether `a` and `b` list one character's parts: its lighting, face, body, fade and drive, all
 /// equal, with a body that casts (M1 review RS-001). Parts of a character with no body of its
 /// own can't be told from characters that happen to be lit alike, so they never share.
 fn one_character(a: &CharacterInstance, b: &CharacterInstance) -> bool {
-    a.body.casts() && a.body == b.body && a.lighting == b.lighting && a.face == b.face && a.fade() == b.fade()
+    a.body.casts()
+        && a.body == b.body
+        && a.lighting == b.lighting
+        && a.face == b.face
+        && a.fade() == b.fade()
+        && a.drive == b.drive
 }
 
 /// The entries and which instance reads which, on the CPU. Its vectors are reused, so a warm
@@ -558,12 +607,15 @@ pub(crate) struct CharacterList {
     visibilities: Vec<f32>,
     /// The complete ordered inputs of `visibilities`; lighting and expressions do not affect AO.
     visibility_bodies: Vec<CharacterBody>,
-    /// Per instance slot: how far its character has faded this frame, 0 for none (M1 C7).
+    /// Per instance slot: how far its character has faded (M1 C7) and dissolved (M5 L11) this
+    /// frame, 0 for none.
     fades: Vec<f32>,
+    dissolves: Vec<f32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
     lit: u32,
     ignored: u32,
-    /// Instances the last frame drew faded, and whether it started or stopped fading any.
+    /// Instances the last frame drew faded or dissolving, and whether it started or stopped
+    /// either for any.
     faded: u32,
     fading_changed: bool,
 }
@@ -592,16 +644,26 @@ impl CharacterList {
         let fallback = CharacterLighting::unstyled(packet.sun);
         let ambient = &packet.ambient;
         let none = CharacterBody::default();
-        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &none, ambient, 0.0));
+        let still = MaterialDrive::NONE;
+        self.entries.push(GpuCharacter::new(
+            &fallback,
+            &CharacterFace::default(),
+            &none,
+            ambient,
+            0.0,
+            &still,
+        ));
         self.bodies.push(none);
         self.sources.push(u32::MAX);
         self.same_body.push(0);
         // Slots are never given back, so the last frame's are all below this.
         self.next.resize(slots.len(), 0);
         self.fades.resize(slots.len(), 0.0);
+        self.dissolves.resize(slots.len(), 0.0);
         for &slot in &self.listed {
             self.next[slot as usize] = 0;
             self.fades[slot as usize] = 0.0;
+            self.dissolves[slot as usize] = 0.0;
         }
         self.listing.clear();
         (self.lit, self.ignored, self.faded, self.fading_changed) = (0, 0, 0, false);
@@ -629,6 +691,7 @@ impl CharacterList {
             }
             self.next[slot as usize] = entry;
             self.fades[slot as usize] = character.fade();
+            self.dissolves[slot as usize] = character.drive.dissolved();
         }
         self.group_bodies();
         if capsule_ao {
@@ -650,9 +713,11 @@ impl CharacterList {
         }
         for &slot in self.listed.iter().chain(&self.listing) {
             slots.set_character(slot, self.next[slot as usize]);
-            self.fading_changed |= slots.set_fade(slot, self.fades[slot as usize]);
+            let (fade, dissolve) = (self.fades[slot as usize], self.dissolves[slot as usize]);
+            self.fading_changed |= slots.set_cut(slot, fade, dissolve);
         }
-        self.faded = self.listing.iter().filter(|&&slot| self.fades[slot as usize] > 0.0).count() as u32;
+        let cut = |slot: usize| self.fades[slot] > 0.0 || self.dissolves[slot] > 0.0;
+        self.faded = self.listing.iter().filter(|&&slot| cut(slot as usize)).count() as u32;
         std::mem::swap(&mut self.listed, &mut self.listing);
         self.entries != self.previous
     }
@@ -686,7 +751,8 @@ impl CharacterList {
 
     /// Groups the bodies of the entries an instance reads, in entry order: each body that casts
     /// goes into `occluders` once, and each entry's group into `groups`. An entry no instance
-    /// reads (one made for an instance listed again in another state) belongs to no group.
+    /// reads (one made for an instance listed again in another state) belongs to no group, nor
+    /// does a character that is gone (M5 L11), which casts nothing.
     fn group_bodies(&mut self) {
         self.read.clear();
         self.read.resize(self.entries.len(), false);
@@ -697,7 +763,7 @@ impl CharacterList {
         self.occluders.clear();
         self.groups.clear();
         for (entry, body) in self.bodies.iter().enumerate() {
-            let group = if self.read[entry] && body.casts() {
+            let group = if self.read[entry] && body.casts() && !self.entries[entry].gone() {
                 let next = u32::try_from(self.occluders.len()).expect("fewer than 2³² bodies");
                 let group = *self.by_body.entry(body_key(body)).or_insert(next);
                 if group == next {
@@ -760,6 +826,7 @@ mod tests {
                 face: CharacterFace::default(),
                 body: CharacterBody::default(),
                 opacity: 1.0,
+                drive: MaterialDrive::NONE,
             })
             .collect();
         FramePacket { views: vec![ViewData::new(camera)], characters, ..FramePacket::default() }
@@ -801,27 +868,51 @@ mod tests {
         };
         let none = CharacterBody::default();
         let ambient = AmbientLight::default();
-        let GpuCharacter { rig, face, shadow, fade, style, .. } =
-            GpuCharacter::new(&lighting, &CharacterFace::default(), &none, &ambient, 0.25);
+        let GpuCharacter { rig, face, shadow, fade, style, .. } = GpuCharacter::new(
+            &lighting,
+            &CharacterFace::default(),
+            &none,
+            &ambient,
+            0.25,
+            &MaterialDrive::NONE,
+        );
         assert_eq!(fade.amount, [0.25, 0.0, 0.0, 0.0], "how far it has faded");
         // The shadow hue at a luminance of 1 (blue's is 0.0722), its share held to 1.
         let blue = 1.0 / 0.0722;
         assert!((style.shade[2] - blue).abs() < 1e-3 && style.shade[..2] == [0.0, 0.0], "{style:?}");
         assert_eq!(style.shade[3], 1.0);
         let black = CharacterLighting { shade: CharacterShade { hue: Vec3::ZERO, share: 0.5 }, ..lighting };
-        let black = GpuCharacter::new(&black, &CharacterFace::default(), &none, &ambient, 0.0).style;
+        let black =
+            GpuCharacter::new(&black, &CharacterFace::default(), &none, &ambient, 0.0, &MaterialDrive::NONE)
+                .style;
         assert_eq!(black.shade, [1.0, 1.0, 1.0, 0.0], "a black hue is the key light's own");
         // The camera rim toward its light, unit length, with its share.
         assert_eq!(style.camera_rim, [0.0, 0.6, -0.8, 0.25]);
         let lightless =
             CharacterLighting { camera_rim: CameraRim { direction: Vec3::ZERO, share: 1.0 }, ..lighting };
-        let lightless = GpuCharacter::new(&lightless, &CharacterFace::default(), &none, &ambient, 0.0).style;
+        let lightless = GpuCharacter::new(
+            &lightless,
+            &CharacterFace::default(),
+            &none,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        )
+        .style;
         assert_eq!(lightless.camera_rim, [0.0, 1.0, 0.0, 0.0], "a light without a direction is none");
         let idle = CharacterLighting { camera_rim: CameraRim { direction: Vec3::X, share: 0.0 }, ..lighting };
-        let idle = GpuCharacter::new(&idle, &CharacterFace::default(), &none, &ambient, 0.0).style;
+        let idle =
+            GpuCharacter::new(&idle, &CharacterFace::default(), &none, &ambient, 0.0, &MaterialDrive::NONE)
+                .style;
         assert_eq!(idle.camera_rim, [0.0, 1.0, 0.0, 0.0], "without a share, no direction either");
-        let unstyled =
-            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient, 0.0);
+        let unstyled = GpuCharacter::new(
+            &headless_lighting(),
+            &CharacterFace::default(),
+            &none,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        );
         assert_eq!(unstyled.style.shade[3], 0.0, "no shadow hue by default");
         assert_eq!(unstyled.style.camera_rim[3], 0.0, "no camera rim by default");
         assert_eq!(rig.key_direction, [0.0, 1.0, 0.0, 0.5], "toward the key, unit length; the rim");
@@ -829,7 +920,14 @@ mod tests {
         assert_eq!(rig.head, [1.0, 2.0, 3.0, 0.8]);
         assert_eq!(rig.gi, [0.3, 0.6, f32::MAX, 1.0], "no value ceiling is the largest finite one");
         let headless = CharacterLighting { gi: CharacterGi::default(), ..lighting };
-        let headless = GpuCharacter::new(&headless, &CharacterFace::default(), &none, &ambient, 0.0);
+        let headless = GpuCharacter::new(
+            &headless,
+            &CharacterFace::default(),
+            &none,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        );
         assert_eq!((headless.rig.head, headless.rig.gi[3]), ([0.0, 0.0, 0.0, 1.0], 0.0), "nothing spherizes");
         assert_eq!(rig.skin_tint, [1.1, 0.9, 0.8, 0.0]);
         assert_eq!(face.forward, [0.0, 0.0, 1.0, 0.0], "a face at rest");
@@ -839,7 +937,14 @@ mod tests {
         assert_eq!(shadow.visibility, [1.0, 0.0, 0.0, 0.0], "lit until the face pass says otherwise");
         assert_eq!(headless.shadow.probe, [0.0; 4]);
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
-        let bodied = GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient, 0.0);
+        let bodied = GpuCharacter::new(
+            &headless_lighting(),
+            &CharacterFace::default(),
+            &body,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        );
         assert_eq!(bodied.shadow.probe, [0.0, 1.5, 0.0, HEAD_PROBE_RADIUS]);
     }
 
@@ -854,7 +959,15 @@ mod tests {
             expression: FaceExpression { blush: 0.25, gloom: 2.0 },
         };
         let ambient = AmbientLight::default();
-        let packed = GpuCharacter::new(&lighting(1.0), &face, &CharacterBody::default(), &ambient, 0.0).face;
+        let packed = GpuCharacter::new(
+            &lighting(1.0),
+            &face,
+            &CharacterBody::default(),
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        )
+        .face;
         assert_eq!(packed.forward, [1.0, 0.0, 0.0, 0.0], "unit length");
         assert_eq!(packed.up, [0.0, 1.0, 0.0, 0.0], "square to forward");
         assert_eq!(packed.expression, [0.25, 2.0, 0.0, 0.0], "as given: the shader clamps");
@@ -950,8 +1063,15 @@ mod tests {
         let ambient =
             AmbientLight { sky: Vec3::new(0.4, 0.5, 0.6), ground: Vec3::splat(0.2), intensity: 2.0 };
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
-        let entry =
-            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient, 0.0).ambient;
+        let entry = GpuCharacter::new(
+            &headless_lighting(),
+            &CharacterFace::default(),
+            &body,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        )
+        .ambient;
         // Exactly what the frame's uniforms hold, so `character_ambient_light` is `ambient_light`.
         assert_eq!(entry.sky, (ambient.sky * ambient.intensity).extend(0.0).to_array());
         assert_eq!(entry.ground, (ambient.ground * ambient.intensity).extend(0.0).to_array());
@@ -964,10 +1084,19 @@ mod tests {
             ..lighting(1.0)
         };
         let none = CharacterBody::default();
-        let entry = GpuCharacter::new(&headed, &CharacterFace::default(), &none, &ambient, 0.0).ambient;
-        assert_eq!(entry.probe, [1.0, 1.6, 0.0, 1.0]);
         let entry =
-            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient, 0.0).ambient;
+            GpuCharacter::new(&headed, &CharacterFace::default(), &none, &ambient, 0.0, &MaterialDrive::NONE)
+                .ambient;
+        assert_eq!(entry.probe, [1.0, 1.6, 0.0, 1.0]);
+        let entry = GpuCharacter::new(
+            &headless_lighting(),
+            &CharacterFace::default(),
+            &none,
+            &ambient,
+            0.0,
+            &MaterialDrive::NONE,
+        )
+        .ambient;
         assert_eq!(entry.probe, [0.0; 4]);
     }
 
@@ -1087,5 +1216,53 @@ mod tests {
         list.update(&frame, &mut slots, true);
         assert_eq!(entry_of(&slots, 1), 3, "its last entry");
         assert_eq!(list.entries[1].ambient.axis[3], 1.0, "nothing near the receiver");
+    }
+
+    #[test]
+    fn a_drive_packs_into_the_entry_and_a_character_gone_casts_nothing() {
+        // M5 L11: the drive packed, clamped where the shaders rely on its range.
+        let drive = MaterialDrive { dissolve: 1.5, emission: 2.0, flash: Vec3::new(0.5, 0.0, 1.0) };
+        let packed = GpuCharacterDrive::new(&drive);
+        assert_eq!(packed.levels, [1.0, 2.0, 0.0, 0.0]);
+        assert_eq!(packed.flash, [0.5, 0.0, 1.0, 1.0], "flashing");
+        assert_eq!(GpuCharacterDrive::new(&MaterialDrive::NONE).flash, [0.0; 4], "no flash");
+        assert!(
+            !CharacterInstance {
+                drive: MaterialDrive { emission: -1.0, ..drive },
+                ..packet(&[(0, 1.0)]).characters[0]
+            }
+            .is_valid()
+        );
+        assert!(
+            !CharacterInstance {
+                drive: MaterialDrive { dissolve: f32::NAN, ..drive },
+                ..packet(&[(0, 1.0)]).characters[0]
+            }
+            .is_valid()
+        );
+
+        // Two characters side by side: dissolving partway, the first still casts and occludes, and
+        // its instance is cut; gone, it belongs to no group, so it casts no shadow nor capsule AO.
+        let mut slots = slots(0..2);
+        let mut list = CharacterList::default();
+        let mut frame = packet(&[(0, 1.0), (1, 1.0)]);
+        frame.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+        frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        frame.characters[1].body =
+            CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
+        frame.characters[0].drive = MaterialDrive { dissolve: 0.5, ..MaterialDrive::NONE };
+        list.update(&frame, &mut slots, true);
+        assert!(list.fading_changed, "it started being cut");
+        assert!(slots.cut(slots.slot(InstanceId(0)).expect("live")));
+        assert_eq!((list.table().body(0), list.occluders.len(), list.faded), (Some(0), 2, 1));
+        assert!(list.entries[entry_of(&slots, 1) as usize].ambient.axis[3] < 1.0, "occluded by it");
+        frame.characters[0].drive.dissolve = 1.0;
+        list.update(&frame, &mut slots, true);
+        assert!(!list.fading_changed, "still cut");
+        assert_eq!((list.table().body(0), list.occluders.len()), (None, 1), "gone: no shadow");
+        assert_eq!(list.entries[entry_of(&slots, 1) as usize].ambient.axis[3], 1.0, "nor capsule AO");
+        frame.characters[0].drive = MaterialDrive::NONE;
+        list.update(&frame, &mut slots, true);
+        assert!(list.fading_changed && !slots.cut(0), "whole again");
     }
 }

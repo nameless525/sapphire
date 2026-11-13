@@ -26,8 +26,8 @@ use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, DirectionalLight, FaceExpression, FramePacketRing, HeadBasis, InstanceId,
-    MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer, SkyGradient,
-    ToneCurve, ViewData, Vignette,
+    MaterialDrive, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer,
+    SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -329,6 +329,7 @@ impl Harness {
             face: CharacterFace { head, expression },
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         });
     }
 

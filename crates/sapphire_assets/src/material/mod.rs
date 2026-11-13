@@ -103,10 +103,10 @@ use serde::de::DeserializeOwned;
 
 pub use self::character::{
     AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterLayerRegion,
-    CharacterRegion, CharacterSurface, DiffuseMode, Emission, EyeLayer, EyeShading, FabricDirection,
-    FaceShading, HairHighlight, HairShading, HairShadow, HairTransmission, HighlightMotion, HighlightStyle,
-    IrisShape, LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline, OutlineCurve, RampDiffuse, RegionGi,
-    RegionMatcap, Rim, Specular, SpecularModel, Stockings, ThroughHair,
+    CharacterRegion, CharacterSurface, DiffuseMode, Dissolve, Emission, EyeLayer, EyeShading,
+    FabricDirection, FaceShading, GLASS_MIN_COVER, HairHighlight, HairShading, HairShadow, HairTransmission,
+    HighlightMotion, HighlightStyle, IrisShape, LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline,
+    OutlineCurve, RampDiffuse, RegionGi, RegionMatcap, Rim, Specular, SpecularModel, Stockings, ThroughHair,
 };
 pub use self::common::{
     AlphaMode, DistanceStylization, SHADER_TIME_PERIOD, SWIZZLE_BITS, shader_time, swizzle_code, whole_cycles,
@@ -256,7 +256,8 @@ impl TextureUsage {
 pub struct MaterialFlags(u32);
 
 impl MaterialFlags {
-    /// Discards pixels below an alpha cutoff.
+    /// Discards pixels below an alpha cutoff, or an anime character material's see-through
+    /// regions' pixels by the dither (M5 L11): the variant whose pixels can be cut.
     pub const ALPHA_TEST: Self = Self(1 << 0);
     /// Blends over what is behind it.
     pub const TRANSPARENT: Self = Self(1 << 1);
@@ -348,6 +349,10 @@ pub struct Material {
 }
 
 impl Versioned for Material {
+    /// 12: the anime character family's see-through regions, glass and dissolve (M5 L11): each
+    /// region's layers gain a vector (how much the dither leaves out, the glass's strength), the
+    /// block two after them (the dissolve's noise scale and edge, the edge's glow), and `modes.x`
+    /// the glass and see-through flags. Meshes bump with it: an importer's generated block grows.
     /// 11: the anime character family packs its rates on the shaders' clock (emission's breaths,
     /// a highlight's drift and sparkle) as whole cycles per [`SHADER_TIME_PERIOD`]
     /// ([`whole_cycles`], review RS-003), so they don't jump where the clock wraps. Rates that
@@ -372,7 +377,7 @@ impl Versioned for Material {
     /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
     /// generated materials embed blocks, must bump `Mesh::VERSION` with it unless no block an
     /// importer generates can change (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 11;
+    const VERSION: u32 = 12;
 }
 
 /// What one texture slot binds.
@@ -582,9 +587,11 @@ impl ArchivedMaterial {
         self.params.as_slice()
     }
 
-    /// Whether its draws read the reflection cube: an anime character material with a region metallic enough to
-    /// reflect ([`AnimeCharacterParams::FLAG_REFLECTION`]). A frame that draws one has the ambient pass prefilter
-    /// the cube, so its pipelines are what such a material needs beyond its own ([`crate::PipelineKey::reflection`]).
+    /// Whether its draws read the reflection cube: an anime character material with a region
+    /// metallic enough to reflect ([`AnimeCharacterParams::FLAG_REFLECTION`]) or a glass region
+    /// (M5 L11, [`AnimeCharacterParams::FLAG_GLASS`]). A frame that draws one has the ambient
+    /// pass prefilter the cube, so its pipelines are what such a material needs beyond its own
+    /// ([`crate::PipelineKey::reflection`]).
     pub fn reads_reflection(&self) -> bool {
         if self.family != MaterialFamily::AnimeCharacter {
             return false;
@@ -593,7 +600,7 @@ impl ArchivedMaterial {
         // A validated material holds a whole block.
         self.params().get(offset..offset + 4).is_some_and(|mode| {
             let mode: u32 = bytemuck::pod_read_unaligned(mode);
-            mode & AnimeCharacterParams::FLAG_REFLECTION != 0
+            mode & (AnimeCharacterParams::FLAG_REFLECTION | AnimeCharacterParams::FLAG_GLASS) != 0
         })
     }
 }

@@ -645,10 +645,10 @@ impl Default for Wind {
 }
 
 /// One character's data for a frame: the character light rig that lights the instance `id`
-/// (M1 C2), the character's face (M1 C3), its body, which its shadow is cast from (M1 R4), and
-/// how much of it draws (M1 C7). A character drawn as several instances (body, face, hair, a
-/// weapon) lists each, with the same lighting, face, body and opacity, and a body that casts
-/// ([`CharacterBody::casts`]).
+/// (M1 C2), the character's face (M1 C3), its body, which its shadow is cast from (M1 R4), how
+/// much of it draws (M1 C7) and what the game drives on its materials (M5 L11). A character drawn
+/// as several instances (body, face, hair, a weapon) lists each, with the same lighting, face,
+/// body, opacity and drive, and a body that casts ([`CharacterBody::casts`]).
 ///
 /// Listings in one state with a body that casts are one character's parts: the renderer draws
 /// them as one, sharing one per-character entry, so its eyes draw over its own eye whites and
@@ -675,18 +675,81 @@ pub struct CharacterInstance {
     /// (`sapphire_world::ProximityFade`), so the camera never clips into a character. Its shadow
     /// stays whole.
     pub opacity: f32,
+    /// What the game drives on its anime character materials this frame (M5 L11): how far it has
+    /// dissolved, its emission's scale and a flash. [`MaterialDrive::NONE`] draws it as authored.
+    pub drive: MaterialDrive,
 }
 
 impl CharacterInstance {
-    /// Whether the renderer can draw by it: its lighting, its face and its body are all valid,
-    /// and its opacity is a number.
+    /// Whether the renderer can draw by it: its lighting, its face, its body and its drive are
+    /// all valid, and its opacity is a number.
     pub fn is_valid(&self) -> bool {
-        self.lighting.is_valid() && self.face.is_valid() && self.body.is_valid() && !self.opacity.is_nan()
+        self.lighting.is_valid()
+            && self.face.is_valid()
+            && self.body.is_valid()
+            && !self.opacity.is_nan()
+            && self.drive.is_valid()
     }
 
     /// How far it has faded: 1 − its opacity, within 0 to 1.
     pub fn fade(&self) -> f32 {
         1.0 - self.opacity.clamp(0.0, 1.0)
+    }
+}
+
+/// What the game drives on a character's anime character materials, per frame (M5 L11, spec
+/// §5.12, "As built (M5 L11)"): presentation alone, which the simulation never reads. Each
+/// material says how its character looks dissolving (`sapphire_assets::material::Dissolve`), and
+/// how much each region glows ([`emission`](Self::emission) scales it); the game says when.
+///
+/// - **Dissolve:** a value noise over each surface's UVs cuts away every point below
+///   `dissolve`, in every pass that draws the character, as its proximity fade does: its opaque
+///   draws move to the alpha-tested variants while it dissolves. The points just above the cut
+///   glow in the material's edge color, blooming as the world's light; it takes no rim. Its
+///   shadow stays whole until it is gone: at 1 it casts nothing, nor capsule AO.
+/// - **Emission:** scales every region's authored glow (a charge, a power-up), breathing as
+///   authored.
+/// - **Flash:** a color added over its surfaces, unlit (a hit, a parry); its outlines keep their
+///   line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialDrive {
+    /// How far the character has dissolved: 0 whole, 1 gone, clamped to that range.
+    pub dissolve: f32,
+    /// What its materials' emission is scaled by: 1 as authored, 0 none; not below 0.
+    pub emission: f32,
+    /// The flash over it, linear RGB × intensity (about 1 is white over a lit surface); black for
+    /// none, and no component below 0.
+    pub flash: Vec3,
+}
+
+impl MaterialDrive {
+    /// Nothing driven: the materials as authored.
+    pub const NONE: Self = Self { dissolve: 0.0, emission: 1.0, flash: Vec3::ZERO };
+
+    /// Whether the renderer can draw by it: every value finite, the emission's scale and the
+    /// flash not negative.
+    pub fn is_valid(&self) -> bool {
+        self.dissolve.is_finite()
+            && self.emission.is_finite()
+            && self.emission >= 0.0
+            && self.flash.is_finite()
+            && self.flash.cmpge(Vec3::ZERO).all()
+    }
+
+    /// How far the character has dissolved, within 0 to 1.
+    pub fn dissolved(&self) -> f32 {
+        self.dissolve.clamp(0.0, 1.0)
+    }
+
+    /// Whether it is gone: dissolved all the way.
+    pub fn gone(&self) -> bool {
+        self.dissolved() >= 1.0
+    }
+}
+
+impl Default for MaterialDrive {
+    fn default() -> Self {
+        Self::NONE
     }
 }
 
@@ -830,7 +893,14 @@ mod tests {
             ..CharacterFace::default()
         };
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.25);
-        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face, body, opacity: 1.0 });
+        packet.characters.push(CharacterInstance {
+            id: InstanceId(0),
+            lighting,
+            face,
+            body,
+            opacity: 1.0,
+            drive: MaterialDrive::NONE,
+        });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -948,6 +1018,7 @@ mod tests {
             face: broken[0],
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         };
         assert!(!character.is_valid(), "a broken face makes the entry invalid");
         assert!(CharacterInstance { face: strong, ..character }.is_valid());
@@ -970,7 +1041,15 @@ mod tests {
         let face = CharacterFace::default();
         let broken = CharacterBody { radius: -1.0, ..body };
         assert!(
-            !CharacterInstance { id: InstanceId(0), lighting, face, body: broken, opacity: 1.0 }.is_valid()
+            !CharacterInstance {
+                id: InstanceId(0),
+                lighting,
+                face,
+                body: broken,
+                opacity: 1.0,
+                drive: MaterialDrive::NONE
+            }
+            .is_valid()
         );
         let moved = body.transformed(Mat4::from_scale_rotation_translation(
             Vec3::splat(2.0),

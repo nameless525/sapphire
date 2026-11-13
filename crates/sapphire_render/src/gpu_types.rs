@@ -209,8 +209,13 @@ pub(crate) struct InstanceData {
     ///
     /// [`CharacterInstance::opacity`]: crate::CharacterInstance::opacity
     pub fade: f32,
+    /// How far its character has dissolved (M5 L11, [`MaterialDrive::dissolved`]): 0 whole.
+    /// The prepasses' masked pipelines cut by it, as by the fade.
+    ///
+    /// [`MaterialDrive::dissolved`]: crate::MaterialDrive::dissolved
+    pub dissolve: f32,
     /// Pads the struct to WGSL's 16-byte storage alignment.
-    pub padding: [u32; 2],
+    pub padding: u32,
 }
 
 impl InstanceData {

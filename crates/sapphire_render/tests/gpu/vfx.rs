@@ -20,9 +20,9 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, DirectionalLight, Fog, FogLayer, FramePacket, FramePacketRing, HeightFog,
-    InstanceId, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer,
-    ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, VfxLight, VfxRibbonPoint, VfxShape,
-    VfxSprite, ViewData, Vignette,
+    InstanceId, MaterialDrive, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings,
+    Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, VfxLight, VfxRibbonPoint,
+    VfxShape, VfxSprite, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -1001,6 +1001,7 @@ fn a_spark_over_a_character_blooms_as_it_does_over_the_world() {
             face: CharacterFace::default(),
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         };
         let spark = dot(Vec3::new(0.0, 0.0, -3.0), 0.35, Vec3::splat(40.0));
         // Beside the spark, clear of its quad: bloom alone reaches it.
@@ -1106,6 +1107,7 @@ fn additive_hdr_effects_keep_transmittance_below_the_air_lights_ulp() {
             face: CharacterFace::default(),
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         };
         let fog = Fog {
             near: FogLayer { color: Vec3::splat(256.0), density: 12.5, start: 0.0 },

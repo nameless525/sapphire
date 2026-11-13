@@ -620,8 +620,8 @@ mod tests {
         AmbientUniforms, GpuAmbientCapsule, GtaoUniforms, PrefilterUniforms, RelightUniforms,
     };
     use crate::characters::{
-        GpuCharacter, GpuCharacterAmbient, GpuCharacterFade, GpuCharacterShadow, GpuCharacterStyle, GpuFace,
-        GpuRig,
+        GpuCharacter, GpuCharacterAmbient, GpuCharacterDrive, GpuCharacterFade, GpuCharacterShadow,
+        GpuCharacterStyle, GpuFace, GpuRig,
     };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
@@ -1063,6 +1063,7 @@ mod tests {
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
             (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
+            (Program::AnimeCharacter, "CharacterDrive", size_of::<GpuCharacterDrive>()),
             (Program::AnimeCharacter, "CharacterStyle", size_of::<GpuCharacterStyle>()),
             (Program::AnimeCharacter, "CharacterLayerRegion", size_of::<CharacterLayerRegion>()),
             (Program::AnimeCharacter, "ShadowUniforms", size_of::<ShadowUniforms>()),
@@ -1169,13 +1170,18 @@ mod tests {
                     stocking_sheen,
                     stocking_weave,
                     layer_regions,
+                    dissolve,
+                    dissolve_edge,
                 }),
             ),
             (
                 "AnimeCharacterRegion",
                 offsets!(AnimeCharacterRegion { shade, deep_shade, subsurface, specular, rim, outline }),
             ),
-            ("CharacterLayerRegion", offsets!(CharacterLayerRegion { matcap, surface, emission })),
+            (
+                "CharacterLayerRegion",
+                offsets!(CharacterLayerRegion { matcap, surface, emission, see_through }),
+            ),
             (
                 "EnvironmentParams",
                 offsets!(EnvironmentParams {
@@ -1275,12 +1281,14 @@ mod tests {
                     previous_world_from_object,
                     character,
                     fade,
+                    dissolve,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style, drive })),
             ("CharacterStyle", offsets!(GpuCharacterStyle { shade, camera_rim })),
             ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
             ("CharacterFade", offsets!(GpuCharacterFade { amount })),
+            ("CharacterDrive", offsets!(GpuCharacterDrive { levels, flash })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
             ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),

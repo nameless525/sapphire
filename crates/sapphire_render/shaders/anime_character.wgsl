@@ -216,13 +216,29 @@
 // - **Emission** (`breath`): the region's glow × the mask's B, unlit, breathing over the
 //   material's period at a phase per instance slot. Its share of the pixel's light, × the
 //   material's bloom, is written as the world's share of the pixel (post's character mask, M1
-//   P2), so the glow blooms as the world does while the character around it keeps its own.
+//   P2), so the glow blooms as the world does while the character around it keeps its own. The
+//   character's drive scales it (M5 L11, `CharacterDrive`).
+// - **Glass** (`glass_add`, M5 L11): a region's glass reflects the sky's light along the reflected
+//   view ray by Schlick's Fresnel, untinted, spread over the share of the region's pixels its
+//   see-through dither keeps. The ambient pass prefilters the cube for it as for the reflection.
 //
 // The proximity fade (M1 C7; `CharacterFade` and the dither in frame.wgsl): a fading character's
 // opaque draws go through the alpha-tested variants, which, with the transparent ones, discard
 // the pixels its dither leaves out (`faded_out`); under MSAA the alpha-tested variants' covered
 // entry points write the dither's sample mask instead. Its outlines and eyes through hair keep
 // the same pixels, and it takes no rim, whose depth step would read the character's own holes.
+//
+// Driven materials and see-through regions (M5 L11; spec §5.12, "As built (M5 L11)"), as branches
+// in every variant, no permutation of their own:
+// - **See-through regions** (`see_through_fade`, materials.wgsl): a region's opacity below 1
+//   leaves that share of what the fade keeps out through the same dither, so a material with one
+//   draws through the alpha-tested variants, and every pass that cuts the fade's pixels cuts its.
+// - **The dissolve** (`dissolve_noise`, materials.wgsl): value noise over the surface's UVs from
+//   an integer hash, no texture, cuts away every point below how far the character has dissolved,
+//   which routes its draws as a fade does; the points just above the cut glow in the material's
+//   edge color, unlit, blooming as the world's light, and it takes no rim.
+// - **The flash** (`CharacterDrive::flash`): a color added over the shaded surface, unlit, while
+//   the game flashes the character; outlines keep their line.
 
 // The control map's shadow bias (`character_maps::ilm`): neutral, and the values at and beyond
 // which a point stays lit or in shadow whatever the light.
@@ -289,6 +305,10 @@ override FADE_SAMPLES: u32 = 1u;
 // more metallic, so a mask's filtered edge doesn't alias.
 const REFLECTS: f32 = 0.9;
 const REFLECTS_EDGE: f32 = 0.02;
+// Glass (M5 L11): a dielectric's reflectance facing the camera, and the least share of a glass
+// region's pixels its reflection is spread over (`sapphire_assets`'s `GLASS_MIN_COVER`).
+const GLASS_F0: f32 = 0.04;
+const GLASS_MIN_COVER: f32 = 0.25;
 // The matcap's coordinates: the view-space normal's xy over this radius around the map's center,
 // a little inside its edge, so filtering never wraps across it.
 const MATCAP_RADIUS: f32 = 0.49;
@@ -998,6 +1018,21 @@ fn reflection_add(surface: CharacterSurface, metallic: f32, roughness: f32) -> v
     return sky * surface.albedo * (surface.occlusion * gate);
 }
 
+// The glass layer at a point of a region whose `see_through` is x the share its dither leaves
+// out and y its glass's strength (M5 L11): the sky's light along the reflected view ray, read as
+// the reflection add reads it at `roughness`, by Schlick's Fresnel from `GLASS_F0` facing the
+// camera, × the vertex AO and the strength, over the share of pixels drawn (at least
+// `GLASS_MIN_COVER`), so the dither averages to the whole reflection. Untinted: glass reflects the
+// light's own color.
+fn glass_add(surface: CharacterSurface, roughness: f32, see_through: vec2<f32>) -> vec3<f32> {
+    let facing = 1.0 - saturate(dot(surface.normal, surface.view_dir));
+    let fresnel = GLASS_F0 + (1.0 - GLASS_F0) * facing * facing * facing * facing * facing;
+    let direction = reflect(-surface.view_dir, surface.normal);
+    let sky = textureSampleLevel(reflection_cube, ambient_sampler, direction, roughness * ambient.atlas_texel.w).rgb;
+    let drawn = max(1.0 - see_through.x, GLASS_MIN_COVER);
+    return sky * (fresnel * see_through.y * surface.occlusion / drawn);
+}
+
 // How bright a material's emission is now (`Emission::level`): 1 at the top of a breath, 1 − the
 // depth at its bottom, at a phase per instance slot; 1 for a steady glow.
 fn breath(material: u32, instance: u32) -> f32 {
@@ -1011,6 +1046,12 @@ fn breath(material: u32, instance: u32) -> f32 {
 // characters.
 fn character_fade(character: u32) -> f32 {
     return characters[character].fade.amount.x;
+}
+
+// How far a character has dissolved (M5 L11; `CharacterDrive`): 0 for whole, and for instances
+// that aren't characters.
+fn character_dissolve(character: u32) -> f32 {
+    return characters[character].drive.levels.x;
 }
 
 // What the highlight and the matcap read (M1 C7): N·H toward the key light and its change
@@ -1054,9 +1095,13 @@ struct ShadedCharacter {
     // The emission's share of the color's luminance × the material's bloom (M1 C7): what of the
     // pixel blooms as the world's light. 0 without emission.
     glow: f32,
-    // Whether the pixel stays (M1 C7): false where the alpha test or the proximity fade cuts it
-    // out, which the entry points discard at their one exit. Always true in opaque variants.
+    // Whether the pixel stays (M1 C7): false where the alpha test, the proximity fade, a
+    // see-through region or the dissolve cuts it out (M5 L11), which the entry points discard at
+    // their one exit. Always true in opaque variants.
     kept: bool,
+    // How far the dither leaves the pixel out (M5 L11): the character's fade and its region's
+    // see-through share, which the covered entry points' sample mask follows.
+    fade: f32,
     // The region it shades with, which the material debug views show (M1 F5).
     region: u32,
 }
@@ -1253,18 +1298,28 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         derivatives.position_dy = position_dy;
     }
     // The pixels cut out (M1 C7): by the alpha test, of alpha-tested materials (the variant also
-    // draws fading characters' opaque ones), and by the proximity fade's dither, decided after
-    // every derivative above. Whole quads leave here (`quad_any`, frame.wgsl), since the layers
-    // and the lighting follow; single pixels at the entry points' one exit
+    // draws fading and dissolving characters' opaque ones, and see-through materials), by the
+    // proximity fade's dither with the region's see-through share (M5 L11), and by the dissolve,
+    // decided after every derivative above. Whole quads leave here (`quad_any`, frame.wgsl),
+    // since the layers and the lighting follow; single pixels at the entry points' one exit
     // (docs/conventions.md).
     var kept = true;
     if PERMUTATION_ALPHA_TEST && alpha_tested {
         kept = coverage >= materials[material].split.w;
     }
     var fade = 0.0;
+    var dissolve = 0.0;
+    // How brightly the pixel glows at the dissolve's edge.
+    var edge = 0.0;
     if PERMUTATION_ALPHA_TEST || PERMUTATION_TRANSPARENT {
-        fade = character_fade(in.character);
+        fade = see_through_fade(material, region, character_fade(in.character));
         kept = kept && !(fade > 0.0 && faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES));
+        dissolve = character_dissolve(in.character);
+        if dissolve > 0.0 {
+            let noise = dissolve_noise(material, in.uv);
+            kept = kept && dissolve_keeps(noise, dissolve);
+            edge = dissolve_glow(material, noise, dissolve);
+        }
         if !quad_any(kept) {
             discard;
         }
@@ -1318,22 +1373,28 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
             let reflects = materials[material].layer_regions[region].surface;
             layer_light += reflection_add(surface, reflects.x * layer_mask.g, reflects.y);
         }
+        if (layer_flags & CHARACTER_FLAG_GLASS) != 0u {
+            let glass = materials[material].layer_regions[region];
+            layer_light += glass_add(surface, glass.surface.y, glass.see_through.xy);
+        }
         if (layer_flags & CHARACTER_FLAG_EMISSION) != 0u {
+            // Scaled by the character's drive (M5 L11), 1 as authored.
             let emission = materials[material].layer_regions[region].emission.rgb;
-            let emitted = emission * (layer_mask.b * breath(material, in.instance));
+            let scale = characters[in.character].drive.levels.y;
+            let emitted = emission * (layer_mask.b * breath(material, in.instance)) * scale;
             layer_light += emitted;
             glow = dot(emitted, LUMINANCE);
         }
     }
 
     // The depth-offset rim (M1 C5): characters' bodies, faces and hair, opaque or alpha-tested.
-    // A fading character takes none (M1 C7).
+    // A fading or dissolving character takes none (M1 C7, M5 L11), nor a see-through region.
     var rim: CharacterRim;
     rim.settings = materials[material].rim;
     rim.tint = mix(surface.albedo, vec3<f32>(1.0), 0.5) * surface.region.rim.rgb
         * (materials[material].edges.y * rig.key_direction.w);
     if !PERMUTATION_EYE && !PERMUTATION_TRANSPARENT && in.character != 0u && materials[material].edges.y > 0.0
-        && fade == 0.0 {
+        && fade == 0.0 && dissolve == 0.0 {
         let pixel = in.clip_position.xy;
         rim.mask = rim_mask(surface, material, region, in.character, pixel, in.world_position, fresnel_width);
     }
@@ -1398,6 +1459,13 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         color *= sparkle;
         base.a = saturate(base.a * sparkle);
     }
+    // The dissolve's edge (M5 L11): unlit, in the material's edge color. Added last, so a
+    // character that isn't dissolving shades exactly as before.
+    var edge_light = vec3<f32>(0.0);
+    if edge > 0.0 {
+        edge_light = materials[material].dissolve_edge.rgb * edge;
+        color += edge_light;
+    }
     var shaded: ShadedCharacter;
     shaded.color = color;
     shaded.alpha = base.a;
@@ -1408,7 +1476,17 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         let share = glow / max(dot(color, LUMINANCE), 1e-6);
         shaded.glow = saturate(materials[material].layers.w * share);
     }
+    // The edge blooms whole as the world's light, and the flash (M5 L11) goes over everything,
+    // not glowing: both on branches a still character skips.
+    if edge > 0.0 {
+        shaded.glow = saturate(shaded.glow + dot(edge_light, LUMINANCE) / max(dot(color, LUMINANCE), 1e-6));
+    }
+    let flash = characters[in.character].drive.flash;
+    if flash.w > 0.0 {
+        shaded.color += flash.rgb;
+    }
     shaded.kept = kept;
+    shaded.fade = fade;
     shaded.region = region;
     return shaded;
 }
@@ -1418,6 +1496,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
 struct CharacterPixel {
     color: vec4<f32>,
     kept: bool,
+    // How far the dither leaves it out (`ShadedCharacter::fade`).
+    fade: f32,
     region: u32,
 }
 
@@ -1445,7 +1525,7 @@ fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
     // The final color, with the frame's fog over it (M1 W3): characters take their share of it,
     // so they stay readable where the world melts into the sky. One variable, at the one exit.
     let color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);
-    return CharacterPixel(color, shaded.kept, shaded.region);
+    return CharacterPixel(color, shaded.kept, shaded.fade, shaded.region);
 }
 
 @fragment
@@ -1473,9 +1553,9 @@ fn fs_anime_character_covered(in: CharacterVaryings, @builtin(front_facing) fron
     let pixel = character_pixel(facing(in, front));
     var out: CoveredOutput;
     out.color = pixel.color;
-    out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
-    // The one exit, where the pixels cut out leave: the alpha test's, and those the dither
-    // covers no sample of.
+    out.mask = fade_mask(pixel.fade, in.clip_position.xy, in.character);
+    // The one exit, where the pixels cut out leave: the alpha test's and the dissolve's, and
+    // those the dither covers no sample of.
     if !pixel.kept {
         discard;
     }

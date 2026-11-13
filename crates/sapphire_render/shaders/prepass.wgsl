@@ -40,6 +40,10 @@
 // base color map) and read the surface stream's UVs; the fade and the character's entry come
 // from the instance.
 //
+// They keep a dissolving character's pixels and a see-through region's as the main pass does
+// too (M5 L11; `see_through_fade` and `dissolve_noise` in materials.wgsl): the dissolve from the
+// instance, as the fade, and the region from the control map or the vertex's material ID.
+//
 // Two-sided surfaces (M1 C8): two-sided anime character variants draw into both through copies
 // of the plain or masked pipelines that cull nothing, built with the first such variant. The
 // scene prepass's write a back face's normal flipped (`PERMUTATION_TWO_SIDED`), the side the
@@ -108,22 +112,72 @@ fn fs_scene_prepass(in: ScenePrepassVaryings, @builtin(front_facing) front: bool
     return scene_prepass_targets(facing);
 }
 
+// The vertex's material ID from the surface stream's vertex color, whose alpha holds the vertex
+// flags as unorm8 (`decode_vertex` in frame.wgsl).
+fn vertex_material_id(color: vec4<f32>) -> u32 {
+    return u32(round(color.a * 255.0)) & VERTEX_MATERIAL_ID_MASK;
+}
+
 // The main pass's samples a pixel, for the masked prepasses' dither (M1 C7; `faded_out` in
 // frame.wgsl): set under MSAA, so they keep the pixels where the main pass covers any sample of
 // a fading character; 1 otherwise.
 override FADE_SAMPLES: u32 = 1u;
 
 // The anime character family's group 3, as anime_character.wgsl binds it
-// (`AnimeCharacterMaterial::TEXTURE_SLOTS`): the masked prepasses read the base color map alone.
+// (`AnimeCharacterMaterial::TEXTURE_SLOTS`): the masked prepasses read the base color map, and
+// the control map's material IDs for see-through regions (M5 L11).
 @group(3) @binding(0) var base_color_map: texture_2d<f32>;
+@group(3) @binding(1) var control_map: texture_2d<f32>;
 @group(3) @binding(8) var material_sampler: sampler;
+@group(3) @binding(10) var material_id_sampler: sampler;
 
-// Whether a masked prepass keeps the pixel at `pixel` of an anime character surface drawn with
-// `material` at `uv` (with its screen derivatives), of character entry `character` faded by
-// `fade`: not cut by its alpha test, nor left out by its dither. The alpha test reads the
-// surface's own coordinates, as the main pass's does: an eye's parallax moves its color alone
-// (`iris_parallax` in anime_character.wgsl, review RS-004).
-fn masked_keeps(material: u32, uv: MaterialUv, pixel: vec2<f32>, fade: f32, character: u32) -> bool {
+// The control map's material IDs, k stored as k / (levels - 1) (anime_character.wgsl's
+// `MATERIAL_ID_LEVELS`).
+const PREPASS_MATERIAL_ID_LEVELS: f32 = 8.0;
+
+// The region a pixel of `material` at `uv` shades with, as the main pass picks it: the control
+// map's material ID, unfiltered (`control_material_id` in anime_character.wgsl), or the vertex's
+// `vertex_region` without one, clamped to the material's regions.
+fn masked_region(material: u32, uv: vec2<f32>, vertex_region: u32) -> u32 {
+    let modes = materials[material].modes;
+    var region = vertex_region;
+    if material_has_texture(modes, CHARACTER_CONTROL) {
+        let sampled = textureSampleLevel(control_map, material_id_sampler, uv, 0.0);
+        let level = material_swizzle(sampled, materials[material].swizzles, CHARACTER_CONTROL).a;
+        region = u32(round(saturate(level) * (PREPASS_MATERIAL_ID_LEVELS - 1.0)));
+    }
+    return min(region, max(modes.y, 1u) - 1u);
+}
+
+// What a masked prepass needs to cut a pixel as the main pass does, besides its position.
+struct MaskedCut {
+    material: u32,
+    // The surface's coordinates, with their screen derivatives.
+    uv: MaterialUv,
+    // The character's entry, how far it has faded and dissolved, and the vertex's material ID.
+    character: u32,
+    fade: f32,
+    dissolve: f32,
+    vertex_region: u32,
+}
+
+// How far the dither leaves out the pixel of `cut` (`see_through_fade`).
+fn masked_fade(cut: MaskedCut) -> f32 {
+    var fade = cut.fade;
+    if (materials[cut.material].modes.x & CHARACTER_FLAG_SEE_THROUGH) != 0u {
+        fade = see_through_fade(cut.material, masked_region(cut.material, cut.uv.uv, cut.vertex_region), fade);
+    }
+    return fade;
+}
+
+// Whether a masked prepass keeps the pixel at `pixel` of an anime character surface, `cut`:
+// not cut by its alpha test, nor by the dissolve, nor left out by its dither at `fade`
+// (`masked_fade`). The alpha test reads the surface's own coordinates, as the main pass's does:
+// an eye's parallax moves its color alone (`iris_parallax` in anime_character.wgsl, review
+// RS-004).
+fn masked_keeps(cut: MaskedCut, pixel: vec2<f32>, fade: f32) -> bool {
+    let material = cut.material;
+    let uv = cut.uv;
     let modes = materials[material].modes;
     var alpha = materials[material].base_color.a;
     if material_has_texture(modes, CHARACTER_BASE_COLOR) {
@@ -131,8 +185,9 @@ fn masked_keeps(material: u32, uv: MaterialUv, pixel: vec2<f32>, fade: f32, char
         alpha *= material_swizzle(sampled, materials[material].swizzles, CHARACTER_BASE_COLOR).a;
     }
     let tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
-    let cut = tested && alpha < materials[material].split.w;
-    return !cut && !faded_out(fade, pixel, character, FADE_SAMPLES);
+    let alpha_cut = tested && alpha < materials[material].split.w;
+    let dissolved = cut.dissolve > 0.0 && !dissolve_keeps(dissolve_noise(material, uv.uv), cut.dissolve);
+    return !alpha_cut && !dissolved && !faded_out(fade, pixel, cut.character, FADE_SAMPLES);
 }
 
 // An alpha-tested or fading character in the character prepass: its ID, and what the cut needs.
@@ -142,13 +197,17 @@ struct MaskedCharacterPrepassVaryings {
     @location(1) @interpolate(flat) material: u32,
     @location(2) @interpolate(flat) fade: f32,
     @location(3) uv: vec2<f32>,
+    // M5 L11: how far the character has dissolved, and the vertex's material ID.
+    @location(4) @interpolate(flat) dissolve: f32,
+    @location(5) @interpolate(flat) vertex_region: u32,
 }
 
 @vertex
 fn vs_character_prepass_masked(
     @location(0) position: vec4<f32>,
-    // Slot 3: the surface stream's UVs.
+    // Slot 3: the surface stream's UVs, and the vertex color, whose alpha holds the vertex flags.
     @location(3) uv: vec2<f32>,
+    @location(4) color: vec4<f32>,
     draw: DrawRecord,
 ) -> MaskedCharacterPrepassVaryings {
     let instance = instances[draw.instance];
@@ -159,6 +218,8 @@ fn vs_character_prepass_masked(
     out.material = draw.material;
     out.fade = instance.fade;
     out.uv = draw.uv_transform.xy + draw.uv_transform.zw * uv;
+    out.dissolve = instance.dissolve;
+    out.vertex_region = vertex_material_id(color);
     return out;
 }
 
@@ -168,7 +229,8 @@ fn vs_character_prepass_masked(
 fn fs_character_prepass_masked(in: MaskedCharacterPrepassVaryings) -> @location(0) vec2<u32> {
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let entry = in.id & CHARACTER_ID_ENTRY_MASK;
-    if !masked_keeps(in.material, uv, in.clip_position.xy, in.fade, entry) {
+    let cut = MaskedCut(in.material, uv, entry, in.fade, in.dissolve, in.vertex_region);
+    if !masked_keeps(cut, in.clip_position.xy, masked_fade(cut)) {
         discard;
     }
     return vec2<u32>(in.id);
@@ -185,6 +247,9 @@ struct MaskedScenePrepassVaryings {
     @location(4) @interpolate(flat) material: u32,
     @location(5) @interpolate(flat) fade: f32,
     @location(6) @interpolate(flat) character: u32,
+    // M5 L11: how far the character has dissolved, and the vertex's material ID.
+    @location(7) @interpolate(flat) dissolve: f32,
+    @location(8) @interpolate(flat) vertex_region: u32,
 }
 
 @vertex
@@ -192,6 +257,7 @@ fn vs_scene_prepass_masked(
     @location(0) position: vec4<f32>,
     @location(1) normal: vec2<f32>,
     @location(3) uv: vec2<f32>,
+    @location(4) color: vec4<f32>,
     @location(10) previous_position: vec4<f32>,
     draw: DrawRecord,
 ) -> MaskedScenePrepassVaryings {
@@ -210,6 +276,8 @@ fn vs_scene_prepass_masked(
     out.material = draw.material;
     out.fade = instance.fade;
     out.character = instance.character;
+    out.dissolve = instance.dissolve;
+    out.vertex_region = vertex_material_id(color);
     return out;
 }
 
@@ -230,8 +298,11 @@ fn fs_scene_prepass_masked(
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let normal = facing_normal(in.world_normal, front);
     let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, normal, in.current, in.previous));
-    let outline = select(0.0, OUTLINE_MASK_FADING, in.fade > 0.0);
-    if !masked_keeps(in.material, uv, in.clip_position.xy, in.fade, in.character) {
+    let cut = MaskedCut(in.material, uv, in.character, in.fade, in.dissolve, in.vertex_region);
+    let fade = masked_fade(cut);
+    // A see-through region marks the mask as a fading character does (M5 L11).
+    let outline = select(0.0, OUTLINE_MASK_FADING, fade > 0.0);
+    if !masked_keeps(cut, in.clip_position.xy, fade) {
         discard;
     }
     return MaskedScenePrepassTargets(targets.normal, targets.velocity, outline);

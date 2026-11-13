@@ -123,6 +123,9 @@ struct InstanceData {
     // How far its character has faded (M1 C7; `CharacterFade`): 0 drawn whole. The prepasses'
     // faded pipelines read it in the vertex stage, which their fragments dither by.
     fade: f32,
+    // How far its character has dissolved (M5 L11; `CharacterDrive`): 0 whole. The prepasses'
+    // masked pipelines read it as they read the fade.
+    dissolve: f32,
 }
 
 // A character's light rig (M1 C2), resolved on the CPU for this frame
@@ -201,9 +204,18 @@ struct CharacterStyle {
     camera_rim: vec4<f32>,
 }
 
+// What the game drives on a character's materials (M5 L11; `sapphire_render::MaterialDrive`).
+struct CharacterDrive {
+    // x: how far it has dissolved, 0 whole (entry 0's), 1 gone; y: its emission's scale, 1 as
+    // authored; zw: 0.
+    levels: vec4<f32>,
+    // rgb: the flash added over it, unlit, color × intensity; w: 1 while it flashes, else 0.
+    flash: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
 // own here: the light rig (C2), the face (C3), the shadow (R4), the ambient light (W5), the
-// fade (C7) and the shading follow-ups' style (C8).
+// fade (C7), the shading follow-ups' style (C8) and the driven material values (M5 L11).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
@@ -211,6 +223,7 @@ struct CharacterData {
     ambient: CharacterAmbient,
     fade: CharacterFade,
     style: CharacterStyle,
+    drive: CharacterDrive,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

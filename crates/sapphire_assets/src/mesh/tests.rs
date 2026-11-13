@@ -211,14 +211,14 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 15 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 16 }))
     ));
     // Cooked meshes are rebuilt from source. The cache key holds `Mesh::VERSION`.
     let mut previous = bytes.clone();
-    previous[16] = 14;
+    previous[16] = 15;
     assert!(matches!(
         Mesh::read(&previous),
-        Err(MeshError::Cooked(CookedError::Stale { found: 14, current: 15 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 15, current: 16 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;

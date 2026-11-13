@@ -30,9 +30,9 @@ use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     AmbientLight, AmbientOcclusion, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterGi,
     CharacterInstance, CharacterLighting, ColorGrade, DirectionalLight, EnvironmentSettings,
-    EnvironmentSpecular, FramePacketRing, GtaoSettings, InstanceId, MaterialHandle, MeshHandle, MeshInstance,
-    Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats, Renderer, ShaderFile,
-    ShaderSources, SkyGradient, SkySettings, ToneCurve, ViewData, Vignette,
+    EnvironmentSpecular, FramePacketRing, GtaoSettings, InstanceId, MaterialDrive, MaterialHandle,
+    MeshHandle, MeshInstance, Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats,
+    Renderer, ShaderFile, ShaderSources, SkyGradient, SkySettings, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -453,6 +453,7 @@ impl Harness {
             face: CharacterFace::default(),
             body,
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         });
     }
 

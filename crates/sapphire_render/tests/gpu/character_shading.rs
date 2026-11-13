@@ -290,6 +290,7 @@ impl Harness {
             face: CharacterFace { head: HeadBasis::REST, ..CharacterFace::default() },
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: sapphire_render::MaterialDrive::NONE,
         });
     }
 

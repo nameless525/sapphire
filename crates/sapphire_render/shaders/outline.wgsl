@@ -63,7 +63,9 @@
 //
 // A fading character's hulls (M1 C7) draw through the alpha-tested permutation and keep the
 // pixels its surfaces keep (the proximity fade's dither, frame.wgsl), under MSAA through
-// `fs_outline_covered`'s sample mask, and in the scene prepass through the masked pipeline.
+// `fs_outline_covered`'s sample mask, and in the scene prepass through the masked pipeline. So do
+// a dissolving character's (M5 L11), cut by the dissolve's noise at the hull's own UVs, and a
+// see-through region's, by its share. The edge's glow and the flash stay on the surfaces.
 
 // The width's reference (`OUTLINE_REFERENCE_*`) and its curve (`outline_curve`) are
 // anime_character.wgsl's, which the depth-offset rim's width follows too (M1 C5).
@@ -227,6 +229,8 @@ fn outline_varyings(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
 struct OutlinePixel {
     color: vec4<f32>,
     kept: bool,
+    // How far the dither leaves it out (M5 L11): the fade and the region's see-through share.
+    fade: f32,
     region: u32,
 }
 
@@ -253,25 +257,31 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     if material_has_texture(modes, CHARACTER_BASE_COLOR) && (PERMUTATION_ALPHA_TEST || style.x > 0.0) {
         base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv);
     }
-    // The cutout, of alpha-tested materials: the permutation also draws fading characters' opaque
-    // ones (M1 C7), whose dither it then follows, decided after every derivative. Whole quads
-    // leave here (`quad_any`, frame.wgsl), single pixels at the entry points' one exit
-    // (docs/conventions.md).
-    var kept = true;
-    if PERMUTATION_ALPHA_TEST {
-        let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
-        let fade = character_fade(in.character);
-        let cut = alpha_tested && base.a < materials[material].split.w;
-        kept = !cut && !(fade > 0.0 && faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES));
-        if !quad_any(kept) {
-            discard;
-        }
-    }
     var region = in.region;
     if material_has_texture(modes, CHARACTER_CONTROL) {
         region = control_material_id(swizzles, in.uv);
     }
     region = min(region, max(modes.y, 1u) - 1u);
+    // The cutout, of alpha-tested materials: the permutation also draws fading and dissolving
+    // characters' opaque ones (M1 C7, M5 L11), whose dither and dissolve it then follows, as it
+    // does a see-through region's share, decided after every derivative. Whole quads leave here
+    // (`quad_any`, frame.wgsl), single pixels at the entry points' one exit
+    // (docs/conventions.md).
+    var kept = true;
+    var fade = 0.0;
+    if PERMUTATION_ALPHA_TEST {
+        let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
+        fade = see_through_fade(material, region, character_fade(in.character));
+        let cut = alpha_tested && base.a < materials[material].split.w;
+        kept = !cut && !(fade > 0.0 && faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES));
+        let dissolve = character_dissolve(in.character);
+        if dissolve > 0.0 {
+            kept = kept && dissolve_keeps(dissolve_noise(material, in.uv), dissolve);
+        }
+        if !quad_any(kept) {
+            discard;
+        }
+    }
     var surface: CharacterSurface;
     surface.region = materials[material].regions[region];
     let line = surface.region.outline.rgb * mix(vec3<f32>(1.0), base.rgb, style.x);
@@ -304,7 +314,7 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);
     // The final color, in one variable at the one exit.
     let color = vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
-    return OutlinePixel(color, kept, region);
+    return OutlinePixel(color, kept, fade, region);
 }
 
 @fragment
@@ -325,7 +335,7 @@ fn fs_outline_covered(in: OutlineVaryings) -> CoveredOutput {
     let pixel = outline_pixel(in);
     var out: CoveredOutput;
     out.color = pixel.color;
-    out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
+    out.mask = fade_mask(pixel.fade, in.clip_position.xy, in.character);
     // The one exit, where the pixels cut out leave.
     if !pixel.kept {
         discard;
@@ -508,6 +518,9 @@ struct MaskedOutlinePrepassVaryings {
     @location(6) @interpolate(flat) material: u32,
     @location(7) @interpolate(flat) fade: f32,
     @location(8) @interpolate(flat) character: u32,
+    // M5 L11: how far the character has dissolved, and the vertex's region, for a see-through one.
+    @location(9) @interpolate(flat) dissolve: f32,
+    @location(10) @interpolate(flat) region: u32,
 }
 
 @vertex
@@ -529,11 +542,13 @@ fn vs_outline_prepass_masked(
     out.material = draw.material;
     out.fade = instance.fade;
     out.character = instance.character;
+    out.dissolve = instance.dissolve;
+    out.region = outline_region(decode_vertex(packed, draw), draw.material);
     return out;
 }
 
-// The hull's targets where its main pass keeps the pixel: the material's alpha test and the
-// character's dither.
+// The hull's targets where its main pass keeps the pixel: the material's alpha test, the
+// character's dither with the region's see-through share, and the dissolve (M5 L11).
 @fragment
 fn fs_outline_prepass_masked(in: MaskedOutlinePrepassVaryings) -> OutlinePrepassTargets {
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
@@ -546,9 +561,16 @@ fn fs_outline_prepass_masked(in: MaskedOutlinePrepassVaryings) -> OutlinePrepass
         alpha *= sample_material(base_color_map, materials[material].swizzles, CHARACTER_BASE_COLOR, uv).a;
     }
     let cut = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u && alpha < materials[material].split.w;
-    // A fading character's lines (M1 C7) are its own, for temporal AA's responsive mask.
-    let outline = select(OUTLINE_MASK_LINE, OUTLINE_MASK_FADING_LINE, in.fade > 0.0);
-    if cut || faded_out(in.fade, in.clip_position.xy, in.character, FADE_SAMPLES) {
+    var region = in.region;
+    if material_has_texture(modes, CHARACTER_CONTROL) {
+        region = control_material_id(materials[material].swizzles, in.uv);
+    }
+    let fade = see_through_fade(material, min(region, max(modes.y, 1u) - 1u), in.fade);
+    let dissolved = in.dissolve > 0.0 && !dissolve_keeps(dissolve_noise(material, in.uv), in.dissolve);
+    // A fading character's lines (M1 C7) are its own, for temporal AA's responsive mask, as are a
+    // see-through region's.
+    let outline = select(OUTLINE_MASK_LINE, OUTLINE_MASK_FADING_LINE, fade > 0.0);
+    if cut || dissolved || faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES) {
         discard;
     }
     return OutlinePrepassTargets(targets.normal, targets.velocity, outline);

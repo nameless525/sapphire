@@ -30,8 +30,8 @@ use crate::{
     AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ChromaticAberration, ColorGrade, Diffusion, DirectionalLight, FramePacket,
     FramePacketRing, GradientBlend, GradientLayer, GradientShape, InstanceId, Inversion, LensFlare,
-    MAX_GRADIENT_LAYERS, MeshHandle, MeshInstance, Msaa, PostEffects, PostParams, RadialBlur, RenderSettings,
-    Renderer, ShaderFile, ShaderSources, SkyDisc, SkyGradient, ToneCurve, ViewData, Vignette,
+    MAX_GRADIENT_LAYERS, MaterialDrive, MeshHandle, MeshInstance, Msaa, PostEffects, PostParams, RadialBlur,
+    RenderSettings, Renderer, ShaderFile, ShaderSources, SkyDisc, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -211,6 +211,7 @@ impl Harness {
                     face,
                     body: CharacterBody::default(),
                     opacity: 1.0,
+                    drive: MaterialDrive::NONE,
                 });
             }
             fill(packet);

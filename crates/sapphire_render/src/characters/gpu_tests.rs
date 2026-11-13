@@ -19,8 +19,8 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
     AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance,
-    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance,
-    Msaa, PostParams, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
+    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MaterialDrive, MeshHandle,
+    MeshInstance, Msaa, PostParams, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 
 const SIDE: u32 = 128;
@@ -165,6 +165,7 @@ impl Scene {
             face: CharacterFace::default(),
             body: CharacterBody::default(),
             opacity,
+            drive: MaterialDrive::NONE,
         });
         self.renderer.prepare(&self.gpu, self.packets.current());
 
@@ -429,6 +430,7 @@ fn draw_faded(instances: &[(&[Part], CharacterBody)], opacity: f32) -> Vec<[u8; 
             face: CharacterFace::default(),
             body,
             opacity,
+            drive: MaterialDrive::NONE,
         });
     }
     renderer.prepare(&gpu, packets.current());

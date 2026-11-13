@@ -451,7 +451,7 @@ mod tests {
     use crate::mesh_pool::{DeformSource, Placement};
     use crate::{
         CharacterFace, CharacterInstance, CharacterLighting, DirectionalLight, InstanceDeltas, InstanceId,
-        MeshHandle, MeshInstance, ViewData,
+        MaterialDrive, MeshHandle, MeshInstance, ViewData,
     };
 
     const SETTINGS: ShadowSettings = ShadowSettings {
@@ -502,6 +502,7 @@ mod tests {
             face: CharacterFace::default(),
             body,
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         }
     }
 

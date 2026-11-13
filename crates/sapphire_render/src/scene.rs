@@ -434,19 +434,20 @@ impl InstanceSlots {
         self.data[slot as usize].character
     }
 
-    /// Gives the live instance in `slot` its character's fade (M1 C7; 0 drawn whole), marking it
-    /// for upload if that changed. Returns whether it started or stopped fading, which moves its
-    /// opaque draws between variants. Free slots are left alone.
-    pub(crate) fn set_fade(&mut self, slot: u32, fade: f32) -> bool {
+    /// Gives the live instance in `slot` its character's fade (M1 C7) and dissolve (M5 L11), 0
+    /// each drawn whole, marking it for upload if they changed. Returns whether it started or
+    /// stopped being cut ([`Self::cut`]), which moves its opaque draws between variants. Free
+    /// slots are left alone.
+    pub(crate) fn set_cut(&mut self, slot: u32, fade: f32, dissolve: f32) -> bool {
         let Some(entry) = self.slots.get_mut(slot as usize).filter(|entry| entry.id.is_some()) else {
             return false;
         };
         let data = &mut self.data[slot as usize];
-        if data.fade == fade {
+        if data.fade == fade && data.dissolve == dissolve {
             return false;
         }
-        let flipped = (data.fade > 0.0) != (fade > 0.0);
-        data.fade = fade;
+        let flipped = is_cut(data) != (fade > 0.0 || dissolve > 0.0);
+        (data.fade, data.dissolve) = (fade, dissolve);
         if !entry.dirty {
             entry.dirty = true;
             self.dirty.push(slot);
@@ -454,9 +455,10 @@ impl InstanceSlots {
         flipped
     }
 
-    /// Whether the instance in `slot` fades (M1 C7).
-    pub(crate) fn faded(&self, slot: u32) -> bool {
-        self.data.get(slot as usize).is_some_and(|data| data.fade > 0.0)
+    /// Whether the instance in `slot` is cut: its character fades (M1 C7) or dissolves (M5 L11),
+    /// so its opaque anime character draws go through the alpha-tested variants.
+    pub(crate) fn cut(&self, slot: u32) -> bool {
+        self.data.get(slot as usize).is_some_and(is_cut)
     }
 
     /// Takes the mesh off each instance the last [`Self::apply`] gave a handle that isn't `current`: one
@@ -763,7 +765,7 @@ impl DrawList {
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             let mut foliage = false;
-            let faded = slots.faded(slot);
+            let faded = slots.cut(slot);
             // A static instance of world surfaces alone is the main view's to cull (review
             // RA-O01, the `view_cull` module).
             let first_draw = self.draws.len();
@@ -847,6 +849,11 @@ impl DrawList {
 
 fn to_u32(len: usize) -> u32 {
     u32::try_from(len).expect("instance and draw counts fit the u32 GPU indices")
+}
+
+/// Whether an instance's character cuts its pixels: it fades or dissolves.
+fn is_cut(data: &InstanceData) -> bool {
+    data.fade > 0.0 || data.dissolve > 0.0
 }
 
 #[cfg(test)]

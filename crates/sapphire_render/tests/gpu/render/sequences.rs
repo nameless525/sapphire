@@ -13,7 +13,7 @@ use sapphire_assets::mesh::FoliageVertex;
 use sapphire_render::quality::TierTable;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, ChromaticAberration, DebugView,
-    EffectCoverage, Inversion, PostEffects, RadialBlur, ShaderFile, ShaderSources,
+    EffectCoverage, Inversion, MaterialDrive, PostEffects, RadialBlur, ShaderFile, ShaderSources,
 };
 use sapphire_rhi::TransientDesc;
 
@@ -125,6 +125,7 @@ fn character(id: u64, base: Vec3, opacity: f32) -> CharacterInstance {
         face: CharacterFace::default(),
         body: CharacterBody::capsule(base, base + Vec3::Y, 0.3),
         opacity,
+        drive: MaterialDrive::NONE,
     }
 }
 

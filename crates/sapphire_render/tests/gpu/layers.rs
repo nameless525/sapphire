@@ -4,7 +4,11 @@
 //! run; stockings by N·V and their sheen; emission,
 //! its breath and its bloom; the layer mask; and the fade's dither, whole or none at the ends,
 //! its share of pixels, its outlines, rim and draw list, under MSAA and temporal AA; and
-//! alpha-tested surfaces cut out of the character prepass as the main pass cuts them. Run with
+//! alpha-tested surfaces cut out of the character prepass as the main pass cuts them; and the
+//! driven materials and see-through regions (M5 L11): a dissolve gone all the way leaves what a
+//! fade gone all the way leaves, in every pass, branches that are off change no pixel, the
+//! dissolve's edge glows unlit and stays within its color, a see-through region keeps its share,
+//! glass reflects over it, and the drive scales emission and flashes. Run with
 //! `cargo test -p sapphire_render --test gpu layers:: -- --ignored`.
 //!
 //! Scenes have no ambient light and a black sky unless a test says otherwise, so a material's
@@ -18,7 +22,7 @@ use half::f16;
 use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::MaterialId;
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, CharacterRegion, Emission, LightSplit, Matcap, MatcapBlend,
+    AlphaMode, AnimeCharacterMaterial, CharacterRegion, Dissolve, Emission, LightSplit, Matcap, MatcapBlend,
     MatcapChannel, Material, MaterialDocument, Outline, OutlineCurve, RegionMatcap, Rim, Specular,
     SpecularModel, Stockings,
 };
@@ -29,9 +33,9 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
-    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, HeadBasis, InstanceId, MaterialHandle,
-    MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, SkyGradient,
-    ToneCurve, ViewData, Vignette,
+    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, HeadBasis, InstanceId, MaterialDrive,
+    MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer,
+    SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -361,6 +365,7 @@ impl Harness {
             face: CharacterFace { head: HeadBasis::REST, ..CharacterFace::default() },
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         });
         id
     }
@@ -376,6 +381,12 @@ impl Harness {
     fn opacity(&mut self, id: InstanceId, opacity: f32) {
         let character = self.characters.iter_mut().find(|c| c.id == id).expect("a character");
         character.opacity = opacity;
+    }
+
+    /// Sets what character `id`'s materials are driven by from the next frame on (M5 L11).
+    fn drive(&mut self, id: InstanceId, drive: MaterialDrive) {
+        let character = self.characters.iter_mut().find(|c| c.id == id).expect("a character");
+        character.drive = drive;
     }
 
     /// Prepares, records and submits a frame and reads the target back. Fails on any
@@ -1046,4 +1057,186 @@ fn temporal_aa_resolves_a_moving_fades_dither_too() {
     // With a moving character's reactivity, the spread was 0.052; with the world's, 0.036.
     assert!((mean - 0.45).abs() < 0.03, "the blend's green: {mean}");
     assert!(spread < 0.045, "resolved, not a screen door: {spread}");
+}
+
+// --- Driven materials and see-through regions (M5 L11).
+
+/// A drive that dissolves `amount` of the way and nothing else.
+fn dissolved(amount: f32) -> MaterialDrive {
+    MaterialDrive { dissolve: amount, ..MaterialDrive::NONE }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn a_character_dissolved_all_the_way_writes_nothing_in_any_pass() {
+    // In every pass the fade cuts (surfaces, outlines, both prepasses), with no samples, four
+    // and temporal AA: what a dissolve of 1 leaves is exactly what a fade to 0 leaves, which
+    // draws nothing of the character (M1 C7).
+    let settings = [
+        RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() },
+        RenderSettings { msaa: Msaa::X4, ..RenderSettings::default() },
+        RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() },
+    ];
+    for settings in settings {
+        let mut harness = Harness::with(settings);
+        let character = fade_scene(&mut harness, 8.0);
+        harness.opacity(character, 0.0);
+        for _ in 0..4 {
+            harness.complete();
+        }
+        let faded = harness.render();
+        assert_eq!(coverage(&faded, 20), 0.0, "{settings:?}: the fade leaves none of it");
+        harness.opacity(character, 1.0);
+        harness.drive(character, dissolved(1.0));
+        for _ in 0..4 {
+            harness.complete();
+        }
+        let gone = harness.render();
+        assert!(gone.pixels == faded.pixels, "{settings:?}: dissolved all the way as faded all the way");
+        assert_eq!(gone.stats.faded_characters, 1, "routed as a fade is");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn branches_that_are_off_change_no_pixel() {
+    let mut harness = Harness::new();
+    let character = fade_scene(&mut harness, 8.0);
+    let whole = harness.render();
+    let builds = whole.stats.draw_list_builds;
+    // A dissolve of 0, emission at its authored scale and no flash draw as before, on the opaque
+    // pipelines.
+    harness.drive(character, MaterialDrive { dissolve: 0.0, emission: 1.0, flash: Vec3::ZERO });
+    let still = harness.render();
+    assert!(still.pixels == whole.pixels, "nothing driven");
+    assert_eq!((still.stats.faded_characters, still.stats.draw_list_builds), (0, builds));
+    // Dissolving and back: routed and back, and whole again.
+    harness.drive(character, dissolved(0.4));
+    let dissolving = harness.render();
+    assert!(dissolving.pixels != whole.pixels, "dissolving");
+    harness.drive(character, MaterialDrive::NONE);
+    let back = harness.render();
+    assert!(back.pixels == whole.pixels, "whole again");
+    assert_eq!(back.stats.draw_list_builds, builds + 2);
+    // A material's own dissolve look, regions that draw all of their pixels and no glass change
+    // nothing until something drives them.
+    let mut edited = flat([0.0, 0.6, 0.0]);
+    edited.dissolve = Dissolve { scale: 5.0, edge: 0.3, edge_color: [0.1, 0.2, 3.0] };
+    edited.regions[0].opacity = 1.0;
+    edited.regions[0].glass = 0.0;
+    let mut plain = Harness::new();
+    let (_, _) = ball(&mut plain, &flat([0.0, 0.6, 0.0]));
+    let mut with_settings = Harness::new();
+    let (_, _) = ball(&mut with_settings, &edited);
+    assert!(plain.render().pixels == with_settings.render().pixels, "the dissolve's look alone");
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_dissolve_cuts_by_its_noise_and_its_edge_glows_unlit_within_its_color() {
+    let mut harness = Harness::new();
+    // A black, unlit ball before the gray wall, its edge orange, a tenth of the noise wide.
+    let edge = [0.8, 0.4, 0.0];
+    let mut material = flat([0.0; 3]);
+    material.dissolve = Dissolve { scale: 12.0, edge: 0.1, edge_color: edge };
+    let handle = harness.material(&material);
+    let ball = harness.mesh(&[sphere(Vec3::ZERO, 0.5)], &[handle]);
+    let wall_material = harness.material(&with_region(flat([0.0; 3]), |region| region.emission = [0.3; 3]));
+    let wall = harness.mesh(&[rect((-3.0, -3.0), (3.0, 3.0), -1.0)], &[wall_material]);
+    harness.prop(wall);
+    let character = harness.character(ball, Vec3::Z, 0.0);
+    let kinds = |frame: &Frame| {
+        let (mut wall, mut black, mut glowing) = (0, 0, 0);
+        for pixel in frame.around(Vec3::new(0.0, 0.0, 0.5), 30) {
+            let is_wall = pixel.iter().all(|&c| (c - 0.3).abs() < TOLERANCE);
+            if is_wall {
+                wall += 1;
+            } else if pixel.iter().all(|&c| c < 0.01) {
+                black += 1;
+            } else {
+                // The edge's own hue at up to its color, unlit and never past it.
+                assert!(pixel[0] <= edge[0] + TOLERANCE, "within the edge's color: {pixel:?}");
+                assert!((pixel[1] - 0.5 * pixel[0]).abs() < TOLERANCE && pixel[2] < TOLERANCE, "{pixel:?}");
+                glowing += 1;
+            }
+        }
+        (wall, black, glowing)
+    };
+    let mut last_wall = 0;
+    for amount in [0.25, 0.5, 0.75] {
+        harness.drive(character, dissolved(amount));
+        let (wall, black, glowing) = kinds(&harness.render());
+        eprintln!("dissolved {amount}: wall {wall}, black {black}, glowing {glowing}");
+        assert!(wall > last_wall, "more of the wall shows as it dissolves: {wall} after {last_wall}");
+        assert!(glowing > 0 && black + glowing > 0, "an edge at {amount}");
+        assert!(glowing < black + glowing, "the edge is a band, not the whole surface, at {amount}");
+        last_wall = wall;
+    }
+    // No edge: kept points stay the surface's own black.
+    material.dissolve.edge = 0.0;
+    harness.update(handle, &material);
+    harness.drive(character, dissolved(0.5));
+    let (_, _, glowing) = kinds(&harness.render());
+    assert_eq!(glowing, 0, "no edge without its width");
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn a_see_through_region_keeps_its_share_and_glass_reflects_over_it() {
+    // The fade's scene, its ball's one region drawing half its pixels.
+    let mut see_through = Harness::new();
+    let mut material = flat([0.0, 0.6, 0.0]);
+    material.regions[0].opacity = 0.5;
+    let handle = see_through.material(&material);
+    let ball = see_through.mesh(&[sphere(Vec3::ZERO, 0.5)], &[handle]);
+    let wall_material =
+        see_through.material(&with_region(flat([0.0; 3]), |region| region.emission = [0.3; 3]));
+    let wall = see_through.mesh(&[rect((-3.0, -3.0), (3.0, 3.0), -1.0)], &[wall_material]);
+    see_through.prop(wall);
+    see_through.character(ball, Vec3::Z, 1.0);
+    let half = see_through.render();
+    let share = coverage(&half, 20);
+    assert!((share - 0.5).abs() < 0.03, "half the region's pixels: {share}");
+    holes_show_the_wall(&half, 20);
+    // Glass adds the sky's reflection over the pixels kept, untinted, by Fresnel: brightest
+    // toward the silhouette.
+    see_through.sky =
+        SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };
+    see_through.ambient = AmbientLight { sky: Vec3::splat(0.5), ground: Vec3::splat(0.5), intensity: 1.0 };
+    let plain = see_through.render();
+    assert_eq!(plain.stats.ambient.reflection_mips, 0, "nothing reads the reflection yet");
+    material.regions[0].glass = 1.0;
+    see_through.update(handle, &material);
+    let glass = see_through.render();
+    assert!(glass.stats.ambient.reflection_mips > 0, "glass reads the reflection cube");
+    let kept = |frame: &Frame, point: Vec3| {
+        let pixels = frame.around(point, 3);
+        let green: Vec<_> = pixels.iter().filter(|p| p[1] > 0.45).copied().collect();
+        green.iter().map(|p| p[0]).sum::<f32>() / green.len().max(1) as f32
+    };
+    let (center, edge) = (Vec3::new(0.0, 0.0, 0.5), on_sphere(0.5, Vec3::new(-0.9, 0.0, 0.436)));
+    let (facing, grazing) =
+        (kept(&glass, center) - kept(&plain, center), kept(&glass, edge) - kept(&plain, edge));
+    eprintln!("glass's red facing {facing}, grazing {grazing}");
+    assert!(facing > 0.0 && grazing > 1.5 * facing, "Fresnel: {facing} facing, {grazing} grazing");
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_drive_scales_emission_and_flashes_over_the_surface() {
+    let mut harness = Harness::new();
+    let steady = Emission { period: 0.0, depth: 0.0, bloom: 1.0 };
+    let handle = harness.material(&glowing([0.3, 0.6, 0.1], steady));
+    let mesh = harness.mesh(&[sphere(Vec3::ZERO, 0.5)], &[handle]);
+    let character = harness.character(mesh, Vec3::Z, 0.0);
+    let center = Vec3::new(0.0, 0.0, 0.5);
+    harness.drive(character, MaterialDrive { emission: 0.5, ..MaterialDrive::NONE });
+    assert_near(harness.render().at(center), [0.15, 0.3, 0.05], "half the glow");
+    harness.drive(
+        character,
+        MaterialDrive { emission: 0.0, flash: Vec3::new(0.2, 0.1, 0.4), ..MaterialDrive::NONE },
+    );
+    assert_near(harness.render().at(center), [0.2, 0.1, 0.4], "the flash alone, unlit");
+    let frame = harness.render();
+    assert_eq!(frame.stats.faded_characters, 0, "neither cuts a pixel");
 }

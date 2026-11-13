@@ -37,6 +37,10 @@ struct CharacterLayerRegion {
     surface: vec4<f32>,
     // rgb: emission × intensity.
     emission: vec4<f32>,
+    // M5 L11: x how much of the region the fade's dither leaves out, 1 − its opacity (0 for
+    // all of it, `CHARACTER_FLAG_SEE_THROUGH`); y its glass reflection's strength
+    // (`CHARACTER_FLAG_GLASS`).
+    see_through: vec4<f32>,
 }
 
 struct AnimeCharacterParams {
@@ -95,6 +99,11 @@ struct AnimeCharacterParams {
     // x: the weave's strength; y: 1 for fabric along UV v, 0 along u.
     stocking_weave: vec4<f32>,
     layer_regions: array<CharacterLayerRegion, 8>,
+    // The dissolve (M5 L11; `Dissolve`): x the noise's cells to a UV unit; y the edge's width in
+    // noise.
+    dissolve: vec4<f32>,
+    // rgb: the dissolve edge's glow × intensity.
+    dissolve_edge: vec4<f32>,
 }
 
 // Texture slots (`AnimeCharacterMaterial::TEXTURE_SLOTS`).
@@ -118,7 +127,11 @@ const CHARACTER_FLAG_MATCAP: u32 = 8192u;
 const CHARACTER_FLAG_REFLECTION: u32 = 16384u;
 const CHARACTER_FLAG_STOCKINGS: u32 = 32768u;
 const CHARACTER_FLAG_EMISSION: u32 = 65536u;
-const CHARACTER_FLAG_LAYERS: u32 = 126976u;
+const CHARACTER_FLAG_GLASS: u32 = 131072u;
+const CHARACTER_FLAG_LAYERS: u32 = 258048u;
+// A region sees through (M5 L11): not a layer, since every pass that cuts the material's pixels
+// reads it (`see_through_fade`).
+const CHARACTER_FLAG_SEE_THROUGH: u32 = 262144u;
 
 const CHARACTER_SURFACE_BODY: u32 = 0u;
 const CHARACTER_SURFACE_FACE: u32 = 1u;
@@ -145,6 +158,62 @@ const CHARACTER_EYE_LAYER_SHIFT: u32 = 16u;
 // (`AnimeCharacterParams::eye_layer`).
 fn character_eye_layer(modes: vec4<u32>) -> u32 {
     return select(0u, (modes.w >> CHARACTER_EYE_LAYER_SHIFT) & 0xffu, modes.z == CHARACTER_SURFACE_EYE);
+}
+
+// M5 L11: see-through regions and the dissolve, which every pass that cuts a character's pixels
+// shares (anime_character.wgsl, its outlines and the masked prepasses), so each keeps the same
+// pixels. A pixel's region comes from the control map or the vertex, as each pass reads it.
+
+// How far the fade's dither leaves out a pixel of region `region` of `material`, on a character
+// faded by `fade`: the region's see-through share of what the fade keeps. Just `fade` for
+// materials without see-through regions, which skip the lookup.
+fn see_through_fade(material: u32, region: u32, fade: f32) -> f32 {
+    var cut = fade;
+    if (materials[material].modes.x & CHARACTER_FLAG_SEE_THROUGH) != 0u {
+        cut = fade + materials[material].layer_regions[region].see_through.x * (1.0 - fade);
+    }
+    return cut;
+}
+
+// The dissolve's value at lattice cell `cell` (whole numbers), in [0, 1): an integer hash, so
+// every backend computes the same lattice.
+fn dissolve_hash(cell: vec2<f32>) -> f32 {
+    let c = bitcast<vec2<u32>>(vec2<i32>(cell));
+    var h = (c.x * 0x8da6b343u) ^ (c.y * 0xd8163841u);
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// Value noise at `p`, in lattice cells: its cell's corners blended smoothly, in [0, 1).
+fn dissolve_value(p: vec2<f32>) -> f32 {
+    let cell = floor(p);
+    let f = p - cell;
+    let s = f * f * (3.0 - 2.0 * f);
+    let bottom = mix(dissolve_hash(cell), dissolve_hash(cell + vec2<f32>(1.0, 0.0)), s.x);
+    let top = mix(dissolve_hash(cell + vec2<f32>(0.0, 1.0)), dissolve_hash(cell + vec2<f32>(1.0, 1.0)), s.x);
+    return mix(bottom, top, s.y);
+}
+
+// The dissolve's noise at `uv` on `material` (`Dissolve`): two octaves of value noise, the
+// second finer and offset, in [0, 1). It reads no texture.
+fn dissolve_noise(material: u32, uv: vec2<f32>) -> f32 {
+    let p = uv * materials[material].dissolve.x;
+    return 0.65 * dissolve_value(p) + 0.35 * dissolve_value(p * 2.31 + vec2<f32>(17.0, 31.0));
+}
+
+// Whether the dissolve keeps a point whose noise is `noise`, on a character dissolved by
+// `amount`: every point at 0, none at 1, and between them the points the noise puts above it.
+fn dissolve_keeps(noise: f32, amount: f32) -> bool {
+    return amount < 1.0 && noise >= amount;
+}
+
+// How brightly a point the dissolve keeps glows at its edge, 0 to 1: 1 at the cut, falling to 0
+// the material's edge width above it, and 0 without an edge.
+fn dissolve_glow(material: u32, noise: f32, amount: f32) -> f32 {
+    let width = materials[material].dissolve.y;
+    return select(0.0, 1.0 - saturate((noise - amount) / max(width, 1e-6)), width > 0.0);
 }
 
 // --- Environment (`EnvironmentParams`): stylized GGX, the environment shader (M1 W4).

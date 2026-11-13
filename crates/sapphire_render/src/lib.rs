@@ -288,7 +288,7 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient, fades (M1 C7) and styles (M1 C8), 272 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient, fades (M1 C7), styles (M1 C8) and material drives (M5 L11), 304 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
 //! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
@@ -614,6 +614,12 @@
 //!   of each pixel's samples instead, and the single-sampled prepasses keep the pixels where it
 //!   isn't empty. A fading character takes no rim; its shadow stays whole. Only the anime
 //!   character family fades.
+//! - **Driven materials and see-through regions** (M5 L11, [`MaterialDrive`]): branches of the
+//!   same shader, no permutation of their own. A character's dissolve cuts its pixels by a value
+//!   noise over the UVs (an integer hash, no texture) in every pass the fade cuts, routed as a
+//!   fade is, its edge glowing; its emission's scale and a flash ride in its entry. A region's
+//!   opacity below 1 dithers its pixels as the fade does, its material drawn through the
+//!   alpha-tested variants; its glass reflects the sky by Fresnel, a layer.
 //! - **Cutting pixels out** (the alpha test, the dither): decided after every derivative,
 //!   discarded at the entry points' one exit after the shading, with only quads cut out whole
 //!   leaving early (frame.wgsl's `quad_any`; docs/conventions.md): Apple's Metal compiler has
@@ -922,8 +928,8 @@ pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, FaceExpression, FramePacket,
-    FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance,
-    PacketRange, SkinnedInstance, ViewData, Weather, Wind,
+    FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight, MaterialDrive,
+    MeshInstance, PacketRange, SkinnedInstance, ViewData, Weather, Wind,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;

@@ -106,7 +106,8 @@ use sapphire_physics::PhysicsWorld;
 use sapphire_render::color_vision::COLOR_VISION;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
-    MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers, ViewData, Wind,
+    MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers,
+    ViewData, Wind,
 };
 #[cfg(feature = "samples")]
 use sapphire_render::{LightKind, LocalLight};
@@ -2237,6 +2238,7 @@ impl Scene {
                     face,
                     body,
                     opacity,
+                    drive: MaterialDrive::NONE,
                 });
             }
             // What fades with its holder takes the holder's opacity, once every holder's is known: the
@@ -2268,6 +2270,7 @@ impl Scene {
                     face,
                     body,
                     opacity: 1.0,
+                    drive: MaterialDrive::NONE,
                 });
             }
         }

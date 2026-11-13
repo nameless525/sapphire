@@ -5,7 +5,8 @@
 use sapphire_assets::material::{AlphaMode, FoliageMaterial};
 use sapphire_render::quality::TierTable;
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, HistoryReset, InsetView, Wind,
+    CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, HistoryReset, InsetView,
+    MaterialDrive, Wind,
 };
 use sapphire_rhi::TransientDesc;
 
@@ -394,6 +395,7 @@ fn prepare_scene(frames: &mut Frames, gpu: &GpuContext, frame: u32, changed: &[M
         face: CharacterFace::default(),
         body: CharacterBody::capsule(Vec3::new(0.0, -0.5, 0.0), Vec3::new(0.0, 0.5, 0.0), 0.3),
         opacity: 1.0,
+        drive: MaterialDrive::NONE,
     });
     frames.renderer.prepare(gpu, frames.packets.current());
 }

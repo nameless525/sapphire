@@ -430,7 +430,8 @@ pub struct RenderStats {
     /// or with lighting or a face that isn't valid.
     pub ignored_characters: u32,
     /// Of [`Self::characters`], those that frame drew faded (M1 C7,
-    /// [`CharacterInstance::opacity`](crate::CharacterInstance::opacity) below 1).
+    /// [`CharacterInstance::opacity`](crate::CharacterInstance::opacity) below 1) or dissolving
+    /// (M5 L11, [`MaterialDrive::dissolve`](crate::MaterialDrive::dissolve) above 0).
     pub faded_characters: u32,
     /// Their anime character draws, their opaque ones moved to the alpha-tested variants, which
     /// the prepasses draw through their masked pipelines.

@@ -17,7 +17,7 @@ use super::tuning;
 use crate::graph::{FrameGraph, GraphExecutor};
 use crate::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
-    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
+    InstanceId, MaterialDrive, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
 };
 
 const SIZE: (u32, u32) = (320, 180);
@@ -163,6 +163,7 @@ impl Frames {
             face: CharacterFace::default(),
             body: CharacterBody::default(),
             opacity: 1.0,
+            drive: MaterialDrive::NONE,
         }));
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(gpu, self.packets.current());

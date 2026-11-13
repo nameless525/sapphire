@@ -138,7 +138,9 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 15: meshes carry an optional authored geometry identity. 14: the skeleton left the mesh
+    /// 16: embedded materials of `Material::VERSION` 12 (M5 L11's see-through regions, glass and
+    /// dissolve, which every anime character block carries). 15: meshes carry an optional
+    /// authored geometry identity. 14: the skeleton left the mesh
     /// for an asset of its own (M2 N1): a [`Skin`] names it and
     /// keeps only its joint count. 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag) or 11, whose
     /// whole-cycle rates (review RS-003) leave every block an importer generates as it was: their
@@ -159,13 +161,13 @@ impl Versioned for Mesh {
     /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
     /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
     /// float vertices.
-    const VERSION: u32 = 15;
+    const VERSION: u32 = 16;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
-// format too, unless it can't change a block an importer generates (`Material::VERSION` 11).
+// format too, unless it can't change a block an importer generates (`Material::VERSION` 12).
 const _: () = assert!(
-    Mesh::VERSION == 15 && Material::VERSION == 11,
+    Mesh::VERSION == 16 && Material::VERSION == 12,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

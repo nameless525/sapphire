@@ -285,7 +285,7 @@ fn cooked_materials_that_break_the_format_are_rejected() {
         let error = Material::read(&material.to_cooked().unwrap()).unwrap_err();
         assert!(expected(&error), "{error}");
     };
-    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 1585, .. }));
+    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 1745, .. }));
     check(
         |m| m.family = MaterialFamily::Sky,
         |e| matches!(e, MaterialError::ParamsSize { expected: 96, .. }),
@@ -334,7 +334,7 @@ fn swizzles_pack_two_slots_to_a_word() {
 #[test]
 fn gpu_blocks_have_their_documented_sizes() {
     let sizes = MaterialFamily::ALL.map(MaterialFamily::params_size);
-    assert_eq!(sizes, [1584, 144, 160, 96, 80]);
+    assert_eq!(sizes, [1744, 144, 160, 96, 80]);
     assert!(sizes.iter().all(|size| size % 16 == 0), "WGSL storage arrays stride by 16");
     assert_eq!(size_of::<AnimeCharacterRegion>(), 96);
     for family in MaterialFamily::ALL {
@@ -744,7 +744,8 @@ fn layers_pack_after_the_rim_settings_and_set_their_flags() {
     // A body binds the layer mask in the surface mask slot.
     let bound = 1 << AnimeCharacterMaterial::SURFACE_MASK | 1 << AnimeCharacterMaterial::MATCAP;
     assert_eq!(material.textures[AnimeCharacterMaterial::SURFACE_MASK].texture, Some(id(TEXTURE)));
-    assert_eq!(params.modes[0], bound | AnimeCharacterParams::FLAG_LAYERS);
+    let layers = AnimeCharacterParams::FLAG_LAYERS & !AnimeCharacterParams::FLAG_GLASS;
+    assert_eq!(params.modes[0], bound | layers, "every layer but glass");
     assert_eq!(params.modes[3], AnimeCharacterParams::SPECULAR_GGX);
     assert_eq!(params.terms[1], 0.02, "the highlight's softness");
     assert_eq!(params.layers, [0.75, 0.4, 0.5, 0.75], "albedo share, breaths a second, depth, bloom");
@@ -764,7 +765,10 @@ fn layers_pack_after_the_rim_settings_and_set_their_flags() {
     let rim_regions = 128 + 8 * 96 + 6 * 16;
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layers), rim_regions + 8 * 16);
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layer_regions), rim_regions + 8 * 16 + 5 * 16);
-    assert_eq!(size_of::<CharacterLayerRegion>(), 48);
+    assert_eq!(size_of::<CharacterLayerRegion>(), 64);
+    // M5 L11's dissolve follows the layer regions.
+    let dissolve = rim_regions + 8 * 16 + 5 * 16 + 8 * 64;
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, dissolve), dissolve);
     assert_eq!(material.material_flags(), MaterialFlags::OUTLINE | MaterialFlags::LAYERS, "the layers' bit");
 }
 
@@ -814,6 +818,72 @@ fn each_layer_turns_on_alone_and_none_by_default() {
 }
 
 #[test]
+fn see_through_regions_and_glass_pack_their_shares_and_route_through_the_alpha_test() {
+    let veil = CharacterRegion { opacity: 0.4, ..CharacterRegion::default() };
+    let lens = CharacterRegion { opacity: 0.25, glass: 0.8, roughness: 0.05, ..CharacterRegion::default() };
+    let document = AnimeCharacterMaterial {
+        regions: vec![CharacterRegion::default(), veil, lens],
+        ..AnimeCharacterMaterial::default()
+    };
+    assert!(document.validate().is_ok());
+    let params = document.gpu_params(&[Swizzle::IDENTITY; 8]);
+    let see_through = params.layer_regions.map(|region| region.see_through);
+    assert_eq!(see_through[0], [0.0; 4], "an opaque region keeps every pixel");
+    assert_eq!(see_through[1], [0.6, 0.0, 0.0, 0.0]);
+    assert_eq!(see_through[2], [0.75, 0.8, 0.0, 0.0]);
+    let flags = params.modes[0];
+    assert_eq!(flags & AnimeCharacterParams::FLAG_LAYERS, AnimeCharacterParams::FLAG_GLASS);
+    assert_ne!(flags & AnimeCharacterParams::FLAG_SEE_THROUGH, 0);
+    assert_eq!(flags & AnimeCharacterParams::FLAG_ALPHA_TEST, 0, "the block's own alpha test stays off");
+    let material_flags = document.flags();
+    assert!(material_flags.contains(MaterialFlags::ALPHA_TEST | MaterialFlags::LAYERS), "{material_flags:?}");
+    // Glass alone keeps every pixel: a layer, drawn opaque.
+    let glass = AnimeCharacterMaterial {
+        regions: vec![CharacterRegion { glass: 0.5, ..CharacterRegion::default() }],
+        ..AnimeCharacterMaterial::default()
+    };
+    assert!(!glass.flags().contains(MaterialFlags::ALPHA_TEST));
+    assert_eq!(
+        glass.gpu_params(&[Swizzle::IDENTITY; 8]).modes[0] & AnimeCharacterParams::FLAG_SEE_THROUGH,
+        0
+    );
+    // Glass reads the sky's reflection, so the renderer builds it.
+    let swizzles = vec![Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let reflects = |document: &AnimeCharacterMaterial| {
+        let cooked = Material::from_document(document, &swizzles).unwrap().to_cooked().unwrap();
+        Material::read(&cooked).unwrap().reads_reflection()
+    };
+    assert!(reflects(&glass));
+    assert!(!reflects(&AnimeCharacterMaterial::default()));
+}
+
+#[test]
+fn materials_without_the_new_settings_pack_and_write_as_before() {
+    // M5 L11's fields are written only when set, so earlier documents round-trip unchanged and
+    // their blocks hold zeros where the new settings would go, beside the default dissolve.
+    let document = layered();
+    let written = to_ron(&document).unwrap();
+    for field in ["opacity:", "glass:", "dissolve:"] {
+        let set = written.lines().any(|line| line.trim_start().starts_with(field));
+        assert!(!set, "{field} in {written}");
+    }
+    let params = document.gpu_params(&[Swizzle::IDENTITY; 8]);
+    assert!(params.layer_regions.iter().all(|region| region.see_through == [0.0; 4]));
+    assert_eq!(
+        params.modes[0] & (AnimeCharacterParams::FLAG_GLASS | AnimeCharacterParams::FLAG_SEE_THROUGH),
+        0
+    );
+    assert_eq!(params.dissolve, [20.0, 0.08, 0.0, 0.0]);
+    assert_eq!(params.dissolve_edge, [1.6, 0.8, 0.3, 0.0]);
+    let dissolve = Dissolve { scale: 8.0, edge: 0.2, edge_color: [0.2, 0.6, 2.0] };
+    let custom = AnimeCharacterMaterial { dissolve, ..document };
+    let read: AnimeCharacterMaterial = from_ron(&to_ron(&custom).unwrap()).unwrap();
+    assert_eq!(read.dissolve, dissolve);
+    let params = custom.gpu_params(&[Swizzle::IDENTITY; 8]);
+    assert_eq!((params.dissolve, params.dissolve_edge), ([8.0, 0.2, 0.0, 0.0], [0.2, 0.6, 2.0, 0.0]));
+}
+
+#[test]
 fn layers_validate_their_ranges() {
     let invalid = |edit: fn(&mut AnimeCharacterMaterial)| {
         let mut document = layered();
@@ -840,6 +910,28 @@ fn layers_validate_their_ranges() {
     let face =
         |m: &mut AnimeCharacterMaterial| m.surface = CharacterSurface::Face(FaceShading::new(id(RAMP)));
     assert!(invalid(face).starts_with("layer_mask"));
+    // M5 L11: opacity and glass are shares, for bodies that don't blend; the dissolve's cells
+    // and edge stay in range.
+    assert!(invalid(|m| m.regions[0].opacity = 1.5).starts_with("regions[0].opacity"));
+    assert!(invalid(|m| m.regions[0].glass = -0.5).starts_with("regions[0].glass"));
+    assert!(
+        invalid(|m| {
+            m.regions[0].opacity = 0.5;
+            m.alpha = AlphaMode::Blend;
+        })
+        .contains("sees through by its alpha")
+    );
+    assert!(
+        invalid(|m| {
+            m.layer_mask = None;
+            m.regions[0].glass = 0.5;
+            m.surface = CharacterSurface::Face(FaceShading::new(id(RAMP)));
+        })
+        .contains("for bodies")
+    );
+    assert!(invalid(|m| m.dissolve.scale = 0.0).starts_with("dissolve.scale"));
+    assert!(invalid(|m| m.dissolve.edge = 1.5).starts_with("dissolve.edge"));
+    assert!(invalid(|m| m.dissolve.edge_color = [f32::NAN; 3]).starts_with("dissolve.edge_color"));
 }
 
 #[test]

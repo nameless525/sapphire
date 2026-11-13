@@ -13,6 +13,12 @@
 //! never names more than the files beside it hold (whatever asks for a run's record asks for the document with
 //! it, so the two are overtaken together), and a kill at any moment leaves the document of the last
 //! batch written, or the one before it, with everything it names.
+//!
+//! **A record overtaken (M4 F4).** A document names the records asked for before it. A run's record that
+//! overtakes one waiting leaves the document waiting with it naming a record that will never be written, so
+//! `Writer::write` takes that document out too, and it waits for the next. A batch sent between a record and
+//! its document (a run's end once did this) then carries no document, rather than one naming ticks the
+//! journal skips past.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -126,9 +132,18 @@ impl Writer {
     }
 
     /// Asks for `path` to hold `content`, in place of anything waiting to go there.
+    ///
+    /// A run's record that overtakes one waiting takes the waiting document with it (M4 F4): that document names
+    /// the record overtaken, which now won't be written, so it waits for the next document, which names the new
+    /// one. Sent, it would name ticks the run's journal skips past.
     pub(crate) fn write(&mut self, path: PathBuf, content: Content) {
-        if self.waiting.insert(path, content).is_some() {
-            self.stats.overtaken += 1;
+        let record = matches!(content, Content::Run(_));
+        let Some(overtaken) = self.waiting.insert(path, content) else { return };
+        self.stats.overtaken += 1;
+        if record && matches!(overtaken, Content::Run(_)) {
+            let before = self.waiting.len();
+            self.waiting.retain(|_, waiting| !matches!(waiting, Content::Document(_)));
+            self.stats.overtaken += (before - self.waiting.len()) as u32;
         }
     }
 
@@ -158,16 +173,21 @@ impl Writer {
 
     /// Waits for the batch in flight, then writes what's waiting, here.
     pub(crate) fn finish(&mut self) {
+        self.wait_in_flight();
+        if !self.waiting.is_empty() {
+            let batch = self.batch();
+            let outcomes = write_batch(&*self.disk, batch);
+            self.report(outcomes);
+        }
+    }
+
+    /// Waits for the batch in flight and hears how it went, sending nothing.
+    pub(crate) fn wait_in_flight(&mut self) {
         if let Some(in_flight) = self.in_flight.take() {
             match in_flight.recv() {
                 Ok(outcomes) => self.report(outcomes),
                 Err(_) => self.lost(),
             }
-        }
-        if !self.waiting.is_empty() {
-            let batch = self.batch();
-            let outcomes = write_batch(&*self.disk, batch);
-            self.report(outcomes);
         }
     }
 

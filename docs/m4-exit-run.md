@@ -297,7 +297,7 @@ The test (§1): one command builds, installs and starts a playtest build on each
 - `cargo xtask playtest pull --platform <p>` copies every session to `target/playtest/<p>/sessions/` and replays every run to the device's checksums, failing on the first tick that differs.
 - `cargo xtask playtest report <session>` reads each run per encounter, and writes `report.ron` beside it.
 - `game_app`'s `draws_a_marked_tick` holds a mark's capture to the tick it names.
-- **A kill can't spoil a session** (F3): each run is kept as a journal, appended each keep with `frames.csv`, and `session.ron` is written last, so a kill anywhere in a keep reads as that keep or the one before (`sapphire_playtest`'s `keep_kill`, 40 SIGKILLs of a playing child, and `keep_faults`, every write failed or cut in turn; the emulator's killed sessions pulled whole). `pull` settles the journals into `.sreplay` and checksums before replaying. The report counts the player's hits landed and damage dealt.
+- **A kill can't spoil a session** (F3): each run is kept as a journal, appended each keep with `frames.csv`, and `session.ron` is written last, so a kill anywhere in a keep reads as that keep or the one before (`sapphire_playtest`'s `keep_kill`, 40 SIGKILLs of a playing child, and `keep_faults`, every write failed or cut in turn; the emulator's killed sessions pulled whole). M4 F4 closed the one order `keep_kill` caught, a run's end sending its record with the keep before's document, and a test now forces it. `pull` settles the journals into `.sreplay` and checksums before replaying. The report counts the player's hits landed and damage dealt.
 
 ```bash
 cargo xtask playtest --platform desktop -- --new-game --script fight-back --ticks 1695 \

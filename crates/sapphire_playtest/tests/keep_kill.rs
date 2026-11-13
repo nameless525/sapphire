@@ -22,7 +22,13 @@ use std::time::Duration;
 use common::{Plain, Played, Scratch, about, every_run_replays};
 use sapphire_playtest::{FRAMES_FILE, FrameRow, Session, journal};
 
+/// Kills at least, and at most: past [`ROUNDS`] it kills on until [`MID_KEEP`] kills have landed mid-keep.
 const ROUNDS: usize = 40;
+const MAX_ROUNDS: usize = 120;
+
+/// Kills that must land with a keep part way written past the document, for the rounds to prove that case. How
+/// many of 40 do swings with the machine's load (M4 F4 measured 1 to 11), so the rounds go on until they have.
+const MID_KEEP: usize = 3;
 
 /// Each run's length, in ticks: a run ends, and another begins.
 const RUN: u32 = 700;
@@ -65,8 +71,12 @@ fn left_a_keep_part_way(dir: &Path, kept: &sapphire_playtest::Kept) -> bool {
 fn kill_loop(scratch: &Scratch) {
     let exe = std::env::current_exe().expect("this test's path");
     let mut random = 0x5361_7070_6869_7265;
-    let (mut read, mut part_way, mut runs) = (0, 0, 0);
-    for round in 0..ROUNDS {
+    let (mut read, mut part_way, mut runs, mut rounds) = (0, 0, 0, 0);
+    for round in 0..MAX_ROUNDS {
+        if round >= ROUNDS && part_way >= MID_KEEP {
+            break;
+        }
+        rounds += 1;
         let sessions = scratch.sessions();
         let mut helper =
             Command::new(&exe).arg("--player").arg(&sessions).spawn().expect("starts the helper");
@@ -86,11 +96,11 @@ fn kill_loop(scratch: &Scratch) {
         fs::remove_dir_all(&sessions).unwrap();
     }
     println!(
-        "{ROUNDS} kills: {read} left a session ({runs} runs, each replaying to the device's checksums), \
+        "{rounds} kills: {read} left a session ({runs} runs, each replaying to the device's checksums), \
          {part_way} of them with a keep part way written past their document"
     );
-    assert!(read >= ROUNDS / 2, "too few kills landed after a first keep to prove anything");
-    assert!(part_way >= 3, "too few kills landed mid-keep to prove anything");
+    assert!(read >= rounds / 2, "too few kills landed after a first keep to prove anything");
+    assert!(part_way >= MID_KEEP, "too few kills landed mid-keep to prove anything: {part_way} of {rounds}");
 }
 
 fn main() -> ExitCode {

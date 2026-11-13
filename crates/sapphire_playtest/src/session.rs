@@ -164,7 +164,7 @@ impl Session {
         }
         // A keep, with the document that names the run's last ticks: a run's record waiting to be written may be
         // overtaken only by one whose document overtakes the one waiting with it, or the document on the disk
-        // could name ticks no record ends at.
+        // could name ticks no record ends at. So nothing is sent between the record and the document (M4 F4).
         self.keep_run(replay, &trail, true);
         self.run += 1;
         self.tick = 0;
@@ -232,8 +232,11 @@ impl Session {
     /// Writes what's changed since the last keep on a job, the run standing as far as it's got (`standing`, its
     /// file and its checksums) among it: only its new ticks, and only the new rows of frames. Also hears how
     /// the last keep went.
+    ///
+    /// The writer hears and sends only once the document is asked for, after every record it names (M4 F4): a
+    /// batch sent between [`Self::run_ended`]'s record and its document carried the record with the document
+    /// before, naming ticks that record had overtaken.
     pub fn keep(&mut self, standing: Option<(Replay, Trail)>) {
-        self.writer.poll();
         if let Some((replay, trail)) = standing {
             self.keep_run(replay, &trail, false);
         }
@@ -391,7 +394,14 @@ fn prune(sessions: &Path, keep: usize) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::{Condvar, Mutex};
+
+    use sapphire_gameplay::replay::{ARCHITECTURE, Recording, SCENARIOS, find_script};
+
     use super::*;
+    use crate::Kept;
 
     #[test]
     fn a_session_is_named_by_the_utc_calendar() {
@@ -405,5 +415,212 @@ mod tests {
         assert_eq!(clean_label("  felt\nlate  "), "felt late");
         assert_eq!(clean_label(&"a".repeat(100)).chars().count(), MAX_LABEL);
         assert_eq!(clean_label(&"é".repeat(100)).chars().count(), MAX_LABEL, "characters, not bytes");
+    }
+
+    /// A frame of 100 ms, so each tick adds a tenth of a row of frames.
+    const FRAME: Duration = Duration::from_millis(100);
+
+    #[derive(Default)]
+    struct HeldState {
+        held: bool,
+        /// Writes begun so far, the one that died among them.
+        writes: usize,
+        /// Documents written whole.
+        documents: usize,
+        /// The write the process dies at, counting from 0.
+        dies_at: Option<usize>,
+        dead: bool,
+    }
+
+    /// The disk as `durable_replace` and `durable_append` write it, without their flushes, which a test can hold
+    /// so that a batch stays in flight, and where the process dies as a given write begins: nothing from then
+    /// on reaches it.
+    struct Held {
+        state: Mutex<HeldState>,
+        opened: Condvar,
+    }
+
+    impl Held {
+        fn new(dies_at: Option<usize>) -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(HeldState { dies_at, ..HeldState::default() }),
+                opened: Condvar::new(),
+            })
+        }
+
+        fn hold(&self, held: bool) {
+            self.state.lock().unwrap().held = held;
+            self.opened.notify_all();
+        }
+
+        fn writes(&self) -> usize {
+            self.state.lock().unwrap().writes
+        }
+
+        fn documents(&self) -> usize {
+            self.state.lock().unwrap().documents
+        }
+
+        fn dead(&self) -> bool {
+            self.state.lock().unwrap().dead
+        }
+
+        /// Waits while the disk is held, then says whether this write goes ahead.
+        fn fate(&self, path: &Path) -> io::Result<()> {
+            let mut state = self.opened.wait_while(self.state.lock().unwrap(), |state| state.held).unwrap();
+            state.dead |= state.dies_at == Some(state.writes);
+            state.writes += 1;
+            if state.dead {
+                return Err(io::Error::other("the process died"));
+            }
+            state.documents += usize::from(path.ends_with(DOCUMENT_FILE));
+            Ok(())
+        }
+    }
+
+    impl Disk for Held {
+        fn replace(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            self.fate(path)?;
+            let temp = path.with_added_extension("tmp");
+            fs::write(&temp, bytes)?;
+            fs::rename(&temp, path)
+        }
+
+        fn append(&self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+            self.fate(path)?;
+            let mut file = OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+            if file.metadata()?.len() < at {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "shorter than its writer thinks"));
+            }
+            file.set_len(at)?;
+            file.seek(SeekFrom::Start(at))?;
+            file.write_all(bytes)
+        }
+    }
+
+    /// A directory of its own under the temp directory, empty.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sapphire-playtest-unit-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn about() -> About {
+        let device = Device { architecture: ARCHITECTURE.into(), ..Device::default() };
+        About { device, ..About::default() }
+    }
+
+    /// `ticks` more of a scripted run, the session told each frame.
+    fn play(recording: &mut Recording, session: &mut Session, ticks: u32) {
+        let mut source = find_script("melee-play").unwrap();
+        for _ in 0..ticks {
+            recording.step(&mut source).unwrap();
+            session.frame(FRAME, FRAME, ThermalReading::default(), recording.simulation().tick());
+        }
+    }
+
+    fn so_far(recording: &Recording) -> (Replay, Trail) {
+        (recording.so_far(), recording.trail().clone())
+    }
+
+    fn new_run() -> Recording {
+        let scenario = &SCENARIOS[0];
+        Recording::new(scenario, scenario.config).unwrap()
+    }
+
+    /// Plays a run of 90 ticks into a session under `sessions` on `disk`: a keep at tick 30 held in flight
+    /// while one at tick 60 waits behind it; then, once the first is written and heard and before anything
+    /// else is sent, the run's end at tick 90; then a flush. Gives the session's directory.
+    fn keep_then_end(sessions: &Path, disk: &Arc<Held>) -> PathBuf {
+        let mut session = Session::begin(sessions, about(), disk.clone()).unwrap();
+        let dir = session.dir().to_owned();
+        let mut recording = new_run();
+        play(&mut recording, &mut session, 30);
+        disk.hold(true);
+        // In flight, held at its first write.
+        session.keep(Some(so_far(&recording)));
+        play(&mut recording, &mut session, 30);
+        // Waits behind it: the run's record at tick 60, and the document naming it.
+        session.keep(Some(so_far(&recording)));
+        disk.hold(false);
+        // The first keep is written and heard, and nothing more is sent: the next send is the run's end's.
+        session.writer.wait_in_flight();
+        play(&mut recording, &mut session, 30);
+        let (replay, trail) = so_far(&recording);
+        session.run_ended(replay, trail);
+        session.flush(None);
+        dir
+    }
+
+    /// M4 F4. A run's end asks for its record, then for the document that names it. A batch sent between the
+    /// two carried that record with the document waiting from the keep before, which named the record the end
+    /// overtook; a kill before the next batch left that document on the disk, naming ticks the run's journal
+    /// skips past. `keep_kill` met it as a session reached its four hours (run 206, tick 500: the last keep
+    /// came 200 ticks before the run's end). This forces that order and kills the process at each write in
+    /// turn: every session left must read as one of its keeps.
+    #[test]
+    fn a_kill_after_a_runs_end_leaves_a_document_its_journal_reaches() {
+        let sessions = scratch("run-end");
+        let whole = Held::new(None);
+        keep_then_end(&sessions, &whole);
+        fs::remove_dir_all(&sessions).unwrap();
+        let writes = whole.writes();
+        let mut read = 0;
+        for dies_at in 0..writes {
+            let disk = Held::new(Some(dies_at));
+            let dir = keep_then_end(&sessions, &disk);
+            let what = format!("killed at write {dies_at} of {writes}");
+            assert!(disk.dead(), "{what}");
+            if dir.join(DOCUMENT_FILE).exists() {
+                let kept = Kept::read(&dir).unwrap();
+                let run = &kept.document.runs[0];
+                assert!(
+                    matches!((run.ticks, run.ended), (30, false) | (60, false) | (90, true)),
+                    "{what}: the document names a keep's ticks, not {} {}",
+                    run.ticks,
+                    run.ended
+                );
+                for (run, files) in kept.document.runs.iter().zip(&kept.runs) {
+                    let files =
+                        files.as_ref().unwrap_or_else(|error| panic!("{what}: run {}: {error}", run.number));
+                    assert_eq!(files.replay.ticks(), run.ticks, "{what}");
+                }
+                read += 1;
+            }
+            fs::remove_dir_all(&sessions).unwrap();
+        }
+        assert!(read + 3 >= writes, "only the first keep's writes leave nothing: {read} of {writes} read");
+    }
+
+    /// M4 F4. A run's record that overtakes one waiting takes the waiting document, which named the record
+    /// overtaken, with it: that document waits for the next, however the writer's sends fall.
+    #[test]
+    fn a_record_overtaking_another_takes_the_document_waiting_with_it() {
+        let sessions = scratch("overtaken");
+        let disk = Held::new(None);
+        // Its document is the one written; it writes nothing itself.
+        let mut session = Session::begin(&sessions, about(), disk.clone()).unwrap();
+        let journal = session.dir().join("runs/1/melee-1.journal");
+        let document = session.dir().join(DOCUMENT_FILE);
+        let mut writer = Writer::new(disk.clone());
+        let mut recording = new_run();
+        let run = |recording: &Recording, ended| {
+            let (replay, trail) = so_far(recording);
+            Content::Run(Box::new(RunKept { replay, trail, ended }))
+        };
+
+        play(&mut recording, &mut session, 30);
+        writer.write(journal.clone(), run(&recording, false));
+        writer.write(document.clone(), Content::Document(Box::new(session.document().clone())));
+        play(&mut recording, &mut session, 30);
+        writer.write(journal.clone(), run(&recording, true));
+        writer.finish();
+        assert_eq!(disk.documents(), 0, "the document waiting named the record overtaken");
+        assert_eq!(writer.stats().overtaken, 2);
+
+        writer.write(document, Content::Document(Box::new(session.document().clone())));
+        writer.finish();
+        assert_eq!((disk.documents(), writer.stats().failed), (1, 0));
+        fs::remove_dir_all(&sessions).unwrap();
     }
 }

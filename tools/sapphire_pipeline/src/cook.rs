@@ -2672,7 +2672,7 @@ fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
         .exits
         .iter()
         .map(|exit| {
-            let (other, _) = exit_target(path, plan.document(), exit, assets)?;
+            let (other, _) = exit_target(path, exit, assets)?;
             Ok(sapphire_zone::pack_name(zone::stem(other)))
         })
         .collect::<Result<Vec<_>, CookError>>()?;
@@ -3330,6 +3330,13 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Some(id) = document.probes {
         reference("probes".to_owned(), "a probe grid", id, Planned::is_probe_grid)?;
     }
+    if let Some(id) = document.sky {
+        reference("sky".to_owned(), "a sky material", id, Planned::is_material)?;
+        let source = &assets.get(id).expect("just checked").asset.path;
+        let bytes =
+            fs::read(source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
+        zone::check_sky_material(&bytes).map_err(zone_error(path))?;
+    }
     for (index, &id) in document.encounters.iter().enumerate() {
         let field = format!("encounters[{index}]");
         reference(field.clone(), "an encounter document", id, |planned| {
@@ -3375,7 +3382,7 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         }
     }
     for exit in &document.exits {
-        let (other, _) = exit_target(path, document, exit, assets)?;
+        let (other, _) = exit_target(path, exit, assets)?;
         let hash = blake3::hash(zone::stem(other).as_bytes());
         dependencies.push(Dependency::File { path: format!("#exit {}", exit.name), hash });
     }
@@ -3402,29 +3409,20 @@ fn check_encounter_in(
     })
 }
 
-/// The zone `exit` of the zone at `path`, whose document is `document`, leads to, its source's path and its
-/// plan, once it's held to having the spawner the exit arrives at: from its document, since two zones can lead to
-/// each other.
+/// The zone `exit` of the zone at `path` leads to, its source's path and its plan, once it's held to having the
+/// spawner the exit arrives at: from its document, since two zones can lead to each other. Every cook checks
+/// it, so a spawner taken out of the other zone fails this one's cook.
 ///
-/// Neither zone may have a probe grid (M4 Z3e): a trip brings no grid of its own, nor warms the environment's
-/// pipelines a grid's constants build again, and the renderer keeps the grid it had, so a zone with one would be
-/// lit by another's, or a tier change after the trip would build on the frame. Every cook checks it, as the
-/// spawner, so a grid added to the other zone fails this one's cook.
+/// Either zone may have a probe grid since M5 M6: a trip carries the grid of the zone it arrives in, and warms
+/// what a grid draws through as the zone comes (M4 Z3e refused such an exit until then).
 fn exit_target<'a>(
     path: &Path,
-    document: &ZoneDocument,
     exit: &sapphire_zone::Exit,
     assets: &Assets<'a>,
 ) -> Result<(&'a Path, &'a ZonePlan), CookError> {
     let refused = |field: &str, problem: String| {
         zone_error(path)(ZoneCookError::invalid(format!("exits `{}`{field}", exit.name), problem))
     };
-    if document.probes.is_some() {
-        return Err(refused(
-            "",
-            "a zone with a probe grid has no exits yet: a trip leaves its grid on the renderer".to_owned(),
-        ));
-    }
     let found = assets.zones.iter().find(|(_, plan)| plan.id() == exit.to);
     let (other, plan) = found.ok_or_else(|| CookError::ZoneReference {
         path: path.to_owned(),
@@ -3432,10 +3430,6 @@ fn exit_target<'a>(
         what: "a zone",
         id: exit.to,
     })?;
-    if plan.document().probes.is_some() {
-        let problem = format!("{} has a probe grid, which a trip doesn't bring yet", other.display());
-        return Err(refused(".to", problem));
-    }
     if !plan.document().spawners.iter().any(|spawner| spawner.name == exit.arrive) {
         return Err(refused(".arrive", format!("{} has no spawner `{}`", other.display(), exit.arrive)));
     }

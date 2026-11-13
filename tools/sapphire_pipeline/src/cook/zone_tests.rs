@@ -1439,29 +1439,65 @@ fn add_probe_grid(tree: &Tree) {
     tree.sidecar(&path, GRID, ImportSettings::ProbeGrid(probes::ProbeGridSettings::default()));
 }
 
-/// A trip brings no probe grid, and leaves the renderer the one it had (M4 Z3e): until it does, a zone with a
-/// grid has no exits and none leads into one, so no shipped trip lights a zone with another's grid, or builds
-/// on the frame of a tier change after it. Without a grid on either side the same exit cooks.
+/// A trip carries the grid of the zone it arrives in (M5 M6), so an exit may lead into or out of a zone with a
+/// probe grid, as M4 Z3e's cook refused until then.
 #[test]
-fn no_exit_leads_into_or_out_of_a_zone_with_a_probe_grid() {
+fn an_exit_leads_into_and_out_of_a_zone_with_a_probe_grid() {
     let tree = tree("zone-exit-probes");
     add_probe_grid(&tree);
     let exit = format!(r#"exits: [(name: "out", to: "{MARKET}", arrive: "from_town")],"#);
     let grid = format!(r#"probes: Some("{GRID}"),"#);
-    write_zone(&tree, &format!("{} {exit}", placements()));
-    let market = write_market(&tree, "");
-    tree.cook();
-
     write_zone(&tree, &format!("{} {grid} {exit}", placements()));
-    let text = chain(&tree.try_cook(false).expect_err("an exit out of a zone with a grid"));
-    assert!(
-        text.contains("town.zone.ron") && text.contains("exits `out`") && text.contains("probe grid"),
-        "{text}"
-    );
-
-    write_zone(&tree, &format!("{} {exit}", placements()));
+    let market = write_market(&tree, "");
     let into = fs::read_to_string(&market).unwrap().replace("exits: [],", &format!("{grid} exits: [],"));
     fs::write(&market, into).unwrap();
-    let text = chain(&tree.try_cook(false).expect_err("an exit into a zone with a grid"));
-    assert!(text.contains("exits `out`.to") && text.contains("market.zone.ron has a probe grid"), "{text}");
+    let report = tree.cook();
+    let town = read_zone(&report);
+    let town = Zone::read(&town).unwrap();
+    assert_eq!(town.presentation.probes.as_ref().copied(), Some(GRID));
+    assert_eq!(town.simulation.exits[0].to, MARKET);
 }
+
+const SKY: AssetId = AssetId::from_bytes([0x2c; 16]);
+
+/// A zone's sky is a sky material's, which ships with the zone, and its air comes through as written. A
+/// material of another family is refused by its field, as it would cook and then draw nothing in the sky.
+#[test]
+fn a_zone_names_its_sky_and_its_air() {
+    let tree = tree("zone-sky");
+    let sky = tree.write("materials/hollow_sky.material.ron", SKY_DOCUMENT.as_bytes());
+    tree.sidecar(&sky, SKY, ImportSettings::Material(MaterialSettings::default()));
+    let air = r#"wind: Some((direction: (0.0, 0.0, 1.0), strength: 2.0)), weather: Some((wetness: 0.8)),
+        fog: Some((density: 0.5, height_base: Some(-2.0))),"#;
+    write_zone(&tree, &format!(r#"{} sky: Some("{SKY}"), {air}"#, placements()));
+    let report = tree.cook();
+    let zone = read_zone(&report);
+    let read = Zone::read(&zone).unwrap();
+    assert_eq!(read.presentation.sky.as_ref().copied(), Some(SKY));
+    assert_eq!(read.presentation.wind.as_ref().map(|wind| wind.to_native().strength), Some(2.0));
+    assert_eq!(read.presentation.weather.as_ref().map(|weather| weather.to_native().puddles), Some(0.0));
+    assert_eq!(read.presentation.fog.as_ref().and_then(|fog| fog.to_native().height_base), Some(-2.0));
+    assert!(AssetKind::Zone.reach(&zone).unwrap().contains(&SKY));
+    let packed = pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap();
+    let holding: Vec<&str> = packed
+        .packs
+        .iter()
+        .filter(|pack| {
+            let bytes = fs::read(&pack.path).unwrap();
+            PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == SKY)
+        })
+        .map(|pack| pack.name.as_str())
+        .collect();
+    assert_eq!(holding, ["zone_town"]);
+
+    write_zone(&tree, &format!(r#"{} sky: Some("{WOOD}"),"#, placements()));
+    let text = chain(&tree.try_cook(false).expect_err("a character material for a sky"));
+    assert!(text.contains("town.zone.ron") && text.contains("sky") && text.contains("SkyMaterial"), "{text}");
+}
+
+/// A sky material with nothing but its sun, as small as one reads.
+const SKY_DOCUMENT: &str = r#"(
+    type: "sapphire::render::SkyMaterial",
+    version: 1,
+    data: (sun: (size: 2.0, softness: 0.1)),
+)"#;

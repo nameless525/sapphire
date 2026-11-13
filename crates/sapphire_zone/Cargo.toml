@@ -24,6 +24,8 @@ thiserror.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+# A zone's air read alone, as a document writes it, in its tests.
+ron.workspace = true
 # What a digest reads besides the zone: a cooked collider set, in its test.
 sapphire_colliders.workspace = true
 

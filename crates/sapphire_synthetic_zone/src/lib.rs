@@ -85,7 +85,7 @@ impl SyntheticZone {
     ///
     /// If the zone it builds isn't one a cook could make.
     pub fn pack(self, extra: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
-        self.pack_under(ROOT, Vec::new(), extra)
+        self.pack_under(ROOT, Vec::new(), extra, |_| {})
     }
 
     /// The zone numbered `room`, for a test of going between zones: one of a family, asset IDs of its own.
@@ -105,7 +105,23 @@ impl SyntheticZone {
         exits: Vec<CookedExit>,
         extra: Vec<PackAsset>,
     ) -> Result<Vec<u8>, PackError> {
-        self.pack_under(room_root(room), exits, extra)
+        self.pack_under(room_root(room), exits, extra, |_| {})
+    }
+
+    /// As [`Self::room_pack`], the zone's presentation dressed by `dress` before it's cooked: a look of its own
+    /// (M5 M6), whose assets `extra` holds.
+    ///
+    /// # Panics
+    ///
+    /// If the zone it builds isn't one a cook could make.
+    pub fn dressed_room_pack(
+        self,
+        room: u32,
+        exits: Vec<CookedExit>,
+        extra: Vec<PackAsset>,
+        dress: impl FnOnce(&mut ZonePresentation),
+    ) -> Result<Vec<u8>, PackError> {
+        self.pack_under(room_root(room), exits, extra, dress)
     }
 
     fn pack_under(
@@ -113,6 +129,7 @@ impl SyntheticZone {
         root: AssetId,
         exits: Vec<CookedExit>,
         extra: Vec<PackAsset>,
+        dress: impl FnOnce(&mut ZonePresentation),
     ) -> Result<Vec<u8>, PackError> {
         let material_id = root.sub_asset("material");
         let mut assets = extra;
@@ -184,7 +201,7 @@ impl SyntheticZone {
                 });
             }
         }
-        let zone = Zone {
+        let mut zone = Zone {
             simulation: ZoneSimulation {
                 colliders: None,
                 spawners: Vec::new(),
@@ -213,8 +230,13 @@ impl SyntheticZone {
                 day: None,
                 rigs: None,
                 splines: Vec::new(),
+                sky: None,
+                wind: None,
+                weather: None,
+                fog: None,
             },
         };
+        dress(&mut zone.presentation);
         let bytes = zone.to_cooked().expect("a synthetic zone is a valid one");
         assets.push(asset(root.sub_asset("zone"), AssetKind::Zone, &bytes));
         write_pack(assets)

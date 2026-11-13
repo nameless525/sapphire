@@ -5221,6 +5221,7 @@ dependencies = [
  "bevy_reflect",
  "glam 0.33.12",
  "rkyv",
+ "ron",
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_math",

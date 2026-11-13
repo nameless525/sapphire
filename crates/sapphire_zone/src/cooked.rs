@@ -6,7 +6,8 @@
 //! activates by distance.
 //!
 //! No upgrades, like every cooked format: a changed layout takes a version bump and recooks from its
-//! document.
+//! document. The simulation's half has a version of its own ([`ZoneSimulation`]'s), which the digest names,
+//! so a change to the presentation's alone moves no replay.
 //!
 //! [`Zone::read`] takes bytes that came from a pack, which needn't have come from our cooker: bytecheck
 //! rules out a bad archive, and [`ArchivedZone::validate`] everything the runtime would otherwise have
@@ -25,6 +26,7 @@ use crate::document::{
     check_positive, check_scale, check_spot,
 };
 use crate::grid::{Bounds, CellCoord, Grid, MAX_COORDINATE};
+use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 
 /// Conventional file extension for cooked zones.
 pub const ZONE_EXTENSION: &str = "szone";
@@ -40,7 +42,13 @@ pub struct Zone {
 
 impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
-    /// patrols, and who walks them (P3).
+    /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
+    const VERSION: u32 = 6;
+}
+
+impl Versioned for ZoneSimulation {
+    /// [`Zone::VERSION`] as of the last change to this half, which the digest names: a change to the
+    /// presentation's alone bumps that and not this, so no replay's digest moves with it. 5: M3 P3.
     const VERSION: u32 = 5;
 }
 
@@ -198,6 +206,14 @@ pub struct ZonePresentation {
     pub rigs: Option<String>,
     /// Camera rails, by ascending ID.
     pub splines: Vec<CookedSpline>,
+    /// The sky material its sky draws with, in place of the app's.
+    pub sky: Option<AssetId>,
+    /// The wind its plants sway in.
+    pub wind: Option<ZoneWind>,
+    /// How wet it is.
+    pub weather: Option<ZoneWeather>,
+    /// Its fog over its day's.
+    pub fog: Option<ZoneFog>,
 }
 
 /// One cell of a zone's grid.
@@ -485,8 +501,8 @@ impl ArchivedZone {
         references
     }
 
-    /// What the zone names without holding: the meshes of its cells and instances and its probe grid,
-    /// for the world to ask for and let go of, and for a packer to place. Sorted, without repeats.
+    /// What the zone names without holding: the meshes of its cells and instances, its probe grid and its sky
+    /// material, for the world to ask for and let go of, and for a packer to place. Sorted, without repeats.
     pub fn presentation_references(&self) -> Vec<AssetId> {
         let presentation = &self.presentation;
         let contents = presentation
@@ -497,7 +513,8 @@ impl ArchivedZone {
         let meshes = contents.filter_map(|contents| contents.mesh.as_ref().copied());
         let instances = presentation.instances.iter().map(|instance| instance.mesh);
         let probes = presentation.probes.as_ref().copied();
-        let mut references: Vec<AssetId> = meshes.chain(instances).chain(probes).collect();
+        let sky = presentation.sky.as_ref().copied();
+        let mut references: Vec<AssetId> = meshes.chain(instances).chain(probes).chain(sky).collect();
         references.sort_unstable();
         references.dedup();
         references
@@ -536,7 +553,7 @@ impl ArchivedZone {
         let simulation = &self.simulation;
         let mut digest = Digest::new();
         digest.bytes(b"sapphire zone simulation");
-        digest.u32(Zone::VERSION);
+        digest.u32(ZoneSimulation::VERSION);
 
         digest.u32(simulation.spawners.len() as u32);
         for spawner in simulation.spawners.iter() {
@@ -737,6 +754,15 @@ impl ArchivedZone {
                 ZoneError::invalid(format!("spline `{}`", spline.name.as_str()), problem)
             })?;
         }
+        if let Some(wind) = presentation.wind.as_ref() {
+            wind.to_native().check().map_err(|problem| ZoneError::invalid("wind", problem))?;
+        }
+        if let Some(weather) = presentation.weather.as_ref() {
+            weather.to_native().check().map_err(|problem| ZoneError::invalid("weather", problem))?;
+        }
+        if let Some(fog) = presentation.fog.as_ref() {
+            fog.to_native().check().map_err(|problem| ZoneError::invalid("fog", problem))?;
+        }
         Ok(())
     }
 }
@@ -861,6 +887,7 @@ mod tests {
     const PROBES: AssetId = AssetId::from_text("9df1c80b-9d2d-4100-a6cc-a16331f57cb5");
     const OTHER_ZONE: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
     const NAVIGATION: AssetId = AssetId::from_text("6d7b7a5c-8c5e-4d7f-9b0e-3a1f2c4d5e6f");
+    const SKY: AssetId = AssetId::from_text("5d1c7a2e-90b4-4e3f-8c61-2a7f0d9b4e15");
 
     fn document() -> ZoneDocument {
         ZoneDocument::from_ron(&format!(
@@ -882,6 +909,10 @@ mod tests {
                         ),
                     ],
                     probes: Some("{PROBES}"),
+                    sky: Some("{SKY}"),
+                    wind: Some((direction: (1.0, 0.0, 0.0), strength: 0.5, gustiness: 0.2)),
+                    weather: Some((wetness: 0.6, puddles: 0.3)),
+                    fog: Some((density: 1.5, height_base: Some(-0.5))),
                     colliders: Some("{COLLIDERS}"),
                     navigation: Some((min: (-64.0, -64.0), max: (64.0, 64.0))),
                     spawners: [
@@ -994,6 +1025,13 @@ mod tests {
         assert!(presentation.cell_at(CellCoord { x: 0, z: 0 }).is_none());
         assert!(matches!(presentation.lights[0].shape(), CookedLightShape::Spot { .. }));
         assert_eq!(presentation.splines[0].point(1), [3.2, 2.5, -40.0]);
+        assert_eq!(presentation.sky.as_ref().copied(), Some(SKY));
+        let wind = presentation.wind.as_ref().expect("there").to_native();
+        assert_eq!(wind, ZoneWind { direction: [1.0, 0.0, 0.0], strength: 0.5, gustiness: 0.2 });
+        let weather = presentation.weather.as_ref().expect("there").to_native();
+        assert_eq!(weather, ZoneWeather { wetness: 0.6, puddles: 0.3 });
+        let fog = presentation.fog.as_ref().expect("there").to_native();
+        assert_eq!(fog, ZoneFog { density: 1.5, height_base: Some(-0.5) });
     }
 
     #[test]
@@ -1001,7 +1039,7 @@ mod tests {
         let bytes = zone().to_cooked().expect("write");
         let read = Zone::read(&bytes).expect("read");
         assert_eq!(read.references(), [COLLIDERS, NAVIGATION]);
-        let mut expected = vec![MESH, CELL_MESH, BACKDROP_MESH, PROBES];
+        let mut expected = vec![MESH, CELL_MESH, BACKDROP_MESH, PROBES, SKY];
         expected.sort_unstable();
         assert_eq!(read.presentation_references(), expected);
     }
@@ -1010,7 +1048,7 @@ mod tests {
     #[test]
     fn cooked_data_the_document_would_refuse_is_refused() {
         type Tamper = fn(&mut Zone);
-        let cases: [(&str, &str, Tamper); 29] = [
+        let cases: [(&str, &str, Tamper); 32] = [
             ("cell size", "cell_size", |z| z.presentation.cell_size = 0.0),
             ("spawner order", "out of order", |z| z.simulation.spawners.reverse()),
             ("spawner id", "isn't its name's hash", |z| z.simulation.spawners[0].id ^= 1),
@@ -1048,6 +1086,11 @@ mod tests {
             ("instance scale", "nonzero", |z| z.presentation.instances[0].scale = [0.0; 3]),
             ("light", "isn't positive", |z| z.presentation.lights[0].range = -1.0),
             ("spline", "points", |z| z.presentation.splines[0].points.clear()),
+            ("wind", "horizontal", |z| {
+                z.presentation.wind.as_mut().expect("there").direction = [0.0, 1.0, 0.0]
+            }),
+            ("weather", "wetness", |z| z.presentation.weather.as_mut().expect("there").wetness = 2.0),
+            ("fog", "density", |z| z.presentation.fog.as_mut().expect("there").density = f32::NAN),
         ];
         for (what, expected, tamper) in cases {
             let mut tampered = zone();
@@ -1218,11 +1261,15 @@ mod tests {
             tamper(&mut moved);
             assert_ne!(digest_of(&moved, &colliders), base, "{what}");
         }
-        let presentation: [(&str, Tamper); 4] = [
+        let presentation: [(&str, Tamper); 8] = [
             ("a cell's bounds", |z| z.presentation.cells[0].contents.bounds_max[1] += 1.0),
             ("a light", |z| z.presentation.lights[0].intensity += 1.0),
             ("the day", |z| z.presentation.day = None),
             ("a rail", |z| z.presentation.splines[0].points[0][0] += 1.0),
+            ("the sky", |z| z.presentation.sky = None),
+            ("the wind", |z| z.presentation.wind = None),
+            ("the weather", |z| z.presentation.weather = None),
+            ("the fog", |z| z.presentation.fog = None),
         ];
         for (what, tamper) in presentation {
             let mut moved = zone();
@@ -1286,7 +1333,7 @@ mod tests {
     /// The test CI's Linux, Windows and macOS jobs read, on x86-64 and arm64. The digest goes through
     /// the process's stderr, past the test harness's capture, so a passing job's log shows it, and it's
     /// pinned, so a different one fails the job with the number. Search a job's log for
-    /// `sapphire_zone digest`. The value moves when `Zone::VERSION`, the text below or the collider
+    /// `sapphire_zone digest`. The value moves when `ZoneSimulation::VERSION`, the text below or the collider
     /// cook's output changes: set it to what this prints.
     #[test]
     fn digest_pins() {

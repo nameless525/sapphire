@@ -898,6 +898,10 @@ fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
             day: None,
             rigs: None,
             splines: Vec::new(),
+            sky: None,
+            wind: None,
+            weather: None,
+            fog: None,
         },
     };
     let cooked = zone.to_cooked()?;

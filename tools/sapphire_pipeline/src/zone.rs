@@ -138,6 +138,9 @@ pub const SOURCE_SUFFIX: &str = ".zone.ron";
 /// cooker can't link, so a cook checks what it can and the runtime reads the rest.
 const RIG_LIBRARY: &str = "sapphire::world::LightRigLibrary";
 
+/// The document type a zone's `sky` must be: a sky material, not one of another family's.
+const SKY_MATERIAL: &str = "sapphire::render::SkyMaterial";
+
 /// Import settings for zones: how their cells' meshes cook. A source's own `MeshSettings` don't apply,
 /// as a prefab's triangles join a cell's.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -900,6 +903,17 @@ fn rigs_text(bytes: Vec<u8>) -> Result<String, ZoneCookError> {
         return Err(ZoneCookError::invalid("rigs", problem));
     }
     Ok(text)
+}
+
+/// Whether `bytes`, the source of the material a zone's `sky` names, is a sky material's (M5 M6): another
+/// family's would cook, and then draw nothing in the sky.
+pub fn check_sky_material(bytes: &[u8]) -> Result<(), ZoneCookError> {
+    let found = sapphire_serialize::document::type_name(&String::from_utf8_lossy(bytes))
+        .map_err(|error| ZoneCookError::invalid("sky", format!("it doesn't read: {error}")))?;
+    if found != SKY_MATERIAL {
+        return Err(ZoneCookError::invalid("sky", format!("it's a `{found}`, not a `{SKY_MATERIAL}`")));
+    }
+    Ok(())
 }
 
 /// `bounds` under `at · turn · scale`: the box around its corners, as an instance stands.

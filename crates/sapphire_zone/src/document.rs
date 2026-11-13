@@ -26,6 +26,11 @@
 //!         probes: Some("44f04da1-31ba-4d3f-9e65-3e38a30fff43"),
 //!         day: Some("../lookdev/lookdev_day.ron"),
 //!         rigs: Some("../lookdev/lookdev_light_rigs.ron"),
+//!         // Its own sky, and its air (the `look` module): what it looks like as itself, after a trip too.
+//!         sky: Some("5d1c7a2e-90b4-4e3f-8c61-2a7f0d9b4e15"),
+//!         wind: Some((direction: (0.94, 0.0, 0.33), strength: 0.6, gustiness: 0.3)),
+//!         weather: Some((wetness: 0.7, puddles: 0.4)),
+//!         fog: Some((density: 1.6, height_base: Some(-0.5))),
 //!         colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
 //!         navigation: Some((min: (-64.0, -64.0), max: (64.0, 64.0))),
 //!         spawners: [
@@ -78,6 +83,7 @@ use crate::cooked::{
     ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
+use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 
 /// The most entries any list of a zone may hold.
 pub const MAX_ENTRIES: usize = 1 << 20;
@@ -111,6 +117,18 @@ pub struct ZoneDocument {
     /// A character light rig library's document, from this document's directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rigs: Option<String>,
+    /// The sky material its sky draws with, by its sidecar's ID, in place of the app's (M5 M6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky: Option<AssetId>,
+    /// The wind its plants sway in, in place of the stage's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind: Option<ZoneWind>,
+    /// How wet it is. With none, it's dry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<ZoneWeather>,
+    /// Its fog over its day's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fog: Option<ZoneFog>,
     /// The zone's static colliders: a `.colliders.ron` source, by its sidecar's ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colliders: Option<AssetId>,
@@ -485,6 +503,15 @@ impl ZoneDocument {
         if let Some(rigs) = &self.rigs {
             check_path(rigs).map_err(invalid("rigs".to_owned()))?;
         }
+        if let Some(wind) = &self.wind {
+            wind.check().map_err(invalid("wind".to_owned()))?;
+        }
+        if let Some(weather) = &self.weather {
+            weather.check().map_err(invalid("weather".to_owned()))?;
+        }
+        if let Some(fog) = &self.fog {
+            fog.check().map_err(invalid("fog".to_owned()))?;
+        }
         check_names("spawners", self.spawners.iter().map(|spawner| spawner.name.as_str()))?;
         for (index, spawner) in self.spawners.iter().enumerate() {
             let field = |name: &str| format!("spawners[{index}].{name}");
@@ -720,6 +747,10 @@ impl ZoneDocument {
             day: geometry.day,
             rigs: geometry.rigs,
             splines: self.cooked_splines()?,
+            sky: self.sky,
+            wind: self.wind,
+            weather: self.weather,
+            fog: self.fog,
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {

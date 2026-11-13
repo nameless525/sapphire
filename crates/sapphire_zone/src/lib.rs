@@ -16,6 +16,8 @@
 //!   into what the simulation reads ([`ZoneSimulation`]) and what only presentation does
 //!   ([`ZonePresentation`]).
 //! - **The digest** ([`ArchivedZone::simulation_digest`]): what a replay pins.
+//! - **A zone's air** ([`look`], M5 M6): its wind, weather and fog, beside its day, rigs, probes and sky in
+//!   [`ZonePresentation`].
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //!
@@ -47,6 +49,7 @@ pub mod cooked;
 pub mod document;
 pub mod encounter;
 pub mod grid;
+pub mod look;
 
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
@@ -65,6 +68,7 @@ pub use encounter::{
     EncounterDocument, MAX_FACTION, MAX_TOKENS, MAX_WAVE_SPAWNS, MAX_WAVES, Wave, WaveStart,
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
+pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
 
 /// The pack a zone's own assets go in, from the zone source's file stem (`town.zone.ron` →
 /// `zone_town`): the packer writes it and whoever loads the zone mounts it.

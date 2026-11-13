@@ -75,6 +75,10 @@ impl Small {
                 day: None,
                 rigs: None,
                 splines: Vec::new(),
+                sky: None,
+                wind: None,
+                weather: None,
+                fog: None,
             },
         };
         let encounter = format!(

@@ -100,6 +100,11 @@
 //! axis (`overrun_give`). The heroine also resolves garment and limb contact at the drawn pose,
 //! with a bounded coherent change to each strand rather than more bend at the tip.
 //!
+//! # Cloth
+//!
+//! [`SpringBones::set_cloth`] wears sheets of neighbouring chains as cloth: XPBD links across the
+//! chains, solved inside the same sub-steps after the springs' own step (the `cloth` module's docs).
+//!
 //! # Teleports, cuts and sleeping
 //!
 //! [`SpringBones::reset`] settles from the pose at the next update, with no motion, so a teleport or
@@ -128,6 +133,9 @@ use sapphire_math::{Affine3A, Quat, Vec3};
 use sapphire_body_pose::{CharacterPose, JointLayout, model_of};
 
 mod clearance;
+mod cloth;
+
+pub use cloth::{ClothError, ClothSheet, MAX_CLOTH_ITERATIONS};
 
 /// Ticks a second on the clocks springs run on (`sapphire_time::TICK_HZ`), and the rate VRM's
 /// parameters are read at.
@@ -497,6 +505,16 @@ struct Tail {
     before: Vec3,
 }
 
+/// A swinging bone at a sub-step, as its colliders see it.
+#[derive(Clone, Copy, Debug)]
+struct Bone {
+    head: Vec3,
+    length: f32,
+    hit_radius: f32,
+    /// Where it points when nothing else says: as the pose has it.
+    fallback: Vec3,
+}
+
 /// A collider on a joint, in that joint's space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Collider {
@@ -688,6 +706,8 @@ pub struct SpringBones {
     /// Ticks between the clearance's solves, `None` to hold what it last solved
     /// ([`Self::set_clearance_interval`]).
     clearance_interval: Option<u32>,
+    /// Sheets of its chains worn as cloth ([`Self::set_cloth`]).
+    cloth: Option<Box<cloth::Cloth>>,
 }
 
 /// Presentation contact fitted to the heroine's cooked strands and shirt ([`SpringBones::with_clearance`]):
@@ -941,6 +961,7 @@ impl SpringBones {
             resting: false,
             clearance: None,
             clearance_interval: Some(1),
+            cloth: None,
         })
     }
 
@@ -1050,8 +1071,12 @@ impl SpringBones {
     }
 
     /// Takes over `other`'s motion for a new version of the character: its tails and clock, when it
-    /// swings the same joints the same way. Otherwise this settles at its next update.
+    /// swings the same joints the same way. Otherwise this settles at its next update. Cloth carries
+    /// its iterations over; the sheets are this one's own ([`Self::set_cloth`]), set first.
     pub fn continue_from(&mut self, other: &Self) {
+        if let (Some(cloth), Some(old)) = (&mut self.cloth, &other.cloth) {
+            cloth.continue_from(old);
+        }
         let same = self.layout == other.layout
             && self.steps == other.steps
             && self.anchors == other.anchors
@@ -1189,6 +1214,9 @@ impl SpringBones {
         self.index = last;
         self.drawn_at = ticks;
         self.anchors_was.copy_from_slice(&self.anchors_now);
+        if let Some(cloth) = &mut self.cloth {
+            cloth.end_frame();
+        }
 
         self.note_stillness(due as u32, fastest, pose_moved || world_moved);
         self.draw(pose, ticks);
@@ -1213,6 +1241,10 @@ impl SpringBones {
             } else {
                 Frame::of(&pose.model()[usize::from(joint)])
             };
+        }
+        if let Some(mut cloth) = self.cloth.take() {
+            cloth.read_pose(self, pose.model());
+            self.cloth = Some(cloth);
         }
         self.targets_stale = false;
     }
@@ -1249,6 +1281,9 @@ impl SpringBones {
             self.origin = world.position;
             self.world_rotation = world.rotation;
             self.world = frame.world_from_model;
+            if let Some(cloth) = &mut self.cloth {
+                cloth.scale = world.scale;
+            }
         }
         for (now, model) in self.anchors_now.iter_mut().zip(&self.model_anchors) {
             *now = model.in_world(&world);
@@ -1271,6 +1306,10 @@ impl SpringBones {
             *now = model.in_world(&world);
         }
         self.anchors_was.copy_from_slice(&self.anchors_now);
+        if let Some(cloth) = &mut self.cloth {
+            cloth.scale = world.scale;
+            cloth.end_frame();
+        }
         let anchors = self.anchors.len();
         self.slots[..anchors].copy_from_slice(&self.anchors_now);
         place_colliders(&self.colliders, &self.slots, &mut self.colliders_now);
@@ -1307,6 +1346,14 @@ impl SpringBones {
     /// Returns the square of the fastest tail's motion.
     fn substep(&mut self, pose: &CharacterPose, between: f32, torso_contact: f32) -> f32 {
         let anchors = self.anchors.len();
+        // Out of the way while the springs step, so they can read it.
+        let mut cloth = self.cloth.take();
+        let solving = cloth.as_ref().is_some_and(|cloth| cloth.is_solving());
+        if let Some(cloth) = &mut cloth
+            && solving
+        {
+            cloth.begin(&self.tails);
+        }
         for ((slot, was), now) in self.slots.iter_mut().zip(&self.anchors_was).zip(&self.anchors_now) {
             *slot = was.lerp(now, between);
         }
@@ -1361,26 +1408,11 @@ impl SpringBones {
                 let moved = tail.now
                     + (tail.now - tail.before) * keep
                     + (toward_pose * swing.stiffness + swing.gravity) * force;
-                let mut next = position + (moved - position).try_normalize().unwrap_or(toward_pose) * length;
+                let next = position + (moved - position).try_normalize().unwrap_or(toward_pose) * length;
                 let (first, end) = swing.colliders;
                 let hit_radius = swing.hit_radius * scale;
-                for &collider in &self.collider_lists[first as usize..end as usize] {
-                    let was = &self.colliders_was[usize::from(collider)];
-                    let now = &self.colliders_now[usize::from(collider)];
-                    if let Some(out) = contact(tail.now, next, was, now, hit_radius) {
-                        let reach = now.radius + hit_radius;
-                        let (out, reach) = if self.limited {
-                            // Likewise a bone whose own head it has overrun: nothing it can do reads.
-                            let began = tail.now.distance(was.nearest(tail.now));
-                            let head = position.distance(now.nearest(position));
-                            let give = overrun_give(began / reach) * overrun_give(head / reach);
-                            (next.lerp(out, give), began + (reach - began).max(0.0) * give)
-                        } else {
-                            (out, reach)
-                        };
-                        next = clear_of(position, length, out, now, reach, toward_pose);
-                    }
-                }
+                let bone = Bone { head: position, length, hit_radius, fallback: toward_pose };
+                let next = self.collide(swing.colliders, &self.colliders_was, &bone, tail.now, next);
                 // Bound the dynamics before the final pose's surface contact. The swing goes first
                 // and the bend last to protect the curve of the strand.
                 let aim = (next - position).try_normalize().unwrap_or(toward_pose);
@@ -1424,7 +1456,10 @@ impl SpringBones {
                         next = position + aim * length;
                     }
                 }
-                fastest = fastest.max((next - tail.now).length_squared());
+                // A tail the cloth moves is measured once the cloth has.
+                if !(solving && cloth.as_ref().is_some_and(|cloth| cloth.moves(at))) {
+                    fastest = fastest.max((next - tail.now).length_squared());
+                }
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
                 let turned = (parent.rotation.inverse() * rotation).normalize();
                 // What the bone and the colliders did counts toward its motion by this sub-step's share.
@@ -1435,7 +1470,45 @@ impl SpringBones {
             };
             self.slots[anchors + index] = Frame { rotation, position, scale };
         }
+        if let Some(mut cloth) = cloth {
+            if solving {
+                fastest = fastest.max(self.solve_cloth(&mut cloth, locals, between));
+            }
+            self.cloth = Some(cloth);
+        }
         fastest
+    }
+
+    /// Where a tail going from `from` to `next` over a sub-step belongs against its chain's
+    /// `colliders`, which went from `was` to where they are now. See the module docs' "Colliders".
+    fn collide(
+        &self,
+        colliders: (u32, u32),
+        was: &[Placed],
+        bone: &Bone,
+        from: Vec3,
+        mut next: Vec3,
+    ) -> Vec3 {
+        let Bone { head, length, hit_radius, fallback } = *bone;
+        let (first, end) = colliders;
+        for &collider in &self.collider_lists[first as usize..end as usize] {
+            let was = &was[usize::from(collider)];
+            let now = &self.colliders_now[usize::from(collider)];
+            if let Some(out) = contact(from, next, was, now, hit_radius) {
+                let reach = now.radius + hit_radius;
+                let (out, reach) = if self.limited {
+                    // Likewise a bone whose own head it has overrun: nothing it can do reads.
+                    let began = from.distance(was.nearest(from));
+                    let overrun = head.distance(now.nearest(head));
+                    let give = overrun_give(began / reach) * overrun_give(overrun / reach);
+                    (next.lerp(out, give), began + (reach - began).max(0.0) * give)
+                } else {
+                    (out, reach)
+                };
+                next = clear_of(head, length, out, now, reach, fallback);
+            }
+        }
+        next
     }
 
     /// Whether every tail has stopped for long enough, with nothing moving them.

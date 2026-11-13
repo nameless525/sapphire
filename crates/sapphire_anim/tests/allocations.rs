@@ -6,10 +6,10 @@
 use std::alloc::System;
 
 use sapphire_anim::{
-    CharacterPose, Clip, FeetInput, FootGround, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
-    JointTransform, LookInput, PackedRotation, RotationTrack, Skeleton, SpringBones, SpringFrame, Substeps,
-    Transform, VectorRange, VectorTrack, WeaponPlace, add, blend, local_to_model, make_delta, root_motion,
-    sample,
+    CharacterPose, Clip, ClothSheet, FeetInput, FootGround, Grip, GroundHit, Hand, HeldWeapon, IkInput,
+    Joint, JointMask, JointTransform, LookInput, PackedRotation, RotationTrack, Skeleton, SpringBones,
+    SpringFrame, Substeps, Transform, VectorRange, VectorTrack, WeaponPlace, add, blend, local_to_model,
+    make_delta, root_motion, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, RootMotion};
@@ -208,6 +208,101 @@ fn updating_springs_allocates_nothing_once_they_are_made() {
         sum
     });
     assert!(sum.is_finite());
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+}
+
+/// Cloth allocates nothing once its sheets are set, through everything a frame and a tier can ask of it:
+/// its iterations changing, off and on again, sub-step counts, colliders, a reset, sleeping and waking,
+/// and a new version of the character taking its motion over.
+#[test]
+fn updating_cloth_allocates_nothing_once_it_is_made() {
+    let skeleton_bytes = skeleton().to_cooked().expect("cooked");
+    let cooked = Skeleton::read(&skeleton_bytes).expect("a valid skeleton");
+    let clip_bytes = clip().to_cooked().expect("cooked");
+    let clip = Clip::read(&clip_bytes).expect("a valid clip");
+    let joint = |joint: u16| SpringJoint {
+        joint,
+        hit_radius: 0.02,
+        stiffness: 0.3,
+        gravity_power: 0.5,
+        gravity_dir: [0.0, -1.0, 0.0],
+        drag_force: 0.2,
+    };
+    // Four chains, each hanging below the last, so the cloth walks again what hangs below it too.
+    let chain = |name: &str, first: u16| Spring {
+        name: name.into(),
+        joints: (first..first + 6).map(joint).collect(),
+        tip: SpringTip::Extended { length: 0.05 },
+        collider_groups: vec![0],
+        center: None,
+    };
+    let rig = CharacterRig {
+        joint_count: JOINTS as u32,
+        springs: vec![chain("a", 10), chain("b", 20), chain("c", 30), chain("d", 40)],
+        colliders: vec![
+            RigCollider { joint: 2, shape: ColliderShape::Sphere { offset: [0.0; 3], radius: 0.1 } },
+            RigCollider {
+                joint: 4,
+                shape: ColliderShape::Capsule { offset: [0.0; 3], radius: 0.05, tail: [0.1, 0.0, 0.0] },
+            },
+        ],
+        collider_groups: vec![ColliderGroup { name: "body".into(), colliders: vec![0, 1] }],
+        ..CharacterRig::default()
+    };
+    let rig_bytes = rig.to_cooked().expect("cooked");
+    let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
+    let mut pose = CharacterPose::new(cooked, &[], &[], Vec::new());
+    let sheet = ClothSheet {
+        chains: ["a", "b", "c"].map(String::from).to_vec(),
+        closed: true,
+        lateral_compliance: 1e-6,
+        bend_compliance: 1e-4,
+    };
+    let make = || {
+        let mut springs = SpringBones::new(rig, &pose).expect("it has springs");
+        springs.set_cloth(rig, std::slice::from_ref(&sheet)).expect("its chains");
+        springs
+    };
+    let mut springs = make();
+    let mut next = make();
+
+    let (sum, counts) = alloc::count_in_scope(|| {
+        let mut sum = 0.0;
+        for frame in 0..1_200_u32 {
+            if frame % 300 == 100 {
+                springs.reset();
+            }
+            if frame == 600 {
+                springs.set_substeps(Substeps::One);
+            }
+            if frame == 700 {
+                next.continue_from(&springs);
+                std::mem::swap(&mut springs, &mut next);
+            }
+            springs.set_cloth_iterations([4, 2, 1, 0][(frame / 50 % 4) as usize]);
+            let moved = frame % 400 < 300;
+            if moved {
+                pose.sample(clip, (frame % 60) as f32);
+                pose.finish();
+            }
+            let world = Affine3A::from_translation(Vec3::new(
+                f64::from(frame).sin() as f32,
+                0.0,
+                frame as f32 * 0.03,
+            ));
+            let active = frame % 200 < 150;
+            let work = springs.update(
+                &mut pose,
+                &SpringFrame { world_from_model: world, ticks: f64::from(frame), pose_moved: moved, active },
+            );
+            sum += work.substeps as f32 + pose.model()[15].translation.y + springs.cloth_strain();
+        }
+        sum
+    });
+    assert!(sum.is_finite());
+    assert_eq!(springs.cloth_iterations(), Some(0));
     if PER_THREAD_COUNTS {
         assert_eq!(counts.allocations, 0, "{counts:?}");
     }

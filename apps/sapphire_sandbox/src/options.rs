@@ -392,6 +392,10 @@ pub(crate) struct Options {
     /// `--bench` of a fight or a zone, which plays once or walks its frames, checks the load's inventory and
     /// measures nothing (M3 K1): every pipeline is built before a graph runs, so one that isn't counts.
     pub draw_every: Option<NonZeroU32>,
+    /// `--capture-through-trips`, with `--replay` and `--capture-ticks` (M5 M6): each tick a capture counts is
+    /// one of the replay's, a step a zone trip holds drawing a frame and stepping again, as a capture of a
+    /// replay's end steps; so a capture can land after a trip, in the zone it brought.
+    pub capture_through_trips: bool,
     /// `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the character at a spawner of the zone cooked from
     /// `<stem>.zone.ron`, `player_start` unless named, under the zone's day and light rigs.
     pub zone: Option<(String, String)>,
@@ -1230,6 +1234,7 @@ impl Options {
                     capture_frames = Some(count);
                 }
                 "--capture-step" => capture_step = Some(number(&value("--capture-step")?, "--capture-step")?),
+                "--capture-through-trips" => options.capture_through_trips = true,
                 "--size" => size = Some(parse_size(&value("--size")?)?),
                 "--replay" => replay = Some(PathBuf::from(value("--replay")?)),
                 "--record" => record = Some(PathBuf::from(value("--record")?)),
@@ -1620,6 +1625,13 @@ impl Options {
             if given && !capturing {
                 return Err(format!("{flag} needs {CAPTURE_FLAG}"));
             }
+        }
+        if options.capture_through_trips
+            && !matches!(options.combat, Some(CombatOption::Replay { to_end: false, .. }))
+        {
+            return Err(format!(
+                "--capture-through-trips needs {CAPTURE_FLAG} of a --replay with --capture-ticks"
+            ));
         }
         options.offscreen = match mode {
             Some(mode) => {
@@ -2971,6 +2983,21 @@ mod tests {
         assert_eq!(options.combat, Some(replay(false)));
         let (options, _) = parse(&["--bench", "10", "--replay", "a.sreplay"]).unwrap();
         assert_eq!(options.combat, Some(replay(true)));
+        // Through a trip, to a tick of the replay's (M5 M6): only a capture of a tick before its end.
+        let through = [
+            "--capture",
+            "x.png",
+            "--replay",
+            "a.sreplay",
+            "--capture-ticks",
+            "30",
+            "--capture-through-trips",
+        ];
+        assert!(parse(&through).unwrap().0.capture_through_trips);
+        for args in [&through[..4], &["--bench", "10", "--replay", "a.sreplay"][..]] {
+            let error = parse(&[args, &["--capture-through-trips"]].concat()).expect_err("refused");
+            assert!(error.contains("--capture-through-trips"), "{args:?}: {error}");
+        }
         let (options, _) =
             parse(&["--bench", "10", "--record", "a.sreplay", "--scenario", "s", "--script", "p"]).unwrap();
         assert_eq!(

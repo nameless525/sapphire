@@ -64,21 +64,21 @@ fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppIn
 }
 
 /// A tick of a capture: a stage's step, a frame's worth. A frame a cutscene holds the fight for is a frame,
-/// so `--capture-ticks` counts it; `to_end`, a capture of a replay's end, steps on through it, since the end
-/// is the replay's last tick (M3 Q3). A zone trip holds the fight until its zone has loaded, its first cells
-/// are in and its wipe has covered and cleared, and only a drawn frame moves those on (M3 W4): so a step a
-/// trip holds draws one into `view`, its output discarded where it may be. Without it, a capture of
-/// `zone-trip`'s end never ended (M3 Z2).
+/// so `--capture-ticks` counts it; `through`, for a capture of a replay's end or `--capture-through-trips`
+/// (M5 M6), steps on through it, since the end is the replay's last tick (M3 Q3). A zone trip holds the fight
+/// until its zone has loaded, its first cells are in and its wipe has covered and cleared, and only a drawn
+/// frame moves those on (M3 W4): so a step a trip holds draws one into `view`, its output discarded where it
+/// may be. Without it, a capture of `zone-trip`'s end never ended (M3 Z2).
 fn step(
     stage: &mut Stage,
-    to_end: bool,
+    through: bool,
     view: &wgpu::TextureView,
     history_only: bool,
 ) -> Result<(), AppInitError> {
     loop {
         let held = stage.show.fight.held_steps();
         stage.step();
-        if !to_end || stage.show.fight.held_steps() == held {
+        if !through || stage.show.fight.held_steps() == held {
             return Ok(());
         }
         if stage.show.fight.show.trip_phase().is_some() {
@@ -168,7 +168,7 @@ impl Drop for Scratch {
 pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
-    (ticks, to_end): (u32, bool),
+    (ticks, through): (u32, bool),
     (frames, draw_every): (CaptureFrames, Option<NonZeroU32>),
     width: u32,
     height: u32,
@@ -186,7 +186,7 @@ pub(crate) fn run(
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     for _ in 0..first {
-        step(stage, to_end, &view, history_only)?;
+        step(stage, through, &view, history_only)?;
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
     // shown, at least its warm-up, redrawing the same scene state at the end.
@@ -209,7 +209,7 @@ pub(crate) fn run(
             // The frames still to come, the captured one included, each this many ticks later.
             if earlier - frame < frames.count {
                 for _ in 0..frames.step {
-                    step(stage, to_end, &view, history_only)?;
+                    step(stage, through, &view, history_only)?;
                 }
             }
         }

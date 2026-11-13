@@ -94,11 +94,12 @@ impl App for OffscreenApp {
                     }
                     _ => *ticks,
                 };
-                let to_end = matches!(options.combat, Some(CombatOption::Replay { to_end: true, .. }));
+                let through_trips = options.capture_through_trips
+                    || matches!(options.combat, Some(CombatOption::Replay { to_end: true, .. }));
                 crate::capture::run(
                     &mut stage,
                     path,
-                    (ticks, to_end),
+                    (ticks, through_trips),
                     (*frames, options.draw_every),
                     width,
                     height,

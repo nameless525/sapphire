@@ -201,7 +201,7 @@ impl Renderer {
             &self.fog_cards,
             &self.wind,
         );
-        self.rebuild_frame_bind_group();
+        self.rebuild_frame_bind_groups();
         self.insets.redraw();
         // Shed passes are the old owners'; the ladder sheds again with its next step.
         self.shed = super::OptionalPasses::NONE;

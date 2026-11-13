@@ -12,7 +12,8 @@ fn dormant_effects_release_depth_bindings_and_active_effects_reuse_them() {
     let layouts = crate::pipelines::Layouts::new(gpu.device());
     let builds = PipelineBuilds::new(None);
     let sources = ShaderSources::compiled_in();
-    let mut vfx = Vfx::new(&gpu, &layouts.frame, &layouts.view, 1, true, &builds);
+    let mut vfx =
+        Vfx::new(&gpu, layouts.frame(crate::pipelines::FrameGroup::World), &layouts.view, 1, true, &builds);
     let camera = CameraData::look_at(Vec3::Z * 5.0, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
     let active = VfxFrame {
         sprites: vec![VfxSprite {

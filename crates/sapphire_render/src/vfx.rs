@@ -817,6 +817,7 @@ pub(crate) struct Vfx {
 impl Vfx {
     /// Holds what later frames need to make its resources, and makes none of them: a renderer that
     /// never draws an effect never pays for one.
+    /// `frame_layout` is the world's frame group's ([`FrameGroup::World`](crate::pipelines::FrameGroup::World)).
     pub(crate) fn new(
         gpu: &sapphire_rhi::GpuContext,
         frame_layout: &wgpu::BindGroupLayout,
@@ -1116,8 +1117,9 @@ pub(crate) struct VfxMainDraw<'a> {
 }
 
 impl VfxMainDraw<'_> {
-    /// Groups 0 and 1 stay as the main pass bound them.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Binds `frame`, the world's frame group, as group 0; group 1 stays as the main pass bound it.
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
+        pass.set_bind_group(0, frame, &[]);
         pass.set_bind_group(2, self.buffers, &[]);
         pass.set_bind_group(3, self.textures, &[]);
         if let Some(mask) = self.mask {

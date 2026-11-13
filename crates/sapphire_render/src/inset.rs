@@ -51,9 +51,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::character_prepass::{CharacterPrepassTargets, IDS_FORMAT};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
-use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
+use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
 use crate::post::{InsetPost, PostProcess, PostUniforms};
-use crate::renderer::{FrameBindings, create_frame_bind_group};
+use crate::renderer::{FrameBindGroups, FrameBindings, create_frame_bind_groups};
 use crate::scene::InstanceSlots;
 use crate::ui::Ui;
 use crate::{CameraData, CharacterInstance, FramePacket, InsetView, PacketRange};
@@ -166,7 +166,7 @@ struct InsetTarget {
     picture_size: (u32, u32),
     scene_size: (u32, u32),
     frame_uniforms: wgpu::Buffer,
-    frame_group: wgpu::BindGroup,
+    frame_groups: FrameBindGroups,
     character_prepass: CharacterPrepassTargets,
     picture: wgpu::Texture,
     picture_view: wgpu::TextureView,
@@ -193,7 +193,7 @@ struct InsetTarget {
 /// What the world's frame lends an inset's group 0, but its constants and character targets.
 pub(crate) struct InsetBindings<'a> {
     pub device: &'a wgpu::Device,
-    pub layout: &'a wgpu::BindGroupLayout,
+    pub layouts: &'a Layouts,
     pub world: FrameBindings<'a>,
     pub post: &'a PostProcess,
     pub ui: &'a Ui,
@@ -320,7 +320,7 @@ impl Insets {
     /// Makes each inset's group 0 again, around the world's resources just replaced.
     pub(crate) fn rebind(&mut self, bindings: &InsetBindings<'_>) {
         for target in &mut self.targets {
-            target.frame_group = target.frame_group(bindings);
+            target.frame_groups = target.frame_groups(bindings);
         }
     }
 
@@ -333,7 +333,7 @@ impl Insets {
                 inset,
                 scene_size,
                 ref frame_uniforms,
-                ref frame_group,
+                ref frame_groups,
                 ref character_prepass,
                 ref picture_view,
                 ref ui_group,
@@ -362,7 +362,7 @@ impl Insets {
             frame.draws[index] = Some(InsetDraw {
                 stand: index as u16 + 1,
                 view_offset,
-                frame_group,
+                frame_groups,
                 character_prepass,
                 post,
                 scene_size,
@@ -389,9 +389,9 @@ impl InsetTarget {
             mapped_at_creation: false,
         });
         let character_prepass = CharacterPrepassTargets::new(device);
-        let frame_group = create_frame_bind_group(
+        let frame_groups = create_frame_bind_groups(
             device,
-            bindings.layout,
+            bindings.layouts,
             FrameBindings {
                 uniforms: &frame_uniforms,
                 character_prepass: &character_prepass,
@@ -405,7 +405,7 @@ impl InsetTarget {
             picture_size: (1, 1),
             scene_size: (1, 1),
             frame_uniforms,
-            frame_group,
+            frame_groups,
             character_prepass,
             picture_view: picture.create_view(&Default::default()),
             picture,
@@ -424,20 +424,20 @@ impl InsetTarget {
         }
     }
 
-    fn frame_group(&self, bindings: &InsetBindings<'_>) -> wgpu::BindGroup {
+    fn frame_groups(&self, bindings: &InsetBindings<'_>) -> FrameBindGroups {
         let target = FrameBindings {
             uniforms: &self.frame_uniforms,
             character_prepass: &self.character_prepass,
             ..bindings.world
         };
-        create_frame_bind_group(bindings.device, bindings.layout, target)
+        create_frame_bind_groups(bindings.device, bindings.layouts, target)
     }
 
     /// Sizes its picture and targets, and makes again the groups that bind what changed.
     fn fit(&mut self, picture: (u32, u32), scene: (u32, u32), bindings: &InsetBindings<'_>) {
         let resized = self.character_prepass.resize(bindings.device, scene);
         if resized {
-            self.frame_group = self.frame_group(bindings);
+            self.frame_groups = self.frame_groups(bindings);
         }
         if (self.picture.width(), self.picture.height()) != picture {
             self.picture = picture_texture(bindings.device, picture, bindings.labels);
@@ -579,7 +579,7 @@ pub(crate) struct InsetDraw<'f> {
     pub stand: u16,
     /// Its view's offset in the view uniforms.
     pub view_offset: u32,
-    pub frame_group: &'f wgpu::BindGroup,
+    pub frame_groups: &'f FrameBindGroups,
     pub character_prepass: &'f CharacterPrepassTargets,
     pub post: &'f mut InsetPost,
     pub scene_size: (u32, u32),

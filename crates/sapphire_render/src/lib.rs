@@ -306,10 +306,23 @@
 //! | 3 material | 0–7: textures | fragment | one material's texture slots (the anime character family's eight, the environment's five), white 1×1 where unbound | material upload or update |
 //! | 3 material | 8–10: samplers | fragment | trilinear repeating; linear clamped for ramps; nearest for material IDs | — |
 //!
+//! Group 0 has a layout per family (M5 L1, `pipelines::FrameGroup`), since wgpu counts a
+//! pipeline layout's bindings by visibility, not by what its shaders read. The characters' (the
+//! anime character family's surfaces, outlines and eyes through hair, and the scene and outline
+//! prepasses) leaves out the probe atlas, the brick table and GTAO (12, 13, 15); the world's (the
+//! environment, foliage, fog cards, the sky, the effects and the debug views' passes over the
+//! frame) leaves out the characters' entries and the character prepass's depth and IDs (3, 8, 9).
+//! The frame makes a bind group of each, and the main pass binds a draw's family's as it binds
+//! its scene group. At the device's floor of 16 sampled textures and 4 storage buffers a stage,
+//! the anime character family's fragment stage has 3 textures free and no storage buffer, the
+//! environment's 5 and 1, fog cards' and foliage's 8 and 1
+//! (`pipelines::tests::each_family_counts_the_binding_slots_it_leaves_free`).
+//!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
-//! prepasses bind groups 0–2 like the main pass, with the anime character family's scene group
-//! for every family's draws, and read no storage buffer beyond that group's: the instances, and
-//! the anime character blocks for the outline hulls' widths (M1 C4).
+//! prepasses bind groups 0–2 like the main pass, with the characters' frame group and the anime
+//! character family's scene group for every family's draws but foliage's, and read no storage
+//! buffer beyond that group's: the instances, and the anime character blocks for the outline
+//! hulls' widths (M1 C4).
 //!
 //! The view group's buffer holds every view at a stride of the device's uniform offset
 //! alignment: the main view (offset 0, written every frame), then the sky cube's six faces

@@ -938,15 +938,83 @@ pub(crate) mod override_constant {
     pub const VELOCITY: &str = "SCENE_PREPASS_VELOCITY";
 }
 
+/// Group 0's bindings that one [`FrameGroup`] leaves out (`shaders/frame.wgsl` declares them).
+pub(crate) mod frame_binding {
+    /// The characters' entries (`CharacterData`), which only characters read.
+    pub const CHARACTERS: u32 = 3;
+    /// The character prepass's depth and IDs (M1 C5), which only characters read.
+    pub const CHARACTER_DEPTH: u32 = 8;
+    pub const CHARACTER_IDS: u32 = 9;
+}
+
+/// Which of group 0's two layouts a pipeline binds (M5 L1): a frame group per family, so each
+/// binds only what its shaders read, against a fragment stage's 16 sampled textures and 4
+/// storage buffers at the device's floor (wgpu counts a pipeline layout's bindings by their
+/// visibility, not by what a shader reads). Both bind the same resources in the same slots
+/// ([`Layouts::frame`]); the frame makes one bind group for each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FrameGroup {
+    /// The anime character family's surfaces, outlines and eyes through hair, and the scene and
+    /// outline prepasses, which share its layouts: everything but the probe atlas, the brick
+    /// table and GTAO, which only the world reads (characters take their ambient through their
+    /// entries, and capsule AO in place of GTAO).
+    Characters,
+    /// The environment, foliage, fog cards, the sky, the frame's effects and the debug views'
+    /// passes over the frame: everything but the characters' entries and the character prepass's
+    /// depth and IDs. It keeps the prepass's nearest sampler, which the effects gather the
+    /// scene's depth with.
+    World,
+}
+
+impl FrameGroup {
+    pub(crate) const ALL: [Self; 2] = [Self::Characters, Self::World];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The group the pipelines that shade `family` bind.
+    pub(crate) const fn of(family: MaterialFamily) -> Self {
+        match family {
+            MaterialFamily::AnimeCharacter => Self::Characters,
+            _ => Self::World,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Characters => "frame characters",
+            Self::World => "frame world",
+        }
+    }
+
+    /// Whether it binds group 0's `binding`.
+    pub(crate) const fn binds(self, binding: u32) -> bool {
+        match self {
+            Self::Characters => !matches!(
+                binding,
+                ambient::frame_binding::ATLAS
+                    | ambient::frame_binding::BRICKS
+                    | ambient::frame_binding::OCCLUSION
+            ),
+            Self::World => !matches!(
+                binding,
+                frame_binding::CHARACTERS | frame_binding::CHARACTER_DEPTH | frame_binding::CHARACTER_IDS
+            ),
+        }
+    }
+}
+
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family. A renderer for another
 /// tier is made on its clone (M4 T3), so what's bound with these binds with its pipelines.
 #[derive(Clone, Debug)]
 pub(crate) struct Layouts {
-    /// Group 0: frame constants, local lights and their lists, the characters' entries, the
-    /// shadows' uniforms, maps and comparison sampler (M1 R4), the character prepass's depth and
-    /// IDs with the sampler that gathers them (M1 C5), and the ambient uniforms, probe atlas, brick
-    /// table, reflection cube, GTAO and their sampler (M1 W5).
-    pub frame: wgpu::BindGroupLayout,
+    /// Group 0 per [`FrameGroup`], each the part of these it binds: frame constants, local
+    /// lights and their lists, the characters' entries, the shadows' uniforms, maps and
+    /// comparison sampler (M1 R4), the character prepass's depth and IDs with the sampler that
+    /// gathers them (M1 C5), and the ambient uniforms, probe atlas, brick table, reflection cube,
+    /// GTAO and their sampler (M1 W5).
+    frame: [wgpu::BindGroupLayout; FrameGroup::ALL.len()],
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
     /// Group 2 per [`MESH_FAMILIES`] entry: instances and that family's parameter buffer, and for
@@ -960,105 +1028,137 @@ pub(crate) struct Layouts {
 
 impl Layouts {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
-        use wgpu::ShaderStages as S;
-        let buffer =
-            |binding, visibility, ty, has_dynamic_offset, min_size: usize| wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility,
-                ty: wgpu::BindingType::Buffer {
-                    ty,
-                    has_dynamic_offset,
-                    min_binding_size: NonZeroU64::new(min_size as u64),
-                },
-                count: None,
-            };
-        let uniform = wgpu::BufferBindingType::Uniform;
-        let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries })
         };
-        let depth = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: S::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Depth,
-                view_dimension,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let frame = [
-            buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>()),
-            buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
-            buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
-            buffer(3, S::FRAGMENT, storage, false, size_of::<GpuCharacter>()),
-            buffer(4, S::FRAGMENT, uniform, false, size_of::<ShadowUniforms>()),
-            depth(5, wgpu::TextureViewDimension::D2Array),
-            depth(6, wgpu::TextureViewDimension::D2),
-            wgpu::BindGroupLayoutEntry {
-                binding: 7,
-                visibility: S::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                count: None,
-            },
-            depth(8, wgpu::TextureViewDimension::D2),
-            wgpu::BindGroupLayoutEntry {
-                binding: 9,
-                visibility: S::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Uint,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 10,
-                visibility: S::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                count: None,
-            },
-        ];
-        let frame: Vec<wgpu::BindGroupLayoutEntry> =
-            frame.into_iter().chain(ambient::frame_layout_entries()).collect();
         Self {
-            frame: layout("frame", &frame),
-            view: layout(
-                "view",
-                &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
-            ),
-            scene: MESH_FAMILIES.map(|family| {
-                let mut entries = vec![
-                    buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
-                    // The family's own parameter buffer: its pipelines read nothing else.
-                    buffer(1, S::VERTEX_FRAGMENT, storage, false, family.params_size()),
-                ];
-                match family {
-                    MaterialFamily::FogCard => {
-                        entries.push(depth(FOG_CARD_DEPTH_BINDING, wgpu::TextureViewDimension::D2));
-                    }
-                    MaterialFamily::Foliage => {
-                        let wind = buffer(
-                            FOLIAGE_WIND_BINDING,
-                            S::VERTEX,
-                            uniform,
-                            false,
-                            size_of::<WindUniforms>(),
-                        );
-                        entries.push(wind);
-                    }
-                    _ => {}
-                }
-                layout(family.name(), &entries)
-            }),
-            materials: MaterialFamily::ALL.map(|family| material_layout(device, family)),
+            frame: FrameGroup::ALL.map(|group| layout(group.name(), &frame_entries(group))),
+            view: layout("view", &[view_entry()]),
+            scene: MESH_FAMILIES.map(|family| layout(family.name(), &scene_entries(family))),
+            materials: MaterialFamily::ALL.map(|family| layout(family.name(), &material_entries(family))),
         }
+    }
+
+    /// Group 0's layout for `group`.
+    pub(crate) fn frame(&self, group: FrameGroup) -> &wgpu::BindGroupLayout {
+        &self.frame[group.index()]
     }
 }
 
-/// Group 3 for `family`: one filterable 2D texture per slot, fragment-visible, then the three
-/// samplers ([`material_binding`]).
-fn material_layout(device: &wgpu::Device, family: MaterialFamily) -> wgpu::BindGroupLayout {
+fn buffer_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    ty: wgpu::BufferBindingType,
+    min_size: usize,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: NonZeroU64::new(min_size as u64),
+        },
+        count: None,
+    }
+}
+
+fn depth_entry(binding: u32, view_dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+const STORAGE: wgpu::BufferBindingType = wgpu::BufferBindingType::Storage { read_only: true };
+
+/// Group 0's entries for `group`: those of every binding it [binds](FrameGroup::binds).
+fn frame_entries(group: FrameGroup) -> Vec<wgpu::BindGroupLayoutEntry> {
+    use wgpu::ShaderStages as S;
+    let uniform = wgpu::BufferBindingType::Uniform;
+    let frame = [
+        buffer_entry(0, S::VERTEX_FRAGMENT, uniform, size_of::<FrameUniforms>()),
+        buffer_entry(1, S::FRAGMENT, STORAGE, size_of::<GpuLight>()),
+        buffer_entry(2, S::FRAGMENT, STORAGE, size_of::<u32>()),
+        buffer_entry(frame_binding::CHARACTERS, S::FRAGMENT, STORAGE, size_of::<GpuCharacter>()),
+        buffer_entry(4, S::FRAGMENT, uniform, size_of::<ShadowUniforms>()),
+        depth_entry(5, wgpu::TextureViewDimension::D2Array),
+        depth_entry(6, wgpu::TextureViewDimension::D2),
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+            count: None,
+        },
+        depth_entry(frame_binding::CHARACTER_DEPTH, wgpu::TextureViewDimension::D2),
+        wgpu::BindGroupLayoutEntry {
+            binding: frame_binding::CHARACTER_IDS,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 10,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        },
+    ];
+    frame
+        .into_iter()
+        .chain(ambient::frame_layout_entries())
+        .filter(|entry| group.binds(entry.binding))
+        .collect()
+}
+
+/// Group 1's one entry, bound with a dynamic offset.
+fn view_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size_of::<ViewUniforms>() as u64),
+        },
+        count: None,
+    }
+}
+
+/// Group 2's entries for `family`, one of [`MESH_FAMILIES`].
+fn scene_entries(family: MaterialFamily) -> Vec<wgpu::BindGroupLayoutEntry> {
+    use wgpu::ShaderStages as S;
+    let mut entries = vec![
+        buffer_entry(0, S::VERTEX, STORAGE, size_of::<InstanceData>()),
+        // The family's own parameter buffer: its pipelines read nothing else.
+        buffer_entry(1, S::VERTEX_FRAGMENT, STORAGE, family.params_size()),
+    ];
+    match family {
+        MaterialFamily::FogCard => {
+            entries.push(depth_entry(FOG_CARD_DEPTH_BINDING, wgpu::TextureViewDimension::D2));
+        }
+        MaterialFamily::Foliage => {
+            let uniform = wgpu::BufferBindingType::Uniform;
+            entries.push(buffer_entry(FOLIAGE_WIND_BINDING, S::VERTEX, uniform, size_of::<WindUniforms>()));
+        }
+        _ => {}
+    }
+    entries
+}
+
+/// Group 3's entries for `family`: one filterable 2D texture per slot, fragment-visible, then the
+/// three samplers ([`material_binding`]).
+fn material_entries(family: MaterialFamily) -> Vec<wgpu::BindGroupLayoutEntry> {
     let fragment = wgpu::ShaderStages::FRAGMENT;
     let slots = family.texture_slots().len() as u32;
     debug_assert!(slots <= material_binding::SAMPLER, "texture slots end before the samplers");
@@ -1087,10 +1187,7 @@ fn material_layout(device: &wgpu::Device, family: MaterialFamily) -> wgpu::BindG
             count: None,
         });
     }
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some(family.name()),
-        entries: &entries,
-    })
+    entries
 }
 
 /// Fixed-function state that differs between passes. Entry points are `vs_<name>` and
@@ -1908,15 +2005,18 @@ impl MeshModules {
 /// What every scene pipeline shares, kept to build the f32 ones later.
 #[derive(Clone, Debug)]
 struct PipelineTarget {
-    /// Groups 0–2, for passes that read no material textures: the scene prepass.
+    /// Groups 0–2, for passes that read no material textures: the scene prepass and the outline
+    /// prepass. Group 0 is the characters' ([`FrameGroup::Characters`]), as on the masked
+    /// prepasses beside them, which bind the anime character family's layout.
     layout: wgpu::PipelineLayout,
     /// Groups 1 and 2 alone: the character prepass, which writes the targets group 0 binds.
     character_layout: wgpu::PipelineLayout,
     /// Groups 1–3, the anime character family's group 3 for the alpha test: the masked character
     /// prepass (M1 C7).
     masked_character_layout: wgpu::PipelineLayout,
-    /// Groups 0–3 per [`MESH_FAMILIES`] entry, with that family's scene group and group 3: the
-    /// passes that shade with it (its surfaces, and the anime character family's outlines).
+    /// Groups 0–3 per [`MESH_FAMILIES`] entry, with that family's frame group
+    /// ([`FrameGroup::of`]), scene group and group 3: the passes that shade with it (its
+    /// surfaces, and the anime character family's outlines).
     family_layouts: [wgpu::PipelineLayout; MESH_FAMILIES.len()],
     color_format: wgpu::TextureFormat,
     sample_count: u32,
@@ -1982,9 +2082,10 @@ impl Pipelines {
         (card_depth_fade, velocity, scene_prepass): (bool, bool, bool),
         ambient: Vec<(&'static str, f64)>,
     ) -> Self {
+        let characters = layouts.frame(FrameGroup::Characters);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
-            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene[0])],
+            bind_group_layouts: &[Some(characters), Some(&layouts.view), Some(&layouts.scene[0])],
             immediate_size: 0,
         });
         let character_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2007,7 +2108,7 @@ impl Pipelines {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(family.name()),
                 bind_group_layouts: &[
-                    Some(&layouts.frame),
+                    Some(layouts.frame(FrameGroup::of(family))),
                     Some(&layouts.view),
                     Some(&layouts.scene[group]),
                     Some(&layouts.materials[family.index()]),
@@ -3063,7 +3164,124 @@ fn fade_draws(mesh: &MeshPipelines) -> Vec<Drawn> {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_rhi::wgpu::naga;
+
     use super::*;
+
+    /// The sampled textures and storage buffers `stage` binds across a pipeline layout's `groups`,
+    /// as wgpu counts them against the device's limits: by each entry's visibility.
+    fn bound(groups: &[Vec<wgpu::BindGroupLayoutEntry>], stage: wgpu::ShaderStages) -> (u32, u32) {
+        let visible = groups.iter().flatten().filter(|entry| entry.visibility.contains(stage));
+        visible.fold((0, 0), |(textures, buffers), entry| match entry.ty {
+            wgpu::BindingType::Texture { .. } => (textures + 1, buffers),
+            wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. } => {
+                (textures, buffers + 1)
+            }
+            _ => (textures, buffers),
+        })
+    }
+
+    /// The slots each mesh family's surfaces leave free (M5 L1), (sampled textures, storage
+    /// buffers) per stage, against the device's floor (`sapphire_rhi` asks for wgpu's downlevel
+    /// defaults for both: 16 and 4 a stage). A package that takes a slot changes its number here.
+    /// Before the frame group split every family bound one group 0: the anime character family's
+    /// fragment stage had none of either free, and every other family two textures and the
+    /// storage buffer fewer than here.
+    #[test]
+    fn each_family_counts_the_binding_slots_it_leaves_free() {
+        use wgpu::ShaderStages as S;
+        let limits = wgpu::Limits::downlevel_defaults();
+        let free = |family: MaterialFamily, stage| {
+            let groups = [
+                frame_entries(FrameGroup::of(family)),
+                vec![view_entry()],
+                scene_entries(family),
+                material_entries(family),
+            ];
+            let (textures, buffers) = bound(&groups, stage);
+            let left =
+                |limit: u32, used| limit.checked_sub(used).unwrap_or_else(|| panic!("{family} {stage:?}"));
+            (
+                left(limits.max_sampled_textures_per_shader_stage, textures),
+                left(limits.max_storage_buffers_per_shader_stage, buffers),
+            )
+        };
+        assert_eq!(
+            MESH_FAMILIES,
+            [
+                MaterialFamily::AnimeCharacter,
+                MaterialFamily::Environment,
+                MaterialFamily::FogCard,
+                MaterialFamily::Foliage
+            ]
+        );
+        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::FRAGMENT)), [(3, 0), (5, 1), (8, 1), (8, 1)]);
+        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::VERTEX)), [(16, 2), (14, 2), (14, 2), (14, 2)]);
+    }
+
+    /// The group 0 bindings `program`'s render entry points read, by entry point, as wgpu checks a
+    /// pipeline's layout against them: whatever the entry point can reach, whatever its constants.
+    fn frame_reads(program: Program) -> Vec<(String, Vec<u32>)> {
+        let module =
+            shaders::validate(program, &ShaderSources::compiled_in()).expect("compiled-in shaders validate");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("validated above");
+        let render = |stage| matches!(stage, naga::ShaderStage::Vertex | naga::ShaderStage::Fragment);
+        let entry_points = module.entry_points.iter().enumerate().filter(|(_, entry)| render(entry.stage));
+        entry_points
+            .map(|(index, entry)| {
+                let uses = info.get_entry_point(index);
+                let reads = module.global_variables.iter().filter_map(|(handle, global)| {
+                    let binding = global.binding.as_ref()?;
+                    (binding.group == 0 && !uses[handle].is_empty()).then_some(binding.binding)
+                });
+                (entry.name.clone(), reads.collect())
+            })
+            .collect()
+    }
+
+    /// Every pipeline built on a frame group binds everything its shaders read of group 0 (M5 L1),
+    /// so a shader that starts reading a binding its group leaves out fails here, without a GPU;
+    /// and each group leaves out what its family doesn't read: the characters the probe atlas,
+    /// bricks and GTAO, the world the characters' entries and their prepass's depth and IDs.
+    #[test]
+    fn each_frame_group_binds_what_its_shaders_read() {
+        let groups = [
+            (FrameGroup::Characters, &[Program::AnimeCharacter, Program::Outline, Program::Prepass][..]),
+            (
+                FrameGroup::World,
+                &[
+                    Program::Environment,
+                    Program::Foliage,
+                    Program::FogCard,
+                    Program::Sky,
+                    Program::Vfx,
+                    Program::DebugView,
+                ],
+            ),
+        ];
+        for (group, programs) in groups {
+            let mut read = Vec::new();
+            for &program in programs {
+                for (entry, reads) in frame_reads(program) {
+                    for binding in reads {
+                        assert!(
+                            group.binds(binding),
+                            "{program:?} {entry} reads binding {binding}, which {group:?} leaves out"
+                        );
+                        read.push(binding);
+                    }
+                }
+            }
+            let bound = frame_entries(group).iter().map(|entry| entry.binding).collect::<Vec<_>>();
+            let unread: Vec<u32> = bound.into_iter().filter(|binding| !read.contains(binding)).collect();
+            assert_eq!(unread, [] as [u32; 0], "{group:?} binds what none of its shaders reads");
+        }
+    }
 
     #[test]
     fn static_permutations_are_at_most_eight_bits_and_pick_one_part() {

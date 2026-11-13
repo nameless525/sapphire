@@ -142,10 +142,10 @@ use crate::graph::{FrameGraph, TextureId};
 use crate::lights::{LightPath, Lights};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{
-    Coverage, Layouts, MainPipeline, Pipelines, REPLAY_COLOR_FORMAT, Replay, ReplayTarget, Shading,
-    SurfaceVariant, VALUES_FORMAT, format_index, replay_depth_format,
+    Coverage, FrameGroup, Layouts, MainPipeline, Pipelines, REPLAY_COLOR_FORMAT, Replay, ReplayTarget,
+    Shading, SurfaceVariant, VALUES_FORMAT, format_index, replay_depth_format,
 };
-use crate::renderer::{DrawThrough, PrepassTargets, draw_main_pass};
+use crate::renderer::{DrawThrough, MeshGroups, PrepassTargets, draw_main_pass};
 use crate::scene::DrawList;
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
@@ -658,7 +658,8 @@ const LINES_WORKGROUP: u32 = 128;
 struct ViewLayouts {
     /// Group 2 of the passes over the frame: the replay's stencil (binding 0) and depth (1).
     input: wgpu::BindGroupLayout,
-    /// The passes over the frame: groups 0 (the frame's), 1 (the view) and 2 (the input).
+    /// The passes over the frame: groups 0 (the world's frame group), 1 (the view) and 2 (the
+    /// input).
     pass: wgpu::PipelineLayout,
     /// The material views' group 2: the replay's depth (binding 1) and values (2).
     values_input: wgpu::BindGroupLayout,
@@ -687,9 +688,11 @@ impl ViewLayouts {
             label: Some("debug view input"),
             entries: &[texture(0, wgpu::TextureSampleType::Uint), texture(1, wgpu::TextureSampleType::Depth)],
         });
+        // The views read the frame's constants and light lists, which the world's group binds.
+        let world = layouts.frame(FrameGroup::World);
         let pass = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(VIEW_PASS),
-            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&input)],
+            bind_group_layouts: &[Some(world), Some(&layouts.view), Some(&input)],
             immediate_size: 0,
         });
         let values = wgpu::TextureSampleType::Float { filterable: false };
@@ -699,7 +702,7 @@ impl ViewLayouts {
         });
         let values_pass = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("debug view values"),
-            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&values_input)],
+            bind_group_layouts: &[Some(world), Some(&layouts.view), Some(&values_input)],
             immediate_size: 0,
         });
         let sky = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1199,8 +1202,7 @@ impl DebugViews {
         let sky = self.pipelines.sky.as_ref();
         let (object_counts, capacity) = (&self.object_counts[..], self.list_capacity);
         let view_bind_group = &self.view_bind_group;
-        let DebugFrame { draws, frame_bind_group, scene_bind_groups, index_buffer, cards, labels, .. } =
-            *frame;
+        let DebugFrame { draws, groups, index_buffer, cards, labels, .. } = *frame;
         pass.record(move |ctx| {
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some(REPLAY_PASS),
@@ -1224,7 +1226,7 @@ impl DebugViews {
                 timestamp_writes: ctx.timestamp_writes(),
                 ..Default::default()
             });
-            pass.set_bind_group(0, frame_bind_group, &[]);
+            // Each run of the draws binds the frame and scene groups of the families it draws.
             pass.set_bind_group(1, view_bind_group, &[0]);
             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             // The plan's own copies of a kind: those of the kind another view made aren't its.
@@ -1238,10 +1240,8 @@ impl DebugViews {
             };
             // Fog cards bind their family's scene group with its stand-in depth: their depth fade
             // changes neither their count nor their edges.
-            let card_group = &scene_bind_groups[SurfaceVariant::FOG_CARD.shading.scene_group()];
+            let card_group = &groups.scene[SurfaceVariant::FOG_CARD.shading.scene_group()];
             let everything = |_| true;
-            // Each run of the draws starts with the anime character family's scene group bound.
-            let group = |pass: &mut wgpu::RenderPass<'_>| pass.set_bind_group(2, &scene_bind_groups[0], &[]);
             match plan {
                 Plan::Overdraw => {
                     // Opaque draws count what they keep; the others every fragment they run for,
@@ -1264,42 +1264,15 @@ impl DebugViews {
                         }
                     };
                     let cards = Some((card_group, cards));
-                    group(&mut pass);
-                    draw_main_pass(
-                        &mut pass,
-                        &through,
-                        &draws,
-                        scene_bind_groups,
-                        Some(&sky),
-                        cards,
-                        everything,
-                    );
+                    draw_main_pass(&mut pass, &through, &draws, groups, Some(&sky), cards, everything);
                 }
                 Plan::ClusterLights => {
-                    group(&mut pass);
-                    draw_main_pass(
-                        &mut pass,
-                        &one(Replay::Depth),
-                        &draws,
-                        scene_bind_groups,
-                        None,
-                        None,
-                        everything,
-                    );
+                    draw_main_pass(&mut pass, &one(Replay::Depth), &draws, groups, None, None, everything);
                 }
                 Plan::Wireframe => {
                     let Some(lines) = lines else { return };
                     // What hides edges first: the surfaces that write depth in the main pass.
-                    group(&mut pass);
-                    draw_main_pass(
-                        &mut pass,
-                        &one(Replay::Hide),
-                        &draws,
-                        scene_bind_groups,
-                        None,
-                        None,
-                        everything,
-                    );
+                    draw_main_pass(&mut pass, &one(Replay::Hide), &draws, groups, None, None, everything);
                     // Then every surface's edges, a family at a time, each tagged with its tone.
                     let (edges, draws) = (one(Replay::Edges), MeshDraws { lines: true, ..draws });
                     pass.set_index_buffer(lines.slice(..), wgpu::IndexFormat::Uint32);
@@ -1310,16 +1283,7 @@ impl DebugViews {
                         };
                         let cards = (tag == wireframe_tag(Shading::FogCard)).then_some((card_group, cards));
                         pass.set_stencil_reference(tag);
-                        group(&mut pass);
-                        draw_main_pass(
-                            &mut pass,
-                            &family,
-                            &draws,
-                            scene_bind_groups,
-                            None,
-                            cards,
-                            everything,
-                        );
+                        draw_main_pass(&mut pass, &family, &draws, groups, None, cards, everything);
                     }
                 }
                 Plan::ObjectLights => {
@@ -1330,8 +1294,7 @@ impl DebugViews {
                         let tagged =
                             |slot: u32| object_counts.get(slot as usize).copied().unwrap_or(0) == count;
                         pass.set_stencil_reference(count + 1);
-                        group(&mut pass);
-                        draw_main_pass(&mut pass, &through, &draws, scene_bind_groups, None, None, tagged);
+                        draw_main_pass(&mut pass, &through, &draws, groups, None, None, tagged);
                     }
                 }
                 Plan::MaterialIds | Plan::RampRows | Plan::OutlineWidths => {
@@ -1344,8 +1307,7 @@ impl DebugViews {
                             let character = matches!(variant.shading, Shading::Character(_));
                             (character == characters).then(|| values(format, variant, set)).flatten()
                         };
-                        group(&mut pass);
-                        draw_main_pass(&mut pass, &ours, &draws, scene_bind_groups, None, None, everything);
+                        draw_main_pass(&mut pass, &ours, &draws, groups, None, None, everything);
                     }
                 }
             }
@@ -1369,7 +1331,7 @@ impl DebugViews {
             builder = builder.read(values);
         }
         let (device, view_bind_group, layouts) = (&self.device, &self.view_bind_group, &self.layouts);
-        let (frame_bind_group, labels) = (frame.frame_bind_group, frame.labels);
+        let (frame_bind_group, labels) = (frame.groups.frame.get(FrameGroup::World), frame.labels);
         builder.record(move |ctx| {
             let aspect = |aspect| {
                 ctx.texture(replayed.depth)
@@ -1444,8 +1406,8 @@ pub(crate) struct DebugFrame<'f> {
     pub prepass: PrepassTargets,
     /// The main pass's draws.
     pub draws: MeshDraws<'f>,
-    pub frame_bind_group: &'f wgpu::BindGroup,
-    pub scene_bind_groups: &'f [wgpu::BindGroup],
+    /// The frame's groups 0 and 2, by family.
+    pub groups: MeshGroups<'f>,
     /// The mesh pool's indices, and the end of those in use.
     pub index_buffer: &'f wgpu::Buffer,
     pub index_end: u32,

@@ -44,9 +44,9 @@ use crate::pipeline_builds::{
     FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats, PipelineWarmup,
 };
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES,
-    MeshPass, MeshPipelines, MeshWarm, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT,
-    Shading, SurfaceVariant, VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, FrameGroup, Layouts,
+    MESH_FAMILIES, MeshPass, MeshPipelines, MeshWarm, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines,
+    SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT, frame_binding,
 };
 use crate::post::{InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
 use crate::quality::{OptionalPass, OptionalPasses};
@@ -591,7 +591,7 @@ pub struct Renderer {
     layouts: Layouts,
     pipelines: Pipelines,
     frame_uniforms: wgpu::Buffer,
-    frame_bind_group: wgpu::BindGroup,
+    frame_bind_groups: FrameBindGroups,
     /// Every view's uniforms, one per [`Self::view_stride`]: the main view first, then the sky
     /// cube's six faces (written once, at creation), the shadow views, then the insets'.
     view_uniforms: wgpu::Buffer,
@@ -871,7 +871,7 @@ impl Renderer {
         let fog_cards = FogCards::new(&device, settings.temporal);
         let vfx = Vfx::new(
             gpu,
-            &layouts.frame,
+            layouts.frame(FrameGroup::World),
             &layouts.view,
             settings.msaa.sample_count(),
             settings.temporal,
@@ -911,9 +911,9 @@ impl Renderer {
         });
         let meshes = MeshPool::new(&device);
         ambient.set_character_buffer(characters.buffer());
-        let frame_bind_group = create_frame_bind_group(
+        let frame_bind_groups = create_frame_bind_groups(
             &device,
-            &layouts.frame,
+            &layouts,
             FrameBindings {
                 uniforms: &frame_uniforms,
                 lights: &lights,
@@ -973,7 +973,7 @@ impl Renderer {
             layouts,
             pipelines,
             frame_uniforms,
-            frame_bind_group,
+            frame_bind_groups,
             view_uniforms,
             view_bind_group,
             view_stride,
@@ -2193,7 +2193,7 @@ impl Renderer {
             self.checked_build(Self::prepare_drawn_pipelines);
         }
         if lists_replaced || characters_replaced {
-            self.rebuild_frame_bind_group();
+            self.rebuild_frame_bind_groups();
         }
         self.ambient.prepare(packet, self.characters.table());
         let materials = &self.materials;
@@ -2252,7 +2252,7 @@ impl Renderer {
             let world = prepared.constants;
             let bindings = InsetBindings {
                 device: &self.device,
-                layout: &self.layouts.frame,
+                layouts: &self.layouts,
                 world: FrameBindings {
                     uniforms: &self.frame_uniforms,
                     lights: &self.lights,
@@ -2499,7 +2499,7 @@ impl Renderer {
         // new size): group 0 binds both.
         let prepass_resized = self.character_prepass.resize(&self.device, size);
         if self.ambient.fit(size) || prepass_resized {
-            self.rebuild_frame_bind_group();
+            self.rebuild_frame_bind_groups();
         }
         // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
         // the camera counts as unmoved.
@@ -2573,7 +2573,7 @@ impl Renderer {
             labels,
             ref pipelines,
             ref frame_uniforms,
-            ref frame_bind_group,
+            ref frame_bind_groups,
             ref view_uniforms,
             ref view_bind_group,
             view_stride,
@@ -2754,7 +2754,8 @@ impl Renderer {
             graph.add_pass("sky cube").side_effect().record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let offset = |face: u32| view_stride * (1 + face);
-                cube.record(ctx.encoder, frame_bind_group, view_bind_group, offset, labels, timestamps);
+                let frame = frame_bind_groups.get(FrameGroup::World);
+                cube.record(ctx.encoder, frame, view_bind_group, offset, labels, timestamps);
             });
         }
         // The shadow maps (M1 R4): persistent too, so side effects before the main pass. Their
@@ -2771,15 +2772,13 @@ impl Renderer {
         // the main pass and the debug views' replays of it, so all agree. The shadows above and
         // the character prepass below draw every instance they pick.
         let view_draws = MeshDraws { view: view_cull.mask(), ..mesh_draws };
-        // Group 2 starts as the anime character family's, which the prepasses bind for every
-        // family's draws but foliage's (they read no material); the main pass binds each family's
-        // in turn.
+        // The main view and the mesh pool's indices. The main pass binds each family's frame and
+        // scene groups in turn (`draw_main_pass`).
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
-            pass.set_bind_group(0, frame_bind_group, &[]);
             pass.set_bind_group(1, view_bind_group, &[0]);
-            pass.set_bind_group(2, &scene_bind_groups[0], &[]);
             pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
         };
+        let groups = MeshGroups { frame: frame_bind_groups, scene: scene_bind_groups };
 
         // The character prepass (M1 C5): the main pass reads it through group 0 and temporal AA
         // through the graph; its targets are imported, so it always runs. The characters the
@@ -2822,6 +2821,11 @@ impl Renderer {
             let colors = [Some(targets.normals), targets.velocity, Some(targets.outlines)];
             let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
             bind(&mut pass);
+            // The anime character family's frame and scene groups, which the prepasses bind for
+            // every family's draws but foliage's (they read no material).
+            let characters = groups.frame.get(FrameGroup::Characters);
+            pass.set_bind_group(0, characters, &[]);
+            pass.set_bind_group(2, &scene_bind_groups[0], &[]);
             // Opaque and alpha-tested surfaces of every family but foliage, through one
             // pipeline per format, but the alpha-tested anime character surfaces (fading
             // characters' among them), which draw through the masked one (M1 C7), cut out
@@ -2851,10 +2855,10 @@ impl Renderer {
                     }
                 }
             }
-            // Foliage (M1 W6) through its own pipelines per coverage, on its scene group (the
-            // wind) and each draw's group 3: displaced by this frame's wind, with velocity
-            // from the last drawn frame's, and its alpha-tested cards cut out as the main pass
-            // cuts them.
+            // Foliage (M1 W6) through its own pipelines per coverage, on its family's layout
+            // (the world's frame group, its scene group with the wind) and each draw's group 3:
+            // displaced by this frame's wind, with velocity from the last drawn frame's, and its
+            // alpha-tested cards cut out as the main pass cuts them.
             let mut foliage_bound = false;
             for format in PositionFormat::ALL {
                 let Some(mesh) = pipelines.mesh(format) else { continue };
@@ -2864,6 +2868,7 @@ impl Renderer {
                     }
                     let pipeline = mesh.foliage_prepass(variant.coverage).expect(SCENE_PREPASS_READ);
                     if !foliage_bound {
+                        pass.set_bind_group(0, groups.frame.get(FrameGroup::World), &[]);
                         pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
                         foliage_bound = true;
                     }
@@ -2873,6 +2878,7 @@ impl Renderer {
                 }
             }
             if foliage_bound {
+                pass.set_bind_group(0, characters, &[]);
                 pass.set_bind_group(2, &scene_bind_groups[0], &[]);
             }
             // Then the outline hulls, after every surface as in the main pass and with the
@@ -2978,10 +2984,10 @@ impl Renderer {
             // Fog cards' scene group holds the depth they fade against.
             let cards = Some((card_group, card_draws));
             let sky = |pass: &mut wgpu::RenderPass<'_>| sky_draw.draw(pass);
-            draw_main_pass(&mut pass, &pipeline, &view_draws, scene_bind_groups, Some(&sky), cards, |_| true);
+            draw_main_pass(&mut pass, &pipeline, &view_draws, groups, Some(&sky), cards, |_| true);
             // Effects after everything: their mask, and without temporal AA their light.
             if let Some(vfx_main) = &vfx_main {
-                vfx_main.draw(&mut pass);
+                vfx_main.draw(&mut pass, groups.frame.get(FrameGroup::World));
             }
         });
 
@@ -2995,7 +3001,7 @@ impl Renderer {
         let mut inset_resolves: [Option<InsetResolve<'f>>; MAX_INSETS] = std::array::from_fn(|_| None);
         for ((resolve, draw), picture) in inset_resolves.iter_mut().zip(inset_draws).zip(inset_pictures) {
             let (Some(draw), Some(picture)) = (draw, picture) else { continue };
-            let InsetDraw { stand, view_offset, frame_group, character_prepass, post, scene_size, backdrop } =
+            let InsetDraw { stand, view_offset, frame_groups, character_prepass, post, scene_size, backdrop } =
                 draw;
             let (character_depth, character_ids) = character_prepass.import(graph);
             let inset_attachment = |format| TransientDesc {
@@ -3065,14 +3071,13 @@ impl Renderer {
                     timestamp_writes: ctx.timestamp_writes(),
                     ..Default::default()
                 });
-                pass.set_bind_group(0, frame_group, &[]);
                 pass.set_bind_group(1, view_bind_group, &[view_offset]);
-                pass.set_bind_group(2, &scene_bind_groups[0], &[]);
                 pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
                 let pipeline = |format, variant, set| {
                     main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
                 };
-                draw_main_pass(&mut pass, &pipeline, &draws, scene_bind_groups, None, None, |_| true);
+                let groups = MeshGroups { frame: frame_groups, scene: scene_bind_groups };
+                draw_main_pass(&mut pass, &pipeline, &draws, groups, None, None, |_| true);
             });
             *resolve = Some(InsetResolve { post, scene: inset_color, picture });
         }
@@ -3095,19 +3100,20 @@ impl Renderer {
         };
         // Under temporal AA effects draw over a copy of the resolved frame, so the history never
         // holds them (see the `vfx` module), and post reads the copy.
-        let resolved =
-            match vfx_after.flatten() {
-                Some(after) => {
-                    let composed =
-                        graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
-                    let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
-                    graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
-                        move |ctx| after.record(ctx, pass, frame_bind_group, view_bind_group, labels),
-                    );
-                    composed
-                }
-                None => resolved,
-            };
+        let resolved = match vfx_after.flatten() {
+            Some(after) => {
+                let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
+                let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
+                graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
+                    move |ctx| {
+                        let frame = frame_bind_groups.get(FrameGroup::World);
+                        after.record(ctx, pass, frame, view_bind_group, labels);
+                    },
+                );
+                composed
+            }
+            None => resolved,
+        };
         post.record(graph, resolved, scene_color, target, inset_resolves.into_iter().flatten(), labels);
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
@@ -3116,8 +3122,7 @@ impl Renderer {
                 size,
                 prepass: targets,
                 draws: view_draws,
-                frame_bind_group,
-                scene_bind_groups,
+                groups,
                 index_buffer: meshes.index_buffer(),
                 index_end: meshes.index_end(),
                 cards: card_draws,
@@ -3176,7 +3181,7 @@ impl Renderer {
                 }) || list.deformed[variant.index()].iter().any(|draw| reflects(draw.material)))
         });
         if self.ambient.set_reflective(reflective, &self.shaders) {
-            self.rebuild_frame_bind_group();
+            self.rebuild_frame_bind_groups();
         }
         let list = self.scene.draw_list();
         for (format_slot, format) in PositionFormat::ALL.into_iter().enumerate() {
@@ -3268,7 +3273,7 @@ impl Renderer {
         if result.is_err() {
             self.ambient.set_grid(&self.queue, None, &self.shaders).expect("removing a grid can't fail");
         }
-        self.rebuild_frame_bind_group();
+        self.rebuild_frame_bind_groups();
         let constants = self.ambient.constants();
         self.checked_build(|renderer| renderer.pipelines.set_ambient_constants(&renderer.device, constants));
         // Entries the character pass wrote for the old grid go back to the CPU's.
@@ -3279,9 +3284,8 @@ impl Renderer {
     }
 
     /// Rebuilds group 0 after a buffer or texture in it was replaced.
-    fn rebuild_frame_bind_group(&mut self) {
-        self.frame_bind_group =
-            create_frame_bind_group(&self.device, &self.layouts.frame, self.frame_bindings());
+    fn rebuild_frame_bind_groups(&mut self) {
+        self.frame_bind_groups = create_frame_bind_groups(&self.device, &self.layouts, self.frame_bindings());
         // The insets' groups bind the same resources but their own constants and character targets.
         let Self {
             insets,
@@ -3306,7 +3310,7 @@ impl Renderer {
             character_prepass,
             ambient,
         };
-        insets.rebind(&InsetBindings { device, layout: &layouts.frame, world, post, ui, labels: *labels });
+        insets.rebind(&InsetBindings { device, layouts, world, post, ui, labels: *labels });
     }
 
     /// What the world's group 0 binds.
@@ -3461,7 +3465,7 @@ impl Renderer {
         );
         if let Some(slots) = light_lists {
             self.lights.limit_lists(&self.device, slots);
-            self.rebuild_frame_bind_group();
+            self.rebuild_frame_bind_groups();
         }
         if let Some(bytes) = skinning_frame {
             self.skinning.limit_frame(&self.device, bytes);
@@ -3500,6 +3504,42 @@ pub(crate) enum DrawThrough<'p> {
     Both([&'p wgpu::RenderPipeline; 2]),
 }
 
+/// The bind groups mesh pipelines bind by family (M5 L1): group 0, the frame's per
+/// [`FrameGroup`], and group 2, the scene's per [`MESH_FAMILIES`] entry.
+#[derive(Clone, Copy)]
+pub(crate) struct MeshGroups<'g> {
+    pub frame: &'g FrameBindGroups,
+    pub scene: &'g [wgpu::BindGroup],
+}
+
+/// The frame and scene groups of [`MeshGroups`] a pass has bound: `None` for one it hasn't, or
+/// one a draw that isn't a mesh's replaced.
+#[derive(Clone, Copy, Default)]
+struct Bound {
+    frame: Option<FrameGroup>,
+    scene: Option<usize>,
+}
+
+impl Bound {
+    /// Binds `frame` as group 0 unless it is bound already.
+    fn frame(&mut self, pass: &mut wgpu::RenderPass<'_>, groups: MeshGroups<'_>, frame: FrameGroup) {
+        if self.frame != Some(frame) {
+            pass.set_bind_group(0, groups.frame.get(frame), &[]);
+            self.frame = Some(frame);
+        }
+    }
+
+    /// Binds the frame and scene groups `shading`'s pipelines bind, unless they are bound already.
+    fn family(&mut self, pass: &mut wgpu::RenderPass<'_>, groups: MeshGroups<'_>, shading: Shading) {
+        self.frame(pass, groups, FrameGroup::of(shading.family()));
+        let scene = shading.scene_group();
+        if self.scene != Some(scene) {
+            pass.set_bind_group(2, &groups.scene[scene], &[]);
+            self.scene = Some(scene);
+        }
+    }
+}
+
 /// The main pass's draws, in their order (see [`Renderer::record`]): opaque and alpha-tested
 /// surfaces (characters before the world in each coverage, so depth rejects the world behind
 /// them), then the characters' outlines, after them so depth rejects the hull wherever a surface
@@ -3507,42 +3547,44 @@ pub(crate) enum DrawThrough<'p> {
 /// wrote depth, then transparent surfaces over all of it, and the fog cards last, back to front
 /// (M1 W3), through `cards`: their scene group (with the depth they fade against) and their
 /// order. Each surface variant draws through its own pipeline (a face's outline is its
-/// coverage's), binding its family's scene group when the family changes; skinned and morphed
-/// instances draw last in each group, through the f32 pipelines.
+/// coverage's), binding its family's frame and scene groups of `groups` when the family changes;
+/// skinned and morphed instances draw last in each group, through the f32 pipelines. The sky
+/// draws with the world's frame group bound.
 ///
-/// Groups 0 and 1 and the index buffer must be bound, and group 2 as the anime character
-/// family's. A debug view replays the pass through it (`debug_view`) with copies of the
-/// pipelines, of a subset (`pipeline` gives `None` for what it leaves out) or of the instance
-/// slots `instance` takes.
+/// Group 1 and the index buffer must be bound. A debug view replays the pass through it
+/// (`debug_view`) with copies of the pipelines, of a subset (`pipeline` gives `None` for what it
+/// leaves out) or of the instance slots `instance` takes.
 pub(crate) fn draw_main_pass<'p>(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &MainPassPipeline<'p>,
     draws: &MeshDraws<'_>,
-    scene_bind_groups: &[wgpu::BindGroup],
+    groups: MeshGroups<'_>,
     sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
     cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
     instance: impl Fn(u32) -> bool + Copy,
 ) {
-    let groups = SurfaceVariant::DEPTH_WRITING
+    let sets = SurfaceVariant::DEPTH_WRITING
         .map(|variant| (variant, DrawSet::Surfaces))
         .into_iter()
         .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
         .chain(SurfaceVariant::DRAWS_THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
-    let mut scene_group = Some(0);
-    for (variant, set) in groups {
-        draw_main(pass, pipeline, draws, scene_bind_groups, &mut scene_group, variant, set, instance);
+    let mut bound = Bound::default();
+    for (variant, set) in sets {
+        draw_main(pass, pipeline, draws, groups, &mut bound, variant, set, instance);
     }
     if let Some(sky) = sky {
+        bound.frame(pass, groups, FrameGroup::of(MaterialFamily::Sky));
         sky(pass);
     }
     // The sky's pipeline bound its own groups 2 and 3; mesh draws bind their family's group 2
     // again, and group 3 per draw.
-    let mut scene_group = None;
+    bound.scene = None;
     for variant in SurfaceVariant::TRANSPARENT {
         let set = DrawSet::Surfaces;
-        draw_main(pass, pipeline, draws, scene_bind_groups, &mut scene_group, variant, set, instance);
+        draw_main(pass, pipeline, draws, groups, &mut bound, variant, set, instance);
     }
     if let Some((group, order)) = cards.filter(|(_, order)| !order.is_empty()) {
+        bound.frame(pass, groups, FrameGroup::of(MaterialFamily::FogCard));
         pass.set_bind_group(2, group, &[]);
         let card = |format| match pipeline(format, SurfaceVariant::FOG_CARD, DrawSet::Surfaces) {
             Some(DrawThrough::One(pipeline)) => pipeline,
@@ -3576,15 +3618,15 @@ fn main_pass_pipeline(
 
 /// Draws `set` of the main pass's draws of `variant` whose instance slot `instance` takes, static
 /// meshes per format and then the skinned and morphed ones, each group through the pipeline
-/// `pipeline` gives, if any. Binds the variant's family's scene group first unless `bound` says
-/// it is bound already, and only if the variant has draws.
+/// `pipeline` gives, if any. Binds the variant's family's frame and scene groups first unless
+/// `bound` says they are bound already, and only if the variant has draws.
 #[expect(clippy::too_many_arguments, reason = "the pass's shared state, then what to draw of it")]
 fn draw_main<'p>(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &MainPassPipeline<'p>,
     draws: &MeshDraws<'_>,
-    scene_bind_groups: &[wgpu::BindGroup],
-    bound: &mut Option<usize>,
+    groups: MeshGroups<'_>,
+    bound: &mut Bound,
     variant: SurfaceVariant,
     set: DrawSet,
     instance: impl Fn(u32) -> bool + Copy,
@@ -3592,11 +3634,7 @@ fn draw_main<'p>(
     if !draws.has_any(variant) {
         return;
     }
-    let group = variant.shading.scene_group();
-    if *bound != Some(group) {
-        pass.set_bind_group(2, &scene_bind_groups[group], &[]);
-        *bound = Some(group);
-    }
+    bound.family(pass, groups, variant.shading);
     // Foliage reads its own stream too.
     let kind = variant.shading.main_pass();
     for format in PositionFormat::ALL {
@@ -3765,40 +3803,59 @@ pub(crate) struct FrameBindings<'a> {
     pub ambient: &'a Ambient,
 }
 
-pub(crate) fn create_frame_bind_group(
+/// Group 0's bind groups, one per [`FrameGroup`] (M5 L1): each binds its part of the same
+/// resources, and the pipelines of a family bind their family's ([`FrameGroup::of`]).
+#[derive(Debug)]
+pub(crate) struct FrameBindGroups([wgpu::BindGroup; FrameGroup::ALL.len()]);
+
+impl FrameBindGroups {
+    pub(crate) fn get(&self, group: FrameGroup) -> &wgpu::BindGroup {
+        &self.0[group.index()]
+    }
+}
+
+pub(crate) fn create_frame_bind_groups(
     device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
+    layouts: &Layouts,
     bindings: FrameBindings<'_>,
-) -> wgpu::BindGroup {
+) -> FrameBindGroups {
     let FrameBindings { uniforms: frame_uniforms, lights, characters, shadows, character_prepass, ambient } =
         bindings;
     let [shadow_uniforms, cascades, atlas, sampler] = shadows.frame_entries();
     let [character_depth, character_ids, character_sampler] = character_prepass.frame_entries();
     let [ambient_uniforms, probe_atlas, bricks, reflection, occlusion, ambient_sampler] =
         ambient.frame_entries();
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("frame"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: characters.buffer().as_entire_binding() },
-            shadow_uniforms,
-            cascades,
-            atlas,
-            sampler,
-            character_depth,
-            character_ids,
-            character_sampler,
-            ambient_uniforms,
-            probe_atlas,
-            bricks,
-            reflection,
-            occlusion,
-            ambient_sampler,
-        ],
-    })
+    let entries = [
+        wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
+        wgpu::BindGroupEntry {
+            binding: frame_binding::CHARACTERS,
+            resource: characters.buffer().as_entire_binding(),
+        },
+        shadow_uniforms,
+        cascades,
+        atlas,
+        sampler,
+        character_depth,
+        character_ids,
+        character_sampler,
+        ambient_uniforms,
+        probe_atlas,
+        bricks,
+        reflection,
+        occlusion,
+        ambient_sampler,
+    ];
+    FrameBindGroups(FrameGroup::ALL.map(|group| {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> =
+            entries.iter().filter(|entry| group.binds(entry.binding)).cloned().collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame"),
+            layout: layouts.frame(group),
+            entries: &entries,
+        })
+    }))
 }
 
 /// Group 2 per [`MESH_FAMILIES`] entry, for that family's pipelines: the instances and the

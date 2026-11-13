@@ -7,7 +7,9 @@
 //              their lists (binding 2) are declared in lights.wgsl and the passes that read
 //              them, the characters (binding 3), the shadows (bindings 4–7) and the
 //              character prepass's targets (bindings 8–10) below, the ambient probe grid,
-//              reflection cube and occlusion (bindings 11–16) in ambient.wgsl
+//              reflection cube and occlusion (bindings 11–16) in ambient.wgsl; a layout per
+//              family (`pipelines::FrameGroup`): the characters' leaves out 12, 13 and 15, the
+//              world's 3, 8 and 9
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material

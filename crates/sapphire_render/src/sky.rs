@@ -146,7 +146,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::materials::{MaterialHandle, Materials};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
-use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
+use crate::pipelines::{DEPTH_FORMAT, FrameGroup, Layouts, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::{CameraData, DirectionalLight, FramePacket, LOG_TARGET, RenderError};
@@ -527,7 +527,8 @@ pub(crate) struct SkyDraw<'a> {
 }
 
 impl SkyDraw<'_> {
-    /// Draws the sky into the main pass: groups 0 and 1 must be bound. Leaves group 2 and 3
+    /// Draws the sky into the main pass: group 0 must be bound as the world's frame group
+    /// ([`FrameGroup::World`]), and group 1. Leaves group 2 and 3
     /// bound to the sky's, so mesh draws after it rebind theirs.
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(self.pipeline);
@@ -726,7 +727,7 @@ impl Sky {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky"),
             bind_group_layouts: &[
-                Some(&layouts.frame),
+                Some(layouts.frame(FrameGroup::World)),
                 Some(&layouts.view),
                 Some(&group_layout),
                 Some(&layouts.materials[MaterialFamily::Sky.index()]),

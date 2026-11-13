@@ -1,20 +1,12 @@
-//! Watching real directories: these wait for the platform's file events, for at most a few
-//! seconds each (longer on a loaded machine, whose sleeps run long).
-//!
-//! They check what holds however the machine is loaded: a pause in the writes, or in the
-//! delivery of their events, as long as the debounce time may end a burst; and FSEvents may
-//! report files written just before a watch began, in its first batches or folded into a later
-//! one. So bursts are checked to coalesce, not to be reported exactly once, and each change to be
-//! reported, not to be reported alone.
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Hot reload's own logic, on the watcher's events made here: what a changed file is (a pack, a
+//! shader source, a document, or none of these), with the files read as they are. When files
+//! are reported, debounced, is `sapphire_watch`'s logic, tested there on a test's events and
+//! time. So no platform or clock decides what these see, and they hold however late a busy
+//! machine delivers its file events. One test waits for the platform's own events.
 
 use sapphire_time::Stopwatch;
 
 use super::*;
-// The public watcher contract promises delivery within two seconds of continuous writes.
-const MAX_WAIT: Duration = Duration::from_secs(2);
 
 /// A directory of its own under the system's temporary directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -42,48 +34,11 @@ impl Drop for TempDir {
 const TEST_DEBOUNCE: Duration = Duration::from_millis(150);
 const TICK: Duration = Duration::from_millis(20);
 
-/// Polls until something changed, for at most five seconds.
-fn next(reload: &mut HotReload) -> Changes {
-    next_where(reload, |_| true)
-}
-
-/// Polls until a change `wanted` takes comes, for at most five seconds, skipping others.
-fn next_where(reload: &mut HotReload, wanted: impl Fn(&Changes) -> bool) -> Changes {
-    for _ in 0..250 {
-        let changes = reload.poll();
-        if !changes.is_empty() && wanted(&changes) {
-            return changes;
-        }
-        std::thread::sleep(TICK);
-    }
-    panic!("no such change in five seconds");
-}
-
-/// Polls until every pack in `expected` was reported, for at most five seconds, and returns
-/// every pack reported meanwhile: others may come too, the expected ones must.
-fn packs_reported(reload: &mut HotReload, expected: &[&str]) -> Vec<String> {
-    let mut packs = Vec::new();
-    for _ in 0..250 {
-        packs.extend(reload.poll().packs);
-        if expected.iter().all(|pack| packs.iter().any(|reported| reported == pack)) {
-            return packs;
-        }
-        std::thread::sleep(TICK);
-    }
-    panic!("{expected:?} weren't reported in five seconds; {packs:?} were");
-}
-
-/// Polls for `wait`, and returns everything that changed in that time.
-fn gather(reload: &mut HotReload, wait: Duration) -> Vec<Changes> {
-    let mut all = Vec::new();
-    for _ in 0..wait.as_millis() / TICK.as_millis() {
-        let changes = reload.poll();
-        if !changes.is_empty() {
-            all.push(changes);
-        }
-        std::thread::sleep(TICK);
-    }
-    all
+/// What hot reload makes of the watcher reporting `changed`, each a file's watch and name.
+fn changes(reload: &mut HotReload, changed: &[(WatchId, &str)]) -> Changes {
+    let changed: Vec<Changed> =
+        changed.iter().map(|(watch, name)| Changed { watch: *watch, name: (*name).into() }).collect();
+    reload.watched.changes(WatchEvents { changed: &changed, errors: &[] })
 }
 
 /// Writes `bytes` to `path` as the pipeline writes packs: to a temporary file, renamed into place.
@@ -94,126 +49,148 @@ fn write_atomically(path: &Path, bytes: &[u8]) {
     std::fs::rename(&temp, path).expect("rename");
 }
 
-#[test]
-fn a_burst_of_writes_is_coalesced() {
-    const WRITES: u8 = 30;
-    let content = TempDir::new("burst");
-    let pack = content.join("shared.spack");
-    std::fs::write(&pack, b"0").unwrap();
+/// Hot reload watching a content root, a shader directory holding every shader file, and two
+/// documents in one directory, as the default day and light rigs are.
+struct Watching {
+    reload: HotReload,
+    content: TempDir,
+    shaders: TempDir,
+    documents: TempDir,
+    packs_watch: WatchId,
+    shaders_watch: WatchId,
+    documents_watch: WatchId,
+    day: DocumentId,
+    rigs: DocumentId,
+}
+
+fn watching(name: &str) -> Watching {
+    let content = TempDir::new(&format!("{name}_content"));
+    let shaders = TempDir::new(&format!("{name}_shaders"));
+    let documents = TempDir::new(&format!("{name}_documents"));
+    for file in ShaderFile::ALL {
+        std::fs::write(shaders.join(file.file_name()), file.compiled_in()).unwrap();
+    }
+    std::fs::write(documents.join("day.ron"), "(keys: [])").unwrap();
+    std::fs::write(documents.join("rigs.ron"), "(rigs: [])").unwrap();
     let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
     reload.watch_packs(&content.0).unwrap();
-    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
-    // Thirty writes over about half a second, more than three debounce times, never quiet for one
-    // unless the machine pauses this thread; each such pause may end a burst.
-    let (mut since_write, mut pauses) = (Stopwatch::start(), 0);
-    for n in 0..WRITES {
-        write_atomically(&pack, &[n]);
-        if since_write.lap() >= TEST_DEBOUNCE && n > 0 {
-            pauses += 1;
-        }
-        std::thread::sleep(Duration::from_millis(15));
-    }
-    let mut reports = vec![next(&mut reload)];
-    reports.extend(gather(&mut reload, 4 * TEST_DEBOUNCE));
-    assert!(
-        reports.iter().all(|changes| changes.packs == ["shared"] && changes.errors.is_empty()),
-        "{reports:?}"
-    );
-    // Once on an idle machine; a report per write would be thirty. A loaded machine may also stall
-    // delivering the events, which this thread can't see: a few times at most in half a second.
-    let most = 1 + pauses + usize::from(WRITES / 10);
-    assert!(
-        reports.len() <= most,
-        "{WRITES} writes with {pauses} pauses were reported {} times, more than {most}: {reports:?}",
-        reports.len()
-    );
+    reload.watch_shaders(&shaders.0).unwrap();
+    let day = reload.watch_document(&documents.join("day.ron")).unwrap();
+    let rigs = reload.watch_document(&documents.join("rigs.ron")).unwrap();
+    assert_ne!(day, rigs);
+    let packs_watch = reload.watched.packs.expect("packs watched");
+    let shaders_watch = reload.watched.shaders.as_ref().expect("shaders watched").0;
+    let documents_watch = reload.watched.documents[0].0;
+    assert_eq!(documents_watch, reload.watched.documents[1].0, "one directory, watched once");
+    Watching { reload, content, shaders, documents, packs_watch, shaders_watch, documents_watch, day, rigs }
 }
 
 #[test]
 fn packs_shaders_and_documents_are_reported_as_what_they_are() {
-    let content = TempDir::new("kinds_content");
-    let shaders = TempDir::new("kinds_shaders");
-    let documents = TempDir::new("kinds_documents");
-    for file in ShaderFile::ALL {
-        std::fs::write(shaders.join(file.file_name()), file.compiled_in()).unwrap();
-    }
-    // Two documents in one directory, as the default day and light rigs are.
-    let (day, rigs) = (documents.join("day.ron"), documents.join("rigs.ron"));
-    std::fs::write(&day, "(keys: [])").unwrap();
-    std::fs::write(&rigs, "(rigs: [])").unwrap();
-    let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
-    reload.watch_packs(&content.0).unwrap();
-    reload.watch_shaders(&shaders.0).unwrap();
-    let document = reload.watch_document(&day).unwrap();
-    let other_document = reload.watch_document(&rigs).unwrap();
-    assert_ne!(document, other_document);
-    // The files just written may be reported once the watch begins.
-    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
+    let Watching {
+        mut reload,
+        content,
+        shaders,
+        documents,
+        packs_watch,
+        shaders_watch,
+        documents_watch,
+        day,
+        rigs,
+    } = watching("kinds");
 
     // A pack lands; the temporary file it was written to is no pack.
     write_atomically(&content.join("shared.spack"), b"pack");
-    let changes = next(&mut reload);
-    assert_eq!(
-        (changes.packs.as_slice(), changes.shaders.is_none()),
-        (["shared".to_owned()].as_slice(), true)
+    let changes_made =
+        changes(&mut reload, &[(packs_watch, "shared.spack.tmp"), (packs_watch, "shared.spack")]);
+    assert_eq!(changes_made.packs, ["shared"]);
+    assert!(
+        changes_made.shaders.is_none() && changes_made.documents.is_empty() && changes_made.errors.is_empty()
     );
 
     // A shader: every file is read again, the changed one with its new text.
     let sky = format!("{}\n// edited\n", ShaderFile::Sky.compiled_in());
     std::fs::write(shaders.join("sky.wgsl"), &sky).unwrap();
-    let changes = next(&mut reload);
-    let sources = changes.shaders.expect("new shader sources");
+    let changes_made = changes(&mut reload, &[(shaders_watch, "sky.wgsl")]);
+    let sources = changes_made.shaders.expect("new shader sources");
     assert_eq!(sources.get(ShaderFile::Sky), sky);
     assert_eq!(sources.get(ShaderFile::Frame), ShaderFile::Frame.compiled_in());
     assert!(
-        changes.packs.is_empty() && changes.errors.is_empty(),
-        "{:?} {:?}",
-        changes.packs,
-        changes.errors
+        changes_made.packs.is_empty() && changes_made.documents.is_empty() && changes_made.errors.is_empty()
     );
 
     // A document, with its text, and not its neighbor.
-    std::fs::write(&day, "(keys: [()])").unwrap();
-    let changes = next(&mut reload);
-    assert_eq!(changes.documents, [(document, "(keys: [()])".to_owned())]);
-    std::fs::write(&rigs, "(rigs: [()])").unwrap();
-    let changes = next(&mut reload);
-    assert_eq!(changes.documents, [(other_document, "(rigs: [()])".to_owned())]);
+    std::fs::write(documents.join("day.ron"), "(keys: [()])").unwrap();
+    let changes_made = changes(&mut reload, &[(documents_watch, "day.ron")]);
+    assert_eq!(changes_made.documents, [(day, "(keys: [()])".to_owned())]);
+    std::fs::write(documents.join("rigs.ron"), "(rigs: [()])").unwrap();
+    let changes_made = changes(&mut reload, &[(documents_watch, "rigs.ron")]);
+    assert_eq!(changes_made.documents, [(rigs, "(rigs: [()])".to_owned())]);
 
-    // Files that are none of these.
+    // All three in one report, each as what it is.
+    write_atomically(&content.join("zone.spack"), b"pack");
+    let changes_made = changes(
+        &mut reload,
+        &[(documents_watch, "day.ron"), (shaders_watch, "frame.wgsl"), (packs_watch, "zone.spack")],
+    );
+    assert_eq!(changes_made.packs, ["zone"]);
+    assert_eq!(changes_made.shaders.expect("shader sources").get(ShaderFile::Sky), sky);
+    assert_eq!(changes_made.documents, [(day, "(keys: [()])".to_owned())]);
+    assert!(changes_made.errors.is_empty(), "{:?}", changes_made.errors);
+
+    // Files that are none of these: what a file is depends on its directory as well as its name.
     std::fs::write(content.join("notes.txt"), "x").unwrap();
     std::fs::write(shaders.join("notes.wgsl"), "x").unwrap();
     std::fs::write(documents.join("other.ron"), "x").unwrap();
-    assert!(gather(&mut reload, 4 * TEST_DEBOUNCE).is_empty());
+    let none = changes(
+        &mut reload,
+        &[
+            (packs_watch, "notes.txt"),
+            (packs_watch, "sky.wgsl"),
+            (packs_watch, "day.ron"),
+            (shaders_watch, "notes.wgsl"),
+            (shaders_watch, "shared.spack"),
+            (documents_watch, "other.ron"),
+            (documents_watch, "zone.spack"),
+        ],
+    );
+    assert!(none.is_empty(), "{none:?}");
 }
 
 #[test]
 fn removed_and_renamed_files_are_changes() {
-    let content = TempDir::new("removed_content");
-    let shaders = TempDir::new("removed_shaders");
-    for file in ShaderFile::ALL {
-        std::fs::write(shaders.join(file.file_name()), file.compiled_in()).unwrap();
-    }
-    std::fs::write(content.join("shared.spack"), b"pack").unwrap();
-    std::fs::write(content.join("zone.spack"), b"pack").unwrap();
-    let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
-    reload.watch_packs(&content.0).unwrap();
-    reload.watch_shaders(&shaders.0).unwrap();
-    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
+    let Watching {
+        mut reload, content, shaders, documents, packs_watch, shaders_watch, documents_watch, ..
+    } = watching("removed");
 
-    // A removed pack is a pack to remount: the remount fails, and the asset server keeps it.
-    std::fs::remove_file(content.join("shared.spack")).unwrap();
-    packs_reported(&mut reload, &["shared"]);
-    // A rename changes both names.
+    // A removed pack is a pack to remount: the remount fails, and the asset server keeps it. A
+    // rename changes both names.
+    std::fs::write(content.join("zone.spack"), b"pack").unwrap();
     std::fs::rename(content.join("zone.spack"), content.join("district.spack")).unwrap();
-    packs_reported(&mut reload, &["district", "zone"]);
+    let changes_made = changes(&mut reload, &[(packs_watch, "zone.spack"), (packs_watch, "district.spack")]);
+    assert_eq!(changes_made.packs, ["zone", "district"]);
 
     // A removed shader keeps the text it had, and says why.
     std::fs::remove_file(shaders.join("outline.wgsl")).unwrap();
-    let changes = next_where(&mut reload, |changes| changes.shaders.is_some());
-    let sources = changes.shaders.expect("shader sources");
+    let changes_made = changes(&mut reload, &[(shaders_watch, "outline.wgsl")]);
+    let sources = changes_made.shaders.expect("shader sources");
     assert_eq!(sources.get(ShaderFile::Outline), ShaderFile::Outline.compiled_in());
-    assert!(changes.errors.iter().any(|error| error.contains("outline.wgsl")), "{:?}", changes.errors);
+    assert!(
+        changes_made.errors.iter().any(|error| error.contains("outline.wgsl")),
+        "{:?}",
+        changes_made.errors
+    );
+
+    // A removed document says why, and brings no text.
+    std::fs::remove_file(documents.join("day.ron")).unwrap();
+    let changes_made = changes(&mut reload, &[(documents_watch, "day.ron")]);
+    assert!(changes_made.documents.is_empty());
+    assert!(changes_made.errors.iter().any(|error| error.contains("day.ron")), "{:?}", changes_made.errors);
+
+    // The watcher's own errors come through, saying whose they are.
+    let errors = ["the watched directory is gone".to_owned()];
+    let changes_made = reload.watched.changes(WatchEvents { changed: &[], errors: &errors });
+    assert_eq!(changes_made.errors, ["file watching: the watched directory is gone"]);
 }
 
 #[test]
@@ -229,45 +206,49 @@ fn directories_are_watched_once_and_missing_ones_fail() {
     reload.watch_document(Path::new("Cargo.toml")).expect("a file here");
 }
 
-/// Writes `path` every 5 ms, and reads `read` as often, until `stop` or ten seconds have passed.
-fn noise(path: PathBuf, read: PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let (since, mut n) = (Stopwatch::start(), 0u32);
-        while !stop.load(Ordering::Relaxed) && since.elapsed() < Duration::from_secs(10) {
-            // The directory goes when the test ends, perhaps before this thread sees `stop`.
-            let _ = std::fs::write(&path, n.to_le_bytes());
-            let _ = std::fs::read(&read);
-            n = n.wrapping_add(1);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    })
-}
+/// The longest [`the_platforms_events_reach_hot_reload`] waits: a saturated Mac's FSEvents has
+/// delivered nothing for more than ten seconds, once for a minute. The wait ends the moment the
+/// events come.
+const PLATFORM_WAIT: Duration = Duration::from_secs(60);
 
+/// How often [`the_platforms_events_reach_hot_reload`] writes the files again while it waits, in
+/// case the platform lost the events without saying so.
+const REWRITE_EVERY: Duration = Duration::from_secs(5);
+
+/// The platform's own events reach hot reload: a pack landing and a document saved once the
+/// watches began are reported, the document with its text. Nothing is in either directory before
+/// then, so nothing from before can stand in for these writes; and nothing here says how fast or
+/// how often, which only the platform decides.
 #[test]
-fn a_file_written_all_the_time_never_holds_back_a_quiet_one() {
-    // DT-006: one debounce for every watched directory waited for all of them to be quiet, so a
-    // file written every few milliseconds held back every other change for as long as it lasted.
-    let dir = TempDir::new("noise");
-    let (target, read) = (dir.join("target.ron"), dir.join("read.spack"));
-    std::fs::write(&target, "(old)").unwrap();
-    std::fs::write(&read, "pack").unwrap();
+fn the_platforms_events_reach_hot_reload() {
+    let content = TempDir::new("platform_content");
+    let documents = TempDir::new("platform_documents");
+    let day = documents.join("day.ron");
     let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
-    let document = reload.watch_document(&target).unwrap();
-    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
+    reload.watch_packs(&content.0).unwrap();
+    let document = reload.watch_document(&day).unwrap();
 
-    // A writer, and a reader (some platforms report reads), in the same directory.
-    let stop = Arc::new(AtomicBool::new(false));
-    let writer = noise(dir.join("noise.tmp"), read, Arc::clone(&stop));
-    std::thread::sleep(2 * TEST_DEBOUNCE);
-    let since = Stopwatch::start();
-    std::fs::write(&target, "(new)").unwrap();
-    let changes = next_where(&mut reload, |changes| !changes.documents.is_empty());
-    let latency = since.elapsed();
-    let noisy = !writer.is_finished();
-    stop.store(true, Ordering::Relaxed);
-    writer.join().unwrap();
-    assert_eq!(changes.documents, [(document, "(new)".to_owned())]);
-    assert!(noisy, "reported only once the writer stopped, {latency:?} after the change");
-    // About the debounce time; a loaded machine may take longer to deliver the events.
-    assert!(latency < MAX_WAIT, "reported {latency:?} after the change");
+    let (since, mut writes, mut dropped) = (Stopwatch::start(), 0u32, false);
+    let (mut pack, mut text, mut errors) = (false, false, Vec::new());
+    while since.elapsed() < PLATFORM_WAIT {
+        // Again every few seconds, and at once if the platform said it dropped events.
+        if dropped || since.elapsed() >= REWRITE_EVERY * writes {
+            write_atomically(&content.join("shared.spack"), b"pack");
+            std::fs::write(&day, "(keys: [])").unwrap();
+            writes += 1;
+        }
+        let changes = reload.poll();
+        pack |= changes.packs.iter().any(|pack| pack == "shared");
+        text |= changes.documents.contains(&(document, "(keys: [])".to_owned()));
+        if pack && text {
+            return;
+        }
+        dropped = changes.errors.iter().any(|error| error.contains("dropped file events"));
+        errors.extend(changes.errors);
+        std::thread::sleep(TICK);
+    }
+    panic!(
+        "in {PLATFORM_WAIT:?} of {writes} writes, the pack was reported: {pack}, the document: {text}; errors \
+         meanwhile: {errors:?}"
+    );
 }

@@ -112,8 +112,16 @@ impl Changes {
 #[derive(Debug)]
 pub struct HotReload {
     watcher: FileWatcher,
+    watched: Watched,
+}
+
+/// What each of [`HotReload`]'s watches is for: what makes the watcher's changed files into
+/// [`Changes`].
+#[derive(Debug)]
+struct Watched {
     packs: Option<WatchId>,
-    shaders: Option<WatchId>,
+    /// The shader sources' watch and directory, canonical.
+    shaders: Option<(WatchId, PathBuf)>,
     /// Each watched document's directory, file name and path, by [`DocumentId`].
     documents: Vec<(WatchId, OsString, PathBuf)>,
     /// The shader sources as last read: the compiled-in ones until a WGSL file changes.
@@ -127,24 +135,27 @@ impl HotReload {
     pub fn new(debounce: Duration) -> Result<Self, WatchError> {
         Ok(Self {
             watcher: FileWatcher::new(debounce)?,
-            packs: None,
-            shaders: None,
-            documents: Vec::new(),
-            sources: ShaderSources::compiled_in(),
+            watched: Watched {
+                packs: None,
+                shaders: None,
+                documents: Vec::new(),
+                sources: ShaderSources::compiled_in(),
+            },
         })
     }
 
     /// Watches the content root's packs, `<name>.spack` files, reporting a changed one as a pack
     /// to remount.
     pub fn watch_packs(&mut self, content_root: &Path) -> Result<(), WatchError> {
-        self.packs = Some(self.watcher.watch(content_root)?);
+        self.watched.packs = Some(self.watcher.watch(content_root)?);
         Ok(())
     }
 
     /// Watches the renderer's WGSL sources in `dir` ([`sources::shader_dir`] in this
     /// repository), reporting the sources again when one changes.
     pub fn watch_shaders(&mut self, dir: &Path) -> Result<(), WatchError> {
-        self.shaders = Some(self.watcher.watch(dir)?);
+        let watch = self.watcher.watch(dir)?;
+        self.watched.shaders = Some((watch, self.watcher.dir(watch).to_owned()));
         Ok(())
     }
 
@@ -162,15 +173,22 @@ impl HotReload {
         // A name alone has an empty parent, which is no directory to the OS.
         let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let watch = self.watcher.watch(dir)?;
-        self.documents.push((watch, name.to_owned(), path.to_owned()));
-        Ok(DocumentId(self.documents.len() - 1))
+        let documents = &mut self.watched.documents;
+        documents.push((watch, name.to_owned(), path.to_owned()));
+        Ok(DocumentId(documents.len() - 1))
     }
 
     /// What changed since the last poll. Call it once a frame: it allocates nothing while nothing
     /// changed. Changed shader files and documents are read here.
     pub fn poll(&mut self) -> Changes {
+        self.watched.changes(self.watcher.poll())
+    }
+}
+
+impl Watched {
+    /// What the watcher's `events` change, reading the shader files and documents that changed.
+    fn changes(&mut self, events: WatchEvents<'_>) -> Changes {
         let mut changes = Changes::default();
-        let events = self.watcher.poll();
         changes.errors.extend(events.errors.iter().map(|error| format!("file watching: {error}")));
         let mut shaders = false;
         for Changed { watch, name } in events.changed {
@@ -184,7 +202,9 @@ impl HotReload {
             {
                 changes.packs.push(pack.to_owned());
             }
-            if Some(*watch) == self.shaders && name.to_str().and_then(ShaderFile::from_file_name).is_some() {
+            if self.shaders.as_ref().is_some_and(|(shaders, _)| shaders == watch)
+                && name.to_str().and_then(ShaderFile::from_file_name).is_some()
+            {
                 shaders = true;
             }
             for (index, (_, _, path)) in self
@@ -199,8 +219,7 @@ impl HotReload {
                 }
             }
         }
-        if let Some(watch) = self.shaders.filter(|_| shaders) {
-            let dir = self.watcher.dir(watch).to_owned();
+        if let Some((_, dir)) = self.shaders.as_ref().filter(|_| shaders) {
             for file in ShaderFile::ALL {
                 let path = dir.join(file.file_name());
                 match std::fs::read_to_string(&path) {

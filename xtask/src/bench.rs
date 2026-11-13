@@ -34,6 +34,9 @@ pub enum Preset {
     Ci,
     /// The shipped game's load, which the benchmark measures: gigabytes.
     Budget,
+    /// The budget with twice the pool's textures (M5 B2), for the texture streamer's proof: never cooked
+    /// unless asked.
+    Double,
 }
 
 impl Preset {
@@ -41,6 +44,7 @@ impl Preset {
         match self {
             Self::Ci => "ci",
             Self::Budget => "budget",
+            Self::Double => "double",
         }
     }
 }
@@ -49,10 +53,10 @@ impl FromStr for Preset {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        [Self::Ci, Self::Budget]
+        [Self::Ci, Self::Budget, Self::Double]
             .into_iter()
             .find(|preset| preset.name() == s)
-            .ok_or_else(|| anyhow!("unknown preset `{s}`; expected `ci` or `budget`"))
+            .ok_or_else(|| anyhow!("unknown preset `{s}`; expected `ci`, `budget` or `double`"))
     }
 }
 
@@ -153,6 +157,7 @@ mod tests {
     fn parses_presets_and_places_their_output() {
         assert_eq!("ci".parse::<Preset>().unwrap(), Preset::Ci);
         assert_eq!("budget".parse::<Preset>().unwrap(), Preset::Budget);
+        assert_eq!("double".parse::<Preset>().unwrap(), Preset::Double);
         assert!("huge".parse::<Preset>().is_err());
         assert!(source_dir(Preset::Budget).ends_with("target/bench/budget/sources"));
         assert!(cooked_dir(Preset::Ci, Cook::Mobile).ends_with("target/bench/ci/mobile"));
@@ -171,7 +176,7 @@ mod tests {
         let shipping = workspace::output_dir().join("content");
         for cook in [Cook::Desktop, Cook::Mobile] {
             assert!(inside(&content::cooked_dir(cook), &shipping));
-            for preset in [Preset::Ci, Preset::Budget] {
+            for preset in [Preset::Ci, Preset::Budget, Preset::Double] {
                 for dir in [source_dir(preset), cooked_dir(preset, cook), loose_dir(preset, cook)] {
                     assert!(!inside(&dir, &shipping) && !inside(&shipping, &dir), "{}", dir.display());
                 }

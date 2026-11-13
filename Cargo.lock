@@ -4756,6 +4756,7 @@ dependencies = [
  "sapphire_sequencer",
  "sapphire_serialize",
  "sapphire_strings",
+ "sapphire_synthetic_zone",
  "sapphire_text",
  "sapphire_time",
  "sapphire_timeline",

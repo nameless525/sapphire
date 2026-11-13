@@ -49,7 +49,7 @@ Usage:
       files only, as gen-samples, unless --force.
   sapphire_pipeline gen-bench --bench <DIR> --preset <PRESET> --out <DIR>
       Write the benchmark's sources that the documents under --bench (bench/) describe, at a preset's
-      scale (ci or budget), each with its sidecar, into --out: a source tree for a cook under target/,
+      scale (ci, budget or double), each with its sidecar, into --out: a source tree for a cook under target/,
       never committed. Files an earlier run left in --out that this one doesn't write are removed;
       --out must be empty or a tree gen-bench wrote.
   sapphire_pipeline icons --source <PNG> --out <DIR>

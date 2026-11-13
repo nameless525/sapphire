@@ -1,0 +1,45 @@
+// A prefab: a stone planter, its greens heaped over its rim.
+// Its three slots, wood, stone and cloth, take the district's texture sets placement by placement.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {},
+        slots: [
+            (name: "wood", tile: (1.5, 1.5)),
+            (name: "stone", tile: (2.0, 2.0), projection: Box),
+            (name: "cloth", tile: (1.0, 1.0), projection: Box),
+        ],
+        surfaces: [
+            (pieces: ["#*"], material: Some("timber"), slot: "wood"),
+            (pieces: ["#*"], material: Some("lattice"), slot: "wood"),
+            (pieces: ["#*"], material: Some("door"), slot: "wood"),
+            (pieces: ["#*"], material: Some("boards"), slot: "wood"),
+            (pieces: ["#*"], material: Some("back"), slot: "wood"),
+            (pieces: ["#*"], material: Some("frame"), slot: "wood"),
+            (pieces: ["#*"], material: Some("sign"), slot: "wood"),
+            (pieces: ["#*"], material: Some("plaster"), slot: "wood"),
+            (pieces: ["#*"], material: Some("gable"), slot: "wood"),
+            (pieces: ["#*"], material: Some("plinth"), slot: "stone"),
+            (pieces: ["#*"], material: Some("trim"), slot: "stone"),
+            (pieces: ["#*"], material: Some("tiles"), slot: "stone"),
+            (pieces: ["#*"], material: Some("roof_tile"), slot: "stone"),
+            (pieces: ["#*"], material: Some("ridge"), slot: "stone"),
+            (pieces: ["#*"], material: Some("eaves"), slot: "stone"),
+            (pieces: ["#*"], material: Some("iron"), slot: "stone"),
+            (pieces: ["#*"], material: Some("pottery"), slot: "stone"),
+            (pieces: ["#*"], material: Some("window"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("paper"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("cloth"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("valance"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("wicker"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("produce"), slot: "cloth"),
+            (pieces: ["#*"], material: Some("fruit"), slot: "cloth"),
+        ],
+        occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
+        place: [
+            (piece: "#box", at: (0.0, 0.25, 0.0), scale: (1.2, 0.5, 1.2), slot: Some("stone")),
+            (piece: "#box", at: (0.0, 0.58, 0.0), scale: (1.0, 0.2, 1.0), slot: Some("cloth")),
+        ],
+    ),
+)

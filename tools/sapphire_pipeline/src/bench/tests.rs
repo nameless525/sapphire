@@ -55,9 +55,10 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
     const PINNED: &[(&str, &str)] = &[
         (".", "cf2cdaca935a3bdde3fe9ab9de1e40c800aa7ada5c7371e8f23155de27b1dd72"),
         ("cast/stand_in_00", "f8aa3907ea259b4cd8718e762b4ebc61f9d654faa7132dee4ee3dbbf271a3c9d"),
-        ("district", "32170bcd24dcb31e051544b2b153d8b4049497a2c67e2bc5e847bf62f4cc9c46"),
+        ("district", "3ad95515a63dc940ace97b511b8b2d5285f5b67e1d61fa41f48ffe95f8dbe482"),
+        ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
-        ("district/prefabs", "3c2c720d914b762aea5b3955d01f0d33e8a3a0abf1392fb0f3ef77949e606ff5"),
+        ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),
         ("district/textures", "3e8613b7430eec9bb2d03163a999abe8ff34be45744a6c7908f0b94d853005c0"),
     ];
     let dir = TempDir::new("bench_pinned");
@@ -92,8 +93,9 @@ fn a_preset_scales_the_district_and_the_cast() {
     assert_eq!(count(Preset::Ci, ".glb"), 1);
     assert_eq!(count(Preset::Budget, ".glb"), 2);
 
-    // Every source but the control maps has a sidecar, every sidecar's ID is its own, and the zone
-    // reaches every material.
+    // Every source but the control maps and the district's day has a sidecar, every sidecar's ID is its
+    // own, and the zone reaches every material.
+    let day = format!("district/{}", district::DAY);
     let files = tree(&dir.path().join("budget"));
     let mut ids = BTreeSet::new();
     for (path, bytes) in &files {
@@ -105,7 +107,7 @@ fn a_preset_scales_the_district_and_the_cast() {
                 meta.id,
                 asset_id(&path[..path.find('/').unwrap()], &source[source.find('/').unwrap() + 1..])
             );
-        } else if path != MARKER && !path.ends_with("_control.png") {
+        } else if path != MARKER && !path.ends_with("_control.png") && *path != day {
             assert!(files.contains_key(&format!("{path}.meta")), "{path} has no sidecar");
         }
     }
@@ -141,5 +143,6 @@ fn a_tree_it_didnt_write_is_left_alone() {
 fn presets_parse_by_name() {
     assert_eq!("ci".parse::<Preset>().unwrap(), Preset::Ci);
     assert_eq!("budget".parse::<Preset>().unwrap(), Preset::Budget);
+    assert_eq!("double".parse::<Preset>().unwrap(), Preset::Double);
     assert!(matches!("huge".parse::<Preset>(), Err(BenchError::Preset(_))));
 }

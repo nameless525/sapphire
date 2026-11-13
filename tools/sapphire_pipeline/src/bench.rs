@@ -4,7 +4,7 @@
 //! The scale benchmark needs content a shipped game's size: hundreds of 2K texture sets, a district of
 //! cells, a cast. Committed, that would be gigabytes; drawn by hand, it's a team's year. So `bench/` holds
 //! documents only (a zone's layout, prefabs, procedural texture specs and figure specs), and
-//! `sapphire_pipeline gen-bench --bench bench --preset <ci|budget> --out <DIR>` writes the sources they
+//! `sapphire_pipeline gen-bench --bench bench --preset <ci|budget|double> --out <DIR>` writes the sources they
 //! describe into `DIR`, with a sidecar each, as an ordinary source tree a cook reads. `cargo xtask
 //! bench-content` runs it and cooks the result under `target/bench/`. Nothing it writes is committed, and
 //! no package ships it: shipping cooks read `content/` alone.
@@ -21,8 +21,9 @@
 //! # Presets
 //!
 //! [`Preset::Ci`] is small, for CI to prove the route end to end in seconds. [`Preset::Budget`] is the
-//! shipped game's load, which the benchmark measures: its textures fill the desktop texture pool. Each part
-//! says what a preset means for it in its own document.
+//! shipped game's load, which the benchmark measures: its textures fill the desktop texture pool.
+//! [`Preset::Double`] (M5 B2) is the budget at twice the pool, for the texture streamer's proof; a part
+//! that gives no `double` makes its budget. Each part says what a preset means for it in its own document.
 //!
 //! # Determinism
 //!
@@ -75,15 +76,19 @@ pub enum Preset {
     Ci,
     /// The shipped game's load, which the benchmark measures.
     Budget,
+    /// The budget with twice the pool's textures (M5 B2), for the texture streamer's proof: a part that says
+    /// nothing of it makes its budget.
+    Double,
 }
 
 impl Preset {
-    pub const ALL: [Self; 2] = [Self::Ci, Self::Budget];
+    pub const ALL: [Self; 3] = [Self::Ci, Self::Budget, Self::Double];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Ci => "ci",
             Self::Budget => "budget",
+            Self::Double => "double",
         }
     }
 }
@@ -105,12 +110,20 @@ impl FromStr for Preset {
     }
 }
 
-/// What each preset means for a part, in its document: `presets: (ci: (...), budget: (...))`.
+/// What each preset means for a part, in its document: `presets: (ci: (...), budget: (...))`, and
+/// `double: Some((...))` for a part the double preset changes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Presets<T> {
     pub ci: T,
     pub budget: T,
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub double: Option<T>,
+}
+
+/// A missing `double`: a plain `default` would ask every preset's type for `Default`.
+fn none<T>() -> Option<T> {
+    None
 }
 
 impl<T> Presets<T> {
@@ -118,6 +131,7 @@ impl<T> Presets<T> {
         match preset {
             Preset::Ci => &self.ci,
             Preset::Budget => &self.budget,
+            Preset::Double => self.double.as_ref().unwrap_or(&self.budget),
         }
     }
 }
@@ -158,7 +172,7 @@ pub fn asset_id(part: &str, path: &str) -> AssetId {
 /// Why the benchmark's content can't be generated.
 #[derive(Debug, thiserror::Error)]
 pub enum BenchError {
-    #[error("unknown preset `{0}`; expected `ci` or `budget`")]
+    #[error("unknown preset `{0}`; expected `ci`, `budget` or `double`")]
     Preset(String),
     #[error("{path}: {source}")]
     Document { path: PathBuf, source: Box<DocumentError> },

@@ -44,6 +44,8 @@ sapphire_timeline.workspace = true
 sapphire_dialogue.workspace = true
 sapphire_tod.workspace = true
 sapphire_zone.workspace = true
+# The benchmark district's simulation half, which the district's generator writes into its documents (M5 B2).
+sapphire_synthetic_zone.workspace = true
 # Reads `.ftl` sources (M3 V2), in the cooker only.
 fluent-syntax.workspace = true
 icu_locale_core.workspace = true

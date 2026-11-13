@@ -48,12 +48,13 @@ Commands:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
       `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
       target/content/editor/, which no app ships.
-  bench-content [--preset ci|budget] [--cook desktop|mobile]
+  bench-content [--preset ci|budget|double] [--cook desktop|mobile]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
       target/bench/<preset>/sources/, then cook them into target/bench/<preset>/loose/<cook>/ and
       pack them into target/bench/<preset>/<cook>/ (defaults: ci, desktop; cache:
       target/bench/cache/). `ci` is small, for CI; `budget` is the shipped game's load, gigabytes
-      of 2K texture sets: check the disk first. Nothing it writes is committed or shipped.
+      of 2K texture sets: check the disk first; `double` is the budget at twice the texture pool.
+      Nothing it writes is committed or shipped.
   release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
       --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
       Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte

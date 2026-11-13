@@ -95,12 +95,13 @@ fn settings() -> Result<Vec<Flashes>, String> {
 /// Frames read before the first second judged, the first of them drawing the picture's history.
 const LEAD: u32 = 2 * RATE;
 
-/// The most red transitions a second may hold. The project's bar, as A3 set it for the arena's fights, is none,
-/// which WCAG's three red flashes a second leave room for. The walk holds one until the camera keeps off near
-/// props (M4 A7, triage C-7): as the view goes back from an ultimate in the court to the fight's camera, the
-/// eye passes a red-hung post right beside it (frames 11,829 to 11,832), and the terrace's last ultimate draws
-/// back past the terrace's boss's red cloth (frame 14,476). Lower it to 0 with that.
-const MOST_RED: u32 = 1;
+/// The most red transitions a second may hold: none, the project's bar, as A3 set it for the arena's fights,
+/// which WCAG's three red flashes a second leave room for. A7 held the walk to one: in the court an enemy's
+/// red-tasselled lance swept across the view, its holder half a metre from the eye, as an ultimate's
+/// cinematic gave the view back (frames 11,829 to 11,832), and on the terrace the boss's red cloth moved
+/// under the eye a metre from its armour (frame 14,476). Fighters near the eye fade now, and what they hold
+/// with them (M4 C7, `game_combat::fight::FIGHTER_FADE`), and the walk has none.
+const MOST_RED: u32 = 0;
 
 /// The frames `SAPPHIRE_FLASH_PART` judges the seconds ending on, `from..to` (`to` past the walk for the last
 /// part), or the whole walk.
@@ -360,6 +361,7 @@ fn worst(walked: &Walked, trace: &[Traced], (from, to): (u32, u32)) -> Option<(u
 
 /// Prints the walk's scores and each stretch's, and says whether they pass.
 #[allow(clippy::print_stdout, reason = "the scores are exit test 6's numbers, read with --nocapture")]
+#[allow(clippy::absurd_extreme_comparisons, reason = "`MOST_RED` is 0, the bar, and stays a bound to read")]
 fn judge(flashes: Flashes, walked: &Walked) -> bool {
     let name = flashes.name();
     let report = &walked.report;

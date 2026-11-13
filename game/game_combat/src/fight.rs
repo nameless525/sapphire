@@ -39,6 +39,7 @@ use sapphire_sequencer::{Origin, Playing, TimelinePlayer};
 use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_timeline::Timeline;
 use sapphire_vfx::VfxBudget;
+use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 #[cfg(feature = "dev")]
 use sapphire_world::screen_effects::EffectLibrary;
@@ -68,7 +69,8 @@ use crate::documents::FightDocuments;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::TimelineShow;
 use sapphire_stage::scene::{
-    DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, ZoneStanding, ZoneTarget, stream_settings,
+    DEFAULT_TIME_OF_DAY, Fade, Figure, LookDev, NearFade, Scene, ZoneShow, ZoneStanding, ZoneTarget,
+    stream_settings,
 };
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
@@ -79,6 +81,16 @@ pub const ENEMY_GRAPH: GraphKey = GraphKey::new("enemy");
 
 /// The most kinds of enemy one fight draws, the warrior among them.
 pub const MAX_KINDS: usize = 8;
+
+/// How a fight's enemies fade as the camera nears them (M4 C7), measured from a capsule as wide as each is
+/// framed ([`NearFade::Reach`]): whole two metres out, gone half a metre out, easing between, so a fighter
+/// the eye comes within a pace of dithers away as the reference games' near-camera fade does. A fighter, a
+/// boss's cloth or a held lance that near the eye covers a quarter of a 10° field and more, and swept across
+/// the view whole it flashes (WCAG 2.3.1): the ward's court, where an enemy's red lance crossed the view half
+/// a metre from the eye after an ultimate, and its terrace, where the boss's red cloth moved under it. The
+/// player fades by the scene's own range from its body, only as the camera clips into it; what anyone holds
+/// fades with them.
+pub const FIGHTER_FADE: ProximityFade = ProximityFade { start: 2.0, end: 0.5 };
 
 /// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws,
 /// and the enemy who fights there.
@@ -770,6 +782,9 @@ impl FightShow {
         ground: ArenaGround,
     ) {
         scene.world_mut().insert_resource(shot.camera(ground.spawns().player.position()));
+        // Fighters near the eye fade (M4 C7): the player as the camera clips into it, the others by
+        // `FIGHTER_FADE`, which `spawn_warrior` gives them.
+        scene.set_fade(Fade::Proximity(ProximityFade::default()));
         let character = scene.character();
         scene.world_mut().entity_mut(character).remove::<Turntable>();
         let stock = WarriorStock { meshes: enemy, held: held.clone(), driver: None };
@@ -1127,6 +1142,7 @@ impl FightShow {
     pub fn spawn_blade(&mut self, scene: &mut Scene, mesh: MeshHandle, held_hand: Mat4) {
         let rig = LightRigId::DEFAULT;
         let figure = scene.figure().of_item_at(held_hand * blade::socket());
+        let holder = scene.character();
         let entity = scene
             .world_mut()
             .spawn((
@@ -1134,6 +1150,7 @@ impl FightShow {
                 RenderTransform::default(),
                 CharacterLightRig { rig, head: figure.head },
                 figure,
+                NearFade::With(holder),
             ))
             .id();
         self.blade = Some(HeldBlade { entity, held_hand });
@@ -1844,6 +1861,7 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held, kin
             CharacterLightRig { rig, head: held.figure.head },
             held.figure,
             held.pose.clone(),
+            NearFade::Reach { radius: held.sizes.framed_radius, range: FIGHTER_FADE },
         ))
         .id();
     let carried = meshes.blade.zip(held.grip).zip(enemy::blade_figure(held));
@@ -1854,6 +1872,7 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held, kin
                 RenderTransform(place * grip.at),
                 CharacterLightRig { rig, head: figure.head },
                 figure,
+                NearFade::With(body),
             ))
             .id()
     });
@@ -1889,6 +1908,8 @@ fn draw(world: &mut World, warrior: Warrior, meshes: EnemyMeshes) {
 impl SceneShow for FightShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         inventory.effects |= self.cues.is_some();
+        // Its fighters fade near the eye (M4 C7), from whenever one stands.
+        inventory.fades = true;
     }
 
     fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {

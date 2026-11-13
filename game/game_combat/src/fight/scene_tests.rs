@@ -1069,6 +1069,23 @@ fn the_arena_stands_its_actors_where_the_simulation_has_them() {
     assert_eq!(scene.camera_heading(), scene.camera().heading());
 }
 
+/// A fight fades its fighters near the eye (M4 C7): each enemy from a capsule as wide as it's framed, what it
+/// holds and the player's blade with their holders, and the player by the scene's own range.
+#[test]
+fn a_fight_fades_its_fighters_near_the_eye() {
+    let (mut scene, _) = arena_stage(ArenaShot::Follow);
+    let (warrior, blade) = pair(&scene.show.warriors[0]);
+    let near = |entity| scene.world().get::<NearFade>(entity).copied();
+    let reach = Look::warrior().sizes().framed_radius;
+    assert_eq!(near(warrior), Some(NearFade::Reach { radius: reach, range: FIGHTER_FADE }));
+    assert_eq!(near(blade), Some(NearFade::With(warrior)));
+    assert_eq!(near(scene.character()), None, "the player fades by the scene's range");
+    // Nothing near the eye at the start, so all three are whole.
+    let packet = scene.frame_packet(1.0, Some((16, 9)));
+    assert_eq!(packet.characters.len(), 3);
+    assert!(packet.characters.iter().all(|listed| listed.opacity == 1.0), "{:?}", packet.characters);
+}
+
 /// The enemy stands beside the character in a shape of its own, and its blade lights as it does
 /// but casts no capsule, so it adds nothing to shadows or occlusion. Each keeps its pose and
 /// transform through a device loss's new meshes.

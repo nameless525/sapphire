@@ -496,7 +496,10 @@ impl Options {
         scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
-        scene.set_fade(self.fade());
+        // Only when asked: the arena's stand fades its fighters as the game's does (M4 C7).
+        if self.fade.is_some() || self.proximity_fade {
+            scene.set_fade(self.fade());
+        }
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }

@@ -80,7 +80,8 @@
 //!   rig figure's key turned to its angles, and each face rig head lit from its own angles (or by
 //!   its GI alone, in the GI layouts), its body a sphere around it. The characters other than the
 //!   face rig's heads take the scene's fade (M1 C7, [`Fade`]): whole, a fixed opacity (`--fade`),
-//!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`).
+//!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`), which a
+//!   character's [`NearFade`] can measure from a wider capsule or take from its holder (M4 C7).
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -174,6 +175,7 @@ type Characters = Query<
         &'static RenderTransform,
         Option<&'static RimKey>,
         Option<&'static Figure>,
+        Option<&'static NearFade>,
     ),
     With<RenderMesh>,
 >;
@@ -367,14 +369,35 @@ pub enum Fade {
 }
 
 impl Fade {
-    /// The opacity of a character with `body` seen from `camera`.
-    fn opacity(self, camera: Vec3, body: &CharacterBody) -> f32 {
-        match self {
-            Self::Off => 1.0,
-            Self::Fixed(opacity) => opacity,
-            Self::Proximity(fade) => fade.opacity(camera, body),
+    /// The opacity of a character with `body` seen from `camera`, faded as `near` says if it says
+    /// (by the proximity fade alone: a fixed fade is everyone's). A character that fades with its
+    /// holder takes the holder's afterwards ([`NearFade::With`]), and is whole here.
+    fn opacity(self, camera: Vec3, body: &CharacterBody, near: Option<&NearFade>) -> f32 {
+        match (self, near) {
+            (Self::Off, _) => 1.0,
+            (Self::Fixed(opacity), _) => opacity,
+            (Self::Proximity(_), Some(NearFade::Reach { radius, range })) => {
+                let reach = CharacterBody { radius: body.radius.max(*radius), ..*body };
+                range.opacity(camera, &reach)
+            }
+            (Self::Proximity(_), Some(NearFade::With(_))) => 1.0,
+            (Self::Proximity(fade), None) => fade.opacity(camera, body),
         }
     }
+}
+
+/// How a character fades as the camera nears it, when not by the scene's own [`Fade::Proximity`] range
+/// from its body capsule (M4 C7): what a fight's fighters and what they hold carry, so nothing near
+/// the eye sweeps whole across the view. Only a proximity fade reads it.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub enum NearFade {
+    /// By `range`, measured from a capsule as wide as the character looks: its body capsule's ends,
+    /// `radius` metres thick (its width as the camera frames it) if that's wider than its body. A
+    /// broad boss's cloth and armour reach far past its torso's capsule.
+    Reach { radius: f32, range: ProximityFade },
+    /// As this character does: something it holds (a weapon), which fades with its holder however
+    /// far it reaches. A holder that isn't listed this frame leaves it whole.
+    With(Entity),
 }
 
 pub struct Scene {
@@ -2131,7 +2154,8 @@ impl Scene {
         // The rigs are resolved for the camera; without one nothing draws.
         if let Some(camera) = packet.main_view().map(|view| view.camera) {
             let frame = time_of_day.frame();
-            for (entity, character, transform, key, figure) in &characters {
+            let listed = packet.characters.len();
+            for (entity, character, transform, key, figure, near) in &characters {
                 let figure = figure.copied().unwrap_or(scene_figure);
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
@@ -2157,7 +2181,7 @@ impl Scene {
                     figure.body_radius,
                 )
                 .transformed(transform.0);
-                let opacity = fade.opacity(camera.position, &body);
+                let opacity = fade.opacity(camera.position, &body, near);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
                     lighting,
@@ -2165,6 +2189,19 @@ impl Scene {
                     body,
                     opacity,
                 });
+            }
+            // What fades with its holder takes the holder's opacity, once every holder's is known: the
+            // query lists them in the same order again, so nothing is gathered.
+            if matches!(fade, Fade::Proximity(_)) {
+                let listed = listed..packet.characters.len();
+                for (at, (.., near)) in listed.clone().zip(&characters) {
+                    let Some(&NearFade::With(holder)) = near else { continue };
+                    let holder = extract::instance_id(holder);
+                    let held = packet.characters[listed.clone()].iter().find(|listed| listed.id == holder);
+                    if let Some(opacity) = held.map(|holder| holder.opacity) {
+                        packet.characters[at].opacity = opacity;
+                    }
+                }
             }
             // The face rig's heads, in the default preset turned to each head's angles, or by its
             // GI alone in the GI layouts.
@@ -3735,6 +3772,53 @@ mod tests {
         // Without a view there is no camera to resolve the rig for, and nothing draws.
         assert!(scene.frame_packet(1.0, None, &mut ()).characters.is_empty());
         scene.end_frame();
+    }
+
+    /// A character's [`NearFade`] fades it from a wider capsule than its body, and what fades with a
+    /// holder takes the holder's opacity, under the proximity fade only (M4 C7).
+    #[test]
+    fn a_near_fade_reaches_wider_and_what_is_held_fades_with_its_holder() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: Figure::MANNEQUIN.head };
+        let range = ProximityFade { start: 2.0, end: 0.5 };
+        let radius = Figure::MANNEQUIN.body_radius + 0.3;
+        let world = scene.ecs.world_mut();
+        let mesh = RenderMesh(MeshHandle::from_raw(1));
+        let fighter =
+            world.spawn((mesh, RenderTransform::default(), rig, NearFade::Reach { radius, range })).id();
+        let held = world.spawn((mesh, RenderTransform::default(), rig, NearFade::With(fighter))).id();
+        let character = scene.character;
+        let opacities = |scene: &mut Scene, fade: Fade, aside: f32| {
+            scene.set_fade(fade);
+            let eye =
+                scene.frame_packet(1.0, Some((16, 9)), &mut ()).main_view().expect("a view").camera.position;
+            scene.end_frame();
+            // Its feet a metre under the eye, so the eye is level with its capsule's straight part.
+            let at = eye - Vec3::new(radius + aside, 1.0, 0.0);
+            scene.ecs.world_mut().get_mut::<RenderTransform>(fighter).expect("placed").0 =
+                Mat4::from_translation(at);
+            let packet = scene.frame_packet(1.0, Some((16, 9)), &mut ());
+            let opacity = |entity: Entity| {
+                let id = InstanceId(entity.to_bits());
+                packet.characters.iter().find(|listed| listed.id == id).expect("listed").opacity
+            };
+            let opacities = [opacity(fighter), opacity(held), opacity(character)];
+            scene.end_frame();
+            opacities
+        };
+        let proximity = Fade::Proximity(ProximityFade::default());
+        // At the wide capsule's surface it's gone, and so is what it holds; the character, far off, is whole.
+        assert_eq!(opacities(&mut scene, proximity, 0.0), [0.0, 0.0, 1.0]);
+        // Within its range, partly, where the scene's range from its body would leave it whole.
+        let [partly, held_partly, _] = opacities(&mut scene, proximity, 1.25);
+        assert!(partly > 0.05 && partly < 0.95, "{partly}");
+        assert_eq!(held_partly, partly);
+        assert!(ProximityFade::default().start < 1.25 + 0.3);
+        // Past its start, whole.
+        assert_eq!(opacities(&mut scene, proximity, range.start + 0.1), [1.0; 3]);
+        // Under a fixed fade or none, the scene's fade is everyone's.
+        assert_eq!(opacities(&mut scene, Fade::Fixed(0.5), 0.0), [0.5; 3]);
+        assert_eq!(opacities(&mut scene, Fade::Off, 0.0), [1.0; 3]);
     }
 
     #[test]

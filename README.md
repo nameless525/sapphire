@@ -11,6 +11,7 @@ on macOS, Windows, Linux, iOS and Android.
 
 [![CI](https://github.com/nameless525/sapphire/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nameless525/sapphire/actions/workflows/ci.yml)
 [![GPU tests](https://github.com/nameless525/sapphire/actions/workflows/gpu-tests-warp.yml/badge.svg?branch=main)](https://github.com/nameless525/sapphire/actions/workflows/gpu-tests-warp.yml)
+[![Release](https://img.shields.io/github/v/release/nameless525/sapphire?label=release&color=1e6fd9)](CHANGELOG.md)
 [![Rust 1.99](https://img.shields.io/badge/rust-1.99-e43716?logo=rust&logoColor=white)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f81f7)](LICENSE)
 
@@ -100,7 +101,7 @@ Each frame, the fixed step advances the simulation, then resolves everything the
 
 ## Status
 
-Every milestone below is built, and runs on macOS, the iOS Simulator and the Android emulator; Windows and Linux build, pass their tests and render the golden images in CI. What only a phone, a store account or a person can prove is still owed.
+**Sapphire 0.1.0** is the first release: the milestones below, all built ([changelog](CHANGELOG.md)). It runs on macOS, the iOS Simulator and the Android emulator; Windows and Linux build, pass their tests and render the golden images in CI. What only a phone, a store account or a person can prove is still owed.
 
 | Milestone | What it built |
 |---|---|
@@ -120,6 +121,7 @@ The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit 
 | [Architecture](docs/architecture.md) | How the crates, the frame and the content pipeline fit together |
 | [Docs index](docs/README.md) | Every document, and when to read it |
 | [Engine spec](docs/engine-spec.md) | What gets built and how, module by module, with each one's "As built" notes |
+| [Changelog](CHANGELOG.md) | What each release holds |
 | [Conventions](docs/conventions.md) · [Iteration](docs/development-iteration.md) | How the code reads, and the smallest useful check for each kind of change |
 
 ## License

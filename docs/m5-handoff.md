@@ -6,6 +6,8 @@ What M5 inherits from M4, for whoever starts it. Like [m4-handoff.md](m4-handoff
 
 **Spec §10 names no milestone after M4.** What M5 is, a second slice, a content push, or the off-ramp, is the maintainer's to choose. This file is what any of them starts from, and its "Before a first upload" is what the maintainer acts on first if M5 is a release.
 
+**M4 is release 0.1.0** (tag `v0.1.0`, [CHANGELOG.md](../CHANGELOG.md)). Whatever M5 is, it starts from that tag, and its release is 0.2.0: raise the workspace version in the change that finishes it ([spec §7.4](engine-spec.md#74-xtask-commands), "Releases").
+
 **Nobody has played anything.** As of 2026-11-11 the maintainer hasn't played M2's fight, M3's slice or M4's packaged game, so review 3 from [m2-exit-run.md](m2-exit-run.md) has never run. M4 made a playtest cheap (F1, F2) and packaged the game for three stores, and whether any of it is fun is still unknown. It is still the largest risk in the project.
 
 ## Where M4 stands

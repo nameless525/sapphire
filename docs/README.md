@@ -10,6 +10,7 @@ Every doc in `docs/`, grouped by what you'd read it for. New here? Start with [A
 | [getting-started.md](getting-started.md) | Requirements, running on each platform, the sandbox's controls, the debug overlay, hot reload and live link, offscreen captures, everyday commands, troubleshooting | Before building or running anything |
 | [architecture.md](architecture.md) | How it fits together: the layers, a frame, the content pipeline, determinism, the test pyramid, CI | Before your first change |
 | [conventions.md](conventions.md) | How code reads: workspace rules, docs, errors, unsafe, time, platform code, logging, GPU structs, tests | Before writing code |
+| [../CHANGELOG.md](../CHANGELOG.md) | Each release: what it holds, by milestone, and its known limitations | To see what a version is, or before cutting a release |
 | [development-iteration.md](development-iteration.md) | The smallest useful check for each kind of edit; replays and their checksums; tuning a fight; the timeline editor; build profiles | Whenever you need to prove a change |
 
 ## Architecture and spec

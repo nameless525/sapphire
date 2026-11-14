@@ -56,7 +56,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_rhi::wgpu;
 use sapphire_sequencer::Origin;
 use sapphire_stage::scene::{LaidOut, Scene};
-use sapphire_stage::{Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
+use sapphire_stage::{CaptureTextures, Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, Stopwatch};
 use sapphire_timeline::Timeline;
 use sapphire_ui::Atlas;
@@ -318,7 +318,7 @@ impl SceneShow for ViewShow {
 }
 
 /// A stage on `gpu` with `host`'s content, and the game's fight stood on it, with everything it can draw built and
-/// its textures [whole](Stage::whole_textures).
+/// its textures [whole](Stage::capture_textures).
 pub fn stand(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     // Read first, so a missing cook says how to make one here rather than in `Content::new`.
     let documents = FightDocuments::read(host.content())
@@ -327,13 +327,13 @@ pub fn stand(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppI
     stand_fight(host, gpu, &the_fight(), documents, moves).map(with_whole_textures)
 }
 
-/// `stage` with every texture brought whole before each frame draws, as a capture's are ([`Stage::whole_textures`],
+/// `stage` with every texture brought whole before each frame draws, as a capture's are ([`Stage::capture_textures`],
 /// M5 M4), rather than streaming in a level at a time as the game's do: a still view settles for
 /// [`SETTLING_FRAMES`], and a level that came partway through, on a frame that depends on when the asset server's
 /// reads finish, would leave temporal AA's history at a different point each time. A run streams them as the
 /// game does.
 fn with_whole_textures(mut stage: Stage<ViewShow>) -> Stage<ViewShow> {
-    stage.whole_textures = true;
+    stage.capture_textures = CaptureTextures::Whole;
     stage
 }
 
@@ -360,7 +360,7 @@ pub fn stand_fight(
 
 /// A stage on `gpu` with `host`'s content and no fight, for a zone to be laid out on, with what the character draws
 /// through built: [`Scene::lay_out_zone`] builds what the zone's pack does. Its textures are
-/// [whole](Stage::whole_textures).
+/// [whole](Stage::capture_textures).
 pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     let desc = StageDesc::new(host, gpu, VIEWPORT_FORMAT, QualitySettings::default());
     let content = Content::new(host, desc.character, desc.sky)?;
@@ -376,7 +376,7 @@ pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<View
 /// A stage on `gpu` with `host`'s content and no fight, for a screen to draw over, with the interface's pipeline
 /// and an inset's resolve built: a screen stands on a flat color, so what's behind it shows only in an inset. It
 /// draws as the game's screens' goldens capture them (`desktop-high`, 4× MSAA, no shadows, occlusion or fog, the
-/// plain sky and post), so an inset's character is theirs too, with its textures [whole](Stage::whole_textures) as
+/// plain sky and post), so an inset's character is theirs too, with its textures [whole](Stage::capture_textures) as
 /// theirs are.
 pub fn stand_screen_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     let quality = QualitySettings {

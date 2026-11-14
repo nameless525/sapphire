@@ -388,6 +388,13 @@ pub(crate) struct Options {
     /// bench's before and after: none, the tier's (`shadows`: the shadow views alone), the shadow
     /// views and both prepasses, or every view.
     pub draw_runs: Option<DrawRuns>,
+    /// `--texture-streaming on|off`: stream textures by what the views draw (M5 M5), or want every texture a
+    /// material binds whole, as before. Unset, a window and `--bench` stream and a capture doesn't; a capture
+    /// told `on` streams, and captures once every texture is at the streamer's plan
+    /// (`sapphire_stage::CaptureTextures::Settled`).
+    pub texture_streaming: Option<bool>,
+    /// `--texture-pool <MiB>`: the streamer's pool instead of the tier's `texture_pool_mib`.
+    pub texture_pool_mib: Option<u32>,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -1396,6 +1403,20 @@ impl Options {
                             ));
                         }
                     });
+                }
+                "--texture-streaming" => {
+                    options.texture_streaming = Some(match value("--texture-streaming")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--texture-streaming expects on or off, got {other:?}")),
+                    });
+                }
+                "--texture-pool" => {
+                    let mib: u32 = number(&value("--texture-pool")?, "--texture-pool")?;
+                    if mib == 0 {
+                        return Err("--texture-pool expects a pool of at least 1 MiB".to_owned());
+                    }
+                    options.texture_pool_mib = Some(mib);
                 }
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
@@ -2968,6 +2989,17 @@ mod tests {
         assert_eq!(runs(&["--draw-runs", "shadows"]), DrawRuns::Shadows);
         assert_eq!(runs(&["--draw-runs", "prepasses"]), DrawRuns::ShadowsAndPrepasses);
         assert!(parse(&["--draw-runs", "on"]).is_err());
+    }
+
+    #[test]
+    fn texture_streaming_and_its_pool_are_chosen_on_the_command_line() {
+        let options = |args: &[&str]| parse(args).unwrap().0;
+        assert_eq!(options(&[]).texture_streaming, None, "the run's kind decides");
+        assert_eq!(options(&["--texture-streaming", "off"]).texture_streaming, Some(false));
+        assert_eq!(options(&["--texture-streaming=on"]).texture_streaming, Some(true));
+        assert_eq!(options(&["--texture-pool", "256"]).texture_pool_mib, Some(256));
+        assert!(parse(&["--texture-streaming", "some"]).is_err());
+        assert!(parse(&["--texture-pool", "0"]).is_err() && parse(&["--texture-pool", "lots"]).is_err());
     }
 
     #[test]

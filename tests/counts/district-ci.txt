@@ -72,12 +72,21 @@ desktop-high-dusk | shadow draws above level 0 | p50 370 p95 445 worst 445 total
 desktop-high-dusk | shadow triangles | p50 2028511 p95 2375572 worst 2549832 total 1032752015
 desktop-high-dusk | skinned instances | not exercised
 desktop-high-dusk | skinned vertices | not exercised
+desktop-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-high-dusk | streamed texture pool | not exercised
 desktop-high-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-dusk | texture bytes raised | not exercised
+desktop-high-dusk | texture bytes wanted | not exercised
+desktop-high-dusk | texture levels lowered | not exercised
+desktop-high-dusk | texture levels raised | not exercised
+desktop-high-dusk | texture lowers waiting | not exercised
 desktop-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-high-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+desktop-high-dusk | textures in debt | not exercised
 desktop-high-dusk | triangles | p50 2960059 p95 3350763 worst 3469933 total 1483688787
 desktop-high-dusk | ui draws | not exercised
 desktop-high-dusk | upscale draws | not exercised
+desktop-high-dusk | worst texture debt frames | not exercised
 
 desktop-high-night | ambient characters in view | not exercised
 desktop-high-night | ambient characters spawned | not exercised
@@ -141,12 +150,21 @@ desktop-high-night | shadow draws above level 0 | p50 430 p95 445 worst 445 tota
 desktop-high-night | shadow triangles | p50 2027372 p95 2250319 worst 2307586 total 1044434070
 desktop-high-night | skinned instances | not exercised
 desktop-high-night | skinned vertices | not exercised
+desktop-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-high-night | streamed texture pool | not exercised
 desktop-high-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-night | texture bytes raised | not exercised
+desktop-high-night | texture bytes wanted | not exercised
+desktop-high-night | texture levels lowered | not exercised
+desktop-high-night | texture levels raised | not exercised
+desktop-high-night | texture lowers waiting | not exercised
 desktop-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-high-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+desktop-high-night | textures in debt | not exercised
 desktop-high-night | triangles | p50 2860296 p95 3411094 worst 3466148 total 1495370842
 desktop-high-night | ui draws | not exercised
 desktop-high-night | upscale draws | not exercised
+desktop-high-night | worst texture debt frames | not exercised
 
 desktop-low-dusk | ambient characters in view | not exercised
 desktop-low-dusk | ambient characters spawned | not exercised
@@ -210,12 +228,21 @@ desktop-low-dusk | shadow draws above level 0 | p50 460 p95 600 worst 610 total 
 desktop-low-dusk | shadow triangles | p50 1848406 p95 2169907 worst 2295287 total 933963649
 desktop-low-dusk | skinned instances | not exercised
 desktop-low-dusk | skinned vertices | not exercised
+desktop-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-low-dusk | streamed texture pool | not exercised
 desktop-low-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-dusk | texture bytes raised | not exercised
+desktop-low-dusk | texture bytes wanted | not exercised
+desktop-low-dusk | texture levels lowered | not exercised
+desktop-low-dusk | texture levels raised | not exercised
+desktop-low-dusk | texture lowers waiting | not exercised
 desktop-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-low-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+desktop-low-dusk | textures in debt | not exercised
 desktop-low-dusk | triangles | p50 2775759 p95 3165615 worst 3255359 total 1382505977
 desktop-low-dusk | ui draws | not exercised
 desktop-low-dusk | upscale draws | not exercised
+desktop-low-dusk | worst texture debt frames | not exercised
 
 desktop-low-night | ambient characters in view | not exercised
 desktop-low-night | ambient characters spawned | not exercised
@@ -279,12 +306,21 @@ desktop-low-night | shadow draws above level 0 | p50 520 p95 590 worst 605 total
 desktop-low-night | shadow triangles | p50 1778562 p95 2002997 worst 2078325 total 927355997
 desktop-low-night | skinned instances | not exercised
 desktop-low-night | skinned vertices | not exercised
+desktop-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-low-night | streamed texture pool | not exercised
 desktop-low-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-night | texture bytes raised | not exercised
+desktop-low-night | texture bytes wanted | not exercised
+desktop-low-night | texture levels lowered | not exercised
+desktop-low-night | texture levels raised | not exercised
+desktop-low-night | texture lowers waiting | not exercised
 desktop-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-low-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+desktop-low-night | textures in debt | not exercised
 desktop-low-night | triangles | p50 2595462 p95 3204733 worst 3254577 total 1375898325
 desktop-low-night | ui draws | not exercised
 desktop-low-night | upscale draws | not exercised
+desktop-low-night | worst texture debt frames | not exercised
 
 mobile-high-dusk | ambient characters in view | not exercised
 mobile-high-dusk | ambient characters spawned | not exercised
@@ -348,12 +384,21 @@ mobile-high-dusk | shadow draws above level 0 | p50 300 p95 360 worst 375 total 
 mobile-high-dusk | shadow triangles | p50 890955 p95 1111139 worst 1158626 total 460197086
 mobile-high-dusk | skinned instances | not exercised
 mobile-high-dusk | skinned vertices | not exercised
+mobile-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-high-dusk | streamed texture pool | not exercised
 mobile-high-dusk | temporal draws | not exercised
 mobile-high-dusk | texture bytes raised | not exercised
+mobile-high-dusk | texture bytes wanted | not exercised
+mobile-high-dusk | texture levels lowered | not exercised
+mobile-high-dusk | texture levels raised | not exercised
+mobile-high-dusk | texture lowers waiting | not exercised
 mobile-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-high-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+mobile-high-dusk | textures in debt | not exercised
 mobile-high-dusk | triangles | p50 1779912 p95 2297356 worst 2375093 total 910992383
 mobile-high-dusk | ui draws | not exercised
 mobile-high-dusk | upscale draws | not exercised
+mobile-high-dusk | worst texture debt frames | not exercised
 
 mobile-high-night | ambient characters in view | not exercised
 mobile-high-night | ambient characters spawned | not exercised
@@ -417,12 +462,21 @@ mobile-high-night | shadow draws above level 0 | p50 310 p95 385 worst 390 total
 mobile-high-night | shadow triangles | p50 887084 p95 1113456 worst 1138875 total 458814663
 mobile-high-night | skinned instances | not exercised
 mobile-high-night | skinned vertices | not exercised
+mobile-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-high-night | streamed texture pool | not exercised
 mobile-high-night | temporal draws | not exercised
 mobile-high-night | texture bytes raised | not exercised
+mobile-high-night | texture bytes wanted | not exercised
+mobile-high-night | texture levels lowered | not exercised
+mobile-high-night | texture levels raised | not exercised
+mobile-high-night | texture lowers waiting | not exercised
 mobile-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-high-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+mobile-high-night | textures in debt | not exercised
 mobile-high-night | triangles | p50 1722163 p95 2338027 worst 2440419 total 909609960
 mobile-high-night | ui draws | not exercised
 mobile-high-night | upscale draws | not exercised
+mobile-high-night | worst texture debt frames | not exercised
 
 mobile-low-dusk | ambient characters in view | not exercised
 mobile-low-dusk | ambient characters spawned | not exercised
@@ -486,12 +540,21 @@ mobile-low-dusk | shadow draws above level 0 | p50 255 p95 315 worst 325 total 1
 mobile-low-dusk | shadow triangles | p50 794951 p95 946040 worst 994669 total 403601033
 mobile-low-dusk | skinned instances | not exercised
 mobile-low-dusk | skinned vertices | not exercised
+mobile-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-low-dusk | streamed texture pool | not exercised
 mobile-low-dusk | temporal draws | not exercised
 mobile-low-dusk | texture bytes raised | not exercised
+mobile-low-dusk | texture bytes wanted | not exercised
+mobile-low-dusk | texture levels lowered | not exercised
+mobile-low-dusk | texture levels raised | not exercised
+mobile-low-dusk | texture lowers waiting | not exercised
 mobile-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-low-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+mobile-low-dusk | textures in debt | not exercised
 mobile-low-dusk | triangles | p50 1286320 p95 1489557 worst 1568544 total 637645403
 mobile-low-dusk | ui draws | not exercised
 mobile-low-dusk | upscale draws | not exercised
+mobile-low-dusk | worst texture debt frames | not exercised
 
 mobile-low-night | ambient characters in view | not exercised
 mobile-low-night | ambient characters spawned | not exercised
@@ -555,9 +618,18 @@ mobile-low-night | shadow draws above level 0 | p50 270 p95 330 worst 345 total 
 mobile-low-night | shadow triangles | p50 780961 p95 957895 worst 981237 total 398779194
 mobile-low-night | skinned instances | not exercised
 mobile-low-night | skinned vertices | not exercised
+mobile-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-low-night | streamed texture pool | not exercised
 mobile-low-night | temporal draws | not exercised
 mobile-low-night | texture bytes raised | not exercised
+mobile-low-night | texture bytes wanted | not exercised
+mobile-low-night | texture levels lowered | not exercised
+mobile-low-night | texture levels raised | not exercised
+mobile-low-night | texture lowers waiting | not exercised
 mobile-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-low-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
+mobile-low-night | textures in debt | not exercised
 mobile-low-night | triangles | p50 1211302 p95 1552084 worst 1598267 total 632823564
 mobile-low-night | ui draws | not exercised
 mobile-low-night | upscale draws | not exercised
+mobile-low-night | worst texture debt frames | not exercised

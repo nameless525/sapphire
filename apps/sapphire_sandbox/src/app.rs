@@ -155,6 +155,9 @@ impl App for SandboxApp {
         platform.set_frame_rate(quality.frame_rate());
         let mut content = options.mount_content(platform.host())?;
         content.set_tier(quality.tier());
+        // A window streams textures by what its views draw, in the tier's pool (M5 M5).
+        content.set_texture_pool(options.texture_pool_mib.map(|mib| u64::from(mib) << 20));
+        content.set_texture_streaming(options.texture_streaming.unwrap_or(true));
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }

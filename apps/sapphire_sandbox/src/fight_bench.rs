@@ -269,7 +269,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 30] = [
+const ROWS: [Row; 33] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -282,6 +282,8 @@ const ROWS: [Row; 30] = [
     cpu_row("streaming activation", |t| t.streams.then_some(t.streaming), low(500, 1_000)),
     // A zone's crowd comes and goes with its cells, so it takes their budget too (M5 C10).
     cpu_row("ambient activation", |t| t.ambient, low(500, 1_000)),
+    // The same row's bar for what texture streaming adds (M5 M5): the streamer and the coverage estimate.
+    cpu_row("texture streaming", |t| Some(t.counted.texture_streaming()), low(500, 1_000)),
     cpu_row("audio update", |t| Some(t.audio), low(200, 300)),
     cpu_row("extract", |t| Some(t.laps.packet.saturating_sub(t.camera + t.hud)), low(700, 1_200)),
     cpu_row("render", |t| Some(t.laps.prepare + t.laps.record), low(4_000, 8_000)),
@@ -290,6 +292,9 @@ const ROWS: [Row; 30] = [
     cpu_row("camera", |t| Some(t.camera), UNBUDGETED),
     cpu_row("hud", |t| Some(t.hud), UNBUDGETED),
     cpu_row("content", |t| Some(t.laps.content), UNBUDGETED),
+    // `texture streaming`'s parts (M5 M5): the raises' share of the streamer, and the coverage estimate.
+    cpu_row("texture raising", |t| Some(t.counted.texture_raising()), UNBUDGETED),
+    cpu_row("texture coverage", |t| Some(t.counted.texture_coverage()), UNBUDGETED),
     // Only the frames a zone was on its way in, as a hub's exits come behind a trip.
     cpu_row("zone prefetch", |t| (!t.prefetch.is_zero()).then_some(t.prefetch), UNBUDGETED),
     cpu_row("gpu wait", |t| Some(t.wait), UNBUDGETED),
@@ -593,7 +598,8 @@ impl Run<'_> {
         let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
         let memory = zone::Held::of(stage, after.live_bytes);
         let assets = stage.content.stats();
-        let counted = counts::Counted::of(&stats, &assets, &self.assets).with_stage(stage);
+        let streaming = stage.content.texture_streaming_stats();
+        let counted = counts::Counted::of(&stats, &assets, &self.assets, &streaming).with_stage(stage);
         self.assets = assets;
         Ok(Traced {
             phase,

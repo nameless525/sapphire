@@ -36,8 +36,8 @@ use crate::LOG_TARGET;
 use crate::offscreen::Stage;
 use crate::options::GameStart;
 use game_combat::combat::CaptureFrames;
-use sapphire_stage::Readback;
 use sapphire_stage::gpu_failure;
+use sapphire_stage::{CaptureTextures, Readback};
 
 /// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its
 /// first frames, and the frame graph's report and GPU timings come back a frame or two late.
@@ -187,6 +187,18 @@ pub(crate) fn run(
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     for _ in 0..first {
         step(stage, through, &view, history_only)?;
+    }
+    // A capture that streams settles on the streamer's plan for the frame drawn before (M5 M5): one frame
+    // here for the views' estimate, prepared and recorded but lost, never run. The renderer takes back what
+    // it took from the frames to come (temporal AA's jitter, its fade dither, its history), so the frames
+    // that follow run the phases a whole capture's do, from the same fresh history, at the plan.
+    if stage.capture_textures == CaptureTextures::Settled {
+        stage.lose_frames = true;
+        let lost = stage.render_capture_warmup(&view, history_only);
+        stage.lose_frames = false;
+        lost?;
+        stage.scene.end_frame();
+        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
     // shown, at least its warm-up, redrawing the same scene state at the end.

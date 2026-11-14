@@ -378,6 +378,12 @@
 //!   tiers' and changes no pixel; `off` draws a call a draw, `prepasses` runs both prepasses too (their
 //!   runs follow the order streamed cells arrive in) and `every` the main view and the insets too
 //!   (pixels move on Metal), for benches that compare them.
+//! - `--texture-streaming on|off`: stream textures by what the views draw, inside the tier's pool (M5 M5,
+//!   `Content::set_texture_streaming`), or want every texture a material binds whole, as before. A window and
+//!   `--bench` stream unless told off; a capture doesn't unless told on, and then draws a frame at its tick
+//!   and captures the next once every texture is at the streamer's plan, unbudgeted
+//!   (`sapphire_stage::CaptureTextures::Settled`): what a player sees once streaming settles, the pool
+//!   binding where it does. `--texture-pool <MiB>` sets the pool instead of the tier's `texture_pool_mib`.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5

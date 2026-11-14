@@ -31,9 +31,9 @@ use game_ui::menus::MenuDocument;
 use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
+use sapphire_stage::{CaptureTextures, StageDesc, headless_gpu};
 #[cfg(feature = "dev")]
 use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
-use sapphire_stage::{StageDesc, headless_gpu};
 use sapphire_ui::Atlas;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
@@ -225,12 +225,25 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
     let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
-    // A capture sees every texture whole, as its load left it before textures streamed (M5 M4); a bench lets
-    // them stream in, as a game does, but for one under `--draw-every`, which times nothing and whose count rows
-    // CI's scale lane holds exactly (M5 X4): what it counts mustn't wait on when a read finishes.
-    let counts_only = options.draw_every.is_some()
-        && options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
-    stage.whole_textures = capture || counts_only;
+    // A capture sees every texture whole, as its load left it before textures streamed (M5 M4), unless told to
+    // stream, and then sees them at the streamer's plan; a bench lets them stream in, as a game does, and
+    // streams them by what its views draw (M5 M5) unless told not to, but for one under `--draw-every`, which
+    // times nothing and whose count rows CI's scale lane holds exactly (M5 X4): what it counts mustn't wait on
+    // when a read finishes, so it wants every texture whole unless told to stream.
+    let bench = options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
+    let counts_only = options.draw_every.is_some() && bench;
+    let streams = match capture {
+        true => options.texture_streaming == Some(true),
+        false => options.texture_streaming.unwrap_or(bench && !counts_only),
+    };
+    stage.capture_textures = match (capture, streams) {
+        (true, false) => CaptureTextures::Whole,
+        (true, true) => CaptureTextures::Settled,
+        (false, false) if counts_only => CaptureTextures::Whole,
+        (false, _) => CaptureTextures::Stream,
+    };
+    stage.content.set_texture_pool(options.texture_pool_mib.map(|mib| u64::from(mib) << 20));
+    stage.content.set_texture_streaming(streams);
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;

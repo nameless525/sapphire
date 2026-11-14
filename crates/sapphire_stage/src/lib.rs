@@ -119,8 +119,8 @@ pub mod vfx;
 pub use content::Content;
 pub use extract::{RenderMesh, RenderPose, RenderTransform};
 pub use frame::{
-    FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame, gpu_failure,
-    headless_gpu,
+    CaptureTextures, FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame,
+    gpu_failure, headless_gpu,
 };
 pub use material_overrides::MaterialOverrides;
 pub use playable::{HeldWeapon, PlayableLook};

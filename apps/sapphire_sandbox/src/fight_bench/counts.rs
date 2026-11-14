@@ -23,6 +23,7 @@ use std::time::Duration;
 use sapphire_assets::{AssetKind, AssetStats};
 use sapphire_platform::CoreKind;
 use sapphire_render::{FrameCounts, RenderStats, RunStats, StateChanges};
+use sapphire_stage::TextureStreamingStats;
 
 use super::{Phase, Traced, spread};
 use crate::LOG_TARGET;
@@ -82,6 +83,25 @@ pub(super) struct Counted {
     pub ambient_in_view: u32,
     /// Instances the main view drew last frame at another level of detail (M5 D4, `LevelStats`).
     pub level_switches: u32,
+    /// The texture streamer's (M5 M5): textures in debt and the worst debt in frames, levels raised and
+    /// lowered and lowers waiting their turn, bytes held against its pool, the tails' share and what the
+    /// views would have it hold, and what its work took in microseconds: the streamer's, the raises' share of
+    /// it, and the coverage estimate's. The times are the trace's and the CPU table's (`texture streaming`,
+    /// `texture raising`, `texture coverage`), never count rows, which CI's scale lane holds exactly.
+    pub textures_in_debt: u64,
+    pub worst_texture_debt: u64,
+    pub levels_raised: u64,
+    pub levels_lowered: u64,
+    pub lowers_waiting: u64,
+    /// Textures whose levels started loading (the trace's alone, no row).
+    pub texture_starts: u64,
+    pub streamed_bytes: u64,
+    pub streamed_pool: u64,
+    pub texture_tails: u64,
+    pub texture_wanted: u64,
+    pub streaming_us: u64,
+    pub raising_us: u64,
+    pub coverage_us: u64,
 }
 
 impl Counted {
@@ -103,8 +123,29 @@ impl Counted {
         }
     }
 
-    /// A frame's counts; `before` is the asset server's at the frame before, for what this one admitted.
-    pub(super) fn of(render: &RenderStats, assets: &AssetStats, before: &AssetStats) -> Self {
+    /// What texture streaming added to the frame's CPU: the streamer's work and the coverage estimate's.
+    pub(super) fn texture_streaming(&self) -> Duration {
+        Duration::from_micros(self.streaming_us + self.coverage_us)
+    }
+
+    /// Of [`Self::texture_streaming`], what the raises took on the renderer.
+    pub(super) fn texture_raising(&self) -> Duration {
+        Duration::from_micros(self.raising_us)
+    }
+
+    /// Of [`Self::texture_streaming`], what the coverage estimate took.
+    pub(super) fn texture_coverage(&self) -> Duration {
+        Duration::from_micros(self.coverage_us)
+    }
+
+    /// A frame's counts; `before` is the asset server's at the frame before, for what this one admitted, and
+    /// `streaming` the texture streamer's.
+    pub(super) fn of(
+        render: &RenderStats,
+        assets: &AssetStats,
+        before: &AssetStats,
+        streaming: &TextureStreamingStats,
+    ) -> Self {
         let pool = |kind: AssetKind| -> u64 {
             AssetKind::ALL
                 .into_iter()
@@ -137,6 +178,19 @@ impl Counted {
             raised: render.mip_streaming.bytes_written,
             given_back: assets.given_back.saturating_sub(before.given_back),
             level_switches: render.levels.switches(),
+            textures_in_debt: u64::from(streaming.in_debt),
+            worst_texture_debt: u64::from(streaming.worst_debt),
+            levels_raised: u64::from(streaming.levels_raised),
+            levels_lowered: u64::from(streaming.levels_lowered),
+            lowers_waiting: u64::from(streaming.lowers_waiting),
+            texture_starts: u64::from(streaming.started),
+            streamed_bytes: streaming.resident,
+            streamed_pool: streaming.pool,
+            texture_tails: streaming.tails,
+            texture_wanted: streaming.wanted,
+            streaming_us: streaming.time.as_micros() as u64,
+            raising_us: streaming.raising.as_micros() as u64,
+            coverage_us: streaming.coverage_time.as_micros() as u64,
             ..Self::default()
         }
     }
@@ -157,8 +211,8 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
 /// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
 /// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
-/// animation's, and a zone's crowd's.
-pub(super) const COUNT_ROWS: [CountRow; 62] = [
+/// animation's, a zone's crowd's, and the texture streamer's.
+pub(super) const COUNT_ROWS: [CountRow; 71] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -237,6 +291,15 @@ pub(super) const COUNT_ROWS: [CountRow; 62] = [
     row("animation jobs", |c| u64::from(c.animation_jobs)),
     row("ambient characters spawned", |c| u64::from(c.ambient_spawned)),
     row("ambient characters in view", |c| u64::from(c.ambient_in_view)),
+    row("textures in debt", |c| c.textures_in_debt),
+    row("worst texture debt frames", |c| c.worst_texture_debt),
+    row("texture levels raised", |c| c.levels_raised),
+    row("texture levels lowered", |c| c.levels_lowered),
+    row("texture lowers waiting", |c| c.lowers_waiting),
+    row("streamed texture bytes", |c| c.streamed_bytes),
+    row("streamed texture pool", |c| c.streamed_pool),
+    row("texture tail bytes", |c| c.texture_tails),
+    row("texture bytes wanted", |c| c.texture_wanted),
 ];
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.
@@ -326,7 +389,9 @@ impl DrawnCounts {
     pub(crate) fn frame(&mut self, stage: &Stage, frame: u64, drawn: bool) {
         let assets = stage.content.stats();
         if drawn {
-            let counted = Counted::of(&stage.renderer.stats(), &assets, &self.assets).with_stage(stage);
+            let streaming = stage.content.texture_streaming_stats();
+            let counted =
+                Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage);
             self.frames.push((counted, frame, stage.scene.zone_walked()));
         }
         self.assets = assets;
@@ -344,7 +409,8 @@ pub(super) const TRACE_COLUMNS: &str = "walked,core,draw_calls,triangles,draw_in
 culled_pass,culled_cutoff,culled_distance,culled_size,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
 skinned_vertices,lights,admitted,decoded_waiting,reads_held,texture_pool,mesh_pool,over_budget,uploaded,raised,\
 given_back,mesh_pool_capacity,mesh_pool_floor,ambient_dispatches,probe_dispatches,animated,posed,held,thinned,\
-off_screen,animation_jobs,ambient_spawned,ambient_in_view";
+off_screen,animation_jobs,ambient_spawned,ambient_in_view,textures_in_debt,worst_texture_debt,levels_raised,\
+levels_lowered,streamed_bytes,streaming_us,lowers_waiting,texture_wanted,raising_us,coverage_us,texture_starts";
 
 /// A frame's `--bench-trace` columns, from `walked`.
 pub(super) fn trace_into(frame: &Traced, line: &mut String) {
@@ -407,5 +473,20 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         c.animation_jobs,
         c.ambient_spawned,
         c.ambient_in_view,
+    );
+    let _ = write!(
+        line,
+        ",{},{},{},{},{},{},{},{},{},{},{}",
+        c.textures_in_debt,
+        c.worst_texture_debt,
+        c.levels_raised,
+        c.levels_lowered,
+        c.streamed_bytes,
+        c.streaming_us,
+        c.lowers_waiting,
+        c.texture_wanted,
+        c.raising_us,
+        c.coverage_us,
+        c.texture_starts,
     );
 }

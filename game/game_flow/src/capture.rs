@@ -124,7 +124,7 @@ pub fn capture_with(
         (Box::new(stage), None)
     };
     // A capture sees every texture whole, as its load left it before textures streamed (M5 M4).
-    stage.whole_textures = true;
+    stage.capture_textures = sapphire_stage::CaptureTextures::Whole;
     if let Some(command) = capture.choose {
         // A booted game's play waits on its title for what its fades draw through (M4 C7), as a player's does.
         while stage.show.play_waits() {

@@ -223,6 +223,24 @@ pub fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
 }
 
 /// The GPU, renderer, content and scene a frame draws with, and what plays on them.
+/// How a stage's textures reach its frames ([`Stage::capture_textures`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureTextures {
+    /// Their levels load and raise within each frame's budgets, by the streamer if it's on (M5 M5), as a
+    /// bench's and a game's do.
+    #[default]
+    Stream,
+    /// Every texture is brought whole before each frame draws, waiting for its levels
+    /// ([`Content::finish_texture_levels`], M5 M4): a capture's, which must see textures whole, as loads left
+    /// them before textures streamed. It turns the streamer off ([`Content::set_texture_streaming`]).
+    Whole,
+    /// Every texture is brought to the top the streamer plans for it before each frame draws, without the
+    /// frame's budgets: a capture that streams (M5 M5), which shows what a player sees once streaming has
+    /// settled, the pool binding where it does. The streamer's plan is from the frame drawn before, so such
+    /// a capture draws one at its tick first.
+    Settled,
+}
+
 pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     // Drop order: everything on the device before the context.
     /// What the caller adds to its frames.
@@ -242,11 +260,10 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub measure_gpu: bool,
     /// Only TAA captures without instrumentation can discard their warmup's display output.
     pub history_only_capture: bool,
-    /// Bring every texture to the top wanted of it before each frame draws, waiting for its levels
-    /// ([`Content::finish_texture_levels`], M5 M4): a capture's, which must see textures whole, as loads
-    /// left them before textures streamed. A bench and a game let them stream in. It turns the streamer off
-    /// ([`Content::set_texture_streaming`]).
-    pub whole_textures: bool,
+    /// How textures reach a frame: streaming in over frames, as a bench's and a game's do (the default);
+    /// brought whole before each frame draws, as a capture's are; or brought to what the streamer plans
+    /// before each frame draws, as a capture that streams is ([`CaptureTextures`]).
+    pub capture_textures: CaptureTextures,
     /// Prepare and record the next frames but run none of it, as a frame whose surface was lost (M3 K1). A
     /// load's inventory is checked this way where drawing is what costs: everything but the graph's passes runs.
     pub lose_frames: bool,
@@ -364,7 +381,7 @@ impl Stage {
             character,
             measure_gpu: false,
             history_only_capture: false,
-            whole_textures: false,
+            capture_textures: CaptureTextures::Stream,
             lose_frames: false,
             laps: FrameLaps::default(),
             gpu,
@@ -390,7 +407,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
-            whole_textures,
+            capture_textures,
             lose_frames,
             laps,
             gpu,
@@ -412,7 +429,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
-            whole_textures,
+            capture_textures,
             lose_frames,
             laps,
             gpu,
@@ -454,7 +471,7 @@ impl<S: SceneShow> Stage<S> {
             character,
             measure_gpu,
             history_only_capture,
-            whole_textures,
+            capture_textures,
             lose_frames,
             laps,
             gpu,
@@ -476,7 +493,7 @@ impl<S: SceneShow> Stage<S> {
             character,
             measure_gpu,
             history_only_capture,
-            whole_textures,
+            capture_textures,
             lose_frames,
             laps,
             gpu,
@@ -671,7 +688,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// Tells the content which meshes' textures are held whole this frame (the character's and those the
     /// scene's show holds whole, [`Scene::keep_textures_whole`]), and keeps a capture's stage from streaming.
     fn follow_whole_textures(&mut self) {
-        if self.whole_textures {
+        if self.capture_textures == CaptureTextures::Whole {
             self.content.set_texture_streaming(false);
         }
         let held = self.scene.textures_kept_whole().iter().copied();
@@ -767,7 +784,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.renderer.set_outline_distance(self.quality.outline_distance());
         self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
         self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
-        if self.whole_textures {
+        if self.capture_textures != CaptureTextures::Stream {
             self.content.finish_texture_levels(&mut self.renderer, &self.gpu);
             // And every reflection probe composed whole, not one a frame (M5 L3).
             self.renderer.finish_reflection_probes();

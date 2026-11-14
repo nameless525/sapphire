@@ -43,7 +43,8 @@ pub struct Zone {
 impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
-    const VERSION: u32 = 6;
+    /// 7: its reflection probes' asset (M5 L2).
+    const VERSION: u32 = 7;
 }
 
 impl Versioned for ZoneSimulation {
@@ -200,6 +201,8 @@ pub struct ZonePresentation {
     pub lights: Vec<CookedLight>,
     /// The zone's ambient probe grid.
     pub probes: Option<AssetId>,
+    /// Its reflection probes, baked by the cook beside its cells (`sapphire_assets::reflections`, M5 L2).
+    pub reflections: Option<AssetId>,
     /// The time-of-day timeline's document, as RON text, its cook having checked it.
     pub day: Option<String>,
     /// The character light rig library's document, as RON text.
@@ -501,8 +504,9 @@ impl ArchivedZone {
         references
     }
 
-    /// What the zone names without holding: the meshes of its cells and instances, its probe grid and its sky
-    /// material, for the world to ask for and let go of, and for a packer to place. Sorted, without repeats.
+    /// What the zone names without holding: the meshes of its cells and instances, its probe grid, its
+    /// reflection probes and its sky material, for the world to ask for and let go of, and for a packer to
+    /// place. Sorted, without repeats.
     pub fn presentation_references(&self) -> Vec<AssetId> {
         let presentation = &self.presentation;
         let contents = presentation
@@ -513,8 +517,10 @@ impl ArchivedZone {
         let meshes = contents.filter_map(|contents| contents.mesh.as_ref().copied());
         let instances = presentation.instances.iter().map(|instance| instance.mesh);
         let probes = presentation.probes.as_ref().copied();
+        let reflections = presentation.reflections.as_ref().copied();
         let sky = presentation.sky.as_ref().copied();
-        let mut references: Vec<AssetId> = meshes.chain(instances).chain(probes).chain(sky).collect();
+        let mut references: Vec<AssetId> =
+            meshes.chain(instances).chain(probes).chain(reflections).chain(sky).collect();
         references.sort_unstable();
         references.dedup();
         references
@@ -888,6 +894,7 @@ mod tests {
     const OTHER_ZONE: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
     const NAVIGATION: AssetId = AssetId::from_text("6d7b7a5c-8c5e-4d7f-9b0e-3a1f2c4d5e6f");
     const SKY: AssetId = AssetId::from_text("5d1c7a2e-90b4-4e3f-8c61-2a7f0d9b4e15");
+    const REFLECTIONS: AssetId = AssetId::from_text("0b3f6c1d-7a52-4e98-b4d1-93c2e8f05a67");
 
     fn document() -> ZoneDocument {
         ZoneDocument::from_ron(&format!(
@@ -909,6 +916,7 @@ mod tests {
                         ),
                     ],
                     probes: Some("{PROBES}"),
+                    reflections: [(name: "gate", position: (3.2, 1.6, -20.0), parallax: (min: (-6.0, 0.0, -30.0), max: (12.0, 9.0, -10.0)))],
                     sky: Some("{SKY}"),
                     wind: Some((direction: (1.0, 0.0, 0.0), strength: 0.5, gustiness: 0.2)),
                     weather: Some((wetness: 0.6, puddles: 0.3)),
@@ -965,6 +973,7 @@ mod tests {
                 rigs: None,
                 navigation: Some(NAVIGATION),
                 exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
+                reflections: Some(REFLECTIONS),
             })
             .expect("cooks")
     }
@@ -1026,6 +1035,7 @@ mod tests {
         assert!(matches!(presentation.lights[0].shape(), CookedLightShape::Spot { .. }));
         assert_eq!(presentation.splines[0].point(1), [3.2, 2.5, -40.0]);
         assert_eq!(presentation.sky.as_ref().copied(), Some(SKY));
+        assert_eq!(presentation.reflections.as_ref().copied(), Some(REFLECTIONS));
         let wind = presentation.wind.as_ref().expect("there").to_native();
         assert_eq!(wind, ZoneWind { direction: [1.0, 0.0, 0.0], strength: 0.5, gustiness: 0.2 });
         let weather = presentation.weather.as_ref().expect("there").to_native();
@@ -1039,7 +1049,7 @@ mod tests {
         let bytes = zone().to_cooked().expect("write");
         let read = Zone::read(&bytes).expect("read");
         assert_eq!(read.references(), [COLLIDERS, NAVIGATION]);
-        let mut expected = vec![MESH, CELL_MESH, BACKDROP_MESH, PROBES, SKY];
+        let mut expected = vec![MESH, CELL_MESH, BACKDROP_MESH, PROBES, REFLECTIONS, SKY];
         expected.sort_unstable();
         assert_eq!(read.presentation_references(), expected);
     }
@@ -1261,8 +1271,9 @@ mod tests {
             tamper(&mut moved);
             assert_ne!(digest_of(&moved, &colliders), base, "{what}");
         }
-        let presentation: [(&str, Tamper); 8] = [
+        let presentation: [(&str, Tamper); 9] = [
             ("a cell's bounds", |z| z.presentation.cells[0].contents.bounds_max[1] += 1.0),
+            ("the reflections", |z| z.presentation.reflections = None),
             ("a light", |z| z.presentation.lights[0].intensity += 1.0),
             ("the day", |z| z.presentation.day = None),
             ("a rail", |z| z.presentation.splines[0].points[0][0] += 1.0),

@@ -115,9 +115,13 @@ impl Tree {
     }
 
     fn set_settings(&self, relative: &str, settings: MapSettings) {
+        self.set_capped(relative, settings, MaxSize::NONE);
+    }
+
+    fn set_capped(&self, relative: &str, settings: MapSettings, max_size: MaxSize) {
         let sidecar = sidecar_path(&self.source().join(relative));
         let mut meta = meta::read(&sidecar).unwrap();
-        meta.importer = ImportSettings::CharacterMap(settings);
+        meta.importer = ImportSettings::CharacterMap(settings, max_size);
         fs::write(&sidecar, to_ron::<AssetMeta>(&meta).unwrap()).unwrap();
     }
 }
@@ -285,7 +289,7 @@ fn document_kinds_go_by_their_compound_extensions() {
         let path = PathBuf::from(format!("x{}", kind.suffix()));
         assert_eq!(
             ImportSettings::for_source(&path),
-            Some(ImportSettings::CharacterMap(kind.default_settings()))
+            Some(ImportSettings::CharacterMap(kind.default_settings(), MaxSize::NONE))
         );
         assert_eq!(kind.default_settings().kind(), kind);
     }
@@ -364,7 +368,7 @@ fn a_content_tree_cooks_its_maps_and_leaves_their_inputs_out() {
         |relative: &str| meta::read(&sidecar_path(&tree.source().join(relative))).unwrap().importer;
     assert_eq!(
         importer("face/face.facesdf.ron"),
-        ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings())
+        ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings(), MaxSize::NONE)
     );
 
     // The face map: R16 on desktop, every mask reproduced exactly at its angle.
@@ -593,6 +597,50 @@ fn keys_cover_inputs_and_settings_and_survive_moves() {
     let moved =
         report.assets.iter().find(|asset| asset.source.ends_with("heroine/face.facesdf.ron")).unwrap();
     assert_eq!((moved.key, moved.status), (before, CookStatus::Cached));
+}
+
+/// A map's sidecar caps it per cook as a texture's does (M5 M1): the capped cook keeps the uncapped
+/// chain's lower levels byte for byte, the other cook doesn't move, and only that map recooks. An
+/// uncapped sidecar reads, writes and keys as it did before maps had a cap.
+#[test]
+fn a_map_is_capped_per_cook_as_a_texture_is() {
+    let tree = Tree::new("maps_capped");
+    let before = Cook::ALL.map(|cook| tree.cook(cook));
+    let face = |cook: Cook| fs::read(tree.out(cook).join("face/face.facesdf.ktx2")).unwrap();
+    let uncapped = Cook::ALL.map(face);
+
+    let max_size = MaxSize { mobile: std::num::NonZeroU32::new(SIZE / 4), ..MaxSize::NONE };
+    tree.set_capped("face/face.facesdf.ron", MapKind::FaceSdf.default_settings(), max_size);
+    for (index, cook) in Cook::ALL.into_iter().enumerate() {
+        let report = tree.cook(cook);
+        for (asset, old) in report.assets.iter().zip(&before[index].assets) {
+            let face = asset.source.ends_with("face.facesdf.ron");
+            let status = if face { CookStatus::Cooked } else { CookStatus::UpToDate };
+            assert_eq!((asset.status, asset.key != old.key), (status, face), "{cook} {:?}", asset.source);
+        }
+    }
+    assert_eq!(face(Cook::Desktop), uncapped[0], "the desktop cook doesn't move");
+    let (old, new) = (uncapped[1].clone(), face(Cook::Mobile));
+    let (old, new) = (Texture::from_ktx2(&old).unwrap(), Texture::from_ktx2(&new).unwrap());
+    assert_eq!((new.desc.width, new.desc.height), (SIZE / 4, SIZE / 4));
+    assert_eq!(new.desc.mip_level_count, old.desc.mip_level_count - 2);
+    assert_eq!(new.levels[..], old.levels[2..]);
+
+    // A committed sidecar writes back as it was, and keys as the variant's index then its settings.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/lancer/lancer.ilm.ron.meta");
+    let text = fs::read_to_string(&path).unwrap();
+    let meta: AssetMeta = from_ron(&text).unwrap();
+    let ImportSettings::CharacterMap(settings, MaxSize::NONE) = &meta.importer else { panic!("{text}") };
+    assert_eq!(to_ron(&meta).unwrap(), text);
+    let key = |importer: &ImportSettings| sapphire_serialize::postcard::to_allocvec(importer).unwrap();
+    let mut plain = vec![3];
+    plain.extend(sapphire_serialize::postcard::to_allocvec(settings).unwrap());
+    assert_eq!(key(&meta.importer), plain);
+    let capped = ImportSettings::CharacterMap(*settings, max_size);
+    let text = to_ron(&AssetMeta::new(meta.id, capped.clone())).unwrap();
+    assert!(text.contains("mobile: Some(16)"), "{text}");
+    assert_eq!(from_ron::<AssetMeta>(&text).unwrap().importer, capped);
+    assert_ne!(key(&capped), key(&meta.importer));
 }
 
 #[test]

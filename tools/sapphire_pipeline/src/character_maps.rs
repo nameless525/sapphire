@@ -33,7 +33,9 @@
 //! (`importer: CharacterMap(FaceSdf((precision: Unorm16)))`) and a recipe: its own importer
 //! stage, which reads the document and its inputs and generates the map as a
 //! [`SourceImage`], then the texture cooker ([`texture::COOKER`]), which cooks that image as
-//! its class like any imported one. The inputs are file dependencies of the key, by the
+//! its class like any imported one, capped per cook by the sidecar's second field as a texture is
+//! ("Size per cook" in [`texture`]; `importer: CharacterMap(Ilm((mips: true)), (desktop: None, mobile:
+//! Some(1024)))`, written only when a cook has a cap). The inputs are file dependencies of the key, by the
 //! path the document names them with, so editing a mask recooks exactly the maps that read
 //! it, and moving a document together with its inputs keeps its key. Importers that decode
 //! images embed the image importer's version in theirs ([`with_image_importer`]).
@@ -79,7 +81,7 @@ use crate::cook::Cook;
 use crate::import::image::{
     self as image_import, ChannelLayout, ImageImportError, SourceFormat, SourceImage, Transfer,
 };
-use crate::texture::{self, IlmSettings, MaskSettings, TextureClass, TextureError, TextureSettings};
+use crate::texture::{self, IlmSettings, MaskSettings, MaxSize, TextureClass, TextureError, TextureSettings};
 
 /// The kinds of map document, each known by its compound extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -256,15 +258,17 @@ pub fn generate(path: &Path, bytes: &[u8], settings: &MapSettings) -> Result<Gen
     }
 }
 
-/// Generates and cooks one map document: the bytes of its cooked KTX2 file.
+/// Generates and cooks one map document, capped to `max_size` as a texture is: the bytes of its
+/// cooked KTX2 file.
 pub fn cook_source(
     path: &Path,
     bytes: &[u8],
     settings: &MapSettings,
+    max_size: MaxSize,
     cook: Cook,
 ) -> Result<Vec<u8>, MapError> {
     let map = generate(path, bytes, settings)?;
-    let cooked = texture::cook(&map.image, &TextureSettings { class: map.class }, cook)
+    let cooked = texture::cook(&map.image, &TextureSettings { class: map.class, max_size }, cook)
         .map_err(|error| MapError::Texture(Box::new(error)))?;
     Ok(cooked.to_ktx2())
 }

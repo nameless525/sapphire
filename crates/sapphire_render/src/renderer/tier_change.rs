@@ -32,8 +32,8 @@ struct Held {
     post: PostShape,
     /// A grid held or expected, and the reflection cube's prefilter ([`Ambient::held`](crate::ambient::Ambient)).
     ambient: (bool, bool),
-    /// The effects' pipelines, with the mask's or not.
-    effects: Option<bool>,
+    /// The effects' pipelines, the sprites' and the meshes', with the mask's or not.
+    effects: Option<crate::vfx::VfxParts>,
     /// The sky's variants, as bits.
     sky: u8,
     /// The shader sources' generation ([`RenderStats::shader_rebuilds`](super::RenderStats)).
@@ -231,8 +231,8 @@ fn build(
         next.shadows.prepare_format(&next.device, format, &next.shaders);
     }
     next.post.build_held(&held.post, on);
-    if let Some(mask) = held.effects {
-        next.vfx.build(&next.shaders, mask, on);
+    if let Some(parts) = held.effects {
+        next.vfx.build(&next.shaders, parts, on);
     }
     next.sky.build_ready(held.sky, on);
     if gpu.is_lost() {

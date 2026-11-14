@@ -152,6 +152,7 @@ pub fn simulation(cells: u32, encounter: AssetId) -> ZoneSimulation {
         instances: Vec::new(),
         lights: Vec::new(),
         probes: None,
+        reflections: Vec::new(),
         day: None,
         rigs: None,
         sky: None,

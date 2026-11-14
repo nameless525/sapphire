@@ -7,7 +7,8 @@
 //! `debug_draw.wgsl` and the on-screen interface `ui.wgsl`; all five stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
 //! a scene pass. The ambient passes (M1 W5) join `ambient.wgsl`, which the environment and
 //! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program. The
-//! frame's effects (M2 E2) are `frame.wgsl`, `materials.wgsl` and their own `vfx.wgsl`.
+//! frame's effects (M2 E2) are `frame.wgsl`, `materials.wgsl` and their own `vfx.wgsl`, and their meshes'
+//! (M5 L5) the same two and `vfx_mesh.wgsl`.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -82,12 +83,14 @@ pub enum ShaderFile {
     DebugDraw,
     /// The frame's effects: instanced sprites and ribbons (M2 E2).
     Vfx,
+    /// The frame's effect meshes (M5 L5).
+    VfxMesh,
     /// The on-screen interface's quads over the finished frame (M2 I2).
     Ui,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -109,6 +112,7 @@ impl ShaderFile {
         Self::DebugView,
         Self::DebugDraw,
         Self::Vfx,
+        Self::VfxMesh,
         Self::Ui,
     ];
 
@@ -136,6 +140,7 @@ impl ShaderFile {
             Self::DebugView => "debug_view.wgsl",
             Self::DebugDraw => "debug_draw.wgsl",
             Self::Vfx => "vfx.wgsl",
+            Self::VfxMesh => "vfx_mesh.wgsl",
             Self::Ui => "ui.wgsl",
         }
     }
@@ -169,6 +174,7 @@ impl ShaderFile {
             Self::DebugView => include_str!("../shaders/debug_view.wgsl"),
             Self::DebugDraw => include_str!("../shaders/debug_draw.wgsl"),
             Self::Vfx => include_str!("../shaders/vfx.wgsl"),
+            Self::VfxMesh => include_str!("../shaders/vfx_mesh.wgsl"),
             Self::Ui => include_str!("../shaders/ui.wgsl"),
         }
     }
@@ -208,12 +214,14 @@ pub(crate) enum Program {
     DebugDraw,
     /// The frame's effects (M2 E2).
     Vfx,
+    /// The frame's effect meshes (M5 L5).
+    VfxMesh,
     /// The on-screen interface (M2 I2).
     Ui,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -230,6 +238,7 @@ impl Program {
         Self::DebugView,
         Self::DebugDraw,
         Self::Vfx,
+        Self::VfxMesh,
         Self::Ui,
     ];
 
@@ -253,6 +262,7 @@ impl Program {
             Self::DebugView => &[F::Frame, F::Materials, F::Lights, F::DebugView],
             Self::DebugDraw => &[F::DebugDraw],
             Self::Vfx => &[F::Frame, F::Materials, F::Vfx],
+            Self::VfxMesh => &[F::Frame, F::Materials, F::VfxMesh],
             Self::Ui => &[F::Ui],
         }
     }
@@ -276,6 +286,7 @@ impl Program {
             Self::DebugView => "debug view",
             Self::DebugDraw => "debug draw",
             Self::Vfx => "vfx",
+            Self::VfxMesh => "vfx mesh",
             Self::Ui => "ui",
         }
     }
@@ -621,7 +632,7 @@ mod tests {
     };
     use crate::characters::{
         GpuCharacter, GpuCharacterAmbient, GpuCharacterDrive, GpuCharacterFade, GpuCharacterShadow,
-        GpuCharacterStyle, GpuFace, GpuRig,
+        GpuCharacterStyle, GpuFace, GpuReceived, GpuRig,
     };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
@@ -636,7 +647,7 @@ mod tests {
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
-    const PASSES: [(Program, &[&str]); 17] = [
+    const PASSES: [(Program, &[&str]); 18] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -675,6 +686,8 @@ mod tests {
                 "fs_character_prepass_masked",
                 "vs_scene_prepass_masked",
                 "fs_scene_prepass_masked",
+                "vs_shadow_caster_masked",
+                "fs_shadow_caster_masked",
             ],
         ),
         (Program::Skinning, &["cs_skinning"]),
@@ -733,11 +746,12 @@ mod tests {
         ),
         (Program::DebugDraw, &["vs_debug_line", "fs_debug_line"]),
         (Program::Vfx, &["vs_vfx", "fs_vfx", "fs_vfx_mask"]),
+        (Program::VfxMesh, &["vs_vfx_mesh", "fs_vfx_mesh", "fs_vfx_mesh_mask"]),
         (Program::Ui, &["vs_ui", "fs_ui"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 15] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 16] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::AnimeCharacter, "vs_through_hair", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
@@ -749,6 +763,7 @@ mod tests {
         (Program::Prepass, "vs_character_prepass_masked", MeshPass::MaskedCharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
         (Program::Prepass, "vs_scene_prepass_masked", MeshPass::MaskedScenePrepass),
+        (Program::Prepass, "vs_shadow_caster_masked", MeshPass::MaskedShadow),
         (Program::Shadows, "vs_shadow_caster", MeshPass::Shadow),
         (Program::Foliage, "vs_foliage", MeshPass::Foliage),
         (Program::Foliage, "vs_foliage_prepass", MeshPass::FoliagePrepass),
@@ -1062,6 +1077,7 @@ mod tests {
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
+            (Program::AnimeCharacter, "CharacterReceived", size_of::<GpuReceived>()),
             (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
             (Program::AnimeCharacter, "CharacterDrive", size_of::<GpuCharacterDrive>()),
             (Program::AnimeCharacter, "CharacterStyle", size_of::<GpuCharacterStyle>()),
@@ -1113,6 +1129,10 @@ mod tests {
             (Program::Vfx, "VfxSprite", size_of::<GpuVfxSprite>()),
             (Program::Vfx, "VfxRibbonPoint", size_of::<GpuVfxRibbonPoint>()),
             (Program::Vfx, "VfxUniforms", size_of::<GpuVfxUniforms>()),
+            (Program::VfxMesh, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::VfxMesh, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::VfxMesh, "VfxMesh", size_of::<crate::vfx::mesh::GpuVfxMesh>()),
+            (Program::VfxMesh, "VfxMeshUniforms", size_of::<crate::vfx::mesh::GpuVfxMeshUniforms>()),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
             (Program::Ui, "UiQuad", size_of::<crate::ui::GpuUiQuad>()),
         ];
@@ -1291,7 +1311,8 @@ mod tests {
             ("CharacterDrive", offsets!(GpuCharacterDrive { levels, flash })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
-            ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),
+            ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility, received })),
+            ("CharacterReceived", offsets!(GpuReceived { casters, weights })),
             (
                 "ShadowUniforms",
                 offsets!(ShadowUniforms {

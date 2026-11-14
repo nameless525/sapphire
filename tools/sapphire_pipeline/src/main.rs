@@ -425,7 +425,7 @@ fn bake_map(input: &Path, output: &Path) -> anyhow::Result<()> {
     }
     let settings = if sidecar.exists() {
         match meta::read(&sidecar)?.importer {
-            ImportSettings::CharacterMap(settings) => settings,
+            ImportSettings::CharacterMap(settings, _) => settings,
             _ => bail!("{} isn't a character map's sidecar", sidecar.display()),
         }
     } else {

@@ -160,7 +160,7 @@ use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
 use crate::procedural::{self, ProceduralSettings};
 use crate::script::{self, ScriptSettings};
-use crate::texture::{HdrSettings, TextureClass, TextureSettings};
+use crate::texture::{HdrSettings, MaxSize, TextureClass, TextureSettings};
 use crate::timeline::{self, TimelineSettings};
 use crate::ui::{self, UiSettings};
 use crate::zone::{self, ZoneSettings};
@@ -213,8 +213,10 @@ pub enum ImportSettings {
     /// PNG, TGA or EXR, cooked as its texture class says (M1 A2).
     Texture(TextureSettings),
     /// An anime character map document (`.facesdf.ron`, `.ramp.ron`, `.ilm.ron`): the map it
-    /// describes is generated, then cooked as a texture (M1 A7).
-    CharacterMap(MapSettings),
+    /// describes is generated, then cooked as a texture (M1 A7), capped per cook as a texture is
+    /// (M5 M1): `CharacterMap(Ilm((mips: true)), (desktop: None, mobile: Some(1024)))`. The cap is written only
+    /// when a cook has one.
+    CharacterMap(MapSettings, #[serde(default, skip_serializing_if = "MaxSize::is_none")] MaxSize),
     /// A material document (`.material.ron`) of any family (M1 A3).
     Material(MaterialSettings),
     /// A VRM character (`.vrm`), 1.0 or 0.x: a mesh as glTF's, and its rig (M1 A6).
@@ -286,7 +288,7 @@ impl ImportSettings {
         // Map and material documents are known by compound extensions, before the last one is
         // looked at.
         if let Some(kind) = MapKind::for_path(source) {
-            return Some(Self::CharacterMap(kind.default_settings()));
+            return Some(Self::CharacterMap(kind.default_settings(), MaxSize::NONE));
         }
         if material::is_source(source) {
             return Some(Self::Material(MaterialSettings::default()));
@@ -361,9 +363,7 @@ impl ImportSettings {
             "vrma" => Some(Self::Vrma(ClipSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
-            "exr" => {
-                Some(Self::Texture(TextureSettings { class: TextureClass::Hdr(HdrSettings::default()) }))
-            }
+            "exr" => Some(Self::Texture(TextureSettings::from(TextureClass::Hdr(HdrSettings::default())))),
             _ => None,
         }
     }
@@ -385,7 +385,7 @@ impl ImportSettings {
             Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&settings.mesh),
             Self::Texture(_)
-            | Self::CharacterMap(_)
+            | Self::CharacterMap(..)
             | Self::Material(_)
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
@@ -420,7 +420,7 @@ impl ImportSettings {
             Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&mut settings.mesh),
             Self::Texture(_)
-            | Self::CharacterMap(_)
+            | Self::CharacterMap(..)
             | Self::Material(_)
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
@@ -973,7 +973,7 @@ mod tests {
         );
         assert!(matches!(
             ImportSettings::for_source(Path::new("sky.EXR")),
-            Some(ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_) }))
+            Some(ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_), .. }))
         ));
         assert_eq!(
             ImportSettings::for_source(Path::new("characters/skin.material.ron")),

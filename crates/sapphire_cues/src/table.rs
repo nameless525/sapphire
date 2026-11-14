@@ -38,6 +38,9 @@ pub enum EffectPlace {
     /// Over the subject's head, upright: a cue's mark (M4 A5), [`CROWN_CLEARANCE`](crate::CROWN_CLEARANCE)
     /// over its highest hurtbox.
     Crown,
+    /// Where the subject stands, turned the way it faces, so the effect's +Z is its front: a swing's arc round
+    /// its body (M5 L5).
+    Facing,
 }
 
 /// Whose clock a row's effect runs on, so what can freeze it.

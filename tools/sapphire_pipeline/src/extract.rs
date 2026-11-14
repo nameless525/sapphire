@@ -109,7 +109,7 @@ use crate::import::vrm::{self, ImageFormat, VrmImport, VrmImportError};
 use crate::material::{MaterialSettings, TextureKind};
 use crate::meta::{self, AssetMeta, ImportSettings, MetaError};
 use crate::texture::{
-    ColorSettings, IlmSettings, MaskSettings, NormalSettings, TextureClass, TextureSettings,
+    ColorSettings, IlmSettings, MaskSettings, MaxSize, NormalSettings, TextureClass, TextureSettings,
 };
 
 /// Options for [`extract_materials`].
@@ -294,7 +294,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
             (slots, Some(import))
         }
         ImportSettings::Texture(_)
-        | ImportSettings::CharacterMap(_)
+        | ImportSettings::CharacterMap(..)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
@@ -672,7 +672,7 @@ impl<'a> FbxImages<'a> {
             as_png(&bytes)
                 .map_err(|source| ExtractError::TextureImage { texture: texture.to_string(), source })
         })?;
-        let id = writer.sidecar(&path, ImportSettings::Texture(TextureSettings { class }))?;
+        let id = writer.sidecar(&path, ImportSettings::Texture(TextureSettings::from(class)))?;
         self.bound.insert(key, id);
         Ok(Some(id))
     }
@@ -706,7 +706,7 @@ impl<'a> FbxImages<'a> {
         }
         let sidecar = meta::sidecar_path(path);
         let Some(class) = role.writes else { return Ok(Some(meta::read(&sidecar)?.id)) };
-        let settings = ImportSettings::Texture(TextureSettings { class });
+        let settings = ImportSettings::Texture(TextureSettings::from(class));
         if !sidecar.exists() {
             return writer.sidecar(path, settings).map(Some);
         }
@@ -919,7 +919,9 @@ impl Resolved {
                     let path = root.join("textures").join(&names.textures[&key]);
                     writer.file(&path, || png(import, image))?;
                     let class = names.classes[&key];
-                    entry.insert(writer.sidecar(&path, ImportSettings::Texture(TextureSettings { class }))?);
+                    entry.insert(
+                        writer.sidecar(&path, ImportSettings::Texture(TextureSettings::from(class)))?,
+                    );
                 }
                 continue;
             }
@@ -944,7 +946,8 @@ impl Resolved {
             let path = root.join("maps").join(format!("{stem}{}", MapKind::Ilm.suffix()));
             let text = sapphire_serialize::to_ron(&document).expect("an ILM document always serializes");
             writer.file(&path, || Ok(text.into_bytes()))?;
-            let settings = ImportSettings::CharacterMap(MapSettings::Ilm(IlmSettings::default()));
+            let settings =
+                ImportSettings::CharacterMap(MapSettings::Ilm(IlmSettings::default()), MaxSize::NONE);
             self.maps.insert(key, writer.sidecar(&path, settings)?);
         }
         if let Some(key) = layer_key(import, mtoon)
@@ -973,7 +976,8 @@ impl Resolved {
             let text =
                 sapphire_serialize::to_ron(&document).expect("a layer mask document always serializes");
             writer.file(&path, || Ok(text.into_bytes()))?;
-            let settings = ImportSettings::CharacterMap(MapSettings::LayerMask(MaskSettings::default()));
+            let settings =
+                ImportSettings::CharacterMap(MapSettings::LayerMask(MaskSettings::default()), MaxSize::NONE);
             self.layers.insert(key, writer.sidecar(&path, settings)?);
         }
         Ok(())

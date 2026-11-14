@@ -27,11 +27,11 @@ use sapphire_render::{
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const SIDE: u32 = 128;
+pub(super) const SIDE: u32 = 128;
 /// The sky every scene draws over, linear.
-const GREY: f32 = 0.25;
+pub(super) const GREY: f32 = 0.25;
 /// How far a pixel's linear color may be from the model: 8-bit output.
-const TOLERANCE: f32 = 0.02;
+pub(super) const TOLERANCE: f32 = 0.02;
 
 /// Post that shows linear values below about 0.98 as they are.
 fn passthrough() -> PostParams {
@@ -59,7 +59,7 @@ fn srgb_to_linear(value: u8) -> f32 {
 }
 
 /// A flat emissive dot of half-width `half`, whose middle is `color` wholly, as light (additive).
-fn dot(position: Vec3, half: f32, color: Vec3) -> VfxSprite {
+pub(super) fn dot(position: Vec3, half: f32, color: Vec3) -> VfxSprite {
     VfxSprite {
         position,
         axis: Vec3::ZERO,
@@ -94,16 +94,16 @@ fn strip(z: f32, color: Vec3, core: Vec3) -> [VfxRibbonPoint; 2] {
     [point(-1.0, false), point(1.0, true)]
 }
 
-fn flat_settings() -> RenderSettings {
+pub(super) fn flat_settings() -> RenderSettings {
     RenderSettings { msaa: Msaa::Off, bloom_levels: 5, ..RenderSettings::default() }
 }
 
-fn temporal_settings() -> RenderSettings {
+pub(super) fn temporal_settings() -> RenderSettings {
     RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() }
 }
 
 /// Both of the paths effects draw through.
-fn paths() -> [(&'static str, RenderSettings); 2] {
+pub(super) fn paths() -> [(&'static str, RenderSettings); 2] {
     [("the main pass", flat_settings()), ("after the resolve", temporal_settings())]
 }
 
@@ -142,10 +142,10 @@ fn wall(z: f32, half: f32) -> Mesh {
     )
 }
 
-struct Harness {
+pub(super) struct Harness {
     gpu: GpuContext,
-    renderer: Renderer,
-    graph: GraphExecutor,
+    pub(super) renderer: Renderer,
+    pub(super) graph: GraphExecutor,
     packets: FramePacketRing,
     target: wgpu::Texture,
     added: Vec<MeshInstance>,
@@ -153,7 +153,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(settings: RenderSettings) -> Self {
+    pub(super) fn new(settings: RenderSettings) -> Self {
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
         let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
@@ -197,7 +197,7 @@ impl Harness {
     }
 
     /// A wall at depth `z` glowing `emission`.
-    fn add_wall(&mut self, z: f32, emission: Vec3) -> InstanceId {
+    pub(super) fn add_wall(&mut self, z: f32, emission: Vec3) -> InstanceId {
         let material = self.material(&glowing(emission));
         let mesh = self.mesh(&wall(z, 20.0), material);
         self.add(mesh)
@@ -205,7 +205,7 @@ impl Harness {
 
     /// Draws one frame, the camera at the origin looking down -Z over 90°, and reads it back as
     /// linear colors. `fill` adds the frame's effects, or changes its look.
-    fn render(&mut self, fill: impl FnOnce(&mut FramePacket)) -> Frame {
+    pub(super) fn render(&mut self, fill: impl FnOnce(&mut FramePacket)) -> Frame {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(camera()));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.0 };
@@ -262,13 +262,13 @@ impl Harness {
     }
 
     /// Pipelines the device holds.
-    fn render_pipelines(&self) -> usize {
+    pub(super) fn render_pipelines(&self) -> usize {
         let report = self.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
         report.hub.render_pipelines.num_kept_from_user
     }
 
     /// Buffers and textures the device holds.
-    fn resources(&self) -> (usize, usize) {
+    pub(super) fn resources(&self) -> (usize, usize) {
         let report = self.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
         (report.hub.buffers.num_kept_from_user, report.hub.textures.num_kept_from_user)
     }
@@ -286,23 +286,23 @@ fn pixel_of(point: Vec3) -> (u32, u32) {
     (((ndc.x + 1.0) * 0.5 * SIDE as f32) as u32, ((1.0 - ndc.y) * 0.5 * SIDE as f32) as u32)
 }
 
-struct Frame {
-    pixels: Vec<[u8; 4]>,
+pub(super) struct Frame {
+    pub(super) pixels: Vec<[u8; 4]>,
 }
 
 impl Frame {
-    fn linear(&self, (x, y): (u32, u32)) -> Vec3 {
+    pub(super) fn linear(&self, (x, y): (u32, u32)) -> Vec3 {
         let pixel = self.pixels[(y * SIDE + x) as usize];
         Vec3::new(srgb_to_linear(pixel[0]), srgb_to_linear(pixel[1]), srgb_to_linear(pixel[2]))
     }
 
     /// The linear color at the middle of the frame.
-    fn middle(&self) -> Vec3 {
+    pub(super) fn middle(&self) -> Vec3 {
         self.linear((SIDE / 2, SIDE / 2))
     }
 }
 
-fn assert_near(actual: Vec3, expected: Vec3, what: &str) {
+pub(super) fn assert_near(actual: Vec3, expected: Vec3, what: &str) {
     assert!((actual - expected).abs().max_element() < TOLERANCE, "{what}: {actual} against {expected}");
 }
 

@@ -287,9 +287,8 @@ fn compressed_textures_stream_level_by_level_by_copies() {
     let sampler = LevelSampler::new(&gpu);
     let mut skipped = Vec::new();
     for case in cases() {
-        let settings = TextureSettings {
-            class: TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }),
-        };
+        let settings =
+            TextureSettings::from(TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }));
         let cooked = texture::cook(&image(case.size.0, case.size.1), &settings, case.cook).expect("cook");
         let desc = cooked.desc;
         if let Err(error @ TextureError::Unsupported { .. }) = check_format(&gpu, desc.format) {
@@ -588,9 +587,8 @@ fn a_tail_raised_level_by_level_is_the_whole_texture() {
     let id = AssetId::from_bytes([5; 16]);
     let mut skipped = Vec::new();
     for case in cases() {
-        let settings = TextureSettings {
-            class: TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }),
-        };
+        let settings =
+            TextureSettings::from(TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }));
         let cooked = texture::cook(&image(case.size.0, case.size.1), &settings, case.cook).expect("cook");
         if let Err(error @ TextureError::Unsupported { .. }) = check_format(&gpu, cooked.desc.format) {
             skipped.push(format!("{}: {error}", case.name));

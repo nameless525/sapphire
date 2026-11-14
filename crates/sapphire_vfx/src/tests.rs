@@ -41,6 +41,7 @@ fn burst(count: u32) -> Effect {
         emitters: vec![dots("dots", Spawn::Burst { count })],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     }
 }
 
@@ -62,6 +63,7 @@ fn trail(max_samples: u32) -> Effect {
             soft: 0.02,
         }),
         mark: false,
+        meshes: Vec::new(),
     }
 }
 
@@ -322,6 +324,7 @@ fn what_a_step_cant_fit_is_counted_without_being_walked() {
         emitters: vec![stream("a"), stream("b"), stream("c"), stream("d")],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     for max_particles in [0, 512] {
         let budget = VfxBudget { max_particles, ..VfxBudget::MOBILE_LOW };
@@ -348,6 +351,7 @@ fn overlapping_bursts_past_the_cap_count_what_didnt_fit() {
         emitters: (0..MAX_EMITTERS).map(|_| dots("dots", Spawn::Burst { count: 4096 })).collect(),
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let budget = VfxBudget::DESKTOP_HIGH;
     let mut world = world_of(vec![full], budget);
@@ -377,6 +381,7 @@ fn what_a_full_world_keeps_is_what_it_would_have_made_first() {
         ],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let sprites = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -401,6 +406,7 @@ fn a_rate_owes_the_same_with_room_or_without() {
         emitters: vec![dots("dots", Spawn::Rate { per_second: 37.5, duration: 0.5 })],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let owed = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -425,6 +431,7 @@ fn a_step_too_long_to_count_owes_what_a_count_holds() {
         emitters: vec![dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 })],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -438,7 +445,13 @@ fn a_continuous_emitter_recovers_after_large_finite_steps() {
     for step in [1e8, f32::MAX] {
         let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 });
         emitter.lifetime = (0.25, 0.25);
-        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None, mark: false };
+        let stream = Effect {
+            name: "stream".to_owned(),
+            emitters: vec![emitter],
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+        };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
         world.advance(&OwnerSteps { world: step, owners: &[] });
@@ -459,7 +472,13 @@ fn a_large_step_respects_delayed_finite_emission_and_pauses() {
         let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.5 });
         emitter.delay = 1.0;
         emitter.lifetime = (0.25, 0.25);
-        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None, mark: false };
+        let stream = Effect {
+            name: "stream".to_owned(),
+            emitters: vec![emitter],
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+        };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
         world.advance(&OwnerSteps { world: 0.0, owners: &[] });
@@ -690,6 +709,7 @@ fn a_rate_emits_at_its_rate_and_stops_when_stopped() {
         emitters: vec![dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 })],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -715,6 +735,7 @@ fn an_effect_is_endless_exactly_when_it_never_ends_by_itself() {
         emitters: spawns.iter().map(|&spawn| dots("dots", spawn)).collect(),
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let (once, brief) = (Spawn::Burst { count: 2 }, Spawn::Rate { per_second: 60.0, duration: 0.5 });
     let endless = Spawn::Rate { per_second: 60.0, duration: 0.0 };
@@ -797,6 +818,7 @@ fn a_rates_duration_bounds_how_many_it_emits() {
         }],
         trail: None,
         mark: false,
+        meshes: Vec::new(),
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");

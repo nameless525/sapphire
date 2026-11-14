@@ -11,6 +11,8 @@ use sapphire_math::sh::{self, Projection, SkyTransfer};
 
 use super::bvh::{Bvh, Hit};
 
+pub mod cubes;
+
 /// A surface's material, as far as light bouncing off it goes: W4's environment shading,
 /// diffuse only.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -227,13 +229,28 @@ impl Rays<'_> {
 /// the machine's thread count.
 pub fn bake(scene: &BakeScene, keys: &[BakeKey], settings: &BakeSettings) -> Result<ProbeGrid, BakeError> {
     validate(settings)?;
+    let threads = workers();
     let bvh = Bvh::new(scene.triangles.iter().map(|triangle| triangle.positions).collect());
     let layout = Layout::new(settings, &bvh)?;
     let rays = Rays { bvh: &bvh, scene };
-    let surfels = place_surfels(scene, settings);
-    let surfel_light = light_surfels(scene, keys, settings, &rays, &surfels);
-    let probes = bake_probes(scene, keys, settings, &rays, &layout, &surfels, &surfel_light);
+    let surfels = place_surfels(scene, settings.min, settings.max, settings.surfel_spacing);
+    let lighting = Lighting { surfel_rays: settings.surfel_rays, bounces: settings.bounces };
+    let surfel_light = light_surfels(scene, keys, lighting, &rays, &surfels, threads);
+    let probes = bake_probes(keys, settings, &rays, &layout, &surfels, &surfel_light, threads);
     Ok(layout.into_grid(settings, keys, probes))
+}
+
+/// The threads a bake runs on: the machine's, up to 32. What it bakes doesn't depend on how many.
+pub(crate) fn workers() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZeroUsize::get).clamp(1, 32)
+}
+
+/// How surfels pass light between them: the rays each casts and the bounces.
+#[derive(Clone, Copy, Debug)]
+struct Lighting {
+    surfel_rays: u32,
+    /// At least 1.
+    bounces: u32,
 }
 
 fn validate(settings: &BakeSettings) -> Result<(), BakeError> {
@@ -368,13 +385,13 @@ fn global(brick: [u32; 3], local: [u32; 3]) -> [u32; 3] {
     [0, 1, 2].map(|axis| brick[axis] * BRICK_CELLS + local[axis])
 }
 
-/// Spreads surfels over every triangle within reach of the bake box, about `surfel_spacing`
+/// Spreads surfels over every triangle within reach of the bake box `min..max`, about `spacing`
 /// apart, at fixed points of a low-discrepancy sequence, but where a cutout leaves a card clear.
 /// A two-sided card's surfel faces the side its shading normal does. Returns them, and each
 /// triangle's range.
-fn place_surfels(scene: &BakeScene, settings: &BakeSettings) -> Surfels {
-    let reach_min = settings.min - Vec3::splat(SURFEL_MARGIN);
-    let reach_max = settings.max + Vec3::splat(SURFEL_MARGIN);
+fn place_surfels(scene: &BakeScene, min: Vec3, max: Vec3, spacing: f32) -> Surfels {
+    let reach_min = min - Vec3::splat(SURFEL_MARGIN);
+    let reach_max = max + Vec3::splat(SURFEL_MARGIN);
     let mut surfels = Vec::new();
     let mut ranges = Vec::with_capacity(scene.triangles.len());
     for triangle in &scene.triangles {
@@ -388,8 +405,7 @@ fn place_surfels(scene: &BakeScene, settings: &BakeSettings) -> Surfels {
             continue;
         }
         let face = cross.normalize();
-        let count = ((area / (settings.surfel_spacing * settings.surfel_spacing)).ceil() as u32)
-            .clamp(1, MAX_SURFELS_PER_TRIANGLE);
+        let count = ((area / (spacing * spacing)).ceil() as u32).clamp(1, MAX_SURFELS_PER_TRIANGLE);
         let material = material(scene, triangle.material);
         let cutout = material.cutout.map(|cutout| &scene.cutouts[cutout as usize]);
         for i in 0..count {
@@ -464,16 +480,26 @@ struct FarHit {
     normal: Vec3,
 }
 
-/// The light every surfel sends out, per key (RGB), after the bounces; and what far hits send.
+/// The light every surfel sends out, per key (RGB), after the bounces, and what lit it besides the key
+/// light: its sky visibility and the light the last bounce brought it.
 struct SurfelLight {
     /// Per surfel, per key.
     surfels: Vec<Vec3>,
+    /// Per surfel: its sky visibility, L2.
+    visibility: Vec<[f32; sh::L2]>,
+    /// Per surfel, per key: the irradiance the last bounce gathered from the surfels it sees, before its
+    /// albedo (zero with one bounce).
+    gathered: Vec<Vec3>,
     keys: usize,
 }
 
 impl SurfelLight {
     fn get(&self, surfel: u32, key: usize) -> Vec3 {
         self.surfels[surfel as usize * self.keys + key]
+    }
+
+    fn gathered(&self, surfel: u32, key: usize) -> Vec3 {
+        self.gathered[surfel as usize * self.keys + key]
     }
 }
 
@@ -489,17 +515,18 @@ struct SurfelRays {
 fn light_surfels(
     scene: &BakeScene,
     keys: &[BakeKey],
-    settings: &BakeSettings,
+    lighting: Lighting,
     rays: &Rays<'_>,
     surfels: &Surfels,
+    threads: usize,
 ) -> SurfelLight {
-    let directions = sh::fibonacci_directions(settings.surfel_rays);
-    let solid_angle = 4.0 * std::f32::consts::PI / settings.surfel_rays as f32;
+    let directions = sh::fibonacci_directions(lighting.surfel_rays);
+    let solid_angle = 4.0 * std::f32::consts::PI / lighting.surfel_rays as f32;
     let transfers: Vec<[SkyTransfer; 3]> =
         keys.iter().map(|key| key.sky.each_ref().map(SkyTransfer::new)).collect();
     // Each surfel's rays, on its own frame turned by its index so neighbors don't share a
     // pattern.
-    let found: Vec<SurfelRays> = parallel_map(surfels.surfels.len(), |index| {
+    let found: Vec<SurfelRays> = parallel_map(threads, surfels.surfels.len(), |index| {
         let surfel = &surfels.surfels[index];
         let frame = turned(index as u32 ^ 0x5eed_0001);
         let origin = surfel.position + surfel.face * RAY_OFFSET;
@@ -527,7 +554,7 @@ fn light_surfels(
         SurfelRays { visibility: visibility.coefficients, hits, far }
     });
     // The light each surfel and far hit receives straight from the key light and the sky.
-    let direct: Vec<Vec3> = parallel_map(surfels.surfels.len() * keys.len(), |slot| {
+    let direct: Vec<Vec3> = parallel_map(threads, surfels.surfels.len() * keys.len(), |slot| {
         let (index, key) = (slot / keys.len(), slot % keys.len());
         let surfel = &surfels.surfels[index];
         let material = material(scene, surfel.material);
@@ -536,10 +563,12 @@ fn light_surfels(
         material.albedo * (key_light(rays, &keys[key], material, origin, surfel.normal) + sky)
             + material.emission_under(&keys[key])
     });
-    if settings.bounces <= 1 {
-        return SurfelLight { surfels: direct, keys: keys.len() };
+    let visibility = found.iter().map(|rays| rays.visibility).collect();
+    if lighting.bounces <= 1 {
+        let gathered = vec![Vec3::ZERO; direct.len()];
+        return SurfelLight { surfels: direct, visibility, gathered, keys: keys.len() };
     }
-    let far: Vec<Vec<Vec3>> = parallel_map(surfels.surfels.len(), |index| {
+    let far: Vec<Vec<Vec3>> = parallel_map(threads, surfels.surfels.len(), |index| {
         found[index]
             .far
             .iter()
@@ -557,8 +586,9 @@ fn light_surfels(
     });
     // Bounces: each pass, every surfel receives what the others sent in the last.
     let mut light = direct.clone();
-    for _ in 1..settings.bounces.max(1) {
-        light = parallel_map(surfels.surfels.len() * keys.len(), |slot| {
+    let mut gathered = Vec::new();
+    for _ in 1..lighting.bounces.max(1) {
+        let pass: Vec<(Vec3, Vec3)> = parallel_map(threads, surfels.surfels.len() * keys.len(), |slot| {
             let (index, key) = (slot / keys.len(), slot % keys.len());
             let surfel = &surfels.surfels[index];
             let albedo = material(scene, surfel.material).albedo;
@@ -571,10 +601,11 @@ fn light_surfels(
                 };
                 bounce += sent * weight;
             }
-            direct[slot] + albedo * bounce
+            (direct[slot] + albedo * bounce, bounce)
         });
+        (light, gathered) = pass.into_iter().unzip();
     }
-    SurfelLight { surfels: light, keys: keys.len() }
+    SurfelLight { surfels: light, visibility, gathered, keys: keys.len() }
 }
 
 fn material(scene: &BakeScene, index: u32) -> BakeMaterial {
@@ -611,19 +642,20 @@ struct BakedProbe {
 }
 
 fn bake_probes(
-    scene: &BakeScene,
     keys: &[BakeKey],
     settings: &BakeSettings,
     rays: &Rays<'_>,
     layout: &Layout,
     surfels: &Surfels,
     light: &SurfelLight,
+    threads: usize,
 ) -> Vec<BakedProbe> {
+    let scene = rays.scene;
     let directions = sh::fibonacci_directions(settings.probe_rays);
     let solid_angle = 4.0 * std::f32::consts::PI / settings.probe_rays as f32;
     let transfers: Vec<[SkyTransfer; 3]> =
         keys.iter().map(|key| key.sky.each_ref().map(SkyTransfer::new)).collect();
-    parallel_map(layout.probes.len(), |index| {
+    parallel_map(threads, layout.probes.len(), |index| {
         let position = layout.position(layout.probes[index]);
         let frame = turned(index as u32 ^ 0x9e0b_e5a1);
         let mut visibility = Projection::<{ sh::L2 }>::default();
@@ -766,10 +798,9 @@ fn turned(seed: u32) -> impl Fn(Vec3) -> Vec3 {
     move |d: Vec3| tangent * d.x + bitangent * d.y + n * d.z
 }
 
-/// `f` over `0..count` on the machine's threads, in index order whatever their number.
-fn parallel_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get).clamp(1, 32);
-    let chunk = count.div_ceil(threads).max(1);
+/// `f` over `0..count` on up to `threads` threads, in index order whatever their number.
+fn parallel_map<T: Send>(threads: usize, count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let chunk = count.div_ceil(threads.max(1)).max(1);
     let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
     std::thread::scope(|scope| {
         for (part, slots) in out.chunks_mut(chunk).enumerate() {

@@ -1,9 +1,13 @@
 //! The viewport with the real renderer, on a real GPU and with no window: an editor in a harness asks for a pane,
 //! the stage draws into it, and [`Painter`] does what the editor's window does, against a texture.
 //!
-//! They need a GPU and a cook: `cargo xtask content`, then
-//! `cargo test -p sapphire_editor --test viewport_stage -- --ignored --test-threads=1`. Costs are worth reading
-//! optimized, as `cargo xtask editor` builds: `--profile tools`, with `--nocapture`.
+//! They need a GPU and a cook: `cargo xtask content`, and `cargo xtask content --cook editor` for the zone
+//! panel's, then `cargo test -p sapphire_editor --test viewport_stage -- --ignored --test-threads=1`. Costs are
+//! worth reading optimized, as `cargo xtask editor` builds: `--profile tools`, with `--nocapture`.
+//!
+//! CI runs only the four its App tests job names, on a CPU rasterizer; the rest run on a real GPU alone, and
+//! `a_screen_shows_what_its_golden_does` compares with the Metal goldens, so run the whole file on a Mac when
+//! a change touches the viewport, the game's screens or what they show.
 
 #![allow(clippy::print_stdout, reason = "with --nocapture, its numbers are what it is run for")]
 

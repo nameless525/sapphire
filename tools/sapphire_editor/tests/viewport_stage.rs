@@ -1698,7 +1698,8 @@ fn a_screen_shows_what_its_golden_does() {
 }
 
 /// An edit of the screen's document shows in the preview as the document reads, with nothing loaded or built, and
-/// undo shows what was there to the pixel. A value typed in for a path shows too.
+/// undo shows what was there to the pixel. A value typed in for a path the screen reads shows too: the language
+/// row's key, which names the language in its own words.
 #[test]
 #[ignore = "needs a GPU and a cook"]
 fn an_edit_shows_in_the_preview() {
@@ -1727,7 +1728,7 @@ fn an_edit_shows_in_the_preview() {
     let undone = read_texture(&gpu, view.frame().expect("drawn"));
     assert_eq!(against(&undone, &before), (0, 0), "undo shows what was there");
 
-    assert!(harness.state_mut().set_stand_in("sound", StandIn::Number(30.0)));
+    assert!(harness.state_mut().set_stand_in("language", StandIn::Text("settings-language-ja".to_owned())));
     settle(&mut harness, &mut view, &gpu, &painter);
     let typed = read_texture(&gpu, view.frame().expect("drawn"));
     let (_, changed) = against(&typed, &before);

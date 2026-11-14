@@ -669,7 +669,7 @@
                 args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32",
-                       "--character-shadows", "own"],
+                       "--character-shadows", "own", "--anim-levels", "off"],
                 ci_seconds: (lavapipe: 31.9, warp: 73.6),
             ),
             // The ward's boss (M3 C2) on its terrace, a moment after its second wind's toll threw the

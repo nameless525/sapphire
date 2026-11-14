@@ -18,6 +18,8 @@
 //! - **The digest** ([`ArchivedZone::simulation_digest`]): what a replay pins.
 //! - **A zone's air** ([`look`], M5 M6): its wind, weather and fog, beside its day, rigs, probes and sky in
 //!   [`ZonePresentation`].
+//! - **Visible sets by cell** ([`visibility`], M5 D0's prototype): a file beside a cook, not yet the cooked
+//!   zone's, saying which of a zone's objects a camera in each cell may see.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //!
@@ -50,6 +52,7 @@ pub mod document;
 pub mod encounter;
 pub mod grid;
 pub mod look;
+pub mod visibility;
 
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,

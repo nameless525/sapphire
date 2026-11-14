@@ -275,7 +275,7 @@ pub struct Upload<'a> {
     kind: AssetKind,
     slot: AssetSlot,
     generation: u32,
-    bytes: &'a [u8],
+    data: &'a Arc<AlignedVec>,
 }
 
 impl<'a> Upload<'a> {
@@ -302,7 +302,7 @@ impl<'a> Upload<'a> {
 
     /// The cooked bytes, 16-byte aligned.
     pub fn bytes(&self) -> &'a [u8] {
-        self.bytes
+        self.data
     }
 
     /// The asset read as `T`, if it is of that kind: an `&ArchivedMesh`, an `&ArchivedMaterial` or
@@ -310,7 +310,18 @@ impl<'a> Upload<'a> {
     pub fn get<T: Asset>(&self) -> Option<T::View<'a>> {
         // SAFETY: the bytes passed their kind's check in the decode job, and the server holds them
         // unchanged behind an `Arc` for as long as this borrow.
-        (self.kind == T::KIND).then(|| unsafe { T::view(self.bytes) })
+        (self.kind == T::KIND).then(|| unsafe { T::view(self.data) })
+    }
+
+    /// The asset as `T`, if it is of that kind, kept past the upload: the same checked bytes, shared, for
+    /// an uploader that applies it later (a texture's level, until the levels between it and its texture's
+    /// top have come, M5 M4). The server lets go of them as it would have. Kept bytes are the uploader's to
+    /// bound: the upload ends their [admission](AssetServer#admission), since what's kept may wait for
+    /// reads still held back, and their kind's pool counts them as the asset's size, as it does from the
+    /// asset's load until it goes, kept or not.
+    pub fn keep<T: Asset>(&self) -> Option<CpuResident<T>> {
+        (self.kind == T::KIND)
+            .then(|| CpuResident { data: Arc::clone(self.data), kind: std::marker::PhantomData })
     }
 }
 
@@ -359,7 +370,7 @@ impl fmt::Debug for Upload<'_> {
             .field("kind", &self.kind)
             .field("slot", &self.slot)
             .field("generation", &self.generation)
-            .field("bytes", &self.bytes.len())
+            .field("bytes", &self.data.len())
             .finish()
     }
 }
@@ -1224,7 +1235,7 @@ impl AssetServer {
             let (id, kind) = (handle.id(), handle.kind());
             report.assets += 1;
             report.bytes += size;
-            let result = upload(Upload { id, kind, slot: AssetSlot(key), generation, bytes: &data });
+            let result = upload(Upload { id, kind, slot: AssetSlot(key), generation, data: &data });
             let error = |error: UploadError| LoadError::Upload { id, message: error_chain(&*error) };
             match (version, result) {
                 (Version::Main, Ok(())) => self.uploaded(key),
@@ -1335,6 +1346,20 @@ impl AssetServer {
             self.dependencies_first(child.key(), seen, order);
         }
         order.push(key);
+    }
+
+    /// Unloads asset `id` now, if nothing uses or pins it and it's loaded or failed, as a trim of its
+    /// kind would, with any bytes a version reloading holds against [admission](AssetServer#admission),
+    /// and reports it through [`Self::take_unloaded`]. Returns whether it went. For what an app gives back
+    /// of its own accord: a texture's levels it lowered ("Texture levels"), which the next load must read
+    /// and upload again.
+    pub fn unload(&mut self, id: AssetId) -> bool {
+        let Some(&key) = self.by_id.get(&id) else { return false };
+        let evictable = Self::evictable(&self.slots[key]);
+        if evictable {
+            self.remove(key);
+        }
+        evictable
     }
 
     /// Unloads every asset nothing uses or pins, dependencies freed by that included: the

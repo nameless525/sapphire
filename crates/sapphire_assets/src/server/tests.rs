@@ -301,6 +301,37 @@ fn a_split_texture_is_whole_before_its_material_is_ready() {
     assert_eq!(order, [(AssetKind::TextureLevel, TextureLevel::id(id(TEXTURE), 0))]);
 }
 
+/// A level kept past its upload keeps its checked bytes, though the server lets go of them; given back
+/// unused, it goes at once, its tail staying, and a load reads and uploads it again (M5 M4).
+#[test]
+fn a_level_kept_past_its_upload_and_given_back_loads_again() {
+    let level = TextureLevel::id(id(TEXTURE), 0);
+    let (mut server, _) = serve(split_texture(10), unlimited());
+    let held: Handle<TextureLevel> = server.load(level).unwrap();
+    let mut kept = None;
+    server
+        .finish(&held, |upload| {
+            if upload.kind() == AssetKind::TextureLevel {
+                kept = upload.keep::<TextureLevel>();
+            }
+            Ok(())
+        })
+        .unwrap();
+    let kept = kept.expect("kept as a level");
+    assert_eq!(kept.view().data()[0], 10, "kept past the upload");
+    assert!(server.get(&held).is_none(), "the server let go of its bytes as ever");
+
+    assert!(!server.unload(level), "held, it isn't given back");
+    drop(held);
+    assert!(server.unload(level));
+    assert_eq!(server.take_unloaded().iter().map(|unloaded| unloaded.id).collect::<Vec<_>>(), [level]);
+    assert!(server.is_resident(id(TEXTURE)));
+    let again: Handle<TextureLevel> = server.load(level).unwrap();
+    let mut order = Vec::new();
+    server.finish(&again, record(&mut order)).unwrap();
+    assert_eq!(order, [(AssetKind::TextureLevel, level)], "read and uploaded again");
+}
+
 /// A split texture's tail and levels count against one texture pool (M5 M2): a pool that holds them
 /// together keeps them cached, and one a byte short of that lets them go, though the tail alone would fit.
 #[test]

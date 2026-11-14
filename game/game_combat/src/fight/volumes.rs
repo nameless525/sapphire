@@ -144,7 +144,9 @@ impl FightShow {
             self.volumes.stats.held_frames += 1;
             self.volumes.stats.asked_while_held += u64::from(streamed.asked);
         }
+        let stood_before = self.warriors.len() + self.spares.len();
         self.warm_volumes(scene, simulation, cast, Pace::Within { budget, spent: streamed.time });
+        self.room_to_pose(stood_before);
     }
 
     /// Looks at the fight's encounters and warms what's near, at `pace`.

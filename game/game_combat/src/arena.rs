@@ -232,7 +232,9 @@ pub fn check_scenario_named(scenario: &str, party: bool) -> Result<(), String> {
     // or the one that goes between the proving zones (M3 W4), from the arena.
     let in_a_zone =
         document.is_some_and(|document| document.party.is_none() && zone_fight(scenario).is_some());
-    if (on_the_stage.is_some() && !has_a_party) || in_a_zone || scenario == ZONE_TRIP_SCENARIO {
+    // And the animation bench's crowds (M5 C1), code on the arena's colliders.
+    let crowd = sapphire_gameplay::replay::CROWD_SCENARIOS.contains(&scenario);
+    if (on_the_stage.is_some() && !has_a_party) || in_a_zone || scenario == ZONE_TRIP_SCENARIO || crowd {
         return Ok(());
     }
     Err(format!(
@@ -767,6 +769,17 @@ impl ArenaActors {
     /// The entity that draws `fighter`, the player being 0.
     pub(crate) fn entity(&self, fighter: usize) -> Entity {
         self.fighters[fighter].entity
+    }
+
+    /// Where `fighter`'s own clock stood at the latest step, in ticks with a fraction: what its animation
+    /// levels count whole ticks of (M5 C1). Nothing before a fight.
+    pub(crate) fn clock_ticks(&self, fighter: usize) -> Option<f64> {
+        self.seen[fighter].as_ref().map(|view| time_ticks(view.clock_now))
+    }
+
+    /// Whether `fighter` was stood somewhere new since its graph last played, which its next frame poses.
+    pub(crate) fn is_cut(&self, fighter: usize) -> bool {
+        self.fighters[fighter].signals.cut
     }
 
     /// What the last step said of the player, nothing before a fight.

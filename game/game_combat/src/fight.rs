@@ -9,14 +9,14 @@
 //! order.
 
 mod overhead_profile;
+mod posing;
 mod stock_arena;
 
 use crate::dialogue::DialogueRunner;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use sapphire_anim::FootContact;
-use sapphire_anim::{AnimStats, Mouth, Skeleton};
+use sapphire_anim::Skeleton;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::{AssetId, Handle};
 #[cfg(feature = "dev")]
@@ -60,15 +60,15 @@ use crate::enemy::{self, EnemyMeshes, Look};
 use crate::playable::{self, PartyKinds};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::replay::document_file_name;
-use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
-use sapphire_stage::animate::{self, ClipPlayer, SpringKey, SpringRole};
+use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver};
+use sapphire_stage::animate::{ClipPlayer, SpringKey, SpringRole};
 use sapphire_stage::audio::{CueSounds, Said};
 use sapphire_stage::content::{Content, GraphKey};
 use sapphire_stage::{FrameLaps, HeldWeapon, PlayableLook, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::documents::FightDocuments;
-use crate::faces::{self, DialogueFaces};
+use crate::faces::DialogueFaces;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::{self, TimelineShow};
 use sapphire_stage::scene::{
@@ -248,11 +248,12 @@ pub struct ZoneArena {
 
 /// The characters playing a graph, with everything that follows their skeletons.
 type GraphPlayers = QueryState<(
+    Entity,
     &'static mut GraphDriver,
     &'static mut RenderPose,
     &'static mut Figure,
     &'static mut CharacterLightRig,
-    &'static mut RenderTransform,
+    &'static RenderTransform,
 )>;
 
 /// A kind of enemy as a fight has loaded it: its cooked document, and what its look names, held for as long
@@ -499,6 +500,10 @@ pub struct FightShow {
     draws_latest: bool,
     /// Made once: a query made each frame would allocate.
     graph_players: Option<GraphPlayers>,
+    /// The frame's fighters as it poses them, and their work, kept empty between frames so a frame's lists
+    /// allocate nothing (M5 C1, [`posing`]).
+    posing: Vec<posing::Gathered<'static>>,
+    fighter_jobs: Vec<posing::FighterJob<'static>>,
     /// Last world, retained-storage run and simulation tick followed.
     followed_run: Option<(WorldId, u64, u64)>,
     /// How long the last frame's camera took: the arena's director or plain follow.
@@ -905,6 +910,7 @@ impl FightShow {
         cast: &[sapphire_gameplay::ActorId],
     ) {
         let Some(arena) = &mut self.arena else { return };
+        let stood_before = self.warriors.len() + self.spares.len();
         let world = scene.world_mut();
         while let Some(change) = arena.next_change(simulation, cast) {
             match change {
@@ -938,6 +944,17 @@ impl FightShow {
         // Before a fight's first step, what's near stands at once; after it, a frame at a time.
         if self.volumes.unseen() {
             self.warm_volumes(scene, simulation, cast, volumes::Pace::AtOnce);
+        }
+        self.room_to_pose(stood_before);
+    }
+
+    /// Room in the posing lists for everyone who's here or standing by, when more stand than
+    /// `stood_before`, so a wave that comes on from the spares allocates nothing there either (M5 C1).
+    fn room_to_pose(&mut self, stood_before: usize) {
+        let stood = self.warriors.len() + self.spares.len();
+        if stood > stood_before {
+            self.posing.reserve(1 + stood);
+            self.fighter_jobs.reserve(1 + stood);
         }
     }
 
@@ -1681,200 +1698,6 @@ impl FightShow {
                 playing.player.replace(Arc::clone(binding));
             }
         }
-    }
-
-    /// Plays each fighter's graph for this frame, from what the last step said of it, solves its feet
-    /// and its look at who it's fighting, and moves each warrior's blade to its hand. They run in turn on
-    /// this thread, so there's no list of jobs to make, and this allocates nothing; a crowd would want
-    /// `evaluate_all`'s jobs and a retained list. A fighter whose mesh is changing keeps the pose it has
-    /// until it fits.
-    fn animate_fighters(
-        &mut self,
-        scene: &mut Scene,
-        player: &ClipTable<'_>,
-        enemies: &[ClipTable<'_>],
-        alpha: f32,
-        presentation: Option<(&Content, Option<&Simulation>)>,
-    ) {
-        profiling::scope!("animate fighters");
-        let simulation = presentation.and_then(|(_, simulation)| simulation);
-        let moves = simulation.map(Simulation::move_library);
-        let warrior_versions = if self.fixed_fighters[1].is_some() {
-            presentation
-                .and_then(|(content, _)| self.enemy_versions(content))
-                .map(|(mesh, skeleton)| (mesh, 0, skeleton))
-        } else {
-            None
-        };
-        let started = Stopwatch::start();
-        let mut stats = AnimStats::default();
-        let timeline = self.timeline.as_ref();
-        let (generation, dialogue_faces) = (self.timeline_generation, &self.dialogue_faces);
-        let mouth = dialogue_faces.mouth(self.said);
-        let face_dt = std::mem::take(&mut self.face_dt);
-        let held_ticks = self.held_ticks;
-        let kinds = &self.assets.kinds;
-        let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
-        let mut view = scene.spring_view();
-        let world = scene.world_mut();
-        // Everyone with springs takes their place in the frame's rotation before anyone runs (M5 C2).
-        for index in 0..arena.fighter_count() {
-            if world.get::<GraphDriver>(arena.entity(index)).is_some_and(GraphDriver::has_springs) {
-                view.enter(spring_key(index, arena.kind(index)));
-            }
-        }
-        let stick_released = arena
-            .player_seen()
-            .is_some_and(|actor| actor.controls.current.stick == sapphire_gameplay::Stick::CENTER);
-        for index in 0..arena.fighter_count() {
-            let Ok((mut driver, render, figure, rig, _)) = graph_players.get_mut(world, arena.entity(index))
-            else {
-                continue;
-            };
-            let drawn = arena.kind(index);
-            let clips = match drawn {
-                FighterKind::Playable => player,
-                FighterKind::Enemy(kind) => {
-                    let slot = kinds.get(kind).map_or(0, |kind| kind.graph_slot);
-                    enemies.get(slot).unwrap_or(&enemies[0])
-                }
-            };
-            if !driver.fits(&render) {
-                continue;
-            }
-            // What its role's track says, a timeline's face before a conversation's (M5 C5).
-            let cue = timeline.and_then(|show| show.cue_of_fighter(index, arena));
-            if let Some(face) = driver.face_mut() {
-                let order = cue.and_then(|cue| cue.face).map(|face| faces::timeline_order(generation, face));
-                let said = || {
-                    dialogue_faces
-                        .held()
-                        .find(|&(role, _)| timeline::fighter_of_role(role, arena) == Some(index))
-                        .map(|(_, order)| order)
-                };
-                faces::drive(face, face_dt, order.or_else(said));
-                // The voiced line's role's mouth (M5 C6); every other's shut.
-                let speaking =
-                    mouth.filter(|&(role, _)| timeline::fighter_of_role(role, arena) == Some(index));
-                face.set_mouth(speaking.map_or(Mouth::CLOSED, |(_, mouth)| mouth));
-            }
-            if let Some(fixed) = self.fixed_fighters.get_mut(index).and_then(Option::as_mut) {
-                let (content, _) = presentation.expect("fixed body presentation needs its source");
-                let versions = match drawn {
-                    FighterKind::Playable => {
-                        content.character_kind().and_then(|kind| content.playable_versions(kind))
-                    }
-                    FighterKind::Enemy(_) => warrior_versions,
-                };
-                fixed.renderer.check_source(clips, versions);
-                let simulation = simulation.expect("simulation body presentation needs its producer");
-                let ready = if let Some(impact) = &mut self.impact
-                    && impact.is_held(simulation)
-                {
-                    let ready = fixed.renderer.read_impact(&impact.samples[index]);
-                    impact.presented[index] |= ready;
-                    ready
-                } else {
-                    let ready = fixed.renderer.read_simulation(simulation, fixed.actor, alpha);
-                    if ready
-                        && let Some(impact) = &self.impact
-                        && let Some(release) = &impact.release
-                        && release.valid(impact.actors.map(|actor| simulation.body_stamp(actor)))
-                    {
-                        fixed.renderer.release_impact(&impact.samples[index], &release.origins[index]);
-                    }
-                    ready
-                };
-                if ready {
-                    let (mut render, mut figure, mut rig) = (render, figure, rig);
-                    stats.characters += 1;
-                    let (evaluated, springs, elapsed) = fixed.renderer.publish(
-                        &mut driver,
-                        &mut render,
-                        &mut figure,
-                        &mut rig,
-                        &view,
-                        spring_key(index, drawn),
-                    );
-                    if evaluated {
-                        stats.evaluated += 1;
-                        stats.joints += driver.player.pose().joint_count() as u32;
-                        if index == 1
-                            && let Some(hand) = arena.blade_hand(index)
-                        {
-                            let hand = driver.player.pose().model()[hand];
-                            arena.hold_blade(index, Mat4::from(hand));
-                        }
-                    }
-                    stats.springs += u32::from(springs.wrote_pose);
-                    stats.spring_substeps += springs.substeps;
-                    stats.spring_time += elapsed;
-                    continue;
-                }
-                if simulation.tick() != 0 {
-                    stats.characters += 1;
-                    continue;
-                }
-                // The title and a freshly reset arena can draw before the first body step.
-                // At tick zero the ordinary graph poses the idle fighters without advancing combat.
-                driver.player.pose_mut().clear_body_presentation();
-            }
-            let gather = index == 0 && stick_released && driver.has_ik();
-            driver.player.request_grounded_gather(gather);
-            // After that, since it spends a cut and a landing, which wait for a frame the graph plays.
-            let Some(mut input) = arena.graph_input(index, alpha) else { continue };
-            // A timeline's character track plays its row in the combat slot over whatever the simulation
-            // says (M3 Q3), on a clock that goes on through a cutscene that holds the simulation's.
-            input.ticks += held_ticks;
-            // Only a fighter a role names has a track: `hero`, `foe`, or the first of a kind of enemy by its
-            // name (M5 C5). A crowd's others play what the simulation says (the whole walk's ultimate among
-            // three found this, M3 G1c).
-            if let Some(combat) = cue.as_ref().and_then(timeline::staged_row) {
-                input.combat = Some(combat);
-            }
-            stats.characters += 1;
-            let place = arena.drawn(index, alpha);
-            if let Some(ik) = driver.ik_mut() {
-                // A track's look key over who it's fighting (M5 C5).
-                ik.set_look_target(cue.and_then(|cue| cue.look).or_else(|| arena.look_target(index, alpha)));
-                // Read plants in the move's own root space so extra gameplay travel
-                // cannot turn a stationary shoe into a skating shoe.
-                ik.set_foot_contact(if input.locomotion.grounded && !input.defeated {
-                    if input.combat.is_none() {
-                        // Both fighters author heel and forefoot rolls. Pin the
-                        // loaded sole landmark rather than the ankle between them.
-                        FootContact::RollingStance
-                    } else {
-                        moves
-                            .zip(input.combat)
-                            .and_then(|(moves, combat)| {
-                                arena.authored_foot_motion(index, combat.position, moves)
-                            })
-                            .map_or(FootContact::Sole, FootContact::Authored)
-                    }
-                } else {
-                    FootContact::Sole
-                });
-            }
-            let key = spring_key(index, drawn);
-            let mut job = GraphEvaluation::new(driver, render, figure, rig, input, place, &view, key);
-            job.run(clips);
-            stats.teleports += job.driver.player.teleports();
-            if job.evaluated {
-                stats.evaluated += 1;
-                stats.joints += job.driver.player.pose().joint_count() as u32;
-                stats.ik += u32::from(job.driver.has_ik());
-                if let Some(hand) = arena.blade_hand(index) {
-                    let hand = job.driver.player.pose().model()[hand];
-                    arena.hold_blade(index, Mat4::from(hand));
-                }
-            }
-            stats.springs += u32::from(job.spring_work.wrote_pose);
-            stats.spring_substeps += job.spring_work.substeps;
-            stats.spring_time += job.spring_time;
-        }
-        stats.time = started.elapsed();
-        scene.set_anim_stats(stats);
     }
 
     fn animate_with_simulation(
@@ -2754,7 +2577,7 @@ impl Fight {
                 let enemy = show.enemy_driver(content, world)?;
                 show.play_fighters(scene, player.with_ik(solver), enemy);
                 show.load_kinds(&stand.plan.kinds, content, renderer, gpu)?;
-                scene.set_spring_quality(animate::spring_quality(tier));
+                scene.set_motion_tier(tier);
 
                 let look = content.playable(kind).cloned().ok_or_else(|| AppInitError::msg(NO_KIND))?;
                 if look.held.is_some() {
@@ -2926,7 +2749,7 @@ impl SceneShow for Fight {
     }
 
     fn tier_changed(&mut self, scene: &mut Scene, tier: TierId) {
-        scene.set_spring_quality(animate::spring_quality(tier));
+        scene.set_motion_tier(tier);
         self.show.tier_changed(scene, tier);
     }
 
@@ -3011,5 +2834,7 @@ mod impact_tests {
 mod clock_tests;
 #[cfg(all(test, feature = "dev"))]
 mod content_tests;
+#[cfg(test)]
+mod posing_tests;
 #[cfg(test)]
 mod scene_tests;

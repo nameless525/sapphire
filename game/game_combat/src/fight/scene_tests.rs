@@ -18,6 +18,7 @@ use sapphire_vfx::VfxBudget;
 
 use super::*;
 use crate::arena::{ArenaGround, ArenaShot};
+use crate::timeline;
 use sapphire_stage::lookdev::{self, FigureJoints, Shot, TownMeshes};
 use sapphire_stage::scene::{Figure, LookDev};
 use sapphire_stage::turntable::Turntable;

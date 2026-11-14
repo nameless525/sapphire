@@ -70,6 +70,8 @@
 //! - **Encounter documents** cook `.encounter.ron` → `.sencounter` (M3 B2, [`encounter`]): a zone's fights.
 //! - **Enemy documents** cook `.enemy.ron` → `.senemy` (M3 B3, [`enemy`]): one kind of enemy, its brains
 //!   compiled against the `.moves.ron` it names, which is its one input besides itself.
+//! - **Playable kinds** cook `.playable.ron` → `.splayable` (M5 C8, [`playable`]): one playable kind's
+//!   look, reading nothing besides itself, but what it names must be of the right kinds.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Timelines** cook `.timeline.ron` → `.stimeline` (M3 Q1, [`timeline`]), reading nothing besides
@@ -169,7 +171,10 @@ use sapphire_assets::{AssetId, AssetKind};
 use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_dialogue::{DIALOGUE_EXTENSION, Dialogue};
-use sapphire_moves::{BakedTables, ClipMotionDocument, ENEMY_EXTENSION, Enemy, MOVE_SET_EXTENSION, MoveSet};
+use sapphire_moves::{
+    BakedTables, ClipMotionDocument, ENEMY_EXTENSION, Enemy, MOVE_SET_EXTENSION, MoveSet, PLAYABLE_EXTENSION,
+    Playable,
+};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
@@ -203,6 +208,7 @@ use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
+use crate::playable::{self, PlayableCookError};
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::procedural::{self, ProceduralError};
 use crate::reflections::{self, ReflectionCookError};
@@ -389,6 +395,12 @@ impl Recipe {
                 format: Enemy::VERSION,
                 extension: ENEMY_EXTENSION,
             },
+            ImportSettings::Playable(_) => Self {
+                importer: playable::IMPORTER,
+                cooker: playable::COOKER,
+                format: Playable::VERSION,
+                extension: PLAYABLE_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -553,6 +565,8 @@ impl Recipe {
             encounter::output_path(relative, self.extension)
         } else if enemy::is_source(relative) {
             enemy::output_path(relative, self.extension)
+        } else if playable::is_source(relative) {
+            playable::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if audio::is_score_source(relative) {
@@ -710,6 +724,15 @@ pub enum CookError {
     },
     #[error("enemy {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
     EnemyReference { path: PathBuf, field: &'static str, what: &'static str, id: AssetId },
+    #[error("failed to cook playable kind {}", path.display())]
+    Playable {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<PlayableCookError>,
+    },
+    #[error("playable kind {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
+    PlayableReference { path: PathBuf, field: &'static str, what: &'static str, id: AssetId },
     #[error("failed to cook locale {}", path.display())]
     Locale {
         path: PathBuf,
@@ -1652,6 +1675,7 @@ fn sub_assets(
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
         | ImportSettings::Enemy(_)
+        | ImportSettings::Playable(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)
@@ -1853,6 +1877,11 @@ impl Planned {
     /// Whether it cooks to a mesh: a mesh source's own asset.
     fn is_mesh(&self) -> bool {
         self.part == Part::Own && self.asset.meta.importer.mesh().is_some()
+    }
+
+    /// Whether it cooks to a rig: a VRM's.
+    fn is_rig(&self) -> bool {
+        self.part == Part::Rig
     }
 
     fn is_anim_graph(&self) -> bool {
@@ -2625,6 +2654,11 @@ fn cook_source(
             enemy::cook(bytes, &moves_path, &moves)
                 .map_err(|source| CookError::Enemy { path: path.to_owned(), source: Box::new(source) })
         }
+        ImportSettings::Playable(_) => {
+            playable_references(path, bytes, assets)?;
+            playable::cook(bytes)
+                .map_err(|source| CookError::Playable { path: path.to_owned(), source: Box::new(source) })
+        }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -3215,6 +3249,8 @@ fn source_dependencies(
             let id = enemy::read(bytes).expect("`enemy_moves` read it").moves;
             Ok(vec![Dependency::File { path: format!("#moves {id}"), hash: blake3::hash(&moves) }])
         }
+        // It reads nothing else, but what it names is held to its kinds on every cook.
+        ImportSettings::Playable(_) => playable_references(path, bytes, assets).map(|()| Vec::new()),
         ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -3390,6 +3426,28 @@ fn enemy_moves(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result<(PathBu
     let source = assets.get(document.moves).expect("just checked").asset.path.clone();
     let moves = fs::read(&source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
     Ok((source, moves))
+}
+
+/// Holds what a playable kind names to the kinds of asset it must be, on every cook, as an enemy's are.
+fn playable_references(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result<(), CookError> {
+    let document = playable::read(bytes)
+        .map_err(|source| CookError::Playable { path: path.to_owned(), source: Box::new(source) })?;
+    let reference = |field: &'static str, what, id, good: fn(&Planned) -> bool| {
+        if assets.get(id).is_some_and(good) {
+            Ok(())
+        } else {
+            Err(CookError::PlayableReference { path: path.to_owned(), field, what, id })
+        }
+    };
+    let look = &document.look;
+    reference("moves", "a move set document", document.moves, Planned::is_move_set)?;
+    reference("look.mesh", "a mesh", look.mesh, Planned::is_mesh)?;
+    reference("look.rig", "a rig", look.rig, Planned::is_rig)?;
+    reference("look.graph", "an animation graph", look.graph, Planned::is_anim_graph)?;
+    if let Some(held) = &look.held {
+        reference("look.held.mesh", "a mesh", held.mesh, Planned::is_mesh)?;
+    }
+    Ok(())
 }
 
 /// What a zone's part reads besides its own document, and the check of what it names, on every cook.
@@ -3691,6 +3749,7 @@ fn imported_mesh(
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
         | ImportSettings::Enemy(_)
+        | ImportSettings::Playable(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)
@@ -4901,6 +4960,26 @@ mod tests {
         fs::remove_file(&output).unwrap();
         scratch.cook_with(Cook::Desktop, false);
         assert!(fs::read(&output).unwrap() == first);
+    }
+
+    /// A playable kind whose moves, mesh, rig or graph no source under the root is fails its cook, naming the
+    /// field (M5 C8), as a kind of enemy's does.
+    #[test]
+    fn a_playable_kind_naming_what_isnt_there_is_refused() {
+        let scratch = Scratch::new("cook_playable_reference");
+        let path = scratch.source().join("combat/slice.playable.ron");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, include_str!("../../../crates/sapphire_moves/test_content/slice.playable.ron"))
+            .unwrap();
+        let sidecar = "(type: \"sapphire::assets::AssetMeta\", version: 1, data: (id: \
+                       \"0b5c1a7e-3f2d-4c8a-9e61-7d2f4a8b9c10\", importer: Playable(())))";
+        fs::write(sidecar_path(&path), sidecar).unwrap();
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
+        let error = cook_dir(&scratch.source(), &scratch.out(), &options).expect_err("refused");
+        assert!(
+            matches!(error, CookError::PlayableReference { field: "moves", .. }),
+            "the first it names: {error}"
+        );
     }
 
     #[test]

@@ -1,0 +1,26 @@
+// A playable kind on the test content's moves, for `playable`'s tests: a weapon in a hand and a resting
+// face. Its mesh and rig are the look-dev heroine's pair, since a rig is derived from its mesh's ID; its
+// other IDs name nothing: these tests cook nothing else.
+(
+    type: "sapphire::moves::PlayableDocument",
+    version: 1,
+    data: (
+        // Its name's key in the game's words: what the party's slots call it.
+        name: "character-name-slice",
+        moves: "5d2c9a61-0f3e-4b7a-9c1d-2e8f6a4b3c10",
+        look: (
+            mesh: "6f8a81b6-29c4-485f-b161-847b001d561f",
+            rig: "4b4073fd-44c5-8437-a712-1cccad486da3",
+            graph: "6a5f4e3d-2c1b-4a09-8f7e-6d5c4b3a2910",
+            seed: 3,
+            held: Some((
+                mesh: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+                joint: "hand.r",
+                offset: (0.0, 0.0, 0.4),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+            )),
+            body_contacts: ["hips", "foot.l", "foot.r"],
+            expression: Some((preset: "relaxed", weight: 0.35)),
+        ),
+    ),
+)

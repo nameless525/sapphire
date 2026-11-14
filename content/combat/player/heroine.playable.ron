@@ -1,0 +1,54 @@
+// The heroine as a playable kind (M5 C8): the look-dev character, her graph and the sword in her right
+// hand. Her moves are the player's, compiled into the simulation; this is what draws her.
+(
+    type: "sapphire::moves::PlayableDocument",
+    version: 1,
+    data: (
+        // Her name's key in the game's words, which the HUD names her by: Wanderer.
+        name: "character-name-wanderer",
+        // `player.moves.ron`.
+        moves: "6fc61cbc-8189-4b6d-a4a0-b0e09475c6ce",
+        look: (
+            // `content/lookdev/character/character.vrm`, and its rig, which the cook derives from it. Her
+            // springs are the VRM's own, cooked into that rig.
+            mesh: "6f8a81b6-29c4-485f-b161-847b001d561f",
+            rig: "4b4073fd-44c5-8437-a712-1cccad486da3",
+            // `content/lookdev/character/character.animgraph.ron`.
+            graph: "b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68",
+            // What sets her blinks apart from another's: a golden pins this one's.
+            seed: 1,
+            // The sword (`sword.glb`) in her right hand. The socket is the `blade` path's in
+            // `player.moves.ron`, so what's drawn is what the hit volumes sweep.
+            held: Some((
+                mesh: "c4a07ad2-6d0e-4f3c-9b21-7e5a1f0c8d34",
+                joint: "J_Bip_R_Hand",
+                offset: (-0.234, -0.002, 0.417),
+                rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+            )),
+            // Where her body meets what it touches, by the VRM's joints.
+            body_contacts: [
+                "J_Bip_C_Hips",
+                "J_Bip_C_Spine",
+                "J_Bip_C_UpperChest",
+                "J_Bip_C_Neck",
+                "J_Bip_C_Head",
+                "J_Bip_L_UpperLeg",
+                "J_Bip_L_LowerLeg",
+                "J_Bip_L_Foot",
+                "J_Bip_L_ToeBase",
+                "J_Bip_R_UpperLeg",
+                "J_Bip_R_LowerLeg",
+                "J_Bip_R_Foot",
+                "J_Bip_R_ToeBase",
+                "J_Bip_L_UpperArm",
+                "J_Bip_L_LowerArm",
+                "J_Bip_L_Hand",
+                "J_Bip_R_UpperArm",
+                "J_Bip_R_LowerArm",
+                "J_Bip_R_Hand",
+            ],
+            // A soft, relaxed face, which her face layer rests on.
+            expression: Some((preset: "relaxed", weight: 0.35)),
+        ),
+    ),
+)

@@ -168,7 +168,7 @@ impl App for SandboxApp {
             .as_ref()
             .map(|option| {
                 if options.arena.is_some()
-                    && options.character() == options.playable().mesh
+                    && options.character() == options.playable_kind()
                     && options.character_rig.is_none()
                 {
                     show.fight.prepare_stock_combat(option, &mut content)
@@ -277,7 +277,8 @@ impl App for SandboxApp {
         if let Some(mesh) = renderer.hard_edges {
             scene.spawn_hard_edges(mesh);
         }
-        let playable = options.playable();
+        let playable =
+            game_combat::playable::look(&mut content, options.playable_kind()).map_err(AppInitError::msg)?;
         if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
             let (pose, figure) = lookdev::hold(&mut content, &playable, &mut renderer.renderer, &device.gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
@@ -1628,7 +1629,11 @@ pub(crate) fn create_renderer(
         .transpose()?;
         let sword = options
             .blade()
-            .then(|| fight.load_sword(&options.playable(), content, &mut renderer, gpu))
+            .then(|| {
+                let look = game_combat::playable::look(content, options.playable_kind())
+                    .map_err(AppInitError::msg)?;
+                fight.load_sword(&look, content, &mut renderer, gpu)
+            })
             .transpose()?;
         let stage = options.stage.map(|_| content.studio_meshes(&mut renderer)).transpose()?;
         let ik_block = options

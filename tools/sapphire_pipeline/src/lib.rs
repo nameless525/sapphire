@@ -48,6 +48,7 @@
 //!   per probe and time-of-day key, the scene without the sky and the sky's share in alpha.
 //! - [`encounter`]: encounter documents (`.encounter.ron`) cooked to `.sencounter`, a zone's fights (M3 B2).
 //! - [`enemy`]: enemy documents (`.enemy.ron`) cooked to `.senemy`, one kind of enemy (M3 B3).
+//! - [`playable`]: playable kinds (`.playable.ron`) cooked to `.splayable`, what draws one (M5 C8).
 //! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
 //!   [`ColliderSet`](sapphire_colliders::ColliderSet)s (M2 D3): a zone's static collision.
 //! - [`timeline`]: timeline documents (`.timeline.ron`) cooked to
@@ -156,6 +157,7 @@ pub mod moves;
 pub mod nav;
 pub mod optimize;
 pub mod pack;
+pub mod playable;
 pub mod probes;
 pub mod procedural;
 pub mod reflections;

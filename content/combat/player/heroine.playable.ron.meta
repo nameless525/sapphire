@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "60976269-85cf-4c5a-a29b-4aeeb65f3793",
+        importer: Playable(()),
+    ),
+)

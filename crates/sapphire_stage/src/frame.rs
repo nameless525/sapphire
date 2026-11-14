@@ -146,7 +146,7 @@ pub struct StageDesc {
     pub quality: Quality,
     /// What the renderer's made with: the tier's, or more than it says.
     pub settings: RenderSettings,
-    /// The character, loaded before this returns.
+    /// The character, loaded before this returns: a mesh, or a playable kind, whose mesh it is (M5 C8).
     pub character: AssetId,
     /// The zone's sky material.
     pub sky: AssetId,

@@ -91,9 +91,13 @@ const SWING_TICKS: u16 = 30;
 /// A graph for the character that plays [`SWING`].
 const GRAPH: AssetId = AssetId::from_bytes([0x60; 16]);
 
-/// What draws the test character: the heroine's playable kind, mesh, rig and sword, with [`GRAPH`].
+/// What draws the test character: the heroine's playable kind, mesh, rig and sword, with [`GRAPH`], the
+/// sword in the test skeleton's right hand.
 fn heroine_look() -> PlayableLook {
-    PlayableLook { graph: GRAPH, ..playable::heroine() }
+    let heroine = playable::tests::heroine();
+    let hand = HumanBone::REQUIRED.iter().position(|&bone| bone == HumanBone::RightHand).expect("required");
+    let held = heroine.held.map(|held| HeldWeapon { joint: format!("joint {hand}"), ..held });
+    PlayableLook { graph: GRAPH, held, ..heroine }
 }
 
 /// A cooked set of moves, as the graph show plays.

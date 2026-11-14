@@ -117,6 +117,7 @@ use sapphire_dialogue::Dialogue;
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
 use sapphire_livelink::{LivePacks, PushedPack};
+use sapphire_moves::Playable;
 use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
 use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
@@ -953,8 +954,11 @@ pub struct Content {
     character_motion: sapphire_anim::CharacterMotion,
     /// How its IK places its feet and turns its head ([`Self::set_body_tuning`]).
     body_tuning: sapphire_anim::BodyTuning,
-    /// The character's ID: the mannequin's unless the scene asked for another.
+    /// The character's mesh's ID: the mannequin's unless the scene asked for another.
     character_id: AssetId,
+    /// What the scene asked for as its character: [`Self::character_id`], or the playable kind whose mesh it
+    /// is (M5 C8).
+    character_asked: AssetId,
     character: Handle<Mesh>,
     /// The shader swatches' materials, once asked for (`--swatches`).
     #[cfg(feature = "samples")]
@@ -1086,6 +1090,28 @@ impl std::fmt::Display for GraphKey {
     }
 }
 
+/// How long reading a playable kind's cooked document may wait for its pack: it's a few hundred bytes.
+const PLAYABLE_READ: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The look of the playable kind `kind`, from its cooked document (M5 C8), loading it until it's read.
+fn read_playable(server: &mut AssetServer, kind: AssetId) -> Result<PlayableLook, String> {
+    let stopwatch = Stopwatch::start();
+    let remaining = || PLAYABLE_READ.saturating_sub(stopwatch.elapsed());
+    let handle =
+        server.load_with::<Playable>(kind, LoadPriority::Critical).map_err(|error| error.to_string())?;
+    let cooked = server.finish_cpu(&handle, &remaining).map_err(|error| error.to_string())?;
+    PlayableLook::of(kind, &cooked.view().to_playable())
+}
+
+/// The mesh the scene's character is when it's `character`: itself, or a playable kind's mesh (M5 C8).
+fn character_mesh(server: &mut AssetServer, character: AssetId) -> Result<AssetId, String> {
+    if server.kind_of(character) == Some(AssetKind::Playable) {
+        Ok(read_playable(server, character)?.mesh)
+    } else {
+        Ok(character)
+    }
+}
+
 /// A playable kind [`Content::load_playable`] loaded: its look, its rig and skeleton, and the versions of its
 /// mesh, rig and skeleton the scene last knew of ([`Content::take_character_changed`]).
 struct HeldPlayable {
@@ -1113,7 +1139,7 @@ fn newest_saved(files: &[(GraphKey, PathBuf)], owner: GraphKey, server: &AssetSe
 
 impl Content {
     pub(crate) fn selection(&self) -> (AssetId, AssetId) {
-        (self.character_id, self.sky_id)
+        (self.character_asked, self.sky_id)
     }
 
     /// What the mounted packs' meshes draw through, and the skinning that deforms theirs (M3 K1): for a renderer
@@ -1187,7 +1213,8 @@ impl Content {
     }
 
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
-    /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
+    /// the character (`character`, a mesh's ID, or a playable kind's, whose mesh it is: [`CHARACTER`] unless
+    /// the scene wants another),
     /// within the budgets of the device's class until a tier's are set ([`Self::set_tier`]). The scene's
     /// sky is the sky material `sky`
     /// ([`SKY`] unless the scene wants another), loaded when asked for.
@@ -1218,17 +1245,20 @@ impl Content {
             server.mount_only_released(&release);
         }
         server.mount_now(PACK).map_err(|error| missing(&error))?;
-        let character_id = character;
+        let character_asked = character;
+        let character_id = character_mesh(&mut server, character).map_err(AppInitError::msg)?;
         let character = server.load_with(character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
-        Ok(Self::over_server(
+        let mut content = Self::over_server(
             server,
             character_id,
             character,
             sky,
             #[cfg(feature = "dev")]
             live_packs,
-        ))
+        );
+        content.character_asked = character_asked;
+        Ok(content)
     }
 
     /// With nothing uploaded yet, over a `server` that's loading the character.
@@ -1244,6 +1274,7 @@ impl Content {
             character_motion: *sapphire_anim::CharacterMotion::shipped(),
             body_tuning: *sapphire_anim::BodyTuning::shipped(),
             character_id,
+            character_asked: character_id,
             character,
             #[cfg(feature = "samples")]
             swatches: Vec::new(),
@@ -1488,6 +1519,20 @@ impl Content {
     /// The playable kind `kind`, once [`Self::load_playable`] has loaded it.
     fn held_playable(&self, kind: AssetId) -> Option<&HeldPlayable> {
         self.playables.iter().find(|held| held.look.kind == kind)
+    }
+
+    /// What draws the playable kind `kind`, from its cooked document (M5 C8), as `enemy::Look::of` reads a
+    /// kind of enemy's: what [`Self::load_playable`] then loads.
+    ///
+    /// # Errors
+    ///
+    /// If no mounted pack holds a playable kind `kind`, or it doesn't read.
+    pub fn playable_look(&mut self, kind: AssetId) -> Result<PlayableLook, String> {
+        match self.server.kind_of(kind) {
+            Some(AssetKind::Playable) => read_playable(&mut self.server, kind),
+            Some(other) => Err(format!("{kind} is a {other}, not a playable kind")),
+            None => Err(format!("no playable kind {kind} is in the mounted packs")),
+        }
     }
 
     /// What draws the playable kind `kind`, once [`Self::load_playable`] has loaded it.
@@ -2224,7 +2269,12 @@ impl Content {
         }
         loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))?;
         skeleton_loaded
-            .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))
+            .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))?;
+        // Its weapon's socket is on one of its own joints, which only its cooked skeleton says (M5 C8).
+        if let Some(skeleton) = self.skeleton_of(look.kind) {
+            look.weapon_joint(skeleton).map_err(AppInitError::msg)?;
+        }
+        Ok(())
     }
 
     /// Loads the timeline `id` until it's resident, and hands it back to be played: it holds nothing of the
@@ -3281,6 +3331,7 @@ mod tests {
             seed: 1,
             held: None,
             body_contacts: Vec::new(),
+            expression: Some((sapphire_assets::rig::ExpressionPreset::Relaxed, 0.35)),
         }
     }
 

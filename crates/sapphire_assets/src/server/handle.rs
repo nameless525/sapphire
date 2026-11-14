@@ -8,7 +8,7 @@ use std::sync::Arc;
 use sapphire_bytecode::{ArchivedScriptChunk, ScriptChunk};
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_dialogue::{ArchivedDialogue, Dialogue};
-use sapphire_moves::{ArchivedEnemy, ArchivedMoveSet, Enemy, MoveSet};
+use sapphire_moves::{ArchivedEnemy, ArchivedMoveSet, ArchivedPlayable, Enemy, MoveSet, Playable};
 use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
 use sapphire_serialize::cooked::access_unchecked;
 use sapphire_timeline::{ArchivedTimeline, Timeline};
@@ -73,6 +73,7 @@ mod sealed {
     impl Sealed for sapphire_bytecode::ScriptChunk {}
     impl Sealed for sapphire_dialogue::Dialogue {}
     impl Sealed for sapphire_moves::Enemy {}
+    impl Sealed for sapphire_moves::Playable {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
@@ -206,6 +207,17 @@ impl Asset for Enemy {
         // SAFETY: as for meshes: `Enemy::from_cooked` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Enemy>(bytes) }
             .expect("the envelope was checked when the enemy was decoded")
+    }
+}
+
+impl Asset for Playable {
+    const KIND: AssetKind = AssetKind::Playable;
+    type View<'a> = &'a ArchivedPlayable;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedPlayable {
+        // SAFETY: as for meshes: `Playable::from_cooked` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Playable>(bytes) }
+            .expect("the envelope was checked when the playable kind was decoded")
     }
 }
 

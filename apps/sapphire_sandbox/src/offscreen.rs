@@ -174,7 +174,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         .map(|option| {
             if !tooling
                 && options.arena.is_some()
-                && options.character() == options.playable().mesh
+                && options.character() == options.playable_kind()
                 && options.character_rig.is_none()
             {
                 let pending = &mut content;
@@ -287,7 +287,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.hard_edges {
         scene.spawn_hard_edges(content.hard_edges(renderer, gpu)?);
     }
-    let playable = options.playable();
+    let playable =
+        game_combat::playable::look(content, options.playable_kind()).map_err(AppInitError::msg)?;
     if let Some(shot) = options.look_dev {
         let town = content.town(renderer, gpu)?;
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;

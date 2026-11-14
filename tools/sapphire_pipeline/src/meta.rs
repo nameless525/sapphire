@@ -157,6 +157,7 @@ use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
 use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
+use crate::playable::{self, PlayableSettings};
 use crate::probes::{self, ProbeGridSettings};
 use crate::procedural::{self, ProceduralSettings};
 use crate::script::{self, ScriptSettings};
@@ -235,6 +236,8 @@ pub enum ImportSettings {
     Encounter(EncounterSettings),
     /// An enemy document (`.enemy.ron`), cooked to `.senemy` against the moves it names (M3 B3).
     Enemy(EnemySettings),
+    /// A playable kind's document (`.playable.ron`), cooked to `.splayable` (M5 C8).
+    Playable(PlayableSettings),
     /// An Ogg Vorbis file (`.ogg`), copied as the target format once it decodes (M2 E1).
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
@@ -310,6 +313,9 @@ impl ImportSettings {
         }
         if enemy::is_source(source) {
             return Some(Self::Enemy(EnemySettings::default()));
+        }
+        if playable::is_source(source) {
+            return Some(Self::Playable(PlayableSettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -392,6 +398,7 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Encounter(_)
             | Self::Enemy(_)
+            | Self::Playable(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Score(_)
@@ -427,6 +434,7 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Encounter(_)
             | Self::Enemy(_)
+            | Self::Playable(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Score(_)

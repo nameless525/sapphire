@@ -134,6 +134,7 @@ impl Gpu {
             AssetKind::Script => unreachable!("scripts never go to the uploader"),
             AssetKind::Dialogue => unreachable!("dialogues never go to the uploader"),
             AssetKind::Enemy => unreachable!("enemies never go to the uploader"),
+            AssetKind::Playable => unreachable!("playable kinds never go to the uploader"),
             AssetKind::Score | AssetKind::VoiceLines => {
                 unreachable!("music and voice never go to the uploader")
             }
@@ -241,7 +242,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         admission: 8 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

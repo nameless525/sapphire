@@ -57,7 +57,8 @@
 //! - **What loads:** the caller holds its own assets by [`Content::hold`] and reads them by [`Content::read`], and
 //!   [`Content::load_graph_of`] keys a graph by a [`content::GraphKey`] the game names. A recolor is an
 //!   [`content::UploadWatcher`].
-//! - **Who's playable:** the caller hands the stage each playable kind's [`PlayableLook`]
+//! - **Who's playable:** a playable kind's cooked document says what draws it, the caller reads its
+//!   [`PlayableLook`] by the kind's ID ([`Content::playable_look`]) and hands it to the stage
 //!   ([`lookdev::hold`]), and the stage finds everything of a character by its kind from then on
 //!   ([`playable`]). It names no character.
 //!

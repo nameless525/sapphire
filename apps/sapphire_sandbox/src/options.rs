@@ -665,16 +665,16 @@ impl Options {
         self.blade.unwrap_or(self.look_dev == Some(Shot::Body) || fighting)
     }
 
-    /// The character the scene draws: its playable kind's mesh in the town or a zone, the mannequin
-    /// otherwise.
+    /// The character the scene draws: its playable kind in the town or a zone, whose mesh the content loads
+    /// ([`sapphire_stage::Content::new`]), the mannequin otherwise.
     pub fn character(&self) -> sapphire_assets::AssetId {
-        if self.look_dev_character() { self.playable().mesh } else { sapphire_stage::content::CHARACTER }
+        if self.look_dev_character() { self.playable_kind() } else { sapphire_stage::content::CHARACTER }
     }
 
-    /// The playable kind the character draws as in the town or a zone: the heroine, whom every scenario's
-    /// player is ([`game_combat::playable::of_scenario`]).
-    pub fn playable(&self) -> sapphire_stage::PlayableLook {
-        game_combat::playable::heroine()
+    /// The playable kind the character draws as in the town or a zone: the heroine, whom a scenario's player
+    /// is when it names none ([`game_combat::playable::KIND`]).
+    pub fn playable_kind(&self) -> sapphire_assets::AssetId {
+        game_combat::playable::KIND
     }
 
     /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
@@ -2296,7 +2296,7 @@ mod tests {
     fn look_dev_takes_a_shot_and_its_own_character() {
         let (options, _) = parse(&["--look-dev", "hero"]).unwrap();
         assert_eq!(options.look_dev, Some(Shot::Hero));
-        assert_eq!(options.character(), game_combat::playable::heroine().mesh);
+        assert_eq!(options.character(), game_combat::playable::KIND);
         assert!(options.keeps_character_mesh());
         assert_eq!(parse(&["--look-dev=wide"]).unwrap().0.look_dev, Some(Shot::Wide));
         assert_eq!(parse(&["--look-dev", "face"]).unwrap().0.look_dev, Some(Shot::Face));
@@ -2462,7 +2462,7 @@ mod tests {
         let (options, _) = parse(&[&bench[..], &["--zone", "ward"]].concat()).unwrap();
         assert_eq!(options.zone, Some(("ward".to_owned(), "player_start".to_owned())));
         assert!(options.look_dev_character() && options.keeps_character_mesh() && !options.in_town());
-        assert_eq!(options.character(), game_combat::playable::heroine().mesh);
+        assert_eq!(options.character(), game_combat::playable::KIND);
         let (options, _) =
             parse(&[&bench[..], &["--zone", "ward:boss", "--zone-walk", "tour:2.5"]].concat()).unwrap();
         assert_eq!(options.zone, Some(("ward".to_owned(), "boss".to_owned())));
@@ -2937,7 +2937,7 @@ mod tests {
         assert!(unknown.is_empty());
         assert!(live.combat.is_some() && live.arena.is_some());
         assert_eq!(options.look_dev, None);
-        assert_eq!(options.character(), game_combat::playable::heroine().mesh);
+        assert_eq!(options.character(), game_combat::playable::KIND);
         assert_eq!(options.sky(), lookdev::SKY);
         assert!(options.keeps_character_mesh());
         assert_eq!(parse(&["--arena", "--arena-shot", "over"]).unwrap().0.arena, Some(ArenaShot::Over));

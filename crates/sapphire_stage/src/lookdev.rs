@@ -578,23 +578,17 @@ fn turns() -> [(HumanBone, Quat); 7] {
     ]
 }
 
-/// The expression the character holds, and its weight: a soft, relaxed face. Its face layer rests on it
-/// ([`face_layer`]).
-const EXPRESSION: (&str, f32) = ("relaxed", 0.35);
-
 /// The face layer of the playable kind `kind` (M5 C5): its rig's expression presets over its mesh's morphs,
-/// resting on its soft expression. `None` if the kind isn't loaded, or its rig has no presets.
+/// resting on the expression its look names (M5 C8). `None` if the kind isn't loaded, or its rig has no
+/// presets.
 #[must_use]
 pub fn face_layer(content: &Content, kind: AssetId) -> Option<FaceLayer> {
-    let mesh = content.mesh_of(kind)?;
-    let rig = content.rig_of(kind)?;
-    face_layer_of(mesh, rig)
+    let Parts { look, mesh, rig, .. } = Parts::of(content, kind).ok()?;
+    face_layer_of(look, mesh, rig)
 }
 
-fn face_layer_of(mesh: &Mesh, rig: &ArchivedCharacterRig) -> Option<FaceLayer> {
-    let (name, weight) = EXPRESSION;
-    let rest = ExpressionPreset::from_name(name).map(|preset| (preset, weight));
-    FaceLayer::new(rig, mesh.morph_targets.len(), rest)
+fn face_layer_of(look: &PlayableLook, mesh: &Mesh, rig: &ArchivedCharacterRig) -> Option<FaceLayer> {
+    FaceLayer::new(rig, mesh.morph_targets.len(), look.expression)
 }
 
 /// A face the held character shows, settled (`--face`, `--face-mouth`; M5 C5): what the close-up goldens
@@ -680,20 +674,17 @@ pub(crate) fn character_kind(content: &Content) -> Result<AssetId, String> {
 /// mesh, rig or skeleton gets a new version ([`Content::take_character_changed`]), whose joints may be
 /// others.
 pub(crate) fn held(content: &Content, kind: AssetId) -> Result<(RenderPose, Figure), String> {
-    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
-    held_pose(mesh, rig, skeleton)
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
+    held_pose(look, mesh, rig, skeleton)
 }
 
-/// Where the held pose of the playable kind `kind` has its right hand, in its own space: what a weapon is
-/// placed by when no clip plays.
+/// Where the held pose of the playable kind `kind` has the joint its weapon is held by (its right hand, if
+/// it holds none), in its own space: what a weapon is placed by when no clip plays.
 pub fn held_hand(content: &Content, kind: AssetId) -> Result<Mat4, String> {
-    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
-    let (mut pose, _) = character_pose(mesh, rig, skeleton)?;
-    let joints = RigJoints::new(rig);
-    pose::hold(&mut pose, &joints, &turns());
-    let hand = joints
-        .joint(HumanBone::RightHand)
-        .ok_or_else(|| format!("playable kind {kind}'s rig has no right hand"))?;
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
+    let (mut pose, joints) = character_pose(look, mesh, rig, skeleton)?;
+    pose::hold(&mut pose, &RigJoints::new(rig), &turns());
+    let hand = joints.right_hand().ok_or_else(|| format!("playable kind {kind}'s rig has no right hand"))?;
     Ok(Mat4::from(pose.model()[hand]))
 }
 
@@ -701,11 +692,12 @@ pub fn held_hand(content: &Content, kind: AssetId) -> Result<Mat4, String> {
 /// for its mesh, and its head, feet, body and face basis in its own space. Fails if the mesh has
 /// no skin or the rig no head.
 pub(crate) fn held_pose(
+    look: &PlayableLook,
     mesh: &Mesh,
     rig: &ArchivedCharacterRig,
     skeleton: &ArchivedSkeleton,
 ) -> Result<(RenderPose, Figure), String> {
-    let (mut pose, joints) = character_pose(mesh, rig, skeleton)?;
+    let (mut pose, joints) = character_pose(look, mesh, rig, skeleton)?;
     let rig_joints = RigJoints::new(rig);
     pose::hold(&mut pose, &rig_joints, &turns());
     let figure = joints.held(&pose);
@@ -718,10 +710,10 @@ pub(crate) fn held_pose(
 /// rest pose and its soft expression. Fails where [`held`] does, or if the clip isn't loaded or was cooked
 /// for another skeleton.
 pub fn player(content: &Content, kind: AssetId) -> Result<ClipPlayer, String> {
-    let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
     let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
-    let (pose, joints) = character_pose(mesh, rig, skeleton)?;
+    let (pose, joints) = character_pose(look, mesh, rig, skeleton)?;
     let springs =
         springs_of(content, rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
@@ -760,14 +752,14 @@ pub fn graph_driver_fitted(
 ) -> Result<GraphDriver, String> {
     let binding = graph_binding(content, kind)?;
     let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
-    let (pose, joints) = character_pose(mesh, rig, skeleton)?;
+    let (pose, joints) = character_pose(look, mesh, rig, skeleton)?;
     let springs = springs_of(content, rig, &pose).map(|springs| match fit {
         Some(fit) => springs.with_clearance(fit.take()),
         None => springs.with_heroine_clearance(mesh, skeleton, rig),
     });
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, look.seed), joints)
         .with_springs(springs)
-        .with_face(face_layer_of(mesh, rig)))
+        .with_face(face_layer_of(look, mesh, rig)))
 }
 
 /// The character's hair and shirt clearance ([`HeroineClearance`]), fitting on the warm-up pool, for
@@ -834,10 +826,15 @@ pub(crate) fn ik_rig(content: &Content, kind: AssetId, pose: &CharacterPose) -> 
     Ok(IkRig::from_cooked(pose, rig, mesh.streams.bounds.min[1].max(0.0)))
 }
 
-/// The authored rest expression's morph defaults, in the cooked mesh's channel order.
-fn body_rest_weights(count: usize, rig: &ArchivedCharacterRig) -> Vec<f32> {
+/// The morph defaults of the expression `rest` a kind's face rests on, in the cooked mesh's channel order.
+fn body_rest_weights(
+    count: usize,
+    rig: &ArchivedCharacterRig,
+    rest: Option<(ExpressionPreset, f32)>,
+) -> Vec<f32> {
     let mut morph_weights = vec![0.0; count];
-    let (name, weight) = EXPRESSION;
+    let Some((preset, weight)) = rest else { return morph_weights };
+    let name = preset.name();
     if let Some(expression) = rig.expressions.iter().find(|expression| expression.name.as_str() == name) {
         for target in expression.morph_targets.iter() {
             if let Some(slot) = morph_weights.get_mut(target.target.to_native() as usize) {
@@ -869,7 +866,7 @@ pub fn arena_body_profile(
         .morph_targets
         .iter()
         .map(|target| target.name.as_str().to_owned())
-        .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view()))
+        .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view(), look.expression))
         .collect();
     let contacts: Vec<&str> = look.body_contacts.iter().map(String::as_str).collect();
     BodyProfile::bind(
@@ -891,8 +888,10 @@ pub fn arena_body_profile(
     .map_err(|error| error.to_string())
 }
 
-/// The character's pose at rest with its soft expression, and where its figure finds its parts.
+/// The playable kind `look`'s pose at rest with the expression its face rests on, and where its figure finds
+/// its parts: its weapon's at the joint its look names (M5 C8), its right hand's if it holds none.
 fn character_pose(
+    look: &PlayableLook,
     mesh: &Mesh,
     rig: &ArchivedCharacterRig,
     skeleton: &ArchivedSkeleton,
@@ -900,13 +899,17 @@ fn character_pose(
     check_counts(rig, skeleton, mesh)?;
     let skin = mesh.skin.as_ref().ok_or("the look-dev character has no skin")?;
     let rig_joints = RigJoints::new(rig);
-    let morph_weights = body_rest_weights(mesh.morph_targets.len(), rig);
+    let morph_weights = body_rest_weights(mesh.morph_targets.len(), rig, look.expression);
     let pose = CharacterPose::try_new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights)
         .map_err(|error| error.to_string())?
         .with_morph_names(mesh.morph_targets.iter().map(|target| target.name.clone()).collect());
     let head = rig_joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
     let floor = mesh.streams.bounds.min[1].max(0.0);
     let joints = FigureJoints::new(&pose, &rig_joints, head, floor, PLAYABLE_SHAPE);
+    let joints = match look.weapon_joint(skeleton)? {
+        Some(joint) => joints.with_right_hand(joint),
+        None => joints,
+    };
     Ok((pose, joints))
 }
 
@@ -935,7 +938,8 @@ pub struct FigureJoints {
     /// Both feet's joints, and how far above the floor the lower stands at rest. `None` for a rig
     /// without them, whose feet stay under its head.
     feet: Option<([usize; 2], f32)>,
-    /// The right hand's joint, which a blade follows. `None` for a rig without one.
+    /// The joint a held weapon follows: the right hand's, unless the kind holds its weapon by another
+    /// ([`Self::with_right_hand`]). `None` for a rig without one.
     right_hand: Option<usize>,
     spine: Option<usize>,
     shape: FigureShape,

@@ -26,7 +26,7 @@ const HIPS: [f32; 3] = [0.0, 0.8, 0.0];
 
 /// Where the heroine's playable kind holds its sword, in the hand's space.
 fn socket() -> Mat4 {
-    playable::heroine().held.expect("the heroine holds a sword").socket
+    playable::tests::heroine().held.expect("the heroine holds a sword").socket
 }
 
 /// A warrior's body and blade, for one whose kind holds a blade.

@@ -14,6 +14,8 @@
 //!   through one does ([`PerfectDodgeWindow`]);
 //! - [`EnemyDocument`] and [`Enemy`], one kind of enemy (M3 B3): its [`BrainDef`]s, compiled against
 //!   its moves, its health's phases ([`EnemyMind`]), and its look ([`EnemyLook`]);
+//! - [`PlayableDocument`] and [`Playable`], one playable kind (M5 C8): its set of moves and what draws
+//!   it, as an enemy's kind;
 //! - [`ControllerProfile`], how a fighter moves, as numbers, and what a document may hold of them
 //!   ([`MOVEMENT_LIMITS`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
@@ -238,6 +240,7 @@ mod brain;
 mod document;
 mod enemy;
 mod movement;
+mod playable;
 mod set;
 
 pub use brain::{
@@ -258,6 +261,10 @@ pub use enemy::{
     NamedBrain, PER_MILLE, QUARTERS, phase_of,
 };
 pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
+pub use playable::{
+    ArchivedPlayable, HeldWeapon, HeldWeaponDocument, MAX_BODY_CONTACTS, NAME_PREFIX, PLAYABLE_EXTENSION,
+    Playable, PlayableDocument, PlayableError, PlayableLookDocument, RIG_SUB_ASSET, RestExpression, RestPose,
+};
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
     DodgeVolume, EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState,

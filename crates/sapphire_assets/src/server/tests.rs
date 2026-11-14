@@ -211,6 +211,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Script => unreachable!("scripts never go to the uploader"),
                 AssetKind::Dialogue => unreachable!("dialogues never go to the uploader"),
                 AssetKind::Enemy => unreachable!("enemies never go to the uploader"),
+                AssetKind::Playable => unreachable!("playable kinds never go to the uploader"),
                 AssetKind::Score | AssetKind::VoiceLines => {
                     unreachable!("music and voice never go to the uploader")
                 }

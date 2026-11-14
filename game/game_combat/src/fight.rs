@@ -111,12 +111,13 @@ pub struct Arena {
 const CUT_LOOKAHEAD: f32 = 1.5;
 
 /// What a fight's stand needs of its scenario, and nothing of its run: the scenario checked, where it stands,
-/// the playable kind its player stands as, and its kinds of enemy. Reading the documents they come from is a
+/// the playable kind its player stands as (whose look the stand reads from the content), and its kinds of
+/// enemy. Reading the documents they come from is a
 /// third of a stand on the frame's thread, so a boot reads them on a worker while its renderer builds (M4
 /// H4).
 pub struct StandPlan {
     place: FightPlace,
-    playable: PlayableLook,
+    playable: AssetId,
     kinds: Vec<KindOfEnemy>,
 }
 
@@ -2140,12 +2141,12 @@ impl SceneShow for FightShow {
     }
 }
 
-/// `desc`, as [`Fight::stand`] asks of a stage: the town's sky, the mesh of the playable kind a player stands
-/// as ([`playable::heroine`], whom every scenario's player is), the copy of that mesh its held pose comes
-/// from, and the packs' pipelines built before anything's uploaded.
+/// `desc`, as [`Fight::stand`] asks of a stage: the town's sky, the playable kind a player stands as when
+/// its scenario names none ([`playable::KIND`]), whose mesh the content loads first, the copy of that mesh its
+/// held pose comes from, and the packs' pipelines built before anything's uploaded.
 pub fn fight_stage(desc: StageDesc) -> StageDesc {
     StageDesc {
-        character: playable::heroine().mesh,
+        character: playable::KIND,
         sky: lookdev::SKY,
         keep_character_mesh: true,
         prewarm_packs: true,
@@ -2158,7 +2159,7 @@ const NO_KIND: &str = "the character draws as no playable kind";
 
 /// The weapon the playable kind `look` holds.
 fn weapon_of(look: &PlayableLook) -> Result<HeldWeapon, String> {
-    look.held.ok_or_else(|| format!("playable kind {} holds no weapon", look.kind))
+    look.held.clone().ok_or_else(|| format!("playable kind {} holds no weapon", look.kind))
 }
 
 /// A fight beside the simulation it follows.
@@ -2225,7 +2226,7 @@ impl Fight {
             }
             let content = content().map_err(|error| error.to_string())?;
             if self.stock_arena.is_none() {
-                let look = playable::of_scenario(scenario.name)?;
+                let look = playable::look(content, playable::of_scenario(scenario.name)?)?;
                 self.stock_arena = Some(stock_arena::StockArenaAssets::load(content, look)?);
             }
             self.stock_arena
@@ -2525,8 +2526,9 @@ impl Fight {
                 content.set_body_tuning(self.documents.body);
                 let show = &mut self.show;
                 let place = &stand.plan.place;
-                let kind = stand.plan.playable.kind;
-                let (pose, figure) = lookdev::hold(content, &stand.plan.playable, renderer, gpu)?;
+                let kind = stand.plan.playable;
+                let look = playable::look(content, kind).map_err(AppInitError::msg)?;
+                let (pose, figure) = lookdev::hold(content, &look, renderer, gpu)?;
                 if stand.off_frame {
                     stand.fit = Some(lookdev::ClearanceFit::start(content, kind).map_err(AppInitError::msg)?);
                 }
@@ -2604,7 +2606,7 @@ impl Fight {
                 self.dialogue.bind(combat);
                 let show = &mut self.show;
                 show.set_zone_streaming(stream_settings(tier));
-                content.load_graph(stand.plan.playable.kind, renderer, gpu)?;
+                content.load_graph(stand.plan.playable, renderer, gpu)?;
                 show.load_enemy_graph(content, renderer, gpu)?;
                 stand.part = StandPart::Fighters;
                 Ok(None)
@@ -2618,7 +2620,7 @@ impl Fight {
                 let combat = stand.combat.take().expect("a stand has its combat until it's attached");
                 let world = stand.world.take().expect("the ground stood in the first part");
                 let show = &mut self.show;
-                let kind = stand.plan.playable.kind;
+                let kind = stand.plan.playable;
                 let player = lookdev::graph_driver_fitted(content, kind, stand.fit.take())
                     .map_err(AppInitError::msg)?;
                 let solver = scene
@@ -2629,7 +2631,8 @@ impl Fight {
                 show.load_kinds(&stand.plan.kinds, content, renderer, gpu)?;
                 scene.set_spring_quality(animate::spring_quality(tier));
 
-                let blade = show.load_sword(&stand.plan.playable, content, renderer, gpu)?;
+                let look = content.playable(kind).cloned().ok_or_else(|| AppInitError::msg(NO_KIND))?;
+                let blade = show.load_sword(&look, content, renderer, gpu)?;
                 show.spawn_blade(scene, blade, content).map_err(AppInitError::msg)?;
                 scene.set_day(DEFAULT_TIME_OF_DAY, None);
                 show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())

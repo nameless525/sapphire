@@ -231,6 +231,9 @@
             // blow's own hit fires its row as well.
             (cue: "ultimate_raise", screen: Some((preset: "ultimate_raise", center: Preset))),
             (cue: "ultimate_chop", screen: Some((preset: "ultimate_chop", center: Preset))),
+            // The ultimate's close-up (M5 L10) as its cinematic opens: the character's cut-in, `ultimate` in
+            // `sapphire_world`'s `default_cutins.ron`, for whoever plays it.
+            (cue: "ultimate_cutin", cutin: Some("ultimate")),
         ],
     ),
 )

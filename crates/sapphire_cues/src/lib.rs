@@ -127,8 +127,8 @@ mod rumble;
 mod table;
 
 pub use dispatch::{
-    CueDispatcher, CueStats, CueStep, MAX_FRAME_LINES, MAX_FRAME_SOUNDS, SaidLine, ShakeSink, actor_emitter,
-    emitter_of, owner_of,
+    CueDispatcher, CueStats, CueStep, CutInRequest, MAX_FRAME_CUTINS, MAX_FRAME_LINES, MAX_FRAME_SOUNDS,
+    SaidLine, ShakeSink, actor_emitter, emitter_of, owner_of,
 };
 pub use marks::{CROWN_CLEARANCE, CueMarks, DODGE_WINDOW, NAMED_PHASE, Stand, named_phases};
 pub use rumble::{MAX_RUMBLES, Rumble, RumbleMixer, RumbleSink};

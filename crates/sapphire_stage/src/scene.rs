@@ -133,6 +133,14 @@ use crate::animate::{ClipPlayer, Evaluation, SpringKey, SpringRole, SpringView, 
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::content::GraphKey;
+use crate::cutin::{self, CutInShot, CutInStand};
+
+/// A cut-in stand's springs, being readied off the frame ([`Scene::prepare_cutin`]).
+enum CutInSprings {
+    Fitting(lookdev::ClearanceFit),
+    /// `None` for a rig with no springs.
+    Fitted(Option<Box<sapphire_anim::SpringBones>>),
+}
 #[cfg(feature = "samples")]
 use crate::debug_shapes::DebugDrawDemo;
 use crate::environment;
@@ -239,7 +247,7 @@ type FrameCharacters = SystemState<(
     FaceHeads,
 )>;
 
-/// What a frame's packet shoots its insets from (M3 U6), likewise.
+/// What a frame's packet shoots its insets from (M3 U6), and its cut-in (M5 L10), likewise.
 type FrameInsets = SystemState<(
     ResMut<'static, RenderExtract>,
     Res<'static, LightRigLibrary>,
@@ -248,6 +256,16 @@ type FrameInsets = SystemState<(
         'static,
         (Entity, &'static Showcased, &'static CharacterLightRig, &'static RenderTransform),
     >,
+    Query<'static, 'static, (Entity, &'static CutInStand, &'static CharacterLightRig)>,
+)>;
+
+/// A cut-in's stand, with what its pose writes (M5 L10).
+type CutInStands = QueryState<(
+    &'static mut CutInStand,
+    &'static mut RenderPose,
+    &'static mut Figure,
+    &'static mut CharacterLightRig,
+    &'static RenderTransform,
 )>;
 
 /// The effect stack and its presets, borrowed together in place. `World::resource_scope` would
@@ -594,6 +612,11 @@ pub struct Scene {
     frame_insets: FrameInsets,
     /// The showcases standing for characters in insets ([`Self::spawn_showcase`]).
     showcases: Vec<Entity>,
+    /// A cut-in's stand, while one plays ([`Self::stand_cutin`]).
+    cutin: Option<Entity>,
+    /// A stand's springs made ready off the frame for a kind ([`Self::prepare_cutin`]).
+    cutin_ready: Option<(sapphire_assets::AssetId, CutInSprings)>,
+    cutin_stands: CutInStands,
     /// Made once, like the queries: [`Self::with_screen_effects`] runs inside fixed steps.
     screen_effects: ScreenEffects,
     lamps: Lamps,
@@ -682,6 +705,7 @@ impl Scene {
         let frame_start = SystemState::new(ecs.world_mut());
         let frame_characters = SystemState::new(ecs.world_mut());
         let frame_insets = SystemState::new(ecs.world_mut());
+        let cutin_stands = ecs.world_mut().query();
         let screen_effects = SystemState::new(ecs.world_mut());
         let lamps = ecs.world_mut().query();
         let players = ecs.world_mut().query();
@@ -765,6 +789,9 @@ impl Scene {
             frame_characters,
             frame_insets,
             showcases: Vec::new(),
+            cutin: None,
+            cutin_ready: None,
+            cutin_stands,
             screen_effects,
             lamps,
             sky_material: None,
@@ -1996,6 +2023,132 @@ impl Scene {
         self.ecs.world_mut().despawn(showcase);
     }
 
+    /// Makes a cut-in's stand of the playable kind `kind` ready off the frame (M5 L10): its springs' clearance
+    /// fits on the warm-up pool, which takes tens of milliseconds, so the stand that takes them doesn't hitch. A
+    /// show that can play a cut-in calls it every frame; it does nothing once they're ready, and starts again
+    /// for another kind.
+    pub fn prepare_cutin(&mut self, content: &Content, kind: sapphire_assets::AssetId) {
+        let ready = match self.cutin_ready.take() {
+            Some((made, ready)) if made == kind => ready,
+            _ => match lookdev::ClearanceFit::start(content, kind) {
+                Ok(fit) => CutInSprings::Fitting(fit),
+                Err(error) => {
+                    tracing::debug!(target: LOG_TARGET, %error, "a cut-in's stand can't be readied yet");
+                    return;
+                }
+            },
+        };
+        let ready = match ready {
+            CutInSprings::Fitting(mut fit) => match fit.is_fitted() {
+                true => match lookdev::cutin_springs(content, kind, Some(fit)) {
+                    Ok(springs) => CutInSprings::Fitted(springs.map(Box::new)),
+                    Err(error) => {
+                        tracing::debug!(target: LOG_TARGET, %error, "a cut-in's stand can't be readied yet");
+                        return;
+                    }
+                },
+                false => CutInSprings::Fitting(fit),
+            },
+            fitted => fitted,
+        };
+        self.cutin_ready = Some((kind, ready));
+    }
+
+    /// Stands a cut-in's stand of the character `of` as the playable kind `kind`, playing `cutin`'s clip from its
+    /// start (M5 L10, [`crate::cutin`]): drawn only in the cut-in's view, wearing `of`'s mesh and rig, then posed
+    /// by [`Self::pose_cutin`]. A stand already standing goes first. Fails, standing nothing, if the kind's graph
+    /// holds no clip of the name, or `of` isn't a character with a mesh and a light rig.
+    pub fn stand_cutin(
+        &mut self,
+        content: &Content,
+        of: Entity,
+        kind: sapphire_assets::AssetId,
+        cutin: &sapphire_world::cutin::CutIn,
+    ) -> Result<(), String> {
+        self.end_cutin();
+        let look = content.playable(kind).ok_or_else(|| format!("no playable kind {kind} is loaded"))?;
+        let name = lookdev::ClipName::Named(cutin.clip.name.clone());
+        let clip = name.resolve(content, look).map_err(|error| error.to_string())?;
+        if sapphire_anim::ClipSource::clip(&content.graph_clips_of(GraphKey::playable(kind)), clip).is_none()
+        {
+            return Err(format!("kind {kind}'s graph holds no clip {:?}", cutin.clip.name));
+        }
+        // Springs readied off the frame, else fitted now, which a stand asked for before they're ready pays for.
+        let springs = match &self.cutin_ready {
+            Some((made, CutInSprings::Fitted(springs))) if *made == kind => springs.as_deref().cloned(),
+            _ => lookdev::cutin_springs(content, kind, None)?,
+        };
+        let (player, joints) = lookdev::cutin_player(content, kind, springs)?;
+        let world = self.ecs.world_mut();
+        let source = world.get_entity(of).map_err(|_| "the cut-in's character is gone".to_owned())?;
+        let mesh = *source.get::<RenderMesh>().ok_or("the cut-in's character has no mesh")?;
+        let rig = *source.get::<CharacterLightRig>().ok_or("the cut-in's character has no light rig")?;
+        let (figure, pose) = (source.get::<Figure>().copied(), source.get::<RenderPose>().cloned());
+        let at = cutin::stand();
+        let stand = CutInStand {
+            player,
+            kind,
+            clip,
+            start: cutin.clip.start,
+            rate: cutin.clip.rate,
+            joints,
+            joint: cutin.camera.joint,
+            reach: Vec3::from(cutin.camera.offset).length(),
+            framed: at,
+        };
+        let mut stood = world.spawn((stand, mesh, rig, RenderTransform(Mat4::from_translation(at))));
+        stood.insert(figure.unwrap_or(self.figure));
+        if let Some(pose) = pose {
+            stood.insert(pose);
+        }
+        self.cutin = Some(stood.id());
+        Ok(())
+    }
+
+    /// Poses the cut-in's stand `seconds` into its cut-in, on the presentation's clock: its clip at its start
+    /// and rate, holding the last pose past the clip's end, its springs run. Allocates nothing.
+    pub fn pose_cutin(&mut self, content: &Content, seconds: f32) {
+        let Some(entity) = self.cutin else { return };
+        let world = self.ecs.world_mut();
+        let Ok((mut stand, mut render, mut figure, mut rig, transform)) =
+            self.cutin_stands.get_mut(world, entity)
+        else {
+            return;
+        };
+        let clips = content.graph_clips_of(GraphKey::playable(stand.kind));
+        let Some(clip) = sapphire_anim::ClipSource::clip(&clips, stand.clip) else { return };
+        let end = clip.ticks.to_native() as f32;
+        let at = (stand.start + seconds.max(0.0) * stand.rate) * clip.rate.to_native() as f32;
+        let position = if end > 0.0 { at.clamp(0.0, end) } else { 0.0 };
+        let ticks = f64::from(seconds.max(0.0)) * f64::from(TICK_HZ);
+        let place = transform.0;
+        let stand = &mut *stand;
+        // The tier's sub-steps, and its clearance as close as the camera stands.
+        let quality = self.spring_quality;
+        let frame = crate::animate::StandFrame {
+            ticks,
+            world_from_model: place,
+            substeps: quality.substeps,
+            clearance: quality.clearance.interval_at(stand.reach),
+        };
+        stand.player.pose_at(clip, position, frame, &mut render, &mut figure);
+        rig.head = figure.head;
+        let framed = stand.framed_joint().and_then(|joint| stand.player.joint_position(joint));
+        stand.framed = framed.map_or(place.w_axis.truncate(), |joint| place.transform_point3(joint));
+    }
+
+    /// Takes the cut-in's stand away: its cut-in ended or was cut. Nothing happens without one.
+    pub fn end_cutin(&mut self) {
+        if let Some(stand) = self.cutin.take() {
+            self.ecs.world_mut().despawn(stand);
+        }
+    }
+
+    /// The cut-in's stand, while one stands.
+    pub fn cutin_stand(&self) -> Option<Entity> {
+        self.cutin
+    }
+
     /// Dresses each showcase as the character it stands for is this frame: its mesh, rig and pose, written
     /// only where they differ, so one standing still extracts nothing and a warm frame allocates nothing.
     fn follow_showcases(&mut self) {
@@ -2677,7 +2830,7 @@ impl Scene {
             let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
             show.draw_interface(size, &mut extract.packet_mut().ui);
             // The insets it drew, each from its own camera, after the characters they show are listed.
-            let (mut extract, rigs, showcases) = self
+            let (mut extract, rigs, showcases, stands) = self
                 .frame_insets
                 .get_mut(self.ecs.world_mut())
                 .expect("the scene inserts what insets shoot from");
@@ -2685,6 +2838,9 @@ impl Scene {
             show.inset_shots(&mut |shot| shoot_inset(packet, &rigs, &showcases, &shot));
             if let Some(blur) = soft_backdrop {
                 packet.insets.iter_mut().for_each(|view| view.soft_backdrop = blur);
+            }
+            if let Some(shot) = show.cutin_shot() {
+                shoot_cutin(packet, &rigs, &stands, &shot);
             }
         }
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
@@ -2857,6 +3013,28 @@ fn shoot_inset(
     }
     let ids = standing().map(|(entity, ..)| extract::instance_id(entity));
     packet.push_inset(showcase::view(shot, camera), ids);
+}
+
+/// Pushes the cut-in `shot`'s view, naming its stand, and lights the stand for its camera by the cut-in's own rig
+/// and light (M5 L10). Without a stand, nothing.
+fn shoot_cutin(
+    packet: &mut FramePacket,
+    rigs: &LightRigLibrary,
+    stands: &Query<'_, '_, (Entity, &CutInStand, &CharacterLightRig)>,
+    shot: &CutInShot<'_>,
+) {
+    let Some((entity, stand, character)) = stands.iter().next() else { return };
+    let camera = cutin::camera(shot, stand.framed);
+    let light = &shot.cutin.light;
+    let rig = rigs.rig(rigs.find(&light.rig).unwrap_or(LightRigId::DEFAULT));
+    let (key, character_light) = cutin::lights(shot.cutin);
+    let id = extract::instance_id(entity);
+    let head = cutin::stand() + character.head;
+    if let Some(listed) = packet.characters.iter_mut().find(|listed| listed.id == id) {
+        listed.lighting = rig.resolve(&key, &character_light, &camera, head);
+        listed.opacity = 1.0;
+    }
+    packet.push_inset(cutin::view(shot, camera), [id]);
 }
 
 /// Width over height of a target the main view can draw into: none without a target, or for

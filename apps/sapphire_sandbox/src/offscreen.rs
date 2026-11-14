@@ -161,6 +161,18 @@ impl App for OffscreenApp {
 }
 
 /// The stage `options` ask for. Offscreen modes run on desktops only.
+/// `--cutin-library`'s document, read and checked, or `None` for the shipped one.
+pub(crate) fn cutin_library(
+    options: &Options,
+) -> Result<Option<sapphire_world::cutin::CutInLibrary>, AppInitError> {
+    let Some(path) = &options.cutin_library else { return Ok(None) };
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| AppInitError::msg(format!("--cutin-library {}: {error}", path.display())))?;
+    sapphire_world::cutin::CutInLibrary::from_ron(&text)
+        .map(Some)
+        .map_err(|error| AppInitError::msg(format!("--cutin-library {}: {error}", path.display())))
+}
+
 pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, AppInitError> {
     let mount_content = || options.mount_content(platform.host());
     let mut content = None;
@@ -471,6 +483,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         scene.set_vfx_distortion(options.distortion != Some(false));
     }
     if options.cues {
+        fight.set_cutins(!options.cutins_off);
+        fight.set_cutins_full_frame(options.cutins_full);
+        fight.set_cutin_library(cutin_library(options)?);
         fight
             .play_cues(scene, sapphire_stage::vfx::budget(quality.active().id))
             .map_err(AppInitError::msg)?;

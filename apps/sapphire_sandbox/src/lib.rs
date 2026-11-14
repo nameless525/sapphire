@@ -472,6 +472,9 @@
 //!     sounds and rumble, which load `audio.spack`. A capture and a bench stay silent. `--decals off`
 //!     keeps the cues' ground decals (M5 L7) from drawing, as the goldens from before them pin, and
 //!     `--distortion off` their bends (M5 L6), as a `--vfx` show's too.
+//!     Its cut-ins (M5 L10, the ultimate's close-up) play too; `--cutins off` plays none, as the goldens
+//!     from before them pin, and `--cutins full` draws each across the whole frame, whatever its panel's
+//!     shape. `--cutin-library <ron>` takes them from a `CutInLibrary` document instead of the shipped one.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.

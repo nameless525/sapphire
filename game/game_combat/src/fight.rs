@@ -35,13 +35,16 @@ use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
-    CharacterDetail, EffectScale, Focus, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame,
+    CharacterDetail, EffectScale, Focus, MeshHandle, PipelineInventory, PostParams, Renderer, UiDrawList,
+    VfxFrame,
 };
 use sapphire_rhi::GpuContext;
 use sapphire_sequencer::{FocusFollow, Origin, Playing, TimelinePlayer};
+use sapphire_stage::cutin::CutInShot;
 use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_timeline::Timeline;
 use sapphire_vfx::VfxBudget;
+use sapphire_world::cutin::CutInLibrary;
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 #[cfg(feature = "dev")]
@@ -58,6 +61,7 @@ use crate::combat::SessionRecorder;
 use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
+use crate::cutin::CutIns;
 use crate::enemy::{self, EnemyMeshes, Look};
 use crate::playable::{self, PartyKinds};
 #[cfg(feature = "dev")]
@@ -532,6 +536,14 @@ pub struct FightShow {
     /// The cues' bends aren't drawn (`--distortion off`, M5 L6): what keeps an older golden's frame as it was.
     /// They still play, unseen, as they take no random numbers.
     distortion_off: bool,
+    /// The cut-ins a fight's cues ask for (M5 L10), with its cues.
+    cutins: Option<Box<CutIns>>,
+    /// True with `--cutins off`, which the cut-ins it plays from then on keep to.
+    cutins_off: bool,
+    /// True with `--cutins full`: the cues' cut-ins drawn across the whole frame, from the next cues played.
+    cutins_full_frame: bool,
+    /// A library the next cues played take their cut-ins from instead of the shipped one (`--cutin-library`).
+    cutin_library: Option<CutInLibrary>,
 }
 
 impl FightShow {
@@ -897,6 +909,9 @@ impl FightShow {
         if started_over {
             self.volumes.start_over();
             scene.cut_view();
+            if let Some(cutins) = &mut self.cutins {
+                cutins.cut(scene);
+            }
             if let Some(cues) = &mut self.cues {
                 scene.with_screen_effects(|stack, _| cues.start_over(stack));
             }
@@ -1450,8 +1465,13 @@ impl FightShow {
             let variants = show.post_variants(presets);
             Ok::<_, String>((show, variants))
         })?;
+        let library = self.cutin_library.take().unwrap_or_else(CutInLibrary::default_cutins);
+        let library = if self.cutins_full_frame { library.full_frame() } else { library };
+        let mut cutins = CutIns::new(library, show.cutin_names())?;
+        cutins.set_on(!self.cutins_off);
         scene.will_push_effects(variants);
         self.cues = Some(show);
+        self.cutins = Some(Box::new(cutins));
         Ok(())
     }
 
@@ -1503,6 +1523,14 @@ impl FightShow {
         rumble: &mut dyn RumbleSink,
     ) {
         let Some(cues) = &mut self.cues else { return };
+        if let Some(cutins) = &mut self.cutins {
+            // Asked for by this frame's steps, before the frame's end clears them, then moved on by the view's time.
+            let player = self.fixed_fighters[0].as_ref().map(|fixed| fixed.actor);
+            for request in cues.cutin_requests() {
+                cutins.ask(request.name, request.actor, player);
+            }
+            cutins.advance(view_dt);
+        }
         if let Some(shake) = self.shake {
             cues.set_shake(shake);
             if let Some(director) = self.arena.as_mut().and_then(|arena| arena.director()) {
@@ -1752,6 +1780,53 @@ impl FightShow {
                 Some((content, simulation)),
             );
         }
+        self.animate_cutin(scene, content);
+    }
+
+    /// Stands, poses or ends a fight's cut-in (M5 L10, [`crate::cutin`]), queuing the sound of one it stood.
+    fn animate_cutin(&mut self, scene: &mut Scene, content: &Content) {
+        let Some(cutins) = &mut self.cutins else { return };
+        cutins.set_still(self.effect_scale.flash_swing < 1.0);
+        if let Some(sound) = cutins.animate(scene, content)
+            && let Some(cues) = &mut self.cues
+        {
+            cues.queue_flat_sound(sound);
+        }
+    }
+
+    /// Draws a playing cut-in's panel for a target of `size` pixels into `list`, under its quads from `under` on:
+    /// what was drawn after the game's view, its HUD (M5 L10). A show draws its HUD, then calls this with the
+    /// number of quads before it.
+    pub fn draw_cutin(&mut self, size: (u32, u32), list: &mut UiDrawList, under: u32) {
+        if let Some(cutins) = &mut self.cutins {
+            cutins.draw(size, list, under);
+        }
+    }
+
+    /// Plays the cut-ins a fight's cues ask for, or not (`--cutins off`, which old goldens pin): off from the
+    /// next frame.
+    pub fn set_cutins(&mut self, on: bool) {
+        self.cutins_off = !on;
+        if let Some(cutins) = &mut self.cutins {
+            cutins.set_on(on);
+        }
+    }
+
+    /// Draws every cut-in the cues play from then on across the whole frame (`--cutins full`), to look at
+    /// that shape with the entries there are.
+    pub fn set_cutins_full_frame(&mut self, full: bool) {
+        self.cutins_full_frame = full;
+    }
+
+    /// The library the next cues played take their cut-ins from (`--cutin-library`), or the shipped one for
+    /// `None`.
+    pub fn set_cutin_library(&mut self, library: Option<CutInLibrary>) {
+        self.cutin_library = library;
+    }
+
+    /// A fight's cut-ins, while its cues play.
+    pub fn cutins(&self) -> Option<&CutIns> {
+        self.cutins.as_deref()
     }
 
     /// Takes new screen effect presets (live tuning, `dev` builds), if the table firing a fight's cues finds
@@ -2016,6 +2091,17 @@ impl SceneShow for FightShow {
             !self.distortion_off && self.cues.as_ref().is_some_and(|cues| cues.has_distortion());
         // Depth of field's passes, where a timeline it may play keys focus (M5 L8).
         inventory.focus |= self.timelines.iter().any(|timeline| timeline.has_focus());
+        // A cut-in draws through the inset path, so its first draws build nothing (M5 L10).
+        inventory.insets |= self.cutins.as_ref().is_some_and(|cutins| cutins.can_play());
+    }
+
+    fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        let under = list.quads.len() as u32;
+        self.draw_cutin(size, list, under);
+    }
+
+    fn cutin_shot(&self) -> Option<CutInShot<'_>> {
+        self.cutins.as_ref().and_then(|cutins| cutins.shot())
     }
 
     fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {
@@ -2820,6 +2906,14 @@ impl SceneShow for Fight {
 
     fn adjust_post(&mut self, post: &mut PostParams) {
         self.show.adjust_post(post);
+    }
+
+    fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        self.show.draw_interface(size, list);
+    }
+
+    fn cutin_shot(&self) -> Option<CutInShot<'_>> {
+        self.show.cutin_shot()
     }
 
     fn draw_debug(&mut self) {

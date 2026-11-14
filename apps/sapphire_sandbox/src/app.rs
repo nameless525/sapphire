@@ -413,6 +413,9 @@ impl App for SandboxApp {
             scene.set_vfx_distortion(options.distortion != Some(false));
         }
         if options.cues {
+            show.fight.show.set_cutins(!options.cutins_off);
+            show.fight.show.set_cutins_full_frame(options.cutins_full);
+            show.fight.show.set_cutin_library(crate::offscreen::cutin_library(&options)?);
             show.fight
                 .show
                 .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))

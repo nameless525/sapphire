@@ -267,6 +267,10 @@
 //!   stands, or something circling it, crossing behind. The golden scenes `lookdev-ik-*` show them.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
+//! - `--shadow-party <1..3>`: make the character one of a party of that many, the others toward
+//!   the sun from it, one behind the other, seen from the sun's side, so each shadows the next
+//!   (M5 L12, with the tier's `--character-shadows`; 1 frames the character alone the same way,
+//!   for timings). They stand where the sun is at `--time-of-day`'s hour.
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
 //!   shapes whose cooked outline normals keep every corner's hull closed (M1 C4).
 //! - `--outline-distance <0..4>`: the scale on every material's outline LOD cutoff

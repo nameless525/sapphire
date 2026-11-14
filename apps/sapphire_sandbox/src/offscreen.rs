@@ -279,6 +279,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.outline_row {
         scene.spawn_outline_row(character);
     }
+    if let Some(count) = options.shadow_party {
+        scene.spawn_shadow_party(count, character);
+    }
     if options.hard_edges {
         scene.spawn_hard_edges(content.hard_edges(renderer, gpu)?);
     }

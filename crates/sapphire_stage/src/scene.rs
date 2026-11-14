@@ -151,6 +151,8 @@ use crate::orbit::OrbitCamera;
 #[cfg(feature = "samples")]
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
+#[cfg(feature = "samples")]
+use crate::shadow_party::{self, OTHERS};
 use crate::show::{ContentChanges, SceneShow};
 use crate::showcase::{self, InsetShot, Showcased};
 use crate::skinned::{self, Sway};
@@ -457,6 +459,12 @@ pub struct Scene {
     /// The hard-edged outline sample, with `--hard-edges`.
     #[cfg(feature = "samples")]
     hard_edges: Option<Entity>,
+    /// The others of the shadow party, with `--shadow-party`.
+    #[cfg(feature = "samples")]
+    shadow_party: Vec<Entity>,
+    /// Whether the camera frames the shadow party, with `--shadow-party` (of one too).
+    #[cfg(feature = "samples")]
+    shadow_party_framed: bool,
     /// The studio's pieces, with `--stage`.
     studio: Vec<(Entity, Piece)>,
     /// How the studio is laid out, and toward the key light it was built for.
@@ -640,6 +648,10 @@ impl Scene {
             outline_row: None,
             #[cfg(feature = "samples")]
             hard_edges: None,
+            #[cfg(feature = "samples")]
+            shadow_party: Vec::new(),
+            #[cfg(feature = "samples")]
+            shadow_party_framed: false,
             studio: Vec::new(),
             studio_layout: None,
             town_stand: None,
@@ -2015,6 +2027,45 @@ impl Scene {
         let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: self.figure.head };
         self.outline_row =
             Some(places.map(|place| world.spawn((RenderMesh(mesh), RenderTransform(place), rig)).id()));
+    }
+
+    /// Makes the character one of a shadow party of `count` (`--shadow-party`, M5 L12; 1 to 3), its
+    /// others drawing `mesh` (the character's), each a character lit by the default light rig.
+    /// [`Self::frame_shadow_party`] places them and the camera at the scene's hour.
+    #[cfg(feature = "samples")]
+    pub fn spawn_shadow_party(&mut self, count: usize, mesh: MeshHandle) {
+        let world = self.ecs.world_mut();
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: self.figure.head };
+        self.shadow_party_framed = true;
+        self.shadow_party = (1..count.clamp(1, OTHERS.len() + 1))
+            .map(|_| world.spawn((RenderMesh(mesh), RenderTransform(Mat4::IDENTITY), rig)).id())
+            .collect();
+    }
+
+    /// Stands the shadow party's others toward the sun at the scene's hour, and points the camera
+    /// at the three from the sun's side; nothing without them. Call after the hour is set.
+    #[cfg(feature = "samples")]
+    pub fn frame_shadow_party(&mut self) {
+        if !self.shadow_party_framed {
+            return;
+        }
+        let mut packet = FramePacket::default();
+        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
+        let toward_sun = -packet.sun.direction;
+        let world = self.ecs.world_mut();
+        for (&entity, place) in self.shadow_party.iter().zip(shadow_party::places(self.bounds, toward_sun)) {
+            world.entity_mut(entity).insert(RenderTransform(place));
+        }
+        world.insert_resource(shadow_party::camera(self.bounds, toward_sun));
+    }
+
+    /// Sets the mesh the shadow party's others draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
+    pub fn set_shadow_party_mesh(&mut self, mesh: MeshHandle) {
+        for &entity in &self.shadow_party {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
     }
 
     /// Sets the mesh the outline row draws again: after GPU device loss.

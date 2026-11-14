@@ -371,6 +371,9 @@ pub(crate) struct Options {
     /// `--outline-row`: place more of the character behind it, out to past the outline cutoff
     /// (M1 C4).
     pub outline_row: bool,
+    /// `--shadow-party <1..3>`: make the character one of a party of that many standing toward the
+    /// sun, seen from the sun's side, each shadowing the next (M5 L12).
+    pub shadow_party: Option<usize>,
     /// `--hard-edges`: show the hard-edged outline sample instead of the character (M1 C4).
     pub hard_edges: bool,
     /// `--outline-distance <scale>`: the scale on outlines' LOD cutoffs (`r.outline_distance`)
@@ -524,6 +527,7 @@ impl Options {
             scene.set_camera_rim(share)?;
         }
         scene.frame_foliage();
+        scene.frame_shadow_party();
         if let Some(wind) = self.wind() {
             scene.set_wind(wind);
         }
@@ -1129,6 +1133,13 @@ impl Options {
                     options.zoom = Some(factor);
                 }
                 "--outline-row" => options.outline_row = true,
+                "--shadow-party" => {
+                    let count: usize = number(&value("--shadow-party")?, "--shadow-party")?;
+                    if !(1..=3).contains(&count) {
+                        return Err(format!("--shadow-party expects 1 to 3, got {count}"));
+                    }
+                    options.shadow_party = Some(count);
+                }
                 "--hard-edges" => options.hard_edges = true,
                 "--outline-distance" => {
                     let scale: f32 = number(&value("--outline-distance")?, "--outline-distance")?;
@@ -1442,6 +1453,20 @@ impl Options {
         }
         if options.graph.is_some() && options.clip.is_some() {
             return Err("--graph and --clip are exclusive: the graph chooses what plays".to_owned());
+        }
+        if options.shadow_party.is_some()
+            && (options.look_dev.is_some()
+                || arena_flag
+                || options.outline_row
+                || options.faces.is_some()
+                || options.rim_rig.is_some()
+                || options.hard_edges)
+        {
+            return Err(
+                "--shadow-party frames the camera on its party: drop --look-dev, --arena, --outline-row, \
+                 --faces, --rim-rig and --hard-edges"
+                    .to_owned(),
+            );
         }
         options.arena = match (arena_flag, arena_shot) {
             (true, shot) => Some(shot.unwrap_or_default()),
@@ -2550,6 +2575,15 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    #[test]
+    fn the_shadow_party_frames_the_camera_alone() {
+        assert_eq!(parse(&["--shadow-party", "3", "--stage", "floor"]).unwrap().0.shadow_party, Some(3));
+        assert!(parse(&["--shadow-party", "4"]).is_err() && parse(&["--shadow-party", "0"]).is_err());
+        for other in [&["--faces"][..], &["--outline-row"], &["--hard-edges"], &["--look-dev", "hero"]] {
+            assert!(parse(&[&["--shadow-party", "2"][..], other].concat()).is_err(), "{other:?}");
+        }
     }
 
     #[test]

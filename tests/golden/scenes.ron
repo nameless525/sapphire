@@ -3720,6 +3720,37 @@
                        "--replay", "tests/replays/dodge-dash.sreplay", "--cues"],
                 ci_seconds: (lavapipe: 20.4, warp: 50.6),
             ),
+            // Characters shadowing each other (M5 L12): three of the character in a row toward a low
+            // golden-hour sun, seen from its side. The nearest the sun shades the middle one's lit
+            // side through its tile of the atlas, the middle one the farthest, in their own shade
+            // tones; nothing shades itself, and the floor takes all three.
+            (
+                name: "shadows-party",
+                ticks: 90,
+                args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+            ),
+            // The same on Mobile-Low: each takes the others' capsules instead of their tiles, soft
+            // shadows sized by the light's angle, on the middle and farthest figures and the middle
+            // one's pedestal (the mannequin's own).
+            (
+                name: "shadows-party-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
+                       "--tier", "mobile-low", "--plain-sky", "--fog", "off", "--ao", "off"],
+            ),
+            // The face rig under a low morning sun along its rows: each head's neighbor toward the sun
+            // shades it, per pixel on the face. The second head's face map keeps its left half in
+            // shadow and the cast shadow takes the lit half: the face shows the darker of the two,
+            // eyes and brows with it.
+            (
+                name: "shadows-party-faces",
+                ticks: 90,
+                args: ["--plain-post", "--faces", "--stage", "floor", "--time-of-day", "7",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+            ),
         ],
     ),
 )

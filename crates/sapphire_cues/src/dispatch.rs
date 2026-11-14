@@ -1035,6 +1035,7 @@ mod tests {
             emitters: spawns.iter().map(|&spawn| EmitterDesc { spawn, ..dust.emitters[0].clone() }).collect(),
             trail: None,
             mark: false,
+            meshes: Vec::new(),
         });
         VfxLibrary::new(effects.collect()).expect("valid")
     }

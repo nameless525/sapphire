@@ -423,6 +423,12 @@ impl ZoneWalk {
         Self { points, leg: 0, along: 0.0, metres_per_step }
     }
 
+    /// How far along the rail it's walked, in metres.
+    fn walked(&self) -> f32 {
+        let legs = self.points.windows(2).take(self.leg);
+        legs.map(|leg| leg[0].distance(leg[1])).sum::<f32>() + self.along
+    }
+
     /// Moves on a step, and says where that's reached and which way it's facing. It stops at the rail's end.
     fn advance(&mut self) -> Option<(Vec3, Vec3)> {
         let mut left = self.metres_per_step;
@@ -830,6 +836,20 @@ impl Scene {
         self.prefetch_time
     }
 
+    /// How far the zone stage's walk has gone along its rail, in metres: where a bench's frame was on its
+    /// tour (M5 B4). `None` without a walk.
+    pub fn zone_walked(&self) -> Option<f32> {
+        self.zone_walk.as_ref().map(ZoneWalk::walked)
+    }
+
+    /// Puts the zone stage's walk back at its rail's start, for a bench to walk the same tour again; the next
+    /// step moves the character and the camera there. Nothing without a walk.
+    pub fn restart_zone_walk(&mut self) {
+        if let Some(walk) = &mut self.zone_walk {
+            (walk.leg, walk.along) = (0, 0.0);
+        }
+    }
+
     /// What the zone's streaming did this frame and where it stands, with a zone open.
     pub fn stream_stats(&self) -> Option<StreamStats> {
         self.zone.as_ref().map(|zone| zone.streamer.stats())
@@ -978,12 +998,14 @@ mod tests {
     fn a_zone_walk_goes_round_its_corners_and_stops_at_the_end() {
         let points = vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 1.0)];
         let mut walk = ZoneWalk::new(points, 0.75);
+        assert_eq!(walk.walked(), 0.0);
         let (place, facing) = walk.advance().expect("under way");
         assert!(place.distance(Vec3::new(0.0, 0.0, 0.75)) < 1e-5, "{place}");
         assert!(facing.distance(Vec3::Z) < 1e-5);
         let (place, facing) = walk.advance().expect("past the corner");
         assert!(place.distance(Vec3::new(0.5, 0.0, 1.0)) < 1e-5, "{place}");
         assert!(facing.distance(Vec3::X) < 1e-5);
+        assert!((walk.walked() - 1.5).abs() < 1e-5, "{}", walk.walked());
         assert!(walk.advance().is_none(), "it's walked the rail's 2 m");
         assert!(walk.advance().is_none());
     }

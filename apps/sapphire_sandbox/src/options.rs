@@ -1640,10 +1640,12 @@ impl Options {
         }
         if options.bench_trace.is_some()
             && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
-                && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
+                && (matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }))
+                    || options.zone_walk.is_some()))
         {
             return Err(format!(
-                "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+                "--bench-trace needs {BENCH_FLAG} of a fight or a walk: --replay, --fight with --script, or \
+                 --zone-walk"
             ));
         }
         if options.zone_walk.is_some() && options.zone.is_none() {
@@ -3195,7 +3197,8 @@ mod tests {
 
     #[test]
     fn a_bench_trace_goes_with_a_bench_of_a_fight() {
-        for fight in [&["--replay", "x"][..], &["--fight", "--arena", "--script", "idle"]] {
+        let walk = &["--zone", "district", "--zone-walk", "tour"][..];
+        for fight in [&["--replay", "x"][..], &["--fight", "--arena", "--script", "idle"], walk] {
             let args = [&["--bench", "1", "--bench-trace", "t.csv"], fight].concat();
             let (options, _) = parse(&args).unwrap();
             assert_eq!(options.bench_trace, Some(PathBuf::from("t.csv")));
@@ -3203,6 +3206,7 @@ mod tests {
         for args in [
             &["--bench", "1", "--bench-trace", "t.csv"][..],
             &["--capture", "x.png", "--replay", "x", "--bench-trace", "t.csv"],
+            &["--capture", "x.png", "--zone", "district", "--zone-walk", "tour", "--bench-trace", "t.csv"],
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");

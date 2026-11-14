@@ -317,9 +317,13 @@
 //!   grid, the camera behind it. A game mounts a zone like this, by its pack: no code names one. Not with
 //!   `--look-dev` or `--arena`, whose town is a stage of its own; `--stream` says how it streams.
 //! - `--zone-walk <spline>[:<metres a second>]`: the zone stage's character walks that spline of the zone, the
-//!   camera behind it, each fixed step, at a run's speed unless told. Moves only what's drawn. A bench of it adds
-//!   a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks) and fails if any
-//!   frame built a pipeline; `--inventory-without ambient` shows that failing, by leaving its grid undeclared.
+//!   camera behind it, each fixed step, at a run's speed unless told. Moves only what's drawn. A bench of it is
+//!   a fight's bench with no fight (M5 B4, `fight_bench.rs`): three phases, each walking the rail from its start
+//!   for at least `<frames>`, every row and count with its worst frame's metres along the rail, the frames split
+//!   by the kind of core they ran on, and `--bench-trace` takes every frame. With `--draw-every` it is a plain
+//!   bench, which adds a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks).
+//!   Either fails if any frame built a pipeline; `--inventory-without ambient` shows that failing, by leaving its
+//!   grid undeclared.
 //! - `--stream off|<entities>:<metres>`: how the town's zone streams (M3 W2): not at all, so the town has
 //!   no cells, or with that many entities a frame and that activation radius, instead of the tier's.
 //! - `--fog on|off`: draw time of day's fog (M1 W3), on by default. Off leaves it out of every

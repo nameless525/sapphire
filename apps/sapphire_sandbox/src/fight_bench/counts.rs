@@ -4,10 +4,15 @@
 //! thinned and in how many jobs (M5 C1), and the kind of core the frame's main thread was on.
 //!
 //! - **Counts need no rounds:** the same walk or fight draws the same frames, so a count row's spread is the
-//!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile and its worst
-//!   frame, the tick and the metres walked it fell on, and spec §3.4's view budget where it has one (2,500
-//!   draws and 64 lights a desktop frame, 700 and 8 a phone's). A row every frame read zero of says `not
-//!   exercised`: nothing on this walk or fight fed it (a fourth cascade on a tier of three, say).
+//!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile, its worst
+//!   frame, the tick and the metres walked it fell on, its total over the phase's frames, and spec §3.4's
+//!   view budget where it has one (2,500 draws and 64 lights a desktop frame, 700 and 8 a phone's). A row
+//!   every frame read zero of says `not exercised`: nothing on this walk or fight fed it (a fourth cascade
+//!   on a tier of three, say).
+//! - **A plain bench of a walk** (`--zone-walk` with `--draw-every <n>`, which `bench.rs` runs) logs the same
+//!   rows over the frames it drew ([`DrawnCounts`], M5 X4): only every `n`th frame runs its graph, and one
+//!   that doesn't submits nothing. They're what CI's scale lane holds on a software GPU (`cargo xtask
+//!   counts`), and they time nothing.
 //! - **Core kinds:** each frame samples which kind of core the main thread was on as its CPU work ended
 //!   (`sapphire_platform::current_core`), and each phase logs its frames' CPU and GPU times split by kind,
 //!   which is what explains a ×2.6–3 spread between runs of one build: a frame on an efficiency core.
@@ -20,6 +25,7 @@ use sapphire_render::{FrameCounts, RenderStats, StateChanges};
 
 use super::{Phase, Traced, spread};
 use crate::LOG_TARGET;
+use crate::offscreen::Stage;
 
 /// What a frame counted, beside its times.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +76,20 @@ pub(super) struct Counted {
 }
 
 impl Counted {
+    /// These counts with what animation did in the stage's last frame (`Scene::anim_stats`).
+    pub(super) fn with_animation(self, stage: &Stage) -> Self {
+        let anim = stage.scene.anim_stats();
+        Self {
+            animated: anim.characters,
+            posed: anim.evaluated,
+            held: anim.held,
+            thinned: anim.thinned,
+            off_screen: anim.off_screen,
+            animation_jobs: anim.jobs,
+            ..self
+        }
+    }
+
     /// A frame's counts; `before` is the asset server's at the frame before, for what this one admitted.
     pub(super) fn of(render: &RenderStats, assets: &AssetStats, before: &AssetStats) -> Self {
         let pool = |kind: AssetKind| -> u64 {
@@ -187,40 +207,16 @@ pub(super) const COUNT_ROWS: [CountRow; 52] = [
     row("animation jobs", |c| u64::from(c.animation_jobs)),
 ];
 
+/// A frame's counts, the tick it was drawn at and the metres walked by then.
+type Counting<'a> = (&'a Counted, u64, Option<f32>);
+
 /// Logs each count row over `phase`'s frames, and its frames' times by the kind of core they ran on.
 pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
     let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.restart.is_zero());
     if frames().next().is_none() {
         return;
     }
-    for row in &COUNT_ROWS {
-        // Counts ride in a spread's Duration as nanoseconds: one per unit.
-        let values = frames()
-            .enumerate()
-            .map(|(at, frame)| (Duration::from_nanos((row.read)(&frame.counted)), at as u64));
-        let Some(spread) = spread(values) else { continue };
-        if spread.worst.is_zero() {
-            tracing::info!(target: LOG_TARGET, phase = phase.name(), row = row.name, "count row not exercised");
-            continue;
-        }
-        let worst = frames().nth(spread.worst_tick as usize).expect("the spread's frame");
-        let budget = row.budget[column];
-        let count = |value: Duration| value.as_nanos() as u64;
-        tracing::info!(
-            target: LOG_TARGET,
-            phase = phase.name(),
-            row = row.name,
-            p50 = count(spread.p50),
-            p95 = count(spread.p95),
-            worst = count(spread.worst),
-            worst_tick = worst.tick,
-            worst_walked_m = worst.walked.map(|walked| format!("{walked:.1}")),
-            budget = ?budget,
-            over_p50 = budget.is_some_and(|budget| count(spread.p50) > budget),
-            over_worst = budget.is_some_and(|budget| count(spread.worst) > budget),
-            "count row",
-        );
-    }
+    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), phase.name(), column);
     for core in [Some(CoreKind::Performance), Some(CoreKind::Efficiency), None] {
         let on = || frames().filter(move |frame| frame.core == core);
         let samples = on().count();
@@ -243,6 +239,71 @@ pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
             gpu_us_p95 = gpu.map(|gpu| micros(gpu.p95)),
             "frames by core",
         );
+    }
+}
+
+/// Logs each count row over `frames`, with its total over them.
+fn rows<'a, I: Iterator<Item = Counting<'a>>>(frames: impl Fn() -> I, phase: &str, column: usize) {
+    for row in &COUNT_ROWS {
+        // Counts ride in a spread's Duration as nanoseconds: one per unit.
+        let values = frames()
+            .enumerate()
+            .map(|(at, (counted, _, _))| (Duration::from_nanos((row.read)(counted)), at as u64));
+        let Some(spread) = spread(values) else { continue };
+        if spread.worst.is_zero() {
+            tracing::info!(target: LOG_TARGET, phase, row = row.name, "count row not exercised");
+            continue;
+        }
+        let (_, worst_tick, worst_walked) =
+            frames().nth(spread.worst_tick as usize).expect("the spread's frame");
+        let budget = row.budget[column];
+        let count = |value: Duration| value.as_nanos() as u64;
+        tracing::info!(
+            target: LOG_TARGET,
+            phase,
+            row = row.name,
+            frames = frames().count(),
+            p50 = count(spread.p50),
+            p95 = count(spread.p95),
+            worst = count(spread.worst),
+            total = frames().map(|(counted, _, _)| (row.read)(counted)).sum::<u64>(),
+            worst_tick,
+            worst_walked_m = worst_walked.map(|walked| format!("{walked:.1}")),
+            budget = ?budget,
+            over_p50 = budget.is_some_and(|budget| count(spread.p50) > budget),
+            over_worst = budget.is_some_and(|budget| count(spread.worst) > budget),
+            "count row",
+        );
+    }
+}
+
+/// What a plain bench of a walk drew, frame by frame (see the module docs): every frame's asset server is
+/// read, for what the next admitted, and a drawn frame's counts kept.
+pub(crate) struct DrawnCounts {
+    frames: Vec<(Counted, u64, Option<f32>)>,
+    assets: AssetStats,
+}
+
+impl DrawnCounts {
+    /// Before the bench's first frame, with room for `frames` drawn.
+    pub(crate) fn new(stage: &Stage, frames: usize) -> Self {
+        Self { frames: Vec::with_capacity(frames), assets: stage.content.stats() }
+    }
+
+    /// After frame `frame`, which ran its graph if `drawn`.
+    pub(crate) fn frame(&mut self, stage: &Stage, frame: u64, drawn: bool) {
+        let assets = stage.content.stats();
+        if drawn {
+            let counted = Counted::of(&stage.renderer.stats(), &assets, &self.assets).with_animation(stage);
+            self.frames.push((counted, frame, stage.scene.zone_walked()));
+        }
+        self.assets = assets;
+    }
+
+    /// Logs each count row over the frames drawn, as a phase of its own, `drawn`.
+    pub(crate) fn log(&self, stage: &Stage) {
+        let column = super::tier_column(stage.quality.stats().tier.id);
+        rows(|| self.frames.iter().map(|(counted, tick, walked)| (counted, *tick, *walked)), "drawn", column);
     }
 }
 

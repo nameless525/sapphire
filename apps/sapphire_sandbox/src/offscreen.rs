@@ -226,8 +226,11 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
     // A capture sees every texture whole, as its load left it before textures streamed (M5 M4); a bench lets
-    // them stream in, as a game does.
-    stage.whole_textures = capture;
+    // them stream in, as a game does, but for one under `--draw-every`, which times nothing and whose count rows
+    // CI's scale lane holds exactly (M5 X4): what it counts mustn't wait on when a read finishes.
+    let counts_only = options.draw_every.is_some()
+        && options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
+    stage.whole_textures = capture || counts_only;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;

@@ -70,6 +70,8 @@ use sapphire_stage::audio::OfflineAudio;
 mod counts;
 mod zone;
 
+pub(crate) use counts::DrawnCounts;
+
 /// What a phase measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -586,15 +588,7 @@ impl Run<'_> {
         let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
         let memory = zone::Held::of(stage, after.live_bytes);
         let assets = stage.content.stats();
-        let counted = counts::Counted {
-            animated: anim.characters,
-            posed: anim.evaluated,
-            held: anim.held,
-            thinned: anim.thinned,
-            off_screen: anim.off_screen,
-            animation_jobs: anim.jobs,
-            ..counts::Counted::of(&stats, &assets, &self.assets)
-        };
+        let counted = counts::Counted::of(&stats, &assets, &self.assets).with_animation(stage);
         self.assets = assets;
         Ok(Traced {
             phase,

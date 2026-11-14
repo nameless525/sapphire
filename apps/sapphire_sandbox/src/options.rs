@@ -440,7 +440,8 @@ pub(crate) struct Options {
     /// software GPU, where drawing is what costs: the renderer is still beside every frame, and nothing the
     /// simulation sees changes. With `--offscreen` or `--capture`, whose own frame always draws; or with
     /// `--bench` of a fight or a zone, which plays once or walks its frames, checks the load's inventory and
-    /// measures nothing (M3 K1): every pipeline is built before a graph runs, so one that isn't counts.
+    /// times nothing (M3 K1): every pipeline is built before a graph runs, so one that isn't counts. A walk's
+    /// bench logs what the frames it drew submitted, as a bench's count rows (M5 X4).
     pub draw_every: Option<NonZeroU32>,
     /// `--capture-through-trips`, with `--replay` and `--capture-ticks` (M5 M6): each tick a capture counts is
     /// one of the replay's, a step a zone trip holds drawing a frame and stepping again, as a capture of a

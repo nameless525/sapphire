@@ -38,6 +38,8 @@
 //! A fight is measured whole, by phases: `crate::fight_bench`, and so is a zone stage's walk (`--zone
 //! --zone-walk`, M5 B4) but with `--draw-every`. A zone stage (`--zone`, M3 C1) adds what walking a zone costs,
 //! from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a pipeline, as a fight's bench does.
+//! A walk under `--draw-every` logs the count rows of the frames it drew too, as the fight's bench logs them
+//! (`fight_bench::DrawnCounts`, M5 X4): what CI's scale lane holds.
 //!
 //! Every bench first logs the class its OS schedules its threads in, the main thread's and the compute pool's,
 //! then asks for the main thread to be scheduled as user-interactive, as a game the user started is
@@ -55,6 +57,7 @@ use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::fight_bench::DrawnCounts;
 use crate::offscreen::Stage;
 use crate::options::Options;
 use game_combat::combat::CombatOption;
@@ -199,6 +202,10 @@ pub(crate) fn run(
     // `--draw-every`, on a zone (M3 K1): every frame steps, streams, prepares and records, and one in `n` runs its
     // graph, so a pipeline any of them builds still counts, on the frame it's built or the next one drawn.
     let draw_every = options.draw_every.map(|every| u64::from(every.get()));
+    // What a walk's drawn frames submitted, as count rows (M5 X4).
+    let mut drawn = draw_every
+        .filter(|_| options.zone_walk.is_some())
+        .map(|every| DrawnCounts::new(&stage, (u64::from(frames) / every + 1) as usize));
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
         let before = alloc::stats();
@@ -212,6 +219,10 @@ pub(crate) fn run(
         let wait = stopwatch.lap();
         let after = alloc::stats();
         zone_walk.frame(&mut stage);
+        if let Some(drawn) = &mut drawn {
+            let measured = frame >= u64::from(WARMUP_FRAMES);
+            drawn.frame(&stage, frame, measured && !stage.lose_frames);
+        }
         if frame >= u64::from(WARMUP_FRAMES) {
             cpu.push(frame_cpu);
             gpu_wait += wait;
@@ -267,6 +278,9 @@ pub(crate) fn run(
     };
     stage.lose_frames = false;
     zone_walk.log(&stage, options);
+    if let Some(drawn) = &drawn {
+        drawn.log(&stage);
+    }
     if options.zone.is_some() {
         check_first_uses(&stage)?;
     }

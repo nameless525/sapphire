@@ -16,10 +16,12 @@
 //! hold as distinct characters would be.
 //!
 //! A preset scales a figure: its copies, and its `detail`, map size and exact triangle count over
-//! the spec's own. A figure may share another's skeleton (`skeleton`): it takes that figure's joints
+//! the spec's own. Maps larger than spec §3.4's 2K a part on desktop or 1K on mobile are capped on that
+//! cook in their sidecars ([`PART_MAP`], M5 M1): the budget hero's 2K maps store 1K on mobile. A figure may share another's skeleton (`skeleton`): it takes that figure's joints
 //! and its model's sidecar names the first copy of that figure's model, so their poses are each
 //! other's (M5 C11's crowd).
 
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use bevy_reflect::TypePath;
@@ -98,6 +100,17 @@ const RAMP_NIGHT: [(f32, &str); 2] = [(0.0, "#565aa4"), (1.0, "#8086bc")];
 /// A copy's folder in the output: `<name>_<cc>`.
 fn folder(name: &str, copy: u32) -> String {
     format!("{name}_{copy:02}")
+}
+
+/// Spec §3.4's longest side for a character part's map, per cook (M5 M1).
+pub const PART_MAP: MaxSize = MaxSize { desktop: NonZeroU32::new(2048), mobile: NonZeroU32::new(1024) };
+
+/// The cap a figure's maps take: spec §3.4's on each cook its maps are over, so a map within both is
+/// written as it always was.
+fn map_cap(figure: &Figure) -> MaxSize {
+    let size = figure.maps.as_ref().map_or(0, |maps| maps.size);
+    let over = |cap: Option<NonZeroU32>| cap.filter(|cap| size > cap.get());
+    MaxSize { desktop: over(PART_MAP.desktop), mobile: over(PART_MAP.mobile) }
 }
 
 /// One figure of the cast at a preset's scale: its spec as the preset makes it, with its own folder
@@ -237,8 +250,9 @@ fn figure_sources(
     let in_dir = |name: String| format!("{}/{name}", figure.dir);
     let stem = |group: &MaterialGroup, suffix: &str| in_dir(format!("{}{suffix}", group.stem));
     let id = |path: &str| asset_id(PART, path);
-    let color =
-        || ImportSettings::Texture(TextureSettings::from(TextureClass::Color(ColorSettings::default())));
+    let max_size = map_cap(figure);
+    let texture = |class| ImportSettings::Texture(TextureSettings { class, max_size });
+    let color = texture(TextureClass::Color(ColorSettings::default()));
     let matcap = in_dir(format!("{}_matcap.png", figure.name));
 
     let mesh = MeshSettings {
@@ -257,13 +271,15 @@ fn figure_sources(
                 Some(ImportSettings::Vrm(VrmSettings { mesh: mesh.clone(), version: Some(VrmVersion::V1) }))
             }
             FileKind::Model => Some(ImportSettings::Gltf(mesh.clone())),
-            FileKind::Palette(_) | FileKind::Matcap => Some(color()),
-            FileKind::Layers(_) => {
-                Some(ImportSettings::Texture(TextureSettings::from(TextureClass::Mask(MaskSettings {
-                    channels: MaskChannels::Four,
-                    ..MaskSettings::default()
-                }))))
-            }
+            FileKind::Palette(_) => Some(color.clone()),
+            // The matcap is the warrior's small painted one, whatever the figure's maps.
+            FileKind::Matcap => Some(ImportSettings::Texture(TextureSettings::from(TextureClass::Color(
+                ColorSettings::default(),
+            )))),
+            FileKind::Layers(_) => Some(texture(TextureClass::Mask(MaskSettings {
+                channels: MaskChannels::Four,
+                ..MaskSettings::default()
+            }))),
             // The control map and the face's masks are documents' inputs, not textures of their own.
             FileKind::Control(_) => None,
             FileKind::FaceMask(group, angle) => {
@@ -285,7 +301,7 @@ fn figure_sources(
         sources.push(Source::asset(
             stem(group, ".ilm.ron"),
             ilm_document(&file_name("_control.png")),
-            ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE),
+            ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), max_size),
         ));
         sources.push(Source::asset(
             stem(group, ".ramp.ron"),
@@ -299,7 +315,7 @@ fn figure_sources(
                 sources.push(Source::asset(
                     stem(group, ".facesdf.ron"),
                     face_sdf_document(&masks[index]),
-                    ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings(), MaxSize::NONE),
+                    ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings(), max_size),
                 ));
                 CharacterSurface::Face(FaceShading::new(id(&stem(group, ".facesdf.ron"))))
             }
@@ -526,7 +542,7 @@ mod tests {
     /// Every figure of the `budget` cast cooks at spec §3.4's row: the hero exactly on the desktop
     /// (80,000 triangles, 200 joints, 6 materials, 2K maps, the 18 expressions), and its mobile LOD0 within
     /// 30,000; an enemy at 8,000 on 24 joints; an ambient figure within 3,200 on the same 24, one material.
-    /// What the mobile cook can't yet meet (joints, materials, maps) is held as it is, and named in the
+    /// What the mobile cook can't yet meet (joints, materials) is held as it is, and named in the
     /// spec's §3.4.
     #[test]
     fn every_budget_figure_cooks_at_its_row() {
@@ -579,6 +595,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every map of the `budget` cast cooks within spec §3.4's part budget on each cook (M5 M1): the hero's
+    /// 2K maps carry the mobile cook's 1K cap in their sidecars, and a map within both carries none.
+    #[test]
+    fn every_budget_map_cooks_within_the_part_budget() {
+        use crate::character_maps::MapSettings;
+        use crate::cook::Cook;
+        let mut capped = 0;
+        for member in members(&cast_dir(), Preset::Budget).unwrap() {
+            let figure = member.copy(0);
+            let files = figure::figure_files(&figure).unwrap();
+            let mut sources = Vec::new();
+            figure_sources(&figure, files, &member.entry, member.skeleton, &member.spec, &mut sources)
+                .unwrap();
+            let size =
+                |path: &str| png_size(&sources.iter().find(|source| source.path == path).unwrap().bytes);
+            for source in &sources {
+                // A ramp is 256 × N and uncompressed; a face SDF is a quarter of its figure's maps a side.
+                let (settings, (width, height)) = match &source.sidecar {
+                    Some((ImportSettings::Texture(settings), _)) => (*settings, png_size(&source.bytes)),
+                    Some((ImportSettings::CharacterMap(MapSettings::Ilm(ilm), max_size), _)) => {
+                        // An ILM is its control map's size.
+                        let control = size(&source.path.replace(".ilm.ron", "_control.png"));
+                        (TextureSettings { class: TextureClass::Ilm(*ilm), max_size: *max_size }, control)
+                    }
+                    _ => continue,
+                };
+                for (cook, budget) in [(Cook::Desktop, PART_MAP.desktop), (Cook::Mobile, PART_MAP.mobile)] {
+                    let (w, h) = crate::texture::cooked_size(&settings, cook, width, height).unwrap();
+                    assert!(w.max(h) <= budget.unwrap().get(), "{} ({cook}): {w} × {h}", source.path);
+                }
+                let within = width.max(height) <= PART_MAP.mobile.unwrap().get();
+                assert_eq!(settings.max_size.is_none(), within, "{}: {width} × {height}", source.path);
+                capped += usize::from(!within);
+            }
+        }
+        // The hero's six palettes and six ILMs, and its four body materials' layer masks.
+        assert_eq!(capped, 6 + 6 + 4, "capped maps");
     }
 
     /// The look-dev character, measured against the hero's row as spec §3.4 reports it: every level's

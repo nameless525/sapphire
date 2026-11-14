@@ -198,12 +198,34 @@ fn the_budgets_textures_fill_the_pool_and_double_twice() {
     // Within a hundredth: a set's smallest levels round up to whole blocks.
     assert!(budget.abs_diff(pool) * 100 <= pool, "{budget} bytes against the pool's {pool}");
     assert!(double.abs_diff(2 * pool) * 100 <= 2 * pool, "{double} bytes against twice the pool");
+    let sources = generated(Preset::Budget).sources;
+    assert!(sources.keys().filter(|path| path.starts_with("materials/")).count() == 160);
+
+    // On mobile the budget's sets store their level nearest the mobile pool (M5 M1): 1K, 640 MiB of maps
+    // at full residency against 600.
+    let mobile_pool = AssetBudgets::MOBILE.resident[AssetKind::Texture.index()];
+    let scale = district.presets.get(Preset::Budget);
+    let off = |size: u32| (u64::from(scale.texture_sets) * set_bytes(size)).abs_diff(mobile_pool);
     assert!(
-        generated(Preset::Budget).sources.keys().filter(|path| path.starts_with("materials/")).count() == 160
+        off(MOBILE_SET_SIZE) < off(MOBILE_SET_SIZE * 2) && off(MOBILE_SET_SIZE) < off(MOBILE_SET_SIZE / 2)
     );
+    let capped = MaxSize { mobile: NonZeroU32::new(MOBILE_SET_SIZE), ..MaxSize::NONE };
+    for (preset, sources) in [(Preset::Budget, sources), (Preset::Ci, generated(Preset::Ci).sources)] {
+        let size = district.presets.get(preset).texture_size;
+        let maps: Vec<MaxSize> = sources
+            .values()
+            .filter_map(|source| match &source.sidecar {
+                Some((ImportSettings::ProceduralTexture(settings), _)) => Some(settings.max_size),
+                _ => None,
+            })
+            .collect();
+        let cap = if size > MOBILE_SET_SIZE { capped } else { MaxSize::NONE };
+        assert!(!maps.is_empty() && maps.iter().all(|&max_size| max_size == cap), "{preset}: {size} texels");
+    }
     eprintln!(
-        "textures: budget {budget} bytes, double {double}, desktop pool {pool}, mobile pool {}",
-        AssetBudgets::MOBILE.resident[AssetKind::Texture.index()]
+        "textures: budget {budget} bytes, double {double}, desktop pool {pool}; mobile {} bytes, mobile pool \
+         {mobile_pool}",
+        u64::from(scale.texture_sets) * set_bytes(MOBILE_SET_SIZE.min(scale.texture_size))
     );
 }
 

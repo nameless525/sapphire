@@ -180,6 +180,13 @@ pub struct FramePacket {
     pub insets: Vec<InsetView>,
     /// The instances the insets draw, back to back: each [`InsetView::instances`] is a range of it.
     pub inset_instances: Vec<InstanceId>,
+    /// Static world instances the caller knows nothing of can reach the main view's pixels: M5 D0's
+    /// prototype of cooked visibility by cell, which only a dev build fills. The main pass, the scene
+    /// prepass and the debug views leave them out as they do what the frustum culls (the `view_cull`
+    /// module), and count them in [`ViewCullingStats`](crate::ViewCullingStats); shadows, insets and
+    /// every other view keep them. Instances the frustum doesn't cull alone (characters, skinned and
+    /// morphed ones) are drawn whatever it says. Empty, the default, draws as before.
+    pub main_view_hidden: Vec<InstanceId>,
 }
 
 impl FramePacket {
@@ -244,6 +251,7 @@ impl FramePacket {
             ui,
             insets,
             inset_instances,
+            main_view_hidden,
         } = self;
         *number = frame;
         views.clear();
@@ -275,6 +283,7 @@ impl FramePacket {
         ui.reset();
         insets.clear();
         inset_instances.clear();
+        main_view_hidden.clear();
     }
 
     /// Adds inset view `view`, drawing `instances`, which draw nowhere else this frame: appends them to
@@ -325,6 +334,7 @@ impl Default for FramePacket {
             ui: UiDrawList::default(),
             insets: Vec::new(),
             inset_instances: Vec::new(),
+            main_view_hidden: Vec::new(),
         }
     }
 }

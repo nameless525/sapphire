@@ -302,6 +302,13 @@ fn crowd() -> Vec<(Kind, Mat4)> {
         .collect()
 }
 
+/// What these tests pin: candidates tested, culled and drawn. The
+/// triangle count rides along and hiding by set is never asked for here.
+fn counts(stats: &ViewCullingStats) -> (u32, u32, u32) {
+    assert_eq!(stats.hidden, 0);
+    (stats.tested, stats.culled, stats.drawn)
+}
+
 fn settings(view_culling: bool) -> RenderSettings {
     RenderSettings { view_culling, ..RenderSettings::default() }
 }
@@ -335,7 +342,7 @@ fn offscreen_instances_are_culled_and_change_no_pixel() {
     let shots = [shot(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO)];
     let frames = same_with_and_without(settings, &crowd(), &shots, false);
     let (pixels, stats) = &frames[0];
-    assert_eq!(*stats, ViewCullingStats { tested: 1088, culled: 1024, drawn: 64 });
+    assert_eq!(counts(stats), (1088, 1024, 64));
     // The quads in view show: not the sky alone.
     let sky = &pixels[..4];
     assert!(pixels.chunks(4).filter(|pixel| pixel != &sky).count() > 1000);
@@ -363,7 +370,7 @@ fn instances_across_the_frustums_edges_draw() {
     let shots = [shot(Vec3::ZERO, Vec3::NEG_Z)];
     let frames = same_with_and_without(settings, &instances, &shots, false);
     // Only those well past their edge are culled: the padding keeps the ones a pixel or two out.
-    assert_eq!(frames[0].1, ViewCullingStats { tested: 16, culled: 4, drawn: 12 });
+    assert_eq!(counts(&frames[0].1), (16, 4, 12));
 }
 
 #[test]
@@ -424,12 +431,12 @@ fn foliage_the_wind_carries_into_view_is_drawn() {
     let shots: Vec<Shot> = (0..4).map(|_| shot(Vec3::ZERO, Vec3::NEG_Z)).collect();
     let frames = same_with_and_without(settings, &[(Kind::Card, card), ground], &shots, true);
     for (frame, (pixels, stats)) in frames.iter().enumerate() {
-        assert_eq!(*stats, ViewCullingStats { tested: 2, culled: 0, drawn: 2 }, "frame {frame}");
+        assert_eq!(counts(stats), (2, 0, 2), "frame {frame}");
         let red = |pixel: &[u8]| u16::from(pixel[0]) > 2 * u16::from(pixel[1].max(pixel[2])) && pixel[0] > 60;
         let red = pixels.chunks(4).filter(|pixel| red(pixel)).count();
         assert!(red > 20, "frame {frame}: the card is in view ({red} pixels)");
     }
     // Calm, it stays out of view, and is culled.
     let frames = same_with_and_without(settings, &[(Kind::Card, card), ground], &shots[..1], false);
-    assert_eq!(frames[0].1, ViewCullingStats { tested: 2, culled: 1, drawn: 1 });
+    assert_eq!(counts(&frames[0].1), (2, 1, 1));
 }

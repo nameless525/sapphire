@@ -769,6 +769,7 @@ impl DrawList {
             // A static instance of world surfaces alone is the main view's to cull (review
             // RA-O01, the `view_cull` module).
             let first_draw = self.draws.len();
+            let mut triangles = 0;
             let mut world = matches!(record.streams, MeshStreams::Slab { .. });
             for submesh in &record.lods[0] {
                 let handle = submesh.material.handle;
@@ -791,6 +792,7 @@ impl DrawList {
                     material: submesh.material.slot,
                     dequantize: record.dequantize,
                 });
+                triangles += submesh.index_count / 3;
                 let indices = submesh.first_index..submesh.first_index + submesh.index_count;
                 match &record.streams {
                     MeshStreams::Slab { format, first_vertex } => {
@@ -821,7 +823,7 @@ impl DrawList {
             self.foliage_instances += u32::from(foliage);
             let draws = to_u32(self.draws.len() - first_draw);
             if world && draws > 0 {
-                self.cullable.push(CullCandidate { slot, mesh, draws });
+                self.cullable.push(CullCandidate { slot, mesh, draws, triangles });
             }
         }
         // An eye's shadow, iris and highlight layers each blend over the ones before them,

@@ -21,6 +21,11 @@
 //! What else draws instances keeps its whole list: the shadow cascades and character maps (their
 //! own culling, per view), the sky cube, the ambient probes and the character prepass. No LOD is
 //! chosen here: that comes with LOD selection (crate docs, "Later milestones").
+//!
+//! **What the caller hides:** a candidate the frustum passes but
+//! [`FramePacket::main_view_hidden`](crate::FramePacket::main_view_hidden) names is skipped the same
+//! way, and counted apart ([`ViewCullingStats::hidden`]): M5 D0's prototype of cooked visibility by
+//! cell, whose sets only a dev build passes. The caller answers for its pixels.
 //! [`RenderSettings::view_culling`](crate::RenderSettings::view_culling) turns it off, for
 //! comparisons and triage.
 
@@ -52,8 +57,16 @@ pub struct ViewCullingStats {
     /// scene prepass and the debug views skipped.
     pub culled: u32,
     /// Surface draws the main pass drew:
-    /// [`RenderStats::draws`](crate::RenderStats::draws) less the culled instances'.
+    /// [`RenderStats::draws`](crate::RenderStats::draws) less the culled and hidden instances'.
     pub drawn: u32,
+    /// Of the tested instances the frustum passed, the ones the packet's
+    /// [`main_view_hidden`](crate::FramePacket::main_view_hidden) named, and their surface draws and
+    /// triangles: what the frustum alone would have drawn besides.
+    pub hidden: u32,
+    pub hidden_draws: u32,
+    pub hidden_triangles: u32,
+    /// Triangles of the tested instances the main pass drew (at their first LOD).
+    pub triangles: u32,
 }
 
 /// A static instance whose draws are all environment or foliage surfaces: one the main view can
@@ -64,6 +77,8 @@ pub(crate) struct CullCandidate {
     pub mesh: crate::MeshHandle,
     /// Its surface draws.
     pub draws: u32,
+    /// Their triangles, at the first LOD.
+    pub triangles: u32,
 }
 
 /// The main view's frustum, as planes facing in: left, right, bottom, top and near. The far
@@ -111,9 +126,19 @@ pub(crate) struct ViewCull {
     visible: Vec<bool>,
     on: bool,
     stats: ViewCullingStats,
+    /// The last prepared packet's [`FramePacket::main_view_hidden`](crate::FramePacket::main_view_hidden).
+    hidden: Vec<crate::InstanceId>,
+    /// Per instance slot, while testing: whether `hidden` names it.
+    named: Vec<bool>,
 }
 
 impl ViewCull {
+    /// Takes the instances a prepared packet's main view may leave out, for the next [`Self::update`].
+    pub(crate) fn hide(&mut self, hidden: &[crate::InstanceId]) {
+        self.hidden.clear();
+        self.hidden.extend_from_slice(hidden);
+    }
+
     /// Tests `list`'s candidates against `frustum` (`None`: culling is off) with `slots`'
     /// transforms and `meshes`' bounds, foliage grown by `margin`. `draws` is the frame's surface
     /// draws, for the stats.
@@ -134,7 +159,15 @@ impl ViewCull {
             return;
         };
         self.visible.resize(slots.len(), true);
+        self.named.clear();
+        self.named.resize(slots.len(), false);
+        for id in &self.hidden {
+            if let Some(slot) = slots.slot(*id) {
+                self.named[slot as usize] = true;
+            }
+        }
         let (mut tested, mut culled, mut culled_draws) = (0, 0, 0);
+        let (mut hidden, mut hidden_draws, mut hidden_triangles, mut triangles) = (0, 0, 0, 0);
         for candidate in &list.cullable {
             let Some(transform) = slots.transform(candidate.slot) else { continue };
             let Some(record) = meshes.get(candidate.mesh.index()) else { continue };
@@ -152,9 +185,24 @@ impl ViewCull {
                 self.visible[candidate.slot as usize] = false;
                 culled += 1;
                 culled_draws += candidate.draws;
+            } else if self.named[candidate.slot as usize] {
+                self.visible[candidate.slot as usize] = false;
+                hidden += 1;
+                hidden_draws += candidate.draws;
+                hidden_triangles += candidate.triangles;
+            } else {
+                triangles += candidate.triangles;
             }
         }
-        self.stats = ViewCullingStats { tested, culled, drawn: draws.saturating_sub(culled_draws) };
+        self.stats = ViewCullingStats {
+            tested,
+            culled,
+            drawn: draws.saturating_sub(culled_draws + hidden_draws),
+            hidden,
+            hidden_draws,
+            hidden_triangles,
+            triangles,
+        };
     }
 
     /// Per instance slot, whether the main view draws it, or `None` with culling off.
@@ -363,10 +411,26 @@ mod tests {
             let found: Vec<u32> = (0..8).filter(|&slot| !mask[slot as usize]).collect();
             assert_eq!(found, culled, "wind margin {margin}");
             let count = culled.len() as u32;
-            assert_eq!(cull.stats(), ViewCullingStats { tested: 5, culled: count, drawn: 8 - count });
+            let stats = cull.stats();
+            assert_eq!((stats.tested, stats.culled, stats.drawn), (5, count, 8 - count));
+            assert_eq!((stats.hidden, stats.triangles), (0, 5 - count), "a triangle a draw");
         }
+        // Named hidden: the instance ahead and the one behind, which the frustum culls anyway, and a
+        // character, which isn't tested.
+        cull.hide(&[InstanceId(0), InstanceId(1), InstanceId(5)]);
+        cull.update(Some(&frustum), &list, &slots, &meshes, |_| 2.0, 8);
+        let mask = cull.mask().expect("on");
+        let found: Vec<u32> = (0..8).filter(|&slot| !mask[slot as usize]).collect();
+        assert_eq!(found, [0, 1, 2]);
+        let stats = cull.stats();
+        assert_eq!((stats.culled, stats.hidden, stats.hidden_draws, stats.hidden_triangles), (2, 1, 1, 1));
+        assert_eq!((stats.drawn, stats.triangles), (5, 2));
+        cull.hide(&[]);
         // Off: no mask, every draw drawn.
         cull.update(None, &list, &slots, &meshes, |_| 0.0, 8);
-        assert_eq!((cull.mask(), cull.stats()), (None, ViewCullingStats { tested: 0, culled: 0, drawn: 8 }));
+        assert_eq!(
+            (cull.mask(), cull.stats()),
+            (None, ViewCullingStats { drawn: 8, ..ViewCullingStats::default() })
+        );
     }
 }

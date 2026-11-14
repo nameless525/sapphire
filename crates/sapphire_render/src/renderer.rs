@@ -2146,6 +2146,7 @@ impl Renderer {
         // And a finished warm-up is taken in, after it: one built from sources just replaced starts again.
         self.poll_warm_ups();
 
+        self.view_cull.hide(&packet.main_view_hidden);
         if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
             self.scene_bind_groups = create_scene_bind_groups(
                 device,

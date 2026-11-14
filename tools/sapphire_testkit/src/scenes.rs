@@ -818,6 +818,12 @@ mod tests {
             } else if scene.name.starts_with("upscale-") {
                 // A phone tier's upscaler (M5 L14), on the tier as it ships, or with AO off under a screen effect.
                 assert!(scene.has("--tier") && !scene.has("--probes"), "{}", scene.name);
+            } else if scene.name.starts_with("cutin-") {
+                // A cut-in (M5 L10) on a tier as it ships, AO pinned off where the tier has it, or left to a phone
+                // tier, as the upscaler's are.
+                let phone = scene.value("--tier").is_some_and(|tier| tier.starts_with("mobile-"));
+                assert!(scene.has("--tier") && !scene.has("--probes"), "{}", scene.name);
+                assert!(pinned("--ao", "off") || (phone && !scene.has("--ao")), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.has("--probes"), "{}", scene.name);
@@ -831,10 +837,11 @@ mod tests {
         for scene in committed_scenes() {
             let hud = scene.has("--hud");
             // `arena-fight-hit`, `arena-skirmish`, `arena-boss`, `arena-captain` and the ward's fights show the
-            // bars reading a real fight.
+            // bars reading a real fight. A cut-in (M5 L10) plays under the HUD, so every `cutin-` scene draws it.
             let name = scene.name.as_str();
             let expected = name.starts_with("hud-")
                 || name.starts_with("game-hud-")
+                || name.starts_with("cutin-")
                 || ["arena-fight-hit", "arena-skirmish", "arena-boss", "arena-captain"].contains(&name)
                 || ["fight-ward-market", "fight-ward-terrace"].contains(&name);
             assert_eq!(hud, expected, "{name}");

@@ -4366,6 +4366,55 @@
                 args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 14.1, warp: 28.9),
             ),
+            // Cut-ins (M5 L10) on `arena-ultimate`, whose ultimate's timeline asks for the player's close-up as its
+            // cinematic opens: a live inset of the character cut across the fight under the HUD. Mid-hold, the
+            // band slanting up across the frame with its warm border, the face close from a little below and to
+            // her right as her arms rise, lit warm from the side before a night-blue to ember gradient with focus
+            // lines; the fight and its bars above and below it.
+            (
+                name: "cutin-band",
+                ticks: 88,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32", "--character-shadows", "own"],
+            ),
+            // The same moment across the whole frame (`--cutins full`): only the HUD over the close-up.
+            (
+                name: "cutin-full",
+                ticks: 88,
+                args: ["--cues", "--cutins", "full", "--hud", "live", "--arena",
+                       "--replay", "tests/replays/arena-ultimate.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
+            ),
+            // Partway through the enter: the band sliding in from the left, its picture with it, cut where the
+            // frame's left edge would be.
+            (
+                name: "cutin-enter",
+                ticks: 67,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32", "--character-shadows", "own"],
+            ),
+            // On a phone at Mobile-Low, mid-hold: the picture drawn at the tier's smaller cut-in size and scaled
+            // up by the interface.
+            (
+                name: "cutin-phone",
+                size: "1280x592",
+                ticks: 88,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
+                       "--time-of-day", "10", "--tier", "mobile-low", "--render-scale", "0.504274",
+                       "--blade", "on"],
+            ),
+            // With flashes reduced, partway through the enter: the band fading in where it holds, its focus
+            // lines still.
+            (
+                name: "cutin-reduced",
+                ticks: 67,
+                args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32", "--character-shadows", "own", "--effect-scale", "reduced:1"],
+            ),
         ],
     ),
 )

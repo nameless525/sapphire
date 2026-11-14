@@ -3822,6 +3822,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 6.4, warp: 27.4),
             ),
             // The proving ground's shelter by day, the character standing under its roof facing its back wall,
             // the camera at its open front: the floor, walls and roof lie on the probe's box and reflect it
@@ -3831,6 +3832,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 7.1, warp: 26.8),
             ),
             // The same at night, from the bake's night key: the lantern-lit yard and the dark roof.
             (
@@ -3838,6 +3840,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "22", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 10.3, warp: 26.7),
             ),
             // The character in the open yard by day, reflecting the yard's probe, its paving the yard's.
             (
@@ -3845,6 +3848,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "13", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 6.8, warp: 24.7),
             ),
             // Mobile-High's shelter: the probes read without the box's correction.
             (
@@ -3852,6 +3856,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "mobile-high",
                        "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 16.2, warp: 20.8),
             ),
             // Mobile-Low's: characters alone reflect the probes, from one cube a probe composed at 32.
             (
@@ -3859,6 +3864,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "mobile-low",
                        "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 6.4, warp: 23.8),
             ),
         ],
     ),

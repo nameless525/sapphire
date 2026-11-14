@@ -30,6 +30,9 @@
 //! copy of its own, or name the asset through the zone. A zone's navmesh is named by that zone alone, so
 //! it's always in that zone's pack. So are its shapes' meshes in an editor's cook, which nothing names but
 //! an editor that knows the zone: whatever a zone's source cooks to is a root of its pack, as the zone is.
+//! Its ambient characters (M5 C10) are one of those, and reach their cast's meshes and their graph, so a cast
+//! only that zone has ships in its pack; what they name from another tree (the benchmark's district names
+//! the shipped content's) is left out of the walk.
 //!
 //! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1), and scores and voice lines with them (M3 A1).
 //! The content tree holds about 280 sounds, about 3 MB against the shared pack's 23 MB, and nothing
@@ -188,6 +191,7 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Enemy
         | AssetKind::Playable
         | AssetKind::Motion
+        | AssetKind::Ambient
         | AssetKind::Score
         | AssetKind::VoiceLines => Codec::Lz4,
         AssetKind::Sound => Codec::None,
@@ -471,10 +475,19 @@ fn groups<'a>(
     let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let mut reach = HashMap::new();
     for asset in &report.assets {
-        // A kind that may depend on nothing reaches nothing: it needn't be read.
-        let reaches = kind(&asset.output).filter(|&of| AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
+        // A kind that may depend on nothing reaches nothing, but for a zone's ambient characters (M5 C10): it
+        // needn't be read.
+        let reaches = kind(&asset.output)
+            .filter(|&of| of == AssetKind::Ambient || AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
         if let Some(of) = reaches {
-            reach.insert(asset.id, reach_of(asset, of, cache)?);
+            let mut reached = reach_of(asset, of, cache)?;
+            // Ambient characters may name another tree's cast and graph: the benchmark's district names the
+            // shipped content's, which its walk mounts beside its own (`zone`'s "Ambient characters"). What this
+            // tree has ships with the zone.
+            if of == AssetKind::Ambient {
+                reached.retain(|id| by_id.contains_key(id));
+            }
+            reach.insert(asset.id, reached);
         }
         // A texture's levels go where it goes: what reaches a texture reaches its levels (M5 M3).
         if kind(&asset.output) == Some(AssetKind::Texture) {

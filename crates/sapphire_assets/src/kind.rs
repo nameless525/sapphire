@@ -13,7 +13,9 @@ use sapphire_moves::{
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
-use sapphire_zone::{ENCOUNTER_EXTENSION, Encounter, ZONE_EXTENSION, Zone, ZoneError};
+use sapphire_zone::{
+    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, ZONE_EXTENSION, Zone, ZoneError,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
@@ -115,11 +117,15 @@ pub enum AssetKind {
     /// cloth a playable kind names when it moves by numbers of its own. It depends on nothing. CPU data, never
     /// uploaded.
     Motion = 29,
+    /// A zone's ambient characters (`.sambient`, M5 C10): [`Ambient`], its posts and walks and who stands and
+    /// walks there, the zone's own sub-asset beside its cells. Its cast and graph are the stage's to load, so it
+    /// depends on nothing, but they ship with it ([`Self::reach`]). CPU data, never uploaded.
+    Ambient = 30,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -149,6 +155,7 @@ impl AssetKind {
         Self::ReflectionProbes,
         Self::Playable,
         Self::Motion,
+        Self::Ambient,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -189,6 +196,7 @@ impl AssetKind {
             Self::ReflectionProbes => REFLECTIONS_EXTENSION,
             Self::Playable => PLAYABLE_EXTENSION,
             Self::Motion => MOTION_EXTENSION,
+            Self::Ambient => AMBIENT_EXTENSION,
         }
     }
 
@@ -224,6 +232,7 @@ impl AssetKind {
             Self::ReflectionProbes => "reflection probes",
             Self::Playable => "playable kind",
             Self::Motion => "character motion",
+            Self::Ambient => "ambient characters",
         }
     }
 
@@ -258,6 +267,7 @@ impl AssetKind {
                 | Self::VoiceLines
                 | Self::Playable
                 | Self::Motion
+                | Self::Ambient
         )
     }
 
@@ -299,6 +309,7 @@ impl AssetKind {
                 | Self::VoiceLines
                 | Self::Playable
                 | Self::Motion
+                | Self::Ambient
         )
     }
 
@@ -315,7 +326,7 @@ impl AssetKind {
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues, reflection
-    /// probes, playable kinds and character motions on nothing. A zone's meshes and probes and an enemy's or a playable kind's
+    /// probes, playable kinds, character motions and ambient characters on nothing. A zone's meshes and probes and an enemy's or a playable kind's
     /// look aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -366,6 +377,7 @@ impl AssetKind {
             27 => Some(Self::ReflectionProbes),
             28 => Some(Self::Playable),
             29 => Some(Self::Motion),
+            30 => Some(Self::Ambient),
             _ => None,
         }
     }
@@ -376,7 +388,8 @@ impl AssetKind {
     /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
-    /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`), and
+    /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
+    /// `Ambient::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -495,6 +508,11 @@ impl AssetKind {
                 Motion::read(bytes)?;
                 Vec::new()
             }
+            // Its cast's meshes and its graph are the stage's to load as the zone opens.
+            Self::Ambient => {
+                Ambient::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -502,7 +520,8 @@ impl AssetKind {
     }
 
     /// [`Self::references`], and what an asset names without holding: a zone's cell and instance meshes
-    /// and its probe grid, an enemy's meshes and graph, and a playable kind's meshes, rig, graph and motion, which
+    /// and its probe grid, an enemy's meshes and graph, a playable kind's meshes, rig, graph and motion, and a
+    /// zone's ambient characters' cast meshes and graph, which
     /// loading it doesn't load, so they aren't
     /// dependencies, but which must ship with it. This is what decides which pack an asset goes in.
     pub fn reach(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -514,6 +533,7 @@ impl AssetKind {
                 reach.extend([look.mesh, look.graph].into_iter().chain(look.held.map(|held| held.mesh)));
             }
             Self::Playable => reach.extend(Playable::from_cooked(bytes)?.named()),
+            Self::Ambient => reach.extend(Ambient::read(bytes)?.named()),
             _ => {}
         }
         reach.sort_unstable();

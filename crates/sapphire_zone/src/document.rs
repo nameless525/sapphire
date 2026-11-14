@@ -80,6 +80,7 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
+use crate::ambient::{Ambient, ZoneAmbient};
 use crate::cooked::{
     CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedPatrol, CookedSpawner,
     CookedSpline, CookedTrigger, CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation,
@@ -159,6 +160,10 @@ pub struct ZoneDocument {
     /// Where this zone leads.
     #[serde(default)]
     pub exits: Vec<Exit>,
+    /// Its ambient characters (M5 C10): people standing about and walking, as presentation alone, which the
+    /// cook writes as an asset of the zone's own: the [`ambient`](crate::ambient) module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<ZoneAmbient>,
 }
 
 impl Versioned for ZoneDocument {
@@ -573,7 +578,16 @@ impl ZoneDocument {
         for (index, exit) in self.exits.iter().enumerate() {
             check_name(&exit.arrive).map_err(invalid(format!("exits[{index}].arrive")))?;
         }
+        if let Some(ambient) = &self.ambient {
+            ambient.check()?;
+        }
         Ok(())
+    }
+
+    /// Its ambient characters, cooked, if it has any: an asset of its own, never part of [`Zone`], so a
+    /// zone without them cooks as it did before they existed (the [`ambient`](crate::ambient) module).
+    pub fn cook_ambient(&self) -> Result<Option<Ambient>, ZoneError> {
+        self.ambient.as_ref().map(ZoneAmbient::cook).transpose()
     }
 
     /// What a placement's or an instance's `colliders` (`field`) may name: the zone's colliders, by names that
@@ -1397,5 +1411,40 @@ mod tests {
         none.reflections.clear();
         assert!(none.cook(baked).is_err(), "baked some nobody placed");
         assert_eq!(none.cook(ZoneGeometry::default()).expect("cooks").presentation.reflections, None);
+    }
+
+    /// Ambient characters are presentation in an asset of their own: a document with them cooks the very zone
+    /// one without them does, byte for byte, so its digest and every replay stand still; its checks name the
+    /// field under `ambient`; and it reads back from its text.
+    #[test]
+    fn ambient_characters_leave_the_cooked_zone_alone() {
+        let mut without = full();
+        without.placements.clear();
+        without.lights.clear();
+        without.instances.clear();
+        let mut with = without.clone();
+        with.ambient = Some(crate::ambient::tests::example());
+        with.check().expect("good");
+        let text = sapphire_serialize::to_ron(&with).expect("write");
+        assert_eq!(ZoneDocument::from_ron(&text).expect("read"), with);
+        assert!(
+            !sapphire_serialize::to_ron(&without).expect("write").contains("ambient"),
+            "left out with none"
+        );
+
+        let geometry = ZoneGeometry::default();
+        let (cooked, plain) =
+            (with.cook(geometry.clone()).expect("cooks"), without.cook(geometry).expect("cooks"));
+        assert_eq!(cooked, plain);
+        assert_eq!(
+            cooked.to_cooked().expect("bytes").as_slice(),
+            plain.to_cooked().expect("bytes").as_slice()
+        );
+        assert!(with.cook_ambient().expect("cooks").is_some());
+        assert_eq!(without.cook_ambient().expect("cooks"), None);
+
+        with.ambient.as_mut().expect("there").posts[0].position[1] = f32::NAN;
+        let message = with.check().expect_err("not finite").to_string();
+        assert!(message.contains("`ambient.posts[0].position`"), "{message}");
     }
 }

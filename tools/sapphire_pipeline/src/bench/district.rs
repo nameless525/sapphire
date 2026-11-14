@@ -32,7 +32,17 @@
 //! - `plaza.encounter.ron`: the plaza's fight, and `district_day.ron`, the day the zone names.
 //! - `district.zone.ron`: the zone. Its simulation half (spawners, the plaza's volume, a checkpoint and the
 //!   fight) is `sapphire_synthetic_zone::district`'s, written here as its code builds it; its presentation is
-//!   the cells, buildings, lights, day, wind and fog, and the `tour` spline.
+//!   the cells, buildings, lights, day, wind and fog, the `tour` spline and, for a preset with a crowd, its
+//!   ambient characters.
+//!
+//! # The crowd
+//!
+//! A preset with `crowd` (the budget's) gives the zone ambient characters (M5 C10, `sapphire_zone::ambient`):
+//! in front of every block side's buildings, `posts_per_side` people standing, facing the fronts or along the
+//! street, and `walkers_per_side` walking its length there and back, each side a walk of its own, so the
+//! crowd's cells are the blocks'. Its cast and graph are the shipped content's (the proving hub's, in
+//! `zone_proving_hub`), named by ID from another tree, which the cook neither checks nor packs: a run that
+//! draws the crowd mounts that pack beside the district's (the sandbox's `--mount zone_proving_hub`).
 //!
 //! # Seen by the tour
 //!
@@ -62,7 +72,7 @@ use sapphire_reflect::Versioned;
 use sapphire_synthetic_zone::district as simulation;
 use sapphire_zone::document::{Instance, Light, LightShape, Placement, Spline, ZoneDocument};
 use sapphire_zone::grid::Grid;
-use sapphire_zone::{ZoneFog, ZoneWind};
+use sapphire_zone::{CastMember, Post, Walk, ZoneAmbient, ZoneFog, ZoneWind};
 use serde::{Deserialize, Serialize};
 
 use super::{BenchError, Preset, Presets, Source, asset_id, document_bytes, read_document};
@@ -130,7 +140,29 @@ pub struct BenchDistrict {
     pub wind: Option<ZoneWind>,
     #[serde(default)]
     pub fog: Option<ZoneFog>,
+    /// The people a preset with `crowd` stands and walks in the streets (M5 C10).
+    #[serde(default)]
+    pub crowd: Option<DistrictCrowd>,
     pub presets: Presets<DistrictScale>,
+}
+
+/// The district's ambient characters (see the [module docs](self#the-crowd)).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistrictCrowd {
+    /// What the zone's picks of who and when are drawn from.
+    pub seed: u32,
+    /// The graph every one of them plays, and who may appear: the shipped content's, by ID.
+    pub graph: AssetId,
+    pub cast: Vec<CastMember>,
+    /// The graph's moves the standing make now and then.
+    pub gestures: Vec<String>,
+    /// People standing in front of each block side's buildings, and walking its length.
+    pub posts_per_side: u32,
+    pub walkers_per_side: u16,
+    /// How far into the street from the block's edge they stand and walk, in metres.
+    pub post_out: f32,
+    pub walk_out: f32,
 }
 
 impl Versioned for BenchDistrict {
@@ -226,6 +258,9 @@ pub struct DistrictScale {
     pub texture_sets: u32,
     /// Texels on a side of every map.
     pub texture_size: u32,
+    /// Whether the zone has the document's `crowd` (M5 C10).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crowd: bool,
 }
 
 /// Generates the district from the documents in `dir` (`bench/district/`) at `preset`'s scale.
@@ -385,10 +420,49 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         navigation: None,
         encounters: vec![encounter],
         exits: Vec::new(),
+        ambient: crowd(&district, scale, &plan),
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(ZONE, document_bytes(&zone), ImportSettings::Zone(Default::default())));
     Ok(sources)
+}
+
+/// The district's ambient characters at `scale`, if its preset has a crowd (see the [module
+/// docs](self#the-crowd)): integer hashes and the four operations, as the rest of the plan.
+fn crowd(district: &BenchDistrict, scale: DistrictScale, plan: &Plan) -> Option<ZoneAmbient> {
+    let crowd = district.crowd.as_ref().filter(|_| scale.crowd)?;
+    let ground = |at: [f32; 2]| [at[0], 0.0, at[1]];
+    let (mut posts, mut walks) = (Vec::new(), Vec::new());
+    for (index, front) in plan.fronts.iter().enumerate() {
+        let side = |salt: u32| seed(&[front.cell[0], front.cell[1], index as u32, salt]);
+        let count = crowd.posts_per_side;
+        for post in 0..count {
+            let roll = side(0x706f_7374 ^ post);
+            let along = front.length * (post as f32 + 0.25 + 0.5 * unit(roll)) / count as f32;
+            // Facing the fronts, or up or down the street.
+            let facing = [180.0, 90.0, 180.0, 270.0][(roll % 4) as usize];
+            posts.push(Post {
+                name: format!("front_{index}_{post}"),
+                position: ground(front.at(along, crowd.post_out)),
+                yaw_degrees: (front.turn + facing) % 360.0,
+                who: None,
+                gestures: crowd.gestures.clone(),
+                every: [8.0, 16.0],
+            });
+        }
+        if crowd.walkers_per_side > 0 {
+            let ends = [front.at(2.0, crowd.walk_out), front.at(front.length - 2.0, crowd.walk_out)];
+            walks.push(Walk {
+                name: format!("front_{index}"),
+                points: ends.map(ground).to_vec(),
+                closed: false,
+                pace: 1.0 + 0.4 * unit(side(0x7761_6c6b)),
+                who: None,
+                count: crowd.walkers_per_side,
+            });
+        }
+    }
+    Some(ZoneAmbient { seed: crowd.seed, graph: crowd.graph, cast: crowd.cast.clone(), posts, walks })
 }
 
 /// What a document can be wrong about that serde can't see.
@@ -551,10 +625,34 @@ pub struct Plan {
     props: Vec<Placed>,
     /// Each lantern post's foot.
     pub lights: Vec<[f32; 2]>,
+    /// Every block side, where a crowd stands and walks.
+    pub fronts: Vec<Front>,
     /// The closed lane segments' walls.
     pub closures: Vec<Rect>,
     taken: Taken,
     next_footprint: usize,
+}
+
+/// One side of a block as a crowd sees it: its cell, where its edge starts, which way it runs and faces
+/// (outward, toward its street, and `turn` degrees about +Y from +Z), and how long it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Front {
+    pub cell: [u32; 2],
+    pub start: [f32; 2],
+    pub along: [f32; 2],
+    pub normal: [f32; 2],
+    pub turn: f32,
+    pub length: f32,
+}
+
+impl Front {
+    /// `along` metres along the side and `out` into the street.
+    pub fn at(&self, along: f32, out: f32) -> [f32; 2] {
+        [
+            self.start[0] + self.along[0] * along + self.normal[0] * out,
+            self.start[1] + self.along[1] * along + self.normal[1] * out,
+        ]
+    }
 }
 
 /// One side of a block: where its edge starts, which way it runs and faces, and the street it faces.
@@ -604,6 +702,7 @@ impl Plan {
             lots: Vec::new(),
             props: Vec::new(),
             lights: Vec::new(),
+            fronts: Vec::new(),
             closures: Vec::new(),
             taken: Taken::new(half),
             next_footprint: 0,
@@ -856,6 +955,14 @@ impl Plan {
         for (index, (side, _)) in sides.iter().enumerate() {
             let length =
                 if side.along[0] != 0.0 { self.block(cell).size(0) } else { self.block(cell).size(1) };
+            self.fronts.push(Front {
+                cell,
+                start: side.start,
+                along: side.along,
+                normal: side.normal,
+                turn: side.turn,
+                length,
+            });
             // Where each of this side's buildings stands along it, and its width.
             let fronts: Vec<(f32, f32)> = lots
                 .iter()

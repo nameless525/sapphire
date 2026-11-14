@@ -182,7 +182,10 @@ use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
-use sapphire_zone::{ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone, ZoneDocument};
+use sapphire_zone::{
+    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone, ZoneDocument,
+    ZoneError,
+};
 
 use crate::anim_graph::{self, AnimGraphCookError};
 use crate::assembly::{self, AssemblyError};
@@ -522,6 +525,16 @@ impl Recipe {
             cooker: reflections::COOKER,
             format: ReflectionProbes::VERSION,
             extension: REFLECTIONS_EXTENSION,
+        }
+    }
+
+    /// The recipe of a zone's ambient characters (M5 C10).
+    fn zone_ambient() -> Self {
+        Self {
+            importer: zone::IMPORTER,
+            cooker: zone::AMBIENT_COOKER,
+            format: Ambient::VERSION,
+            extension: AMBIENT_EXTENSION,
         }
     }
 
@@ -1173,7 +1186,9 @@ fn cook_dir_through(
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
                 }
-                Part::Navigation | Part::Reflections => zone::output_path(&source_relative, recipe.extension),
+                Part::Navigation | Part::Reflections | Part::Ambient => {
+                    zone::output_path(&source_relative, recipe.extension)
+                }
                 // Beside the tail, by its name: `albedo.mip0.smip`, `brick.color.mip0.smip`.
                 Part::Level { level, .. } => {
                     let file = format!(
@@ -1539,6 +1554,8 @@ enum Part {
     Navigation,
     /// A zone's reflection probes (M5 L2).
     Reflections,
+    /// A zone's ambient characters (M5 C10).
+    Ambient,
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
@@ -1738,7 +1755,12 @@ fn sub_assets(
                 part: Part::Reflections,
                 recipe: Recipe::zone_reflections(),
             });
-            let parts = parts.chain(navigation).chain(reflections).collect();
+            let ambient = plan.ambient_id().map(|id| PlannedPart {
+                id,
+                part: Part::Ambient,
+                recipe: Recipe::zone_ambient(),
+            });
+            let parts = parts.chain(navigation).chain(reflections).chain(ambient).collect();
             zones.insert(path.clone(), plan);
             Ok(parts)
         }
@@ -2421,6 +2443,7 @@ fn asset_key(
         Part::Shape(shape) => assets.zones[path].shape_recipe(shape),
         Part::Navigation => assets.zones[path].navigation_recipe(),
         Part::Reflections => assets.zones[path].reflections_recipe(),
+        Part::Ambient => assets.zones[path].ambient_recipe(),
         _ => source.hash,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -2585,6 +2608,7 @@ fn cook_source(
             return cook_shape(path, shape, settings, cook, assets);
         }
         Part::Navigation => return cook_navigation(path, assets),
+        Part::Ambient => return cook_ambient(path, assets),
         Part::Reflections => {
             let plan = &assets.zones[path];
             return reflections::cook(plan, path, cook, |id| assets.probe_input(id)).map_err(|source| {
@@ -2761,6 +2785,14 @@ fn zone_mesh(
         .pack(settings.position_format, bindings)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
     Ok(cooked_bytes(path, &packed)?.into_vec())
+}
+
+/// A zone's ambient characters, from its document's section alone (M5 C10).
+fn cook_ambient(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let document = assets.zones[path].document();
+    let error = |source: ZoneError| zone_error(path)(source.into());
+    let ambient = document.cook_ambient().map_err(error)?.expect("only a zone with `ambient` plans its part");
+    Ok(ambient.to_cooked().map_err(error)?.into_vec())
 }
 
 /// A zone's navmesh, from the cooked colliders it names.
@@ -3520,6 +3552,22 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
             Err(CookError::ZoneReference { path: path.to_owned(), field, what, id })
         }
     };
+    // Its cast and graph, to their kinds where this tree has them: the benchmark's district names the shipped
+    // content's (`zone`'s "Ambient characters"). It reads nothing else.
+    if *part == Part::Ambient {
+        let ambient = document.ambient.as_ref().expect("only a zone with `ambient` plans its part");
+        for (field, id) in ambient.named() {
+            let (what, good): (&'static str, fn(&Planned) -> bool) = match field.as_str() {
+                "graph" => ("an animation graph", Planned::is_anim_graph),
+                _ => ("a mesh", Planned::is_mesh),
+            };
+            if assets.get(id).is_some_and(|planned| !good(planned)) {
+                let field = format!("ambient.{field}");
+                return Err(CookError::ZoneReference { path: path.to_owned(), field, what, id });
+            }
+        }
+        return Ok(Vec::new());
+    }
     if let Some(id) = document.colliders {
         reference("colliders".to_owned(), "a collider document", id, |planned| {
             matches!(planned.asset.meta.importer, ImportSettings::Colliders(_))

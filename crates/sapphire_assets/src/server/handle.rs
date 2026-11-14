@@ -76,6 +76,7 @@ mod sealed {
     impl Sealed for sapphire_moves::Enemy {}
     impl Sealed for sapphire_moves::Playable {}
     impl Sealed for crate::motion::Motion {}
+    impl Sealed for sapphire_zone::Ambient {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
@@ -220,6 +221,17 @@ impl Asset for Playable {
         // SAFETY: as for meshes: `Playable::from_cooked` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Playable>(bytes) }
             .expect("the envelope was checked when the playable kind was decoded")
+    }
+}
+
+impl Asset for sapphire_zone::Ambient {
+    const KIND: AssetKind = AssetKind::Ambient;
+    type View<'a> = &'a sapphire_zone::ArchivedAmbient;
+
+    unsafe fn view(bytes: &[u8]) -> &sapphire_zone::ArchivedAmbient {
+        // SAFETY: as for meshes: `Ambient::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<sapphire_zone::Ambient>(bytes) }
+            .expect("the envelope was checked when the ambient characters were decoded")
     }
 }
 

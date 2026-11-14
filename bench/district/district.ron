@@ -73,9 +73,27 @@
         day: "district_day.ron",
         wind: Some((direction: (0.8, 0.0, 0.6), strength: 0.4, gustiness: 0.3)),
         fog: Some((density: 1.2)),
+        // Its people (M5 C10), for a preset with `crowd`: in front of every block side, one standing and two
+        // walking its length there and back, 720 on the budget's 240 sides, which the tiers' caps draw from.
+        // The cast and graph are the shipped content's, the proving hub's (`content/ambient/`), so a run that
+        // draws them mounts `zone_proving_hub` beside the district (`--mount zone_proving_hub`).
+        crowd: Some((
+            seed: 5,
+            graph: "9fb02cf8-5a3d-4ed9-9651-c89bc8ccfecd",
+            cast: [
+                (name: "lady", mesh: "39c1b8aa-15aa-5345-b654-309b4acbefb8"),
+                (name: "dockhand", mesh: "db819d3f-6470-5a18-b07a-5da4af03919b"),
+                (name: "porter", mesh: "834df6ef-6b41-5841-8746-8fd871250ded"),
+            ],
+            gestures: ["shift", "look_around"],
+            posts_per_side: 1,
+            walkers_per_side: 2,
+            post_out: 1.4,
+            walk_out: 2.2,
+        )),
         presets: (
             ci: (cells: 4, texture_sets: 4, texture_size: 256),
-            budget: (cells: 8, texture_sets: 160, texture_size: 2048),
+            budget: (cells: 8, texture_sets: 160, texture_size: 2048, crowd: true),
             double: Some((cells: 8, texture_sets: 320, texture_size: 2048)),
         ),
     ),

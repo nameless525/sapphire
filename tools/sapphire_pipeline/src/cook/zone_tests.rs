@@ -1579,3 +1579,81 @@ fn a_zones_reflection_probes_bake_beside_it_and_ship_with_it() {
     assert!(!report.assets.iter().any(|asset| asset.id == reflections_id()));
     assert!(Zone::read(&read_zone(&report)).unwrap().presentation.reflections.is_none());
 }
+
+fn ambient_id() -> AssetId {
+    ZONE.sub_asset(sapphire_zone::AMBIENT_PART)
+}
+
+/// A graph this tree hasn't got, as the benchmark's district names the shipped content's.
+const ELSEWHERE: AssetId = AssetId::from_bytes([0x2a; 16]);
+
+/// A zone's ambient characters (M5 C10), `graph` playing on `mesh`, the one cast member.
+fn ambient_section(graph: AssetId, mesh: AssetId, gesture: &str) -> String {
+    format!(
+        r#"ambient: Some((seed: 3, graph: "{graph}", cast: [(name: "lamplighter", mesh: "{mesh}")],
+            posts: [(name: "corner", position: (2.0, 0.0, 3.0), yaw_degrees: 90.0, gestures: ["{gesture}"])],
+            walks: [(name: "lap", points: [(0.0, 0.0, 0.0), (8.0, 0.0, 0.0), (8.0, 0.0, 8.0)], closed: true,
+                     count: 2)])),"#
+    )
+}
+
+/// A zone's ambient characters cook to an asset of the zone's own, which ships in its pack with the cast it
+/// reaches, and leave the `.szone` the bytes it was without them: nothing the simulation reads moves.
+#[test]
+fn a_zones_ambient_characters_cook_beside_it_and_leave_it_as_it_was() {
+    let tree = tree("zone-ambient");
+    add_lamp(&tree);
+    write_zone(&tree, &placements());
+    let report = tree.cook();
+    let without = fs::read(&by_id(&report, ZONE).output).unwrap();
+    assert!(!report.assets.iter().any(|asset| asset.id == ambient_id()), "no section, no asset");
+
+    write_zone(&tree, &format!("{} {}", placements(), ambient_section(ELSEWHERE, LAMP, "shift")));
+    let report = tree.cook();
+    assert_eq!(fs::read(&by_id(&report, ZONE).output).unwrap(), without, "the zone is the bytes it was");
+    let cooked = by_id(&report, ambient_id());
+    assert!(cooked.output.ends_with("town.sambient"), "{}", cooked.output.display());
+    let bytes = read_aligned(&cooked.output);
+    let ambient = Ambient::read(&bytes).unwrap();
+    assert_eq!((ambient.seed.to_native(), ambient.posts.len(), ambient.walks.len()), (3, 1, 1));
+    assert_eq!(ambient.cast[0].mesh, LAMP);
+    let reach = AssetKind::Ambient.reach(&bytes).unwrap();
+    assert!(reach.contains(&LAMP) && reach.contains(&ELSEWHERE), "{reach:?}");
+    assert!(AssetKind::Ambient.references(&bytes).unwrap().is_empty(), "loading it loads nothing else");
+
+    let packed = pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap();
+    let holding = |id: AssetId| -> Vec<String> {
+        packed
+            .packs
+            .iter()
+            .filter(|pack| {
+                let bytes = fs::read(&pack.path).unwrap();
+                PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == id)
+            })
+            .map(|pack| pack.name.clone())
+            .collect()
+    };
+    assert_eq!(holding(ambient_id()), ["zone_town"]);
+    assert_eq!(holding(LAMP), ["zone_town"], "a cast only this zone has ships with it");
+    assert!(holding(ELSEWHERE).is_empty(), "what another tree has stays out");
+}
+
+/// A cast member that isn't a mesh, a graph that isn't one, and a bad name fail the cook naming the zone and
+/// the field.
+#[test]
+fn what_a_zones_ambient_characters_name_is_held_to_its_kind() {
+    let tree = tree("zone-ambient-errors");
+    add_lamp(&tree);
+    let cases = [
+        (ambient_section(ELSEWHERE, WOOD, "shift"), ["`ambient.cast[0].mesh`", "a mesh"]),
+        (ambient_section(LAMP, LAMP, "shift"), ["`ambient.graph`", "an animation graph"]),
+        (ambient_section(ELSEWHERE, LAMP, ""), ["ambient.posts[0].gestures[0]", ""]),
+    ];
+    for (data, said) in cases {
+        write_zone(&tree, &data);
+        let text = chain(&tree.try_cook(false).expect_err(&data));
+        for said in ["town.zone.ron"].into_iter().chain(said) {
+            assert!(text.contains(said), "`{text}` must say `{said}`");
+        }
+    }
+}

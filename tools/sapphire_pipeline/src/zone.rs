@@ -69,6 +69,15 @@
 //! materials' keys and the day's keys, so a save to a light or a spawner leaves it alone. The zone's `.szone`
 //! names its ID, which its pack then holds.
 //!
+//! # Ambient characters
+//!
+//! A document with `ambient` (M5 C10, `sapphire_zone::ambient`) makes a `.sambient` of its own, a sub-asset
+//! (`town.sambient`) beside its cells, which the zone's `.szone` doesn't name and whose ID the stage derives
+//! from the zone's: so a zone without the section cooks to the bytes it always did, and its pack differs
+//! only by that one asset. Its key holds the section and nothing else. A cook holds its cast's meshes and its
+//! graph to their kinds when this tree has them; the benchmark's district names the shipped content's, which
+//! its tree hasn't, as its walk mounts both (`bench`).
+//!
 //! # Exits
 //!
 //! An exit names another zone and a spawner in it, and a cook holds the two together from the other's
@@ -261,6 +270,10 @@ struct NavigationRecipe<'a> {
 /// What a zone's reflection probes' sub-asset is called among a zone's. Never changed: its ID is derived
 /// from it.
 pub const REFLECTIONS_PART: &str = "reflections";
+
+/// The `.sambient` writer (M5 C10): a zone's ambient characters, an asset of its own. Bump the version
+/// whenever it changes output for the same section.
+pub const AMBIENT_COOKER: Stage = Stage { name: "sambient", version: 1 };
 
 /// What keys a zone's reflection probes in place of the document (see [`ZonePlan::reflections_recipe`]).
 #[derive(Serialize)]
@@ -557,6 +570,20 @@ impl ZonePlan {
                 .collect(),
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a reflections recipe always encodes"))
+    }
+
+    /// The ID of the zone's ambient characters, which it has if its document has an `ambient` section (M5
+    /// C10): `sapphire_zone::AMBIENT_PART`, which the stage finds by the zone's ID.
+    pub fn ambient_id(&self) -> Option<AssetId> {
+        self.document.ambient.is_some().then(|| self.id.sub_asset(sapphire_zone::AMBIENT_PART))
+    }
+
+    /// What the key of the zone's ambient characters holds in place of the document's hash: the section alone,
+    /// so a save to anything else in the document leaves it alone, and its cook reads nothing else.
+    pub fn ambient_recipe(&self) -> blake3::Hash {
+        let section =
+            serde_json::to_vec(&self.document.ambient).expect("a checked section's numbers are finite");
+        blake3::hash(&section)
     }
 
     /// Whether a placement or an instance names colliders that stand for it, which the `.szone`'s cook then

@@ -167,6 +167,7 @@ pub fn simulation(cells: u32, encounter: AssetId) -> ZoneSimulation {
         navigation: None,
         encounters: vec![encounter],
         exits: Vec::new(),
+        ambient: None,
     };
     document.simulation().expect("the district's simulation half is a valid zone's")
 }

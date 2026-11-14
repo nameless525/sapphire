@@ -21,6 +21,8 @@
 //! - **Reflection probes** ([`reflections`], M5 L2): where a zone's reflections are baked from and the box
 //!   each is corrected against, at most [`reflections::MAX_PROBES`]. The cooked zone names the asset the cook
 //!   bakes of them (`sapphire_assets::reflections`).
+//! - **Ambient characters** ([`ambient`], M5 C10): who stands about a zone and walks it, as presentation
+//!   alone, cooked to an asset of the zone's own (`.sambient`) beside its cells, never into [`Zone`].
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //!
@@ -48,6 +50,7 @@
 //! each platform's C math library, so they stay out of the digest and may differ by a few bits.
 //! `[simulation]` in `xtask/layers.toml` holds this crate to the simulation's `clippy.toml`.
 
+pub mod ambient;
 pub mod cooked;
 pub mod document;
 pub mod encounter;
@@ -55,6 +58,10 @@ pub mod grid;
 pub mod look;
 pub mod reflections;
 
+pub use ambient::{
+    AMBIENT_EXTENSION, AMBIENT_PART, Ambient, ArchivedAmbient, ArchivedCookedCastMember, ArchivedCookedPost,
+    ArchivedCookedWalk, CastMember, CookedCastMember, CookedPost, CookedWalk, Post, Walk, ZoneAmbient,
+};
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
     ArchivedCookedLightShape, ArchivedCookedPatrol, ArchivedCookedSpawner, ArchivedCookedSpline,

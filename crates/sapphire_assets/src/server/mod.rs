@@ -60,7 +60,7 @@ impl AssetBudgets {
     /// are proposals, to set by measuring zones (M2, M3). A quality tier sets its own texture pool on top
     /// ([`Self::with_resident`]; `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2). Reflection probes'
     /// is a zone's most, 42 probes of ten keys at 128 (315 MiB), with room for a second zone's few (M5 L2).
-    /// Playable kinds 1 MiB (M5 C8), character motions 1 MiB (M5 C4).
+    /// Playable kinds 1 MiB (M5 C8), character motions 1 MiB (M5 C4), a zone's ambient characters 1 MiB (M5 C10).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         admission: 256 * MIB,
@@ -100,6 +100,8 @@ impl AssetBudgets {
             MIB,
             // Character motions.
             MIB,
+            // Ambient characters.
+            MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
@@ -109,7 +111,7 @@ impl AssetBudgets {
     /// 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 2 MiB,
     /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures'
     /// pool; reflection probes 96 MiB (42 probes of ten keys at 64 are 79 MiB, M5 L2); playable kinds 1 MiB;
-    /// character motions 1 MiB.
+    /// character motions 1 MiB; ambient characters 1 MiB.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         admission: 64 * MIB,
@@ -146,6 +148,8 @@ impl AssetBudgets {
             // Playable kinds.
             MIB,
             // Character motions.
+            MIB,
+            // Ambient characters.
             MIB,
         ]),
     };
@@ -189,7 +193,8 @@ impl AssetBudgets {
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
     /// skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string tables,
     /// fonts, font chains, navmeshes, timelines, UI documents, encounters, scripts, dialogues, enemies,
-    /// scores, voice lines, texture levels, reflection probes, playable kinds, character motions.
+    /// scores, voice lines, texture levels, reflection probes, playable kinds, character motions,
+    /// ambient characters.
     const fn by_kind(budgets: [u64; AssetKind::ALL.len()]) -> [u64; AssetKind::ALL.len()] {
         budgets
     }

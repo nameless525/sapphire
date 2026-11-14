@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use sapphire_assets::{AssetKind, AssetStats};
 use sapphire_platform::CoreKind;
-use sapphire_render::{FrameCounts, RenderStats};
+use sapphire_render::{FrameCounts, RenderStats, StateChanges};
 
 use super::{Phase, Traced, spread};
 use crate::LOG_TARGET;
@@ -24,6 +24,8 @@ use crate::LOG_TARGET;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counted {
     pub passes: FrameCounts,
+    /// The pipelines, materials and mesh streams the mesh passes set (M5 D1).
+    pub state_changes: StateChanges,
     /// Scene instances, and of the skinned ones those skinned this frame, their joints and vertices.
     pub instances: u32,
     pub skinned: u32,
@@ -65,6 +67,7 @@ impl Counted {
         };
         Self {
             passes: render.passes,
+            state_changes: render.state_changes,
             instances: render.instances,
             skinned: render.skinning.skinned,
             joints: render.skinning.joints,
@@ -99,9 +102,9 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
     CountRow { name, read, budget: [None; 4] }
 }
 
-/// What's logged, the frame's whole first, then pass by pass, then what culled, the levels drawn, skinning,
-/// lights, and the asset server's.
-pub(super) const COUNT_ROWS: [CountRow; 39] = [
+/// What's logged, the frame's whole first, then pass by pass, then what culled, the levels drawn, the state
+/// the mesh passes changed, skinning, lights, and the asset server's.
+pub(super) const COUNT_ROWS: [CountRow; 42] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -131,6 +134,9 @@ pub(super) const COUNT_ROWS: [CountRow; 39] = [
     row("culled past outline cutoff", |c| u64::from(c.passes.total().culled_by_cutoff)),
     row("lod0 draws", |c| u64::from(c.passes.total().levels[0])),
     row("lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
+    row("pipelines set", |c| u64::from(c.state_changes.pipelines)),
+    row("materials bound", |c| u64::from(c.state_changes.materials)),
+    row("vertex buffers bound", |c| u64::from(c.state_changes.vertex_buffers)),
     row("scene instances", |c| u64::from(c.instances)),
     row("skinned instances", |c| u64::from(c.skinned)),
     row("joints", |c| u64::from(c.joints)),

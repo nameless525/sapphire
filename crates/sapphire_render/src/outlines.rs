@@ -198,6 +198,7 @@ mod tests {
                     surface: 0,
                     draw_id,
                     material: handle,
+                    mesh: MeshHandle::from_raw(0),
                     outline: true,
                 }),
                 outline => list.commands[0][0].push(DrawCommand {
@@ -206,6 +207,7 @@ mod tests {
                     slot,
                     draw_id,
                     material: handle,
+                    mesh: MeshHandle::from_raw(0),
                     outline: outline.is_some(),
                     foliage: 0,
                 }),

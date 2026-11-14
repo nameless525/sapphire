@@ -923,7 +923,7 @@ pub use ambient::{
 };
 pub use character_prepass::CharacterPrepassStats;
 pub use color_vision::ColorVision;
-pub use counts::{FrameCounts, MESH_LEVELS, PassCounts};
+pub use counts::{FrameCounts, MESH_LEVELS, PassCounts, StateChanges};
 pub use debug_draw::DebugDrawPassStats;
 pub use debug_view::{DebugView, DebugViewStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};

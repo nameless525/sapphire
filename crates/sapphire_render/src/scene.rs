@@ -35,10 +35,12 @@
 //! order, each over the ones before it. Draws of skinned or morphed meshes form groups of their own,
 //! per variant: each instance draws from its own skinning outputs (f32 positions), so they bind
 //! by instance slot rather than by mesh. Each draw record carries its mesh's dequantization, so
-//! the vertex shaders decode any mesh without another binding. Sorting by material and mesh
-//! within a group (§5.12) will cost nothing on frames that only move instances, since the list
-//! is rebuilt only when the set changes; sorting transparent draws back to front depends on
-//! where things are, so it will run every frame that has them.
+//! the vertex shaders decode any mesh without another binding. Each view compacts a list of its
+//! own every frame (M5 D1, the `draw::lists` module): the shadow views draw a group's
+//! depth-writing static surfaces by mesh, in orders sorted when the list is rebuilt (so a frame
+//! that only moves instances sorts nothing); the views that write colour keep this order.
+//! Sorting transparent draws back to front depends on where things are, so it will run every
+//! frame that has them.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -51,6 +53,7 @@ use sapphire_rhi::wgpu;
 
 use crate::bounds::Sphere;
 use crate::buffer::{self, GrowableBuffer};
+use crate::draw::Orders;
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
@@ -646,6 +649,9 @@ pub(crate) struct DrawCommand {
     pub slot: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
+    /// The instance's mesh, whose level 0 the draw draws a submesh of: the shadow views' key (the
+    /// `draw::lists` module) and what instancing runs are made of (m5-plan D2).
+    pub mesh: MeshHandle,
     /// It draws an outline hull too
     /// ([`Permutation::outlined`](crate::pipelines::Permutation::outlined)).
     pub outline: bool,
@@ -665,6 +671,8 @@ pub(crate) struct DeformedDraw {
     pub surface: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
+    /// The instance's mesh.
+    pub mesh: MeshHandle,
     /// It draws an outline hull too.
     pub outline: bool,
 }
@@ -692,6 +700,9 @@ pub(crate) struct DrawList {
     /// The static instances whose draws are all environment or foliage surfaces, in slot order:
     /// the main view culls them by their bounds (review RA-O01, the `view_cull` module).
     pub cullable: Vec<CullCandidate>,
+    /// The sorted groups' orders (M5 D1), which each view's list is compacted in: built with the
+    /// list, so a frame that only moves instances sorts nothing.
+    pub orders: Orders,
 }
 
 impl Default for DrawList {
@@ -704,6 +715,7 @@ impl Default for DrawList {
             faded: 0,
             over_limit: 0,
             cullable: Vec::new(),
+            orders: Orders::default(),
         }
     }
 }
@@ -801,6 +813,7 @@ impl DrawList {
                             slot,
                             draw_id,
                             material,
+                            mesh,
                             outline,
                             foliage: record.foliage.unwrap_or(0),
                         });
@@ -813,6 +826,7 @@ impl DrawList {
                             surface,
                             draw_id,
                             material,
+                            mesh,
                             outline,
                         });
                     }
@@ -832,6 +846,8 @@ impl DrawList {
             commands[layers].sort_unstable_by_key(|command| (layer(command.material), command.draw_id));
         }
         self.deformed[layers].sort_unstable_by_key(|draw| (layer(draw.material), draw.draw_id));
+        // Then each view's order within its groups (M5 D1): material, mesh, record.
+        self.orders.build(&self.commands);
     }
 
     /// Surface draws of `variant`.
@@ -1306,6 +1322,7 @@ mod tests {
             slot: instance,
             draw_id,
             material: MaterialHandle::from_raw(slot + 10),
+            mesh: slots.mesh(instance).expect("live"),
             outline,
             foliage: 0,
         };
@@ -1319,7 +1336,15 @@ mod tests {
         let material = MaterialHandle::from_raw(14);
         assert_eq!(
             deformed_opaque[..],
-            [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
+            [DeformedDraw {
+                indices: 27..33,
+                slot: 4,
+                surface: 90,
+                draw_id: 4,
+                material,
+                mesh: MeshHandle::from_raw(3),
+                outline: false
+            }]
         );
         // Draws per variant: `[opaque, face, alpha-tested, transparent]` bodies and faces.
         let lens = |[o, f, a, t]: [usize; 4]| {

@@ -24,12 +24,12 @@ use serde::{Deserialize, Serialize};
 use crate::ambient::{Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, ReflectionSettings};
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
-use crate::characters::Characters;
+use crate::characters::{CharacterSlots, Characters};
 use crate::color_vision::{ColorVision, ColorVisionDraw};
-use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts};
+use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
-use crate::draw::{DrawRef, DrawSet, MeshDraws};
+use crate::draw::{DrawRef, DrawSet, MeshDraws, ViewLists, ViewTests, Walk};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
@@ -507,6 +507,9 @@ pub struct RenderStats {
     /// mesh draws it looked at and culled, by what, and the levels of detail drawn (M5 B4, the
     /// [`counts`](crate::counts) module). Zero for a pass the graph culled.
     pub passes: FrameCounts,
+    /// The pipelines, materials and mesh streams the last frame's mesh passes set (M5 D1): what the
+    /// order of each view's draw list decides.
+    pub state_changes: StateChanges,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -689,6 +692,12 @@ pub struct Renderer {
     /// What each pass of the frame recorded last submits, added as its passes record
     /// ([`RenderStats::passes`]): zeroed at each [`Self::record`].
     counts: PassCounters,
+    /// Each view's draw list (M5 D1, the `draw::lists` module), compacted at each
+    /// [`Self::record`]. Boxed: a few dozen lists.
+    view_lists: Box<ViewLists>,
+    /// The passes walk the whole draw list and test each draw, as before view lists
+    /// ([`Self::walk_filtered`]).
+    walk_filtered: bool,
     /// What the last [`Self::record`] took, if it built a graph, until the next [`Self::prepare`]
     /// knows whether that graph ran.
     recorded: Option<RecordedFrame>,
@@ -1037,6 +1046,8 @@ impl Renderer {
             pending_cut: false,
             frame_ran: AtomicBool::new(false),
             counts: PassCounters::default(),
+            view_lists: Box::default(),
+            walk_filtered: false,
             recorded: None,
             pipeline_builds,
             prewarmed_keys: BTreeSet::new(),
@@ -1325,6 +1336,15 @@ impl Renderer {
         if !self.device_lost {
             self.meshes.stage_uploads(&self.queue, ring);
         }
+    }
+
+    /// Records each pass by walking the whole draw list and testing every draw as it goes (`true`),
+    /// as the passes did before each view had its own list (M5 D1, `false`, the default):
+    /// for the test that draws scenes both ways and compares every byte. m5-plan D2 deletes the
+    /// filtered walk, and this with it.
+    #[doc(hidden)]
+    pub fn walk_filtered(&mut self, filtered: bool) {
+        self.walk_filtered = filtered;
     }
 
     /// Whether a compaction asked for isn't over: the last frame prepared left the pool above its floor.
@@ -2836,6 +2856,8 @@ impl Renderer {
             ref mut insets,
             first_inset_view,
             color_format,
+            ref mut view_lists,
+            walk_filtered,
             ..
         } = *self;
         // With the colour-vision view on (M4 A5), everything draws into a texture of the target's, which
@@ -2883,6 +2905,35 @@ impl Renderer {
         let skinning_frame = skinning.frame();
         // The insets (M3 U6): their uploads, those that draw, and those the interface shows.
         let inset_frame = insets.split_for_record(first_inset_view, view_stride);
+        // Each view's list (M5 D1): what its passes draw, in their order, from the draw list's
+        // groups, tested here once rather than by each pass as it records.
+        let lists = if walk_filtered {
+            None
+        } else {
+            profiling::scope!("view lists");
+            let lists = &mut **view_lists;
+            let listed = |slot| character_slots.listed(slot);
+            let world = ViewTests {
+                stands: inset_frame.stands,
+                stand: 0,
+                hulls: outlines.visible(),
+                materials: material_records,
+                view: view_cull.mask(),
+                instance: |_| true,
+            };
+            lists.compact_view(Walk::Main, draw_list, &world);
+            lists.compact_view(Walk::ScenePrepass, draw_list, &world);
+            let characters = ViewTests { view: None, ..world.with_instance(listed) };
+            lists.compact_view(Walk::CharacterPrepass, draw_list, &characters);
+            shadows.compact_casters(lists, draw_list, inset_frame.stands);
+            for (index, draw) in inset_frame.draws.iter().enumerate() {
+                let Some(draw) = draw else { continue };
+                let inset = ViewTests { stand: draw.stand, view: None, ..world };
+                lists.compact_view(Walk::InsetMain(index), draw_list, &inset);
+                lists.compact_view(Walk::InsetCharacters(index), draw_list, &inset.with_instance(listed));
+            }
+            Some(&**view_lists)
+        };
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,
@@ -2895,6 +2946,9 @@ impl Renderer {
             stands: inset_frame.stands,
             stand: 0,
             counter: counts.get(Counted::CharacterPrepass),
+            changes: counts.changes(),
+            lists,
+            walk: Walk::CharacterPrepass,
         };
         let InsetFrame { uploads: inset_uploads, draws: inset_draws, shown: inset_shown, .. } = inset_frame;
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
@@ -3006,9 +3060,14 @@ impl Renderer {
         // The main view's passes skip what its frustum culled (review RA-O01): the scene prepass,
         // the main pass and the debug views' replays of it, so all agree. The shadows above and
         // the character prepass below draw every instance they pick.
-        let view_draws =
-            MeshDraws { view: view_cull.mask(), counter: counts.get(Counted::Main), ..mesh_draws };
-        let scene_draws = MeshDraws { counter: counts.get(Counted::ScenePrepass), ..view_draws };
+        let view_draws = MeshDraws {
+            view: view_cull.mask(),
+            counter: counts.get(Counted::Main),
+            walk: Walk::Main,
+            ..mesh_draws
+        };
+        let scene_draws =
+            MeshDraws { counter: counts.get(Counted::ScenePrepass), walk: Walk::ScenePrepass, ..view_draws };
         // The main view and the mesh pool's indices. The main pass binds each family's frame and
         // scene groups in turn (`draw_main_pass`).
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
@@ -3041,9 +3100,7 @@ impl Renderer {
                 // ones (fading characters' among them, which the draw list moves there) through
                 // the masked one (M1 C7), cut out as the main pass cuts them, then the two-sided
                 // ones through theirs, which cull nothing (M1 C8).
-                draw_character_prepass(&mut pass, pipelines, &mesh_draws, |slot| {
-                    character_slots.listed(slot)
-                });
+                draw_character_prepass(&mut pass, pipelines, &mesh_draws, character_slots);
             });
         let mut scene_prepass = graph
             .add_pass(SCENE_PREPASS)
@@ -3058,6 +3115,7 @@ impl Renderer {
             let colors = [Some(targets.normals), targets.velocity, Some(targets.outlines)];
             let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
             bind(&mut pass);
+            scene_draws.count_left_out();
             // The anime character family's frame and scene groups, which the prepasses bind for
             // every family's draws but foliage's (they read no material).
             let characters = groups.frame.get(FrameGroup::Characters);
@@ -3075,7 +3133,7 @@ impl Renderer {
                 let Some(mesh) = pipelines.mesh(format) else { continue };
                 for (pipeline, kind, variants) in mesh.scene_prepasses() {
                     if variants.iter().any(|&variant| scene_draws.has_static(format, variant)) {
-                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
+                        scene_draws.set_pipeline(&mut pass, pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             scene_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
@@ -3085,7 +3143,7 @@ impl Renderer {
             if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                 for (pipeline, kind, variants) in mesh.scene_prepasses() {
                     if variants.iter().any(|&variant| scene_draws.has_deformed(variant)) {
-                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
+                        scene_draws.set_pipeline(&mut pass, pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             scene_draws.draw_deformed(&mut pass, kind, variant, set);
                         }
@@ -3109,7 +3167,7 @@ impl Renderer {
                         pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
                         foliage_bound = true;
                     }
-                    pass.set_pipeline(pipeline);
+                    scene_draws.set_pipeline(&mut pass, pipeline);
                     let foliage = MeshPass::FoliagePrepass;
                     scene_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
                 }
@@ -3128,7 +3186,7 @@ impl Renderer {
                 let Some(mesh) = pipelines.mesh(format) else { continue };
                 for (pipeline, kind, variants) in mesh.outline_prepasses() {
                     if variants.iter().any(|&variant| scene_draws.has_static(format, variant)) {
-                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
+                        scene_draws.set_pipeline(&mut pass, pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             scene_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
@@ -3138,7 +3196,7 @@ impl Renderer {
             if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                 for (pipeline, kind, variants) in mesh.outline_prepasses() {
                     if variants.iter().any(|&variant| scene_draws.has_deformed(variant)) {
-                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
+                        scene_draws.set_pipeline(&mut pass, pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             scene_draws.draw_deformed(&mut pass, kind, variant, set);
                         }
@@ -3215,6 +3273,7 @@ impl Renderer {
                 ..Default::default()
             });
             bind(&mut pass);
+            view_draws.count_left_out();
             let pipeline = |format, variant, set| {
                 main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
             };
@@ -3289,7 +3348,9 @@ impl Renderer {
             let inset_msaa = (samples > 1)
                 .then(|| graph.create_texture("inset msaa color", inset_attachment(SCENE_COLOR_FORMAT)));
             let inset_depth = graph.create_texture("inset depth", inset_attachment(DEPTH_FORMAT));
-            let draws = MeshDraws { stand, counter: counts.get(Counted::Inset(index)), ..mesh_draws };
+            let counter = counts.get(Counted::Inset(index));
+            let draws = MeshDraws { stand, counter, walk: Walk::InsetCharacters(index), ..mesh_draws };
+            let main_draws = MeshDraws { walk: Walk::InsetMain(index), ..draws };
             graph
                 .add_pass(INSET_CHARACTER_PASS)
                 .weight(pass_weight::CHARACTERS)
@@ -3301,7 +3362,7 @@ impl Renderer {
                     pass.set_bind_group(1, view_bind_group, &[view_offset]);
                     pass.set_bind_group(2, &scene_bind_groups[0], &[]);
                     pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                    draw_character_prepass(&mut pass, pipelines, &draws, |slot| character_slots.listed(slot));
+                    draw_character_prepass(&mut pass, pipelines, &draws, character_slots);
                 });
             let mut inset_main = graph
                 .add_pass(INSET_MAIN_PASS)
@@ -3344,7 +3405,8 @@ impl Renderer {
                     main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
                 };
                 let groups = MeshGroups { frame: frame_groups, scene: scene_bind_groups };
-                draw_main_pass(&mut pass, &pipeline, &draws, groups, None, None, |_| true);
+                main_draws.count_left_out();
+                draw_main_pass(&mut pass, &pipeline, &main_draws, groups, None, None, |_| true);
             });
             *resolve = Some(InsetResolve { post, scene: inset_color, picture, soft_backdrop });
         }
@@ -3527,6 +3589,7 @@ impl Renderer {
             ambient: self.ambient.stats(),
             vfx: self.vfx.stats(),
             passes: self.counts.read(),
+            state_changes: self.counts.read_changes(),
             ..self.stats
         }
     }
@@ -3953,7 +4016,7 @@ fn draw_main<'p>(
         {
             match through {
                 DrawThrough::One(pipeline) => {
-                    pass.set_pipeline(pipeline);
+                    draws.set_pipeline(pass, pipeline);
                     draws.draw_static_where(pass, kind, format, variant, set, instance);
                 }
                 DrawThrough::Both(pipelines) => {
@@ -3967,7 +4030,7 @@ fn draw_main<'p>(
     {
         match through {
             DrawThrough::One(pipeline) => {
-                pass.set_pipeline(pipeline);
+                draws.set_pipeline(pass, pipeline);
                 draws.draw_deformed_where(pass, kind, variant, set, instance);
             }
             DrawThrough::Both(pipelines) => {
@@ -4025,10 +4088,26 @@ fn check_foliage(
     Ok(())
 }
 
-/// Draws the character prepass's surfaces of `draws` whose instance slot `listed` takes: every part
+/// Draws the character prepass's surfaces of `draws` of the instances `characters` lists: every part
 /// but hair, then hair, each the opaque, alpha-tested and two-sided surfaces through their pipelines
 /// ([`Renderer::record`] says why). Groups 1 and 2 and the index buffer must be bound.
 fn draw_character_prepass(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipelines: &Pipelines,
+    draws: &MeshDraws<'_>,
+    characters: CharacterSlots<'_>,
+) {
+    draws.count_left_out();
+    // The view's list holds the listed characters' alone; the filtered walk tests each draw.
+    if draws.lists.is_some() {
+        draw_character_surfaces(pass, pipelines, draws, |_| true);
+    } else {
+        draw_character_surfaces(pass, pipelines, draws, |slot| characters.listed(slot));
+    }
+}
+
+/// Draws [`draw_character_prepass`]'s surfaces of the instances `listed` takes.
+fn draw_character_surfaces(
     pass: &mut wgpu::RenderPass<'_>,
     pipelines: &Pipelines,
     draws: &MeshDraws<'_>,
@@ -4040,7 +4119,7 @@ fn draw_character_prepass(
             let Some(mesh) = pipelines.mesh(format) else { continue };
             let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
             if variants.iter().any(|&variant| draws.has_static(format, variant)) {
-                pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                draws.set_pipeline(pass, pipeline.expect("built with the variants' surfaces"));
                 for &variant in variants {
                     draws.draw_static_where(pass, kind, format, variant, set, listed);
                 }
@@ -4049,7 +4128,7 @@ fn draw_character_prepass(
         if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
             let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
             if variants.iter().any(|&variant| draws.has_deformed(variant)) {
-                pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                draws.set_pipeline(pass, pipeline.expect("built with the variants' surfaces"));
                 for &variant in variants {
                     draws.draw_deformed_where(pass, kind, variant, set, listed);
                 }

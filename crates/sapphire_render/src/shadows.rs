@@ -227,7 +227,7 @@ use serde::{Deserialize, Serialize};
 use crate::buffer;
 use crate::characters::{CharacterTable, GpuCharacter, GpuReceived};
 use crate::counts::{Counted, PassCounters};
-use crate::draw::{DrawSet, MeshDraws};
+use crate::draw::{CasterTests, DrawSet, MeshDraws, ViewLists, Walk};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
 use crate::mesh_pool::MeshRecord;
@@ -909,6 +909,29 @@ impl Shadows {
         }
     }
 
+    /// Compacts every shadow view's draw list (M5 D1) from `list`: each cascade the frame draws
+    /// lists the world's casters its test keeps, each character map its character's. `stands` says
+    /// which view each instance slot stands in.
+    pub(crate) fn compact_casters(&self, lists: &mut ViewLists, list: &DrawList, stands: &[u16]) {
+        let active = self.pipelines.is_some() && self.plan.active;
+        let maps = match self.settings {
+            Some(_) if active => self.plan.maps.len(),
+            _ => 0,
+        };
+        let plan = &self.plan.casters;
+        let tests = CasterTests {
+            stands,
+            cascades: std::array::from_fn(|index| {
+                active && self.plan.drawn.get(index).is_some_and(Option::is_some)
+            }),
+            maps,
+            plan: |slot: u32| {
+                plan.get(slot as usize).map_or((0, None), |caster| (caster.cascades, caster.map))
+            },
+        };
+        lists.compact_casters(list, &tests);
+    }
+
     /// The view of cascade `index` (below [`MAX_CASCADES`]), or of character map `index −
     /// MAX_CASCADES`, among the shadows' views.
     fn view_index(&self, index: usize) -> u32 {
@@ -946,34 +969,48 @@ impl Shadows {
             }
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
-            let draws = MeshDraws { counter: counts.get(Counted::Cascade(index)), ..draws };
+            let counter = counts.get(Counted::Cascade(index));
+            let draws = MeshDraws { counter, walk: Walk::Cascade(index), ..draws };
             graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
                     begin_depth_pass(ctx.encoder, CASCADE_PASSES[index], layer, timestamps, labels);
                 pass.set_bind_group(1, view_group, &[offset(index)]);
                 pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
-                    plan.get(slot as usize).is_some_and(|caster| caster.cascades & bit != 0)
-                });
+                draws.count_left_out();
+                // The cascade's list holds its casters alone; the filtered walk tests each draw.
+                if draws.lists.is_some() {
+                    draw_casters(&mut pass, pipelines, casters, &draws, |_| true);
+                } else {
+                    draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
+                        plan.get(slot as usize).is_some_and(|caster| caster.cascades & bit != 0)
+                    });
+                }
             });
         }
         if let Some(settings) = self.settings.filter(|_| !self.plan.maps.is_empty()) {
             let (tile, maps) = (settings.character_resolution, self.plan.maps.len());
-            let draws = MeshDraws { counter: counts.get(Counted::CharacterMaps), ..draws };
+            let draws =
+                MeshDraws { counter: counts.get(Counted::CharacterMaps), walk: Walk::CharacterMaps, ..draws };
             graph.add_pass(CHARACTER_PASS).side_effect().weight(pass_weight::CHARACTERS).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let atlas = &self.textures.atlas;
                 let mut pass = begin_depth_pass(ctx.encoder, CHARACTER_PASS, atlas, timestamps, labels);
                 pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+                draws.count_left_out();
                 for map in 0..maps {
                     let (x, y) = ((map as u32 % ATLAS_COLUMNS) * tile, (map as u32 / ATLAS_COLUMNS) * tile);
                     pass.set_viewport(x as f32, y as f32, tile as f32, tile as f32, 0.0, 1.0);
                     pass.set_scissor_rect(x, y, tile, tile);
                     pass.set_bind_group(1, view_group, &[offset(MAX_CASCADES + map)]);
-                    draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
-                        plan.get(slot as usize).is_some_and(|caster| caster.map == Some(map as u8))
-                    });
+                    let draws = MeshDraws { walk: Walk::CharacterMap(map), ..draws };
+                    if draws.lists.is_some() {
+                        draw_casters(&mut pass, pipelines, casters, &draws, |_| true);
+                    } else {
+                        draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
+                            plan.get(slot as usize).is_some_and(|caster| caster.map == Some(map as u8))
+                        });
+                    }
                 }
             });
         }
@@ -1049,14 +1086,14 @@ fn draw_casters(
         let Some(pipeline) = &pipelines.casters[format_index(format)] else { continue };
         let variants = SurfaceVariant::SHARED_DEPTH.iter().filter(|variant| shared(format, variant));
         if variants.clone().any(|&variant| draws.has_static(format, variant)) {
-            pass.set_pipeline(pipeline);
+            draws.set_pipeline(pass, pipeline);
             for &variant in variants {
                 draws.draw_static_where(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces, include);
             }
         }
         let Some(masked) = masked_caster(format) else { continue };
         if SurfaceVariant::CHARACTER_ALPHA_TEST.iter().any(|&variant| draws.has_static(format, variant)) {
-            pass.set_pipeline(masked);
+            draws.set_pipeline(pass, masked);
             for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
                 draws.draw_static_where(
                     pass,
@@ -1074,7 +1111,7 @@ fn draw_casters(
     if let Some(pipeline) = &pipelines.casters[format_index(float)]
         && variants.clone().any(|&variant| draws.has_deformed(variant))
     {
-        pass.set_pipeline(pipeline);
+        draws.set_pipeline(pass, pipeline);
         for &variant in variants {
             draws.draw_deformed_where(pass, MeshPass::Shadow, variant, DrawSet::Surfaces, include);
         }
@@ -1082,7 +1119,7 @@ fn draw_casters(
     if let Some(masked) = masked_caster(float)
         && SurfaceVariant::CHARACTER_ALPHA_TEST.iter().any(|&variant| draws.has_deformed(variant))
     {
-        pass.set_pipeline(masked);
+        draws.set_pipeline(pass, masked);
         for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
             draws.draw_deformed_where(pass, MeshPass::MaskedShadow, variant, DrawSet::Surfaces, include);
         }
@@ -1101,7 +1138,7 @@ fn draw_casters(
                 pass.set_bind_group(2, bindings.foliage_group, &[]);
                 foliage_bound = true;
             }
-            pass.set_pipeline(pipeline);
+            draws.set_pipeline(pass, pipeline);
             draws.draw_static_where(
                 pass,
                 MeshPass::FoliageShadow,

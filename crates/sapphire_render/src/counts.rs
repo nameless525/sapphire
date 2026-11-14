@@ -19,6 +19,9 @@
 //! - **Levels of detail:** every mesh draw counts in [`PassCounts::levels`] by the level it drew. Every
 //!   draw is LOD0 until levels are selected (m5-plan D4, D5); the buckets are fixed so that work fills
 //!   them as they are.
+//! - **State changes** (M5 D1, [`StateChanges`]): the pipelines the mesh passes set, the materials they
+//!   bind and the vertex buffers they bind for meshes' streams, the whole frame's together. What an
+//!   order of each view's draws buys is exact here, where time is noisy.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -212,6 +215,58 @@ impl Counted {
     }
 }
 
+/// What a frame's mesh passes changed between draws (M5 D1): the state the draw list's order decides.
+/// Every pass that draws meshes counts, the debug views' replays too; the sky, effects, post and the
+/// interface don't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateChanges {
+    /// Pipelines set for mesh draws.
+    pub pipelines: u32,
+    /// Material groups (group 3) bound.
+    pub materials: u32,
+    /// Vertex buffers bound for meshes' streams (positions, shading, surface, foliage and previous
+    /// positions), but not each draw's record, which every draw binds.
+    pub vertex_buffers: u32,
+}
+
+/// The frame's [`StateChanges`], which every mesh pass adds to: relaxed atomics, as [`Counter`]'s.
+#[derive(Debug, Default)]
+pub(crate) struct ChangeCounter {
+    pipelines: AtomicU32,
+    materials: AtomicU32,
+    vertex_buffers: AtomicU32,
+}
+
+impl ChangeCounter {
+    /// Adds `changes`, a group of draws' or a pass's.
+    pub(crate) fn add(&self, changes: &StateChanges) {
+        for (counter, value) in [
+            (&self.pipelines, changes.pipelines),
+            (&self.materials, changes.materials),
+            (&self.vertex_buffers, changes.vertex_buffers),
+        ] {
+            if value != 0 {
+                counter.fetch_add(value, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn read(&self) -> StateChanges {
+        let read = |counter: &AtomicU32| counter.load(Ordering::Relaxed);
+        StateChanges {
+            pipelines: read(&self.pipelines),
+            materials: read(&self.materials),
+            vertex_buffers: read(&self.vertex_buffers),
+        }
+    }
+
+    fn reset(&self) {
+        for counter in [&self.pipelines, &self.materials, &self.vertex_buffers] {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 /// One pass's counters, which only its recording adds to.
 #[derive(Debug, Default)]
 pub(crate) struct Counter {
@@ -286,6 +341,7 @@ impl Counter {
 #[derive(Debug, Default)]
 pub(crate) struct PassCounters {
     slots: [Counter; Counted::SLOTS],
+    changes: ChangeCounter,
 }
 
 impl PassCounters {
@@ -293,9 +349,20 @@ impl PassCounters {
         &self.slots[pass.slot()]
     }
 
+    /// The frame's state changes, which every mesh pass adds to.
+    pub(crate) fn changes(&self) -> &ChangeCounter {
+        &self.changes
+    }
+
+    /// What the mesh passes have changed since the last [`Self::reset`].
+    pub(crate) fn read_changes(&self) -> StateChanges {
+        self.changes.read()
+    }
+
     /// Zeroes every pass's counts, for a frame about to record.
     pub(crate) fn reset(&self) {
         self.slots.iter().for_each(Counter::reset);
+        self.changes.reset();
     }
 
     /// What every pass has added since the last [`Self::reset`].
@@ -381,8 +448,11 @@ mod tests {
             counts.mesh_draw(36, 0, true);
             counters.get(Counted::Main).add(&counts);
             counters.get(Counted::Cascade(1)).add(&PassCounts::fullscreen());
+            counters.changes().add(&StateChanges { pipelines: 1, materials: 2, vertex_buffers: 3 });
             assert_eq!(counters.read().total().draws, 2);
+            assert_eq!(counters.read_changes().vertex_buffers, 3);
             counters.reset();
+            assert_eq!(counters.read_changes(), StateChanges::default());
         });
         assert_eq!(allocated.allocations, 0, "{allocated:?}");
     }

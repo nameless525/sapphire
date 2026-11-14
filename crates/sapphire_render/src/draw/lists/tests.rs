@@ -1,0 +1,366 @@
+use glam::{Mat4, Vec3};
+use sapphire_assets::material::{MaterialFamily, MaterialFlags};
+use sapphire_assets::mesh::PositionFormat;
+
+use super::*;
+use crate::bounds::Sphere;
+use crate::gpu_types::Dequantize;
+use crate::mesh_pool::{DeformSource, MeshRecord, MeshStreams, Placement, SubmeshDraw, SubmeshMaterial};
+use crate::pipelines::{Coverage, Part};
+use crate::scene::{DrawLimits, InstanceSlots};
+use crate::{InstanceDeltas, InstanceId, MeshHandle, MeshInstance};
+
+const UNORM16: PositionFormat = PositionFormat::Unorm16;
+
+/// Material handle `handle`, in material slot 0.
+fn submesh(first_index: u32, handle: u32) -> SubmeshDraw {
+    SubmeshDraw {
+        first_index,
+        index_count: 3,
+        material: SubmeshMaterial { handle: MaterialHandle::from_raw(handle), slot: 0 },
+    }
+}
+
+fn mesh(streams: MeshStreams, submeshes: Vec<SubmeshDraw>) -> MeshRecord {
+    MeshRecord {
+        streams,
+        dequantize: Dequantize { position_scale: [1.0; 3], ..Dequantize::default() },
+        lods: vec![submeshes],
+        lod_vertices: vec![4],
+        placement: Placement::default(),
+        slots: Vec::new(),
+        bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+        palette_reach: Vec::new(),
+        morph_reach: Vec::new(),
+        foliage: None,
+    }
+}
+
+fn slab(first_vertex: u32) -> MeshStreams {
+    MeshStreams::Slab { format: UNORM16, first_vertex }
+}
+
+/// Handles 10 to 19 are opaque environment materials, 20 an anime character body with a hull, 30
+/// a transparent environment material and 40 an eye's layer.
+fn kind(handle: MaterialHandle) -> (MaterialFamily, MaterialFlags) {
+    match handle.index() {
+        20 => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
+        30 => (MaterialFamily::Environment, MaterialFlags::TRANSPARENT),
+        40 => (MaterialFamily::AnimeCharacter, MaterialFlags::EYE | MaterialFlags::TRANSPARENT),
+        _ => (MaterialFamily::Environment, MaterialFlags::empty()),
+    }
+}
+
+/// Instances of `meshes`, in slots 0 onward, one a metre apart.
+fn slots(meshes: &[u32]) -> InstanceSlots {
+    let changed = meshes
+        .iter()
+        .enumerate()
+        .map(|(id, &mesh)| MeshInstance {
+            id: InstanceId(id as u64),
+            mesh: MeshHandle::from_raw(mesh),
+            transform: Mat4::from_translation(Vec3::new(id as f32, 0.0, 0.0)),
+        })
+        .collect();
+    let mut slots = InstanceSlots::default();
+    slots.apply(&InstanceDeltas { changed, removed: Vec::new() });
+    slots
+}
+
+fn built(meshes: &[MeshRecord], slots: &InstanceSlots) -> DrawList {
+    let mut list = DrawList::default();
+    list.build(meshes, kind, |handle| handle.index() as u32, slots, DrawLimits::NONE);
+    list
+}
+
+fn environment() -> SurfaceVariant {
+    SurfaceVariant::environment(Coverage::Opaque)
+}
+
+/// What a group of a view's list draws: (record, material handle, mesh handle) in its order.
+fn drawn(
+    list: &DrawList,
+    view: &ViewList,
+    variant: SurfaceVariant,
+    set: DrawSet,
+) -> Vec<(u32, usize, usize)> {
+    let commands = &list.commands[format_index(UNORM16)][variant.index()];
+    view.group(Source::Static(UNORM16), variant, set)
+        .iter()
+        .map(|&index| {
+            let command = &commands[index as usize];
+            (command.draw_id, command.material.index(), command.mesh.index())
+        })
+        .collect()
+}
+
+fn world<'a>(
+    stands: &'a [u16],
+    hulls: &'a [bool],
+    view: Option<&'a [bool]>,
+) -> ViewTests<'a, fn(u32) -> bool> {
+    ViewTests { stands, stand: 0, hulls, materials: &[], view, instance: |_| true }
+}
+
+/// Three meshes of environment draws, instanced in an order that alternates them.
+fn mixed() -> (Vec<MeshRecord>, InstanceSlots) {
+    let meshes = vec![
+        // Two submeshes: materials 12 then 11.
+        mesh(slab(0), vec![submesh(0, 12), submesh(3, 11)]),
+        mesh(slab(4), vec![submesh(6, 11)]),
+        mesh(slab(8), vec![submesh(9, 12)]),
+    ];
+    (meshes, slots(&[2, 0, 1, 2, 0, 1]))
+}
+
+/// Each kind of view holds its order: the views that write anything but depth (the main view, an
+/// inset, both prepasses) draw a group in the record's order, where an exact tie in depth keeps
+/// the first-drawn surface; the shadow views (each cascade, each character map) by mesh, then
+/// record. m5-plan D2 changes the first, in `ViewKind::key`, and this test with it.
+#[test]
+fn each_kind_of_view_holds_its_order() {
+    let (meshes, slots) = mixed();
+    let list = built(&meshes, &slots);
+    // Records in slot order: slot 0 (mesh 2) is record 0, slot 1 (mesh 0) records 1 and 2, ...
+    let records =
+        [(0, 12, 2), (1, 12, 0), (2, 11, 0), (3, 11, 1), (4, 12, 2), (5, 12, 0), (6, 11, 0), (7, 11, 1)];
+    let listed: Vec<(u32, usize, usize)> = list.commands[0][environment().index()]
+        .iter()
+        .map(|command| (command.draw_id, command.material.index(), command.mesh.index()))
+        .collect();
+    assert_eq!(listed, records);
+
+    let mut lists = ViewLists::default();
+    let stands = [];
+    let tests = world(&stands, &[], None);
+    for walk in [Walk::Main, Walk::ScenePrepass, Walk::InsetMain(0)] {
+        lists.compact_view(walk, &list, &tests);
+        let view = lists.list(walk).expect("listed");
+        assert_eq!(
+            drawn(&list, view, environment(), DrawSet::Surfaces),
+            records,
+            "{walk:?}: the record's order"
+        );
+    }
+    // The character prepass draws the characters' surfaces alone, in the record's order too.
+    let body = SurfaceVariant::character(Coverage::Opaque, Part::Body);
+    let characters = vec![mesh(slab(0), vec![submesh(0, 20)]), mesh(slab(4), vec![submesh(3, 20)])];
+    let party = built(&characters, &self::slots(&[1, 0, 1]));
+    for walk in [Walk::CharacterPrepass, Walk::InsetCharacters(0)] {
+        lists.compact_view(walk, &party, &tests);
+        let meshes: Vec<usize> = drawn(&party, lists.list(walk).expect("listed"), body, DrawSet::Surfaces)
+            .iter()
+            .map(|d| d.2)
+            .collect();
+        assert_eq!(meshes, [1, 0, 1], "{walk:?}: the record's order");
+    }
+
+    let plan = |slot: u32| (1, Some((slot % 2) as u8));
+    let casters = CasterTests { stands: &stands, cascades: [true, false, false, false], maps: 2, plan };
+    lists.compact_casters(&list, &casters);
+    let cascade = lists.list(Walk::Cascade(0)).expect("listed");
+    assert_eq!(
+        drawn(&list, cascade, environment(), DrawSet::Surfaces),
+        [(1, 12, 0), (2, 11, 0), (5, 12, 0), (6, 11, 0), (3, 11, 1), (7, 11, 1), (0, 12, 2), (4, 12, 2)],
+        "depth alone: mesh, then record"
+    );
+    // Map 0 draws slots 0, 2 and 4: records 0 (mesh 2), 3 (mesh 1), 5 and 6 (mesh 0).
+    let map = lists.list(Walk::CharacterMap(0)).expect("listed");
+    let records: Vec<u32> = drawn(&list, map, environment(), DrawSet::Surfaces).iter().map(|d| d.0).collect();
+    assert_eq!(records, [5, 6, 3, 0], "a character map: mesh, then record");
+}
+
+/// Keys are unique and total: a rebuild gives the same order, and draws of one mesh keep their
+/// records' order. The views that keep the record list no order of their own.
+#[test]
+fn the_order_is_stable() {
+    let (meshes, slots) = mixed();
+    let list = built(&meshes, &slots);
+    let again = built(&meshes, &slots);
+    for kind in ViewKind::ALL {
+        assert_eq!(
+            list.orders.sorted(kind, UNORM16, environment()),
+            again.orders.sorted(kind, UNORM16, environment())
+        );
+        assert_eq!(list.orders.sorted(kind, UNORM16, environment()).is_some(), kind == ViewKind::Casters);
+    }
+    let mut keys: Vec<DrawKey> = list.commands[0][environment().index()]
+        .iter()
+        .filter_map(|command| ViewKind::Casters.key(command))
+        .collect();
+    keys.sort();
+    keys.dedup_by_key(|key| key.mesh);
+    assert_eq!(keys.len(), 3, "three runs: meshes 0, 1 and 2");
+}
+
+/// Groups whose order can show keep the draw list's: transparent surfaces, eyes' layers (in their
+/// layers' order), outline hulls; and skinned instances bind by instance.
+#[test]
+fn order_dependent_groups_keep_the_list_order() {
+    let meshes = vec![
+        // A transparent card over an opaque one, and an eye's layers 2 then 1 (`layer` is the
+        // handle), each listed after the other mesh's.
+        mesh(slab(0), vec![submesh(0, 30), submesh(3, 10)]),
+        mesh(slab(4), vec![submesh(6, 30), submesh(9, 20)]),
+        mesh(MeshStreams::Deformable(DeformSource::default()), vec![submesh(12, 20), submesh(15, 10)]),
+    ];
+    let slots = slots(&[1, 0, 2, 1, 0, 2]);
+    let list = built(&meshes, &slots);
+    let mut lists = ViewLists::default();
+    let hulls = [true; 16];
+    lists.compact_view(Walk::Main, &list, &world(&[], &hulls, None));
+    let main = lists.list(Walk::Main).expect("listed");
+    let transparent = SurfaceVariant::environment(Coverage::Transparent);
+    let records = |variant: SurfaceVariant| -> Vec<u32> {
+        list.commands[0][variant.index()].iter().map(|command| command.draw_id).collect()
+    };
+    let in_list = |variant: SurfaceVariant, set| -> Vec<u32> {
+        drawn(&list, main, variant, set).into_iter().map(|(record, ..)| record).collect()
+    };
+    assert_eq!(in_list(transparent, DrawSet::Surfaces), records(transparent), "blended in today's order");
+    let body = SurfaceVariant::character(Coverage::Opaque, Part::Body);
+    assert_eq!(in_list(body, DrawSet::Outlines), records(body), "hulls in today's order");
+    let deformed: Vec<u32> = main
+        .group(Source::Deformed, body, DrawSet::Surfaces)
+        .iter()
+        .map(|&index| list.deformed[body.index()][index as usize].draw_id)
+        .collect();
+    let skinned: Vec<u32> = list.deformed[body.index()].iter().map(|draw| draw.draw_id).collect();
+    assert_eq!(deformed, skinned, "skinned instances in slot order");
+    assert!(!skinned.is_empty() && !records(transparent).is_empty());
+}
+
+/// Eyes' layers blend in their layers' order, which the draw list sorted them into: the list keeps it.
+#[test]
+fn eye_layers_keep_their_layers_order() {
+    // Handle 41 is a later layer than 40, listed first.
+    let kind = |handle: MaterialHandle| match handle.index() {
+        40 | 41 => (MaterialFamily::AnimeCharacter, MaterialFlags::EYE | MaterialFlags::TRANSPARENT),
+        _ => (MaterialFamily::Environment, MaterialFlags::empty()),
+    };
+    let meshes = vec![mesh(slab(0), vec![submesh(0, 41), submesh(3, 40)])];
+    let slots = slots(&[0, 0]);
+    let mut list = DrawList::default();
+    list.build(&meshes, kind, |handle| handle.index() as u32, &slots, DrawLimits::NONE);
+    let mut lists = ViewLists::default();
+    lists.compact_view(Walk::Main, &list, &world(&[], &[], None));
+    let main = lists.list(Walk::Main).expect("listed");
+    let layers: Vec<usize> = drawn(&list, main, SurfaceVariant::EYE_LAYERS, DrawSet::Surfaces)
+        .into_iter()
+        .map(|(_, material, _)| material)
+        .collect();
+    assert_eq!(layers, [40, 40, 41, 41], "layer 40 under 41, whatever the mesh lists first");
+}
+
+/// A view's list leaves out what its passes left out, counting it by the test, as they counted.
+#[test]
+fn a_view_counts_what_it_leaves_out() {
+    let meshes = vec![mesh(slab(0), vec![submesh(0, 10)]), mesh(slab(4), vec![submesh(3, 20)])];
+    // Slots 0 to 3: environment, character, environment, character; slot 2 culled by the frustum,
+    // slot 3 stands in an inset.
+    let slots = slots(&[0, 1, 0, 1]);
+    let list = built(&meshes, &slots);
+    let stands = [0, 0, 0, 1];
+    let view = [true, true, false, true];
+    // The character's hull (record 1) is past its cutoff.
+    let hulls = [false; 4];
+    let mut lists = ViewLists::default();
+    lists.compact_view(Walk::Main, &list, &world(&stands, &hulls, Some(&view)));
+    let main = lists.list(Walk::Main).expect("listed");
+    assert_eq!(main.len(), 2, "slot 0's surface and slot 1's");
+    let left_out = lists.left_out(Walk::Main);
+    assert_eq!((left_out.considered, left_out.culled_by_frustum, left_out.culled_by_cutoff), (2, 1, 1));
+    // The character prepass takes the listed characters alone: none.
+    let tests = ViewTests { view: None, ..world(&stands, &hulls, None).with_instance(|_| false) };
+    lists.compact_view(Walk::CharacterPrepass, &list, &tests);
+    assert_eq!(lists.list(Walk::CharacterPrepass).expect("listed").len(), 0);
+    assert_eq!(
+        lists.left_out(Walk::CharacterPrepass).culled_by_pass,
+        1,
+        "slot 1's body; slot 3's is the inset's"
+    );
+    // The inset's view: slot 3's surface and its hull, cut off.
+    let inset = ViewTests { stand: 1, ..world(&stands, &hulls, None) };
+    lists.compact_view(Walk::InsetMain(0), &list, &inset);
+    assert_eq!(lists.list(Walk::InsetMain(0)).expect("listed").len(), 1);
+    assert_eq!(lists.left_out(Walk::InsetMain(0)).culled_by_cutoff, 1);
+
+    // Shadows: cascade 0 takes slots 0 and 1, cascade 1 slot 2; slot 1 draws into map 0 of two.
+    let plan = |slot: u32| match slot {
+        0 => (0b01, None),
+        1 => (0b01, Some(0)),
+        2 => (0b10, None),
+        _ => (0b11, Some(1)),
+    };
+    let tests = CasterTests { stands: &stands, cascades: [true, true, false, false], maps: 2, plan };
+    lists.compact_casters(&list, &tests);
+    let len = |walk| lists.list(walk).expect("listed").len();
+    assert_eq!((len(Walk::Cascade(0)), len(Walk::Cascade(1))), (2, 1), "slot 3 stands in the inset");
+    assert_eq!((len(Walk::CharacterMap(0)), len(Walk::CharacterMap(1))), (1, 0));
+    assert_eq!(lists.left_out(Walk::Cascade(0)).culled_by_pass, 1);
+    assert_eq!(lists.left_out(Walk::Cascade(1)).culled_by_pass, 2);
+    // Each map looks at all three casters and draws its own: six looked at, one drawn.
+    let maps = lists.left_out(Walk::CharacterMaps);
+    assert_eq!((maps.considered, maps.culled_by_pass), (5, 5));
+    assert_eq!(lists.left_out(Walk::CharacterMap(0)), PassCounts::default(), "counted by the maps' pass");
+}
+
+/// The mesh pool moves meshes when it compacts (M5 D9): the rebuilt list draws the same draws in
+/// the same order, from their new places, since the key holds handles and no pool range.
+#[test]
+fn a_list_rebuilt_after_the_pool_compacts_draws_the_same() {
+    let (mut meshes, slots) = mixed();
+    let list = built(&meshes, &slots);
+    // Compaction slides meshes 1 and 2 down over a freed range.
+    meshes[1].streams = slab(2);
+    meshes[2].streams = slab(5);
+    let moved = built(&meshes, &slots);
+    let mut lists = ViewLists::default();
+    let casters =
+        CasterTests { stands: &[], cascades: [true, false, false, false], maps: 0, plan: |_| (1, None) };
+    let compact = |lists: &mut ViewLists, list: &DrawList| {
+        lists.compact_view(Walk::Main, list, &world(&[], &[], None));
+        lists.compact_casters(list, &casters);
+    };
+    compact(&mut lists, &list);
+    let before = [Walk::Main, Walk::Cascade(0)]
+        .map(|walk| drawn(&list, lists.list(walk).expect("listed"), environment(), DrawSet::Surfaces));
+    compact(&mut lists, &moved);
+    for (walk, before) in [Walk::Main, Walk::Cascade(0)].into_iter().zip(before) {
+        let view = lists.list(walk).expect("listed");
+        assert_eq!(drawn(&moved, view, environment(), DrawSet::Surfaces), before, "{walk:?}");
+    }
+    let cascade = lists.list(Walk::Cascade(0)).expect("listed");
+    let first_vertices: Vec<u32> = cascade
+        .group(Source::Static(UNORM16), environment(), DrawSet::Surfaces)
+        .iter()
+        .map(|&index| moved.commands[0][environment().index()][index as usize].first_vertex)
+        .collect();
+    assert_eq!(first_vertices, [0, 0, 0, 0, 2, 2, 5, 5], "by mesh, from the meshes' new places");
+}
+
+/// A warm frame's compaction allocates nothing: every list keeps its capacity.
+#[test]
+fn compacting_a_warm_frame_allocates_nothing() {
+    let (meshes, slots) = mixed();
+    let list = built(&meshes, &slots);
+    let mut lists = ViewLists::default();
+    let compact = |lists: &mut ViewLists| {
+        let tests = world(&[], &[], None);
+        lists.compact_view(Walk::Main, &list, &tests);
+        lists.compact_view(Walk::ScenePrepass, &list, &tests);
+        lists.compact_view(Walk::CharacterPrepass, &list, &tests);
+        lists.compact_view(Walk::InsetMain(1), &list, &tests);
+        let casters = CasterTests {
+            stands: &[],
+            cascades: [true; 4],
+            maps: 8,
+            plan: |slot| (0b1011, Some((slot % 8) as u8)),
+        };
+        lists.compact_casters(&list, &casters);
+    };
+    compact(&mut lists);
+    let ((), allocated) = sapphire_core::alloc::count_in_scope(|| compact(&mut lists));
+    assert_eq!(allocated.allocations, 0, "{allocated:?}");
+    assert_eq!(lists.list(Walk::Main).expect("listed").len(), 8);
+}

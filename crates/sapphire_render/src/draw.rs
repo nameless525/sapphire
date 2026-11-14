@@ -27,7 +27,18 @@
 //! Each group of draws counts what it submitted and what it left out, by which test, on its stack,
 //! and adds that to its pass's counter once ([`MeshDraws::counter`], the `counts` module). A draw
 //! of another view, or outside the group's set (a surface without a hull in an outline group, one
-//! not drawn through hair in that group), isn't counted as looked at.
+//! not drawn through hair in that group), isn't counted as looked at. The pipelines, materials and
+//! streams the draws set count too ([`StateChanges`]).
+//!
+//! **Each view walks its own list** (M5 D1, the [`lists`] module): with [`MeshDraws::lists`], a
+//! group draws the positions its view's list holds for it, in their view's order, and tests nothing;
+//! what the view left out was counted as its list was compacted, and its pass adds that once
+//! ([`MeshDraws::count_left_out`]). Without, every group walks the whole draw list and tests each
+//! draw as it goes: the filtered walk, kept for the test that compares the two
+//! (`Renderer::walk_filtered`), which m5-plan D2 deletes. The debug views' replays walk the main
+//! view's list and still test the instances they pick.
+
+mod lists;
 
 use std::ops::Range;
 
@@ -35,8 +46,9 @@ use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
+pub(crate) use self::lists::{CasterTests, Orders, Source, ViewLists, ViewTests, Walk};
 use crate::buffer::GrowableBuffer;
-use crate::counts::{Counter, PassCounts};
+use crate::counts::{ChangeCounter, Counter, PassCounts, StateChanges};
 use crate::gpu_types::DrawData;
 use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
@@ -80,6 +92,13 @@ pub(crate) struct MeshDraws<'a> {
     pub stand: u16,
     /// The pass's counts, which its draws add to.
     pub counter: &'a Counter,
+    /// The frame's state changes, which every mesh pass's draws add to.
+    pub changes: &'a ChangeCounter,
+    /// Each view's list this frame (M5 D1): the pass walks [`Self::walk`]'s and tests nothing.
+    /// `None` walks the whole draw list, testing each draw (the filtered walk m5-plan D2 deletes).
+    pub lists: Option<&'a ViewLists>,
+    /// Which of [`Self::lists`] this pass walks.
+    pub walk: Walk,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -104,6 +123,25 @@ pub(crate) enum DrawSet {
 }
 
 impl MeshDraws<'_> {
+    /// The list this pass walks, if the frame walks lists.
+    fn listed(&self) -> Option<&lists::ViewList> {
+        self.lists.and_then(|lists| lists.list(self.walk))
+    }
+
+    /// Adds what the pass's view left out, counted as its list was compacted, to its counts: once a
+    /// pass, by the pass. Nothing on the filtered walk, whose groups count it as they go.
+    pub(crate) fn count_left_out(&self) {
+        if let Some(lists) = self.lists {
+            self.counter.add(&lists.left_out(self.walk));
+        }
+    }
+
+    /// Sets `pipeline` for the draws after, counting it.
+    pub(crate) fn set_pipeline(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) {
+        pass.set_pipeline(pipeline);
+        self.changes.add(&StateChanges { pipelines: 1, ..StateChanges::default() });
+    }
+
     /// Whether the instance in `slot` stands in the view this pass draws.
     fn stands_here(&self, slot: u32) -> bool {
         self.stands.get(slot as usize).copied().unwrap_or(0) == self.stand
@@ -171,14 +209,21 @@ enum Pick {
 }
 
 impl MeshDraws<'_> {
-    /// Whether there are static meshes in `format` of `variant` to draw.
+    /// Whether there are static meshes in `format` of `variant` to draw: in the view's list, of any
+    /// set, or on the filtered walk, in the draw list.
     pub(crate) fn has_static(&self, format: PositionFormat, variant: SurfaceVariant) -> bool {
-        !self.list.commands[format_index(format)][variant.index()].is_empty()
+        match self.listed() {
+            Some(list) => list.has(Source::Static(format), variant),
+            None => !self.list.commands[format_index(format)][variant.index()].is_empty(),
+        }
     }
 
-    /// Whether there are skinned or morphed instances of `variant` to draw.
+    /// Whether there are skinned or morphed instances of `variant` to draw, as [`Self::has_static`].
     pub(crate) fn has_deformed(&self, variant: SurfaceVariant) -> bool {
-        !self.list.deformed[variant.index()].is_empty()
+        match self.listed() {
+            Some(list) => list.has(Source::Deformed, variant),
+            None => !self.list.deformed[variant.index()].is_empty(),
+        }
     }
 
     /// Whether there are draws of `variant` at all, static or deformed.
@@ -232,30 +277,49 @@ impl MeshDraws<'_> {
         let mut bound = Bound::default();
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
-        // Only static draws are culled: the view's culling doesn't read skinned and morphed
-        // instances' posed bounds yet.
-        let in_view =
-            |slot: u32| self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn));
-        for command in &self.list.commands[format_index(format)][variant.index()] {
-            if !self.stands_here(command.slot) {
-                continue;
-            }
-            let pick = self.includes(set, command.draw_id, command.material, command.outline);
-            if !Self::passes(&mut counts, pick, command.slot, &instance, in_view) {
-                continue;
-            }
+        let commands = &self.list.commands[format_index(format)][variant.index()];
+        let mut draw = |command: &DrawCommand, bound: &mut Bound, counts: &mut PassCounts| {
             let indices = command.indices.len() as u32;
             if pipelines.is_empty() {
-                self.draw_command(pass, kind, format, command, &mut bound);
+                self.draw_command(pass, kind, format, command, bound);
                 counts.mesh_draw(indices, DRAWN_LEVEL, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
-                self.draw_command(pass, kind, format, command, &mut bound);
+                bound.changes.pipelines += 1;
+                self.draw_command(pass, kind, format, command, bound);
                 counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+            }
+        };
+        if let Some(list) = self.listed() {
+            // The view's own: listed, in order, and tested already, but for a debug replay's pick
+            // of instances (the passes' take every one).
+            for &index in list.group(Source::Static(format), variant, set) {
+                let command = &commands[index as usize];
+                counts.considered += 1;
+                if instance(command.slot) {
+                    draw(command, &mut bound, &mut counts);
+                } else {
+                    counts.culled_by_pass += 1;
+                }
+            }
+        } else {
+            // Only static draws are culled: the view's culling doesn't read skinned and morphed
+            // instances' posed bounds yet.
+            let in_view =
+                |slot: u32| self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn));
+            for command in commands {
+                if !self.stands_here(command.slot) {
+                    continue;
+                }
+                let pick = self.includes(set, command.draw_id, command.material, command.outline);
+                if Self::passes(&mut counts, pick, command.slot, &instance, in_view) {
+                    draw(command, &mut bound, &mut counts);
+                }
             }
         }
         self.counter.add(&counts);
+        self.changes.add(&bound.changes);
     }
 
     /// Draws `command`, a static mesh's in `format`, binding its streams and material unless
@@ -268,7 +332,7 @@ impl MeshDraws<'_> {
         command: &DrawCommand,
         bound: &mut Bound,
     ) {
-        self.bind_material(pass, kind, command.material, &mut bound.material);
+        self.bind_material(pass, kind, command.material, bound);
         let streams = Streams::Static { format, first_vertex: command.first_vertex };
         if bound.streams != Some(streams) {
             let slab = self.meshes.slab(format);
@@ -290,6 +354,7 @@ impl MeshDraws<'_> {
                 let foliage = u64::from(command.foliage) * FOLIAGE_STRIDE;
                 pass.set_vertex_buffer(slot::FOLIAGE, self.meshes.foliage_buffer().slice(foliage..));
             }
+            bound.changes.vertex_buffers += streams_bound(kind);
             bound.streams = Some(streams);
         }
         self.draw(pass, command.draw_id, command.indices.clone());
@@ -336,26 +401,43 @@ impl MeshDraws<'_> {
         let mut bound = Bound::default();
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
-        for command in &self.list.deformed[variant.index()] {
-            if !self.stands_here(command.slot) {
-                continue;
-            }
-            let pick = self.includes(set, command.draw_id, command.material, command.outline);
-            if !Self::passes(&mut counts, pick, command.slot, &instance, |_| true) {
-                continue;
-            }
+        let deformed = &self.list.deformed[variant.index()];
+        let mut draw = |command: &DeformedDraw, bound: &mut Bound, counts: &mut PassCounts| {
             let indices = command.indices.len() as u32;
-            if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, &mut bound) {
+            if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, bound) {
                 counts.mesh_draw(indices, DRAWN_LEVEL, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
-                if self.draw_deformed_command(pass, kind, command, &mut bound) {
+                bound.changes.pipelines += 1;
+                if self.draw_deformed_command(pass, kind, command, bound) {
                     counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                }
+            }
+        };
+        if let Some(list) = self.listed() {
+            for &index in list.group(Source::Deformed, variant, set) {
+                let command = &deformed[index as usize];
+                counts.considered += 1;
+                if instance(command.slot) {
+                    draw(command, &mut bound, &mut counts);
+                } else {
+                    counts.culled_by_pass += 1;
+                }
+            }
+        } else {
+            for command in deformed {
+                if !self.stands_here(command.slot) {
+                    continue;
+                }
+                let pick = self.includes(set, command.draw_id, command.material, command.outline);
+                if Self::passes(&mut counts, pick, command.slot, &instance, |_| true) {
+                    draw(command, &mut bound, &mut counts);
                 }
             }
         }
         self.counter.add(&counts);
+        self.changes.add(&bound.changes);
     }
 
     /// Draws `command`, a skinned or morphed instance's, binding its streams and material unless
@@ -383,9 +465,10 @@ impl MeshDraws<'_> {
                 let surface = u64::from(command.surface) * 4;
                 pass.set_vertex_buffer(slot::SURFACE, self.meshes.deformable_buffer().slice(surface..));
             }
+            bound.changes.vertex_buffers += streams_bound(kind);
             bound.streams = Some(streams);
         }
-        self.bind_material(pass, kind, command.material, &mut bound.material);
+        self.bind_material(pass, kind, command.material, bound);
         self.draw(pass, command.draw_id, command.indices.clone());
         true
     }
@@ -411,6 +494,7 @@ impl MeshDraws<'_> {
             };
             if bound_format != Some(format) {
                 pass.set_pipeline(pipeline(format));
+                bound.changes.pipelines += 1;
                 bound_format = Some(format);
             }
             match draw {
@@ -434,6 +518,7 @@ impl MeshDraws<'_> {
             }
         }
         self.counter.add(&counts);
+        self.changes.add(&bound.changes);
     }
 
     /// Binds `material`'s group 3 if `kind` shades with materials and it isn't bound already.
@@ -442,11 +527,12 @@ impl MeshDraws<'_> {
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         material: MaterialHandle,
-        bound: &mut Option<MaterialHandle>,
+        bound: &mut Bound,
     ) {
-        if kind.binds_materials() && *bound != Some(material) {
+        if kind.binds_materials() && bound.material != Some(material) {
             pass.set_bind_group(3, self.materials[material.index()].bind_group(), &[]);
-            *bound = Some(material);
+            bound.material = Some(material);
+            bound.changes.materials += 1;
         }
     }
 
@@ -473,9 +559,16 @@ enum Streams {
     Deformed { slot: u32 },
 }
 
-/// What a run of draws has bound, so the next draw rebinds only what differs.
+/// What a run of draws has bound, so the next draw rebinds only what differs, and what it changed.
 #[derive(Debug, Default)]
 struct Bound {
     streams: Option<Streams>,
     material: Option<MaterialHandle>,
+    changes: StateChanges,
+}
+
+/// The vertex buffers a mesh's streams take in `kind`: positions, and each other stream it reads.
+fn streams_bound(kind: MeshPass) -> u32 {
+    let read = [kind.reads_previous(), kind.reads_shading(), kind.reads_surface(), kind.reads_foliage()];
+    1 + read.into_iter().map(u32::from).sum::<u32>()
 }

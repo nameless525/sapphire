@@ -658,6 +658,7 @@ mod tests {
                 slot,
                 draw_id: slot,
                 material: crate::materials::MaterialHandle::from_raw(0),
+                mesh: MeshHandle::from_raw(0),
                 outline: false,
                 foliage: 0,
             });
@@ -683,6 +684,7 @@ mod tests {
             slot: 0,
             draw_id: 0,
             material: crate::materials::MaterialHandle::from_raw(0),
+            mesh: MeshHandle::from_raw(0),
             outline: false,
             foliage: 0,
         });

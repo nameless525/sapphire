@@ -233,6 +233,8 @@ pub struct IkDriver {
     dt: f32,
     /// What the last solve ran on: `None` before the first.
     solved: Option<(IkControls, Mat4)>,
+    /// Whether its feet and look let go, for a character too far for them to show (M5 C1).
+    resting: bool,
 }
 
 impl std::fmt::Debug for IkDriver {
@@ -270,7 +272,21 @@ impl IkDriver {
             presented: None,
             dt: 0.0,
             solved: None,
+            resting: false,
         }
+    }
+
+    /// Lets the feet and the look go, or takes them up again (M5 C1): a character past its tier's band
+    /// for IK. They go and come back as a jump's do, over the feet's and the look's own fades on the
+    /// character's clock, from wherever they've got to, so neither pops; once the feet have faded they
+    /// cast for no ground. What the hands hold is kept: a grip is where a blade's drawn.
+    pub fn set_resting(&mut self, resting: bool) {
+        self.resting = resting;
+    }
+
+    /// Whether the feet and look have been let go ([`Self::set_resting`]).
+    pub fn is_resting(&self) -> bool {
+        self.resting
     }
 
     /// Shows as much as `motion` says from now on: an edit of its document, on a character already standing.
@@ -361,13 +377,14 @@ impl IkDriver {
     ) {
         let world_from_model = Affine3A::from_mat4(transform);
         let ground = &self.ground;
+        let shown = if self.resting { 0.0 } else { 1.0 };
         self.ik.solve_on_ground(
             pose,
             IkInput {
                 dt: self.dt,
                 world_from_model,
-                feet: FeetInput { weight: self.controls.feet, ..FeetInput::default() },
-                look: LookInput { target: self.controls.look_target, weight: self.controls.look },
+                feet: FeetInput { weight: self.controls.feet * shown, ..FeetInput::default() },
+                look: LookInput { target: self.controls.look_target, weight: self.controls.look * shown },
                 weapon: self.controls.weapon,
             },
             contact.unwrap_or(self.foot_contact),
@@ -697,6 +714,63 @@ mod tests {
         assert!(driver.pose_frame(&cut, &table, place));
         assert_eq!(driver.player.teleports(), teleports + 1);
         assert_eq!(driver.springs_saw(), teleports + 1);
+    }
+
+    /// The most a foot moves in one tick when IK comes back to a character that rested (M5 C1): in
+    /// meters, against the 0.12 m curb it climbs back onto, which a snap would cover in one tick.
+    const RETURN_STEP: f32 = 0.02;
+
+    /// A character too far for its feet lets them go, onto its clip, and casts for nothing once they
+    /// have; coming back near, they ease back onto the curb over the feet's fade, never more than
+    /// [`RETURN_STEP`] a tick, and stand where they stood before.
+    #[test]
+    fn resting_feet_let_go_and_come_back_without_a_pop() {
+        let curb = block(1, Vec3::new(1.0, 0.06, 2.0), Vec3::new(1.03, 0.06, 0.0), Quat::IDENTITY);
+        let world = world_from(vec![floor(), curb]);
+        let skeleton_bytes = character_skeleton().to_cooked().expect("cooked");
+        let skeleton = Skeleton::read(&skeleton_bytes).expect("a valid skeleton");
+        let clip = Clip {
+            name: "idle".to_owned(),
+            skeleton: Some(AssetId::from_bytes([9; 16])),
+            joint_count: 10,
+            rate: DEFAULT_RATE,
+            ticks: 60,
+            ..Clip::default()
+        };
+        let clip_bytes = clip.to_cooked().expect("cooked");
+        let id = AssetId::from_bytes([8; 16]);
+        let table =
+            ClipTable::new(0, [(id, Some(Clip::read(&clip_bytes).expect("a valid clip")))].into_iter());
+        let mut driver = on_a_graph(&world, skeleton, &table, id);
+        let place = Mat4::IDENTITY;
+        let frame = |ticks: u32| GraphInput { ticks: f64::from(ticks), ..GraphInput::default() };
+        let foot = |driver: &GraphDriver| driver.player.pose().model()[FEET[0]].translation.y;
+        for tick in 0..120 {
+            driver.pose_frame(&frame(tick), &table, place);
+        }
+        let on_the_curb = foot(&driver);
+        assert!(on_the_curb > 0.2, "up the curb: {on_the_curb}");
+
+        driver.ik_mut().expect("it has IK").set_resting(true);
+        let mut last = on_the_curb;
+        let mut largest = 0.0_f32;
+        for tick in 120..240 {
+            driver.pose_frame(&frame(tick), &table, place);
+            largest = largest.max((foot(&driver) - last).abs());
+            last = foot(&driver);
+        }
+        assert!((last - 0.1).abs() < 1e-3, "as animated once it's let go: {last}");
+        assert!(largest <= RETURN_STEP, "letting go moved a foot {largest} m in a tick");
+
+        driver.ik_mut().expect("it has IK").set_resting(false);
+        largest = 0.0;
+        for tick in 240..360 {
+            driver.pose_frame(&frame(tick), &table, place);
+            largest = largest.max((foot(&driver) - last).abs());
+            last = foot(&driver);
+        }
+        assert!(largest <= RETURN_STEP, "coming back moved a foot {largest} m in a tick");
+        assert!((last - on_the_curb).abs() < 3e-3, "back on the curb: {last} against {on_the_curb}");
     }
 
     /// One foot up a curb.

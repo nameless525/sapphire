@@ -319,7 +319,7 @@ fn the_tier_sets_how_many_substeps_run() {
     for (tier, substeps) in
         [(TierId::DesktopHigh, 2), (TierId::DesktopLow, 2), (TierId::MobileHigh, 1), (TierId::MobileLow, 1)]
     {
-        assert_eq!(crate::animate::spring_quality(tier).substeps.count(), substeps, "{tier:?}");
+        assert_eq!(spring_quality(tier).substeps.count(), substeps, "{tier:?}");
     }
 }
 

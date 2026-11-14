@@ -73,6 +73,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod anim_graph;
+pub mod anim_levels;
 pub mod animate;
 pub mod audio;
 pub mod content;

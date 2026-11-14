@@ -21,6 +21,10 @@
 //!   the air, and its time comes from the same frame ([`GraphDriver::pose_frame`]).
 //! - **Spring bones** run beside the pose as they do under a clip (`--springs`, [`GraphDriver`]), after
 //!   the graph has finished it, and start over when the player reports a teleport.
+//! - **Levels** (M5 C1, [`crate::anim_levels`]): whoever poses a crowd decides each character's level
+//!   ([`GraphDriver::level_mut`]) before it builds the frame's [`GraphEvaluation`]: the level a character
+//!   was last posed at says whether its springs run, and the caller rests its IK by it
+//!   (`IkDriver::set_resting`). A character no one thins is posed at full, as before.
 //! - **A graph's replacement** arrives from hot reload or live link through
 //!   [`Scene::follow_content`](crate::scene::Scene::follow_content), and takes effect at the next state's
 //!   start ([`GraphPlayer::replace`]).
@@ -53,6 +57,7 @@ use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticColli
 use sapphire_time::{SUBTICKS_PER_TICK, SimDuration, SimTime, Stopwatch};
 use sapphire_world::light_rig::CharacterLightRig;
 
+use crate::anim_levels::LevelState;
 use crate::animate::{SpringKey, SpringView};
 use crate::extract::{RenderPose, RenderTransform};
 use crate::ik::{IkControls, IkDriver};
@@ -356,6 +361,8 @@ pub struct GraphDriver {
     posed: bool,
     /// The playable kind it poses, when it was made for one ([`Self::for_kind`]).
     kind: Option<AssetId>,
+    /// Its animation level and what it remembers of it (M5 C1): full unless a crowd's frame thins it.
+    level: LevelState,
 }
 
 impl GraphDriver {
@@ -384,6 +391,20 @@ impl GraphDriver {
             face: None,
             posed: false,
             kind: None,
+            level: LevelState::default(),
+        }
+    }
+
+    /// Its animation level, for the frame that decides it (M5 C1): what its springs and IK keep to.
+    pub fn level_mut(&mut self) -> &mut LevelState {
+        &mut self.level
+    }
+
+    /// Holds its pose off screen (M5 C1): its springs sleep, to wake from the pose when it's back in
+    /// sight. Nothing else of it moves.
+    pub fn rest_off_screen(&mut self) {
+        if let Some(springs) = &mut self.springs {
+            springs.sleep();
         }
     }
 
@@ -572,7 +593,8 @@ impl GraphDriver {
         figure: &Figure,
         key: SpringKey,
     ) -> bool {
-        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key))
+        let level = self.level.current().springs;
+        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key, level))
     }
 
     /// Whether it has springs, which a frame enters in its rotation ([`SpringView::enter`]).

@@ -109,6 +109,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::color_vision::COLOR_VISION;
+use sapphire_render::quality::TierId;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
     MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers,
@@ -127,7 +128,8 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
-use crate::animate::{ClipPlayer, Evaluation, SpringKey, SpringRole, SpringView};
+use crate::anim_levels::{AnimLevels, LevelView, anim_levels};
+use crate::animate::{ClipPlayer, Evaluation, SpringKey, SpringRole, SpringView, spring_quality};
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::content::GraphKey;
@@ -526,6 +528,12 @@ pub struct Scene {
     /// How many characters the look-dev character takes turns with, itself among them, or 0 to lead
     /// ([`Self::set_spring_turns`]).
     spring_turns: u32,
+    /// How the tier thins a crowd's animation by distance and sight (M5 C1, [`Self::level_view`]).
+    anim_levels: AnimLevels,
+    /// Whether levels thin anything ([`Self::set_anim_levels_on`]).
+    anim_levels_on: bool,
+    /// Whether a crowd's characters are posed in jobs ([`Self::set_anim_jobs`]).
+    anim_jobs: bool,
     /// The shape of the last frame drawn, which [`Self::animate`] reads before this frame's.
     aspect: f32,
     /// The ground IK casts for, and the blocks drawn for it, with `--ik on`.
@@ -693,6 +701,9 @@ impl Scene {
             spring_turn: 0,
             spring_floor: true,
             spring_turns: 0,
+            anim_levels: AnimLevels::DESKTOP_HIGH,
+            anim_levels_on: true,
+            anim_jobs: true,
             aspect: 16.0 / 9.0,
             ik_ground: None,
             ik_blocks: Vec::new(),
@@ -1750,6 +1761,42 @@ impl Scene {
     /// Runs spring bones as a quality tier does, from the next frame on.
     pub fn set_spring_quality(&mut self, quality: SpringQuality) {
         self.spring_quality = quality;
+    }
+
+    /// Runs secondary motion and thins animation as `tier` does, from the next frame on: its springs'
+    /// quality and its animation levels (M5 C1).
+    pub fn set_motion_tier(&mut self, tier: TierId) {
+        self.spring_quality = spring_quality(tier);
+        self.anim_levels = anim_levels(tier);
+    }
+
+    /// Thins a crowd's animation by `levels` from the next frame on (M5 C1).
+    pub fn set_anim_levels(&mut self, levels: AnimLevels) {
+        self.anim_levels = levels;
+    }
+
+    /// Thins a crowd's animation by distance and sight, or poses everyone every frame, from the next frame
+    /// on (M5 C1, `--anim-levels`): on unless told otherwise. Nothing the simulation reads moves either way.
+    pub fn set_anim_levels_on(&mut self, on: bool) {
+        self.anim_levels_on = on;
+    }
+
+    /// Poses a crowd's characters in jobs, or one after another on the frame's thread (M5 C1,
+    /// `--anim-jobs`): in jobs unless told otherwise. The poses are the same either way.
+    pub fn set_anim_jobs(&mut self, jobs: bool) {
+        self.anim_jobs = jobs;
+    }
+
+    /// Whether a crowd's characters are posed in jobs ([`Self::set_anim_jobs`]).
+    pub fn anim_jobs(&self) -> bool {
+        self.anim_jobs
+    }
+
+    /// What decides each character's animation level this frame (M5 C1): the camera of the last frame's
+    /// shape, the sun of the last frame drawn, and the tier's bands.
+    pub fn level_view(&self) -> LevelView {
+        let camera = self.camera().camera_data(self.aspect);
+        LevelView::new(&camera, self.packet().sun.direction, self.anim_levels, self.anim_levels_on)
     }
 
     /// Lays springs and cloth on the ground under the feet, or not, from the next frame on (M5 C2): on

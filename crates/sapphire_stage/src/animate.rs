@@ -55,7 +55,7 @@ const _: () = assert!(SPRING_TICK_HZ == TICK_HZ, "springs count the ticks clocks
 
 /// How far from the middle of its body a character's hair and limbs can reach, in meters: what it
 /// takes to be off screen. Hair that wakes as this sphere reaches the frame starts out of sight.
-const CHARACTER_REACH: f32 = 1.5;
+pub(crate) const CHARACTER_REACH: f32 = 1.5;
 
 /// How a tier runs springs.
 pub fn spring_quality(tier: TierId) -> SpringQuality {
@@ -200,7 +200,9 @@ impl SpringView {
     /// Whether `springs` run this frame, for the character `key` names standing as `transform` and
     /// `figure` say, at the tier's substeps and, by its distance, the tier's clearance interval, and with
     /// its pace in the frame's rotation: the on-field character leads, stepping every frame; the others
-    /// step or wait their turn. Those that don't run go to sleep at once, at no further cost.
+    /// step or wait their turn. Those that don't run go to sleep at once, at no further cost. After the
+    /// pace comes the character's animation level ([`crate::anim_levels`], M5 C1): a band past the tier's
+    /// distance for springs says `level` is false, and they sleep as off screen, waking from the pose.
     ///
     /// Everything that decides a character's springs by its role or distance belongs here, beside these:
     /// cloth's iterations, a crowd's cut-off, characters sharing a graph.
@@ -210,13 +212,14 @@ impl SpringView {
         transform: &RenderTransform,
         figure: &Figure,
         key: SpringKey,
+        level: bool,
     ) -> bool {
         springs.set_substeps(self.substeps());
         let center = transform.0.transform_point3((figure.head + figure.feet) * 0.5);
         let distance = self.eye.distance(center);
         springs.set_clearance_interval(self.quality.clearance.interval_at(distance));
         let pace = self.schedule.pace(key);
-        let runs = pace.is_some() && self.sees(center, distance, springs.is_running());
+        let runs = pace.is_some() && level && self.sees(center, distance, springs.is_running());
         if let Some(pace) = pace {
             springs.set_pace(pace);
         }
@@ -455,7 +458,8 @@ impl ClipPlayer {
         figure: &Figure,
         key: SpringKey,
     ) -> bool {
-        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key))
+        // A clip plays on a look-dev scene's character, which is never thinned.
+        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key, true))
     }
 
     /// Whether running springs have anything to do at `ticks` on a frame whose pose didn't move.

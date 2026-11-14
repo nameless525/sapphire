@@ -885,6 +885,7 @@ mod character_prepass;
 mod characters;
 pub mod color_vision;
 pub mod counts;
+mod coverage;
 pub mod debug_draw;
 pub mod debug_view;
 mod draw;
@@ -928,6 +929,7 @@ pub use ambient::{
 pub use character_prepass::CharacterPrepassStats;
 pub use color_vision::ColorVision;
 pub use counts::{FrameCounts, MESH_LEVELS, PassCounts, StateChanges};
+pub use coverage::{TextureCoverage, TextureCoverageFrame, texture_streams};
 pub use debug_draw::DebugDrawPassStats;
 pub use debug_view::{DebugView, DebugViewStats};
 pub use draw::{DrawRuns, RunStats};

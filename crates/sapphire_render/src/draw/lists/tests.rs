@@ -27,6 +27,7 @@ fn mesh(streams: MeshStreams, submeshes: Vec<SubmeshDraw>) -> MeshRecord {
         streams,
         dequantize: Dequantize { position_scale: [1.0; 3], ..Dequantize::default() },
         lods: vec![submeshes],
+        texel_density: Default::default(),
         lod_vertices: vec![4],
         lod_errors: vec![0.0],
         placement: Placement::default(),

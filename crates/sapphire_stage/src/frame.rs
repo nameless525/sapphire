@@ -244,7 +244,8 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub history_only_capture: bool,
     /// Bring every texture to the top wanted of it before each frame draws, waiting for its levels
     /// ([`Content::finish_texture_levels`], M5 M4): a capture's, which must see textures whole, as loads
-    /// left them before textures streamed. A bench and a game let them stream in.
+    /// left them before textures streamed. A bench and a game let them stream in. It turns the streamer off
+    /// ([`Content::set_texture_streaming`]).
     pub whole_textures: bool,
     /// Prepare and record the next frames but run none of it, as a frame whose surface was lost (M3 K1). A
     /// load's inventory is checked this way where drawing is what costs: everything but the graph's passes runs.
@@ -667,10 +668,21 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.render_frame(view, false, alpha, after).map(|_| ())
     }
 
+    /// Tells the content which meshes' textures are held whole this frame (the character's and those the
+    /// scene's show holds whole, [`Scene::keep_textures_whole`]), and keeps a capture's stage from streaming.
+    fn follow_whole_textures(&mut self) {
+        if self.whole_textures {
+            self.content.set_texture_streaming(false);
+        }
+        let held = self.scene.textures_kept_whole().iter().copied();
+        self.content.keep_textures_whole(std::iter::once(self.character).chain(held));
+    }
+
     /// A frame with nothing to draw into, for a window whose surface gave no image: still loaded, animated
     /// and prepared, so the renderer's persistent scene sees every packet's deltas.
     pub fn skip_frame(&mut self, alpha: f32) {
         self.load_warmup = None;
+        self.follow_whole_textures();
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content, &mut self.show);
         self.scene.animate(&self.content, alpha, &mut self.show);
@@ -708,6 +720,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             scene: &mut self.scene,
             show: &mut self.show,
         });
+        self.follow_whole_textures();
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content, &mut self.show);
         self.laps.content += laps.lap();

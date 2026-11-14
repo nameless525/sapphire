@@ -276,6 +276,8 @@ struct FoliageParams {
     wind: vec4<f32>,
     // x: desaturation start; y: end; z: amount.
     distance: vec4<f32>,
+    // x: bound slots; y: each slot's texture's levels missing above its bound top, 4 bits a slot
+    // (the renderer's, M5 M5).
     modes: vec4<u32>,
     swizzles: vec4<u32>,
 }

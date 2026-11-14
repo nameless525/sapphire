@@ -31,6 +31,7 @@ use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
 use crate::color_vision::{ColorVision, ColorVisionDraw};
 use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges};
+use crate::coverage::{CoverageEstimate, CoverageInputs, CoverageViews, Footprint, TextureCoverageFrame};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
 use crate::draw::{DrawRef, DrawRuns, DrawSet, MeshDraws, RunRecords, RunStats, ViewLists, ViewTests, Walk};
@@ -754,6 +755,11 @@ pub struct Renderer {
     view_lists: Box<ViewLists>,
     /// The frame's run records (M5 D2): each run of more than one draw's records, side by side.
     run_records: RunRecords,
+    /// How finely the last recorded frame read each streamed texture (M5 M5, the `coverage` module):
+    /// estimated from the view lists when the stage asks ([`Self::estimate_texture_coverage`]).
+    texture_coverage: CoverageEstimate,
+    /// The views the last [`Self::record`] drew, until they're estimated.
+    coverage_views: Option<CoverageViews>,
     /// What the last [`Self::record`] took, if it built a graph, until the next [`Self::prepare`]
     /// knows whether that graph ran.
     recorded: Option<RecordedFrame>,
@@ -1033,6 +1039,7 @@ impl Renderer {
         let skinning = Skinning::new(&device);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         let run_records = RunRecords::new(&device);
+        let mip_streaming = MipStreaming::new(&device);
         // A device lost while the pipelines were built (the Android emulator's, building GTAO's
         // on Mobile-High, QA-001) left everything made since invalid.
         if gpu.is_lost() {
@@ -1112,6 +1119,8 @@ impl Renderer {
             counts: PassCounters::default(),
             view_lists: Box::default(),
             run_records,
+            texture_coverage: CoverageEstimate::default(),
+            coverage_views: None,
             recorded: None,
             pipeline_builds,
             prewarmed_keys: BTreeSet::new(),
@@ -1119,7 +1128,7 @@ impl Renderer {
             edited_shaders,
             device_lost: false,
             fence: FrameFence::default(),
-            mip_streaming: MipStreaming::new(),
+            mip_streaming,
             warned_stale_mesh: false,
             stats: RenderStats {
                 temporal: TemporalStats { enabled: settings.temporal, ..TemporalStats::default() },
@@ -1402,6 +1411,30 @@ impl Renderer {
         }
     }
 
+    /// How finely the last estimated frame's views read each streamed texture (M5 M5, the `coverage`
+    /// module): what the stage's streamer wants of each texture's levels. Its `frame` counts the
+    /// estimates ([`Self::estimate_texture_coverage`]).
+    pub fn texture_coverage(&self) -> TextureCoverageFrame<'_> {
+        self.texture_coverage.frame()
+    }
+
+    /// Estimates how finely the last recorded frame's views read each streamed texture, from their lists
+    /// ([`Self::texture_coverage`]), once a recorded frame; nothing if no frame was recorded since. Call it
+    /// before the next [`Self::prepare`] changes what the frame drew and before uploads change what its
+    /// draws refer to: the stage does at the top of its loading, while it streams textures, and times it
+    /// there, so a frame that doesn't stream pays nothing.
+    pub fn estimate_texture_coverage(&mut self) {
+        let Some(views) = self.coverage_views.take() else { return };
+        self.texture_coverage.estimate(&CoverageInputs {
+            list: self.scene.draw_list(),
+            slots: self.scene.slots(),
+            meshes: self.meshes.records(),
+            materials: self.materials.records(),
+            lists: &self.view_lists,
+            views,
+        });
+    }
+
     /// Whether a compaction asked for isn't over: the last frame prepared left the pool above its floor.
     pub fn compacting_meshes(&self) -> bool {
         self.meshes.compacting()
@@ -1439,9 +1472,12 @@ impl Renderer {
         levels: &[&ArchivedTextureLevel],
     ) -> Result<(), RenderError> {
         profiling::scope!("Renderer::raise_texture");
+        if self.device_lost {
+            return Err(RenderError::DeviceLost);
+        }
         let label = self.labels.then_some("raised texture");
-        let encoder = self.mip_streaming.encoder(&self.device);
-        let raised = texture.raised(&self.device, &self.queue, encoder, levels, label)?;
+        let (staging, encoder) = self.mip_streaming.writes(&self.device);
+        let raised = texture.raised(&self.device, staging, encoder, levels, label)?;
         let written = levels.iter().map(|level| level.data().len() as u64).sum();
         self.replace_texture(id, texture, raised, Some(written));
         Ok(())
@@ -3033,6 +3069,7 @@ impl Renderer {
             ref mut run_records,
             ref queue,
             ref mut stats,
+            ref mut coverage_views,
             ..
         } = *self;
         // With the colour-vision view on (M4 A5), everything draws into a texture of the target's, which
@@ -3117,6 +3154,16 @@ impl Renderer {
         };
         let run_records = &*run_records;
         let run_list = lists.records();
+        // The views, for the estimate of how finely they read each streamed texture (M5 M5) that the
+        // stage's streamer asks for.
+        let (cascades, map_texels, maps) = shadows.texels();
+        *coverage_views = Some(CoverageViews {
+            footprint: Footprint::new(camera.view, camera.proj, camera.position, size),
+            insets: std::array::from_fn(|index| inset_frame.draws[index].is_some()),
+            cascades,
+            map_texels,
+            maps,
+        });
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,

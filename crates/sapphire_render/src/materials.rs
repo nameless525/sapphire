@@ -152,6 +152,12 @@ impl MaterialRecord {
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
         &self.group.as_ref().expect("nothing draws a freed material").bind_group
     }
+
+    /// The textures it binds, by slot: none once it's freed (the `coverage` module, M5 M5).
+    pub(crate) fn textures(&self) -> impl Iterator<Item = (usize, AssetId)> + '_ {
+        let slots = self.group.as_ref().map_or(&[][..], |group| &group.slots[..]);
+        slots.iter().enumerate().filter_map(|(slot, (texture, _))| texture.map(|texture| (slot, texture)))
+    }
 }
 
 /// A material's group 3, and what each of its texture slots binds: the texture's asset ID, if one is bound,
@@ -161,6 +167,18 @@ impl MaterialRecord {
 struct Group3 {
     bind_group: wgpu::BindGroup,
     slots: Vec<(Option<AssetId>, wgpu::TextureView)>,
+    /// Per slot, [`TOP_BITS`] bits each: the levels its texture lacks above the one bound as its level 0
+    /// ([`GpuTexture::top`]), which foliage shifts its base color map's size by to read the whole
+    /// texture's (M5 M5, [`Materials::write_tops`]): 0 for a whole texture.
+    tops: u32,
+}
+
+/// Bits per slot in [`Group3::tops`]: a texture of up to 15 levels above its tail.
+const TOP_BITS: u32 = 4;
+
+/// The `tops` word for one slot's texture.
+fn top_bits(slot: usize, texture: &GpuTexture) -> u32 {
+    texture.top().min((1 << TOP_BITS) - 1) << (TOP_BITS * slot as u32)
 }
 
 /// A family's parameter buffer and its CPU mirror.
@@ -359,6 +377,7 @@ impl Materials {
         } else {
             self.records[index] = record;
         }
+        self.write_tops(index);
         Ok((MaterialHandle { index: index as u32, generation }, replaced))
     }
 
@@ -445,6 +464,7 @@ impl Materials {
         record.layer = layer(material);
         record.reflects = reflects(material);
         self.families[record.family.index()].write(record.slot, material.params());
+        self.write_tops(handle.index());
         Ok(())
     }
 
@@ -459,6 +479,7 @@ impl Materials {
         let family = material.family;
         let descs = family.texture_slots();
         let mut slots = Vec::with_capacity(descs.len());
+        let mut tops = 0;
         for (desc, binding) in descs.iter().zip(material.textures.iter()) {
             let Some(id) = binding.texture() else {
                 slots.push((None, self.fallback.clone()));
@@ -477,10 +498,32 @@ impl Materials {
             if holds_data(desc.usage) && format.is_srgb() {
                 return Err(RenderError::SrgbData { slot: desc.name, format });
             }
+            tops |= top_bits(slots.len(), texture);
             slots.push((Some(id), texture.view().clone()));
         }
         let bind_group = self.bind_group(device, &layouts[family.index()], family, &slots);
-        Ok(Group3 { bind_group, slots })
+        Ok(Group3 { bind_group, slots, tops })
+    }
+
+    /// Writes material record `index`'s texture tops into its block if it's foliage's, whose shader scales
+    /// a card's alpha by the level its base color map is read at (`modes[1]`, M5 M5), when they changed:
+    /// so a lowered texture reads as the whole one's size, and differs only by the levels it lacks. The
+    /// sky's shader reads its maps' sizes too, but only to choose a level of the texture bound, or as a
+    /// ratio of its sides, which a lowered texture keeps.
+    fn write_tops(&mut self, index: usize) {
+        let record = &self.records[index];
+        if record.family != MaterialFamily::Foliage {
+            return;
+        }
+        let Some(tops) = record.group.as_ref().map(|group| group.tops) else { return };
+        let buffer = &mut self.families[record.family.index()];
+        let start = record.slot as usize * buffer.stride();
+        let Some(block) = buffer.mirror.get(start..start + buffer.stride()) else { return };
+        let mut params: FoliageParams = bytemuck::pod_read_unaligned(block);
+        if params.modes[1] != tops {
+            params.modes[1] = tops;
+            buffer.write(record.slot, bytemuck::bytes_of(&params));
+        }
     }
 
     /// A family's group 3 binding `slots`' views.
@@ -543,8 +586,14 @@ impl Materials {
                 .iter()
                 .map(|(bound, view)| (*bound, if *bound == Some(id) { texture.view() } else { view }.clone()))
                 .collect();
+            let mut tops = group.tops;
+            for (slot, _) in slots.iter().enumerate().filter(|(_, (bound, _))| *bound == Some(id)) {
+                let mask = ((1 << TOP_BITS) - 1) << (TOP_BITS * slot as u32);
+                tops = (tops & !mask) | top_bits(slot, texture);
+            }
             let bind_group = self.bind_group(device, &layouts[family.index()], family, &slots);
-            self.records[index].group = Some(Group3 { bind_group, slots });
+            self.records[index].group = Some(Group3 { bind_group, slots, tops });
+            self.write_tops(index);
             rebound += 1;
         }
         rebound
@@ -658,6 +707,11 @@ impl Materials {
     /// dirty slots, and draws bind each material's group 3, indexed by handle.
     pub(crate) fn split_for_record(&mut self) -> (MaterialUploads<'_>, &[MaterialRecord]) {
         (MaterialUploads { families: &mut self.families }, &self.records)
+    }
+
+    /// Every material's record, by handle.
+    pub(crate) fn records(&self) -> &[MaterialRecord] {
+        &self.records
     }
 }
 

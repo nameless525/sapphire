@@ -128,6 +128,7 @@ fn record(foliage: bool, deformed: bool) -> MeshRecord {
             index_count: 3,
             material: SubmeshMaterial { handle: MaterialHandle::from_raw(0), slot: 0 },
         }]],
+        texel_density: Default::default(),
         lod_vertices: vec![3],
         lod_errors: vec![0.0],
         placement: Placement::default(),

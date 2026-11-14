@@ -497,6 +497,8 @@ pub struct Scene {
     town_mountains: Vec<Entity>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
     view_cut: bool,
+    /// Meshes whose textures the show holds whole ([`Self::keep_textures_whole`], M5 M5).
+    whole_textures: Vec<MeshHandle>,
     /// Whether something plays the character by a graph that a [`SceneShow`] gave it
     /// ([`Self::pose_character_by_graph`]).
     character_plays_graph: bool,
@@ -693,6 +695,7 @@ impl Scene {
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             view_cut: false,
+            whole_textures: Vec::new(),
             character_plays_graph: false,
             held_face: None,
             character_waits: false,
@@ -1978,6 +1981,19 @@ impl Scene {
     /// Tells the next view that the camera jumped since the last, for temporal AA and the shadows.
     pub fn cut_view(&mut self) {
         self.view_cut = true;
+    }
+
+    /// Holds the textures `meshes` draw whole from the next frame, whatever the views read of them, until
+    /// called again (M5 M5): the party, or what a timeline's next shot frames, ahead of its cut so it opens
+    /// sharp. The stage's character is always held whole.
+    pub fn keep_textures_whole(&mut self, meshes: impl IntoIterator<Item = MeshHandle>) {
+        self.whole_textures.clear();
+        self.whole_textures.extend(meshes);
+    }
+
+    /// The meshes [`Self::keep_textures_whole`] holds.
+    pub fn textures_kept_whole(&self) -> &[MeshHandle] {
+        &self.whole_textures
     }
 
     /// Says which post variants the screen effects a show fires on this scene go through, so they're among

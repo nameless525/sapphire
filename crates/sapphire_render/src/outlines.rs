@@ -224,6 +224,7 @@ mod tests {
             streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 0 },
             dequantize: Dequantize::default(),
             lods: Vec::new(),
+            texel_density: Default::default(),
             lod_vertices: Vec::new(),
             lod_errors: Vec::new(),
             placement: Placement::default(),

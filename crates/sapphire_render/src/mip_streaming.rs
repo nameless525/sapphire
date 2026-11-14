@@ -4,9 +4,10 @@
 //!
 //! - **Off the frame's passes.** A raise or a lower runs between frames, where the app hands it the levels
 //!   it loaded. Its copies go into an encoder of their own, submitted once, ahead of the next frame's
-//!   ([`MipStreaming::submit`], at the top of [`crate::Renderer::prepare`]), and the new levels go with the
-//!   queue's writes, which wgpu runs before any submission's commands: no pass records any of it, and a
-//!   frame lost before it ran still finds the new texture whole.
+//!   ([`MipStreaming::submit`], at the top of [`crate::Renderer::prepare`]), and the new levels go with
+//!   them, copied from a staging belt of its own whose buffers stay mapped and are reused (M5 M5; a queue
+//!   write maps a fresh staging buffer each time, whose pages cost more to touch than the copy): no pass
+//!   records any of it, and a frame lost before it ran still finds the new texture whole.
 //! - **A budget a frame.** A frame may write so many bytes by raising ([`crate::Renderer::set_mip_budget`]):
 //!   the app raises while [`crate::Renderer::may_raise`] says they fit, and the first raise always does,
 //!   however large, as the asset server's upload budget lets one asset through.
@@ -25,6 +26,10 @@ use crate::texture::GpuTexture;
 /// Bytes a frame may write by raising textures until [`crate::Renderer::set_mip_budget`] sets another: the
 /// asset server's desktop upload budget, so a level it hands over in a frame is written in that frame.
 pub const DEFAULT_MIP_BUDGET: u64 = 16 << 20;
+
+/// Each staging buffer raises write their levels through (M5 M5): a 2K BC7 or ASTC 4×4 texture's level 0. The
+/// belt keeps a few and reuses them; a larger level gets a buffer of its own, which the belt keeps too.
+const STAGING_CHUNK: u64 = 4 << 20;
 
 /// Raises and lowers: what they made and wrote between the last two prepared frames, what waits for its
 /// frames, and the budget (rule R9).
@@ -56,6 +61,8 @@ pub struct MipStreamingStats {
 pub(crate) struct MipStreaming {
     /// Copies recorded since the last submission.
     encoder: Option<wgpu::CommandEncoder>,
+    /// The raises' new levels, on their way to the copies `encoder` records (`GpuTexture::raised`).
+    staging: wgpu::util::StagingBelt,
     /// Textures replaced, until no frame can be reading them.
     retired: Retiring<GpuTexture>,
     retired_bytes: u64,
@@ -65,9 +72,10 @@ pub(crate) struct MipStreaming {
 }
 
 impl MipStreaming {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         Self {
             encoder: None,
+            staging: wgpu::util::StagingBelt::new(device.clone(), STAGING_CHUNK),
             retired: Retiring::default(),
             retired_bytes: 0,
             budget: DEFAULT_MIP_BUDGET,
@@ -82,10 +90,23 @@ impl MipStreaming {
         })
     }
 
-    /// Submits the copies recorded since the last submission, if any.
+    /// The staging the next raise writes its levels through, and the encoder its copies go into.
+    pub(crate) fn writes(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> (&mut wgpu::util::StagingBelt, &mut wgpu::CommandEncoder) {
+        self.encoder(device);
+        let encoder = self.encoder.as_mut().expect("just made");
+        (&mut self.staging, encoder)
+    }
+
+    /// Submits the copies recorded since the last submission, if any, and readies their staging to be
+    /// reused once the GPU has read it.
     pub(crate) fn submit(&mut self, queue: &wgpu::Queue) {
         if let Some(encoder) = self.encoder.take() {
+            self.staging.finish();
             queue.submit([encoder.finish()]);
+            self.staging.recall();
         }
     }
 

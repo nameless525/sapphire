@@ -272,7 +272,10 @@ fn foliage_base(material: u32, uv: MaterialUv) -> vec4<f32> {
     var base = foliage_materials[material].base_color;
     if material_has_texture(modes, FOLIAGE_BASE_COLOR) {
         base *= sample_foliage(base_color_map, foliage_materials[material].swizzles, FOLIAGE_BASE_COLOR, uv);
-        let size = vec2<f32>(textureDimensions(base_color_map));
+        // The whole texture's size, whatever top the streamer bound (M5 M5): a lowered map differs
+        // only by the levels it lacks.
+        let top = (modes.y >> (4u * FOLIAGE_BASE_COLOR)) & 15u;
+        let size = vec2<f32>(textureDimensions(base_color_map) << vec2<u32>(top));
         let texels = max(length(uv.dx * size), length(uv.dy * size));
         base.a *= 1.0 + max(log2(max(texels, 1e-8)), 0.0) * ALPHA_MIP_SCALE;
     }

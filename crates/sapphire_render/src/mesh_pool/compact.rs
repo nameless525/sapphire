@@ -272,6 +272,7 @@ mod tests {
                 ],
                 vec![SubmeshDraw { first_index: first + 6, index_count: 3, material }],
             ],
+            texel_density: Default::default(),
             lod_vertices: vec![4, 3],
             lod_errors: vec![0.0, 0.0],
             placement,

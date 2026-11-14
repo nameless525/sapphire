@@ -33,6 +33,7 @@ mod scene_prepass;
 mod shadows;
 mod temporal;
 mod texture;
+mod texture_coverage;
 mod ui;
 mod upscale;
 mod vfx;

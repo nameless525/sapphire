@@ -157,13 +157,15 @@ impl GpuTexture {
     }
 
     /// This texture raised by `levels`, the levels just above its top, from the new top down: a new texture
-    /// with `levels` written and the kept levels copied from this one by `encoder`. The writes go with the
-    /// queue's next submission: submit `encoder` before anything reads the new texture, and keep this one
-    /// until then. Several levels at once make one new texture.
+    /// with `levels` written and the kept levels copied from this one by `encoder`. The new levels go
+    /// through `staging`, whose buffers are mapped already and reused, by copies `encoder` records too
+    /// (`Queue::write_texture` maps a new staging buffer for every write, and touching its fresh pages was
+    /// most of a raise's time on an M5, M5 M5): call its `finish` and submit `encoder` before anything
+    /// reads the new texture, and keep this one until then. Several levels at once make one new texture.
     pub fn raised(
         &self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        staging: &mut wgpu::util::StagingBelt,
         encoder: &mut wgpu::CommandEncoder,
         levels: &[&ArchivedTextureLevel],
         label: Option<&str>,
@@ -182,9 +184,60 @@ impl GpuTexture {
         let raised = Self::create(device, self.whole, top, self.above, label);
         copy_levels(encoder, self, &raised, self.top..self.whole.mip_level_count);
         for (index, level) in (top..).zip(levels) {
-            raised.write(queue, index, level.data());
+            raised.stage(staging, encoder, index, level.data());
         }
         Ok(raised)
+    }
+
+    /// Writes `data`, the whole texture's level `level`, through `staging` by a copy `encoder` records, its
+    /// rows spaced as a buffer copy wants them.
+    fn stage(
+        &self,
+        staging: &mut wgpu::util::StagingBelt,
+        encoder: &mut wgpu::CommandEncoder,
+        level: u32,
+        data: &[u8],
+    ) {
+        let (block_width, block_height) = self.whole.format.block_dimensions();
+        let (width, height) = self.whole.level_extent(level);
+        let row = width.div_ceil(block_width) * self.whole.format.block_bytes();
+        let rows = height.div_ceil(block_height);
+        let spaced = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let Some(size) = wgpu::BufferSize::new(u64::from(spaced) * u64::from(rows)) else { return };
+        // A buffer copy starts at a multiple of the format's block, which divides the row alignment.
+        let alignment = wgpu::BufferSize::new(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)).expect("not 0");
+        let slice = staging.allocate(size, alignment);
+        {
+            let mut mapped =
+                slice.get_mapped_range_mut().expect("a staging belt hands out slices of mapped buffers");
+            // A level's bytes are its rows' (`TextureLevel::validate`), so they fit.
+            let data = &data[..data.len().min(mapped.len())];
+            if spaced == row {
+                mapped.slice(..data.len()).copy_from_slice(data);
+            } else {
+                for (index, from) in data.chunks(row as usize).enumerate() {
+                    let start = index * spaced as usize;
+                    mapped.slice(start..start + from.len()).copy_from_slice(from);
+                }
+            }
+        }
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: slice.buffer(),
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: slice.offset(),
+                    bytes_per_row: Some(spaced),
+                    rows_per_image: Some(rows),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: level - self.top,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            copy_extent(&self.whole, level),
+        );
     }
 
     /// This texture lowered to `top`, under its own and no deeper than its tail's: a new texture that

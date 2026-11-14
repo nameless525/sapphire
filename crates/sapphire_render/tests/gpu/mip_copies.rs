@@ -583,6 +583,8 @@ fn a_tail_raised_level_by_level_is_the_whole_texture() {
         wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_DST);
     let gpu = gpu();
     let (device, queue) = (gpu.device(), gpu.queue());
+    // Small chunks, so raises write through buffers of their own as well as through shared ones.
+    let mut staging = wgpu::util::StagingBelt::new(device.clone(), 64 << 10);
     let sampler = LevelSampler::new(&gpu);
     let id = AssetId::from_bytes([5; 16]);
     let mut skipped = Vec::new();
@@ -609,8 +611,11 @@ fn a_tail_raised_level_by_level_is_the_whole_texture() {
         // Up a level at a time, as levels arrive.
         for top in (0..above).rev() {
             let mut encoder = device.create_command_encoder(&Default::default());
-            streamed = streamed.raised(device, queue, &mut encoder, &[level(top)], None).expect("raise");
+            streamed =
+                streamed.raised(device, &mut staging, &mut encoder, &[level(top)], None).expect("raise");
+            staging.finish();
             queue.submit([encoder.finish()]);
+            staging.recall();
             assert_eq!(
                 (streamed.top(), streamed.desc()),
                 (top, from_level(&cooked.desc, top)),
@@ -633,8 +638,10 @@ fn a_tail_raised_level_by_level_is_the_whole_texture() {
         check(&gpu, &sampler, &case, &cooked, above, lowered.texture());
         let all: Vec<_> = (0..above).map(level).collect();
         let mut encoder = device.create_command_encoder(&Default::default());
-        let raised = lowered.raised(device, queue, &mut encoder, &all, None).expect("raise at once");
+        let raised = lowered.raised(device, &mut staging, &mut encoder, &all, None).expect("raise at once");
+        staging.finish();
         queue.submit([encoder.finish()]);
+        staging.recall();
         assert!(
             read_levels(&gpu, raised.texture(), &cooked.desc) == full,
             "{}: lowered and raised",
@@ -644,13 +651,13 @@ fn a_tail_raised_level_by_level_is_the_whole_texture() {
         // A whole texture can't rise, a lowered one takes only the level above its top, and a texture
         // lowers only under its top and no deeper than its tail.
         let mut encoder = device.create_command_encoder(&Default::default());
-        let refused = raised.raised(device, queue, &mut encoder, &[level(0)], None);
+        let refused = raised.raised(device, &mut staging, &mut encoder, &[level(0)], None);
         assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
         if above > 1 {
-            let refused = lowered.raised(device, queue, &mut encoder, &[level(0)], None);
+            let refused = lowered.raised(device, &mut staging, &mut encoder, &[level(0)], None);
             assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
         }
-        let refused = lowered.raised(device, queue, &mut encoder, &[], None);
+        let refused = lowered.raised(device, &mut staging, &mut encoder, &[], None);
         assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
         for to in [0, above + 1] {
             let refused = raised.lowered(device, &mut encoder, to, None);

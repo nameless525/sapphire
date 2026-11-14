@@ -54,7 +54,7 @@ use std::ops::Range;
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
-pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewLists, ViewTests, Walk};
+pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewList, ViewLists, ViewTests, Walk};
 pub(crate) use self::runs::RunRecords;
 pub use self::runs::{DrawRuns, RunStats};
 use crate::buffer::GrowableBuffer;
@@ -135,7 +135,7 @@ pub(crate) enum DrawSet {
 impl MeshDraws<'_> {
     /// The list this pass walks: none for the character maps' pass as a whole, which draws each
     /// map's.
-    fn listed(&self) -> Option<&lists::ViewList> {
+    fn listed(&self) -> Option<&ViewList> {
         self.lists.list(self.walk)
     }
 

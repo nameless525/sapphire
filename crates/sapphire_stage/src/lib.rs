@@ -128,6 +128,7 @@ pub use readback::Readback;
 pub use scene::Scene;
 pub use show::{ContentChanges, SceneShow};
 pub use showcase::{InsetShot, Showcased};
+pub use texture_levels::{TextureLevelState, TextureStreaming, TextureStreamingStats};
 
 /// Log target for the stage.
 pub(crate) const LOG_TARGET: &str = "sapphire::stage";

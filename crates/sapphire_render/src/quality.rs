@@ -255,6 +255,11 @@ pub struct QualityTier {
     /// The zone texture pool in MiB (§3.4): the textures' residency budget the stage gives the asset
     /// server on this tier (M5 M2). The renderer doesn't read it.
     pub texture_pool_mib: u32,
+    /// KiB of texture levels a frame may write raising textures while they stream (M5 M5): what the stage
+    /// hands [`crate::Renderer::set_mip_budget`]. The first raise of a frame goes whatever its size. The
+    /// renderer doesn't read it. `tiers.ron`'s values are placeholders until the district's timed walks
+    /// choose them.
+    pub texture_raise_kib: u32,
     /// Live GPU particles at most (§3.4), for `sapphire_vfx` (M2).
     pub max_particles: u32,
     /// The levels of detail's allowance exponent (M5 D4, the `levels` module): a level is good
@@ -552,6 +557,9 @@ impl QualityTier {
         }
         if self.texture_pool_mib == 0 {
             return invalid("texture_pool_mib", "must be at least 1");
+        }
+        if self.texture_raise_kib == 0 {
+            return invalid("texture_raise_kib", "must be at least 1");
         }
         if !(-4.0..=4.0).contains(&self.lod_bias) {
             return invalid("lod_bias", "must be within -4..=4");
@@ -1717,6 +1725,10 @@ mod tests {
         let pools = [DesktopHigh, DesktopLow, MobileHigh, MobileLow].map(|id| table.get(id).texture_pool_mib);
         assert_eq!(pools, [2560, 2560, 600, 400]);
         assert_eq!(invalid_field(edited(MobileLow, |tier| tier.texture_pool_mib = 0)), "texture_pool_mib");
+        let raises =
+            [DesktopHigh, DesktopLow, MobileHigh, MobileLow].map(|id| table.get(id).texture_raise_kib);
+        assert_eq!(raises, [4096, 4096, 2048, 2048]);
+        assert_eq!(invalid_field(edited(MobileLow, |tier| tier.texture_raise_kib = 0)), "texture_raise_kib");
     }
 
     #[test]

@@ -177,6 +177,8 @@ pub(crate) struct MeshRecord {
     /// Per LOD, LOD0 first: its submeshes, each coarser LOD's in LOD0's order, one for each of
     /// LOD0's (M5 D4): a submesh a coarser LOD simplified away has no indices there.
     pub lods: Vec<Vec<SubmeshDraw>>,
+    /// What the texture coverage estimate reads of it (M5 M5).
+    pub texel_density: crate::coverage::TexelDensity,
     /// Per LOD: the vertices it reads, a prefix of the streams.
     pub lod_vertices: Vec<u32>,
     /// Per LOD: how far it may stray from LOD0, in object-space meters (`Lod::error`), which levels
@@ -298,6 +300,7 @@ impl MeshRecord {
                 uv_transform: [0.0; 4],
             },
             lods: vec![Vec::new()],
+            texel_density: Default::default(),
             lod_vertices: vec![0],
             lod_errors: vec![0.0],
             placement: Placement::default(),
@@ -809,6 +812,7 @@ impl MeshPool {
             streams: record_streams,
             dequantize,
             lods: aligned_lods(mesh, first_index, materials),
+            texel_density: crate::coverage::TexelDensity::of_mesh(mesh),
             lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
             lod_errors: mesh.lods.iter().map(|lod| lod.error.to_native()).collect(),
             placement: Placement {

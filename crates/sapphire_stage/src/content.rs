@@ -94,7 +94,7 @@ use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 #[cfg(not(feature = "dev"))]
 use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
-use sapphire_assets::mesh::{ArchivedMesh, Mesh};
+use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, Mesh};
 use sapphire_assets::motion::Motion;
 use sapphire_assets::pack;
 use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
@@ -124,7 +124,7 @@ use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     MaterialHandle, MeshHandle, PipelineInventory, ReflectionProbesHandle, Renderer, WarmUpProgress,
-    WarmUpRequest,
+    WarmUpRequest, texture_streams,
 };
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
@@ -149,7 +149,7 @@ use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
 #[cfg(feature = "samples")]
 use crate::swatches::{self, SWATCHES};
-use crate::texture_levels::TextureLevels;
+use crate::texture_levels::{TextureLevelState, TextureLevels, TextureStreaming, TextureStreamingStats};
 use sapphire_loc::StringTable;
 use sapphire_world::streaming::{StreamSettings, Streamer};
 use sapphire_zone::Zone;
@@ -270,10 +270,14 @@ struct GpuAssets {
     /// What's wanted of the textures' levels above their tails, and held of them (M5 M4).
     levels: TextureLevels,
     materials: HashMap<AssetId, Held<MaterialHandle>>,
-    /// The textures each material binds, which [`Self::levels`] counts.
-    material_textures: HashMap<AssetId, Vec<AssetId>>,
+    /// The textures each material binds, which [`Self::levels`] counts, each with whether its slot never
+    /// streams (`sapphire_render::texture_streams`, M5 M5).
+    material_textures: HashMap<AssetId, Vec<(AssetId, bool)>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
+    /// The material assets each mesh on the renderer binds in its slots: what holding a mesh's textures
+    /// whole holds ([`Content::keep_textures_whole`], M5 M5).
+    mesh_materials: HashMap<MeshHandle, Vec<AssetId>>,
     /// The character's ID, whose mesh [`Self::character_mesh`] copies.
     character: AssetId,
     /// A copy of the character's mesh as last uploaded, while one is wanted.
@@ -342,6 +346,7 @@ impl GpuAssets {
             materials: HashMap::new(),
             material_textures: HashMap::new(),
             meshes: HashMap::new(),
+            mesh_materials: HashMap::new(),
             character,
             character_mesh: None,
             keep_character,
@@ -398,17 +403,18 @@ impl GpuAssets {
             let kept = resident(id);
             if !kept {
                 stale_materials.push(held.object);
-                for texture in material_textures.remove(&id).into_iter().flatten() {
-                    levels.unbind(texture);
+                for (texture, whole) in material_textures.remove(&id).into_iter().flatten() {
+                    levels.unbind(texture, whole);
                 }
             }
             kept
         });
-        let stale_meshes = &mut self.stale_meshes;
+        let (stale_meshes, mesh_materials) = (&mut self.stale_meshes, &mut self.mesh_materials);
         self.meshes.retain(|&id, held| {
             let kept = resident(id);
             if !kept {
                 stale_meshes.push(held.object.handle);
+                mesh_materials.remove(&held.object.handle);
             }
             kept
         });
@@ -540,12 +546,15 @@ impl GpuAssets {
             {
                 renderer.free_material(previous.object);
             }
-            let bound = material.textures.iter().filter_map(|binding| binding.texture()).collect::<Vec<_>>();
-            for &texture in &bound {
-                self.levels.bind(texture);
+            let family = material.family;
+            let bound = (material.textures.iter().enumerate())
+                .filter_map(|(slot, binding)| Some((binding.texture()?, !texture_streams(family, slot))))
+                .collect::<Vec<_>>();
+            for &(texture, whole) in &bound {
+                self.levels.bind(texture, whole);
             }
-            for texture in self.material_textures.insert(id, bound).into_iter().flatten() {
-                self.levels.unbind(texture);
+            for (texture, whole) in self.material_textures.insert(id, bound).into_iter().flatten() {
+                self.levels.unbind(texture, whole);
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
             if self.meshes.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
@@ -616,7 +625,13 @@ impl GpuAssets {
                 && previous.object.handle != handle
             {
                 renderer.free_mesh(previous.object.handle);
+                self.mesh_materials.remove(&previous.object.handle);
             }
+            let materials = mesh.materials.iter().filter_map(|slot| match &slot.material {
+                ArchivedSlotMaterial::Asset(material) => Some(*material),
+                ArchivedSlotMaterial::Embedded(_) => None,
+            });
+            self.mesh_materials.insert(handle, materials.collect());
             self.meshes_replaced |= old.is_some();
             if let Some(copies) = copies {
                 copies.commit(&mut self.copies, renderer);
@@ -729,6 +744,18 @@ impl GpuAssets {
         }
     }
 
+    /// Marks the textures of `meshes`' materials held whole for this frame's [`Self::follow_levels`].
+    fn hold_whole(&mut self, meshes: &[MeshHandle]) {
+        self.levels.clear_whole_now();
+        for mesh in meshes {
+            for material in self.mesh_materials.get(mesh).into_iter().flatten() {
+                for &(texture, _) in self.material_textures.get(material).into_iter().flatten() {
+                    self.levels.hold_whole_now(texture);
+                }
+            }
+        }
+    }
+
     /// Raises and lowers textures toward what's wanted of them ([`TextureLevels::follow`]).
     fn follow_levels(&mut self, server: &mut AssetServer, renderer: &mut Renderer, unlimited: bool) {
         let change = self.levels.follow(&mut self.textures, server, renderer, unlimited);
@@ -754,14 +781,15 @@ impl GpuAssets {
             && let Some(held) = self.materials.remove(&id)
         {
             self.stale_materials.push(held.object);
-            for texture in self.material_textures.remove(&id).into_iter().flatten() {
-                self.levels.unbind(texture);
+            for (texture, whole) in self.material_textures.remove(&id).into_iter().flatten() {
+                self.levels.unbind(texture, whole);
             }
         }
         if self.meshes.get(&id).is_some_and(|held| held.slot == slot)
             && let Some(held) = self.meshes.remove(&id)
         {
             self.stale_meshes.push(held.object.handle);
+            self.mesh_materials.remove(&held.object.handle);
         }
         // The renderer keeps the grid it holds, its own copy, until `follow_wanted_grid` takes it off or puts
         // another on: a trip's arrival unmounts the last zone's pack, and so its grid, before the next update
@@ -1009,6 +1037,12 @@ pub struct Content {
     /// Zones' reflection probes are asked for; off, none is loaded and the sky alone is reflected
     /// (`--no-reflection-probes`, which the scenes captured before them keep).
     reflection_probes: bool,
+    /// The meshes whose textures are held whole whatever the views read ([`Self::keep_textures_whole`]).
+    whole_meshes: Vec<MeshHandle>,
+    /// The streamer's pool a run set, over the tier's ([`Self::set_texture_pool`]).
+    texture_pool: Option<u64>,
+    /// Bytes of levels a frame may write raising streamed textures: the tier's `texture_raise_kib`.
+    texture_raise: u64,
     /// The pipelines of zones coming next and those a load left for after its screen, warming up off the
     /// frame: see [`Self::queue_zone_prewarm`] and [`Self::warm_after_load`].
     zone_prewarms: Vec<OffFrameWarm>,
@@ -1299,11 +1333,18 @@ impl Content {
     /// Loads within quality tier `tier`'s budgets ([`Self::tier_budgets`]) from here on: what's over a budget
     /// now is trimmed at the next [`Self::update`]. The stage calls it when it takes a tier's renderer.
     pub fn set_tier(&mut self, tier: &QualityTier) {
-        let budgets = Self::tier_budgets(tier);
+        let mut budgets = Self::tier_budgets(tier);
+        if let Some(pool) = self.texture_pool {
+            budgets = budgets.with_resident(AssetKind::Texture, pool);
+        }
         if *self.server.budgets() != budgets {
             tracing::info!(target: LOG_TARGET, tier = tier.id.name(), ?budgets, "asset budgets for the tier");
             self.server.set_budgets(budgets);
         }
+        // The streamer's pool and raise budget follow the tier's: the next update lowers to the pool first,
+        // then raises within it.
+        self.texture_raise = u64::from(tier.texture_raise_kib) << 10;
+        self.set_texture_streaming(self.gpu.levels.streaming().is_some());
     }
 
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
@@ -1388,6 +1429,9 @@ impl Content {
             town: Vec::new(),
             left_out_of_zones: None,
             zone_probes: None,
+            whole_meshes: Vec::new(),
+            texture_pool: None,
+            texture_raise: sapphire_render::DEFAULT_MIP_BUDGET,
             zone_sky: None,
             zone_reflections: None,
             reflection_probes: true,
@@ -1417,6 +1461,8 @@ impl Content {
     /// One frame of loading: applies finished reads and decodes, frees what the server unloaded,
     /// and uploads what is ready within the frame's budget.
     pub fn update(&mut self, renderer: &mut Renderer, gpu: &GpuContext) {
+        // First, while the renderer holds what the frame it recorded drew.
+        self.gpu.levels.estimate(renderer);
         self.server.update();
         self.prewarm_next_zones(renderer);
         for unloaded in self.server.take_unloaded() {
@@ -1427,25 +1473,90 @@ impl Content {
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
         self.gpu.follow_wanted_reflections(renderer);
+        self.gpu.hold_whole(&self.whole_meshes);
         self.gpu.follow_levels(&mut self.server, renderer, false);
         self.gpu.follow_give_back(renderer);
+    }
+
+    /// Streams textures by what the views draw (`true`, M5 M5), inside the tier's zone texture pool
+    /// ([`Self::set_tier`]) or the one a run set ([`Self::set_texture_pool`]); or (`false`, the default) wants
+    /// every texture a material on the renderer binds whole, as a capture must. See the `texture_levels`
+    /// module.
+    pub fn set_texture_streaming(&mut self, on: bool) {
+        let streaming = on.then(|| TextureStreaming { pool: self.texture_pool(), raise: self.texture_raise });
+        if self.gpu.levels.streaming() != streaming {
+            tracing::info!(target: LOG_TARGET, ?streaming, "texture streaming");
+            self.gpu.levels.set_streaming(streaming);
+        }
+    }
+
+    /// The pool the streamer holds textures within: the tier's zone texture pool, or with `Some(bytes)` that
+    /// many bytes from now on, which the asset server's texture budget follows too. `None` goes back to the
+    /// tier's.
+    pub fn set_texture_pool(&mut self, bytes: Option<u64>) {
+        self.texture_pool = bytes;
+        if let Some(bytes) = bytes {
+            self.server.set_budgets(self.server.budgets().with_resident(AssetKind::Texture, bytes));
+        }
+        self.set_texture_streaming(self.gpu.levels.streaming().is_some());
+    }
+
+    fn texture_pool(&self) -> u64 {
+        self.texture_pool.unwrap_or_else(|| self.server.budgets().resident(AssetKind::Texture))
+    }
+
+    /// Holds the textures of `meshes` (the renderer's) whole from the next update on, whatever the views read
+    /// of them, and lets the meshes held before stream again: the party, an inset's or a close-up's framed
+    /// characters, a timeline's next shot, asked for ahead so it opens sharp (M5 M5). It replaces the last
+    /// call's set; the pool still bounds them, last of all.
+    pub fn keep_textures_whole(&mut self, meshes: impl IntoIterator<Item = MeshHandle>) {
+        self.whole_meshes.clear();
+        self.whole_meshes.extend(meshes);
+    }
+
+    /// What the streamer did at the last update and holds (rule R9).
+    #[must_use]
+    pub fn texture_streaming_stats(&self) -> TextureStreamingStats {
+        self.gpu.levels.stats()
+    }
+
+    /// Each texture on the renderer's wanted, resident and tail tops and its debt, in ID order: what the scale
+    /// views show (m5-plan X1).
+    pub fn texture_levels(&self) -> impl Iterator<Item = (AssetId, TextureLevelState)> + '_ {
+        self.gpu.levels.states(&self.gpu.textures)
     }
 
     /// Brings every texture on `renderer` to the top wanted of it before a frame draws, loading and
     /// raising without the frame's budgets: a capture's, which must see every texture whole as a load
     /// left it before textures streamed (M5 M4). The levels' loads drain the server's upload queue as
     /// any finished load does. A level that fails, or doesn't come within half a minute, leaves its texture
-    /// under it, with a warning.
+    /// under it, with a warning. While the streamer is on, each texture goes to the top it plans for it,
+    /// within the pool, from the coverage of the frame drawn last instead (a capture that streams, M5 M5).
     pub fn finish_texture_levels(&mut self, renderer: &mut Renderer, gpu: &GpuContext) {
         let stopwatch = Stopwatch::start();
+        let streaming = self.gpu.levels.streaming().is_some();
         loop {
             self.gpu.follow_levels(&mut self.server, renderer, true);
             if self.gpu.levels.settled(&self.gpu.textures) {
+                if streaming {
+                    let stats = self.gpu.levels.stats();
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        resident = stats.resident,
+                        pool = stats.pool,
+                        wanted = stats.wanted,
+                        in_debt = stats.in_debt,
+                        over_pool = stats.over_pool,
+                        "textures at the streamer's plan for a capture"
+                    );
+                }
                 return;
             }
             let waiting = self.gpu.levels.waiting();
-            if waiting.is_empty() || stopwatch.elapsed() > std::time::Duration::from_secs(30) {
-                tracing::warn!(target: LOG_TARGET, waiting = waiting.len(), "textures aren't whole for a capture");
+            // The streamer starts and lowers so many textures a pass: another pass goes on while one did.
+            let stuck = waiting.is_empty() && !(streaming && self.gpu.levels.progressed());
+            if stuck || stopwatch.elapsed() > std::time::Duration::from_secs(30) {
+                tracing::warn!(target: LOG_TARGET, waiting = waiting.len(), streaming, "textures aren't at their tops for a capture");
                 return;
             }
             for handle in waiting {
@@ -1472,7 +1583,7 @@ impl Content {
     }
 
     /// Whether every texture on the renderer is at the top wanted of it: what a capture's stage
-    /// ([`crate::Stage::whole_textures`]) holds before each frame draws, and a game's reaches a frame or a few after
+    /// ([`crate::Stage::capture_textures`]) holds before each frame draws, and a game's reaches a frame or a few after
     /// a material binds its textures, as their levels load.
     #[must_use]
     pub fn textures_settled(&self) -> bool {
@@ -5971,6 +6082,224 @@ mod tests {
             whole - 4 * (16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1),
             "all of it"
         );
+    }
+
+    /// The streamed textures' side, and the levels above their 4 × 4 tails.
+    const STREAMED_SIDE: u32 = 128;
+    const STREAMED_ABOVE: u32 = 5;
+
+    /// The textures [`streamed_pack`] holds.
+    fn streamed(index: u8) -> AssetId {
+        AssetId::from_bytes([0x70 + index; 16])
+    }
+
+    /// Bytes an RGBA8 [`STREAMED_SIDE`] texture holds with its top at `top`.
+    fn streamed_bytes(top: u32) -> u64 {
+        (top..=STREAMED_SIDE.ilog2()).map(|level| 4 * u64::from((STREAMED_SIDE >> level).pow(2))).sum()
+    }
+
+    /// A pack whose character is a quad of three strips, each drawn through a material without an outline
+    /// that binds its own texture as its base colour, cooked as a tail and [`STREAMED_ABOVE`] levels.
+    fn streamed_pack() -> Vec<u8> {
+        use sapphire_assets::material::Outline;
+        use sapphire_assets::mesh::SlotMaterial;
+        use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
+        let format = TextureFormat::Rgba8UnormSrgb;
+        let mut assets = Vec::new();
+        let (mut vertices, mut indices, mut submeshes, mut slots) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for strip in 0..3u8 {
+            let texture = streamed(strip);
+            let shades: Vec<u8> =
+                (0..=STREAMED_SIDE.ilog2()).map(|level| 30 + 20 * level as u8 + strip).collect();
+            let levels = split_levels(&shades);
+            let tail_side = STREAMED_SIDE >> STREAMED_ABOVE;
+            let desc = TextureDesc {
+                format,
+                width: tail_side,
+                height: tail_side,
+                mip_level_count: levels.len() as u32 - STREAMED_ABOVE,
+                swizzle: Swizzle::IDENTITY,
+            };
+            let tail = TextureTail {
+                texture: Texture {
+                    desc,
+                    levels: levels[STREAMED_ABOVE as usize..].iter().map(Vec::as_slice).collect(),
+                },
+                above: STREAMED_ABOVE,
+            };
+            assets.push(packed(texture, AssetKind::Texture, &tail.to_ktx2().expect("a tail")));
+            for level in 0..STREAMED_ABOVE {
+                let width = STREAMED_SIDE >> level;
+                let data = levels[level as usize].clone();
+                let level =
+                    TextureLevel { texture, level, format: format.vk_format(), width, height: width, data };
+                let bytes = level.to_cooked().expect("cooked");
+                let id = TextureLevel::id(texture, level.level);
+                assets.push(packed_with(id, AssetKind::TextureLevel, &bytes, vec![texture]));
+            }
+            let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+            let document = AnimeCharacterMaterial {
+                base_color_map: Some(texture),
+                outline: Outline { width: 0.0, ..Outline::default() },
+                ..AnimeCharacterMaterial::default()
+            };
+            let material = Material::from_document(&document, &swizzles).expect("a valid material");
+            let material_id = AssetId::from_bytes([0x78 + strip; 16]);
+            let bytes = material.to_cooked().expect("cooked");
+            assets.push(packed_with(material_id, AssetKind::Material, &bytes, vec![texture]));
+            // A strip a third of a 2 m square, its texture once across it.
+            let x = -1.0 + 2.0 * f32::from(strip) / 3.0;
+            let first = vertices.len() as u32;
+            for (dx, y, u, v) in [
+                (0.0, 0.0, 0.0, 1.0),
+                (2.0 / 3.0, 0.0, 1.0, 1.0),
+                (2.0 / 3.0, 2.0, 1.0, 0.0),
+                (0.0, 2.0, 0.0, 0.0),
+            ] {
+                vertices.push(Vertex {
+                    position: [x + dx, y, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    outline_normal: [0.0, 0.0, 1.0],
+                    uv: [u, v],
+                    color: VERTEX_COLOR_NEUTRAL,
+                    flags: VertexFlags::NONE,
+                });
+            }
+            submeshes.push(Submesh {
+                first_index: indices.len() as u32,
+                index_count: 6,
+                material: u32::from(strip),
+            });
+            indices.extend([0, 1, 2, 0, 2, 3].map(|index| first + index));
+            let mut slot = MaterialSlot::embedded(format!("strip {strip}"), material);
+            slot.material = SlotMaterial::Asset(material_id);
+            slots.push(slot);
+        }
+        let mesh = Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16);
+        let materials = (0..3).map(|strip| AssetId::from_bytes([0x78 + strip; 16])).collect();
+        assets.push(packed_with(MESH, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), materials));
+        write_pack(assets).expect("a pack")
+    }
+
+    impl Stage {
+        /// The stage's counters against each texture's state: what's in debt, the worst debt, the textures
+        /// and the bytes held, as [`TextureLevels`]'s states say.
+        fn check_streaming_counters(&self) -> TextureStreamingStats {
+            let stats = self.content.texture_streaming_stats();
+            let states: Vec<TextureLevelState> =
+                self.content.texture_levels().map(|(_, state)| state).collect();
+            assert_eq!(stats.textures as usize, states.len());
+            let in_debt = states.iter().filter(|state| state.resident > state.wanted).count();
+            assert_eq!(stats.in_debt as usize, in_debt, "{states:?}");
+            assert_eq!(stats.worst_debt, states.iter().map(|state| state.debt).max().unwrap_or(0));
+            assert_eq!(stats.tails, 3 * streamed_bytes(STREAMED_ABOVE));
+            // Nothing's on its way between frames once settled, so what's held is what's on the GPU.
+            let on_gpu: u64 = states.iter().map(|state| streamed_bytes(state.resident)).sum();
+            assert!(stats.resident >= on_gpu, "{stats:?}");
+            stats
+        }
+    }
+
+    /// m5-plan M5: with streaming on, a pool too small for what the views read holds: what the textures
+    /// hold never passes it, and what it can't afford is debt, counted. A larger pool pays the debt; the
+    /// mesh held whole (the party, a framed character) rises whole; streaming off wants every texture whole.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_streamer_keeps_to_its_pool_and_counts_its_debt() {
+        let mut character = None;
+        let mut stage = Stage::over_pack_with(streamed_pack(), |_, _, _, mesh, bounds| {
+            character = Some(mesh);
+            Scene::with_character(mesh, bounds, false)
+        });
+        let character = character.expect("the character");
+        let tails = 3 * streamed_bytes(STREAMED_ABOVE);
+        // Room above the tails for one texture's 8 × 8 level and half another's.
+        let level_4 = streamed_bytes(4) - streamed_bytes(STREAMED_ABOVE);
+        let pool = tails + level_4 * 3 / 2;
+        stage.content.set_texture_pool(Some(pool));
+        stage.content.set_texture_streaming(true);
+        let (mut raised, mut lowered) = (0, 0);
+        for _ in 0..200 {
+            stage.frame();
+            let stats = stage.check_streaming_counters();
+            assert!(stats.streaming && stats.pool == pool);
+            assert!(stats.resident <= pool, "the pool is hard: {stats:?}");
+            (raised, lowered) = (raised + stats.levels_raised, lowered + stats.levels_lowered);
+        }
+        let stats = stage.content.texture_streaming_stats();
+        let states: Vec<_> = stage.content.texture_levels().collect();
+        assert!(
+            states.iter().all(|(_, state)| state.wanted < 4),
+            "the views read finer than the pool: {states:?}"
+        );
+        assert!(stats.in_debt >= 2 && stats.over_pool >= 2, "{stats:?}");
+        assert!(stats.worst_debt >= 190, "debt the pool keeps is never paid: {stats:?}");
+        assert!(raised > 0, "raised {raised}, lowered {lowered}");
+
+        // A pool with room: every texture rises to what the views read, and the debt's paid.
+        stage.content.set_texture_pool(Some(3 * streamed_bytes(0)));
+        stage.content.set_texture_streaming(true);
+        stage.frames_until(|stage| stage.content.texture_streaming_stats().in_debt == 0);
+        let stats = stage.check_streaming_counters();
+        assert_eq!((stats.over_pool, stats.worst_debt), (0, 0));
+        for (id, state) in stage.content.texture_levels() {
+            assert_eq!(state.resident, state.wanted, "{id}");
+            assert!(state.wanted > 0, "{id}: a 32-pixel view never reads a 128-texel texture whole");
+        }
+        // Settled, the content's update, the streamer's choosing in it, allocates nothing (rule R6).
+        assert!(sapphire_core::alloc::is_installed());
+        for _ in 0..30 {
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                stage.content.update(&mut stage.renderer, &stage.gpu);
+            });
+            assert_eq!(counts.allocations, 0, "{counts:?}");
+            stage.frame();
+        }
+
+        // Held whole: every texture the character draws rises to level 0, first.
+        stage.content.keep_textures_whole([character]);
+        stage.frames_until(|stage| stage.content.texture_levels().all(|(_, state)| state.resident == 0));
+        assert_eq!(stage.check_streaming_counters().held_whole, 3);
+
+        // Let go, they ease back to what the views read, once the lazy lowering's wait is over.
+        stage.content.keep_textures_whole([]);
+        stage.frame();
+        assert!(stage.content.texture_levels().all(|(_, state)| state.resident == 0), "never at once");
+        stage.frames_until(|stage| stage.content.texture_levels().all(|(_, state)| state.resident > 0));
+
+        // Off, as captures run: every texture whole, the stand-in's policy.
+        stage.content.set_texture_streaming(false);
+        stage.frames_until(|stage| stage.content.texture_levels().all(|(_, state)| state.resident == 0));
+        assert!(!stage.content.texture_streaming_stats().streaming);
+    }
+
+    /// m5-plan M5: a frame's work is bounded by counts, not by a clock. With a raise budget smaller than any
+    /// level, each frame raises one texture and starts one at most (the first always goes), lowers no more
+    /// than `MAX_LOWERS`, and the streamer still pays its debt, a texture a frame.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_frames_raises_and_starts_keep_to_the_tiers_budget() {
+        let mut stage = Stage::over_pack_with(streamed_pack(), |_, _, _, mesh, bounds| {
+            Scene::with_character(mesh, bounds, false)
+        });
+        stage.content.set_texture_pool(Some(3 * streamed_bytes(0)));
+        stage.content.texture_raise = 1;
+        stage.content.set_texture_streaming(true);
+        let (mut raises, mut frames) = (0, 0);
+        while stage.content.texture_streaming_stats().in_debt > 0 || frames == 0 {
+            stage.frame();
+            frames += 1;
+            assert!(frames < 200, "the debt is never paid");
+            let stats = stage.content.texture_streaming_stats();
+            let mips = stage.renderer.stats().mip_streaming;
+            assert_eq!(mips.budget, 1, "the stage hands the renderer its budget");
+            assert!(mips.raises <= 1, "one raise a frame past the budget: {mips:?}");
+            assert!(stats.started <= 1, "one start a frame past the budget: {stats:?}");
+            assert!(mips.lowers as usize <= crate::texture_levels::MAX_LOWERS, "{mips:?}");
+            raises += mips.raises;
+        }
+        assert!(raises >= 3, "each texture rose, one a frame: {raises} in {frames} frames");
     }
 }
 

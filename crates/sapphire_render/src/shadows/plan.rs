@@ -673,6 +673,7 @@ mod tests {
             streams,
             dequantize: Dequantize::default(),
             lods: Vec::new(),
+            texel_density: Default::default(),
             lod_vertices: Vec::new(),
             lod_errors: Vec::new(),
             placement: Placement::default(),

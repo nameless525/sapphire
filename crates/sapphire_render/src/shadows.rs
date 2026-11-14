@@ -954,6 +954,23 @@ impl Shadows {
         cascades.chain(map).min()
     }
 
+    /// One texel, in meters, of each cascade the frame draws and of each character map, as
+    /// [`Self::caster_tests`] lists them: what a masked caster's or a foliage card's texture is read
+    /// by in a shadow view (the `coverage` module, M5 M5).
+    pub(crate) fn texels(&self) -> ([Option<f32>; MAX_CASCADES], [f32; MAX_CHARACTER_MAPS], usize) {
+        let active = self.pipelines.is_some() && self.plan.active;
+        let cascades = std::array::from_fn(|index| {
+            let drawn = self.plan.drawn.get(index).copied().flatten();
+            drawn.filter(|_| active).map(|fit| fit.texel())
+        });
+        let maps = match self.settings {
+            Some(_) if active => self.plan.maps.len().min(MAX_CHARACTER_MAPS),
+            _ => 0,
+        };
+        let texels = std::array::from_fn(|index| self.plan.maps.get(index).map_or(0.0, |fit| fit.texel()));
+        (cascades, texels, maps)
+    }
+
     /// The view of cascade `index` (below [`MAX_CASCADES`]), or of character map `index −
     /// MAX_CASCADES`, among the shadows' views.
     fn view_index(&self, index: usize) -> u32 {

@@ -2386,6 +2386,10 @@ impl Renderer {
             self.scene.draw_list(),
             self.characters.table(),
         );
+        // The other characters' shadows each character receives go into its entry (M5 L12).
+        if packet.main_view().is_some() {
+            self.characters.receive(self.shadows.received());
+        }
 
         // The interface's pipeline with its first quads. On a lost device nothing draws.
         if !self.device_lost {

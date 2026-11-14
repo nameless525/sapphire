@@ -1,20 +1,36 @@
 //! Each frame's shadows, planned on the CPU: which cascades are drawn and where, who casts into
-//! what, which characters draw maps and which cast capsules, and what receivers read. Its vectors
-//! are reused, so a warm frame allocates nothing.
+//! what, which characters draw maps and which cast capsules, which other characters' shadows each
+//! character receives, and what receivers read. Its vectors are reused, so a warm frame allocates
+//! nothing.
 
 use glam::Vec3;
 
 use super::fit::{self, CascadeFit, Frustum, LightSpace};
 use super::{
     ATLAS_COLUMNS, GpuCapsule, GpuCascade, GpuCharacterMap, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS,
-    ShadowSettings, ShadowStats, ShadowUniforms,
+    MAX_OTHERS, ShadowSettings, ShadowStats, ShadowUniforms,
 };
 use crate::bounds::Sphere;
-use crate::characters::CharacterTable;
+use crate::characters::{CharacterTable, GpuReceived, RECEIVED_CAPSULE};
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
-use crate::{CameraData, CharacterBody, FramePacket};
+use crate::{CameraData, CharacterBody, FramePacket, ShadowRole};
+
+/// How far a capsule's shadow reaches from it along the light, in meters (`CAPSULE_REACH` in
+/// frame.wgsl).
+const CAPSULE_REACH: f32 = 8.0;
+/// Over how many meters a caster's weight on a receiver grows from 0 as its sphere comes to
+/// overlap the receiver's in the light's view, comes toward the light past the receiver's back,
+/// or comes within its shadow's reach: where its shadow can't yet touch the receiver, so the
+/// weight's fade never shows.
+const FALLS_ON_BAND: f32 = 0.25;
+/// Over how many meters of rank a receiver's last chosen caster yields its slot to the first left
+/// out: it fades out as their ranks meet, so they trade places at weight 0 (M5 L12).
+const YIELD_BAND: f32 = 0.5;
+/// What a caster's rank grows by as its weight falls from 1 to 0: past any distance along the
+/// light, so a caster only beginning to fall on a receiver ranks behind every whole one.
+const UNSURE_RANK: f32 = 1.0e4;
 
 /// How far the frame's wind can carry a mesh's vertices past its cooked bounds, in meters:
 /// foliage's margin (`foliage::wind_margin`), 0 for every other mesh.
@@ -54,8 +70,8 @@ struct CharacterGroup {
 enum Cast {
     /// A tile of the character atlas (desktop).
     Map(u8),
-    /// Its body's capsule.
-    Capsule,
+    /// Its body's capsule, the receivers' capsule of this index.
+    Capsule(u8),
     /// Nothing: past the shadow distance, or past the budgets.
     Nothing,
 }
@@ -83,6 +99,10 @@ pub(crate) struct ShadowPlan {
     groups: Vec<CharacterGroup>,
     /// The groups' indices, nearest the camera first.
     order: Vec<u32>,
+    /// Per group: the other characters' shadows it receives (M5 L12).
+    pub received: Vec<GpuReceived>,
+    /// A receiver's casters as [`Self::receive`] ranks them.
+    candidates: Vec<Candidate>,
     /// What receivers read.
     pub uniforms: ShadowUniforms,
     /// The frame has a main view: there is something to draw.
@@ -117,6 +137,7 @@ impl ShadowPlan {
             // with a view draws every cascade.
             self.active = false;
             self.cached = [None; MAX_CASCADES];
+            self.received.clear();
             return;
         };
         self.active = true;
@@ -132,6 +153,7 @@ impl ShadowPlan {
         }
         self.plan_cascades(settings, camera, light);
         self.classify(characters, slots, (meshes, wind_margin), settings, camera, light);
+        self.receive(settings, light);
         self.skip_empty(list);
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
         self.count_draws(list, settings);
@@ -221,7 +243,8 @@ impl ShadowPlan {
             self.characters[slot as usize] = SlotCharacter::Character(group);
         }
         // The nearest get maps (desktop), the next capsules; those past the shadow distance, or
-        // past both budgets, cast nothing.
+        // past both budgets, cast nothing. A crowd's ambient characters cast capsules alone (M5
+        // L12).
         self.order.clear();
         for (index, group) in self.groups.iter_mut().enumerate() {
             group.distance = (group.sphere.center.distance(camera.position) - group.sphere.radius).max(0.0);
@@ -236,14 +259,15 @@ impl ShadowPlan {
         let (mut capsules, mut uncast) = (0u32, 0u32);
         for &index in &self.order {
             let group = &mut self.groups[index as usize];
+            let named = group.body.role == ShadowRole::Named;
             group.cast = if group.distance > reach {
                 Cast::Nothing
-            } else if settings.character_shadow && self.maps.len() < MAX_CHARACTER_MAPS {
+            } else if settings.character_shadow && named && self.maps.len() < MAX_CHARACTER_MAPS {
                 self.maps.push(CascadeFit::character(light, group.sphere, settings.character_resolution));
                 Cast::Map(self.maps.len() as u8 - 1)
             } else if (capsules as usize) < MAX_CAPSULES {
                 capsules += 1;
-                Cast::Capsule
+                Cast::Capsule(capsules as u8 - 1)
             } else {
                 Cast::Nothing
             };
@@ -257,7 +281,7 @@ impl ShadowPlan {
                 SlotCharacter::Character(group) => {
                     caster.map = group.and_then(|group| match self.groups[group as usize].cast {
                         Cast::Map(map) => Some(map),
-                        Cast::Capsule | Cast::Nothing => None,
+                        Cast::Capsule(_) | Cast::Nothing => None,
                     });
                 }
                 SlotCharacter::Environment => {
@@ -286,6 +310,36 @@ impl ShadowPlan {
         self.stats.character_maps = self.maps.len() as u32;
         self.stats.capsules = capsules;
         self.stats.uncast_characters = uncast;
+    }
+
+    /// Chooses the other characters' shadows each named character receives (M5 L12; the module
+    /// docs of `shadows`, "Characters shadowing each other"), at most `settings.others`: the casters
+    /// whose shadows can fall on it ([`falls_on`]), nearest along the light first, each weighted by
+    /// how surely, and the last chosen yielding its slot to the first left out as their ranks meet,
+    /// so no caster's shadow on a receiver ever pops as characters move.
+    fn receive(&mut self, settings: &ShadowSettings, light: LightSpace) {
+        self.received.clear();
+        self.received.resize(self.groups.len(), GpuReceived::default());
+        let slots = (settings.others as usize).min(MAX_OTHERS);
+        let mut pairs = 0;
+        if slots > 0 {
+            let reach = settings.distance as f32;
+            for (index, receiver) in self.groups.iter().enumerate() {
+                if receiver.body.role != ShadowRole::Named || receiver.distance > reach {
+                    continue;
+                }
+                rank_casters(index, &self.groups, light, &mut self.candidates);
+                let received = &mut self.received[index];
+                let next = self.candidates.get(slots).map(|left_out| left_out.rank);
+                for (slot, candidate) in self.candidates.iter().take(slots).enumerate() {
+                    let yields = next.map_or(1.0, |next| smoothstep(0.0, YIELD_BAND, next - candidate.rank));
+                    received.casters[slot] = candidate.caster;
+                    received.weights[slot] = candidate.weight * yields;
+                    pairs += u32::from(received.weights[slot] > 0.0);
+                }
+            }
+        }
+        self.stats.received = pairs;
     }
 
     /// Leaves out the cascades picked this frame that nothing casts into while their maps hold
@@ -358,12 +412,11 @@ impl ShadowPlan {
                 ],
             };
         }
-        let capsules = self.order.iter().map(|&index| &self.groups[index as usize]);
-        let capsules = capsules.filter(|group| group.cast == Cast::Capsule).take(MAX_CAPSULES);
         let mut count = 0;
-        for (gpu, group) in uniforms.capsules.iter_mut().zip(capsules) {
+        for group in &self.groups {
+            let Cast::Capsule(index) = group.cast else { continue };
             let body = group.body;
-            *gpu = GpuCapsule {
+            uniforms.capsules[index as usize] = GpuCapsule {
                 base: body.base.extend(body.radius).to_array(),
                 top: body.top.extend(0.0).to_array(),
             };
@@ -424,6 +477,67 @@ impl ShadowPlan {
     }
 }
 
+/// A caster of a receiver's (M5 L12), as [`ShadowPlan::receive`] ranks them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Candidate {
+    /// As a [`GpuReceived`] slot names it: its map, or its capsule with [`RECEIVED_CAPSULE`].
+    caster: u32,
+    /// How surely its shadow falls on the receiver ([`falls_on`]), above 0.
+    weight: f32,
+    /// Its distance from the receiver along the light, grown by [`UNSURE_RANK`] as its weight falls:
+    /// the lowest ranks are chosen.
+    rank: f32,
+}
+
+/// Ranks the casters whose shadows can fall on group `receiver` of `groups` into `candidates`, the
+/// lowest rank first (ties by caster): every other group that casts a map or a capsule.
+fn rank_casters(
+    receiver: usize,
+    groups: &[CharacterGroup],
+    light: LightSpace,
+    candidates: &mut Vec<Candidate>,
+) {
+    candidates.clear();
+    let at = |group: &CharacterGroup| (light.point(group.sphere.center), group.sphere.radius);
+    let (receiver_at, receiver_radius) = at(&groups[receiver]);
+    for (index, group) in groups.iter().enumerate() {
+        let (caster, reach) = match group.cast {
+            _ if index == receiver => continue,
+            Cast::Map(map) => (u32::from(map), fit::CHARACTER_REACH),
+            Cast::Capsule(capsule) => (u32::from(capsule) | RECEIVED_CAPSULE, CAPSULE_REACH),
+            Cast::Nothing => continue,
+        };
+        let (caster_at, caster_radius) = at(group);
+        let weight = falls_on((receiver_at, receiver_radius), (caster_at, caster_radius), reach);
+        if weight > 0.0 {
+            let rank = (caster_at.z - receiver_at.z).abs() + (1.0 - weight) * UNSURE_RANK;
+            candidates.push(Candidate { caster, weight, rank });
+        }
+    }
+    candidates.sort_unstable_by(|a, b| a.rank.total_cmp(&b.rank).then(a.caster.cmp(&b.caster)));
+}
+
+/// How surely a caster's shadow can fall on a receiver, each a sphere in light space (its center,
+/// z toward the light, and its radius), for a caster whose shadow reaches `reach` meters past it
+/// away from the light: 0 where it can't (their discs don't overlap in the light's view, the
+/// caster lies wholly behind the receiver, or the receiver lies wholly past its reach), growing to 1
+/// over [`FALLS_ON_BAND`] past each.
+fn falls_on(receiver: (Vec3, f32), caster: (Vec3, f32), reach: f32) -> f32 {
+    let ((receiver, receiver_radius), (caster, caster_radius)) = (receiver, caster);
+    let overlap = receiver_radius + caster_radius - receiver.truncate().distance(caster.truncate());
+    let ahead = (caster.z + caster_radius) - (receiver.z - receiver_radius);
+    let gap = (caster.z - caster_radius) - (receiver.z + receiver_radius);
+    smoothstep(0.0, FALLS_ON_BAND, overlap)
+        * smoothstep(0.0, FALLS_ON_BAND, ahead)
+        * (1.0 - smoothstep(reach - FALLS_ON_BAND, reach, gap))
+}
+
+/// WGSL's `smoothstep`.
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// The sphere around a body's capsule.
 fn capsule_sphere(body: &CharacterBody) -> Sphere {
     Sphere { center: (body.base + body.top) * 0.5, radius: body.base.distance(body.top) * 0.5 + body.radius }
@@ -462,6 +576,7 @@ mod tests {
         character_shadow: true,
         character_resolution: 1024,
         filter: super::super::ShadowFilter::Tent5,
+        others: 4,
     };
 
     /// A static unit cube (mesh 0) and a deformable one (mesh 1).
@@ -934,6 +1049,157 @@ mod tests {
         update(&mut plan, &SETTINGS, &packet(characters), &mut slots);
         assert_eq!(plan.groups.len(), ID_ENTRY_MASK as usize);
         assert_eq!(plan.maps.len(), MAX_CHARACTER_MAPS);
+    }
+
+    /// A frame of named characters standing with their bodies' centers at `centers` (world space),
+    /// each a capsule 1.6 m tall, under a sun shining along `sun`, its instance a unit cube at the
+    /// center; and the light space it plans in.
+    fn party(centers: &[Vec3], sun: Vec3) -> (FramePacket, InstanceSlots, LightSpace) {
+        let instances: Vec<MeshInstance> =
+            centers.iter().enumerate().map(|(id, &at)| instance(id as u64, 0, at)).collect();
+        let characters = centers
+            .iter()
+            .enumerate()
+            .map(|(id, &at)| {
+                let body = CharacterBody::capsule(at - 0.55 * Vec3::Y, at + 0.55 * Vec3::Y, 0.25);
+                character(id as u64, body)
+            })
+            .collect();
+        let mut packet = packet(characters);
+        packet.sun.direction = sun;
+        (packet, slots(&instances), LightSpace::new(fit::quantize(-sun)))
+    }
+
+    /// The weight receiver `receiver` gives each group's shadow this frame, by group: 0 for those it
+    /// doesn't receive.
+    fn weights(plan: &ShadowPlan, receiver: usize) -> Vec<f32> {
+        let received = plan.received[receiver];
+        plan.groups
+            .iter()
+            .map(|group| {
+                let caster = match group.cast {
+                    Cast::Map(map) => u32::from(map),
+                    Cast::Capsule(capsule) => u32::from(capsule) | RECEIVED_CAPSULE,
+                    Cast::Nothing => return 0.0,
+                };
+                (0..MAX_OTHERS)
+                    .filter(|&slot| received.casters[slot] == caster)
+                    .map(|slot| received.weights[slot])
+                    .sum()
+            })
+            .collect()
+    }
+
+    /// A point `along` meters toward the light from `from`, and `across` meters across it.
+    fn toward(light: LightSpace, from: Vec3, along: f32, across: f32) -> Vec3 {
+        from + light.z * along + light.x * across
+    }
+
+    #[test]
+    fn a_party_under_a_low_sun_receives_each_others_shadows_and_never_its_own() {
+        // A low sun from the side: three characters in a row along it, each shading the next.
+        let sun = Vec3::new(-1.0, -0.35, 0.0);
+        let light = LightSpace::new(fit::quantize(-sun));
+        let first = Vec3::new(0.0, 0.8, -3.0);
+        let centers = [first, toward(light, first, 1.2, 0.0), toward(light, first, 2.4, 0.0)];
+        for (settings, maps) in [(SETTINGS, 3), (ShadowSettings { character_shadow: false, ..SETTINGS }, 0)] {
+            let (packet, mut slots, _) = party(&centers, sun);
+            let mut plan = ShadowPlan::default();
+            update(&mut plan, &settings, &packet, &mut slots);
+            assert_eq!(plan.maps.len(), maps);
+            // Those toward the light shade a receiver whole, and so does the one just behind it,
+            // whose sphere still reaches past the receiver's back; the last, toward the light,
+            // takes nothing from the first, wholly behind it. None takes its own.
+            let expected = [[0.0, 1.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]];
+            for (receiver, expected) in expected.iter().enumerate() {
+                assert_eq!(weights(&plan, receiver), expected, "{receiver} receives");
+                let slot = plan.received[receiver].casters[0];
+                assert_eq!(slot & RECEIVED_CAPSULE != 0, maps == 0, "tiles on desktop, capsules on phones");
+            }
+            assert_eq!(plan.stats.received, 5);
+        }
+    }
+
+    #[test]
+    fn no_slots_and_ambient_characters_receive_nothing_and_ambient_ones_cast_capsules() {
+        let sun = Vec3::new(-1.0, -0.35, 0.0);
+        let light = LightSpace::new(fit::quantize(-sun));
+        let first = Vec3::new(0.0, 0.8, -3.0);
+        let centers = [first, toward(light, first, 1.2, 0.0)];
+        let (packet, mut slots, _) = party(&centers, sun);
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &ShadowSettings { others: 0, ..SETTINGS }, &packet, &mut slots);
+        assert!(plan.received.iter().all(|received| *received == GpuReceived::default()));
+        assert_eq!(plan.stats.received, 0);
+        // The second is a crowd's: it draws no map and receives nothing; the first takes its capsule.
+        let mut crowd = packet.clone();
+        crowd.characters[1].body = crowd.characters[1].body.with_role(ShadowRole::Ambient);
+        update(&mut plan, &SETTINGS, &crowd, &mut slots);
+        assert_eq!(plan.maps.len(), 1, "the named one's alone");
+        assert_eq!(plan.groups[1].cast, Cast::Capsule(0));
+        assert_eq!(plan.received[1], GpuReceived::default(), "an ambient character receives none");
+        assert_eq!(plan.received[0].casters[0], RECEIVED_CAPSULE, "its capsule");
+        assert_eq!(plan.received[0].weights[0], 1.0);
+    }
+
+    #[test]
+    fn a_caster_falls_on_a_receiver_only_where_its_shadow_can_reach_it() {
+        let receiver = (Vec3::ZERO, 1.0);
+        let at = |x: f32, z: f32| falls_on(receiver, (Vec3::new(x, 0.0, z), 1.0), 10.0);
+        assert_eq!(at(0.0, 2.0), 1.0, "toward the light, over it");
+        assert_eq!(at(2.0, 2.0), 0.0, "discs only touching in the light's view");
+        assert_eq!(at(1.75, 2.0), 1.0, "overlapping by the band");
+        assert!((0.0..1.0).contains(&at(1.9, 2.0)) && at(1.9, 2.0) > 0.0, "fading in between");
+        assert_eq!(at(0.0, -2.0), 0.0, "wholly behind it");
+        assert_eq!(at(0.0, -1.75), 1.0, "reaching past its back by the band");
+        assert_eq!(at(0.0, 12.0), 0.0, "the receiver wholly past its reach");
+        assert_eq!(at(0.0, 11.75), 1.0);
+    }
+
+    /// The pick never pops (M5 L12): walked in centimetre steps along every edge a caster can cross
+    /// (into a receiver's slot past another, into the light's view of it, behind it), no caster's
+    /// weight on a receiver moves by more than a smooth fade's step, and each crossing happens.
+    #[test]
+    fn a_receivers_casters_never_pop_as_they_move() {
+        let sun = Vec3::new(-0.8, -0.5, 0.3);
+        let light = LightSpace::new(fit::quantize(-sun));
+        let receiver = Vec3::new(0.0, 0.8, -4.0);
+        let one_slot = ShadowSettings { others: 1, ..SETTINGS };
+        // How far a weight may move in a centimetre: the steepest of the fades, smoothstep's slope
+        // of 1.5 over the narrower band, with room.
+        let most = 1.5 / FALLS_ON_BAND * 0.01 * 1.2;
+        let walk = |settings: &ShadowSettings, place: &dyn Fn(f32) -> Vec<Vec3>, steps: usize| {
+            let mut plan = ShadowPlan::default();
+            let mut before: Option<Vec<f32>> = None;
+            let mut seen = Vec::new();
+            for step in 0..=steps {
+                let (packet, mut slots, _) = party(&place(step as f32 * 0.01), sun);
+                update(&mut plan, settings, &packet, &mut slots);
+                let now = weights(&plan, 0);
+                if let Some(before) = &before {
+                    for (caster, (was, is)) in before.iter().zip(&now).enumerate() {
+                        assert!((was - is).abs() <= most, "step {step}: caster {caster} {was} to {is}");
+                    }
+                }
+                seen.push(now.clone());
+                before = Some(now);
+            }
+            seen
+        };
+        // Two casters toward the light and one slot: the far one walks in past the near one.
+        let near = toward(light, receiver, 1.5, 0.0);
+        let seen =
+            walk(&one_slot, &|walked| vec![receiver, near, toward(light, receiver, 3.0 - walked, 0.1)], 250);
+        let (first, last) = (&seen[0], &seen[seen.len() - 1]);
+        assert!(first[1] == 1.0 && first[2] == 0.0, "the near one first: {first:?}");
+        assert!(last[1] == 0.0 && last[2] == 1.0, "then the walker: {last:?}");
+        // One caster crossing into the light's view of the receiver, then wholly behind it.
+        let seen = walk(&SETTINGS, &|walked| vec![receiver, toward(light, receiver, 1.5, 2.5 - walked)], 150);
+        assert!(seen[0][1] == 0.0 && seen[150][1] == 1.0, "{:?} to {:?}", seen[0], seen[150]);
+        // (A body just where the receiver's would be one character with it: the walk starts 10 cm off.)
+        let seen =
+            walk(&SETTINGS, &|walked| vec![receiver, toward(light, receiver, -0.1 - walked, 0.0)], 300);
+        assert!(seen[0][1] == 1.0 && seen[300][1] == 0.0, "{:?} to {:?}", seen[0], seen[300]);
     }
 
     #[test]

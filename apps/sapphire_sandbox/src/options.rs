@@ -10,7 +10,7 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants,
-    RenderSettings, Wind,
+    RenderSettings, ShadowSettings, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -342,6 +342,10 @@ pub(crate) struct Options {
     /// `--view-culling off`: draw every static world instance in the main view, culling none
     /// (review RA-O01), for comparisons. `--view-culling on` is the default.
     pub view_culling_off: bool,
+    /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
+    /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
+    /// the default.
+    pub own_shadows_only: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
@@ -687,6 +691,10 @@ impl Options {
             light_path: self.light_path.unwrap_or(tier.light_path),
             post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
             view_culling: tier.view_culling && !self.view_culling_off,
+            shadows: tier.shadows.map(|shadows| ShadowSettings {
+                others: if self.own_shadows_only { 0 } else { shadows.others },
+                ..shadows
+            }),
             ..tier
         }
     }
@@ -1180,6 +1188,15 @@ impl Options {
                     };
                 }
                 "--plain-post" => options.plain_post = true,
+                "--character-shadows" => {
+                    options.own_shadows_only = match value("--character-shadows")?.as_str() {
+                        "others" => false,
+                        "own" => true,
+                        other => {
+                            return Err(format!("--character-shadows expects own or others, got {other:?}"));
+                        }
+                    };
+                }
                 "--view-culling" => {
                     options.view_culling_off = match value("--view-culling")?.as_str() {
                         "on" => false,
@@ -2533,6 +2550,18 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    #[test]
+    fn characters_receive_the_tiers_shadows_of_each_other_unless_told_their_own() {
+        let tier = RenderSettings { shadows: Some(ShadowSettings::default()), ..RenderSettings::default() };
+        let others = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).shadows.map(|s| s.others);
+        assert_eq!(others(&[]), Some(ShadowSettings::default().others), "the tier's");
+        assert_eq!(others(&["--character-shadows", "own"]), Some(0));
+        assert_eq!(others(&["--character-shadows=others"]), Some(ShadowSettings::default().others));
+        assert!(parse(&["--character-shadows", "all"]).is_err());
+        let off = RenderSettings { shadows: None, ..tier };
+        assert_eq!(parse(&["--character-shadows", "own"]).unwrap().0.render_settings(off).shadows, None);
     }
 
     /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under

@@ -8,7 +8,7 @@
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
 //!   changes (while the hour runs, the camera moves for a rig whose key, GI or camera rim
 //!   depends on it, or a head, an expression, a body, an opacity or a drive changes, or the
-//!   frame's ambient light changes): 304 bytes a character. With shadows on, the face pass (M1 R4)
+//!   frame's ambient light changes): 336 bytes a character. With shadows on, the face pass (M1 R4)
 //!   writes each entry's `shadow.visibility` on the GPU, after the upload, in every frame where a
 //!   face or an eye draws; with a probe grid, the character ambient pass (M1 W5) writes its
 //!   `ambient`.
@@ -58,8 +58,9 @@
 //! - **Only the anime character family fades:** a listed instance's environment or foliage
 //!   surfaces (a prop held as part of the character) stay whole.
 //! - **The rim** goes while the character fades: its depth step would find the character's own
-//!   holes. Its shadow stays whole (casters draw it unfaded), and transparent surfaces discard
-//!   whole pixels by the same dither.
+//!   holes. Its shadow stays whole (casters draw it unfaded) while any of it draws: faded all the
+//!   way, it belongs to no body group, so it casts no shadow nor capsule AO (M5 L12). Transparent
+//!   surfaces discard whole pixels by the same dither.
 //!
 //! # Driven materials (M5 L11)
 //!
@@ -69,8 +70,9 @@
 //! A dissolving instance is cut as a fading one is ([`InstanceSlots::set_cut`]), so its opaque
 //! draws take the same alpha-tested variants and masked prepasses, which cut by the dissolve's
 //! noise (`dissolve_noise` in `materials.wgsl`) where they dither by the fade, and it takes no
-//! rim. Its shadow stays whole until it is gone: a character dissolved all the way
-//! ([`MaterialDrive::gone`]) belongs to no body group, so it casts no shadow nor capsule AO.
+//! rim. Its shadow is cut as its surfaces are, through the masked casters (M5 L12), and a character
+//! dissolved all the way ([`MaterialDrive::gone`]) belongs to no body group, so it casts no shadow
+//! nor capsule AO.
 //!
 //! # Per-character data of later packages
 //!
@@ -79,7 +81,8 @@
 //! (where the face pass samples the environment's shadow over the head, and what it found), W5's
 //! the ambient light its stylized GI reads ([`GpuCharacterAmbient`]: the frame's hemisphere, the
 //! other characters' capsule AO, and where a probe grid reads it from), C7's the fade, C8's the
-//! style and M5 L11's the drive.
+//! style and M5 L11's the drive. M5 L12's shadows of the other characters it receives went into
+//! R4's shadow ([`GpuReceived`]), so the drive stays last.
 //! Later ones (C4's outline lighting) add theirs the same way. A character's data is then found
 //! through one index and one binding: the fragment stage's fourth and last storage buffer (see
 //! the crate docs, "Binding budget").
@@ -95,7 +98,7 @@ use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{
     AmbientLight, CameraRim, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
-    CharacterShade, FramePacket, InsetView, InstanceId, MaterialDrive,
+    CharacterShade, FramePacket, InsetView, InstanceId, MaterialDrive, ShadowRole,
 };
 
 /// The radius of the sphere around a character's head that the face pass samples the
@@ -146,7 +149,7 @@ pub(crate) struct GpuFace {
     pub expression: [f32; 4],
 }
 
-/// A character's shadow as the shaders read it (WGSL `CharacterShadow`, M1 R4). 32 bytes.
+/// A character's shadow as the shaders read it (WGSL `CharacterShadow`, M1 R4). 64 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct GpuCharacterShadow {
@@ -156,7 +159,25 @@ pub(crate) struct GpuCharacterShadow {
     /// x: the key light's visibility there past environment casters, 1 as uploaded; the face pass
     /// writes it on the GPU. yzw: 0.
     pub visibility: [f32; 4],
+    /// The other characters' shadows it receives (M5 L12), which the shadow planner chooses.
+    pub received: GpuReceived,
 }
+
+/// The other characters' shadows a character receives as the shaders read them (WGSL
+/// `CharacterReceived`, M5 L12; the `shadows` module docs, "Characters shadowing each other").
+/// 32 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuReceived {
+    /// Per slot: the caster's map, its index in the shadow uniforms' maps, or its capsule, its
+    /// index in their capsules with [`RECEIVED_CAPSULE`] set.
+    pub casters: [u32; 4],
+    /// Per slot: how much of that shadow it takes, 0 (an empty slot) to 1.
+    pub weights: [f32; 4],
+}
+
+/// The bit of a [`GpuReceived`] slot that says it names a capsule (WGSL `RECEIVED_CAPSULE`).
+pub(crate) const RECEIVED_CAPSULE: u32 = 1 << 31;
 
 /// A character's ambient light as the shaders read it (WGSL `CharacterAmbient`, M1 W5). 64
 /// bytes.
@@ -309,7 +330,7 @@ impl GpuCharacterShadow {
     fn new(lighting: &CharacterLighting, body: &CharacterBody) -> Self {
         let head = lighting.gi.head.or(body.casts().then_some(body.top));
         let probe = head.map_or([0.0; 4], |head| head.extend(HEAD_PROBE_RADIUS).to_array());
-        Self { probe, visibility: [1.0, 0.0, 0.0, 0.0] }
+        Self { probe, visibility: [1.0, 0.0, 0.0, 0.0], received: GpuReceived::default() }
     }
 }
 
@@ -373,9 +394,15 @@ impl GpuCharacter {
         Self::new(lighting, face, body, ambient, character.fade(), drive)
     }
 
-    /// Whether its character is gone: dissolved all the way (M5 L11).
-    fn gone(&self) -> bool {
-        self.drive.levels[0] >= 1.0
+    /// The same entry before the shadow planner said which shadows it receives.
+    fn unreceived(&self) -> Self {
+        Self { shadow: GpuCharacterShadow { received: GpuReceived::default(), ..self.shadow }, ..*self }
+    }
+
+    /// Whether nothing of its character draws: dissolved all the way (M5 L11) or faded all the way,
+    /// so it casts nothing (M5 L12).
+    fn unseen(&self) -> bool {
+        self.drive.levels[0] >= 1.0 || self.fade.amount[0] >= 1.0
     }
 }
 
@@ -434,6 +461,14 @@ impl Characters {
         let replaced = self.buffer.reserve(device, queue, bytes, 0);
         self.unsent |= replaced;
         replaced
+    }
+
+    /// Gives each character the other characters' shadows the shadow planner chose for it (M5
+    /// L12): `received` holds them per body group ([`CharacterTable::bodies`]); a character whose
+    /// body casts nothing, or past `received`'s end, receives none. Every frame with a view, after
+    /// [`Self::prepare`], shadows on or off, so no entry keeps a frame's before.
+    pub(crate) fn receive(&mut self, received: &[GpuReceived]) {
+        self.unsent |= self.list.receive(received);
     }
 
     /// Group 0 binding 3.
@@ -553,13 +588,13 @@ impl CharacterUpload<'_> {
 /// The group of an entry whose body casts nothing, or that no instance reads.
 const NO_GROUP: u32 = u32::MAX;
 
-/// A body's bits, −0 taken as 0: bodies that compare equal (valid ones are finite) have the
-/// same key.
-type BodyKey = [u32; 7];
+/// A body's bits, −0 taken as 0, and its role: bodies that compare equal (valid ones are finite)
+/// have the same key.
+type BodyKey = ([u32; 7], ShadowRole);
 
 fn body_key(body: &CharacterBody) -> BodyKey {
-    let CharacterBody { base, top, radius } = *body;
-    [base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits())
+    let CharacterBody { base, top, radius, role } = *body;
+    ([base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits()), role)
 }
 
 /// Whether `a` and `b` list one character's parts: its lighting, face, body, fade and drive, all
@@ -719,7 +754,23 @@ impl CharacterList {
         let cut = |slot: usize| self.fades[slot] > 0.0 || self.dissolves[slot] > 0.0;
         self.faded = self.listing.iter().filter(|&&slot| cut(slot as usize)).count() as u32;
         std::mem::swap(&mut self.listed, &mut self.listing);
-        self.entries != self.previous
+        // What each receives is [`Self::receive`]'s to compare.
+        self.entries.len() != self.previous.len()
+            || self.entries.iter().zip(&self.previous).any(|(entry, before)| *entry != before.unreceived())
+    }
+
+    /// Gives each entry of the last update the other characters' shadows its body group receives
+    /// (`received`, per group; none past its end or without a group), and returns whether any entry
+    /// receives other than the frame before's.
+    pub(crate) fn receive(&mut self, received: &[GpuReceived]) -> bool {
+        let mut changed = false;
+        for (entry, gpu) in self.entries.iter_mut().enumerate() {
+            let group = self.groups.get(entry).copied().unwrap_or(NO_GROUP);
+            let shadows = received.get(group as usize).copied().unwrap_or_default();
+            gpu.shadow.received = shadows;
+            changed |= self.previous.get(entry).is_none_or(|before| before.shadow.received != shadows);
+        }
+        changed
     }
 
     /// The entry this frame already made for `character`'s character, if an earlier listing in
@@ -752,7 +803,8 @@ impl CharacterList {
     /// Groups the bodies of the entries an instance reads, in entry order: each body that casts
     /// goes into `occluders` once, and each entry's group into `groups`. An entry no instance
     /// reads (one made for an instance listed again in another state) belongs to no group, nor
-    /// does a character that is gone (M5 L11), which casts nothing.
+    /// does a character nothing of which draws (dissolved or faded all the way, M5 L11 and L12),
+    /// which casts nothing.
     fn group_bodies(&mut self) {
         self.read.clear();
         self.read.resize(self.entries.len(), false);
@@ -763,7 +815,7 @@ impl CharacterList {
         self.occluders.clear();
         self.groups.clear();
         for (entry, body) in self.bodies.iter().enumerate() {
-            let group = if self.read[entry] && body.casts() && !self.entries[entry].gone() {
+            let group = if self.read[entry] && body.casts() && !self.entries[entry].unseen() {
                 let next = u32::try_from(self.occluders.len()).expect("fewer than 2³² bodies");
                 let group = *self.by_body.entry(body_key(body)).or_insert(next);
                 if group == next {
@@ -1264,5 +1316,37 @@ mod tests {
         frame.characters[0].drive = MaterialDrive::NONE;
         list.update(&frame, &mut slots, true);
         assert!(list.fading_changed && !slots.cut(0), "whole again");
+        // M5 L12: faded all the way, it casts nothing either.
+        frame.characters[0].opacity = 0.0;
+        list.update(&frame, &mut slots, true);
+        assert_eq!((list.table().body(0), list.occluders.len()), (None, 1), "faded out: no shadow");
+    }
+
+    #[test]
+    fn entries_take_the_shadows_their_group_receives_and_say_when_they_change() {
+        // M5 L12: two bodies and a bodiless instance. Each body's entry takes its group's slots, the
+        // bodiless one none; the same slots again are no change, other slots are, and an update
+        // that leaves the slots alone is none either.
+        let mut slots = slots(0..3);
+        let mut list = CharacterList::default();
+        let mut frame = packet(&[(0, 1.0), (1, 1.0), (2, 1.0)]);
+        frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        frame.characters[1].body = CharacterBody::capsule(Vec3::X, Vec3::X + Vec3::Y, 0.3);
+        list.update(&frame, &mut slots, false);
+        let takes = |caster: u32| GpuReceived { casters: [caster, 0, 0, 0], weights: [0.5, 0.0, 0.0, 0.0] };
+        let received = [takes(1), takes(RECEIVED_CAPSULE)];
+        assert!(list.receive(&received), "new slots");
+        let entry = |list: &CharacterList, slots: &InstanceSlots, id| {
+            list.entries[entry_of(slots, id) as usize].shadow.received
+        };
+        let each = [0, 1, 2].map(|id| entry(&list, &slots, id));
+        assert_eq!(each, [received[0], received[1], GpuReceived::default()]);
+        assert!(!list.update(&frame, &mut slots, false), "the slots aside, nothing changed");
+        assert!(!list.receive(&received), "the same slots");
+        list.update(&frame, &mut slots, false);
+        assert!(list.receive(&[received[1], received[0]]), "other slots");
+        list.update(&frame, &mut slots, false);
+        assert!(list.receive(&[]), "none at all");
+        assert_eq!(entry(&list, &slots, 0), GpuReceived::default());
     }
 }

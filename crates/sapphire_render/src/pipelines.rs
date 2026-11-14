@@ -194,6 +194,9 @@ pub(crate) enum MeshPass {
     MaskedOutlinePrepass,
     /// Positions only: the shadow casters (M1 R4).
     Shadow,
+    /// The alpha-tested anime character variants' shadow casters (M5 L12): positions, and the
+    /// surface stream for the alpha test's UVs and the vertex's material ID.
+    MaskedShadow,
     /// Foliage's main pass draws (M1 W6): the main pass's streams and the foliage stream.
     Foliage,
     /// Foliage in the scene prepass: every stream, the surface stream for the alpha test's UVs
@@ -208,7 +211,11 @@ impl MeshPass {
     pub(crate) fn reads_shading(self) -> bool {
         !matches!(
             self,
-            Self::CharacterPrepass | Self::MaskedCharacterPrepass | Self::Shadow | Self::FoliageShadow
+            Self::CharacterPrepass
+                | Self::MaskedCharacterPrepass
+                | Self::Shadow
+                | Self::MaskedShadow
+                | Self::FoliageShadow
         )
     }
 
@@ -232,8 +239,9 @@ impl MeshPass {
     }
 
     /// Whether the pass shades with materials, binding each draw's group 3: the main pass, and
-    /// foliage's every pass and the masked prepasses (M1 C7), whose alpha test reads the base
-    /// color map; the other prepasses' and casters' layouts leave group 3 out.
+    /// foliage's every pass, the masked prepasses (M1 C7) and the masked casters (M5 L12), whose
+    /// alpha test reads the base color map; the other prepasses' and casters' layouts leave group
+    /// 3 out.
     pub(crate) fn binds_materials(self) -> bool {
         matches!(
             self,
@@ -244,6 +252,7 @@ impl MeshPass {
                 | Self::MaskedCharacterPrepass
                 | Self::MaskedScenePrepass
                 | Self::MaskedOutlinePrepass
+                | Self::MaskedShadow
         )
     }
 
@@ -1281,6 +1290,10 @@ pub(crate) struct MeshPipelines {
     foliage_prepass: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
     /// Foliage's shadow casters likewise, while shadows are on: displaced alike, and cut out.
     foliage_casters: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
+    /// The alpha-tested anime character variants' shadow caster (M5 L12), while shadows are on,
+    /// built with the format's first of them: cut out as the main pass cuts them, but for the
+    /// proximity fade.
+    masked_caster: Option<wgpu::RenderPipeline>,
 }
 
 /// A prepass pipeline (none until built), the mesh pass it draws and the variants it draws.
@@ -1366,6 +1379,7 @@ enum Piece {
     TwoSidedScenePrepass(Coverage),
     FoliagePrepass(Coverage),
     FoliageCaster(Coverage),
+    MaskedCaster,
     /// Its entry in [`SurfaceVariant::THROUGH_HAIR`].
     ThroughHair(usize),
 }
@@ -1419,6 +1433,7 @@ impl Piece {
                 build_foliage_prepass(device, target, modules, format, coverage)
             }
             Self::FoliageCaster(coverage) => build_foliage_caster(device, target, modules, format, coverage),
+            Self::MaskedCaster => build_masked_caster(device, target, modules, format),
             Self::ThroughHair(index) => {
                 build_through_hair(device, target, modules, format, SurfaceVariant::THROUGH_HAIR[index])
             }
@@ -1501,6 +1516,12 @@ impl MeshPipelines {
             if SurfaceVariant::CHARACTER_ALPHA_TEST.contains(&variant) && self.masked.is_none() {
                 add(pieces, Piece::Masked);
             }
+            if SurfaceVariant::CHARACTER_ALPHA_TEST.contains(&variant)
+                && casters
+                && self.masked_caster.is_none()
+            {
+                add(pieces, Piece::MaskedCaster);
+            }
             if variant.shading == Shading::Foliage && casters && self.foliage_caster(coverage).is_none() {
                 add(pieces, Piece::FoliageCaster(coverage));
             }
@@ -1578,6 +1599,7 @@ impl MeshPipelines {
             (self.masked.is_some(), Piece::Masked),
             (self.masked_scene.is_some(), Piece::MaskedScenePrepass),
             (self.masked_outline.is_some(), Piece::MaskedOutlinePrepass),
+            (self.masked_caster.is_some(), Piece::MaskedCaster),
         ];
         pieces.extend(built.into_iter().filter(|&(built, _)| built).map(|(_, piece)| piece));
         pieces.extend(
@@ -1614,6 +1636,7 @@ impl MeshPipelines {
             Piece::TwoSidedScenePrepass(coverage) => self.two_sided[coverage.index()].scene = built,
             Piece::FoliagePrepass(coverage) => self.foliage_prepass[coverage.index()] = built,
             Piece::FoliageCaster(coverage) => self.foliage_casters[coverage.index()] = built,
+            Piece::MaskedCaster => self.masked_caster = built,
             Piece::ThroughHair(index) => self.through_hair[index] = built,
         }
     }
@@ -1721,6 +1744,12 @@ impl MeshPipelines {
         self.foliage_casters.get(coverage.index())?.as_ref()
     }
 
+    /// The alpha-tested anime character variants' shadow caster (M5 L12), once one of them was
+    /// prepared with shadows on.
+    pub(crate) fn masked_caster(&self) -> Option<&wgpu::RenderPipeline> {
+        self.masked_caster.as_ref()
+    }
+
     /// The eyes-through-hair pipeline of `variant`, once it was prepared.
     pub(crate) fn through_hair(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
         self.through_hair[variant.through_hair_index()?].as_ref()
@@ -1738,12 +1767,14 @@ impl MeshPipelines {
                 let masked = if self.masked.is_some() { 2 } else { 0 };
                 let masked_scene = usize::from(self.masked_scene.is_some());
                 let masked_outline = usize::from(self.masked_outline.is_some());
+                let masked_caster = usize::from(self.masked_caster.is_some());
                 let two_sided: usize = self.two_sided.iter().map(TwoSidedPrepasses::count).sum();
                 self.outline.iter().flatten().count()
                     + self.through_hair.iter().flatten().count()
                     + masked
                     + masked_scene
                     + masked_outline
+                    + masked_caster
                     + two_sided
             }
             MaterialFamily::Foliage => {
@@ -2381,6 +2412,9 @@ impl Pipelines {
                 through_hair: Default::default(),
                 foliage_prepass: Default::default(),
                 foliage_casters: Default::default(),
+                masked_caster: old.masked_caster.as_ref().map(|old| {
+                    rebuild(Program::Prepass, old, &|| build_masked_caster(device, target, &modules, format))
+                }),
             };
             for (index, variant) in SurfaceVariant::THROUGH_HAIR.into_iter().enumerate() {
                 if let Some(old) = &old.through_hair[index] {
@@ -2462,6 +2496,7 @@ impl Pipelines {
             through_hair: Default::default(),
             foliage_prepass: Default::default(),
             foliage_casters: Default::default(),
+            masked_caster: None,
         };
         for &piece in &pieces[2..] {
             mesh.store(piece, next());
@@ -2863,6 +2898,57 @@ fn build_foliage_caster(
         },
     );
     tracing::debug!(target: LOG_TARGET, pipeline = "foliage shadow caster", "built a mesh pipeline");
+    pipeline
+}
+
+/// The alpha-tested anime character variants' shadow caster for meshes in `format` (shadows on, M5
+/// L12): `prepass.wgsl`'s masked caster on the masked character prepass's layout (no group 0, which
+/// holds the maps it draws into), two-sided with the shared casters' raster bias, cutting a hair
+/// card's cutout, a dissolve and a see-through region out of the maps.
+fn build_masked_caster(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+) -> wgpu::RenderPipeline {
+    tracing::debug!(target: LOG_TARGET, pipeline = "masked shadow caster", "building a mesh pipeline");
+    let pipeline = target.builds.render(
+        device,
+        PipelineFamily::Mesh,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some("masked shadow caster"),
+            layout: Some(&target.masked_character_layout),
+            vertex: wgpu::VertexState {
+                module: &modules.prepass,
+                entry_point: Some("vs_shadow_caster_masked"),
+                compilation_options: Default::default(),
+                buffers: &MeshPass::MaskedShadow.buffers(format),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: shadow::CASTER_BIAS,
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &modules.prepass,
+                entry_point: Some("fs_shadow_caster_masked"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: target.builds.cache(),
+        },
+    );
+    tracing::debug!(target: LOG_TARGET, pipeline = "masked shadow caster", "built a mesh pipeline");
     pipeline
 }
 

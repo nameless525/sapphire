@@ -458,7 +458,7 @@
                 ticks: 90,
                 args: ["--plain-post", "--faces", "--stage", "pillar", "--time-of-day", "14",
                        "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
-                       "--fog", "off", "--ao", "off"],
+                       "--fog", "off", "--ao", "off", "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 17.8, warp: 34.0),
             ),
             // The courtyard (W4) by day with shadows: the colonnade, the wall and the boulders cast
@@ -665,7 +665,8 @@
                 ticks: 228,
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 31.9, warp: 73.6),
             ),
             // The ward's boss (M3 C2) on its terrace, a moment after its second wind's toll threw the
@@ -1228,7 +1229,8 @@
                 name: "arena-ultimate-chop",
                 ticks: 126,
                 args: ["--arena", "--replay", "tests/replays/arena-ultimate.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 50.5, warp: 81.4),
             ),
             // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with a crisp
@@ -1244,7 +1246,8 @@
                 ticks: 240,
                 args: ["--cues", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-skirmish.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 56.8, warp: 132.4),
             ),
             // A boss (M3 B3) a few steps past the hit that took it under half its health, at tick 652 of its
@@ -1255,7 +1258,8 @@
                 ticks: 670,
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-boss.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 45.3, warp: 64.1),
             ),
             // Two kinds of enemy in one fight (M3 B3b): the captain, a head over the warrior beside it, each
@@ -1265,7 +1269,8 @@
                 ticks: 90,
                 args: ["--cues", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-captain.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 45.2, warp: 90.4),
             ),
             (
@@ -1304,7 +1309,8 @@
             ),
             // The character dissolving partway in the courtyard (M5 L11): a value noise over its UVs
             // cuts it away in every pass, its outlines too, and the points just above the cut glow
-            // orange, unlit, blooming as the world's light; it takes no rim, and its shadow stays whole.
+            // orange, unlit, blooming as the world's light; it takes no rim, and its shadow has the
+            // same cut (M5 L12's masked caster).
             (
                 name: "dissolve-partway",
                 ticks: 90,

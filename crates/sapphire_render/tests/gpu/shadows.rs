@@ -17,8 +17,9 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use half::f16;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    AnimeCharacterMaterial, CharacterRegion, CharacterSurface, DistanceStylization, EnvironmentMaterial,
-    EyeShading, FaceShading, LightSplit, Material, MaterialDocument, Outline, Rim, Terminator,
+    AlphaMode, AnimeCharacterMaterial, CharacterRegion, CharacterSurface, DistanceStylization,
+    EnvironmentMaterial, EyeShading, FaceShading, LightSplit, Material, MaterialDocument, Outline, Rim,
+    Terminator,
 };
 use sapphire_assets::mesh::{
     Influences, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
@@ -1423,4 +1424,247 @@ fn shadow_maps_past_the_devices_limit_are_an_error() {
     // What's out of range on any device comes back as an error too, from a renderer made directly.
     let no_cascades = make(ShadowSettings { cascades: 0, ..shadows });
     assert!(matches!(no_cascades, Err(RenderError::InvalidSettings { field: "shadows.cascades", .. })));
+}
+
+// Characters shadowing each other (M5 L12). A card facing +Z at the origin is the receiver, lit by
+// a sun low behind the camera; the casters stand between them, behind the camera and out of its
+// sight, so only their shadows show on the card.
+
+/// The camera on the card, between it and the casters.
+fn party_stage(settings: RenderSettings) -> Harness {
+    let mut harness = Harness::new(settings);
+    harness.sun_toward(Vec3::new(0.0, 0.2, 1.0).normalize());
+    harness.camera = looking(Vec3::new(0.0, 0.0, 2.0), Vec3::ZERO);
+    harness
+}
+
+/// The receiving card, 2 m a side, drawn with `document` and listed as a character with a body.
+fn party_card(harness: &mut Harness, document: &AnimeCharacterMaterial) -> InstanceId {
+    let card = harness.add(&upright_square(), document, Mat4::IDENTITY);
+    let body = CharacterBody::capsule(Vec3::new(0.0, -0.5, 0.0), Vec3::new(0.0, 0.5, 0.0), 0.7);
+    harness.character(card, body, None);
+    card
+}
+
+/// A caster: a slab a meter wide and 2 m tall, centred `x` across and `z` toward the light, listed
+/// as a character with its own body.
+fn party_slab(harness: &mut Harness, x: f32, z: f32) -> InstanceId {
+    let slab = harness.cuboid(Vec3::new(x, -1.0, z), Vec3::new(1.0, 2.0, 0.1));
+    let body = CharacterBody::capsule(Vec3::new(x, -0.5, z), Vec3::new(x, 0.5, z), 0.6);
+    harness.character(slab, body, None);
+    slab
+}
+
+/// `settings` with characters receiving up to `others` other characters' shadows.
+fn receiving(settings: RenderSettings, others: u32) -> RenderSettings {
+    let shadows = settings.shadows.map(|shadows| ShadowSettings { others, ..shadows });
+    RenderSettings { shadows, ..settings }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_character_darkens_another_only_where_it_stands_between_it_and_the_light() {
+    // A slab 3 m toward the light over the card's left half: the left half takes its shadow, in
+    // the shade tone, from its tile on desktop and its capsule on phones, and the right half stays
+    // lit. With no other characters received, or the slab off to the side, the card is lit
+    // throughout, byte for byte as a character alone.
+    let (left, right) = (Vec3::new(-0.45, 0.0, 0.0), Vec3::new(0.45, 0.0, 0.0));
+    for (name, settings, maps, capsules) in [("desktop", desktop(), 2, 0), ("mobile", mobile(), 0, 2)] {
+        let frame = |others: u32, slab: Option<f32>| {
+            let mut harness = party_stage(receiving(settings, others));
+            party_card(&mut harness, &surface(0.0));
+            if let Some(x) = slab {
+                party_slab(&mut harness, x, 3.0);
+            }
+            harness.render()
+        };
+        let cast = frame(4, Some(-0.5));
+        cast.dump(&format!("party-cast-{name}"));
+        assert!(cast.shaded_at(left), "{name}: the slab's shadow: {:?}", cast.at(left));
+        assert!(cast.lit_at(right), "{name}: lit beside it: {:?}", cast.at(right));
+        let stats = cast.stats.shadows;
+        assert_eq!((stats.character_maps, stats.capsules), (maps, capsules));
+        // The card takes the slab's; the slab's sphere reaches past the card's, so it takes the
+        // card's too, a lookup that finds the card behind it and reads 1.
+        assert!((1..=2).contains(&stats.received), "{name}: {}", stats.received);
+
+        let alone = frame(4, None);
+        assert!(alone.lit_at(left) && alone.lit_at(right), "{name}: alone, lit");
+        assert_eq!(alone.stats.shadows.received, 0);
+        for (what, other) in
+            [("none received", frame(0, Some(-0.5))), ("the slab aside", frame(4, Some(-6.0)))]
+        {
+            assert_eq!(other.stats.shadows.received, 0, "{name}: {what}");
+            assert!(other.pixels == alone.pixels, "{name}: {what} draws as a character alone");
+        }
+        let own_alone = frame(0, None);
+        assert!(own_alone.pixels == alone.pixels, "{name}: a character alone draws as before");
+    }
+}
+
+/// The card map of [`floating_card`]: white, its left half (u below ½) clear.
+fn half_clear(harness: &Harness) -> GpuTexture {
+    let texels: Vec<[u16; 4]> = (0..16 * 16)
+        .map(|i| {
+            let alpha = if i % 16 < 8 { 0.0 } else { 1.0 };
+            [1.0, 1.0, 1.0, alpha].map(|c: f32| f16::from_f32(c).to_bits())
+        })
+        .collect();
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba16Float,
+        width: 16,
+        height: 16,
+        mip_level_count: 1,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let bytes: &[u8] = bytemuck::cast_slice(&texels);
+    GpuTexture::upload(&harness.gpu, &Texture { desc, levels: vec![bytes] }, "card").expect("texture")
+}
+
+/// How [`floating_card`] lists its card.
+#[derive(Clone, Copy)]
+enum Listed {
+    /// A plain instance, casting into the cascades.
+    Plain,
+    /// A character with a body, `drive`n and at `opacity`, casting into its own tile.
+    Character(MaterialDrive, f32),
+}
+
+/// A card a meter square floating 1 m over a ground drawn with `ground` at the origin under a sun
+/// from 45° above +X, so its shadow falls a meter toward −X, seen from above; drawn with `document`
+/// over [`half_clear`], and listed as `listed` says.
+fn floating_card(
+    document: &AnimeCharacterMaterial,
+    listed: Listed,
+    ground_surface: &AnimeCharacterMaterial,
+) -> Frame {
+    const MAP: &str = "2b7c1d9e-4f3a-4e8b-9c6d-5a1f0e2d3c4b";
+    let mut harness = Harness::new(desktop());
+    harness.add(&ground(), ground_surface, Mat4::from_scale(Vec3::new(100.0, 1.0, 100.0)));
+    let map = half_clear(&harness);
+    let document = AnimeCharacterMaterial { base_color_map: Some(id(MAP)), ..document.clone() };
+    let material = harness.material(&document, &[(MAP, &map)]);
+    let mesh = harness.mesh(&ground(), material);
+    let place = Mat4::from_scale_rotation_translation(Vec3::new(0.5, 1.0, 0.5), Quat::IDENTITY, Vec3::Y);
+    let card = harness.add_mesh(mesh, place);
+    if let Listed::Character(drive, opacity) = listed {
+        let body = CharacterBody::capsule(Vec3::new(-0.2, 1.0, 0.0), Vec3::new(0.2, 1.0, 0.0), 0.4);
+        harness.character(card, body, None);
+        harness.characters[0].drive = drive;
+        harness.characters[0].opacity = opacity;
+    }
+    harness.sun_toward(toward(45.0, 0.0));
+    harness.camera = top_down(Vec3::new(-1.0, 0.0, 0.0), 5.0);
+    harness.render()
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_masked_card_casts_its_cutout() {
+    // The card's left half is clear. Alpha-tested, it casts only its right half's shadow, into its
+    // character's tile and, as a plain instance, into the cascades; opaque, it casts both halves.
+    let (kept, cut) = (Vec3::new(-0.75, 0.0, 0.0), Vec3::new(-1.25, 0.0, 0.0));
+    let masked = AnimeCharacterMaterial { alpha: AlphaMode::Mask { cutoff: 0.5 }, ..surface(0.0) };
+    for listed in [Listed::Character(MaterialDrive::NONE, 1.0), Listed::Plain] {
+        let character = matches!(listed, Listed::Character(..));
+        let frame = floating_card(&masked, listed, &surface(-0.95));
+        frame.dump(&format!("masked-card-{character}"));
+        assert!(frame.shaded_at(kept), "{character}: the kept half's shadow: {:?}", frame.at(kept));
+        assert!(frame.lit_at(cut), "{character}: none of the clear half: {:?}", frame.at(cut));
+        let opaque = floating_card(&surface(0.0), listed, &surface(-0.95));
+        assert!(opaque.shaded_at(kept) && opaque.shaded_at(cut), "{character}: opaque, the whole card's");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_dissolving_or_see_through_character_casts_through_its_cut() {
+    // The opaque card (its map's clear half counts only with a cutoff) over a softly split ground,
+    // whose tone follows the light reaching it: its shadow lightens as it dissolves and as its
+    // region draws a share of its pixels, and none is left when it's dissolved or faded all the
+    // way. A proximity fade partway leaves its shadow whole.
+    let soft =
+        AnimeCharacterMaterial { light_split: LightSplit { threshold: 0.0, softness: 2.0 }, ..surface(0.0) };
+    let shadow = |document: &AnimeCharacterMaterial, dissolve: f32, opacity: f32| {
+        let drive = MaterialDrive { dissolve, ..MaterialDrive::NONE };
+        let frame = floating_card(document, Listed::Character(drive, opacity), &soft);
+        frame.dump(&format!("cut-card-{dissolve}-{opacity}"));
+        let center = frame.pixel_of(Vec3::new(-1.0, 0.0, 0.0)).expect("in view");
+        let reach = frame.pixel_of(Vec3::new(-0.6, 0.0, 0.0)).expect("in view").0 - center.0;
+        let (mut sum, mut n) = (0.0, 0.0);
+        for y in center.1 - reach..center.1 + reach {
+            for x in center.0 - reach..center.0 + reach {
+                sum += frame.linear(x, y)[0];
+                n += 1.0;
+            }
+        }
+        (frame.pixels, sum / n)
+    };
+    let (lit_pixels, lit) = shadow(&surface(0.0), 1.0, 1.0);
+    let darkness = |document: &AnimeCharacterMaterial, dissolve: f32, opacity: f32| {
+        let (pixels, tone) = shadow(document, dissolve, opacity);
+        (pixels, lit - tone)
+    };
+    let (_, whole) = darkness(&surface(0.0), 0.0, 1.0);
+    let (_, dissolving) = darkness(&surface(0.0), 0.5, 1.0);
+    let mut half_drawn = surface(0.0);
+    half_drawn.regions[0].opacity = 0.5;
+    let (_, see_through) = darkness(&half_drawn, 0.0, 1.0);
+    let (_, fading) = darkness(&surface(0.0), 0.0, 0.5);
+    let (faded, _) = darkness(&surface(0.0), 0.0, 0.0);
+    eprintln!("lit {lit}: darkened by whole {whole}, dissolving {dissolving}, see-through {see_through}");
+    assert!(whole > 0.2, "the whole card's shadow: {whole}");
+    for (what, part) in [("dissolving", dissolving), ("see-through", see_through)] {
+        assert!(part > whole * 0.15 && part < whole * 0.85, "{what}: through its cut: {part} of {whole}");
+    }
+    assert_eq!(fading, whole, "a proximity fade leaves the shadow whole");
+    assert!(faded == lit_pixels, "faded all the way as dissolved all the way: no shadow");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_receivers_casters_trade_its_slot_without_a_pop() {
+    // One slot, two slabs: one 3 m toward the light over the card's left half, the other over its
+    // right half walking from 3.7 m to 2.3 m in centimetre steps, past it. The walker takes the
+    // slot from the other as it comes nearer along the light, the halves' shadows trading through
+    // a fade on a softly split card: no frame moves either half's tone by more than a fade's step.
+    let soft =
+        AnimeCharacterMaterial { light_split: LightSplit { threshold: 0.0, softness: 1.0 }, ..surface(0.0) };
+    let mut harness = party_stage(receiving(desktop(), 1));
+    party_card(&mut harness, &soft);
+    party_slab(&mut harness, -0.5, 3.0);
+    let material = harness.material(&surface(-0.2), &[]);
+    let slab = harness.mesh(&cuboid(), material);
+    let walker = InstanceId(1000);
+    let half = |frame: &Frame, x: f32| {
+        let (mut sum, mut n) = (0.0, 0);
+        for step in 0..9 {
+            for y in [-0.4, 0.0, 0.4] {
+                sum += frame.at(Vec3::new(x + (step as f32 - 4.0) * 0.04, y, 0.0))[0];
+                n += 1;
+            }
+        }
+        sum / n as f32
+    };
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for step in 0..=140 {
+        let z = 3.7 - step as f32 * 0.01;
+        let at = Vec3::new(0.5, -1.0, z);
+        let transform = Mat4::from_scale_rotation_translation(Vec3::new(1.0, 2.0, 0.1), Quat::IDENTITY, at);
+        harness.added.push(MeshInstance { id: walker, mesh: slab, transform });
+        let body = CharacterBody::capsule(Vec3::new(0.5, -0.5, z), Vec3::new(0.5, 0.5, z), 0.6);
+        harness.character(walker, body, None);
+        let frame = harness.render();
+        left.push(half(&frame, -0.45));
+        right.push(half(&frame, 0.45));
+    }
+    let (first, last) = (0, left.len() - 1);
+    let range = (left[last] - left[first]).abs().max((right[last] - right[first]).abs());
+    eprintln!("left {} to {}, right {} to {}", left[first], left[last], right[first], right[last]);
+    assert!(left[last] > left[first] + 0.1, "the left half comes out of shadow: {left:?}");
+    assert!(right[last] + 0.1 < right[first], "the right half goes into it: {right:?}");
+    for tones in [&left, &right] {
+        let most = tones.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+        assert!(most < 0.2 * range, "a step of {most} in a trade of {range}: {tones:?}");
+    }
 }

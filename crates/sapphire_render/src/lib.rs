@@ -612,8 +612,8 @@
 //!   keeps the blend;
 //!   under MSAA the alpha-tested variants' covered entry points (`fs_*_covered`) write a share
 //!   of each pixel's samples instead, and the single-sampled prepasses keep the pixels where it
-//!   isn't empty. A fading character takes no rim; its shadow stays whole. Only the anime
-//!   character family fades.
+//!   isn't empty. A fading character takes no rim; its shadow stays whole until it's gone. Only
+//!   the anime character family fades.
 //! - **Driven materials and see-through regions** (M5 L11, [`MaterialDrive`]): branches of the
 //!   same shader, no permutation of their own. A character's dissolve cuts its pixels by a value
 //!   noise over the UVs (an integer hash, no texture) in every pass the fade cuts, routed as a
@@ -670,7 +670,9 @@
 //! - **Who casts and receives:** the frame's character list classifies. Environment instances
 //!   cast into the cascades and receive everything; characters cast only their own shadow (a
 //!   tile of the character atlas on desktop, their [`CharacterBody`]'s capsule on phones) and
-//!   receive the cascades alone, so they never shadow themselves.
+//!   receive the cascades and a few other characters' own shadows (M5 L12,
+//!   [`ShadowSettings::others`]), never their own, so they never shadow themselves. Alpha-tested
+//!   anime character surfaces cast their cutout, and a dissolve's cut.
 //! - **The cascades:** 4 on desktop and 2 on phones ([`ShadowSettings`] per tier), fit to
 //!   spheres around the view's slices and snapped to texels under a quantized key light, the far
 //!   ones cached and drawn in turns; a tent PCF that receivers' splits and terminators threshold.
@@ -928,7 +930,7 @@ pub use foliage::FoliageSettings;
 pub use frame::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, FaceExpression, FramePacket,
     FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight, MaterialDrive,
-    MeshInstance, PacketRange, SkinnedInstance, ViewData, Weather, Wind,
+    MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather, Wind,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;

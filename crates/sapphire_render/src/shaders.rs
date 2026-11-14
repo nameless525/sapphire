@@ -632,7 +632,7 @@ mod tests {
     };
     use crate::characters::{
         GpuCharacter, GpuCharacterAmbient, GpuCharacterDrive, GpuCharacterFade, GpuCharacterShadow,
-        GpuCharacterStyle, GpuFace, GpuRig,
+        GpuCharacterStyle, GpuFace, GpuReceived, GpuRig,
     };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
@@ -686,6 +686,8 @@ mod tests {
                 "fs_character_prepass_masked",
                 "vs_scene_prepass_masked",
                 "fs_scene_prepass_masked",
+                "vs_shadow_caster_masked",
+                "fs_shadow_caster_masked",
             ],
         ),
         (Program::Skinning, &["cs_skinning"]),
@@ -749,7 +751,7 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 15] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 16] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::AnimeCharacter, "vs_through_hair", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
@@ -761,6 +763,7 @@ mod tests {
         (Program::Prepass, "vs_character_prepass_masked", MeshPass::MaskedCharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
         (Program::Prepass, "vs_scene_prepass_masked", MeshPass::MaskedScenePrepass),
+        (Program::Prepass, "vs_shadow_caster_masked", MeshPass::MaskedShadow),
         (Program::Shadows, "vs_shadow_caster", MeshPass::Shadow),
         (Program::Foliage, "vs_foliage", MeshPass::Foliage),
         (Program::Foliage, "vs_foliage_prepass", MeshPass::FoliagePrepass),
@@ -1074,6 +1077,7 @@ mod tests {
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
+            (Program::AnimeCharacter, "CharacterReceived", size_of::<GpuReceived>()),
             (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
             (Program::AnimeCharacter, "CharacterDrive", size_of::<GpuCharacterDrive>()),
             (Program::AnimeCharacter, "CharacterStyle", size_of::<GpuCharacterStyle>()),
@@ -1307,7 +1311,8 @@ mod tests {
             ("CharacterDrive", offsets!(GpuCharacterDrive { levels, flash })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
-            ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),
+            ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility, received })),
+            ("CharacterReceived", offsets!(GpuReceived { casters, weights })),
             (
                 "ShadowUniforms",
                 offsets!(ShadowUniforms {

@@ -243,11 +243,13 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let rig = characters[in.character].rig;
     // A cast shadow (M1 R4) joins the occlusion as on the surface, so a line goes into the shadow
-    // tone with it: a face's whole (the face pass's), any other surface's at the hull. Both are
-    // computed and one selected, without a branch around the lookups (as for WARP below).
+    // tone with it: a face's whole (the face pass's) with the other characters' at the hull (M5
+    // L12), as the face takes them, any other surface's at the hull. Both are computed and one
+    // selected, without a branch around the lookups (as for WARP below).
     let face = materials[material].modes.z == CHARACTER_SURFACE_FACE;
     let at_hull = cast_shadow_at(in.world_position, in.world_normal, in.character);
-    let shadow = select(at_hull, face_shadow(in.character), face);
+    let received = received_visibility(in.world_position, safe_normalize(in.world_normal), in.character);
+    let shadow = select(at_hull, face_shadow(in.character) * received, face);
     let x = split_input(dot(safe_normalize(in.world_normal), rig.key_direction.xyz), in.occlusion * shadow, SHADOW_BIAS_NEUTRAL);
     let split = materials[material].split.xy;
     let width = max(split.y, 0.5 * fwidth(x));

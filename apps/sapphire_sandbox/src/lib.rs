@@ -72,6 +72,10 @@
 //! - `--shadows on|off`: the player's shadow setting (M1 R4); the tier's shadows without it. Off
 //!   draws no shadow maps and compiles the shaders as they were before shadows, which the golden
 //!   scenes from before them pin.
+//! - `--character-shadows own|others`: whether characters receive the other characters' shadows
+//!   (M5 L12, `ShadowSettings::others`), as the tier says by default (`others`). `own` keeps each
+//!   character's shadow on the world alone, as before, for comparisons and the golden scenes from
+//!   before it.
 //! - `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's without
 //!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before

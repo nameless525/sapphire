@@ -2,11 +2,38 @@
 
 use std::time::Duration;
 
-/// Runs `evaluate` on each character, one job each (spec §5.13): a single character runs on the
-/// calling thread. The job system allocates per call past one (`sapphire_jobs`' docs), so this
-/// stays out of the fixed step, as all of presentation does.
-pub fn evaluate_all<T: Send>(characters: &mut [T], evaluate: impl Fn(&mut T) + Sync) {
-    sapphire_jobs::par_for_each_chunk_mut(characters, 1, |_, chunk| chunk.iter_mut().for_each(&evaluate));
+/// How many jobs a frame's characters split into for each thread that runs them, the calling thread
+/// among them: more than one, so a dear character (the one on field, with its springs) doesn't leave
+/// the others waiting, and few enough that the job system's allocations don't grow with a crowd.
+const JOBS_PER_THREAD: usize = 2;
+
+/// Runs `evaluate` on each character in jobs on the compute pool (spec §5.13), each character once,
+/// and returns how many jobs that took: 1 for a slice that fits one, which runs on the calling thread
+/// and allocates nothing. Characters go to jobs in runs, two for each of the pool's
+/// threads and the caller, so the job system's allocations (`sapphire_jobs`' docs: about 3 a call and
+/// 1 a job) stay bounded however many characters there are. Nothing here runs in the fixed step, as
+/// nothing in presentation does. What one character's evaluation writes must be its own, so the
+/// results are those of a plain loop, whatever the thread count.
+pub fn evaluate_all<T: Send>(characters: &mut [T], evaluate: impl Fn(&mut T) + Sync) -> usize {
+    let threads = sapphire_jobs::system().compute_pool().thread_num() + 1;
+    let jobs = characters.len().min(JOBS_PER_THREAD * threads).max(1);
+    let run = characters.len().div_ceil(jobs).max(1);
+    sapphire_jobs::par_for_each_chunk_mut(characters, run, |_, chunk| chunk.iter_mut().for_each(&evaluate));
+    characters.len().div_ceil(run).max(1)
+}
+
+/// `list`, emptied, as a list of `U`, keeping its allocation: a frame's list of jobs whose items borrow
+/// the frame, kept from one frame to the next as an empty list of the same items at another lifetime,
+/// so a frame's list allocates nothing once it has held as many as a frame asks for. `T` and `U` must
+/// be laid out alike, which they are when they differ only in lifetimes; the standard library collects
+/// such a list in place, and the stage's allocation tests hold that it still does.
+#[must_use]
+pub fn reuse_list<T, U>(mut list: Vec<T>) -> Vec<U> {
+    const {
+        assert!(size_of::<T>() == size_of::<U>() && align_of::<T>() == align_of::<U>());
+    }
+    list.clear();
+    list.into_iter().map(|_| unreachable!("the list was emptied")).collect()
 }
 
 /// What animation did in a frame (rule R9).
@@ -16,6 +43,16 @@ pub struct AnimStats {
     pub characters: u32,
     /// Characters whose pose was evaluated: those with a clip whose position moved.
     pub evaluated: u32,
+    /// Characters whose pose a level held this frame (M5 C1): off screen, or between the updates of a
+    /// band farther than the nearest. Nothing of theirs was evaluated or stepped.
+    pub held: u32,
+    /// Characters posed by a level below full this frame, held or updated: past the nearest band, on an
+    /// interval, or with their IK or springs off by distance.
+    pub thinned: u32,
+    /// Of [`Self::held`], those no view draws.
+    pub off_screen: u32,
+    /// The jobs the frame's characters ran in: 0 when they ran one after another on the frame's thread.
+    pub jobs: u32,
     /// Joints in the poses evaluated.
     pub joints: u32,
     /// Characters whose spring bones wrote their pose ([`SpringBones`](crate::SpringBones)).
@@ -363,5 +400,46 @@ mod tests {
         for pose in &poses {
             assert_eq!(bytes_of(pose), expected);
         }
+    }
+
+    /// However many characters there are, each is evaluated exactly once, at its own position, and the
+    /// jobs stay bounded by the pool rather than the crowd: one for one character.
+    #[test]
+    fn every_character_of_a_crowd_is_evaluated_once_in_bounded_jobs() {
+        let bytes = swing().to_cooked().expect("cooked");
+        let clip = Clip::read(&bytes).expect("a valid clip");
+        let threads = sapphire_jobs::system().compute_pool().thread_num() + 1;
+        for count in [1, 2, 7, 15, 60, 65] {
+            let mut crowd: Vec<(f32, u32, CharacterPose)> =
+                (0..count).map(|index| (index as f32 * 0.5, 0, arm())).collect();
+            let jobs = evaluate_all(&mut crowd, |(position, visits, pose)| {
+                *visits += 1;
+                pose.sample(clip, *position);
+                pose.finish();
+            });
+            assert!(jobs <= JOBS_PER_THREAD * threads && jobs <= count, "{count}: {jobs} jobs");
+            assert_eq!(jobs == 1, count == 1, "{count}: {jobs} jobs");
+            for (position, visits, pose) in &crowd {
+                let mut alone = arm();
+                alone.sample(clip, *position);
+                alone.finish();
+                assert_eq!(*visits, 1, "{count} at {position}");
+                assert_eq!(bytes_of(pose), bytes_of(&alone), "{count} at {position}");
+            }
+        }
+    }
+
+    /// A list given back keeps its allocation, whatever it held, so a frame's list of jobs costs the heap
+    /// nothing once it has held a frame's worth.
+    #[test]
+    fn a_reused_list_keeps_its_allocation() {
+        let mut list: Vec<&u32> = Vec::with_capacity(16);
+        let values = [1, 2, 3];
+        list.extend(&values);
+        let place = list.as_ptr().cast::<u8>();
+        let again: Vec<&'static u32> = reuse_list(list);
+        assert!(again.is_empty());
+        assert_eq!(again.capacity(), 16);
+        assert_eq!(again.as_ptr().cast::<u8>(), place);
     }
 }

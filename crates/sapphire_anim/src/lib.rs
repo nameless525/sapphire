@@ -7,7 +7,7 @@ pub mod face;
 mod motion;
 mod springs;
 
-pub use character::{AnimStats, evaluate_all};
+pub use character::{AnimStats, evaluate_all, reuse_list};
 pub use face::{FaceLayer, FaceOrder, Mouth};
 pub use motion::{CharacterMotion, CharacterMotionError};
 pub use sapphire_body_pose::graph::{FixedGraphHistory, GraphStepStamp};

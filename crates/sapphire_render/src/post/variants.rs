@@ -7,6 +7,7 @@ use std::ops::{BitOr, BitOrAssign};
 use sapphire_look::Dichromacy;
 use sapphire_rhi::wgpu;
 
+use super::focus::{DepthOfFieldSettings, FocusPass};
 use super::layers::Variant;
 use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
@@ -15,6 +16,7 @@ use super::{
 use crate::color_vision::{COLOR_VISION_CONSTANTS, COLOR_VISION_PASS};
 use crate::inset::{INSET_FORMAT, INSET_RESOLVE_PASS};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
+use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shader_builds::Cancel;
 use crate::shaders::BuildOn;
 
@@ -123,17 +125,32 @@ pub(super) enum Slot {
     /// The colour-vision debug view (M4 A5, `color_vision`): the finished frame as a dichromat sees it.
     /// Outside [`Self::all`] too, built only while the view shows.
     ColorVision(Dichromacy),
+    /// Depth of field's passes (M5 L8, `focus`): outside [`Self::all`], built where a tier has them and an
+    /// inventory declares focus, or a frame first draws it.
+    Focus(FocusPass),
 }
 
 impl Slot {
     /// How many the frame's variants have.
     const COUNT: usize = 4 + Variant::COMPOSITES;
-    /// How many there are, the inset's resolve and the colour-vision views with them.
-    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len();
+    /// How many there are, the inset's resolve, the colour-vision views and depth of field's with them.
+    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len();
 
     /// The pipelines outside the frame's variants, which something else asks for.
     pub(super) fn others() -> impl Iterator<Item = Self> {
-        [Self::Inset].into_iter().chain(Dichromacy::ALL.map(Self::ColorVision))
+        [Self::Inset]
+            .into_iter()
+            .chain(Dichromacy::ALL.map(Self::ColorVision))
+            .chain(FocusPass::ALL.map(Self::Focus))
+    }
+
+    /// Whether a post pass with depth of field's `settings` can draw with it: not depth of field's passes
+    /// a tier lacks.
+    pub(super) fn drawable_with(self, settings: DepthOfFieldSettings) -> bool {
+        match self {
+            Self::Focus(pass) => settings.has(pass),
+            _ => true,
+        }
     }
 
     /// Every pipeline post has, in [`Self::index`]'s order.
@@ -151,6 +168,7 @@ impl Slot {
             Self::Composite(index) => 4 + index,
             Self::Inset => Self::COUNT,
             Self::ColorVision(dichromacy) => Self::COUNT + 1 + dichromacy as usize,
+            Self::Focus(pass) => Self::COUNT + 1 + Dichromacy::ALL.len() + pass as usize,
         }
     }
 
@@ -168,7 +186,7 @@ impl Slot {
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
                 (switches, 0)
             }
-            Self::Inset | Self::ColorVision(_) => (PostVariants::NONE, 0),
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) => (PostVariants::NONE, 0),
         }
     }
 
@@ -188,7 +206,7 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
-            Self::Inset | Self::ColorVision(_) => false,
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) => false,
         })
     }
 }
@@ -262,6 +280,21 @@ impl Builder {
                 let names = (COLOR_VISION_PASS, fullscreen, "fs_color_vision");
                 let (layout, format) = (&self.layouts.one, self.output_format);
                 self.pipeline(module, PipelineFamily::Debug, names, layout, format, &constants)
+            }
+            // Every pass writes HDR light at the scene colour's format: the half sizes hold their blur in
+            // alpha, the composite and the backdrop the mask they read.
+            Slot::Focus(pass) => {
+                let (name, fragment) = pass.names();
+                let layout = match pass {
+                    FocusPass::Prepare => &self.layouts.focus_depth,
+                    FocusPass::Composite => &self.layouts.focus_composite,
+                    FocusPass::Gather | FocusPass::Backdrop => &self.layouts.one,
+                };
+                let names = (name, fullscreen, fragment);
+                // The backdrop is an inset's, declared with them: a miss names the entry that declares it.
+                let family =
+                    if pass == FocusPass::Backdrop { PipelineFamily::Inset } else { PipelineFamily::Focus };
+                self.pipeline(module, family, names, layout, SCENE_COLOR_FORMAT, &[])
             }
         }
     }

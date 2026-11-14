@@ -132,7 +132,8 @@ pub struct FrameCounts {
     pub insets: [PassCounts; MAX_INSETS],
     /// Temporal AA's passes and the effects drawn after its resolve (sprites and effect meshes).
     pub temporal: PassCounts,
-    /// Post's passes: the bloom chain, the fused composite, and the colour-vision view's pass.
+    /// Post's passes: depth of field's three where the frame has focus (M5 L8), the bloom chain, the fused
+    /// composite, the colour-vision view's pass, and insets' resolves with any soft backdrop's pass before them.
     pub post: PassCounts,
     /// The on-screen interface.
     pub ui: PassCounts,

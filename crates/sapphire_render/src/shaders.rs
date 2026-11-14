@@ -62,6 +62,9 @@ pub enum ShaderFile {
     Skinning,
     /// Every post pass: the bloom chain and the fused composite.
     Post,
+    /// Depth of field's passes (M5 L8), after post's own in its program: the prepare, the gather, the
+    /// composite and an inset's soft backdrop.
+    Focus,
     /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
     Temporal,
     /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
@@ -90,7 +93,7 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -103,6 +106,7 @@ impl ShaderFile {
         Self::Prepass,
         Self::Skinning,
         Self::Post,
+        Self::Focus,
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
@@ -131,6 +135,7 @@ impl ShaderFile {
             Self::Prepass => "prepass.wgsl",
             Self::Skinning => "skinning.wgsl",
             Self::Post => "post.wgsl",
+            Self::Focus => "focus.wgsl",
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
             Self::Foliage => "foliage.wgsl",
@@ -165,6 +170,7 @@ impl ShaderFile {
             Self::Prepass => include_str!("../shaders/prepass.wgsl"),
             Self::Skinning => include_str!("../shaders/skinning.wgsl"),
             Self::Post => include_str!("../shaders/post.wgsl"),
+            Self::Focus => include_str!("../shaders/focus.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
             Self::Foliage => include_str!("../shaders/foliage.wgsl"),
@@ -254,7 +260,7 @@ impl Program {
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
-            Self::Post => &[F::Post],
+            Self::Post => &[F::Post, F::Focus],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
@@ -806,7 +812,8 @@ mod tests {
             include_str!("../shaders/anime_character.wgsl")
         );
         assert_eq!(sources.program(Program::AnimeCharacter), character);
-        assert_eq!(sources.program(Program::Post), include_str!("../shaders/post.wgsl"));
+        let post = concat!(include_str!("../shaders/post.wgsl"), "\n", include_str!("../shaders/focus.wgsl"));
+        assert_eq!(sources.program(Program::Post), post);
         // Every file is in a program, and found by its name.
         for file in ShaderFile::ALL {
             assert!(Program::ALL.iter().any(|program| program.files().contains(&file)), "{file}");
@@ -1847,6 +1854,8 @@ mod tests {
             gradients,
             flare_elements,
             effects,
+            focus,
+            focus_blur,
         });
         assert_eq!(fields("PostUniforms"), owned(uniforms), "PostUniforms: WGSL vs Rust fields");
         let effects = offsets!(GpuEffects {

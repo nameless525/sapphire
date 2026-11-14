@@ -294,6 +294,11 @@ impl Insets {
         !self.targets.is_empty()
     }
 
+    /// Whether any inset the frame shows asks for a soft backdrop (M5 L8).
+    pub(crate) fn any_soft_backdrop(&self, packet: &FramePacket) -> bool {
+        packet.insets.iter().any(|view| crate::post::focus::backdrop_blur(view.soft_backdrop) > 0.0)
+    }
+
     /// The last prepared frame's, with the transient bytes of `samples` per pixel.
     pub(crate) fn stats(&self, samples: u32) -> InsetStats {
         let drawn = self.targets.iter().filter(|target| target.draw);
@@ -372,6 +377,7 @@ impl Insets {
                     b: f64::from(backdrop.z),
                     a: 1.0,
                 },
+                soft_backdrop: post_uniforms.focus_blur[2] > 0.0,
             });
         }
         frame
@@ -512,7 +518,7 @@ impl InsetTarget {
         };
         let camera = view.camera;
         self.view = ViewUniforms::new(&camera, self.scene_size, camera.proj * camera.view, [0.0; 2]);
-        self.post_uniforms = post.inset_uniforms(view.exposure);
+        self.post_uniforms = post.inset_uniforms(view.exposure, view.soft_backdrop);
         self.backdrop = if view.backdrop.is_finite() { view.backdrop.max(Vec3::ZERO) } else { Vec3::ZERO };
     }
 }
@@ -585,6 +591,8 @@ pub(crate) struct InsetDraw<'f> {
     pub scene_size: (u32, u32),
     /// Its main pass's clear: the backdrop.
     pub backdrop: wgpu::Color,
+    /// Its backdrop blurs behind its characters before its resolve (M5 L8).
+    pub soft_backdrop: bool,
 }
 
 /// An inset the frame shows, for the interface.

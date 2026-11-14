@@ -34,9 +34,9 @@ use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
-use sapphire_render::{EffectScale, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
+use sapphire_render::{EffectScale, Focus, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
 use sapphire_rhi::GpuContext;
-use sapphire_sequencer::{Origin, Playing, TimelinePlayer};
+use sapphire_sequencer::{FocusFollow, Origin, Playing, TimelinePlayer};
 use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_timeline::Timeline;
 use sapphire_vfx::VfxBudget;
@@ -481,6 +481,11 @@ pub struct FightShow {
     /// The zone's frames with a place in reach still to come when the timeline playing first presented, so
     /// that its end can say how many it added (M3 Q3).
     timeline_unready: Option<u64>,
+    /// Follows the playing timeline's focus keys (M5 L8): a role's head as it moves, and the fade with the
+    /// camera's blend back once it ends.
+    focus: FocusFollow,
+    /// This frame's focus, for post.
+    frame_focus: Focus,
     /// Fighters draw on the latest step, not between it and the one before: a timeline has held the
     /// simulation, and the next step hasn't come. Past that, a frame can't draw earlier than this one did.
     draws_latest: bool,
@@ -1096,11 +1101,22 @@ impl FightShow {
     /// A timeline over is gone from here: every post track ended on nothing, and the director's blend out
     /// goes on by itself.
     fn present_timeline(&mut self, scene: &mut Scene, alpha: f32) {
+        let weight = self.arena.as_deref().map_or(0.0, ArenaActors::takeover_weight);
         let Some(show) = &mut self.timeline else {
+            // A shot's focus fades with the blend back to the gameplay camera.
+            self.frame_focus = self.focus.follow(None, weight, 0.0, |_| None);
             scene.stream_ahead([]);
             return;
         };
         let shown = show.present(alpha, self.arena.as_mut().and_then(|arena| arena.director_mut()));
+        // Its focus (M5 L8), on a role's head where the fighters are drawn this frame.
+        let drawn_at = if self.draws_latest { 1.0 } else { alpha };
+        let arena = self.arena.as_deref();
+        let head_of = |role| {
+            let arena = arena?;
+            Some(arena.head(timeline::fighter_of_role(role, arena)?, drawn_at))
+        };
+        self.frame_focus = self.focus.follow(show.player().shot().as_ref(), weight, shown.dt, head_of);
         let unready = scene.stream_stats().map_or(0, |stats| stats.unready_frames);
         let unready_before = *self.timeline_unready.get_or_insert(unready);
         // Where its camera cuts to soon, streamed for ahead of the cut (M3 Q3).
@@ -2011,6 +2027,8 @@ impl SceneShow for FightShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         inventory.effects |= self.cues.is_some();
         inventory.effect_meshes |= self.cues.as_ref().is_some_and(|cues| cues.has_meshes());
+        // Depth of field's passes, where a timeline it may play keys focus (M5 L8).
+        inventory.focus |= self.timelines.iter().any(|timeline| timeline.has_focus());
     }
 
     fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {
@@ -2087,6 +2105,7 @@ impl SceneShow for FightShow {
         if let Some(show) = &self.timeline {
             show.player().apply_post(post);
         }
+        post.focus = self.frame_focus;
         if self.effect_scale != EffectScale::FULL {
             post.effects = post.effects.scaled(self.effect_scale);
         }

@@ -274,6 +274,7 @@
 //!   images render without it).
 
 mod effects;
+pub(crate) mod focus;
 pub(crate) mod layers;
 mod lut;
 mod variants;
@@ -298,12 +299,14 @@ use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::{CameraData, RenderError, bind_cache};
 pub(crate) use effects::{COLOR_EFFECTS_CONSTANT, GpuEffects, LENS_EFFECTS_CONSTANT, RADIAL_TAPS_CONSTANT};
 pub use effects::{DrawnEffects, MAX_RADIAL_BLUR_TAPS, PostEffectSettings};
+use focus::FocusPass;
+pub use focus::{BACKDROP_PASS as FOCUS_BACKDROP_PASS, DepthOfFieldSettings, PASSES as FOCUS_PASSES};
 use layers::{FLARE_ELEMENTS, FLARE_VISIBLE_SHARE, GpuFlareElement, GpuGradient, Layers, Variant};
 pub(crate) use layers::{SunDisc, SunOnScreen};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use sapphire_look::post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, Duotone,
-    EffectCoverage, EffectScale, Flash, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
+    EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
     Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve,
     Vignette,
 };
@@ -390,6 +393,12 @@ pub(crate) struct PostUniforms {
     pub gradients: [GpuGradient; MAX_GRADIENT_LAYERS],
     pub flare_elements: [GpuFlareElement; FLARE_ELEMENTS],
     pub effects: GpuEffects,
+    /// Depth of field (M5 L8, `focus`), appended. x: the sharp plane's view depth; y: how far either side
+    /// stays sharp; z and w: 1 / the growth in front and behind (metres).
+    pub focus: [f32; 4],
+    /// x: the largest blur, as a fraction of the picture's height (0: none); y: the camera's near plane;
+    /// z: an inset's soft backdrop's blur, as a fraction of its scene's height (0: none).
+    pub focus_blur: [f32; 4],
 }
 
 impl PostUniforms {
@@ -424,6 +433,8 @@ impl PostUniforms {
             gradients: layers.gradients,
             flare_elements: layers.flare_elements,
             effects,
+            focus: [0.0; 4],
+            focus_blur: [0.0; 4],
         }
     }
 }
@@ -461,7 +472,10 @@ pub struct PostStats {
     pub sharpening: bool,
     /// The screen effects that drew (M1 P3).
     pub effects: DrawnEffects,
-    /// Post's pipelines built so far, of 16: the variants built ahead of the frames
+    /// Depth of field drew on the main view (M5 L8): its three passes ran.
+    pub focus: bool,
+    /// Post's pipelines built so far, of 16 variants and the inset's, color vision's and depth of
+    /// field's (M5 L8) beside them: the variants built ahead of the frames
     /// ([`RenderSettings::post_variants`](crate::RenderSettings::post_variants),
     /// [`Renderer::prewarm_post`](crate::Renderer::prewarm_post)) and those frames built.
     pub pipelines: u32,
@@ -506,6 +520,10 @@ pub(crate) struct PostProcess {
     texels: Vec<u32>,
     /// The levels its pipelines are built for.
     bloom_levels: u32,
+    /// What of depth of field the tier has (M5 L8).
+    depth_of_field: DepthOfFieldSettings,
+    /// The last prepared frame draws depth of field on the main view.
+    focus: bool,
     /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
     shed_levels: u32,
     bind_groups: Box<BindGroups>,
@@ -550,7 +568,16 @@ struct Layouts {
     /// Composite: both, the two LUTs, the diffusion glow's bloom level and the scene color whose
     /// alpha is the character mask (the screen effects').
     composite: wgpu::BindGroupLayout,
+    /// Depth of field's prepare (M5 L8): `texture0` and the scene prepass's depth at binding 6.
+    focus_depth: wgpu::BindGroupLayout,
+    /// Depth of field's composite: `texture0`, `texture1` and the depth at binding 6.
+    focus_composite: wgpu::BindGroupLayout,
 }
+
+/// Where depth of field's passes bind their textures: `focus.wgsl` puts the depth at binding 6, past the
+/// textures post's own passes bind.
+const FOCUS_DEPTH_BINDINGS: [u32; 2] = [0, 6];
+const FOCUS_COMPOSITE_BINDINGS: [u32; 3] = [0, 1, 6];
 
 /// A group 1 bind group, for the most textures a post pass reads.
 type CachedBindGroup = bind_cache::CachedBindGroup<6>;
@@ -560,6 +587,9 @@ type CachedBindGroup = bind_cache::CachedBindGroup<6>;
 struct BindGroups {
     composite: CachedBindGroup,
     prefilter: CachedBindGroup,
+    focus_prepare: CachedBindGroup,
+    focus_gather: CachedBindGroup,
+    focus_composite: CachedBindGroup,
     down: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
     up: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
 }
@@ -569,6 +599,8 @@ struct BindGroups {
 pub(crate) struct InsetPost {
     shared: wgpu::BindGroup,
     cache: CachedBindGroup,
+    /// Its soft backdrop's group 1 (M5 L8).
+    backdrop: CachedBindGroup,
 }
 
 /// An inset's resolve, which [`PostProcess::record`] adds after post's own passes: its scene, exposed
@@ -577,6 +609,8 @@ pub(crate) struct InsetResolve<'f> {
     pub post: &'f mut InsetPost,
     pub scene: TextureId,
     pub picture: TextureId,
+    /// Blur what of its scene isn't a character first (M5 L8, `focus`).
+    pub soft_backdrop: bool,
 }
 
 /// A texture a fullscreen pass samples: one from the frame graph or a persistent one.
@@ -596,6 +630,8 @@ struct Fullscreen<'f> {
     cache: &'f mut CachedBindGroup,
     /// Post's counts, which its draw adds to.
     counter: &'f Counter,
+    /// Where it binds its textures: empty for 0, 1, … in order.
+    bindings: &'static [u32],
 }
 
 impl PostProcess {
@@ -603,11 +639,13 @@ impl PostProcess {
     /// the tier's `effects`, and builds the pipelines of `variants` (the module docs' "Building
     /// the variants"). Fails if the device can't filter the grading LUTs' format. The
     /// scene-color format is the renderer's to check: it is the main pass's attachment.
+    #[expect(clippy::too_many_arguments, reason = "a tier's post settings, each its own")]
     pub(crate) fn new(
         gpu: &GpuContext,
         output_format: wgpu::TextureFormat,
         bloom_levels: u32,
         effects: PostEffectSettings,
+        depth_of_field: DepthOfFieldSettings,
         variants: PostVariants,
         builds: &PipelineBuilds,
         sources: &ShaderSources,
@@ -642,6 +680,16 @@ impl PostProcess {
         };
         let flat = wgpu::TextureViewDimension::D2;
         let volume = wgpu::TextureViewDimension::D3;
+        let depth = wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: flat,
+                multisampled: false,
+            },
+            count: None,
+        };
         let shared_layout = layout(
             "post",
             &[
@@ -677,6 +725,11 @@ impl PostProcess {
                     texture(4, fragment, flat),
                     texture(5, fragment, flat),
                 ],
+            ),
+            focus_depth: layout("focus prepare", &[texture(0, fragment, flat), depth]),
+            focus_composite: layout(
+                "focus composite",
+                &[texture(0, fragment, flat), texture(1, fragment, flat), depth],
             ),
         };
 
@@ -764,6 +817,8 @@ impl PostProcess {
             slots: LutSlots::default(),
             texels: vec![0; LUT_TEXELS],
             bloom_levels,
+            depth_of_field,
+            focus: false,
             shed_levels: 0,
             bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
@@ -803,7 +858,29 @@ impl PostProcess {
     /// Builds the inset resolve's pipeline unless it is built (M3 U6): an inventory's, while nothing draws,
     /// or a first use, in the frame that first shows an inset. Says how many it built.
     pub(crate) fn build_inset(&mut self, on: BuildOn) -> u32 {
-        self.pipelines.build_all(&self.builder, &self.module, [Slot::Inset], on)
+        let slots = self.inset_slots();
+        self.pipelines.build_all(&self.builder, &self.module, slots, on)
+    }
+
+    /// The inset resolve's pipeline, and the soft backdrop's where the tier has it (M5 L8): what an inventory
+    /// declaring insets builds, so an inset that asks for a soft backdrop builds nothing on its first frame.
+    fn inset_slots(&self) -> Vec<Slot> {
+        let backdrop = self.depth_of_field.insets.then_some(Slot::Focus(FocusPass::Backdrop));
+        [Slot::Inset].into_iter().chain(backdrop).collect()
+    }
+
+    /// The main view's depth of field passes the tier has (M5 L8): none without it.
+    fn focus_slots(&self) -> Vec<Slot> {
+        let view = [FocusPass::Prepare, FocusPass::Gather, FocusPass::Composite];
+        view.into_iter().filter(|&pass| self.depth_of_field.has(pass)).map(Slot::Focus).collect()
+    }
+
+    /// Builds the main view's depth of field pipelines the tier has unless they are built (M5 L8): an
+    /// inventory's, while nothing draws, or a first use, in the frame that first draws focus. Says how many it
+    /// built; none on a tier without it.
+    pub(crate) fn build_focus(&mut self, on: BuildOn) -> u32 {
+        let slots = self.focus_slots();
+        self.pipelines.build_all(&self.builder, &self.module, slots, on)
     }
 
     /// What these have built and are ready for: what a post pass of another tier builds before it takes this
@@ -817,26 +894,30 @@ impl PostProcess {
     pub(crate) fn build_held(&mut self, held: &PostShape, on: BuildOn) {
         self.ready |= held.ready;
         // Of the other's first uses, those this pass can draw: a shorter bloom chain draws fewer levels.
-        let drawable: Vec<Slot> =
-            Slot::within(PostVariants::ALL, self.bloom_levels).chain(Slot::others()).collect();
+        let drawable: Vec<Slot> = Slot::within(PostVariants::ALL, self.bloom_levels)
+            .chain(Slot::others().filter(|slot| slot.drawable_with(self.depth_of_field)))
+            .collect();
         let carried = held.slots.iter().copied().filter(|slot| drawable.contains(slot));
         let slots: Vec<Slot> = Slot::within(self.ready, self.bloom_levels).chain(carried).collect();
         self.pipelines.build_all(&self.builder, &self.module, slots, on);
     }
 
     /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants`, with `inset` [`Self::build_inset`],
-    /// and [`Self::build_color_vision`] of each of `color_vision` would build, on a clone of these, where `on`
-    /// says, for [`Self::adopt`]. `None` when it's built.
+    /// [`Self::build_color_vision`] of each of `color_vision` and with `focus` [`Self::build_focus`] would build,
+    /// on a clone of these, where `on` says, for [`Self::adopt`]. `None` when it's built.
     pub(crate) fn warm(
         &self,
         variants: PostVariants,
         inset: bool,
         color_vision: &[Dichromacy],
+        focus: bool,
         on: BuildOn,
     ) -> Option<Step<WarmedPost>> {
-        let inset = inset.then_some(Slot::Inset);
+        let inset = if inset { self.inset_slots() } else { Vec::new() };
+        let focus = if focus { self.focus_slots() } else { Vec::new() };
         let slots: Vec<Slot> = Slot::within(self.ready | variants, self.bloom_levels)
             .chain(inset)
+            .chain(focus)
             .chain(color_vision.iter().map(|&dichromacy| Slot::ColorVision(dichromacy)))
             .filter(|&slot| self.pipelines.get(slot).is_none())
             .collect();
@@ -890,16 +971,33 @@ impl PostProcess {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        (buffer, InsetPost { shared, cache: CachedBindGroup::default() })
+        (
+            buffer,
+            InsetPost { shared, cache: CachedBindGroup::default(), backdrop: CachedBindGroup::default() },
+        )
     }
 
     /// An inset's constants this frame: the frame's grade at the inset's `exposure` (1 where it isn't a
-    /// positive number).
-    pub(crate) fn inset_uniforms(&self, exposure: f32) -> PostUniforms {
+    /// positive number), and its `soft_backdrop`'s blur where the tier has soft backdrops (M5 L8), none of the
+    /// main view's focus.
+    pub(crate) fn inset_uniforms(&self, exposure: f32, soft_backdrop: f32) -> PostUniforms {
         let mut uniforms = self.uniforms;
         uniforms.composite[0] = if exposure.is_finite() && exposure > 0.0 { exposure } else { 1.0 };
         uniforms.composite[3] = 0.0;
+        let blur = if self.depth_of_field.insets { focus::backdrop_blur(soft_backdrop) } else { 0.0 };
+        uniforms.focus = [0.0; 4];
+        uniforms.focus_blur = [0.0, 0.0, blur, 0.0];
         uniforms
+    }
+
+    /// Builds what a frame showing insets draws them with unless it is built: their resolve, and with
+    /// `soft_backdrop` (an inset asks for one) the soft backdrop's pipeline where the tier has it (M5 L8). A
+    /// first use, when no inventory declared insets. Says how many it built.
+    pub(crate) fn build_inset_drawn(&mut self, soft_backdrop: bool, on: BuildOn) -> u32 {
+        let backdrop =
+            (soft_backdrop && self.depth_of_field.insets).then_some(Slot::Focus(FocusPass::Backdrop));
+        let slots = [Slot::Inset].into_iter().chain(backdrop);
+        self.pipelines.build_all(&self.builder, &self.module, slots, on)
     }
 
     /// What an inset's grade is made of this frame: the LUT blend and shaper, the slots the grades read,
@@ -972,6 +1070,17 @@ impl PostProcess {
         self.bound = assignment.slots;
         let flare_sun = sun.filter(|_| layers.lens_flare());
         uniforms.frame[0] = aspect;
+        // Depth of field (M5 L8): only where the tier has it, with a camera whose depth the frame keeps.
+        let near = camera.map_or(0.0, |camera| camera.proj.w_axis.z);
+        let focus = focus::constants(&params.focus, near).filter(|_| self.depth_of_field.view);
+        self.focus = focus.is_some();
+        if let Some((plane, blur)) = focus {
+            (uniforms.focus, uniforms.focus_blur) = (plane, blur);
+        } else {
+            self.bind_groups.focus_prepare = CachedBindGroup::default();
+            self.bind_groups.focus_gather = CachedBindGroup::default();
+            self.bind_groups.focus_composite = CachedBindGroup::default();
+        }
         if let Some(sun) = flare_sun {
             let visible = flare_threshold(sun.luminance, uniforms.composite[0]);
             uniforms.flare_sun = [sun.uv.x, sun.uv.y, sun.radius, visible];
@@ -998,10 +1107,12 @@ impl PostProcess {
             vignette_tint: layers.vignette_color[..3] != [0.0; 3],
             sharpening: self.variant.sharpen && !self.variant.lens_effects,
             effects: drawn,
+            focus: self.focus,
             ..PostStats::default()
         };
         self.uniforms = uniforms;
-        let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels());
+        let focus = if self.focus { self.focus_slots() } else { Vec::new() };
+        let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels()).chain(focus);
         let built = self.pipelines.build(&self.builder, &self.module, drawn);
         if built > 0 {
             self.first_use_builds += built;
@@ -1055,13 +1166,16 @@ impl PostProcess {
     /// Adds the bloom chain and the fused composite to `graph`, reading `input` (the main
     /// pass's HDR output, or temporal AA's resolve of it) and writing `target`. `scene_color` is
     /// the main pass's own output, whose alpha is the character mask: `input` itself without
-    /// temporal AA. Each pass's draw counts in `counter`.
+    /// temporal AA. `depth` is the scene prepass's, which depth of field reads (M5 L8): before the
+    /// bloom chain, its passes take `input` and give what the rest reads in its place. Each pass's
+    /// draw counts in `counter`.
     #[expect(clippy::too_many_arguments, reason = "the passes' inputs, targets and counts")]
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
         input: TextureId,
         scene_color: TextureId,
+        depth: Option<TextureId>,
         target: TextureId,
         insets: impl IntoIterator<Item = InsetResolve<'f>>,
         labels: bool,
@@ -1080,14 +1194,82 @@ impl PostProcess {
             bloom,
             variant,
             stats,
+            focus,
             ..
         } = *self;
         let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
-        let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = **bind_groups;
+        let BindGroups {
+            ref mut composite,
+            ref mut prefilter,
+            ref mut down,
+            ref mut up,
+            ref mut focus_prepare,
+            ref mut focus_gather,
+            ref mut focus_composite,
+        } = **bind_groups;
         let bloom_levels = bloom_levels - shed_levels;
-        let pass =
-            |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache, counter };
+        let pass = |pipeline, layout, cache| Fullscreen {
+            device,
+            labels,
+            pipeline,
+            shared,
+            layout,
+            cache,
+            counter,
+            bindings: &[],
+        };
         let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
+
+        // Depth of field (M5 L8, `focus`): the composite's output is the rest's input.
+        let input = match depth.filter(|_| focus) {
+            Some(depth) => {
+                let (width, height) = graph.size(input);
+                let full = TransientDesc {
+                    width,
+                    height,
+                    format: SCENE_COLOR_FORMAT,
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                };
+                let half = TransientDesc { width: width.div_ceil(2), height: height.div_ceil(2), ..full };
+                let prepared = graph.create_texture(focus::PREPARE_PASS, half);
+                let gathered = graph.create_texture(focus::GATHER_PASS, half);
+                let focused = graph.create_texture(focus::COMPOSITE_PASS, full);
+                add_fullscreen(
+                    graph,
+                    focus::PREPARE_PASS,
+                    [Input::Graph(input), Input::Graph(depth)],
+                    prepared,
+                    Fullscreen {
+                        bindings: &FOCUS_DEPTH_BINDINGS,
+                        ..pass(pipeline(Slot::Focus(FocusPass::Prepare)), &layouts.focus_depth, focus_prepare)
+                    },
+                );
+                add_fullscreen(
+                    graph,
+                    focus::GATHER_PASS,
+                    [Input::Graph(prepared)],
+                    gathered,
+                    pass(pipeline(Slot::Focus(FocusPass::Gather)), &layouts.one, focus_gather),
+                );
+                add_fullscreen(
+                    graph,
+                    focus::COMPOSITE_PASS,
+                    [Input::Graph(input), Input::Graph(gathered), Input::Graph(depth)],
+                    focused,
+                    Fullscreen {
+                        bindings: &FOCUS_COMPOSITE_BINDINGS,
+                        ..pass(
+                            pipeline(Slot::Focus(FocusPass::Composite)),
+                            &layouts.focus_composite,
+                            focus_composite,
+                        )
+                    },
+                );
+                focused
+            }
+            None => input,
+        };
 
         let chain = bloom.then(|| {
             let (width, height) = graph.size(input);
@@ -1161,9 +1343,45 @@ impl PostProcess {
             target,
             pass(pipeline(Slot::Composite(variant.composite_index())), &layouts.composite, composite),
         );
-        // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs.
-        for InsetResolve { post: inset, scene, picture } in insets {
-            let InsetPost { ref shared, ref mut cache, .. } = *inset;
+        // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs; first
+        // its soft backdrop, where it asks for one (M5 L8).
+        for InsetResolve { post: inset, scene, picture, soft_backdrop } in insets {
+            let InsetPost { ref shared, ref mut cache, ref mut backdrop } = *inset;
+            let backdrop_pipeline = pipelines.get(Slot::Focus(FocusPass::Backdrop)).filter(|_| soft_backdrop);
+            let scene = match backdrop_pipeline {
+                Some(backdrop_pipeline) => {
+                    let (width, height) = graph.size(scene);
+                    let soft = graph.create_texture(
+                        focus::BACKDROP_PASS,
+                        TransientDesc {
+                            width,
+                            height,
+                            format: SCENE_COLOR_FORMAT,
+                            sample_count: 1,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                        },
+                    );
+                    add_fullscreen(
+                        graph,
+                        focus::BACKDROP_PASS,
+                        [Input::Graph(scene)],
+                        soft,
+                        Fullscreen {
+                            device,
+                            labels,
+                            pipeline: backdrop_pipeline,
+                            shared,
+                            layout: &layouts.one,
+                            cache: backdrop,
+                            counter,
+                            bindings: &[],
+                        },
+                    );
+                    soft
+                }
+                None => scene,
+            };
             let none = Input::View(no_bloom);
             add_fullscreen(
                 graph,
@@ -1178,6 +1396,7 @@ impl PostProcess {
                     layout: &layouts.composite,
                     cache,
                     counter,
+                    bindings: &[],
                 },
             );
         }
@@ -1212,13 +1431,17 @@ fn add_fullscreen<'f, const N: usize>(
         }
     }
     builder.write(output).record(move |ctx| {
-        let Fullscreen { device, labels, pipeline, shared, layout, cache, counter } = draw;
+        let Fullscreen { device, labels, pipeline, shared, layout, cache, counter, bindings } = draw;
         let views = inputs.map(|input| match input {
             Input::Graph(texture) => ctx.view(texture),
             Input::View(view) => view,
         });
         let label = labels.then_some(name);
-        let group = cache.get(device, label, layout, &views);
+        let group = if bindings.is_empty() {
+            cache.get(device, label, layout, &views)
+        } else {
+            cache.get_at(device, label, layout, &views, bindings)
+        };
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

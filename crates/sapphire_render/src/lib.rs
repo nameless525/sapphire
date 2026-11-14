@@ -943,11 +943,11 @@ pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,
 };
 pub use post::{
-    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, DrawnEffects,
-    Duotone, EffectCoverage, EffectScale, Flash, Glitch, GradientBlend, GradientLayer, GradientShape,
-    Halftone, Inversion, LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS,
-    PostEffectSettings, PostEffects, PostParams, PostStats, PostVariants, RadialBlur, SpeedLines, ToneCurve,
-    Vignette,
+    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, DepthOfFieldSettings, Desaturation,
+    Diffusion, DrawnEffects, Duotone, EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend,
+    GradientLayer, GradientShape, Halftone, Inversion, LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS,
+    MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams, PostStats, PostVariants, RadialBlur,
+    SpeedLines, ToneCurve, Vignette,
 };
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.
@@ -958,10 +958,10 @@ pub use renderer::{
 };
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
-    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, UiAtlas,
-    UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, VfxErosion,
-    VfxFlipbook, VfxFrame, VfxLight, VfxMesh, VfxMeshShape, VfxPattern, VfxRibbonPoint, VfxShape, VfxSprite,
-    VfxStats,
+    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, MAX_FOCUS_BLUR, Nebula, SkyDisc, SkyGradient,
+    SkyLayers, UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun,
+    UiSource, VfxErosion, VfxFlipbook, VfxFrame, VfxLight, VfxMesh, VfxMeshShape, VfxPattern, VfxRibbonPoint,
+    VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};

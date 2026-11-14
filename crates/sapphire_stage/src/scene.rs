@@ -562,6 +562,10 @@ pub struct Scene {
     debug_draw_demo: Option<DebugDrawDemo>,
     /// The player's sharpening instead of the cvar's (`--sharpening`).
     sharpening: Option<f32>,
+    /// A fixed focus for look-dev (`--focus`, M5 L8), in place of whatever the show's timeline keys.
+    focus: Option<sapphire_render::Focus>,
+    /// Every inset's soft backdrop for look-dev and benches (`--soft-backdrop`, M5 L8), in place of none.
+    soft_backdrop: Option<f32>,
     /// How the characters fade (`--fade`, `--proximity-fade`).
     fade: Fade,
     /// What the characters' materials are driven by (`--dissolve`, `--emission-scale`,
@@ -706,6 +710,8 @@ impl Scene {
             #[cfg(feature = "samples")]
             debug_draw_demo: None,
             sharpening: None,
+            focus: None,
+            soft_backdrop: None,
             fade: Fade::Off,
             drive: MaterialDrive::NONE,
             pushed_effects: PostVariants::NONE,
@@ -834,6 +840,19 @@ impl Scene {
     /// with `None`.
     pub fn set_sharpening(&mut self, amount: Option<f32>) {
         self.sharpening = amount;
+    }
+
+    /// Holds depth of field at `focus` for look-dev (`--focus`, M5 L8), over whatever the show's timeline keys,
+    /// or lets the show's through again with `None`. A tier without depth of field ignores it.
+    pub fn set_focus(&mut self, focus: Option<sapphire_render::Focus>) {
+        self.focus = focus;
+    }
+
+    /// Softens every inset's backdrop by `blur` (`--soft-backdrop`, M5 L8: a radius over the picture's height,
+    /// at most `sapphire_render::MAX_FOCUS_BLUR`), or by none again with `None`. A tier without soft
+    /// backdrops ignores it.
+    pub fn set_soft_backdrop(&mut self, blur: Option<f32>) {
+        self.soft_backdrop = blur;
     }
 
     /// Fades the characters (but the face rig's heads) as `fade` says (M1 C7).
@@ -2225,6 +2244,7 @@ impl Scene {
             effect_meshes: self.vfx.as_ref().is_some_and(VfxPlayer::has_meshes),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
+            focus: self.focus.is_some_and(|focus| focus.drawn()),
             debug_draw: demo || debug_draw::enabled(),
             color_vision: COLOR_VISION.get().dichromacy().into_iter().collect(),
             ..PipelineInventory::default()
@@ -2260,6 +2280,7 @@ impl Scene {
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
+        let focus = self.focus;
         let probe_hours = &self.probe_hours;
         let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
         let vfx = &mut self.vfx;
@@ -2308,6 +2329,9 @@ impl Scene {
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = effects.resolve(alpha);
             show.adjust_post(&mut packet.post);
+            if let Some(focus) = focus {
+                packet.post.focus = focus;
+            }
         }
         // Lamps by night, before extraction writes the lights.
         let day_night = self.ecs.world().resource::<TimeOfDay>().frame().look.day_night;
@@ -2401,6 +2425,7 @@ impl Scene {
             }
         }
         if let Some(size) = target_size {
+            let soft_backdrop = self.soft_backdrop;
             let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
             show.draw_interface(size, &mut extract.packet_mut().ui);
             // The insets it drew, each from its own camera, after the characters they show are listed.
@@ -2410,6 +2435,9 @@ impl Scene {
                 .expect("the scene inserts what insets shoot from");
             let packet = extract.packet_mut();
             show.inset_shots(&mut |shot| shoot_inset(packet, &rigs, &showcases, &shot));
+            if let Some(blur) = soft_backdrop {
+                packet.insets.iter_mut().for_each(|view| view.soft_backdrop = blur);
+            }
         }
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.

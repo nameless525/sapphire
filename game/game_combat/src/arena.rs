@@ -899,8 +899,20 @@ impl ArenaActors {
             foe.and_then(|foe| self.place_of(foe)).unwrap_or(0)
         };
         self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
-        let height = if other == 0 { PLAYER_EYES } else { self.fighters[other].sizes.eyes };
-        Some(self.drawn(other, alpha).w_axis.truncate() + Vec3::Y * height)
+        Some(self.head(other, alpha))
+    }
+
+    /// Where `fighter`'s head is drawn, `alpha` of the way between its last two steps: its root, raised to its
+    /// eyes. What a look turns to, and what a timeline's focus on its role keeps sharp (M5 L8).
+    pub(crate) fn head(&self, fighter: usize, alpha: f32) -> Vec3 {
+        let height = if fighter == 0 { PLAYER_EYES } else { self.fighters[fighter].sizes.eyes };
+        self.drawn(fighter, alpha).w_axis.truncate() + Vec3::Y * height
+    }
+
+    /// The takeover's share of the view: how far a timeline's shot, and so its focus, is in (M5 L8). 0 with no
+    /// director, which shows no shot.
+    pub(crate) fn takeover_weight(&self) -> f32 {
+        self.camera.as_ref().map_or(0.0, |camera| camera.director.weight(Rig::Takeover))
     }
 
     /// The place of `actor`, if it's on the stage.

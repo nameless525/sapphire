@@ -36,6 +36,11 @@
 //   history, so their scene is twice the picture's, which the resolve box-filters; phones draw it
 //   with their 4x MSAA in tile memory at the picture's size. The sides hold a character screen's
 //   showcase at each tier's height (`sapphire_render::inset`).
+// - `depth_of_field` (M5 L8, `sapphire_render::post`'s `focus` module): the main view's authored focus on the
+//   desktop tiers, a half-size gather after temporal AA's resolve reading the scene prepass's depth, which
+//   only TAA keeps; and the soft backdrop an inset may ask for behind its characters, on the desktop tiers
+//   and Mobile-High, which blurs by the character mask and needs no depth. Mobile-Low has neither, and
+//   ignores a focus. Each builds its pipelines only once an inventory declares it or a frame draws it.
 // - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
 //   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
 //   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
@@ -124,6 +129,7 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
                 inset: (max_side: 960, supersample: 2),
+                depth_of_field: (view: true, insets: true),
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -166,6 +172,7 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
                 inset: (max_side: 720, supersample: 2),
+                depth_of_field: (view: true, insets: true),
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -208,6 +215,7 @@
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 64),
                 inset: (max_side: 720, supersample: 1),
+                depth_of_field: (insets: true),
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel, Gtao]),
                     Scale(0.85),

@@ -52,7 +52,9 @@ use crate::pipelines::{
     MESH_FAMILIES, MeshPass, MeshPipelines, MeshWarm, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines,
     SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT, frame_binding,
 };
-use crate::post::{InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
+use crate::post::{
+    DepthOfFieldSettings, InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen,
+};
 use crate::quality::{OptionalPass, OptionalPasses};
 use crate::retire::FrameFence;
 use crate::scene::GpuScene;
@@ -167,6 +169,9 @@ pub struct RenderSettings {
     pub reflections: ReflectionSettings,
     /// How large 3D insets' pictures and scenes are (M3 U6, the [`inset`](crate::inset) module).
     pub inset: InsetSettings,
+    /// What of depth of field it has (M5 L8, `post`'s `focus` module): the main view's focus, drawn only with
+    /// [`Self::temporal`] ([`DepthOfFieldSettings::with_temporal`]), and insets' soft backdrops. Off by default.
+    pub depth_of_field: DepthOfFieldSettings,
     /// Main-view culling of static environment and foliage instances (review RA-O01): the main
     /// pass, the scene prepass and the debug views skip those wholly outside the main view's
     /// frustum, which changes no pixel. On by default; off draws everything, for comparisons and
@@ -211,6 +216,7 @@ impl Default for RenderSettings {
             ambient_occlusion: AmbientOcclusion::OFF,
             reflections: ReflectionSettings::default(),
             inset: InsetSettings::default(),
+            depth_of_field: DepthOfFieldSettings::OFF,
             view_culling: true,
         }
     }
@@ -808,6 +814,7 @@ impl Renderer {
                             color_format,
                             settings.bloom_levels,
                             settings.post_effects,
+                            settings.depth_of_field.with_temporal(settings.temporal),
                             settings.post_variants,
                             builds,
                             shaders_ref,
@@ -2115,7 +2122,13 @@ impl Renderer {
             shadows: self.shadows.warm(device, &formats),
             ambient: self.ambient.warm(inventory.probe_grid, reflection),
             skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
-            post: self.post.warm(inventory.post, inventory.insets, &inventory.color_vision, on),
+            post: self.post.warm(
+                inventory.post,
+                inventory.insets,
+                &inventory.color_vision,
+                inventory.focus,
+                on,
+            ),
             vfx: self.vfx.warm(
                 VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true },
                 on,
@@ -2235,6 +2248,9 @@ impl Renderer {
             }
             if inventory.insets {
                 renderer.post.build_inset(on);
+            }
+            if inventory.focus {
+                renderer.post.build_focus(on);
             }
             for &dichromacy in &inventory.color_vision {
                 renderer.post.build_color_vision(dichromacy, on);
@@ -2460,8 +2476,9 @@ impl Renderer {
             };
             self.insets.prepare(packet, self.scene.slots(), &world, &bindings);
             if self.insets.any() {
+                let soft_backdrop = self.insets.any_soft_backdrop(packet);
                 self.checked_build(|renderer| {
-                    renderer.post.build_inset(BuildOn::sources(renderer.edited_shaders))
+                    renderer.post.build_inset_drawn(soft_backdrop, BuildOn::sources(renderer.edited_shaders))
                 });
             }
         }
@@ -3212,8 +3229,16 @@ impl Renderer {
         let inset_passes = inset_resolves.iter_mut().zip(inset_draws).zip(inset_pictures).enumerate();
         for (index, ((resolve, draw), picture)) in inset_passes {
             let (Some(draw), Some(picture)) = (draw, picture) else { continue };
-            let InsetDraw { stand, view_offset, frame_groups, character_prepass, post, scene_size, backdrop } =
-                draw;
+            let InsetDraw {
+                stand,
+                view_offset,
+                frame_groups,
+                character_prepass,
+                post,
+                scene_size,
+                backdrop,
+                soft_backdrop,
+            } = draw;
             let (character_depth, character_ids) = character_prepass.import(graph);
             let inset_attachment = |format| TransientDesc {
                 width: scene_size.0,
@@ -3290,7 +3315,7 @@ impl Renderer {
                 let groups = MeshGroups { frame: frame_groups, scene: scene_bind_groups };
                 draw_main_pass(&mut pass, &pipeline, &draws, groups, None, None, |_| true);
             });
-            *resolve = Some(InsetResolve { post, scene: inset_color, picture });
+            *resolve = Some(InsetResolve { post, scene: inset_color, picture, soft_backdrop });
         }
 
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
@@ -3327,8 +3352,10 @@ impl Renderer {
             }
             None => resolved,
         };
+        // Depth of field reads the scene prepass's depth, which temporal AA keeps (`DepthOfFieldSettings`).
+        let depth = temporal_targets.map(|_| targets.depth);
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
-        post.record(graph, resolved, scene_color, target, insets, labels, counter);
+        post.record(graph, resolved, scene_color, depth, target, insets, labels, counter);
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
             let frame = DebugFrame {

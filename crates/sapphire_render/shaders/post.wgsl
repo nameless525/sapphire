@@ -67,6 +67,12 @@ struct PostUniforms {
     flare_elements: array<FlareElement, FLARE_ELEMENTS>,
     // The screen effects' (M1 P3), appended.
     effects: PostEffects,
+    // Depth of field's (M5 L8, focus.wgsl), appended. x: the sharp plane's view depth; y: how far either
+    // side stays sharp; z: 1 / the growth in front; w: 1 / the growth behind (metres).
+    focus: vec4<f32>,
+    // x: the largest blur, as a fraction of the picture's height (0: none); y: the camera's near plane;
+    // z: an inset's soft backdrop's blur, as a fraction of its scene's height (0: none).
+    focus_blur: vec4<f32>,
 }
 
 // Mirrors `post::effects::GpuEffects`. Effects with no amount, strength or opacity are off.

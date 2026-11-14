@@ -55,6 +55,8 @@ pub enum PipelineFamily {
     Ui,
     /// An inset's resolve (M3 U6): its meshes draw through [`Self::Mesh`].
     Inset,
+    /// Depth of field's passes (M5 L8), an inset's soft backdrop among them.
+    Focus,
     Ambient,
     Temporal,
     Lights,
@@ -74,6 +76,7 @@ impl PipelineFamily {
             Self::Sky => "sky",
             Self::Ui => "ui",
             Self::Inset => "inset",
+            Self::Focus => "focus",
             Self::Ambient => "ambient",
             Self::Temporal => "temporal",
             Self::Lights => "lights",
@@ -183,8 +186,12 @@ pub struct PipelineInventory {
     pub skinning: bool,
     /// It draws an interface: atlas quads and glyph pages go through the one pipeline this builds.
     pub ui: bool,
-    /// It shows 3D insets (M3 U6): their resolve. Their characters draw through `meshes`' keys.
+    /// It shows 3D insets (M3 U6): their resolve, and their soft backdrop where the tier has one (M5 L8).
+    /// Their characters draw through `meshes`' keys.
     pub insets: bool,
+    /// It pulls focus on the main view (M5 L8): depth of field's passes, where the tier has them; nothing on
+    /// a tier without. A timeline with focus keys declares it.
+    pub focus: bool,
     /// The sky materials it draws, uploaded by the time they're listed.
     pub sky: Vec<MaterialHandle>,
     /// A probe grid arrives after this (a zone's, M3 C1): the ambient pass's pipelines, and the environment
@@ -204,7 +211,7 @@ pub struct PipelineInventory {
 
 impl PipelineInventory {
     /// The name of each entry: `mesh` and a key, `post`, `effects`, `effect-meshes`, `skinning`, `ui`, `inset`,
-    /// `sky` and `ambient` as a miss names them, and `fades` and `debug`.
+    /// `focus`, `sky` and `ambient` as a miss names them, and `fades` and `debug`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
         let others = [
@@ -214,6 +221,7 @@ impl PipelineInventory {
             (PipelineFamily::Skinning.name(), self.skinning),
             (PipelineFamily::Ui.name(), self.ui),
             (PipelineFamily::Inset.name(), self.insets),
+            (PipelineFamily::Focus.name(), self.focus),
             (PipelineFamily::Sky.name(), !self.sky.is_empty()),
             (PipelineFamily::Ambient.name(), self.probe_grid),
             ("fades", self.fades),
@@ -234,6 +242,7 @@ impl PipelineInventory {
             "skinning" => self.skinning = false,
             "ui" => self.ui = false,
             "inset" => self.insets = false,
+            "focus" => self.focus = false,
             "sky" => self.sky.clear(),
             "ambient" => self.probe_grid = false,
             "fades" => self.fades = false,
@@ -257,6 +266,7 @@ impl PipelineInventory {
             skinning,
             ui,
             insets,
+            focus,
             sky,
             probe_grid,
             fades,
@@ -270,6 +280,7 @@ impl PipelineInventory {
         self.skinning |= skinning;
         self.ui |= ui;
         self.insets |= insets;
+        self.focus |= focus;
         for material in sky {
             if !self.sky.contains(material) {
                 self.sky.push(*material);

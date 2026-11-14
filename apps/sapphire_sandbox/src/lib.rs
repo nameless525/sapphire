@@ -343,6 +343,14 @@
 //!   benches that compare the two.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
+//! - `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5
+//!   L8), as a timeline's focus key says it: the sharp plane's distance, how far either side stays sharp and
+//!   the growths in front and behind, in metres, and the largest blur as a fraction of the picture's height
+//!   (at most 0.02). The desktop tiers draw it (`--tier desktop-high`); a tier without depth of field
+//!   ignores it.
+//! - `--soft-backdrop <blur>`: every 3D inset's backdrop (what isn't a character) softened by `blur`, as a
+//!   fraction of the picture's height (above 0, at most 0.02), on the tiers with soft backdrops: both desktop
+//!   tiers and Mobile-High (M5 L8).
 //! - `--post-effect <preset>[@<seconds>]`, repeatable: push a screen effect preset (M1 P3:
 //!   `radial_blur`, `chromatic_aberration`, `inversion`, `duotone`, `speed_lines`,
 //!   `impact_frame`, and M5 L9's `desaturation`, `halftone`, `flash`, `glitch` and `crt`) at the

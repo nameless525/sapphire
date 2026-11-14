@@ -124,9 +124,10 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AmbientOcclusion, EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET,
-    LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
-    ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    AmbientOcclusion, DepthOfFieldSettings, EnvironmentSettings, FoliageSettings, GtaoSettings,
+    InsetSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
+    PostEffectSettings, PostVariants, ReflectionSettings, RenderSettings, ShadowSettings, SkySettings,
+    scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
@@ -284,6 +285,10 @@ pub struct QualityTier {
     /// without it gets the desktop tiers'.
     #[serde(default)]
     pub inset: InsetSettings,
+    /// What of depth of field it has (M5 L8, [`RenderSettings::depth_of_field`]). A table without it gets
+    /// none.
+    #[serde(default)]
+    pub depth_of_field: DepthOfFieldSettings,
     /// The thermal ladder's rungs, from the top (M4 T2, [`ladder`]). A tier without them answers
     /// neither heat nor dynamic resolution's pressure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -464,6 +469,7 @@ impl QualityTier {
             ambient_occlusion: self.ambient_occlusion,
             reflections: self.reflections,
             inset: self.inset,
+            depth_of_field: self.depth_of_field,
             view_culling: true,
         }
     }
@@ -1526,6 +1532,7 @@ mod tests {
                 post_effects,
                 ambient_occlusion,
                 inset: tier.inset,
+                depth_of_field: DepthOfFieldSettings { view: true, insets: true },
                 ..RenderSettings::default()
             };
             assert_eq!(tier.render_settings(), expected, "{id}");
@@ -1545,6 +1552,10 @@ mod tests {
             );
             assert_eq!(settings.post_effects.radial_blur_taps, 8, "{id}");
             assert_eq!(settings.inset.supersample, 1, "{id}: an inset takes the main pass's MSAA");
+            // Depth of field reads temporal AA's depth, so a phone's main view has none; Mobile-High softens
+            // an inset's backdrop (M5 L8).
+            let insets = id == TierId::MobileHigh;
+            assert_eq!(settings.depth_of_field, DepthOfFieldSettings { view: false, insets }, "{id}");
         }
     }
 

@@ -425,6 +425,11 @@ pub struct InsetView {
     pub ambient: AmbientLight,
     /// Linear light behind its characters, exposed and graded with them.
     pub backdrop: Vec3,
+    /// How soft what isn't a character goes behind them (M5 L8), as the radius of its blur over the
+    /// picture's height, at most [`MAX_FOCUS_BLUR`](sapphire_look::MAX_FOCUS_BLUR): 0, the default, is
+    /// none. Only where the tier has soft backdrops
+    /// ([`DepthOfFieldSettings::insets`](crate::DepthOfFieldSettings::insets)); elsewhere it's ignored.
+    pub soft_backdrop: f32,
 }
 
 impl InsetView {
@@ -432,7 +437,16 @@ impl InsetView {
     /// a black backdrop, with no instances until [`FramePacket::push_inset`] adds it.
     pub fn new(inset: u16, camera: CameraData, size: (u32, u32), ambient: AmbientLight) -> Self {
         let instances = PacketRange::default();
-        Self { inset, camera, size, instances, exposure: 1.0, ambient, backdrop: Vec3::ZERO }
+        Self {
+            inset,
+            camera,
+            size,
+            instances,
+            exposure: 1.0,
+            ambient,
+            backdrop: Vec3::ZERO,
+            soft_backdrop: 0.0,
+        }
     }
 }
 

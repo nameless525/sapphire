@@ -67,7 +67,21 @@ impl<const N: usize> CachedBindGroup<N> {
         layout: &wgpu::BindGroupLayout,
         views: &[&wgpu::TextureView],
     ) -> &wgpu::BindGroup {
+        let bindings: [u32; N] = std::array::from_fn(|binding| binding as u32);
+        self.get_at(device, label, layout, views, &bindings[..views.len()])
+    }
+
+    /// [`Self::get`] with each view at its own binding of `bindings`, one each, in order.
+    pub(crate) fn get_at(
+        &mut self,
+        device: &wgpu::Device,
+        label: Option<&str>,
+        layout: &wgpu::BindGroupLayout,
+        views: &[&wgpu::TextureView],
+        bindings: &[u32],
+    ) -> &wgpu::BindGroup {
         debug_assert!((1..=N).contains(&views.len()), "{} views for a cache of {N}", views.len());
+        debug_assert_eq!(views.len(), bindings.len(), "a binding for each view");
         let hit =
             (0..2).map(|offset| (self.last + offset) % 2).find(|&index| self.entries[index].holds(views));
         let index = hit.unwrap_or_else(|| {
@@ -76,11 +90,13 @@ impl<const N: usize> CachedBindGroup<N> {
                 *kept = Entry::default();
             }
             let index = 1 - self.last;
-            let entries: [wgpu::BindGroupEntry<'_>; N] =
-                std::array::from_fn(|binding| wgpu::BindGroupEntry {
-                    binding: binding as u32,
-                    resource: wgpu::BindingResource::TextureView(views[binding.min(views.len() - 1)]),
-                });
+            let entries: [wgpu::BindGroupEntry<'_>; N] = std::array::from_fn(|index| {
+                let index = index.min(views.len() - 1);
+                wgpu::BindGroupEntry {
+                    binding: bindings[index],
+                    resource: wgpu::BindingResource::TextureView(views[index]),
+                }
+            });
             let entry = &mut self.entries[index];
             entry.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label,

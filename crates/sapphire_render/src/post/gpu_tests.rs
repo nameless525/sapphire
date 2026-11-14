@@ -6,6 +6,7 @@
 //! sRGB-encoded, to within the LUT's precision, and each layer's effect can be predicted.
 
 mod effects;
+mod focus;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -306,6 +307,7 @@ fn disabling_bloom_releases_only_its_dormant_bindings() {
         FORMAT,
         settings.bloom_levels,
         settings.post_effects,
+        settings.depth_of_field,
         settings.post_variants,
         &crate::pipeline_builds::PipelineBuilds::new(None),
         &ShaderSources::compiled_in(),

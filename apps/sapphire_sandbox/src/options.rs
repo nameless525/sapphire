@@ -355,6 +355,12 @@ pub(crate) struct Options {
     pub own_shadows_only: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
+    /// `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5 L8),
+    /// in metres and a fraction of the picture's height, as a timeline's focus key says them.
+    pub focus: Option<sapphire_render::Focus>,
+    /// `--soft-backdrop <blur>`: every inset's backdrop softened by `blur` (above 0, at most 0.02 of the
+    /// picture's height) where the tier has soft backdrops (M5 L8).
+    pub soft_backdrop: Option<f32>,
     /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
     /// (M1 P3), each playing from its start, or held that many seconds into it (for captures and
     /// benches). The scene checks the names against its presets.
@@ -543,6 +549,8 @@ impl Options {
         scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
+        scene.set_focus(self.focus);
+        scene.set_soft_backdrop(self.soft_backdrop);
         // Only when asked: the arena's stand fades its fighters as the game's does (M4 C7).
         if self.fade.is_some() || self.proximity_fade {
             scene.set_fade(self.fade());
@@ -1245,6 +1253,21 @@ impl Options {
                     options.sharpening = Some(amount);
                 }
                 "--post-effect" => options.post_effects.push(parse_post_effect(&value("--post-effect")?)?),
+                "--focus" => options.focus = Some(parse_focus(&value("--focus")?)?),
+                "--soft-backdrop" => {
+                    let raw = value("--soft-backdrop")?;
+                    let blur = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|blur| *blur > 0.0 && *blur <= sapphire_render::MAX_FOCUS_BLUR);
+                    let message = || {
+                        format!(
+                            "--soft-backdrop expects a blur above 0 and at most {}, got {raw:?}",
+                            sapphire_render::MAX_FOCUS_BLUR
+                        )
+                    };
+                    options.soft_backdrop = Some(blur.ok_or_else(message)?);
+                }
                 "--effect-scale" => {
                     options.effect_scale = Some(parse_effect_scale(&value("--effect-scale")?)?)
                 }
@@ -1905,6 +1928,35 @@ fn unit(flag: &str, raw: &str) -> Result<f32, String> {
         .ok()
         .filter(|value| (0.0..=1.0).contains(value))
         .ok_or_else(|| format!("{flag} expects a number from 0 to 1, got {raw:?}"))
+}
+
+/// `<distance>,<sharp>,<near>,<far>,<blur>`: a focus key's numbers, each in its range.
+fn parse_focus(raw: &str) -> Result<sapphire_render::Focus, String> {
+    let invalid = || {
+        format!(
+            "--focus expects DISTANCE,SHARP,NEAR,FAR,BLUR: metres (a distance and growths above 0, a sharp range from \
+             0) and the largest blur as a fraction of the picture's height, above 0 and at most {}, got {raw:?}",
+            sapphire_render::MAX_FOCUS_BLUR
+        )
+    };
+    let values: Vec<f32> = raw
+        .split(',')
+        .map(|part| part.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid())?;
+    let [distance, sharp, near, far, blur] = values[..] else { return Err(invalid()) };
+    let positive = |value: f32| value.is_finite() && value > 0.0;
+    let good = positive(distance)
+        && sharp.is_finite()
+        && sharp >= 0.0
+        && positive(near)
+        && positive(far)
+        && positive(blur)
+        && blur <= sapphire_render::MAX_FOCUS_BLUR;
+    if !good {
+        return Err(invalid());
+    }
+    Ok(sapphire_render::Focus { distance, sharp, near, far, blur })
 }
 
 /// `<preset>` or `<preset>@<seconds>`.
@@ -2596,6 +2648,35 @@ mod tests {
         assert_eq!(Options::default().shade_hue, None);
         for wrong in ["0.5,0.6,1", "0,0,0,0.5", "1,1,1,1.5", "1,-1,1,0.5", "1,1,NaN,0.5", "1,1,1,0.5,1"] {
             assert!(parse(&["--shade-hue", wrong]).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn focus_holds_a_key_and_refuses_nonsense() {
+        let (options, unknown) = parse(&["--focus", "2.4,0.3,1,6,0.01"]).unwrap();
+        assert!(unknown.is_empty());
+        let focus = sapphire_render::Focus { distance: 2.4, sharp: 0.3, near: 1.0, far: 6.0, blur: 0.01 };
+        assert_eq!(options.focus, Some(focus));
+        assert_eq!(Options::default().focus, None);
+        let (options, _) = parse(&["--soft-backdrop", "0.01"]).unwrap();
+        assert_eq!(options.soft_backdrop, Some(0.01));
+        for bad in ["0", "-0.01", "0.03", "NaN", "soft"] {
+            assert!(parse(&["--soft-backdrop", bad]).is_err(), "{bad:?}");
+        }
+        for bad in [
+            "",
+            "2.4",
+            "2.4,0.3,1,6",
+            "2.4,0.3,1,6,0.01,1",
+            "0,0,1,1,0.01",
+            "2,-1,1,1,0.01",
+            "2,0,0,1,0.01",
+            "2,0,1,1,0",
+            "2,0,1,1,0.5",
+            "2,0,1,NaN,0.01",
+            "a,b,c,d,e",
+        ] {
+            assert!(parse(&["--focus", bad]).is_err(), "{bad:?}");
         }
     }
 

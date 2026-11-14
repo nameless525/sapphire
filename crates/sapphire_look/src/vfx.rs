@@ -12,11 +12,16 @@
 //!   for light with some body, which is what keeps a tinted edge readable over white plaster.
 //!
 //! The shapes' coverage is a pure function ([`VfxShape::coverage`]); the renderer rasterizes it
-//! into a texture array at first use, so no third-party art is involved.
+//! into a texture array at first use, so no third-party art is involved. Effect meshes ([`mesh`], M5
+//! L5) are generated the same way: their shapes and patterns are functions too.
+
+pub mod mesh;
 
 use std::time::Duration;
 
 use glam::Vec3;
+
+pub use mesh::VfxMesh;
 
 /// What a sprite shows: a layer of the generated map (see the module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -206,6 +211,11 @@ pub struct VfxStats {
     /// Effects that spawned without their trail because the budget's cap was full, since the
     /// simulation began.
     pub dropped_trails: u64,
+    /// Effect meshes drawn (M5 L5).
+    pub meshes: u32,
+    /// Effect meshes not drawn because the budget's cap was full, the lowest priority first, since the
+    /// simulation began.
+    pub dropped_meshes: u64,
     /// The app's measure of the last simulation step and frame write, against spec §3.2's budget
     /// (0.3 ms on Desktop-Low, 0.6 on Mobile-Low). Zero until an app measures it: the simulation
     /// can't read the clock itself (rule R2).
@@ -217,6 +227,8 @@ pub struct VfxStats {
 pub struct VfxFrame {
     pub sprites: Vec<VfxSprite>,
     pub ribbon_points: Vec<VfxRibbonPoint>,
+    /// Effect meshes (M5 L5), in the order their effects play.
+    pub meshes: Vec<VfxMesh>,
     pub stats: VfxStats,
 }
 
@@ -225,12 +237,13 @@ impl VfxFrame {
     pub fn clear(&mut self) {
         self.sprites.clear();
         self.ribbon_points.clear();
+        self.meshes.clear();
         self.stats = VfxStats::default();
     }
 
     /// Whether it draws nothing.
     pub fn is_empty(&self) -> bool {
-        self.sprites.is_empty() && self.ribbon_points.is_empty()
+        self.sprites.is_empty() && self.ribbon_points.is_empty() && self.meshes.is_empty()
     }
 }
 

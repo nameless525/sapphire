@@ -16,6 +16,9 @@ pub struct VfxBudget {
     pub max_trails: u32,
     /// The smoothed points between two socket samples: 1 draws the samples as they are.
     pub trail_subdivisions: u32,
+    /// Effect meshes a frame draws (M5 L5). Past it the lowest priority aren't drawn that frame, and are
+    /// counted: a mesh is a whole draw, so this caps the effects' draws, not their pixels.
+    pub max_meshes: u32,
 }
 
 impl VfxBudget {
@@ -27,6 +30,7 @@ impl VfxBudget {
         max_effects: 128,
         max_trails: 16,
         trail_subdivisions: 4,
+        max_meshes: 32,
     };
     pub const DESKTOP_LOW: Self = Self {
         max_particles: 2048,
@@ -34,6 +38,7 @@ impl VfxBudget {
         max_effects: 96,
         max_trails: 12,
         trail_subdivisions: 3,
+        max_meshes: 24,
     };
     pub const MOBILE_HIGH: Self = Self {
         max_particles: 1024,
@@ -41,6 +46,7 @@ impl VfxBudget {
         max_effects: 64,
         max_trails: 8,
         trail_subdivisions: 3,
+        max_meshes: 16,
     };
     pub const MOBILE_LOW: Self = Self {
         max_particles: 512,
@@ -48,6 +54,7 @@ impl VfxBudget {
         max_effects: 48,
         max_trails: 6,
         trail_subdivisions: 2,
+        max_meshes: 8,
     };
 }
 

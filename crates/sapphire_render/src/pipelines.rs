@@ -1987,6 +1987,7 @@ impl MeshModules {
             | Program::DebugView
             | Program::DebugDraw
             | Program::Vfx
+            | Program::VfxMesh
             | Program::Ui => unreachable!("not a mesh program"),
         }
     }
@@ -3260,6 +3261,7 @@ mod tests {
                     Program::FogCard,
                     Program::Sky,
                     Program::Vfx,
+                    Program::VfxMesh,
                     Program::DebugView,
                 ],
             ),

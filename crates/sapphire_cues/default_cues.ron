@@ -5,7 +5,7 @@
 //
 // - `effects`: `sapphire_vfx`'s effects, `default_effects.ron`. `at: Hit` (the default) is the hit's
 //   point with the effect's +Y out of the surface, `Feet` where its subject stands, `Crown` over its
-//   head, where a cue mark goes. `clock: World`
+//   head, where a cue mark goes, `Facing` at its feet turned the way it faces (M5 L5). `clock: World`
 //   (the default) burns through hitstop; `Subject` and `Actor` freeze with one of the fighters.
 // - `sounds`: `Cue` documents by their sidecars' IDs, in `content/audio/`.
 // - `shake`: a preset of `default_camera.ron`, and a `strength` on top of it.
@@ -158,14 +158,19 @@
                 effects: [(effect: "dust_puff", at: Feet)],
                 sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
             ),
-            // A skill starting, and its blade coming through. What that blade lands on fires a hit's own
-            // row, so these say nothing of a hit, and a miss doesn't shake anything.
+            // A skill starting, and its blade coming through: an arc of light round the fighter at each of its
+            // two cuts (M5 L5), frozen with it in hitstop. What that blade lands on fires a hit's own row, so
+            // these say nothing of a hit, and a miss doesn't shake anything.
             (
                 cue: "skill_flash",
                 screen: Some((preset: "skill_flash", center: Preset)),
                 rumble: Some((low: 0.0, high: 0.25, seconds: 0.05)),
             ),
-            (cue: "skill_hit", sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"]), // swing
+            (
+                cue: "skill_hit",
+                effects: [(effect: "skill_arc", at: Facing, clock: Actor)],
+                sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"], // swing
+            ),
             // On purpose, nothing yet: their moves' animation will say enough, or T2 will add to them.
             (cue: "swing_windup"),
             (cue: "reaction"),

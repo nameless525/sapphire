@@ -325,14 +325,15 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     // too, with no pipeline built from them yet, the shadow passes', M1 R4, which build nothing
     // with shadows off, the ambient pass's, M1 W5, which builds nothing without a grid, GTAO or
     // a reflective character, M1 C7, the debug views', M1 F5, which build nothing while none
-    // shows, and the effects', M2 E2, which build nothing before the first effect), and every
+    // shows, the effects', M2 E2, which build nothing before the first effect, and the effect meshes',
+    // M5 L5, which build nothing before the first effect mesh), and every
     // pipeline built from them (the sky's six, surface, outline, scene prepass,
     // outline prepass, the character prepass's two (hair's writes one ID, M1 C6), and the light
     // clusters' two: view-space lights and binning).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 14 });
+    assert_eq!(update, ShaderUpdate { programs: 13, pipelines: 14 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -582,10 +583,11 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     // M1 C7) and the light clusters' two (and the environment's, fog cards' and foliage's
     // programs, which built no pipeline, the shadow passes', unbuilt with shadows off, the
     // ambient pass's, unbuilt without a grid or GTAO, M1 W5, the debug views', unbuilt while
-    // none shows, M1 F5, and the effects', unbuilt before the first effect, M2 E2).
+    // none shows, M1 F5, the effects', unbuilt before the first effect, M2 E2, and the effect meshes',
+    // unbuilt before the first effect mesh, M5 L5).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 22 });
+    assert_eq!(update, ShaderUpdate { programs: 13, pipelines: 22 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 10, "the same set, rebuilt");
 }

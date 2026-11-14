@@ -43,6 +43,9 @@
 //! - [`probes`]: ambient probe grid documents (`.probes.ron`) baked to
 //!   [`ProbeGrid`](sapphire_assets::probes::ProbeGrid)s (M1 W5): sky visibility and bounce light
 //!   per time-of-day key, ray traced on the CPU over the meshes they name.
+//! - [`reflections`]: a zone's reflection probes baked on the same tracer to
+//!   [`ReflectionProbes`](sapphire_assets::reflections::ReflectionProbes) (`.sreflect`, M5 L2): a cube
+//!   per probe and time-of-day key, the scene without the sky and the sky's share in alpha.
 //! - [`encounter`]: encounter documents (`.encounter.ron`) cooked to `.sencounter`, a zone's fights (M3 B2).
 //! - [`enemy`]: enemy documents (`.enemy.ron`) cooked to `.senemy`, one kind of enemy (M3 B3).
 //! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
@@ -155,6 +158,7 @@ pub mod optimize;
 pub mod pack;
 pub mod probes;
 pub mod procedural;
+pub mod reflections;
 pub mod release;
 pub mod samples;
 pub mod script;

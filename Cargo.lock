@@ -5174,6 +5174,7 @@ dependencies = [
  "profiling",
  "sapphire_core",
  "sapphire_look",
+ "sapphire_math",
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",

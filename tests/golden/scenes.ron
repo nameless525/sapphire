@@ -3948,6 +3948,36 @@
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 42.0, warp: 107.4),
             ),
+            // The benchmark district (M5 X4): its `ci` preset, which the golden jobs cook beside the content,
+            // as a pull request sees it at scale. Each stands where nothing streams (the desktops' 256 m and
+            // the plaza's 100 m reach take in the whole 128 m district at the load) and draws whole textures.
+            // The long street at dusk, 8 m down it from its east end on the tour, looking west along it:
+            // its repeated buildings and lanterns end to end, every cascade at its fullest.
+            (
+                name: "zone-district-street-dusk",
+                size: "480x270",
+                ticks: 1600,
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                       "--tier", "desktop-high", "--capture-frames", "32"],
+            ),
+            // The plaza at night from where the player arrives in it: the lanterns at the light cap, the
+            // windows lit.
+            (
+                name: "zone-district-plaza-night",
+                size: "480x270",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "23", "--tier", "desktop-high",
+                       "--capture-frames", "32"],
+            ),
+            // The same place at dusk on Mobile-High, at a phone's aspect: two cascades, eight lights, the
+            // phone's post.
+            (
+                name: "zone-district-plaza-phone",
+                size: "480x222",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
+                       "--capture-frames", "32"],
+            ),
         ],
     ),
 )

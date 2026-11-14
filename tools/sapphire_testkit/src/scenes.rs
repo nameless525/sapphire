@@ -693,8 +693,8 @@ mod tests {
         }
     }
 
-    /// The shard counts CI runs (lavapipe 5, WARP 6), one, and a few more.
-    const SHARD_COUNTS: [usize; 6] = [1, 2, 3, 4, 5, 6];
+    /// The shard counts CI runs (lavapipe 5, WARP 8), one, and a few more.
+    const SHARD_COUNTS: [usize; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
     const FAMILIES: [Option<Family>; 3] = [None, Some(Family::Lavapipe), Some(Family::Warp)];
 
     /// Each shard's scenes, by name, as `select` picks them.
@@ -764,9 +764,9 @@ mod tests {
 
     #[test]
     fn splitting_by_cost_shortens_ci_s_slowest_shard() {
-        // CI's split: lavapipe in 5, WARP in 6.
+        // CI's split: lavapipe in 5, WARP in 8.
         let scenes = committed_scenes();
-        for (family, count) in [(Family::Lavapipe, 5), (Family::Warp, 6)] {
+        for (family, count) in [(Family::Lavapipe, 5), (Family::Warp, 8)] {
             let costs = costs(&scenes, Some(family));
             let slowest = |slices: &[usize]| {
                 let mut loads = vec![0_u64; count];
@@ -831,8 +831,9 @@ mod tests {
             let size = scene.value("--size").expect("the runner's size").to_owned();
             if hud {
                 sizes.push(size);
-            } else if !display_text && !name.starts_with("tier-") {
-                // The tier scenes (M4 T0) draw a phone's frame at a phone's shape.
+            } else if !display_text && !name.starts_with("tier-") && !name.starts_with("zone-district-") {
+                // The tier scenes (M4 T0) draw a phone's frame at a phone's shape, and the benchmark district's
+                // (M5 X4) draw small, since lavapipe and WARP draw them on every pull request.
                 assert_eq!(size, SIZE, "{name}");
             }
         }

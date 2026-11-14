@@ -17,6 +17,10 @@ const VFX_DISTORTION_FLIPBOOK: u32 = 4u;
 const VFX_DISTORTION_EDGE_AA: f32 = 0.05;
 // Where a shimmer reads its pattern the second time, in repeats: far enough that the two reads are unrelated.
 const VFX_DISTORTION_APART: vec2<f32> = vec2<f32>(0.37, 0.61);
+// Near the camera a bend fades out by its fragment's view depth, in metres: none nearer than the first, whole past
+// the second. A column or dome the camera passes through would otherwise bend the whole screen at full strength.
+const VFX_DISTORTION_NEAR_NONE: f32 = 0.5;
+const VFX_DISTORTION_NEAR_WHOLE: f32 = 1.5;
 
 // Mirrors `vfx::distortion::GpuVfxDistortion`.
 struct VfxDistortion {
@@ -83,6 +87,8 @@ struct VfxDistortionVaryings {
     @location(3) @interpolate(flat) middle: vec4<f32>,
     // x: the pattern's layer; y: the mask's; z: the flags.
     @location(4) @interpolate(flat) layers: vec3<u32>,
+    // The fragment's view depth, in metres: clip space's w.
+    @location(5) depth: f32,
 }
 
 @vertex
@@ -91,6 +97,7 @@ fn vs_vfx_distortion(vertex: VfxDistortionVertex, @builtin(instance_index) insta
     let world = mesh.world_from_local * vec4<f32>(vertex.position, 1.0);
     var out: VfxDistortionVaryings;
     out.clip_position = vfx_distortion.clip_from_world * world;
+    out.depth = out.clip_position.w;
     let pattern_uv = vertex.uv * mesh.tiling - mesh.scroll;
     out.uv = vec4<f32>(pattern_uv, pattern_uv);
     if (mesh.flags & VFX_DISTORTION_FLIPBOOK) != 0u {
@@ -139,7 +146,8 @@ fn fs_vfx_distortion(in: VfxDistortionVaryings) -> @location(0) vec4<f32> {
     var shown = smoothstep(low - half_aa, low + half_aa, mask);
     shown = select(shown, 1.0, !erodes || threshold <= 0.0);
     shown = select(shown, 0.0, erodes && threshold >= 1.0);
-    let amount = in.amount.x * shown * vfx_distortion_scene_fade(in);
+    let near = smoothstep(VFX_DISTORTION_NEAR_NONE, VFX_DISTORTION_NEAR_WHOLE, in.depth);
+    let amount = in.amount.x * shown * vfx_distortion_scene_fade(in) * near;
     // From the middle to the fragment, in frame heights.
     let uv = in.clip_position.xy * vfx_distortion.target_size.zw;
     let away = (uv - in.middle.xy) * vec2<f32>(vfx_distortion.frame.x, 1.0);

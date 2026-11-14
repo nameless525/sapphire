@@ -354,6 +354,50 @@ fn a_flat_frame_stays_flat_under_a_bend() {
     }
 }
 
+/// A shimmering column round the camera, `radius` metres out and ten high, the camera a fifth of the way up.
+fn column_round_the_camera(radius: f32) -> VfxDistortion {
+    let mut column = bend(Vec2::ZERO, STRENGTH);
+    column.mesh.shape = VfxMeshShape::Column;
+    column.mesh.position = Vec3::new(0.0, -2.0, 0.0);
+    column.mesh.scale = Vec3::new(radius, 10.0, radius);
+    column.mesh.pattern = VfxPattern::Noise;
+    column.bend = VfxBend::Shimmer;
+    column
+}
+
+/// A bend fades out near the camera, none nearer than half a metre: a column the camera stands in, 0.4 m round
+/// it, leaves the frame byte for byte as it is without the bend, where the same column three metres out
+/// shimmers over the picture. (Bends past a metre and a half move it as they did: the card the other tests bend
+/// with is two metres out.)
+#[test]
+#[ignore = "needs a GPU"]
+fn a_bend_round_the_camera_fades_out() {
+    for (path, settings) in paths() {
+        let size = (SIDE, SIDE);
+        let count = frames(&settings);
+        // Each from a harness of its own, so temporal AA's history and jitter are the same in all three.
+        let frame = |bends: &[VfxDistortion]| {
+            let mut harness = Harness::sized(settings, size);
+            for band in -12..12 {
+                let left = band as f32 * 0.5;
+                add_band(&mut harness, left, left + 0.5, if band % 2 == 0 { BRIGHT } else { DARK });
+            }
+            let frame = draw(&mut harness, count, passthrough(), bends);
+            let stats = harness.renderer.stats();
+            assert_eq!(stats.post.distortion, !bends.is_empty(), "{path}: it drew bent where it had a bend");
+            frame
+        };
+        let plain = frame(&[]);
+        let close = frame(&[column_round_the_camera(0.4)]);
+        let far = frame(&[column_round_the_camera(3.0)]);
+        let moved = |frame: &Frame| plain.pixels.iter().zip(&frame.pixels).filter(|(a, b)| a != b).count();
+        let (close_moved, far_moved) = (moved(&close), moved(&far));
+        eprintln!("{path}: the column 0.4 m round moves {close_moved} pixels, 3 m round {far_moved}");
+        assert_eq!(close_moved, 0, "{path}: a column round the camera at 0.4 m moved pixels");
+        assert!(far_moved > 1000, "{path}: the column three metres out shimmers");
+    }
+}
+
 /// Depth of field runs before the bend: the blurred background is what bends, the blurred edge moving by the
 /// bend's strength as the sharp one does.
 #[test]

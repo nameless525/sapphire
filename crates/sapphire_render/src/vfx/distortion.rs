@@ -13,6 +13,9 @@
 //!   wall in front of a haze isn't bent. Without temporal AA (Mobile-High, and a desktop tier run with MSAA)
 //!   there's no depth to read and nothing is tested: what stands in is post's character mask, which no bend ever
 //!   moves, so characters in front of a bend stay exact, and the rare world surface in front of one bends with it.
+//! - **Near the camera** a bend fades out by its fragment's view depth, none nearer than half a metre and whole
+//!   past a metre and a half (the shader's `VFX_DISTORTION_NEAR_*`), so a column or dome the camera passes through
+//!   doesn't bend the whole screen.
 //! - **Unjittered:** the buffer is drawn through the main view without temporal AA's jitter, as the frame post
 //!   reads is resolved, and the same frame twice draws the same offsets.
 //! - **Costs nothing while off:** Mobile-Low has none ([`DistortionResolution::Off`]): no pipeline, no target, no

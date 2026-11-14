@@ -402,6 +402,19 @@ An effect mesh is a layer of an effect in [default_effects.ron](../crates/sapphi
 7. **Look at it:** `--vfx mesh-scroll`, `mesh-erosion` and `mesh-flipbook` play the three shows the `vfxmesh-*` goldens capture, and a save under `--cues` reaches a running fight. Validation names the effect, the layer and the field, as an emitter's does.
 8. **Rust steps:** a new shape, a new pattern or a cooked mesh by id (see "Everything deferred").
 
+### A decal (M5 L7)
+
+A ground decal is a layer of an effect in [default_effects.ron](../crates/sapphire_vfx/default_effects.ron), beside its emitters, trail and meshes. Spec §5.16's "As built (M5 L7)" is the reference, and `sapphire_vfx`'s `decal` module docs have every field. No step edits Rust, and no replay moves: decals are presentation.
+
+1. **The version:** a library with decal layers says `version: 3`. Versions 1 and 2 still load, as libraries with none, and write as they did.
+2. **The layer:** `decals: [(name: "reach", shape: Sector(radius: 2.6, angle: 110.0), lifetime: 0.75, …)]`, up to two an effect. `shape` is `Disc(radius)`, `Ring(inner, outer)`, `Sector(radius, angle, inner)` (degrees across, along the effect's +Z) or `Lane(width, length)` (from the origin along +Z), each at most 64 m, and there's no default. `offset` is metres across and ahead in the ground's plane; `delay` and `lifetime` are seconds on the effect's clock; `color` (linear, relative to the display), `alpha` and `fill` are curves over the layer's own life. `priority` decides who goes first past a tier's cap.
+3. **The look:** `blend: Light` adds its color, bright enough to bloom; `blend: Darken` multiplies the ground toward it, as a scorch does. `outline` is a band of whole opacity inside the edge, metres; `body` is the share of opacity where the fill hasn't reached; `fill` grows from the origin out (a disc, ring or sector) or along a lane, 0 to 1. `noise` breaks the edge by up to that many metres; Mobile-Low draws a clean edge and shortens a decal's life to 0.6 of its own, a telegraph's excepted.
+4. **A telegraph:** `until_strike: true` fills it for exactly what's left of its subject's wind-up, on the subject's own clock, so hitstop holds it and slow motion slows it; `linger` keeps it whole that long past the strike. `lifetime` is what it plays where no strike is coming. `telegraph_ground` is the worked example, its color the telegraph mark's (`telegraph.rs` in `sapphire_cues`'s tests holds them equal): one more reader of that mark's palette, never a second.
+5. **A scorch:** `blend: Darken` with `noise` and an `offset` ahead of the subject. `scorch_mark` is the worked example.
+6. **Fire it:** a cue row names the effect with `at: Ground`, which lays it at the subject's feet, its +Y the ground's normal where it stands and its +Z the subject's front. Only on the subject's own clock (`clock: Actor` on its own cue) does it learn the strike. `telegraph` and `heavy_land` are the worked rows. The fight declares the decals' pipelines whenever its library has a layer.
+7. **Look at it:** `--vfx decal-slope` plays the show the `decal-slope` golden captures, `--cues` plays them in a fight, and a save under `--cues` reaches a running fight. `--decals off` keeps them from drawing. Validation names the effect, the layer and the field.
+8. **Rust steps:** a new shape, a decal on a wall or over steps (a projected decal), a lit or textured decal (see "Everything deferred").
+
 ### A focus key (M5 L8)
 
 Depth of field is a key on a timeline's camera, a cutscene's or a move's cinematic. Spec §5.12's "As built (M5 L8)" is the reference. No step edits Rust, and no replay moves: focus is presentation, and the timeline's simulation digest doesn't see it.

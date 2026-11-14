@@ -3878,6 +3878,7 @@
                        "--replay", "tests/replays/party-kinds.sreplay", "--ui-game", "hud", "--ui-locale", "en",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 68.8, warp: 167.8),
             ),
         ],
     ),

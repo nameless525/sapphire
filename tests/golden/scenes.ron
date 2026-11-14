@@ -3569,6 +3569,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "desaturation@0.3"],
+                ci_seconds: (lavapipe: 52.0, warp: 69.6),
             ),
             // The halftone: ink dots on a turned grid, as large as the world is dark, over the world behind the
             // character, whose lines and two-tone shading stay clean.
@@ -3577,6 +3578,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "halftone@0.3"],
+                ci_seconds: (lavapipe: 27.4, warp: 54.0),
             ),
             // A flash a tenth of a second in, falling away: the whole frame pale and warm.
             (
@@ -3584,6 +3586,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "flash@0.1"],
+                ci_seconds: (lavapipe: 38.7, warp: 52.3),
             ),
             // The glitch: bands torn sideways by whole pixels, red and blue read apart, the same on every
             // frame it's held.
@@ -3592,6 +3595,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "glitch@0.1"],
+                ci_seconds: (lavapipe: 50.6, warp: 69.0),
             ),
             // The CRT: scanlines and the grille's stripes over the whole frame, its corners rounded, the
             // character's outlines still sharp through them.
@@ -3600,6 +3604,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--post-effect", "crt@0.5"],
+                ci_seconds: (lavapipe: 27.7, warp: 81.8),
             ),
         ],
     ),

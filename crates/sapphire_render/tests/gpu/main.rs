@@ -24,6 +24,7 @@ mod layers;
 mod look_tiers;
 mod mip_copies;
 mod outline;
+mod reflections;
 mod render;
 mod render_scale;
 mod rim_hair;

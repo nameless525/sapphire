@@ -140,6 +140,46 @@ impl ArchivedReflectionProbes {
         self.texels[first..first + len].iter().map(|bits| bits.to_native())
     }
 
+    /// Probe `probe`'s cube under key `key` at `size` texels a side, appended to `out` as [`Self::cube`]
+    /// orders it: each texel the mean of the cook's texels it covers, summed row by row in `f32` and rounded
+    /// to a half float, as M5 L3's composition averages them on the GPU (`probes.wgsl`'s `cs_compose`). The
+    /// cook's own size copies the cube as it is.
+    ///
+    /// # Panics
+    ///
+    /// If there's no such probe or key, or `size` isn't a power of two from [`MIN_SIZE`] to the cook's.
+    pub fn cube_at(&self, probe: usize, key: usize, size: u32, out: &mut Vec<u16>) {
+        let baked = self.size();
+        assert!(size.is_power_of_two() && (MIN_SIZE..=baked).contains(&size), "size {size} of {baked}");
+        if size == baked {
+            out.extend(self.cube(probe, key));
+            return;
+        }
+        assert!(probe < self.probes.len() && key < self.key_hours.len(), "probe {probe}, key {key}");
+        let (baked, size) = (baked as usize, size as usize);
+        let step = baked / size;
+        let first = (probe * self.key_hours.len() + key) * ReflectionProbes::cube_len(baked as u32);
+        let scale = 1.0 / (step * step) as f32;
+        out.reserve(ReflectionProbes::cube_len(size as u32));
+        for face in 0..6 {
+            let face_first = first + face * baked * baked * TEXEL_CHANNELS;
+            for y in 0..size {
+                for x in 0..size {
+                    let mut sum = [0.0f32; TEXEL_CHANNELS];
+                    for dy in 0..step {
+                        for dx in 0..step {
+                            let at = face_first + ((y * step + dy) * baked + x * step + dx) * TEXEL_CHANNELS;
+                            for (channel, sum) in sum.iter_mut().enumerate() {
+                                *sum += half::f16::from_bits(self.texels[at + channel].to_native()).to_f32();
+                            }
+                        }
+                    }
+                    out.extend(sum.map(|sum| half::f16::from_f32(sum * scale).to_bits()));
+                }
+            }
+        }
+    }
+
     /// Checks what the renderer relies on: the size, the keys, between 1 and [`MAX_PROBES`] probes each in
     /// its box, the texels' count, and every texel finite and not negative with its sky's share at most 1.
     pub fn validate(&self) -> Result<(), ReflectionProbesError> {
@@ -229,6 +269,30 @@ mod tests {
         let back: ReflectionProbes =
             rkyv::deserialize::<ReflectionProbes, rkyv::rancor::Error>(read).expect("deserialize");
         assert_eq!(back, probes);
+    }
+
+    #[test]
+    fn a_cube_at_a_smaller_size_averages_the_texels_it_covers() {
+        let probes = two_probes(16, 2);
+        let bytes = probes.to_cooked().expect("cook");
+        let read = ReflectionProbes::read(&bytes).expect("valid");
+        let mut same = Vec::new();
+        read.cube_at(1, 1, 16, &mut same);
+        assert_eq!(same, read.cube(1, 1).collect::<Vec<_>>(), "the cook's size, as it is");
+        let full: Vec<f32> = read.cube(1, 1).map(|bits| half::f16::from_bits(bits).to_f32()).collect();
+        let mut half_size = Vec::new();
+        read.cube_at(1, 1, 8, &mut half_size);
+        assert_eq!(half_size.len(), ReflectionProbes::cube_len(8));
+        // Face 4's texel (3, 5), channel 2: the cook's (6..8, 10..12) of face 4, averaged.
+        let at = |face: usize, x: usize, y: usize, size: usize| ((face * size + y) * size + x) * 4 + 2;
+        let mean =
+            [(6, 10), (7, 10), (6, 11), (7, 11)].iter().map(|&(x, y)| full[at(4, x, y, 16)]).sum::<f32>()
+                / 4.0;
+        let got = half::f16::from_bits(half_size[at(4, 3, 5, 8)]).to_f32();
+        assert_eq!(got, half::f16::from_f32(mean).to_f32());
+        let mut appended = vec![7];
+        read.cube_at(0, 0, 8, &mut appended);
+        assert_eq!((appended[0], appended.len()), (7, 1 + ReflectionProbes::cube_len(8)), "appended");
     }
 
     #[test]

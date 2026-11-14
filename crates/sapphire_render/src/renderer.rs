@@ -14,6 +14,7 @@ use glam::Mat4;
 use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_assets::probes::ArchivedProbeGrid;
+use sapphire_assets::reflections::ArchivedReflectionProbes;
 use sapphire_assets::texture::TextureTail;
 use sapphire_assets::texture_level::ArchivedTextureLevel;
 use sapphire_assets::{AssetId, PipelineKey};
@@ -21,7 +22,10 @@ use sapphire_core::debug_draw::DebugLine;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
-use crate::ambient::{Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, ReflectionSettings};
+use crate::ambient::reflection_probes::ProbeMode;
+use crate::ambient::{
+    Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, ReflectionProbesHandle, ReflectionSettings,
+};
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::{CharacterSlots, Characters};
@@ -63,7 +67,7 @@ use crate::shader_builds::{
     Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest, Step,
     scope_error,
 };
-use crate::shaders::{BuildOn, Program, ShaderError, ShaderSources};
+use crate::shaders::{BuildOn, ProbeRead, Program, ShaderError, ShaderSources};
 use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
@@ -326,6 +330,12 @@ pub enum RenderError {
     Texture(#[from] TextureError),
     #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
     ProbeGridTooLarge { bricks: u32 },
+    #[error(
+        "{probes} reflection probes of {keys} keys, {size} texels a side, don't fit this device's textures"
+    )]
+    ReflectionProbesTooLarge { probes: u32, keys: u32, size: u32 },
+    #[error("{0:?} were not uploaded to this renderer")]
+    UnknownReflectionProbes(ReflectionProbesHandle),
     /// A [`RenderSettings`] field holds a value out of its range ([`ShadowSettings::validate`] and its
     /// fellows; a tier's table refuses the same values, with the tier's name).
     #[error("{field} {problem}")]
@@ -753,10 +763,12 @@ impl Renderer {
         color_format: wgpu::TextureFormat,
         settings: RenderSettings,
     ) -> Result<Self, RenderError> {
+        // Reflection probes' cubes read as a cube array where the device has them (M5 L3).
+        let read = ProbeRead::of(gpu.caps().cube_array_textures);
         let shared = Shared {
-            layouts: Layouts::new(gpu.device()),
+            layouts: Layouts::new(gpu.device(), read),
             pipeline_builds: PipelineBuilds::new(gpu.pipeline_cache()),
-            shaders: ShaderSources::compiled_in(),
+            shaders: ShaderSources::compiled_in().reading(read),
             edited_shaders: false,
         };
         Self::create(gpu, color_format, settings, shared)
@@ -842,7 +854,7 @@ impl Renderer {
                             shaders_ref,
                             settings.shadows.as_ref(),
                             (settings.temporal, settings.writes_velocity(), settings.reads_scene_prepass()),
-                            crate::ambient::constants(&settings.ambient_occlusion, None),
+                            crate::ambient::constants(&settings.ambient_occlusion, None, None),
                         )
                     },
                 )
@@ -895,6 +907,7 @@ impl Renderer {
                                             settings.temporal,
                                             settings.reflections,
                                             environment_reflects,
+                                            ProbeMode::of(settings.environment.specular),
                                             builds,
                                             shaders_ref,
                                         );
@@ -1755,7 +1768,8 @@ impl Renderer {
     /// nothing.
     pub fn request_shader_sources(&mut self, sources: ShaderSources) -> ShaderRequest {
         profiling::scope!("Renderer::request_shader_sources");
-        let request = self.builds.request(sources);
+        // Assembled as this device reads reflection probes, whatever the sources say.
+        let request = self.builds.request(sources.reading(self.shaders.read()));
         let id = request.id;
         if let Some(request) = self.builds.supersede(request) {
             self.start_shader_build(request);
@@ -1789,6 +1803,8 @@ impl Renderer {
     /// still building starts again on top of these sources once it finishes.
     pub fn set_shader_sources(&mut self, sources: &ShaderSources) -> Result<ShaderUpdate, ShaderError> {
         profiling::scope!("Renderer::set_shader_sources");
+        // Assembled as this device reads reflection probes, whatever the sources say.
+        let sources = &sources.clone().reading(self.shaders.read());
         let changed = self.changed_programs(sources);
         if changed.is_empty() {
             return Ok(ShaderUpdate::default());
@@ -2122,8 +2138,9 @@ impl Renderer {
             .filter(|&format| keys.iter().any(|key| key.format == format))
             .collect();
         let reflection = keys.iter().any(|key| key.reflection);
+        let (grid, probes) = (inventory.probe_grid, inventory.reflection_probes);
         let mesh = MeshWarm {
-            ambient: inventory.probe_grid.then(|| self.ambient.constants_expecting_grid()),
+            ambient: (grid || probes).then(|| self.ambient.constants_expecting(grid, probes)),
             fades: inventory.fades,
             scene_prepass: inventory.debug_draw,
             keys,
@@ -2141,7 +2158,7 @@ impl Renderer {
             edited: self.edited_shaders,
             mesh: self.pipelines.warm(device, mesh, on),
             shadows: self.shadows.warm(device, &formats),
-            ambient: self.ambient.warm(inventory.probe_grid, reflection),
+            ambient: self.ambient.warm(inventory.probe_grid, reflection, inventory.reflection_probes),
             skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
             post: self.post.warm(
                 inventory.post,
@@ -2250,6 +2267,11 @@ impl Renderer {
         self.checked_build(|renderer| {
             if inventory.probe_grid {
                 renderer.ambient.expect_grid(&renderer.shaders);
+            }
+            if inventory.reflection_probes {
+                renderer.ambient.expect_probes(&renderer.shaders);
+            }
+            if inventory.probe_grid || inventory.reflection_probes {
                 let constants = renderer.ambient.constants();
                 renderer.pipelines.set_ambient_constants(&renderer.device, constants);
             }
@@ -2406,7 +2428,9 @@ impl Renderer {
         self.stats.mip_streaming = self.mip_streaming.take_stats();
         let lists_replaced =
             self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
-        let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
+        let picker = self.ambient.probe_picker();
+        let characters_replaced =
+            self.characters.prepare(device, queue, packet, self.scene.slots_mut(), picker);
         if characters_replaced {
             self.shadows.set_character_buffer(device, self.characters.buffer());
             self.ambient.set_character_buffer(self.characters.buffer());
@@ -3624,6 +3648,60 @@ impl Renderer {
         result
     }
 
+    /// Uploads a zone's reflection probes ([`sapphire_assets::reflections::ReflectionProbes::read`], M5 L3):
+    /// every key of every probe, which stays on the GPU until [`Self::free_reflection_probes`]. Nothing reads
+    /// them until they're shown ([`Self::set_reflection_probes`]). Fails if a probe's keys don't fit one of the
+    /// device's textures.
+    pub fn upload_reflection_probes(
+        &mut self,
+        probes: &ArchivedReflectionProbes,
+    ) -> Result<ReflectionProbesHandle, RenderError> {
+        profiling::scope!("Renderer::upload_reflection_probes");
+        let handle = self.ambient.upload_probes(&self.queue, probes)?;
+        Ok(handle)
+    }
+
+    /// Lets go of uploaded reflection probes, hiding them first if they're shown.
+    pub fn free_reflection_probes(&mut self, handle: ReflectionProbesHandle) {
+        if self.ambient.free_probes(&self.queue, handle) {
+            self.reflection_probes_changed();
+        }
+    }
+
+    /// Shows uploaded reflection probes in place of any shown, or none (`None`) (M5 L3, the `reflection_probes`
+    /// module of [`ambient`](crate::ambient)): the environment's glossy surfaces reflect the probe of the cell
+    /// they're in, and characters the probe they stand by, in place of the sky's reflection, each probe's
+    /// cube composed by the hour. The first frame composes every probe, and a load that didn't expect them
+    /// builds their pipelines and the environment's again on this thread. Hiding them keeps the environment's
+    /// pipelines, which then find no probe.
+    pub fn set_reflection_probes(
+        &mut self,
+        handle: Option<ReflectionProbesHandle>,
+    ) -> Result<(), RenderError> {
+        profiling::scope!("Renderer::set_reflection_probes");
+        self.checked_build(|renderer| {
+            renderer.ambient.show_probes(&renderer.queue, handle, &renderer.shaders)
+        })?;
+        self.reflection_probes_changed();
+        Ok(())
+    }
+
+    /// Composes every reflection probe out of date with the next frame, however many: a capture's, which
+    /// mustn't depend on the one-a-frame rotation, as it finishes every texture's levels.
+    pub fn finish_reflection_probes(&mut self) {
+        self.ambient.finish_probes();
+    }
+
+    /// What follows a change of the probes shown: group 0, the environment's constants, the characters'
+    /// probes and the insets' pictures.
+    fn reflection_probes_changed(&mut self) {
+        self.rebuild_frame_bind_groups();
+        let constants = self.ambient.constants();
+        self.checked_build(|renderer| renderer.pipelines.set_ambient_constants(&renderer.device, constants));
+        self.characters.invalidate();
+        self.insets.redraw();
+    }
+
     /// Rebuilds group 0 after a buffer or texture in it was replaced.
     fn rebuild_frame_bind_groups(&mut self) {
         self.frame_bind_groups = create_frame_bind_groups(&self.device, &self.layouts, self.frame_bindings());
@@ -4212,8 +4290,17 @@ pub(crate) fn create_frame_bind_groups(
         bindings;
     let [shadow_uniforms, cascades, atlas, sampler] = shadows.frame_entries();
     let [character_depth, character_ids, character_sampler] = character_prepass.frame_entries();
-    let [ambient_uniforms, probe_atlas, bricks, reflection, occlusion, ambient_sampler] =
-        ambient.frame_entries();
+    let [
+        ambient_uniforms,
+        probe_atlas,
+        bricks,
+        reflection,
+        occlusion,
+        ambient_sampler,
+        probe_cubes,
+        probe_cells,
+        probe_uniforms,
+    ] = ambient.frame_entries();
     let entries = [
         wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
         wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
@@ -4235,6 +4322,9 @@ pub(crate) fn create_frame_bind_groups(
         reflection,
         occlusion,
         ambient_sampler,
+        probe_cubes,
+        probe_cells,
+        probe_uniforms,
     ];
     FrameBindGroups(FrameGroup::ALL.map(|group| {
         let entries: Vec<wgpu::BindGroupEntry<'_>> =

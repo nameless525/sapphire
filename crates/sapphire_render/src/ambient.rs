@@ -118,8 +118,13 @@
 //! the first time one is, the cube (at the tier's size, environment specular or not), the
 //! projection, which the prefilter's scale reads, and the prefilter are made, and while one is,
 //! both run as they do for a grid, all six faces again when they start after a pause. Without a
-//! grid nothing else runs: the relight and the characters' pass wait for one. Reflection probes
-//! come later (see "Later milestones").
+//! grid nothing else runs: the relight and the characters' pass wait for one.
+//!
+//! A zone's reflection probes (M5 L3, the `reflection_probes` module) take the cube's place where
+//! they're shown: the environment's ambient specular reads its cell's probe after the grid's light, and a
+//! character's reflection add the probe it stands by, each falling back to what it read before past
+//! every probe's reach (its box and a short fade beyond). Their composition runs in the ambient pass,
+//! after the sky's projection.
 //!
 //! # Ambient occlusion
 //!
@@ -192,8 +197,9 @@
 //!
 //! # Later milestones
 //!
-//! - **Reflection probes** (early M2): baked local cubes blended by volume, which the sky cube's
-//!   prefiltered mips stand in for today.
+//! - **Reflection probes** beyond M5 L3's: blending two boxes where they overlap rather than taking the
+//!   nearest, following the sky's drift between key changes, a streamer bringing only the keys in play,
+//!   and screen-space or planar reflections over them.
 //! - **Probe visualization** (F5 part 2): spheres at each probe showing its irradiance, beside the
 //!   overlay's grid readout.
 //! - **Several grids and streaming**: one grid per zone today, uploaded whole; open worlds stream
@@ -227,8 +233,15 @@ use crate::graph::{FrameGraph, TextureId};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::Layouts;
 use crate::shader_builds::Step;
-use crate::shaders::{self, Program, ShaderSources};
+use crate::shaders::{self, ProbeRead, Program, ShaderSources};
 use crate::{CharacterBody, FramePacket, LOG_TARGET, RenderError};
+
+pub(crate) mod reflection_probes;
+
+pub use reflection_probes::ReflectionProbesHandle;
+use reflection_probes::{
+    ActiveBindings, ActiveProbes, ComposeUniforms, ProbeMode, ProbePicker, ProbeSet, ProbeSets, ProbeUniforms,
+};
 
 /// Ambient occlusion on a quality tier (`tiers.ron`,
 /// [`RenderSettings::ambient_occlusion`](crate::RenderSettings::ambient_occlusion)): capsule AO
@@ -412,6 +425,7 @@ const AMBIENT_REGION: u64 = std::mem::offset_of!(AmbientBlock, ambient) as u64;
 const RELIGHT_REGION: u64 = std::mem::offset_of!(AmbientBlock, relight) as u64;
 const GTAO_REGION: u64 = std::mem::offset_of!(AmbientBlock, gtao) as u64;
 const PREFILTER_REGION: u64 = std::mem::offset_of!(AmbientBlock, prefilter) as u64;
+const COMPOSE_REGION: u64 = std::mem::offset_of!(AmbientBlock, compose) as u64;
 /// The slices the relight spreads its bricks over after a small change: each brick relights
 /// within this many frames of the last change.
 const RELIGHT_SLICES: u32 = 4;
@@ -447,6 +461,11 @@ pub(crate) mod frame_binding {
     pub const REFLECTION: u32 = 14;
     pub const OCCLUSION: u32 = 15;
     pub const SAMPLER: u32 = 16;
+    /// Reflection probes' composed cubes, their cell table and their uniforms (M5 L3,
+    /// `reflections.wgsl`): the table and uniforms only the world reads.
+    pub const PROBE_CUBES: u32 = 17;
+    pub const PROBE_CELLS: u32 = 18;
+    pub const PROBE_UNIFORMS: u32 = 19;
 }
 
 /// The environment shader's pipeline constants for the ambient terms (`environment.wgsl`).
@@ -455,13 +474,20 @@ pub(crate) mod override_constant {
     pub const PROBES_PER_VERTEX: &str = "AMBIENT_PROBES_PER_VERTEX";
     pub const CAPSULE_AO: &str = "CAPSULE_AO";
     pub const GTAO: &str = "GTAO";
+    /// The environment's reflection probes (M5 L3, `reflections.wgsl`), which foliage doesn't read.
+    pub const REFLECTION_PROBES: &str = "REFLECTION_PROBES";
 }
 
-/// The environment pipelines' ambient constants with `occlusion` and with a grid read the way
-/// `grid` says, or without one (`None`): only those that are on, so a renderer without any builds
-/// the shader as it was before W5.
-pub(crate) fn constants(occlusion: &AmbientOcclusion, grid: Option<ProbeLookup>) -> Vec<(&'static str, f64)> {
-    [
+/// The environment pipelines' ambient constants with `occlusion`, with a grid read the way
+/// `grid` says, or without one (`None`), and with reflection probes read the way `probes` says
+/// (M5 L3): only those that are on, so a renderer without any builds the shader as it was before
+/// W5.
+pub(crate) fn constants(
+    occlusion: &AmbientOcclusion,
+    grid: Option<ProbeLookup>,
+    probes: Option<ProbeMode>,
+) -> Vec<(&'static str, f64)> {
+    let mut constants: Vec<(&'static str, f64)> = [
         (override_constant::PROBES, grid.is_some()),
         (override_constant::PROBES_PER_VERTEX, grid == Some(ProbeLookup::PerVertex)),
         (override_constant::CAPSULE_AO, occlusion.capsules),
@@ -470,7 +496,11 @@ pub(crate) fn constants(occlusion: &AmbientOcclusion, grid: Option<ProbeLookup>)
     .into_iter()
     .filter(|&(_, on)| on)
     .map(|(name, _)| (name, 1.0))
-    .collect()
+    .collect();
+    if let Some(value) = probes.and_then(ProbeMode::constant) {
+        constants.push((override_constant::REFLECTION_PROBES, value));
+    }
+    constants
 }
 
 /// One character body for capsule AO (WGSL `AmbientCapsule`). 32 bytes.
@@ -542,7 +572,7 @@ pub(crate) struct GtaoUniforms {
 }
 
 /// Every ambient uniform of a frame, in one buffer staged with one write: each struct at a
-/// multiple of [`REGION_ALIGNMENT`], where its bindings point. 3,072 bytes.
+/// multiple of [`REGION_ALIGNMENT`], where its bindings point. 3,328 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct AmbientBlock {
@@ -554,6 +584,9 @@ struct AmbientBlock {
     _gtao_padding: [[u32; 4]; 14],
     /// Per reflection mip.
     prefilter: [PrefilterRegion; MAX_REFLECTION_MIPS],
+    /// The frame's reflection probe composition (M5 L3).
+    compose: ComposeUniforms,
+    _compose_padding: [[u32; 4]; 13],
 }
 
 /// One reflection mip's prefilter uniforms in [`AmbientBlock`].
@@ -572,7 +605,8 @@ const _: () = {
         GTAO_REGION.is_multiple_of(REGION_ALIGNMENT) && PREFILTER_REGION.is_multiple_of(REGION_ALIGNMENT)
     );
     assert!(size_of::<PrefilterRegion>() as u64 == REGION_ALIGNMENT);
-    assert!(size_of::<AmbientBlock>() == 3072);
+    assert!(COMPOSE_REGION.is_multiple_of(REGION_ALIGNMENT));
+    assert!(size_of::<AmbientBlock>() == 3328);
 };
 
 /// `size` bytes of `buffer` from `offset`, as a binding.
@@ -614,9 +648,30 @@ pub struct AmbientStats {
     /// grid first arrives, and the projection's three and the prefilter when a reflective
     /// character first draws (M1 C7).
     pub pipelines: u32,
-    /// Compute dispatches the last recorded frame's ambient pass made: none without a grid, GTAO
-    /// or a reflective character, when the pass doesn't run.
+    /// Compute dispatches the last recorded frame's ambient pass made: none without a grid, GTAO,
+    /// a reflective character or a reflection probe to compose, when the pass doesn't run. The
+    /// renderer's compute work counts here and in [`Self::probe_dispatches`], not in
+    /// [`RenderStats::passes`](crate::RenderStats::passes), which counts draws.
     pub dispatches: u32,
+    /// Of [`Self::dispatches`], the reflection probes' (M5 L3): each probe composed, its top level and
+    /// then each rougher level's prefilter, so [`Self::composed_probes`] × [`Self::composed_mips`].
+    pub probe_dispatches: u32,
+    /// Reflection probe sets uploaded (M5 L3), and the bytes of their keys.
+    pub probe_sets: u32,
+    pub probe_key_bytes: u64,
+    /// The size the shown set's keys are held at, texels a side: the cook's, or the size Mobile-Low composes
+    /// at for a set uploaded on it, which then composes no larger on any tier until it's uploaded again; zero
+    /// without one.
+    pub probe_key_size: u32,
+    /// Probes of the set shown, their composed cubes' size and levels, and the bytes of the composed
+    /// texture; zero without one.
+    pub reflection_probes: u32,
+    pub composed_size: u32,
+    pub composed_mips: u32,
+    pub composed_bytes: u64,
+    /// Probes the last recorded frame composed, and those composed since the renderer was created.
+    pub composed_probes: u32,
+    pub compositions: u64,
 }
 
 /// The renderer's ambient light and occlusion: the grid, the reflection cube, GTAO, their
@@ -679,6 +734,24 @@ pub(crate) struct Ambient {
     /// What [`Self::split_for_record`] last found, for [`Self::frame_lost`]: the schedule, the
     /// frame count and [`AmbientStats::prefiltered_faces`].
     before: (RelightSchedule, u64, u64),
+    /// How the device reads the probes' cubes, and how the tier reads probes (M5 L3).
+    read: ProbeRead,
+    probe_mode: ProbeMode,
+    /// A load said probes are coming: their constants and pipelines count before they arrive.
+    probes_expected: bool,
+    /// Every reflection probe set uploaded, and the one shown.
+    probe_sets: ProbeSets,
+    shown: Option<ActiveProbes>,
+    /// Group 0's binding 19: the shown set's boxes and cell table, zeros without one.
+    probe_uniforms: wgpu::Buffer,
+    /// The prepared frame's reflection keys and main camera.
+    reflection_keys: ProbeKeys,
+    eye: Option<Vec3>,
+    /// The last recorded frame ran the sky's projection, so the sky light is current.
+    projected: bool,
+    /// The shown set's schedule, [`AmbientStats::compositions`] and [`Self::projected`] before the last
+    /// recorded frame, for [`Self::frame_lost`].
+    probes_before: (Option<(ReflectionProbesHandle, reflection_probes::ComposeSchedule)>, u64, bool),
 }
 
 /// 1-texel stand-ins for the frame group's ambient bindings while nothing real is bound: they
@@ -690,6 +763,9 @@ struct Placeholders {
     reflection: wgpu::TextureView,
     /// Open: visibility 1.
     occlusion: wgpu::TextureView,
+    /// Six layers, read as the device reads probes' cubes, and a cell with no probe (M5 L3).
+    probe_cubes: wgpu::TextureView,
+    probe_cells: wgpu::TextureView,
 }
 
 /// An uploaded grid.
@@ -892,9 +968,12 @@ struct AmbientLayouts {
     depths: wgpu::BindGroupLayout,
     search: wgpu::BindGroupLayout,
     denoise: wgpu::BindGroupLayout,
+    /// A reflection probe's composition (M5 L3): the sky light, the sky cube, the probe's top level,
+    /// its keys and the composition's uniforms.
+    compose: wgpu::BindGroupLayout,
     /// Per kind of pipeline: the projection's three, the prefilter, the relight, the characters',
-    /// and GTAO's depth prefilter, search and blur.
-    pipelines: [wgpu::PipelineLayout; 7],
+    /// GTAO's depth prefilter, search and blur, and the probes' composition.
+    pipelines: [wgpu::PipelineLayout; 8],
 }
 
 /// The ambient pass's pipelines, each group built only once the renderer can run its work (see
@@ -908,6 +987,8 @@ pub(crate) struct AmbientPipelines {
     prefilter: Option<wgpu::ComputePipeline>,
     grid: Option<GridPipelines>,
     occlusion: Option<OcclusionPipelines>,
+    /// Reflection probes' composition (M5 L3), with the first set shown or expected.
+    compose: Option<wgpu::ComputePipeline>,
 }
 
 /// The sky's projection's pipelines: each face's threads' sums, a face's sum and the sky light.
@@ -947,6 +1028,8 @@ struct PipelineSet {
     /// The grid's relight and the characters' pass.
     grid: bool,
     occlusion: bool,
+    /// Reflection probes' composition.
+    compose: bool,
 }
 
 impl PipelineSet {
@@ -957,6 +1040,7 @@ impl PipelineSet {
             prefilter: self.prefilter && !built.prefilter,
             grid: self.grid && !built.grid,
             occlusion: self.occlusion && !built.occlusion,
+            compose: self.compose && !built.compose,
         }
     }
 
@@ -1016,6 +1100,7 @@ impl AmbientPipelines {
                 search: build(5, "cs_gtao"),
                 denoise: build(6, "cs_gtao_denoise"),
             }),
+            compose: set.compose.then(|| build(7, "cs_compose")),
         }
     }
 
@@ -1026,16 +1111,18 @@ impl AmbientPipelines {
             prefilter: self.prefilter.is_some(),
             grid: self.grid.is_some(),
             occlusion: self.occlusion.is_some(),
+            compose: self.compose.is_some(),
         }
     }
 
     /// Adds the groups `built` has that these lack.
     fn add(&mut self, built: Self) {
-        let Self { projection, prefilter, grid, occlusion } = built;
+        let Self { projection, prefilter, grid, occlusion, compose } = built;
         self.projection = self.projection.take().or(projection);
         self.prefilter = self.prefilter.take().or(prefilter);
         self.grid = self.grid.take().or(grid);
         self.occlusion = self.occlusion.take().or(occlusion);
+        self.compose = self.compose.take().or(compose);
     }
 
     /// Pipelines built.
@@ -1045,13 +1132,15 @@ impl AmbientPipelines {
             + u32::from(set.prefilter)
             + 2 * u32::from(set.grid)
             + 3 * u32::from(set.occlusion)
+            + u32::from(set.compose)
     }
 }
 
 /// Group 0's ambient entries in the frame layout ([`frame_binding`], `ambient.wgsl`): the grid's (its
 /// uniforms, atlas, brick table and sampler) vertex- and fragment-visible, for the per-vertex
-/// lookup ([`ProbeLookup::PerVertex`]); the reflection cube and GTAO fragment-visible.
-pub(crate) fn frame_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+/// lookup ([`ProbeLookup::PerVertex`]); the reflection cube, GTAO and the reflection probes' (M5 L3,
+/// their cubes as `read` says) fragment-visible.
+pub(crate) fn frame_layout_entries(read: ProbeRead) -> [wgpu::BindGroupLayoutEntry; 9] {
     let fragment = wgpu::ShaderStages::FRAGMENT;
     let both = wgpu::ShaderStages::VERTEX_FRAGMENT;
     let texture = |binding, visibility, view_dimension, sample_type| wgpu::BindGroupLayoutEntry {
@@ -1073,6 +1162,14 @@ pub(crate) fn frame_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
+        texture(frame_binding::PROBE_CUBES, fragment, read.dimension(), float),
+        texture(
+            frame_binding::PROBE_CELLS,
+            fragment,
+            wgpu::TextureViewDimension::D3,
+            wgpu::TextureSampleType::Uint,
+        ),
+        uniform_entry(frame_binding::PROBE_UNIFORMS, fragment, size_of::<ProbeUniforms>()),
     ]
 }
 
@@ -1215,6 +1312,16 @@ impl AmbientLayouts {
                 uniform_entry(7, compute, size_of::<GtaoUniforms>()),
             ],
         );
+        let compose = layout(
+            "reflection probe compose",
+            &[
+                storage_entry(2, true, SKY_LIGHT_BYTES),
+                texture_entry(4, Dimension::Cube, float),
+                storage_texture_entry(7, Dimension::D2Array, STORAGE_FORMAT),
+                texture_entry(9, Dimension::D2Array, unfiltered),
+                uniform_entry(10, compute, size_of::<ComposeUniforms>()),
+            ],
+        );
         let pipeline = |label, groups: &[Option<&wgpu::BindGroupLayout>]| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
@@ -1230,13 +1337,25 @@ impl AmbientLayouts {
             pipeline("gtao depths", &[None, Some(&layouts.view), Some(&depths)]),
             pipeline("gtao", &[None, Some(&layouts.view), Some(&search)]),
             pipeline("gtao denoise", &[None, None, Some(&denoise)]),
+            pipeline("reflection probe compose", &[Some(&compute_frame), None, None, Some(&compose)]),
         ];
-        Self { compute_frame, projection, prefilter, relight, character, depths, search, denoise, pipelines }
+        Self {
+            compute_frame,
+            projection,
+            prefilter,
+            relight,
+            character,
+            depths,
+            search,
+            denoise,
+            compose,
+            pipelines,
+        }
     }
 }
 
 impl Placeholders {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, read: ProbeRead) -> Self {
         let texture = |label, dimension, layers, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -1259,6 +1378,9 @@ impl Placeholders {
         let bricks = texture("no brick table", wgpu::TextureDimension::D3, 1, wgpu::TextureFormat::R32Uint);
         let reflection = texture("no reflection cube", wgpu::TextureDimension::D2, 6, STORAGE_FORMAT);
         let occlusion = texture("no gtao", wgpu::TextureDimension::D2, 1, STORAGE_FORMAT);
+        let probe_cubes = texture("no reflection probes", wgpu::TextureDimension::D2, 6, STORAGE_FORMAT);
+        let probe_cells =
+            texture("no reflection probe cells", wgpu::TextureDimension::D3, 1, wgpu::TextureFormat::R8Uint);
         // Open: visibility 1 at the farthest depth, as half floats (1, 65504, 0, 1).
         let open: [u16; 4] = [0x3c00, 0x7bff, 0, 0x3c00];
         queue.write_texture(
@@ -1272,6 +1394,8 @@ impl Placeholders {
             bricks: view(&bricks, wgpu::TextureViewDimension::D3),
             reflection: view(&reflection, wgpu::TextureViewDimension::Cube),
             occlusion: view(&occlusion, wgpu::TextureViewDimension::D2),
+            probe_cubes: view(&probe_cubes, read.dimension()),
+            probe_cells: view(&probe_cells, wgpu::TextureViewDimension::D3),
         }
     }
 }
@@ -1357,6 +1481,7 @@ impl Ambient {
         temporal: bool,
         reflections: ReflectionSettings,
         environment_reflects: bool,
+        probe_mode: ProbeMode,
         builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Self {
@@ -1383,7 +1508,15 @@ impl Ambient {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let placeholders = Placeholders::new(device, queue);
+        let read = sources.read();
+        let placeholders = Placeholders::new(device, queue, read);
+        // Zeros: no cells, so the environment finds no probe.
+        let probe_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("reflection probes"),
+            size: size_of::<ProbeUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let gtao =
             occlusion.gtao.map(|settings| Gtao { settings, shed: false, fitted: None, textures: None });
         let compute_frame = compute_frame_group(
@@ -1435,13 +1568,24 @@ impl Ambient {
             candidates: Vec::new(),
             frames: 0,
             stats,
+            read,
+            probe_mode,
+            probes_expected: false,
+            probe_sets: ProbeSets::default(),
+            shown: None,
+            probe_uniforms,
+            reflection_keys: ProbeKeys::default(),
+            eye: None,
+            projected: false,
+            probes_before: (None, 0, false),
         }
     }
 
     /// The environment pipelines' ambient constants as things stand: the tier's occlusion, and
     /// the grid while one is uploaded.
     pub(crate) fn constants(&self) -> Vec<(&'static str, f64)> {
-        constants(&self.occlusion, (self.grid.is_some() || self.grid_expected).then_some(self.lookup))
+        let probes = (self.shown.is_some() || self.probes_expected).then_some(self.probe_mode);
+        constants(&self.occlusion, (self.grid.is_some() || self.grid_expected).then_some(self.lookup), probes)
     }
 
     /// Builds now what a grid's arrival would, for a load that says one's coming
@@ -1449,13 +1593,17 @@ impl Ambient {
     /// here on, and until the next [`Self::set_grid`] a lookup finds no grid and reads the hemisphere.
     pub(crate) fn expect_grid(&mut self, sources: &ShaderSources) {
         let prefilter = self.environment_reflects;
-        self.prepare_work(sources, PipelineSet { projection: true, prefilter, grid: true, occlusion: false });
+        self.prepare_work(
+            sources,
+            PipelineSet { projection: true, prefilter, grid: true, occlusion: false, compose: false },
+        );
         self.grid_expected = true;
     }
 
-    /// The frame group's bindings 11–16: the uniforms, the atlas and brick table, the reflection
-    /// cube, GTAO's output and the sampler, or stand-ins for those there are none of.
-    pub(crate) fn frame_entries(&self) -> [wgpu::BindGroupEntry<'_>; 6] {
+    /// The frame group's bindings 11–19: the uniforms, the atlas and brick table, the reflection
+    /// cube, GTAO's output, the sampler and the reflection probes' cubes, cells and uniforms, or
+    /// stand-ins for those there are none of.
+    pub(crate) fn frame_entries(&self) -> [wgpu::BindGroupEntry<'_>; 9] {
         fn view(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(view) }
         }
@@ -1480,6 +1628,18 @@ impl Ambient {
             wgpu::BindGroupEntry {
                 binding: frame_binding::SAMPLER,
                 resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            view(
+                frame_binding::PROBE_CUBES,
+                self.shown.as_ref().map_or(&placeholders.probe_cubes, |s| &s.view),
+            ),
+            view(
+                frame_binding::PROBE_CELLS,
+                self.shown.as_ref().map_or(&placeholders.probe_cells, |s| &s.cells),
+            ),
+            wgpu::BindGroupEntry {
+                binding: frame_binding::PROBE_UNIFORMS,
+                resource: self.probe_uniforms.as_entire_binding(),
             },
         ]
     }
@@ -1510,7 +1670,7 @@ impl Ambient {
             let prefilter = self.environment_reflects;
             self.prepare_work(
                 sources,
-                PipelineSet { projection: true, prefilter, grid: true, occlusion: false },
+                PipelineSet { projection: true, prefilter, grid: true, occlusion: false, compose: false },
             );
         }
         let (atlas, bricks) = self
@@ -1623,7 +1783,15 @@ impl Ambient {
             self.stats.reflection_mips = reflection.mips;
             self.reflection = Some(reflection);
         }
-        if set.projection && self.projection_group.is_none() {
+        if set.projection {
+            self.make_projection_group();
+        }
+        self.build_pipelines(sources, set);
+    }
+
+    /// Makes the projection's group, if it isn't made.
+    fn make_projection_group(&mut self) {
+        if self.projection_group.is_none() {
             // The projection threads' sums, which the next dispatch adds up: the pass's own, kept
             // alive by the group.
             let partials = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1645,23 +1813,196 @@ impl Ambient {
                 ],
             }));
         }
+    }
+
+    /// Builds now what showing a set of reflection probes would (M5 L3), for a load that says one's coming
+    /// ([`PipelineInventory::reflection_probes`](crate::PipelineInventory::reflection_probes)): the sky's
+    /// projection, the prefilter and the composition. Their constants count from here on.
+    pub(crate) fn expect_probes(&mut self, sources: &ShaderSources) {
+        self.prepare_probe_work(sources);
+        self.probes_expected = true;
+    }
+
+    /// Builds what composing probes needs that isn't built: the projection's group and the pipelines.
+    fn prepare_probe_work(&mut self, sources: &ShaderSources) {
+        self.make_projection_group();
+        let set = PipelineSet { projection: true, prefilter: true, compose: true, ..PipelineSet::default() };
         self.build_pipelines(sources, set);
+    }
+
+    /// Uploads a zone's reflection probes, every key of every probe (M5 L3, the
+    /// [`reflection_probes`] module). Nothing reads them until they're shown ([`Self::show_probes`]).
+    pub(crate) fn upload_probes(
+        &mut self,
+        queue: &wgpu::Queue,
+        probes: &sapphire_assets::reflections::ArchivedReflectionProbes,
+    ) -> Result<ReflectionProbesHandle, RenderError> {
+        // Mobile-Low holds every key at the size it composes at, a quarter of the bytes of the mobile cook's.
+        let hold =
+            if self.probe_mode == ProbeMode::CharactersOnce { self.reflections.cube_size } else { u32::MAX };
+        let set = ProbeSet::new(&self.device, queue, probes, hold)?;
+        tracing::info!(
+            target: LOG_TARGET,
+            probes = set.boxes.len(),
+            keys = set.keys,
+            baked = probes.size(),
+            size = set.size,
+            bytes = set.bytes,
+            "reflection probes uploaded"
+        );
+        let handle = self.probe_sets.insert(set);
+        self.update_probe_stats();
+        Ok(handle)
+    }
+
+    /// Lets `handle`'s probes go, hiding them first if they're shown. Returns whether they were, so the
+    /// frame group must be rebuilt.
+    pub(crate) fn free_probes(&mut self, queue: &wgpu::Queue, handle: ReflectionProbesHandle) -> bool {
+        let shown = self.shown.as_ref().is_some_and(|shown| shown.handle == handle);
+        if shown {
+            self.hide_probes(queue);
+        }
+        self.probe_sets.remove(handle);
+        self.update_probe_stats();
+        shown
+    }
+
+    /// Shows `handle`'s probes in place of any shown, or none (`None`): their composed texture at the tier's
+    /// size, cell table and groups are made, the composition's pipelines built if a load didn't expect
+    /// them, and the next frame composes every probe. The frame group and the environment pipelines must
+    /// then be rebuilt ([`Self::frame_entries`], [`Self::constants`]). Hiding them keeps their constants, as
+    /// a grid's leaving does: the environment finds no probe.
+    pub(crate) fn show_probes(
+        &mut self,
+        queue: &wgpu::Queue,
+        handle: Option<ReflectionProbesHandle>,
+        sources: &ShaderSources,
+    ) -> Result<(), RenderError> {
+        let Some(handle) = handle else {
+            self.hide_probes(queue);
+            return Ok(());
+        };
+        if self.shown.as_ref().is_some_and(|shown| shown.handle == handle) {
+            return Ok(());
+        }
+        if self.probe_sets.get(handle).is_none() {
+            return Err(RenderError::UnknownReflectionProbes(handle));
+        }
+        self.prepare_probe_work(sources);
+        let set = self.probe_sets.get(handle).expect("checked above");
+        let bindings = ActiveBindings {
+            compose: &self.layouts.compose,
+            prefilter: &self.layouts.prefilter,
+            sky_light: &self.sky_light,
+            sky_cube: &self.sky_cube,
+            uniforms: (&self.uniform_buffer, COMPOSE_REGION),
+        };
+        let frozen = self.probe_mode == ProbeMode::CharactersOnce;
+        let size = self.reflections.cube_size;
+        let shown = ActiveProbes::new(
+            &self.device,
+            queue,
+            handle,
+            set,
+            size,
+            self.read,
+            frozen,
+            &bindings,
+            &self.probe_uniforms,
+        );
+        self.shown = Some(shown);
+        self.update_probe_stats();
+        tracing::info!(
+            target: LOG_TARGET,
+            probes = self.stats.reflection_probes,
+            key_size = self.stats.probe_key_size,
+            key_bytes = self.stats.probe_key_bytes,
+            composed_size = self.stats.composed_size,
+            composed_bytes = self.stats.composed_bytes,
+            "reflection probes shown"
+        );
+        Ok(())
+    }
+
+    /// Hides the probes shown, if any: the environment's uniforms go back to none.
+    fn hide_probes(&mut self, queue: &wgpu::Queue) {
+        if self.shown.take().is_some() {
+            queue.write_buffer(&self.probe_uniforms, 0, bytemuck::bytes_of(&ProbeUniforms::zeroed()));
+            self.update_probe_stats();
+        }
+    }
+
+    /// Hands every uploaded set to `next`, another tier's ambient pass (M4 T3), which shows the one shown
+    /// here at its own size and in its own way. Refused, this one keeps them all and goes on as it was.
+    pub(crate) fn hand_probes_to(
+        &mut self,
+        next: &mut Self,
+        queue: &wgpu::Queue,
+        sources: &ShaderSources,
+    ) -> Result<(), RenderError> {
+        next.probe_sets = std::mem::take(&mut self.probe_sets);
+        let shown = self.shown.as_ref().map(|shown| shown.handle);
+        if let Err(error) = next.show_probes(queue, shown, sources) {
+            self.probe_sets = std::mem::take(&mut next.probe_sets);
+            next.update_probe_stats();
+            return Err(error);
+        }
+        self.shown = None;
+        next.update_probe_stats();
+        self.update_probe_stats();
+        Ok(())
+    }
+
+    /// Composes every probe out of date with the next frame: a capture's, so no golden depends on the
+    /// rotation.
+    pub(crate) fn finish_probes(&mut self) {
+        if let Some(shown) = &mut self.shown {
+            shown.schedule.finish();
+        }
+    }
+
+    /// What picks a character's probe, while probes are shown.
+    pub(crate) fn probe_picker(&self) -> Option<&ProbePicker> {
+        self.shown.as_ref().map(|shown| &shown.picker)
+    }
+
+    fn update_probe_stats(&mut self) {
+        let shown = self.shown.as_ref();
+        self.stats.probe_sets = self.probe_sets.len();
+        self.stats.probe_key_bytes = self.probe_sets.bytes();
+        self.stats.reflection_probes = shown.map_or(0, |shown| shown.groups.len() as u32);
+        self.stats.probe_key_size =
+            shown.and_then(|shown| self.probe_sets.get(shown.handle)).map_or(0, |set| set.size);
+        self.stats.composed_size = shown.map_or(0, |shown| shown.size);
+        self.stats.composed_mips = shown.map_or(0, |shown| shown.mips);
+        self.stats.composed_bytes = shown.map_or(0, |shown| shown.bytes);
     }
 
     /// Whether a grid is here or expected, and whether the reflection cube's prefilter is built: what an
     /// ambient pass of another tier builds before it takes this one's place (M4 T3, [`Self::build_held`]).
-    pub(crate) fn held(&self) -> (bool, bool) {
-        (self.grid.is_some() || self.grid_expected, self.pipelines.set().prefilter)
+    pub(crate) fn held(&self) -> (bool, bool, bool) {
+        (
+            self.grid.is_some() || self.grid_expected,
+            self.pipelines.set().prefilter,
+            self.shown.is_some() || self.probes_expected,
+        )
     }
 
-    /// Builds what [`Self::held`] of another ambient pass says it has: a grid's pipelines, expecting it, and the
-    /// reflection cube's.
-    pub(crate) fn build_held(&mut self, (grid, reflection): (bool, bool), sources: &ShaderSources) {
+    /// Builds what [`Self::held`] of another ambient pass says it has: a grid's pipelines, expecting it, the
+    /// reflection cube's, and reflection probes', expecting them.
+    pub(crate) fn build_held(
+        &mut self,
+        (grid, reflection, probes): (bool, bool, bool),
+        sources: &ShaderSources,
+    ) {
         if grid {
             self.expect_grid(sources);
         }
         if reflection {
             self.build_reflection_pipelines(sources);
+        }
+        if probes {
+            self.expect_probes(sources);
         }
     }
 
@@ -1694,11 +2035,16 @@ impl Ambient {
         }));
     }
 
-    /// A warm-up's step (`warm_up`): the pipelines [`Self::expect_grid`] (`grid`) and
-    /// [`Self::build_reflection_pipelines`] (`reflection`) would build, for [`Self::adopt`]. `None` when they're
-    /// built.
-    pub(crate) fn warm(&self, grid: bool, reflection: bool) -> Option<Step<AmbientPipelines>> {
+    /// A warm-up's step (`warm_up`): the pipelines [`Self::expect_grid`] (`grid`),
+    /// [`Self::build_reflection_pipelines`] (`reflection`) and [`Self::expect_probes`] (`probes`) would build,
+    /// for [`Self::adopt`]. `None` when they're built.
+    pub(crate) fn warm(&self, grid: bool, reflection: bool, probes: bool) -> Option<Step<AmbientPipelines>> {
         let mut set = PipelineSet::default();
+        if probes {
+            set.projection = true;
+            set.prefilter = true;
+            set.compose = true;
+        }
         if grid {
             set.projection = true;
             set.prefilter |= self.environment_reflects;
@@ -1722,10 +2068,12 @@ impl Ambient {
         self.stats.pipelines = self.pipelines.count();
     }
 
-    /// The constants the environment pipelines take once [`Self::expect_grid`] has run, for a warm-up's mesh
-    /// pipelines.
-    pub(crate) fn constants_expecting_grid(&self) -> Vec<(&'static str, f64)> {
-        constants(&self.occlusion, Some(self.lookup))
+    /// The constants the environment pipelines take once [`Self::expect_grid`] (if `grid`) and
+    /// [`Self::expect_probes`] (if `probes`) have run, for a warm-up's mesh pipelines.
+    pub(crate) fn constants_expecting(&self, grid: bool, probes: bool) -> Vec<(&'static str, f64)> {
+        let grid = (grid || self.grid.is_some() || self.grid_expected).then_some(self.lookup);
+        let probes = (probes || self.shown.is_some() || self.probes_expected).then_some(self.probe_mode);
+        constants(&self.occlusion, grid, probes)
     }
 
     /// The passes' pipelines built so far, to build again from new sources (hot reload, off the
@@ -1770,6 +2118,9 @@ impl Ambient {
         self.stats.capsules = capsules;
         // The projection's sky, with a grid or for a reflective character's cube.
         self.sky = packet.ambient.sky * packet.ambient.intensity;
+        // What reflection probes compose against (M5 L3).
+        self.reflection_keys = packet.reflection_keys;
+        self.eye = packet.main_view().map(|view| view.camera.position);
         if let Some(grid) = &self.grid {
             let keys = if packet.probe_keys.is_valid() { packet.probe_keys } else { ProbeKeys::default() };
             self.keys = keys;
@@ -1825,6 +2176,8 @@ impl Ambient {
     /// are staged only when they changed since they last were.
     pub(crate) fn split_for_record(&mut self, faces: Range<u32>) -> AmbientRecord<'_> {
         self.before = (self.schedule, self.frames, self.stats.prefiltered_faces);
+        let shown_schedule = self.shown.as_ref().map(|shown| (shown.handle, shown.schedule));
+        self.probes_before = (shown_schedule, self.stats.compositions, self.projected);
         self.frames += 1;
         let Self {
             ref device,
@@ -1847,6 +2200,11 @@ impl Ambient {
             frames,
             ref mut staged,
             ref mut stats,
+            probe_mode,
+            ref mut shown,
+            reflection_keys,
+            eye,
+            ref mut projected,
             ..
         } = *self;
         let mut light = None;
@@ -1854,9 +2212,26 @@ impl Ambient {
         // character draws (M1 C7).
         let reflected =
             reflection.as_ref().filter(|_| reflective || (environment_reflects && grid.is_some()));
-        // The projection is built with the first grid or reflective character.
+        // The reflection probes due this frame (M5 L3), composed after the sky's projection, which must
+        // see every face again if it missed the last frame's.
+        let mut composing = 0;
+        if let (Some(active), Some(_)) = (shown.as_mut(), &pipelines.compose) {
+            let frozen = probe_mode == ProbeMode::CharactersOnce;
+            let keys = reflection_probes::composed_keys(reflection_keys, frozen);
+            composing = active.schedule.frame(keys, sky, faces.len() as u32, eye, &active.boxes);
+            if composing != 0 {
+                block.compose = active.compose_uniforms(keys);
+                if !*projected {
+                    schedule.reproject();
+                }
+            }
+        }
+        let shown: &Option<ActiveProbes> = shown;
+        stats.composed_probes = composing.count_ones();
+        stats.compositions += u64::from(composing.count_ones());
+        // The projection is built with the first grid, reflective character or probes.
         if let (true, Some(projection), Some(projection_group)) =
-            (grid.is_some() || reflected.is_some(), &pipelines.projection, projection_group)
+            (grid.is_some() || reflected.is_some() || composing != 0, &pipelines.projection, projection_group)
         {
             let kept = grid.as_ref().map_or(0, |grid| grid.kept);
             let work = schedule.frame(kept, faces, keys, sky);
@@ -1865,7 +2240,7 @@ impl Ambient {
             block.ambient.counts[2..].copy_from_slice(&[work.faces.start, work.faces.len() as u32]);
             // The prefilter, for the faces the projection projects (whose scale mip 0 reads).
             let faces = work.faces;
-            let projected = faces.len() as u32;
+            let projected_faces = faces.len() as u32;
             let mut prefilter = None;
             if let (Some(reflection), Some(pipeline)) =
                 (reflected.filter(|_| !faces.is_empty()), &pipelines.prefilter)
@@ -1899,14 +2274,22 @@ impl Ambient {
                     .filter(|_| entries > 1)
                     .map(|group| (&grid_pipelines.character, group, entries - 1));
             }
+            let compose = match (shown, &pipelines.compose, &pipelines.prefilter) {
+                (Some(shown), Some(compose), Some(prefilter)) if composing != 0 => {
+                    Some(ComposeWork { compose, prefilter, shown, probes: composing })
+                }
+                _ => None,
+            };
             light = Some(LightWork {
                 compute_frame,
-                projection: work.project.then_some((projection, projection_group, projected)),
+                projection: work.project.then_some((projection, projection_group, projected_faces)),
                 prefilter,
                 relight,
                 characters,
+                compose,
             });
         }
+        *projected = light.is_some();
         let occlusion = gtao.as_mut().and_then(|gtao| {
             let settings = gtao.settings;
             let textures = gtao.textures.as_mut()?;
@@ -1927,6 +2310,8 @@ impl Ambient {
         });
         stats.dispatches = light.as_ref().map_or(0, LightWork::dispatches)
             + if occlusion.is_some() { OcclusionWork::DISPATCHES } else { 0 };
+        stats.probe_dispatches =
+            light.as_ref().and_then(|light| light.compose.as_ref()).map_or(0, ComposeWork::dispatches);
         let block: &AmbientBlock = block;
         let changed =
             staged.as_ref().is_none_or(|staged| bytemuck::bytes_of(staged) != bytemuck::bytes_of(block));
@@ -1946,6 +2331,14 @@ impl Ambient {
         self.staged = None;
         self.schedule.restore(schedule);
         (self.frames, self.stats.prefiltered_faces) = (frames, prefiltered_faces);
+        // The probes it composed are due again, and the sky light is as it was.
+        let (probes, compositions, projected) = self.probes_before;
+        if let (Some(shown), Some((handle, schedule))) = (&mut self.shown, probes)
+            && shown.handle == handle
+        {
+            shown.schedule = schedule;
+        }
+        (self.stats.compositions, self.projected) = (compositions, projected);
     }
 
     pub(crate) fn stats(&self) -> AmbientStats {
@@ -2265,20 +2658,26 @@ impl Reflection {
     /// Mip `i` is roughness `i / (mips − 1)`; GGX lobes of roughness α and α' convolve to about
     /// one of √(α² + α'²), so each mip adds the lobe that takes the one before it there.
     fn uniform_values(&self, first_face: u32) -> [PrefilterUniforms; MAX_REFLECTION_MIPS] {
-        let mut values = [PrefilterUniforms::default(); MAX_REFLECTION_MIPS];
-        let last = (self.mips - 1).max(1) as f32;
-        let alpha = |mip: u32| (mip as f32 / last).powi(2);
-        for (mip, value) in (0..self.mips).zip(values.iter_mut()) {
-            let added =
-                if mip == 0 { 0.0 } else { (alpha(mip).powi(2) - alpha(mip - 1).powi(2)).max(0.0).sqrt() };
-            let samples = if mip == 0 { 1 } else { PREFILTER_SAMPLES };
-            *value = PrefilterUniforms {
-                mip: [(self.size >> mip) as f32, added, samples as f32, if mip == 0 { 1.0 } else { 0.0 }],
-                faces: [first_face, 0, 0, 0],
-            };
-        }
-        values
+        prefilter_values(self.size, self.mips, first_face)
     }
+}
+
+/// Each mip's prefilter uniforms for a chain of `mips` from `size` a side, whose filtered faces start at
+/// `first_face` ([`Reflection::uniform_values`]; a reflection probe's chain too, M5 L3).
+fn prefilter_values(size: u32, mips: u32, first_face: u32) -> [PrefilterUniforms; MAX_REFLECTION_MIPS] {
+    let mut values = [PrefilterUniforms::default(); MAX_REFLECTION_MIPS];
+    let last = (mips - 1).max(1) as f32;
+    let alpha = |mip: u32| (mip as f32 / last).powi(2);
+    for (mip, value) in (0..mips).zip(values.iter_mut()) {
+        let added =
+            if mip == 0 { 0.0 } else { (alpha(mip).powi(2) - alpha(mip - 1).powi(2)).max(0.0).sqrt() };
+        let samples = if mip == 0 { 1 } else { PREFILTER_SAMPLES };
+        *value = PrefilterUniforms {
+            mip: [(size >> mip) as f32, added, samples as f32, if mip == 0 { 1.0 } else { 0.0 }],
+            faces: [first_face, 0, 0, 0],
+        };
+    }
+    values
 }
 
 impl GtaoTextures {
@@ -2436,6 +2835,39 @@ struct LightWork<'a> {
     prefilter: Option<PrefilterWork<'a>>,
     relight: Option<(&'a wgpu::ComputePipeline, &'a wgpu::BindGroup, u32)>,
     characters: Option<(&'a wgpu::ComputePipeline, &'a wgpu::BindGroup, u32)>,
+    compose: Option<ComposeWork<'a>>,
+}
+
+/// The reflection probes a frame composes (M5 L3), as bits, and what composing them needs: each one's
+/// top level, then its rougher levels by the reflection cube's prefilter.
+struct ComposeWork<'a> {
+    compose: &'a wgpu::ComputePipeline,
+    prefilter: &'a wgpu::ComputePipeline,
+    shown: &'a ActiveProbes,
+    probes: u64,
+}
+
+impl ComposeWork<'_> {
+    fn dispatches(&self) -> u32 {
+        self.probes.count_ones() * self.shown.mips
+    }
+
+    fn dispatch(self, pass: &mut wgpu::ComputePass<'_>) {
+        let Self { compose, prefilter, shown, probes } = self;
+        for probe in (0..shown.groups.len()).filter(|&probe| probes & (1 << probe) != 0) {
+            let groups = &shown.groups[probe];
+            let size = shown.size.div_ceil(PREFILTER_WORKGROUP);
+            pass.set_pipeline(compose);
+            pass.set_bind_group(3, &groups.compose, &[]);
+            pass.dispatch_workgroups(size, size, 6);
+            pass.set_pipeline(prefilter);
+            for (mip, group) in (1..shown.mips).zip(&groups.prefilter) {
+                let size = (shown.size >> mip).div_ceil(PREFILTER_WORKGROUP);
+                pass.set_bind_group(3, group, &[]);
+                pass.dispatch_workgroups(size, size, 6);
+            }
+        }
+    }
 }
 
 impl LightWork<'_> {
@@ -2446,10 +2878,11 @@ impl LightWork<'_> {
             + self.prefilter.as_ref().map_or(0, |prefilter| prefilter.reflection.mips)
             + u32::from(self.relight.is_some())
             + u32::from(self.characters.is_some())
+            + self.compose.as_ref().map_or(0, ComposeWork::dispatches)
     }
 
     fn dispatch(self, pass: &mut wgpu::ComputePass<'_>) {
-        let Self { compute_frame, projection, prefilter, relight, characters } = self;
+        let Self { compute_frame, projection, prefilter, relight, characters, compose } = self;
         if let Some((pipelines, group, faces)) = projection {
             // The three share a layout, so the groups stay bound; wgpu orders each dispatch's
             // writes before the next one's reads.
@@ -2483,6 +2916,10 @@ impl LightWork<'_> {
             pass.set_bind_group(0, compute_frame, &[]);
             pass.set_bind_group(1, group, &[]);
             pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
+        }
+        if let Some(compose) = compose {
+            pass.set_bind_group(0, compute_frame, &[]);
+            compose.dispatch(pass);
         }
     }
 }
@@ -2617,17 +3054,28 @@ mod tests {
 
     #[test]
     fn constants_are_only_those_that_are_on() {
-        assert!(constants(&AmbientOcclusion::OFF, None).is_empty(), "the shader as before W5");
+        assert!(constants(&AmbientOcclusion::OFF, None, None).is_empty(), "the shader as before W5");
         let all = AmbientOcclusion { capsules: true, gtao: Some(GtaoSettings::DESKTOP) };
-        let names =
-            |lookup| -> Vec<&str> { constants(&all, Some(lookup)).iter().map(|(name, _)| *name).collect() };
+        let names = |lookup| -> Vec<&str> {
+            constants(&all, Some(lookup), None).iter().map(|(name, _)| *name).collect()
+        };
         assert_eq!(names(ProbeLookup::PerPixel), ["AMBIENT_PROBES", "CAPSULE_AO", "GTAO"]);
         assert_eq!(
             names(ProbeLookup::PerVertex),
             ["AMBIENT_PROBES", "AMBIENT_PROBES_PER_VERTEX", "CAPSULE_AO", "GTAO"]
         );
         let capsules = AmbientOcclusion { capsules: true, gtao: None };
-        assert_eq!(constants(&capsules, None), [("CAPSULE_AO", 1.0)]);
+        assert_eq!(constants(&capsules, None, None), [("CAPSULE_AO", 1.0)]);
+        // Reflection probes add theirs on desktop tiers, and nothing where only characters read them (M5 L3).
+        assert_eq!(
+            constants(&AmbientOcclusion::OFF, None, Some(ProbeMode::Parallax)),
+            [("REFLECTION_PROBES", 2.0)]
+        );
+        assert_eq!(
+            constants(&AmbientOcclusion::OFF, None, Some(ProbeMode::Plain)),
+            [("REFLECTION_PROBES", 1.0)]
+        );
+        assert!(constants(&AmbientOcclusion::OFF, None, Some(ProbeMode::CharactersOnce)).is_empty());
     }
 
     #[test]

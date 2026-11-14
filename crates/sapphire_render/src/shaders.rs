@@ -92,10 +92,17 @@ pub enum ShaderFile {
     VfxDecal,
     /// The on-screen interface's quads over the finished frame (M2 I2).
     Ui,
+    /// Reflection probes' composed cubes read as a cube array, where the device has them (M5 L3).
+    ProbeCubes,
+    /// The same read from a 2D array of faces, the face picked by hand: devices without cube arrays.
+    ProbeFaces,
+    /// Reflection probes as surfaces read them: the environment's cell table, box parallax and fade, and
+    /// a character's probe (M5 L3).
+    Reflections,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 28] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -121,6 +128,9 @@ impl ShaderFile {
         Self::VfxMesh,
         Self::VfxDecal,
         Self::Ui,
+        Self::ProbeCubes,
+        Self::ProbeFaces,
+        Self::Reflections,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -151,6 +161,9 @@ impl ShaderFile {
             Self::VfxMesh => "vfx_mesh.wgsl",
             Self::VfxDecal => "vfx_decal.wgsl",
             Self::Ui => "ui.wgsl",
+            Self::ProbeCubes => "probe_cubes.wgsl",
+            Self::ProbeFaces => "probe_faces.wgsl",
+            Self::Reflections => "reflections.wgsl",
         }
     }
 
@@ -187,6 +200,9 @@ impl ShaderFile {
             Self::VfxMesh => include_str!("../shaders/vfx_mesh.wgsl"),
             Self::VfxDecal => include_str!("../shaders/vfx_decal.wgsl"),
             Self::Ui => include_str!("../shaders/ui.wgsl"),
+            Self::ProbeCubes => include_str!("../shaders/probe_cubes.wgsl"),
+            Self::ProbeFaces => include_str!("../shaders/probe_faces.wgsl"),
+            Self::Reflections => include_str!("../shaders/reflections.wgsl"),
         }
     }
 
@@ -261,10 +277,35 @@ impl Program {
         use ShaderFile as F;
         match self {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
-            Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::AnimeCharacter],
-            Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Environment],
+            Self::AnimeCharacter => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeFaces,
+                F::Reflections,
+                F::AnimeCharacter,
+            ],
+            Self::Environment => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeFaces,
+                F::Reflections,
+                F::Environment,
+            ],
             Self::FogCard => &[F::Frame, F::Materials, F::FogCard],
-            Self::Outline => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::AnimeCharacter, F::Outline],
+            Self::Outline => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeFaces,
+                F::Reflections,
+                F::AnimeCharacter,
+                F::Outline,
+            ],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
@@ -279,6 +320,43 @@ impl Program {
             Self::VfxMesh => &[F::Frame, F::Materials, F::VfxMesh],
             Self::VfxDecal => &[F::Frame, F::Materials, F::VfxDecal],
             Self::Ui => &[F::Ui],
+        }
+    }
+
+    /// Its files, in order, when it reads reflection probes' cubes as `read` says (M5 L3): [`Self::files`]
+    /// reads them as faces, which every device can.
+    pub(crate) const fn files_reading(self, read: ProbeRead) -> &'static [ShaderFile] {
+        use ShaderFile as F;
+        match (self, read) {
+            (Self::AnimeCharacter, ProbeRead::CubeArray) => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeCubes,
+                F::Reflections,
+                F::AnimeCharacter,
+            ],
+            (Self::Environment, ProbeRead::CubeArray) => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeCubes,
+                F::Reflections,
+                F::Environment,
+            ],
+            (Self::Outline, ProbeRead::CubeArray) => &[
+                F::Frame,
+                F::Materials,
+                F::Lights,
+                F::Ambient,
+                F::ProbeCubes,
+                F::Reflections,
+                F::AnimeCharacter,
+                F::Outline,
+            ],
+            _ => self.files(),
         }
     }
 
@@ -326,9 +404,49 @@ impl Program {
 /// development builds read from disk or take from live link and hand to
 /// [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources). Text, never a path
 /// (rule R5).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ShaderSources {
     files: [Cow<'static, str>; ShaderFile::ALL.len()],
+    /// How the programs that read reflection probes read their cubes: the device's choice, which a renderer
+    /// stamps on the sources it's given ([`Self::reading`]). Not compared: it's the device's, not the text's.
+    read: ProbeRead,
+}
+
+/// Sources are equal when their files are.
+impl PartialEq for ShaderSources {
+    fn eq(&self, other: &Self) -> bool {
+        self.files == other.files
+    }
+}
+
+impl Eq for ShaderSources {}
+
+/// How shaders read reflection probes' composed cubes (M5 L3): six layers a probe, as a cube array where
+/// the device has them ([`GpuCaps::cube_array_textures`](sapphire_rhi::GpuCaps)), else as a 2D array of
+/// faces with the face picked by hand. wgpu refuses a module that declares a cube array on a device
+/// without them, used or not, so the two are two files, and a program is assembled with one
+/// ([`Program::files_reading`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ProbeRead {
+    /// Every device's read, and the compiled-in sources' until a renderer stamps its device's.
+    #[default]
+    Faces,
+    CubeArray,
+}
+
+impl ProbeRead {
+    /// The read of a device that has cube arrays or not.
+    pub(crate) fn of(cube_arrays: bool) -> Self {
+        if cube_arrays { Self::CubeArray } else { Self::Faces }
+    }
+
+    /// The view dimension the probes' texture binds as.
+    pub(crate) fn dimension(self) -> wgpu::TextureViewDimension {
+        match self {
+            Self::Faces => wgpu::TextureViewDimension::D2Array,
+            Self::CubeArray => wgpu::TextureViewDimension::CubeArray,
+        }
+    }
 }
 
 impl Default for ShaderSources {
@@ -340,7 +458,22 @@ impl Default for ShaderSources {
 impl ShaderSources {
     /// The files compiled into the renderer.
     pub fn compiled_in() -> Self {
-        Self { files: ShaderFile::ALL.map(|file| Cow::Borrowed(file.compiled_in())) }
+        Self {
+            files: ShaderFile::ALL.map(|file| Cow::Borrowed(file.compiled_in())),
+            read: ProbeRead::default(),
+        }
+    }
+
+    /// These sources, assembled for a device that reads reflection probes as `read` says.
+    #[must_use]
+    pub(crate) fn reading(mut self, read: ProbeRead) -> Self {
+        self.read = read;
+        self
+    }
+
+    /// How their programs read reflection probes.
+    pub(crate) fn read(&self) -> ProbeRead {
+        self.read
     }
 
     /// The text of `file`.
@@ -360,7 +493,7 @@ impl ShaderSources {
 
     /// The source of `program`: its files, joined by newlines.
     pub(crate) fn program(&self, program: Program) -> String {
-        let files = program.files();
+        let files = program.files_reading(self.read);
         let mut source = String::with_capacity(files.iter().map(|&file| self.get(file).len() + 1).sum());
         for (index, &file) in files.iter().enumerate() {
             if index > 0 {
@@ -373,12 +506,12 @@ impl ShaderSources {
 
     /// Whether `program`'s files differ between these sources and `other`.
     pub(crate) fn differs(&self, other: &Self, program: Program) -> bool {
-        program.files().iter().any(|&file| self.get(file) != other.get(file))
+        program.files_reading(self.read).iter().any(|&file| self.get(file) != other.get(file))
     }
 
     /// The file and line (1-based) of line `line` of `program`'s source, which joins its files.
     fn locate(&self, program: Program, line: u32) -> (ShaderFile, u32) {
-        let files = program.files();
+        let files = program.files_reading(self.read);
         let mut first = 1;
         for &file in files {
             // Each file starts on a line of its own: the newline that joins it to the next adds
@@ -416,7 +549,8 @@ pub enum ShaderError {
 }
 
 /// Checks `program`'s source in `sources` as wgpu will compile it, with naga and no optional
-/// capabilities (every shader must run on every supported device), and returns the module.
+/// capabilities (every shader must run on every supported device) but the cube arrays of sources that read
+/// reflection probes through them ([`ProbeRead`]), and returns the module.
 pub(crate) fn validate(program: Program, sources: &ShaderSources) -> Result<naga::Module, ShaderError> {
     let source = sources.program(program);
     let invalid = |location: Option<naga::SourceLocation>, message: String, report: String| {
@@ -428,7 +562,11 @@ pub(crate) fn validate(program: Program, sources: &ShaderSources) -> Result<naga
         let report = error.emit_to_string_with_path(&source, program.name());
         invalid(error.location(&source), error.message().to_owned(), report)
     })?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+    let capabilities = match sources.read {
+        ProbeRead::Faces => naga::valid::Capabilities::empty(),
+        ProbeRead::CubeArray => naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
+    };
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
         .validate(&module)
         .map_err(|error| {
             let report = error.emit_to_string_with_path(&source, program.name());
@@ -643,12 +781,13 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
+    use crate::ambient::reflection_probes::{ComposeUniforms, GpuProbe, ProbeUniforms};
     use crate::ambient::{
         AmbientUniforms, GpuAmbientCapsule, GtaoUniforms, PrefilterUniforms, RelightUniforms,
     };
     use crate::characters::{
-        GpuCharacter, GpuCharacterAmbient, GpuCharacterDrive, GpuCharacterFade, GpuCharacterShadow,
-        GpuCharacterStyle, GpuFace, GpuReceived, GpuRig,
+        GpuCharacter, GpuCharacterAmbient, GpuCharacterDrive, GpuCharacterFade, GpuCharacterReflection,
+        GpuCharacterShadow, GpuCharacterStyle, GpuFace, GpuReceived, GpuRig,
     };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
@@ -820,14 +959,30 @@ mod tests {
             "\n",
             include_str!("../shaders/ambient.wgsl"),
             "\n",
+            include_str!("../shaders/probe_faces.wgsl"),
+            "\n",
+            include_str!("../shaders/reflections.wgsl"),
+            "\n",
             include_str!("../shaders/anime_character.wgsl")
         );
         assert_eq!(sources.program(Program::AnimeCharacter), character);
+        // A device with cube arrays reads the probes through them, in the same place.
+        let cubes = sources.clone().reading(ProbeRead::CubeArray).program(Program::AnimeCharacter);
+        assert_eq!(
+            cubes,
+            character.replace(
+                include_str!("../shaders/probe_faces.wgsl"),
+                include_str!("../shaders/probe_cubes.wgsl")
+            )
+        );
         let post = concat!(include_str!("../shaders/post.wgsl"), "\n", include_str!("../shaders/focus.wgsl"));
         assert_eq!(sources.program(Program::Post), post);
         // Every file is in a program, and found by its name.
         for file in ShaderFile::ALL {
-            assert!(Program::ALL.iter().any(|program| program.files().contains(&file)), "{file}");
+            let reads = [ProbeRead::Faces, ProbeRead::CubeArray];
+            let used =
+                |program: &Program| reads.iter().any(|&read| program.files_reading(read).contains(&file));
+            assert!(Program::ALL.iter().any(used), "{file}");
             assert_eq!(ShaderFile::from_file_name(file.file_name()), Some(file));
         }
         assert_eq!(ShaderFile::from_file_name("missing.wgsl"), None);
@@ -1099,6 +1254,10 @@ mod tests {
             (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
             (Program::AnimeCharacter, "CharacterDrive", size_of::<GpuCharacterDrive>()),
             (Program::AnimeCharacter, "CharacterStyle", size_of::<GpuCharacterStyle>()),
+            (Program::AnimeCharacter, "CharacterReflection", size_of::<GpuCharacterReflection>()),
+            (Program::AnimeCharacter, "ReflectionUniforms", size_of::<ProbeUniforms>()),
+            (Program::Environment, "ReflectionUniforms", size_of::<ProbeUniforms>()),
+            (Program::Environment, "ReflectionProbe", size_of::<GpuProbe>()),
             (Program::AnimeCharacter, "CharacterLayerRegion", size_of::<CharacterLayerRegion>()),
             (Program::AnimeCharacter, "ShadowUniforms", size_of::<ShadowUniforms>()),
             (Program::AnimeCharacter, "ShadowCascade", size_of::<GpuCascade>()),
@@ -1137,6 +1296,7 @@ mod tests {
             (Program::Ambient, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Ambient, "RelightUniforms", size_of::<RelightUniforms>()),
             (Program::Ambient, "PrefilterUniforms", size_of::<PrefilterUniforms>()),
+            (Program::Ambient, "ComposeUniforms", size_of::<ComposeUniforms>()),
             (Program::Ambient, "GtaoUniforms", size_of::<GtaoUniforms>()),
             (Program::Ambient, "SkyLight", crate::ambient::SKY_LIGHT_BYTES as usize),
             (Program::DebugView, "FrameUniforms", size_of::<FrameUniforms>()),
@@ -1326,7 +1486,13 @@ mod tests {
                     dissolve,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style, drive })),
+            (
+                "CharacterData",
+                offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style, drive, reflection }),
+            ),
+            ("CharacterReflection", offsets!(GpuCharacterReflection { probe, weight, _padding })),
+            ("ReflectionUniforms", offsets!(ProbeUniforms { cells_origin, cells, probes })),
+            ("ReflectionProbe", offsets!(GpuProbe { box_min, box_max, position })),
             ("CharacterStyle", offsets!(GpuCharacterStyle { shade, camera_rim })),
             ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
             ("CharacterFade", offsets!(GpuCharacterFade { amount })),
@@ -1372,6 +1538,7 @@ mod tests {
             ("AmbientCapsule", offsets!(GpuAmbientCapsule { base, top })),
             ("RelightUniforms", offsets!(RelightUniforms { keys, weights, counts, offsets, atlas, slice })),
             ("PrefilterUniforms", offsets!(PrefilterUniforms { mip, faces })),
+            ("ComposeUniforms", offsets!(ComposeUniforms { keys, weights, size })),
             ("GtaoUniforms", offsets!(GtaoUniforms { size, params })),
         ];
         // Each quad of the interface's storage buffer.
@@ -1590,6 +1757,8 @@ mod tests {
                 crate::pipelines::override_constant::VELOCITY,
                 shadows[0],
                 shadows[1],
+                // `reflections.wgsl`'s (M5 L3), included before the environment's own.
+                ambient::REFLECTION_PROBES,
                 "PERMUTATION_ALPHA_TEST",
                 "PERMUTATION_TRANSPARENT",
                 crate::environment::SPECULAR_CONSTANT,

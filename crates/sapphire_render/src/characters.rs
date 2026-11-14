@@ -7,11 +7,11 @@
 //!   key light with unstyled GI ([`CharacterLighting::unstyled`]), a face at rest
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
 //!   changes (while the hour runs, the camera moves for a rig whose key, GI or camera rim
-//!   depends on it, or a head, an expression, a body, an opacity or a drive changes, or the
-//!   frame's ambient light changes): 336 bytes a character. With shadows on, the face pass (M1 R4)
-//!   writes each entry's `shadow.visibility` on the GPU, after the upload, in every frame where a
-//!   face or an eye draws; with a probe grid, the character ambient pass (M1 W5) writes its
-//!   `ambient`.
+//!   depends on it, or a head, an expression, a body, an opacity or a drive changes, the
+//!   frame's ambient light changes, or the reflection probe it stands by, M5 L3): 352 bytes a
+//!   character. With shadows on, the face pass (M1 R4) writes each entry's `shadow.visibility`
+//!   on the GPU, after the upload, in every frame where a face or an eye draws; with a probe
+//!   grid, the character ambient pass (M1 W5) writes its `ambient`.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
@@ -93,6 +93,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use sapphire_rhi::wgpu;
 
+use crate::ambient::reflection_probes::{NO_PROBE, ProbePicker};
 use crate::buffer::{self, GrowableBuffer};
 use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
@@ -118,6 +119,34 @@ pub(crate) struct GpuCharacter {
     pub fade: GpuCharacterFade,
     pub style: GpuCharacterStyle,
     pub drive: GpuCharacterDrive,
+    pub reflection: GpuCharacterReflection,
+}
+
+/// The reflection probe a character reflects as the shaders read it (WGSL `CharacterReflection`, M5 L3),
+/// chosen on the CPU by where its body's centre stands. 16 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuCharacterReflection {
+    /// The probe, or [`NO_PROBE`]: the sky's reflection alone, as before probes.
+    pub probe: u32,
+    /// How much of its cube it takes, 0 to 1.
+    pub weight: f32,
+    pub _padding: [u32; 2],
+}
+
+impl GpuCharacterReflection {
+    pub(crate) const NONE: Self = Self { probe: NO_PROBE, weight: 0.0, _padding: [0; 2] };
+
+    /// The probe `picker` picks for a character centred at `centre`, or none without a picker or a centre.
+    fn picked(picker: Option<&ProbePicker>, centre: Option<Vec3>) -> Self {
+        match (picker, centre) {
+            (Some(picker), Some(centre)) => {
+                let (probe, weight) = picker.pick(centre);
+                Self { probe, weight, _padding: [0; 2] }
+            }
+            _ => Self::NONE,
+        }
+    }
 }
 
 /// A character's light rig as the shader reads it (WGSL `CharacterRig`). 80 bytes.
@@ -385,6 +414,7 @@ impl GpuCharacter {
             fade: GpuCharacterFade { amount: [fade, 0.0, 0.0, 0.0] },
             style: GpuCharacterStyle::new(&shade, &camera_rim),
             drive: GpuCharacterDrive::new(drive),
+            reflection: GpuCharacterReflection::NONE,
         }
     }
 
@@ -448,6 +478,7 @@ impl Characters {
         queue: &wgpu::Queue,
         packet: &FramePacket,
         slots: &mut InstanceSlots,
+        probes: Option<&ProbePicker>,
     ) -> bool {
         profiling::scope!("Characters::prepare");
         if packet.main_view().is_none() {
@@ -455,7 +486,7 @@ impl Characters {
             self.list.fading_changed = false;
             return false;
         }
-        self.unsent |= self.list.update(packet, slots, self.capsule_ao);
+        self.unsent |= self.list.update(packet, slots, self.capsule_ao, probes);
         // The entries are uploaded whole whenever they change, so nothing needs keeping.
         let bytes = self.list.entries.len() as u64 * ENTRY_BYTES;
         let replaced = self.buffer.reserve(device, queue, bytes, 0);
@@ -662,13 +693,15 @@ impl CharacterList {
     /// entry. Points each of those instances at its entry and gives it its fade, and every
     /// instance the last frame listed but this one doesn't back at the fallback, whole. With
     /// `capsule_ao`, each character's ambient takes what the others' bodies leave of it
-    /// ([`capsule_visibility`]), each body once however many entries carry it. Returns whether
-    /// the entries changed.
+    /// ([`capsule_visibility`]), each body once however many entries carry it. With `probes`, each
+    /// character of the frame's own (not an inset's) reflects the reflection probe it stands by (M5 L3).
+    /// Returns whether the entries changed.
     pub(crate) fn update(
         &mut self,
         packet: &FramePacket,
         slots: &mut InstanceSlots,
         capsule_ao: bool,
+        probes: Option<&ProbePicker>,
     ) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
@@ -715,8 +748,11 @@ impl CharacterList {
                     self.ignored += 1;
                     continue;
                 }
-                // An inset's character takes its inset's ambient light (M3 U6).
-                None => self.push(index, character, inset_ambient(packet, character.id).unwrap_or(ambient)),
+                // An inset's character takes its inset's ambient light (M3 U6), and no probe.
+                None => match inset_ambient(packet, character.id) {
+                    Some(inset) => self.push(index, character, inset, None),
+                    None => self.push(index, character, ambient, probes),
+                },
             };
             // Every slot is 0 here until this frame gives it an entry: an instance listed again
             // takes its last entry, and counts once.
@@ -830,10 +866,20 @@ impl CharacterList {
     }
 
     /// Makes an entry for `character`, the packet's listing `source`, under the frame's
-    /// `ambient` light, and returns it.
-    fn push(&mut self, source: usize, character: &CharacterInstance, ambient: &AmbientLight) -> u32 {
+    /// `ambient` light and reflecting the probe `probes` picks, and returns it.
+    fn push(
+        &mut self,
+        source: usize,
+        character: &CharacterInstance,
+        ambient: &AmbientLight,
+        probes: Option<&ProbePicker>,
+    ) -> u32 {
         let entry = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
-        self.entries.push(GpuCharacter::of(character, ambient));
+        let mut gpu = GpuCharacter::of(character, ambient);
+        let centre = gpu.ambient.probe;
+        let centre = (centre[3] > 0.0).then(|| Vec3::new(centre[0], centre[1], centre[2]));
+        gpu.reflection = GpuCharacterReflection::picked(probes, centre);
+        self.entries.push(gpu);
         self.bodies.push(character.body);
         self.sources.push(u32::try_from(source).expect("fewer than 2³² listings"));
         let body = &character.body;
@@ -1056,7 +1102,7 @@ mod tests {
         let entry =
             |slots: &InstanceSlots, id: u64| slots.character(slots.slot(InstanceId(id)).expect("live"));
         // Instance 9 isn't drawn, and the second entry for 2 replaces the first.
-        assert!(list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false));
+        assert!(list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false, None));
         assert_eq!((list.lit, list.ignored), (2, 1), "instance 2 counts once");
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0, 1, 3, 0]);
         let intensity = |list: &CharacterList, index: usize| list.entries[index].rig.key_radiance[0];
@@ -1064,12 +1110,12 @@ mod tests {
         assert_eq!(intensity(&list, 3), 4.0);
 
         // The same list again: nothing changes, so nothing is uploaded.
-        assert!(!list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false));
+        assert!(!list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false, None));
         // Instance 1 leaves the list and 3 joins: 1 falls back, 2 and 3 move.
-        assert!(list.update(&packet(&[(3, 1.0), (2, 1.0)]), &mut slots, false));
+        assert!(list.update(&packet(&[(3, 1.0), (2, 1.0)]), &mut slots, false, None));
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0, 0, 2, 1]);
         assert_eq!(list.lit, 2);
-        assert!(list.update(&packet(&[]), &mut slots, false));
+        assert!(list.update(&packet(&[]), &mut slots, false, None));
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0; 4]);
         assert_eq!(list.entries.len(), 1, "the fallback alone");
     }
@@ -1080,7 +1126,7 @@ mod tests {
         let mut slots = slots(0..count);
         let mut list = CharacterList::default();
         let characters: Vec<(u64, f32)> = (0..count).map(|id| (id, 1.0)).collect();
-        list.update(&packet(&characters), &mut slots, false);
+        list.update(&packet(&characters), &mut slots, false, None);
         assert_eq!((list.lit, list.ignored), (ID_ENTRY_MASK, 2));
         assert_eq!(list.entries.len(), ID_ENTRY_MASK as usize + 1, "the fallback and the rest");
         assert_eq!(slots.character(slots.slot(InstanceId(count - 1)).expect("live")), 0, "unlit");
@@ -1092,7 +1138,7 @@ mod tests {
         let mut list = CharacterList::default();
         let mut frame = packet(&[(0, 1.0)]);
         frame.characters[0].lighting.rim = -1.0;
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
     }
 
@@ -1101,12 +1147,12 @@ mod tests {
         let mut slots = slots(0..1);
         let mut list = CharacterList::default();
         let mut frame = packet(&[(0, 1.0)]);
-        assert!(list.update(&frame, &mut slots, false));
+        assert!(list.update(&frame, &mut slots, false, None));
         frame.characters[0].face.expression.blush = 0.5;
-        assert!(list.update(&frame, &mut slots, false), "an expression moved");
+        assert!(list.update(&frame, &mut slots, false, None), "an expression moved");
         assert_eq!(list.entries[1].face.expression[0], 0.5);
         frame.characters[0].face.head = HeadBasis { forward: Vec3::ZERO, up: Vec3::Y };
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
     }
 
@@ -1182,9 +1228,9 @@ mod tests {
         frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
         frame.characters[1].body =
             CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert_eq!(list.entries[1].ambient.axis[3], 1.0, "capsule AO off");
-        assert!(list.update(&frame, &mut slots, true));
+        assert!(list.update(&frame, &mut slots, true, None));
         let [fallback, first, second] = [0, 1, 2].map(|index| list.entries[index].ambient);
         assert_eq!(fallback.axis[3], 1.0, "the world's fallback has no body");
         assert!(first.axis[3] < 1.0 && first.axis[3] == second.axis[3], "{first:?}");
@@ -1210,7 +1256,7 @@ mod tests {
         }
         frame.characters[3].body = CharacterBody::capsule(Vec3::X, Vec3::X + Vec3::Y, 0.3);
         frame.characters[6].body = body;
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert_eq!((0..7).map(|id| entry_of(&slots, id)).collect::<Vec<_>>(), [1, 1, 1, 2, 3, 4, 5]);
         assert_eq!(list.entries.len(), 6, "the fallback and five characters");
         assert_eq!(list.lit, 7, "every instance is lit by its rig");
@@ -1218,7 +1264,7 @@ mod tests {
         let mut apart = frame.clone();
         apart.characters[1].face.expression.blush = 0.5;
         apart.characters[2].opacity = 0.5;
-        list.update(&apart, &mut slots, false);
+        list.update(&apart, &mut slots, false, None);
         assert_eq!((0..3).map(|id| entry_of(&slots, id)).collect::<Vec<_>>(), [1, 2, 3]);
     }
 
@@ -1239,7 +1285,7 @@ mod tests {
             for (index, character) in frame.characters.iter_mut().enumerate() {
                 character.body = if (index as u64) < receivers { receiver } else { neighbor };
             }
-            list.update(&frame, &mut slots, true);
+            list.update(&frame, &mut slots, true, None);
             (0..receivers)
                 .map(|id| list.entries[entry_of(&slots, id) as usize].ambient.axis[3])
                 .collect::<Vec<_>>()
@@ -1265,7 +1311,7 @@ mod tests {
             CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
         frame.characters[2].body =
             CharacterBody::capsule(Vec3::new(9.0, 0.0, 0.0), Vec3::new(9.0, 1.0, 0.0), 0.3);
-        list.update(&frame, &mut slots, true);
+        list.update(&frame, &mut slots, true, None);
         assert_eq!(entry_of(&slots, 1), 3, "its last entry");
         assert_eq!(list.entries[1].ambient.axis[3], 1.0, "nothing near the receiver");
     }
@@ -1303,22 +1349,22 @@ mod tests {
         frame.characters[1].body =
             CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
         frame.characters[0].drive = MaterialDrive { dissolve: 0.5, ..MaterialDrive::NONE };
-        list.update(&frame, &mut slots, true);
+        list.update(&frame, &mut slots, true, None);
         assert!(list.fading_changed, "it started being cut");
         assert!(slots.cut(slots.slot(InstanceId(0)).expect("live")));
         assert_eq!((list.table().body(0), list.occluders.len(), list.faded), (Some(0), 2, 1));
         assert!(list.entries[entry_of(&slots, 1) as usize].ambient.axis[3] < 1.0, "occluded by it");
         frame.characters[0].drive.dissolve = 1.0;
-        list.update(&frame, &mut slots, true);
+        list.update(&frame, &mut slots, true, None);
         assert!(!list.fading_changed, "still cut");
         assert_eq!((list.table().body(0), list.occluders.len()), (None, 1), "gone: no shadow");
         assert_eq!(list.entries[entry_of(&slots, 1) as usize].ambient.axis[3], 1.0, "nor capsule AO");
         frame.characters[0].drive = MaterialDrive::NONE;
-        list.update(&frame, &mut slots, true);
+        list.update(&frame, &mut slots, true, None);
         assert!(list.fading_changed && !slots.cut(0), "whole again");
         // M5 L12: faded all the way, it casts nothing either.
         frame.characters[0].opacity = 0.0;
-        list.update(&frame, &mut slots, true);
+        list.update(&frame, &mut slots, true, None);
         assert_eq!((list.table().body(0), list.occluders.len()), (None, 1), "faded out: no shadow");
     }
 
@@ -1332,7 +1378,7 @@ mod tests {
         let mut frame = packet(&[(0, 1.0), (1, 1.0), (2, 1.0)]);
         frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
         frame.characters[1].body = CharacterBody::capsule(Vec3::X, Vec3::X + Vec3::Y, 0.3);
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         let takes = |caster: u32| GpuReceived { casters: [caster, 0, 0, 0], weights: [0.5, 0.0, 0.0, 0.0] };
         let received = [takes(1), takes(RECEIVED_CAPSULE)];
         assert!(list.receive(&received), "new slots");
@@ -1341,11 +1387,11 @@ mod tests {
         };
         let each = [0, 1, 2].map(|id| entry(&list, &slots, id));
         assert_eq!(each, [received[0], received[1], GpuReceived::default()]);
-        assert!(!list.update(&frame, &mut slots, false), "the slots aside, nothing changed");
+        assert!(!list.update(&frame, &mut slots, false, None), "the slots aside, nothing changed");
         assert!(!list.receive(&received), "the same slots");
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert!(list.receive(&[received[1], received[0]]), "other slots");
-        list.update(&frame, &mut slots, false);
+        list.update(&frame, &mut slots, false, None);
         assert!(list.receive(&[]), "none at all");
         assert_eq!(entry(&list, &slots, 0), GpuReceived::default());
     }

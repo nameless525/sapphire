@@ -30,8 +30,9 @@ use crate::temporal::TemporalStats;
 struct Held {
     mesh: MeshShape,
     post: PostShape,
-    /// A grid held or expected, and the reflection cube's prefilter ([`Ambient::held`](crate::ambient::Ambient)).
-    ambient: (bool, bool),
+    /// A grid held or expected, the reflection cube's prefilter, and reflection probes shown or expected
+    /// ([`Ambient::held`](crate::ambient::Ambient)).
+    ambient: (bool, bool, bool),
     /// The effects' pipelines, the sprites' and the meshes', with the mask's or not.
     effects: Option<crate::vfx::VfxParts>,
     /// The sky's variants, as bits.
@@ -149,6 +150,8 @@ impl Renderer {
         }
         // The fallible part first, on the new owners alone.
         next.set_probe_grid(grid)?;
+        // Every reflection probe set goes over, the one shown composed again at the new tier's size (M5 L3).
+        self.ambient.hand_probes_to(&mut next.ambient, &next.queue, &next.shaders)?;
         self.settle_last_frame();
         self.swap_owners(&mut next);
         tracing::info!(target: super::LOG_TARGET, temporal = self.settings.temporal, "the tier changed in place");

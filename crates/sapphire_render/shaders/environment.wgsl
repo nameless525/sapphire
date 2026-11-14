@@ -282,9 +282,11 @@ struct EnvironmentAmbient {
 
 // The ambient light reflected toward the camera: the hemisphere, or where a probe grid lights
 // the point (read per pixel) the sky's prefiltered reflection past the geometry the grid sees
-// (see the top of this file), through Karis's analytic fit of the split-sum environment BRDF
-// ("Physically Based Shading on Mobile", 2014). Zero with specular off.
-fn ambient_specular(surface: EnvironmentSurface, sources: EnvironmentAmbient) -> vec3<f32> {
+// (see the top of this file), and where a reflection probe reaches the point its cube in place of
+// either (M5 L3, `reflections.wgsl`, read at `position`, world space), through Karis's analytic
+// fit of the split-sum environment BRDF ("Physically Based Shading on Mobile", 2014). Zero with
+// specular off.
+fn ambient_specular(surface: EnvironmentSurface, sources: EnvironmentAmbient, position: vec3<f32>) -> vec3<f32> {
     if ENVIRONMENT_SPECULAR == ENVIRONMENT_SPECULAR_OFF {
         return vec3<f32>(0.0);
     }
@@ -304,6 +306,9 @@ fn ambient_specular(surface: EnvironmentSurface, sources: EnvironmentAmbient) ->
         let open = grid_sky_visibility(sources.grid, reflected);
         let probed = mix(grid_irradiance(sources.grid, reflected), sky, open);
         light = mix(light, probed, sources.grid.weight);
+    }
+    if REFLECTION_PROBES != 0u {
+        light = environment_reflection(position, reflected, surface.roughness, light);
     }
     var specular_light = light * brdf * surface.occlusion * surface.cavity;
     if CAPSULE_AO || GTAO {
@@ -486,7 +491,8 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
         ambient_diffuse *= multibounce(sources.visibility, surface.diffuse);
     }
     var color = surface.diffuse * (key_light + ambient_diffuse)
-        + key_radiance * specular(surface, key_direction, n_dot_l) * lit + ambient_specular(surface, sources);
+        + key_radiance * specular(surface, key_direction, n_dot_l) * lit
+        + ambient_specular(surface, sources, in.world_position);
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = light_list(in.clip_position, in.instance);

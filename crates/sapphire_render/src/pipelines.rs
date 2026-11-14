@@ -24,7 +24,7 @@ use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUn
 use crate::lights::GpuLight;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::{Cancel, Step};
-use crate::shaders::{self, BuildOn, Program, ShaderSources};
+use crate::shaders::{self, BuildOn, ProbeRead, Program, ShaderSources};
 use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
@@ -1005,6 +1005,8 @@ impl FrameGroup {
                 ambient::frame_binding::ATLAS
                     | ambient::frame_binding::BRICKS
                     | ambient::frame_binding::OCCLUSION
+                    | ambient::frame_binding::PROBE_CELLS
+                    | ambient::frame_binding::PROBE_UNIFORMS
             ),
             Self::World => !matches!(
                 binding,
@@ -1021,8 +1023,8 @@ pub(crate) struct Layouts {
     /// Group 0 per [`FrameGroup`], each the part of these it binds: frame constants, local
     /// lights and their lists, the characters' entries, the shadows' uniforms, maps and
     /// comparison sampler (M1 R4), the character prepass's depth and IDs with the sampler that
-    /// gathers them (M1 C5), and the ambient uniforms, probe atlas, brick table, reflection cube,
-    /// GTAO and their sampler (M1 W5).
+    /// gathers them (M1 C5), the ambient uniforms, probe atlas, brick table, reflection cube,
+    /// GTAO and their sampler (M1 W5), and reflection probes' cubes, cells and uniforms (M5 L3).
     frame: [wgpu::BindGroupLayout; FrameGroup::ALL.len()],
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
@@ -1036,12 +1038,13 @@ pub(crate) struct Layouts {
 }
 
 impl Layouts {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    /// The layouts on `device`, whose shaders read reflection probes' cubes as `read` says.
+    pub(crate) fn new(device: &wgpu::Device, read: ProbeRead) -> Self {
         let layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries })
         };
         Self {
-            frame: FrameGroup::ALL.map(|group| layout(group.name(), &frame_entries(group))),
+            frame: FrameGroup::ALL.map(|group| layout(group.name(), &frame_entries(group, read))),
             view: layout("view", &[view_entry()]),
             scene: MESH_FAMILIES.map(|family| layout(family.name(), &scene_entries(family))),
             materials: MaterialFamily::ALL.map(|family| layout(family.name(), &material_entries(family))),
@@ -1087,8 +1090,9 @@ fn depth_entry(binding: u32, view_dimension: wgpu::TextureViewDimension) -> wgpu
 
 const STORAGE: wgpu::BufferBindingType = wgpu::BufferBindingType::Storage { read_only: true };
 
-/// Group 0's entries for `group`: those of every binding it [binds](FrameGroup::binds).
-fn frame_entries(group: FrameGroup) -> Vec<wgpu::BindGroupLayoutEntry> {
+/// Group 0's entries for `group`: those of every binding it [binds](FrameGroup::binds), reflection
+/// probes' cubes read as `read` says.
+fn frame_entries(group: FrameGroup, read: ProbeRead) -> Vec<wgpu::BindGroupLayoutEntry> {
     use wgpu::ShaderStages as S;
     let uniform = wgpu::BufferBindingType::Uniform;
     let frame = [
@@ -1125,7 +1129,7 @@ fn frame_entries(group: FrameGroup) -> Vec<wgpu::BindGroupLayoutEntry> {
     ];
     frame
         .into_iter()
-        .chain(ambient::frame_layout_entries())
+        .chain(ambient::frame_layout_entries(read))
         .filter(|entry| group.binds(entry.binding))
         .collect()
 }
@@ -2716,7 +2720,9 @@ fn build_surface(
         }
         Shading::Foliage => {
             constants.extend(target.foliage.constants());
-            constants.extend(target.ambient.iter().copied());
+            // Foliage reads no reflection probes, and its module doesn't declare their constant.
+            let probes = ambient::override_constant::REFLECTION_PROBES;
+            constants.extend(target.ambient.iter().copied().filter(|&(name, _)| name != probes));
             constants.push((foliage::override_constant::SAMPLES, f64::from(target.sample_count)));
             // Alpha-to-coverage under MSAA, where the tier asks for it.
             if variant.coverage == Coverage::AlphaTest && target.foliage.covers(target.sample_count) {
@@ -3281,7 +3287,7 @@ mod tests {
         let limits = wgpu::Limits::downlevel_defaults();
         let free = |family: MaterialFamily, stage| {
             let groups = [
-                frame_entries(FrameGroup::of(family)),
+                frame_entries(FrameGroup::of(family), ProbeRead::Faces),
                 vec![view_entry()],
                 scene_entries(family),
                 material_entries(family),
@@ -3303,7 +3309,7 @@ mod tests {
                 MaterialFamily::Foliage
             ]
         );
-        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::FRAGMENT)), [(3, 0), (5, 1), (8, 1), (8, 1)]);
+        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::FRAGMENT)), [(2, 0), (3, 1), (6, 1), (6, 1)]);
         assert_eq!(MESH_FAMILIES.map(|family| free(family, S::VERTEX)), [(16, 2), (14, 2), (14, 2), (14, 2)]);
     }
 
@@ -3367,7 +3373,8 @@ mod tests {
                     }
                 }
             }
-            let bound = frame_entries(group).iter().map(|entry| entry.binding).collect::<Vec<_>>();
+            let bound =
+                frame_entries(group, ProbeRead::Faces).iter().map(|entry| entry.binding).collect::<Vec<_>>();
             let unread: Vec<u32> = bound.into_iter().filter(|binding| !read.contains(binding)).collect();
             assert_eq!(unread, [] as [u32; 0], "{group:?} binds what none of its shaders reads");
         }

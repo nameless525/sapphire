@@ -24,6 +24,9 @@ pub struct GpuContextDesc {
     /// bench): it fails with the error's text once it asks, rather than hand on what it drew. Off,
     /// which is what an app in a window wants, an error is logged and a shipping build keeps running.
     pub hold_errors: bool,
+    /// Reports no cube arrays ([`GpuCaps::cube_array_textures`]) where the adapter has them, so a test tries
+    /// the read of devices without them (the iOS Simulator's) on any device.
+    pub without_cube_arrays: bool,
 }
 
 /// The GPU device the engine renders with: adapter, device, queue and probed capabilities.
@@ -201,6 +204,7 @@ fn open_device(
         if let Some(side) = context.max_texture_side {
             caps.limits.max_texture_dimension_2d = caps.limits.max_texture_dimension_2d.min(side);
         }
+        caps.cube_array_textures &= !context.without_cube_arrays;
         if let Some(reason) = rejection_reason(&adapter, &caps, surface) {
             tracing::info!(target: LOG_TARGET, adapter = %caps.adapter.name, %backend, reason, "skipping adapter");
             continue;

@@ -9,7 +9,7 @@ use super::*;
 fn dormant_effects_release_depth_bindings_and_active_effects_reuse_them() {
     let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
     let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
-    let layouts = crate::pipelines::Layouts::new(gpu.device());
+    let layouts = crate::pipelines::Layouts::new(gpu.device(), shaders::ProbeRead::Faces);
     let builds = PipelineBuilds::new(None);
     let sources = ShaderSources::compiled_in();
     let mut vfx =

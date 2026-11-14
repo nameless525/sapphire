@@ -647,7 +647,7 @@ mod tests {
         slots: &mut InstanceSlots,
     ) {
         let mut list = CharacterList::default();
-        list.update(packet, slots, false);
+        list.update(packet, slots, false, None);
         let meshes = meshes();
         // These planning fixtures represent one opaque depth draw per live instance.
         let mut list_of_draws = DrawList::default();
@@ -671,7 +671,7 @@ mod tests {
         let mut slots = slots(&[instance(1, 0, Vec3::ZERO)]);
         let packet = packet(Vec::new());
         let mut characters = CharacterList::default();
-        characters.update(&packet, &mut slots, false);
+        characters.update(&packet, &mut slots, false, None);
         let meshes = meshes();
         let mut list = DrawList::default();
         let transparent = SurfaceVariant::ALL

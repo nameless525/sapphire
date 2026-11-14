@@ -24,6 +24,9 @@
 //    the frame blends, and the probe data the lookup's leak test reads.
 // 4. `cs_character_ambient`: each character's ambient hemisphere from the grid at its body's
 //    center and its head (`CharacterAmbient` in frame.wgsl).
+// 5. `cs_compose` (M5 L3): one reflection probe's cube, its baked keys blended by the frame's
+//    weights with the live sky added through their sky share, into the top level of its six
+//    layers; `cs_prefilter` then filters its rougher levels as it does the reflection cube's.
 //
 // Group 3 holds each pass's own resources; the grid's lookup is ambient.wgsl's, through group 0.
 
@@ -509,4 +512,55 @@ fn cs_character_ambient(@builtin(global_invocation_id) id: vec3<u32>) {
     ambient_entries[entry].ambient.sky = vec4<f32>(max(constant + along, vec3<f32>(0.0)) * visibility, 0.0);
     ambient_entries[entry].ambient.ground = vec4<f32>(max(constant - along, vec3<f32>(0.0)) * visibility, 0.0);
     ambient_entries[entry].ambient.axis = vec4<f32>(axis, visibility);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 5. A reflection probe's composition (M5 L3).
+
+// One probe's composition (`ambient::reflection_probes::ComposeUniforms`). 48 bytes.
+struct ComposeUniforms {
+    // Per key the frame blends: the layer its +X face starts at in the probe's keys (key × 6),
+    // and its weight (0: unused).
+    keys: vec4<u32>,
+    weights: vec4<f32>,
+    // x: the composed cube's texels a side; y: baked texels a composed texel averages along a
+    // side, a power of two; zw: 0.
+    size: vec4<u32>,
+}
+
+// Every key a probe was baked at, six layers a key at the bake's size (`.sreflect`): rgb the
+// scene without the sky, a the share of the texel that sees the sky.
+@group(3) @binding(9) var probe_keys: texture_2d_array<f32>;
+@group(3) @binding(10) var<uniform> compose: ComposeUniforms;
+
+// A composed texel per thread, a face per z (the probe's layer), into `prefiltered`: the keys'
+// texels it covers averaged and blended, then the sky cube toward the texel's centre, at the
+// ambient's scale (the reflection cube's mip 0 is the same), times their sky share. The sky's
+// projection runs before it, so the scale is the frame's.
+@compute @workgroup_size(PREFILTER_WORKGROUP, PREFILTER_WORKGROUP, 1)
+fn cs_compose(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = compose.size.x;
+    if id.x >= size || id.y >= size {
+        return;
+    }
+    let step = compose.size.y;
+    let count = step * step;
+    var baked = vec4<f32>(0.0);
+    for (var k = 0u; k < 4u; k++) {
+        let weight = compose.weights[k];
+        if weight > 0.0 {
+            let layer = i32(compose.keys[k] + id.z);
+            var sum = vec4<f32>(0.0);
+            for (var i = 0u; i < count; i++) {
+                let texel = vec2<i32>(id.xy * step + vec2<u32>(i % step, i / step));
+                sum += textureLoad(probe_keys, texel, layer, 0);
+            }
+            baked += sum * (weight / f32(count));
+        }
+    }
+    let s = (f32(id.x) + 0.5) / f32(size) * 2.0 - 1.0;
+    let t = (f32(id.y) + 0.5) / f32(size) * 2.0 - 1.0;
+    let direction = cube_texel_direction(id.z, s, t);
+    let sky = textureSampleLevel(source_cube, ambient_sampler, direction, 0.0).rgb * sky_light.scale.rgb;
+    textureStore(prefiltered, vec2<i32>(id.xy), i32(id.z), vec4<f32>(baked.rgb + baked.a * sky, 1.0));
 }

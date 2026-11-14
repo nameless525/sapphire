@@ -1043,13 +1043,19 @@ fn character_specular(
 
 // The reflection add at a point `metallic` reflects, `roughness` blurred: the sky's light along
 // the reflected view ray from W5's reflection cube, at the ambient's scale (mip 0 is the sky cube
-// scaled as the ambient's sky, each rougher mip filtered from it), × the albedo and vertex AO;
-// nothing at or below `layer_mask::REFLECTS`.
-fn reflection_add(surface: CharacterSurface, metallic: f32, roughness: f32) -> vec3<f32> {
+// scaled as the ambient's sky, each rougher mip filtered from it), or the reflection probe the
+// character stands by (M5 L3), × the albedo and vertex AO; nothing at or below
+// `layer_mask::REFLECTS`.
+fn reflection_add(surface: CharacterSurface, metallic: f32, roughness: f32, character: u32) -> vec3<f32> {
     let gate = smoothstep(REFLECTS, REFLECTS + REFLECTS_EDGE, metallic);
     let direction = reflect(-surface.view_dir, surface.normal);
     let mip = roughness * ambient.atlas_texel.w;
-    let sky = textureSampleLevel(reflection_cube, ambient_sampler, direction, mip).rgb;
+    let sky = character_reflection(
+        characters[character].reflection,
+        direction,
+        roughness,
+        textureSampleLevel(reflection_cube, ambient_sampler, direction, mip).rgb,
+    );
     return sky * surface.albedo * (surface.occlusion * gate);
 }
 
@@ -1059,11 +1065,16 @@ fn reflection_add(surface: CharacterSurface, metallic: f32, roughness: f32) -> v
 // camera, × the vertex AO and the strength, over the share of pixels drawn (at least
 // `GLASS_MIN_COVER`), so the dither averages to the whole reflection. Untinted: glass reflects the
 // light's own color.
-fn glass_add(surface: CharacterSurface, roughness: f32, see_through: vec2<f32>) -> vec3<f32> {
+fn glass_add(surface: CharacterSurface, roughness: f32, see_through: vec2<f32>, character: u32) -> vec3<f32> {
     let facing = 1.0 - saturate(dot(surface.normal, surface.view_dir));
     let fresnel = GLASS_F0 + (1.0 - GLASS_F0) * facing * facing * facing * facing * facing;
     let direction = reflect(-surface.view_dir, surface.normal);
-    let sky = textureSampleLevel(reflection_cube, ambient_sampler, direction, roughness * ambient.atlas_texel.w).rgb;
+    let sky = character_reflection(
+        characters[character].reflection,
+        direction,
+        roughness,
+        textureSampleLevel(reflection_cube, ambient_sampler, direction, roughness * ambient.atlas_texel.w).rgb,
+    );
     let drawn = max(1.0 - see_through.x, GLASS_MIN_COVER);
     return sky * (fresnel * see_through.y * surface.occlusion / drawn);
 }
@@ -1411,11 +1422,11 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         }
         if (layer_flags & CHARACTER_FLAG_REFLECTION) != 0u {
             let reflects = materials[material].layer_regions[region].surface;
-            layer_light += reflection_add(surface, reflects.x * layer_mask.g, reflects.y);
+            layer_light += reflection_add(surface, reflects.x * layer_mask.g, reflects.y, in.character);
         }
         if (layer_flags & CHARACTER_FLAG_GLASS) != 0u {
             let glass = materials[material].layer_regions[region];
-            layer_light += glass_add(surface, glass.surface.y, glass.see_through.xy);
+            layer_light += glass_add(surface, glass.surface.y, glass.see_through.xy, in.character);
         }
         if (layer_flags & CHARACTER_FLAG_EMISSION) != 0u {
             // Scaled by the character's drive (M5 L11), 1 as authored.

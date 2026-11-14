@@ -227,9 +227,20 @@ struct CharacterDrive {
     flash: vec4<f32>,
 }
 
+// The reflection probe a character reflects (M5 L3; `reflections.wgsl`), chosen on the CPU by
+// where it stands.
+struct CharacterReflection {
+    // The probe's cube, or `NO_CHARACTER_PROBE` for the sky's reflection alone.
+    probe: u32,
+    // How much of the cube it takes over the sky's, 0 to 1: less near the box's faces.
+    weight: f32,
+    _padding: vec2<u32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
 // own here: the light rig (C2), the face (C3), the shadow (R4), the ambient light (W5), the
-// fade (C7), the shading follow-ups' style (C8) and the driven material values (M5 L11).
+// fade (C7), the shading follow-ups' style (C8), the driven material values (M5 L11) and the
+// reflection probe (M5 L3).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
@@ -238,6 +249,7 @@ struct CharacterData {
     fade: CharacterFade,
     style: CharacterStyle,
     drive: CharacterDrive,
+    reflection: CharacterReflection,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

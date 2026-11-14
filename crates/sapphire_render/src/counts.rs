@@ -117,7 +117,12 @@ impl PassCounts {
 
 /// What each pass of a frame submitted (see the [module docs](self)). Passes that draw nothing, the
 /// uploads, skinning, light clusters, the sky cube's face, the ambient pass and the face maps' compute
-/// pass, have no entry.
+/// pass, have no entry. The ambient pass's dispatches count in [`AmbientStats::dispatches`], and of
+/// them the reflection probes' composition and prefilter (M5 L3) in
+/// [`AmbientStats::probe_dispatches`]: probes add no draw, only shading in the passes that read them.
+///
+/// [`AmbientStats::dispatches`]: crate::AmbientStats::dispatches
+/// [`AmbientStats::probe_dispatches`]: crate::AmbientStats::probe_dispatches
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameCounts {
     /// The character prepass: the listed characters' surfaces.

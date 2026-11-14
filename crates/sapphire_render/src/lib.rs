@@ -288,7 +288,7 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient, fades (M1 C7), styles (M1 C8) and material drives (M5 L11), 304 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient, fades (M1 C7), styles (M1 C8), material drives (M5 L11) and reflection probes (M5 L3), 352 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
 //! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
@@ -828,10 +828,8 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **The environment shader** (see above): reflection probes (early M2) over the sky cube's
-//!   prefiltered mips, which replace the hemisphere's reflection where a probe grid is (W5); the
-//!   wet surface model reads the frame's weather; screen-space edges for the environment
-//!   (desktop).
+//! - **The environment shader** (see above): the wet surface model reads the frame's weather (M5 L4,
+//!   reflecting M5 L3's probes); screen-space edges for the environment (desktop).
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   a cheaper sky filling the view, and its cubes as frame graph resources.
 //! - **The anime character shader** (see above): screen-space reflections on the desktop tiers
@@ -919,7 +917,8 @@ mod view_cull;
 mod warm_up;
 
 pub use ambient::{
-    AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
+    AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionProbesHandle,
+    ReflectionSettings,
 };
 pub use character_prepass::CharacterPrepassStats;
 pub use color_vision::ColorVision;

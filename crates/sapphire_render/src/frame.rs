@@ -95,6 +95,11 @@ pub struct FramePacket {
     /// blends, resolved by time of day from the frame's hour (M1 W5). The default blends none: a
     /// grid then lends sky light alone.
     pub probe_keys: ProbeKeys,
+    /// Which keys of the shown reflection probes' bake
+    /// ([`Renderer::set_reflection_probes`](crate::Renderer::set_reflection_probes)) this frame's probes
+    /// blend, resolved by time of day from the frame's hour as [`Self::probe_keys`] are (M5 L3). The default
+    /// names none, and probes then compose from their first key.
+    pub reflection_keys: ProbeKeys,
     /// Distance and height fog over the world and the sky (M1 W3), which fog cards take their
     /// light from. The default has none.
     ///
@@ -224,6 +229,7 @@ impl FramePacket {
             sky_material,
             ambient,
             probe_keys,
+            reflection_keys,
             fog,
             shadow_tint,
             weather,
@@ -254,6 +260,7 @@ impl FramePacket {
         *sky_material = None;
         *ambient = AmbientLight::default();
         *probe_keys = ProbeKeys::default();
+        *reflection_keys = ProbeKeys::default();
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
         *weather = Weather::default();
@@ -305,6 +312,7 @@ impl Default for FramePacket {
             sky_material: None,
             ambient: AmbientLight::default(),
             probe_keys: ProbeKeys::default(),
+            reflection_keys: ProbeKeys::default(),
             fog: Fog::default(),
             shadow_tint: Vec3::ZERO,
             weather: Weather::default(),

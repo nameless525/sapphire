@@ -203,6 +203,10 @@ pub struct PipelineInventory {
     /// A probe grid arrives after this (a zone's, M3 C1): the ambient pass's pipelines, and the environment
     /// and foliage surfaces with the grid's constants on, so that its arrival builds nothing.
     pub probe_grid: bool,
+    /// Reflection probes are shown after this (a zone's, M5 L3): the composition's pipelines, and the
+    /// environment surfaces with the probes' constant on, so that showing them builds nothing. Part of the
+    /// `ambient` entry.
+    pub reflection_probes: bool,
     /// Its characters may fade (M1 C7, `--fade` or the proximity fade): the alpha-tested variants of the anime
     /// character surfaces built by then and of [`Self::meshes`]' own, with their outlines, eyes through hair and
     /// the prepasses' masked pipelines, which a fading character's opaque draws move to.
@@ -230,7 +234,7 @@ impl PipelineInventory {
             (PipelineFamily::Inset.name(), self.insets),
             (PipelineFamily::Focus.name(), self.focus),
             (PipelineFamily::Sky.name(), !self.sky.is_empty()),
-            (PipelineFamily::Ambient.name(), self.probe_grid),
+            (PipelineFamily::Ambient.name(), self.probe_grid || self.reflection_probes),
             ("fades", self.fades),
             (PipelineFamily::Debug.name(), self.debug_draw || !self.color_vision.is_empty()),
         ];
@@ -252,7 +256,10 @@ impl PipelineInventory {
             "inset" => self.insets = false,
             "focus" => self.focus = false,
             "sky" => self.sky.clear(),
-            "ambient" => self.probe_grid = false,
+            "ambient" => {
+                self.probe_grid = false;
+                self.reflection_probes = false;
+            }
             "fades" => self.fades = false,
             "debug" => {
                 self.debug_draw = false;
@@ -278,6 +285,7 @@ impl PipelineInventory {
             focus,
             sky,
             probe_grid,
+            reflection_probes,
             fades,
             debug_draw,
             color_vision,
@@ -297,6 +305,7 @@ impl PipelineInventory {
             }
         }
         self.probe_grid |= probe_grid;
+        self.reflection_probes |= reflection_probes;
         self.fades |= fades;
         self.debug_draw |= debug_draw;
         for dichromacy in color_vision {

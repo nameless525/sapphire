@@ -16,6 +16,8 @@ profiling.workspace = true
 # What a zone's cells load through.
 sapphire_assets.workspace = true
 sapphire_ecs.workspace = true
+# A cut-in's panel is a quad of the interface's draw list (M5 L10).
+sapphire_look.workspace = true
 sapphire_math.workspace = true
 sapphire_reflect.workspace = true
 # Time of day resolves into the frame packet's plain scene constants (rule R4: the renderer

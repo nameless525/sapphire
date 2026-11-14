@@ -30,6 +30,16 @@ pub const MAX_FRAME_SOUNDS: usize = sapphire_audio::MAX_VOICES;
 /// The most voice lines a frame can start: more at once is a crowd, not a voice. Past it they're
 /// counted and dropped.
 pub const MAX_FRAME_LINES: usize = 4;
+/// The most cut-ins a frame's steps ask for (M5 L10); past it they're dropped and counted.
+pub const MAX_FRAME_CUTINS: usize = 2;
+
+/// A cut-in a frame's steps asked for (M5 L10): its name's place in [`CueDispatcher::cutin_names`], and the
+/// actor whose cue it was, or none for a cue at a place, such as a timeline's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CutInRequest {
+    pub name: u16,
+    pub actor: Option<ActorId>,
+}
 
 /// Whose clock an actor's effects run on.
 #[must_use]
@@ -115,6 +125,9 @@ pub struct CueStats {
     /// Full-screen flashes held back (M4 A3): within a second of the last one shown.
     pub flashes_held: u64,
     pub rumbles: u64,
+    /// Cut-ins asked for (M5 L10), and those past [`MAX_FRAME_CUTINS`] in a frame.
+    pub cutins: u64,
+    pub cutins_dropped: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +161,8 @@ struct Row {
     effects: [Option<RowEffect>; MAX_ROW_EFFECTS],
     sounds: [Option<AssetId>; MAX_ROW_SOUNDS],
     line: Option<RowLine>,
+    /// The cut-in it asks for, by its name's place in the dispatcher's names (M5 L10).
+    cutin: Option<u16>,
     shake: Option<(ShakeId, f32)>,
     screen: Option<(EffectPresetId, ScreenCenter)>,
     /// How long its screen effect changes the whole frame's light, if it's a full-screen flash (M4 A3).
@@ -162,20 +177,24 @@ impl Row {
         presets: &ScreenLibrary,
         camera: &CameraTuning,
         line_keys: &mut Vec<Box<str>>,
+        cutin_names: &mut Vec<Box<str>>,
     ) -> Result<Self, CueTableError> {
-        let line = row.line.as_deref().map(|line| {
-            let text = line_keys.iter().position(|key| **key == *line).unwrap_or_else(|| {
-                line_keys.push(line.into());
-                line_keys.len() - 1
-            });
-            RowLine { key: LineKey::of(line), text: text as u16 }
-        });
+        let place = |names: &mut Vec<Box<str>>, name: &str| {
+            names.iter().position(|known| **known == *name).unwrap_or_else(|| {
+                names.push(name.into());
+                names.len() - 1
+            }) as u16
+        };
+        let line =
+            row.line.as_deref().map(|line| RowLine { key: LineKey::of(line), text: place(line_keys, line) });
+        let cutin = row.cutin.as_deref().map(|name| place(cutin_names, name));
         let mut resolved = Self {
             cue: Name::intern(&row.cue),
             weight: row.weight,
             effects: [None; MAX_ROW_EFFECTS],
             sounds: [None; MAX_ROW_SOUNDS],
             line,
+            cutin,
             shake: None,
             screen: None,
             flash: None,
@@ -225,6 +244,10 @@ pub struct CueDispatcher {
     said: Vec<(Option<ActorId>, u16)>,
     /// The keys of the lines the rows speak, each once.
     line_keys: Vec<Box<str>>,
+    /// This frame's cut-ins (M5 L10). Reserved, and never grown past that.
+    cutins: Vec<CutInRequest>,
+    /// The names of the cut-ins the rows ask for, each once.
+    cutin_names: Vec<Box<str>>,
     mixer: RumbleMixer,
     /// The tick last read, so a step with nothing after it isn't read twice.
     read_tick: Option<u64>,
@@ -251,6 +274,8 @@ impl CueDispatcher {
             lines: Vec::with_capacity(MAX_FRAME_LINES),
             said: Vec::with_capacity(MAX_FRAME_LINES),
             line_keys: Vec::new(),
+            cutins: Vec::with_capacity(MAX_FRAME_CUTINS),
+            cutin_names: Vec::new(),
             mixer: RumbleMixer::new(),
             read_tick: None,
             owners: Vec::new(),
@@ -289,12 +314,17 @@ impl CueDispatcher {
         presets: &ScreenLibrary,
         camera: &CameraTuning,
     ) -> Result<(), CueTableError> {
-        let mut line_keys = Vec::new();
-        let rows = table.rows().iter().map(|row| Row::resolve(row, effects, presets, camera, &mut line_keys));
+        let (mut line_keys, mut cutin_names) = (Vec::new(), Vec::new());
+        let rows = table
+            .rows()
+            .iter()
+            .map(|row| Row::resolve(row, effects, presets, camera, &mut line_keys, &mut cutin_names));
         self.rows = rows.collect::<Result<_, _>>()?;
-        // What was said points into the old keys.
+        // What was said, and the cut-ins asked for, point into the old names.
         self.said.clear();
+        self.cutins.clear();
         self.line_keys = line_keys;
+        self.cutin_names = cutin_names;
         Ok(())
     }
 
@@ -361,6 +391,18 @@ impl CueDispatcher {
                 Site::Place(_) => None,
             };
             self.queue_line(line, actor);
+        }
+        if let Some(name) = row.cutin {
+            let actor = match site {
+                Site::Actor { actor, .. } => Some(actor),
+                Site::Place(_) => None,
+            };
+            if self.cutins.len() == MAX_FRAME_CUTINS {
+                self.stats.cutins_dropped += 1;
+            } else {
+                self.cutins.push(CutInRequest { name, actor });
+                self.stats.cutins += 1;
+            }
         }
         if let Some((id, strength)) = row.shake {
             step.shakes.fire_shake(id, strength);
@@ -477,6 +519,29 @@ impl CueDispatcher {
         &self.sounds
     }
 
+    /// The cut-ins this frame's steps asked for (M5 L10), in order: each names one of [`Self::cutin_names`].
+    #[must_use]
+    pub fn cutins(&self) -> &[CutInRequest] {
+        &self.cutins
+    }
+
+    /// The names of the cut-ins the table's rows ask for, each once: what a game looks up in its library.
+    #[must_use]
+    pub fn cutin_names(&self) -> &[Box<str>] {
+        &self.cutin_names
+    }
+
+    /// Queues `cue`, an audio cue, played flat this frame, as a cut-in's sound is (M5 L10), within the frame's
+    /// sounds: dropped and counted past them.
+    pub fn queue_flat_sound(&mut self, cue: AssetId) {
+        if self.sounds.len() == MAX_FRAME_SOUNDS {
+            self.stats.sounds_dropped += 1;
+            return;
+        }
+        self.sounds.push(CueRequest { cue, target: CueTarget::Flat });
+        self.stats.sounds += 1;
+    }
+
     /// The voice lines this frame's steps asked for: [`AudioFrame::lines`](sapphire_audio::AudioFrame::lines).
     #[must_use]
     pub fn lines(&self) -> &[LineRequest] {
@@ -497,6 +562,7 @@ impl CueDispatcher {
         self.sounds.clear();
         self.lines.clear();
         self.said.clear();
+        self.cutins.clear();
         self.mixer.update(dt, rumble);
     }
 
@@ -702,6 +768,7 @@ mod tests {
             screen: None,
             rumble: None,
             line: None,
+            cutin: None,
         }
     }
 
@@ -863,6 +930,31 @@ mod tests {
         assert_eq!((stats.lines, stats.lines_dropped), (MAX_FRAME_LINES as u64, 2));
         dispatcher.end_frame(TICK, &mut ());
         assert!(dispatcher.lines().is_empty());
+    }
+
+    /// A row's cut-in (M5 L10) is only asked for: by its name's place, with whose cue it was, until the frame
+    /// ends, two a frame at most.
+    #[test]
+    fn a_cut_in_is_asked_for_by_name_until_the_frame_ends() {
+        let rows = vec![
+            CueRow { cutin: Some("ultimate".to_owned()), ..row("big") },
+            CueRow { cutin: Some("other".to_owned()), ..row("small") },
+            CueRow { cutin: Some("ultimate".to_owned()), ..row("again") },
+        ];
+        let mut dispatcher = dispatcher(rows);
+        assert_eq!(dispatcher.cutin_names(), [Box::from("ultimate"), Box::from("other")]);
+        let mut sinks = Sinks::new();
+        sinks.read(&mut dispatcher, 1, &[event("big", None), event("small", None), event("again", None)]);
+        let asked: Vec<u16> = dispatcher.cutins().iter().map(|request| request.name).collect();
+        assert_eq!(asked, [0, 1]);
+        assert!(dispatcher.cutins().iter().all(|request| request.actor.is_some()));
+        let stats = dispatcher.stats();
+        assert_eq!((stats.cutins, stats.cutins_dropped), (2, 1));
+        dispatcher.end_frame(TICK, &mut ());
+        assert!(dispatcher.cutins().is_empty());
+        // Its sound is played flat with the frame's.
+        dispatcher.queue_flat_sound(SOUND);
+        assert_eq!(dispatcher.sounds()[0].target, CueTarget::Flat);
     }
 
     /// What a caption reads (M4 A2): each line by its key, and who said it, as long as the frame's lines last.

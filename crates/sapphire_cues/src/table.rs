@@ -132,6 +132,10 @@ pub struct CueRow {
     /// [`CueTable::voices`] (M3 A1).
     #[serde(default)]
     pub line: Option<String>,
+    /// A cut-in to play (M5 L10), by its name in the game's `CutInLibrary` (`sapphire_world::cutin`): the
+    /// game looks it up for the kind that plays it. The dispatcher only says it was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutin: Option<String>,
 }
 
 impl CueRow {
@@ -164,6 +168,9 @@ impl CueRow {
             && !is_line_key(line)
         {
             return Err(invalid("line", "isn't a key: a letter, then letters, digits, `-` and `_`"));
+        }
+        if self.cutin.as_ref().is_some_and(String::is_empty) {
+            return Err(invalid("cutin", "can't be empty"));
         }
         if let Some(rumble) = &self.rumble {
             if !(0.0..=1.0).contains(&rumble.low) {
@@ -339,6 +346,7 @@ mod tests {
             screen: None,
             rumble: None,
             line: None,
+            cutin: None,
         }
     }
 

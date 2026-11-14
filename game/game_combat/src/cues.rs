@@ -526,6 +526,21 @@ impl CueShow {
         self.dispatcher.stats()
     }
 
+    /// The cut-ins this frame's steps and timeline asked for (M5 L10), until the frame ends.
+    pub(crate) fn cutin_requests(&self) -> &[sapphire_cues::CutInRequest] {
+        self.dispatcher.cutins()
+    }
+
+    /// The names of the cut-ins its table's rows ask for, each once.
+    pub(crate) fn cutin_names(&self) -> &[Box<str>] {
+        self.dispatcher.cutin_names()
+    }
+
+    /// Plays `cue`, an audio cue, flat with this frame's sounds: a cut-in's (M5 L10).
+    pub(crate) fn queue_flat_sound(&mut self, cue: sapphire_assets::AssetId) {
+        self.dispatcher.queue_flat_sound(cue);
+    }
+
     /// Gets ready for this many fighters, the player among them: see [`BladeTrails::stand_by`].
     pub(crate) fn stand_by(&mut self, fighters: usize) {
         self.trails.stand_by(fighters);

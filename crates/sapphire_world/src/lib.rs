@@ -18,6 +18,9 @@
 //!   `EffectLibrary` document) and the stack of effects gameplay pushes, each on its own timeline
 //!   and clock, resolved once per frame into the post effects the app writes into the frame
 //!   packet.
+//! - **Cut-ins** ([`cutin`], M5 L10): the close-ups a big move cuts across the frame (the
+//!   `CutInLibrary` document): what the character's stand plays, the camera on its joint, its light
+//!   and backdrop, and the interface's panel and when it comes and goes, as a quad of the draw list.
 //!
 //! - **Streaming a zone's cells** ([`streaming`], M3 W2): by distance from a focus, within a budget of
 //!   entities or microseconds a frame, for presentation only: the simulation streams nothing.
@@ -42,6 +45,7 @@
 //! - Loading timelines and presets from packs (A4): the default day, the default light rig
 //!   presets and the sample effect presets are compiled in for now.
 
+pub mod cutin;
 pub mod fade;
 pub mod light_rig;
 pub mod screen_effects;

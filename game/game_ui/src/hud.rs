@@ -597,6 +597,42 @@ pub struct ShownFight {
 }
 
 impl ShownFight {
+    /// What the fight's interface draws over its view, the cut-in aside (M5 L10): its HUD, a screen over it and
+    /// a wipe. A show that draws more over a fight draws this, then its own, then the fight's cut-in under them
+    /// all ([`game_combat::fight::FightShow::draw_cutin`]).
+    pub fn draw_fight_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        if let Some(screen) = &mut self.screen {
+            // The HUD's document over a fight says what the fight says, its foe's name and its party's slots, as
+            // a game's show has it say them.
+            if let Some((values, _)) = self.fight.show.hud_values() {
+                let foe_name = self.fight.show.foe_name();
+                let names = self.fight.show.party_names();
+                for index in 0..screen.len() {
+                    if let Some(model) = screen.model_mut::<HudModel>(index) {
+                        model.follow_fight(Some(&values), foe_name);
+                        model.follow_names(names);
+                    }
+                }
+            }
+            screen.draw(size, list);
+        }
+        // A cutscene has the screen: its subtitles and its way out are the HUD document's.
+        if let Some(hud) = &mut self.hud
+            && !self.fight.show.plays_cutscene()
+        {
+            if let Some((values, time)) = self.fight.show.hud_values() {
+                hud.show_fight(values, time);
+            }
+            hud.draw(size, list);
+        }
+        if let Some(over) = &mut self.over {
+            over.draw_interface(size, list);
+        }
+        if let Some(wipe) = &mut self.wipe {
+            wipe.draw(size, list);
+        }
+    }
+
     /// Covers the fight's zone trips with `wipe` from now on: each waits for it to cover and to clear.
     pub fn wipe_trips(&mut self, wipe: ZoneWipe) {
         self.fight.show.take_trip_wipe();
@@ -719,36 +755,14 @@ impl SceneShow for ShownFight {
     }
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
-        if let Some(screen) = &mut self.screen {
-            // The HUD's document over a fight says what the fight says, its foe's name and its party's slots, as
-            // a game's show has it say them.
-            if let Some((values, _)) = self.fight.show.hud_values() {
-                let foe_name = self.fight.show.foe_name();
-                let names = self.fight.show.party_names();
-                for index in 0..screen.len() {
-                    if let Some(model) = screen.model_mut::<HudModel>(index) {
-                        model.follow_fight(Some(&values), foe_name);
-                        model.follow_names(names);
-                    }
-                }
-            }
-            screen.draw(size, list);
-        }
-        // A cutscene has the screen: its subtitles and its way out are the HUD document's.
-        if let Some(hud) = &mut self.hud
-            && !self.fight.show.plays_cutscene()
-        {
-            if let Some((values, time)) = self.fight.show.hud_values() {
-                hud.show_fight(values, time);
-            }
-            hud.draw(size, list);
-        }
-        if let Some(over) = &mut self.over {
-            over.draw_interface(size, list);
-        }
-        if let Some(wipe) = &mut self.wipe {
-            wipe.draw(size, list);
-        }
+        // A cut-in (M5 L10) goes under everything the fight's interface draws: the HUD, a screen over it, a wipe.
+        let under = list.quads.len() as u32;
+        self.draw_fight_interface(size, list);
+        self.fight.show.draw_cutin(size, list, under);
+    }
+
+    fn cutin_shot(&self) -> Option<sapphire_stage::cutin::CutInShot<'_>> {
+        self.fight.show.cutin_shot()
     }
 
     fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {

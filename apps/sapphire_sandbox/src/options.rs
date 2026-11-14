@@ -494,6 +494,13 @@ pub(crate) struct Options {
     /// says off, which the goldens from before bends pin. Needs `--cues` or `--vfx`. A tier without bends draws
     /// none either way.
     pub distortion: Option<bool>,
+    /// `--cutins off`: the cues play no cut-in (M5 L10), as goldens from before them pin.
+    pub cutins_off: bool,
+    /// `--cutins full`: the cues' cut-ins drawn across the whole frame, whatever their panels' shapes.
+    pub cutins_full: bool,
+    /// `--cutin-library <ron>`: a `CutInLibrary` document the cues' cut-ins come from instead of the shipped
+    /// one, to frame and light a cut-in without a build.
+    pub cutin_library: Option<PathBuf>,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`), and under
     /// `--draw-every` its one phase's, a frame that ran no graph counting nothing drawn (M5 B5).
     pub bench_trace: Option<PathBuf>,
@@ -1571,6 +1578,15 @@ impl Options {
                         other => return Err(format!("--distortion expects on or off, got {other:?}")),
                     });
                 }
+                "--cutins" => {
+                    (options.cutins_off, options.cutins_full) = match value("--cutins")?.as_str() {
+                        "on" => (false, false),
+                        "off" => (true, false),
+                        "full" => (false, true),
+                        other => return Err(format!("--cutins expects on, off or full, got {other:?}")),
+                    };
+                }
+                "--cutin-library" => options.cutin_library = Some(PathBuf::from(value("--cutin-library")?)),
                 "--vfx" => {
                     let raw = value("--vfx")?;
                     options.vfx = Some(VfxShow::from_name(&raw).ok_or_else(|| {
@@ -1992,6 +2008,12 @@ impl Options {
             return Err(
                 "--distortion needs --cues or --vfx: it says whether their effects' bends draw".to_owned()
             );
+        }
+        if (options.cutins_off || options.cutins_full) && !options.cues {
+            return Err("--cutins needs --cues: the cues play a fight's cut-ins".to_owned());
+        }
+        if options.cutin_library.is_some() && !options.cues {
+            return Err("--cutin-library needs --cues: the cues play a fight's cut-ins".to_owned());
         }
         if options.cues && options.vfx.is_some() {
             return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
@@ -3976,6 +3998,18 @@ mod tests {
         assert!(options.cues, "a fight's cues land where its actors are");
         refused(&["--capture", "x", "--replay", "a", "--cues", "--vfx", "arc"], "exclusive");
         refused(&["--cues", "--record", "a", "--scenario", "s", "--cue", "hit"], "exclusive");
+        // Cut-ins pinned off (M5 L10), only with the cues that play them.
+        let (options, _) = parse(&["--capture", "x", "--replay", "a", "--cues", "--cutins", "off"]).unwrap();
+        assert!(options.cutins_off && !options.cutins_full);
+        let (options, _) = parse(&["--capture", "x", "--replay", "a", "--cues", "--cutins", "full"]).unwrap();
+        assert!(options.cutins_full && !options.cutins_off);
+        refused(&["--capture", "x", "--replay", "a", "--cutins", "off"], "needs --cues");
+        refused(&["--capture", "x", "--replay", "a", "--cutins", "full"], "needs --cues");
+        let (options, _) =
+            parse(&["--capture", "x", "--replay", "a", "--cues", "--cutin-library", "c.ron"]).unwrap();
+        assert_eq!(options.cutin_library, Some(PathBuf::from("c.ron")));
+        refused(&["--capture", "x", "--replay", "a", "--cutin-library", "c.ron"], "needs --cues");
+        refused(&["--capture", "x", "--replay", "a", "--cues", "--cutins", "maybe"], "on, off or full");
     }
 
     #[test]

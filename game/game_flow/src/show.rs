@@ -1177,7 +1177,9 @@ impl SceneShow for GameShow {
     }
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
-        self.shown.draw_interface(size, list);
+        // A cut-in (M5 L10) goes under the fight's interface and the game's screens, the HUD's among them.
+        let under = list.quads.len() as u32;
+        self.shown.draw_fight_interface(size, list);
         if let Some(menus) = &mut self.menus {
             self.panel.follow(menus, &self.shown.fight.dialogue);
             // What a cutscene says at the playhead this frame shows, so a line comes up with its frame and
@@ -1210,6 +1212,11 @@ impl SceneShow for GameShow {
             }
             menus.draw(size, list);
         }
+        self.shown.fight.show.draw_cutin(size, list, under);
+    }
+
+    fn cutin_shot(&self) -> Option<sapphire_stage::cutin::CutInShot<'_>> {
+        self.shown.fight.show.cutin_shot()
     }
 
     fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {

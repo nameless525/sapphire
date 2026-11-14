@@ -69,6 +69,14 @@ pub trait SceneShow {
     /// [`PipelineInventory::insets`].
     fn inset_shots(&self, _visit: &mut dyn FnMut(InsetShot<'_>)) {}
 
+    /// What its interface just drew of a cut-in (M5 L10), for [`Scene::frame_packet`] to shoot its stand into
+    /// ([`crate::cutin`]): `None` while none plays. A show that can play one declares
+    /// [`PipelineInventory::insets`], and stands and poses the stand ([`Scene::stand_cutin`],
+    /// [`Scene::pose_cutin`]).
+    fn cutin_shot(&self) -> Option<crate::cutin::CutInShot<'_>> {
+        None
+    }
+
     /// Its debug draws, last in the frame, which go out with the packet.
     fn draw_debug(&mut self) {}
 

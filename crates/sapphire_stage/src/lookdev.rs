@@ -732,6 +732,29 @@ pub fn player(content: &Content, kind: AssetId) -> Result<ClipPlayer, String> {
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
+/// A clip player for a cut-in's stand of the playable kind `kind` (M5 L10): its rest pose with `springs`, its
+/// root held, and the joints a cut-in's camera frames, in [`sapphire_world::cutin::CutInJoint`]'s order (head,
+/// chest, hips, right hand, left hand), each `None` where the rig has none. Fails where [`player`] does but for
+/// the character's clip, which a stand doesn't play.
+pub(crate) fn cutin_player(
+    content: &Content,
+    kind: AssetId,
+    springs: Option<SpringBones>,
+) -> Result<(ClipPlayer, [Option<usize>; 5]), String> {
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
+    let (pose, joints) = character_pose(look, mesh, rig, skeleton)?;
+    let bones = RigJoints::new(rig);
+    let chest = bones.joint(HumanBone::UpperChest).or_else(|| bones.joint(HumanBone::Chest));
+    let framed = [
+        bones.joint(HumanBone::Head),
+        chest.or_else(|| bones.joint(HumanBone::Spine)),
+        bones.joint(HumanBone::Hips),
+        bones.joint(HumanBone::RightHand),
+        bones.joint(HumanBone::LeftHand),
+    ];
+    Ok((ClipPlayer::new(pose, joints).with_springs(springs).with_root_motion(false), framed))
+}
+
 /// The graph of the playable kind `kind` as `content` has it now, bound to the kind as `content` has it now.
 /// Fails where [`held`] does, or if the graph isn't loaded or doesn't fit the kind.
 pub(crate) fn graph_binding(content: &Content, kind: AssetId) -> Result<GraphBinding, String> {
@@ -774,6 +797,26 @@ pub fn graph_driver_fitted(
         .with_springs(springs)
         .with_face(face_layer_of(look, mesh, rig))
         .for_kind(kind))
+}
+
+/// A cut-in stand's springs for the playable kind `kind` (M5 L10), with the hair and shirt's clearance `fit`
+/// fitted off the frame, or fitted here, which takes tens of milliseconds, for `None`. `None` for a rig with no
+/// springs.
+///
+/// # Errors
+///
+/// If the kind, its skeleton or its rig isn't in.
+pub(crate) fn cutin_springs(
+    content: &Content,
+    kind: AssetId,
+    fit: Option<ClearanceFit>,
+) -> Result<Option<SpringBones>, String> {
+    let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
+    let (pose, _) = character_pose(look, mesh, rig, skeleton)?;
+    Ok(springs_of(content, kind, rig, &pose).map(|springs| match fit {
+        Some(fit) => springs.with_clearance(fit.take()),
+        None => springs.with_heroine_clearance(mesh, skeleton, rig),
+    }))
 }
 
 /// The character's hair and shirt clearance ([`HeroineClearance`]), fitting on the warm-up pool, for

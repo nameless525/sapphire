@@ -1,0 +1,67 @@
+// Sapphire's cut-ins (M5 L10), compiled into `sapphire_world`: `CutInLibrary::default_cutins`, whose module
+// docs (`cutin`) say how one plays. A cue's row names one by its name (`cutin:` in `default_cues.ron`); the
+// game takes the entry for the kind that plays it, or the one with no `kind`, for whoever plays it.
+//
+// - `clip`: a clip of the kind's graph by its source's name, from `start` seconds at `rate` (0 holds the pose).
+// - `camera`: from `offset` meters off `joint` (`Head`, `Chest`, `Hips`, `RightHand`, `LeftHand`), looking at
+//   `look` off it, in the stand's space: +X the picture's right seen from the character's front, +Y up, +Z
+//   toward the front. `roll` and `fov` are degrees.
+// - `light`: a light rig of `default_light_rigs.ron` by its name, the key's color and intensity, the ambient
+//   light and the exposure, as a showcase's (`character.ui.ron`'s `inset`).
+// - `backdrop`: linear `color`, or a gradient to `to` along `angle` (degrees clockwise from left to right), and
+//   speed lines over it, sized in the picture's heights, redrawn `rate` times a second.
+// - `panel`: `Full` or a `Band` (`height` and `center` shares of the frame's height, each side turned by its
+//   angle in degrees, positive rising to the right); `enter` and `exit` each over `seconds` by a `curve`
+//   (`Linear`, `EaseIn`, `EaseOut`, `Smooth`) from or to a `side` (`Left`, `Right`, `Top`, `Bottom`, `Centre`);
+//   it holds `hold` seconds between; `border` is a line along a band's sides, in points, its color
+//   display-encoded. With flashes reduced it fades in place and its lines hold still.
+// - Seconds are the presentation's: hit stop and slow motion don't hold a cut-in, and a pause does.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::CutInLibrary",
+    version: 1,
+    data: (
+        cutins: [
+            (
+                // The player's ultimate, as its cinematic opens: a band slanting up across the frame from the
+                // left, the character's face close and a little below it from her right as her arms rise to
+                // the swing, lit warm from the side before a night-blue to ember backdrop with focus lines, gone
+                // to the right before the chop.
+                name: "ultimate",
+                clip: (name: "ultimate", start: 0.45, rate: 0.35),
+                camera: (joint: Head, offset: (-0.3, -0.05, 0.6), look: (0.0, 0.02, 0.0), roll: 6.0, fov: 30.0),
+                light: (
+                    rig: "portrait",
+                    light: (1.0, 0.86, 0.7),
+                    intensity: 1.3,
+                    ambient_sky: (0.45, 0.55, 0.95),
+                    ambient_ground: (0.3, 0.22, 0.3),
+                    ambient: 0.35,
+                    exposure: 1.0,
+                ),
+                backdrop: (
+                    color: (0.015, 0.02, 0.09),
+                    to: Some((0.42, 0.12, 0.03)),
+                    angle: 15.0,
+                    lines: Some((
+                        opacity: 0.55,
+                        center: (0.55, 0.45),
+                        count: 96,
+                        width: 0.3,
+                        inner_radius: 0.38,
+                        spread: 0.3,
+                        color: (1.0, 0.92, 0.8),
+                        rate: 12.0,
+                    )),
+                ),
+                panel: (
+                    shape: Band(height: 0.36, center: 0.44, top_angle: 6.0, bottom_angle: 3.0),
+                    enter: (seconds: 0.16, curve: EaseOut, side: Left),
+                    hold: 0.5,
+                    exit: (seconds: 0.18, curve: EaseIn, side: Right),
+                    border: Some((width: 3.0, color: (255, 236, 210, 255))),
+                ),
+            ),
+        ],
+    ),
+)

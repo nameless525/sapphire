@@ -57,6 +57,17 @@ const _: () = assert!(SPRING_TICK_HZ == TICK_HZ, "springs count the ticks clocks
 /// takes to be off screen. Hair that wakes as this sphere reaches the frame starts out of sight.
 pub(crate) const CHARACTER_REACH: f32 = 1.5;
 
+/// Where a stand playing on a clock of its own stands this frame, for [`ClipPlayer::pose_at`] (M5 L10).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StandFrame {
+    /// Its clock, in ticks.
+    pub(crate) ticks: f64,
+    pub(crate) world_from_model: Mat4,
+    /// Its springs' sub-steps, and how often their clearance solves ([`SpringBones::set_clearance_interval`]).
+    pub(crate) substeps: Substeps,
+    pub(crate) clearance: Option<u32>,
+}
+
 /// How a tier runs springs.
 pub fn spring_quality(tier: TierId) -> SpringQuality {
     match tier {
@@ -393,6 +404,44 @@ impl ClipPlayer {
     /// without one.
     pub fn right_hand(&self) -> Option<Mat4> {
         self.joints.right_hand().map(|joint| Mat4::from(self.pose.model()[joint]))
+    }
+
+    /// Poses it at `position` of `clip`, in the clip's own ticks, as `stand` says, into `render` and `figure`: for
+    /// a stand that plays apart from any entity's clock, as a cut-in's does (M5 L10). Its springs run each call.
+    /// Nothing happens unless it [`Self::fits`]. Allocates nothing.
+    pub(crate) fn pose_at(
+        &mut self,
+        clip: &ArchivedClip,
+        position: f32,
+        stand: StandFrame,
+        render: &mut RenderPose,
+        figure: &mut Figure,
+    ) {
+        let StandFrame { ticks, world_from_model, substeps, clearance } = stand;
+        if !self.fits(clip, render) {
+            return;
+        }
+        self.pose.sample(clip, position);
+        self.pose.finish();
+        *figure = self.joints.moving(&self.pose);
+        if let Some(springs) = &mut self.springs {
+            springs.set_substeps(substeps);
+            springs.set_clearance_interval(clearance);
+            let frame = SpringFrame {
+                world_from_model: Affine3A::from_mat4(world_from_model),
+                ticks,
+                pose_moved: true,
+                active: true,
+            };
+            springs.update(&mut self.pose, &frame);
+        }
+        self.pose.write_palette(&mut render.palette);
+        render.morph_weights.copy_from_slice(self.pose.weights());
+    }
+
+    /// Where joint `joint` is in the character's space, as its pose has it now.
+    pub(crate) fn joint_position(&self, joint: usize) -> Option<Vec3> {
+        self.pose.model().get(joint).map(|joint| Vec3::from(joint.translation))
     }
 
     /// How many joints its pose has.

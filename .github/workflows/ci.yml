@@ -788,16 +788,18 @@ jobs:
           python3 .github/scripts/app_tests_bundle.py run sandbox_push -- --ignored --test-threads=1
       # The real renderer in an editor's pane on Vulkan: a lost device leaves the documents and draws what
       # a capture does, at a scale other than 1, and a run from a snapshot reaches a headless fight's
-      # checksum with no first-use pipeline and leaves the documents alone (m3-plan E3, E4). By name, because
-      # a stage stands in 10 to 20 s here and a frame takes a second or two: these two are 4 stands and
-      # about 90 frames, 2 to 5 minutes. The rest of the file is about 45 stands, and `what_the_viewport_costs`
-      # is 600 frames at 1822 by 925 that only print, so they stay on a real GPU.
+      # checksum with no first-use pipeline and leaves the documents alone (m3-plan E3, E4), and a still
+      # view's textures are whole from its first frame (M5 M4). By name, because a stage stands in 10 to
+      # 20 s here and a frame takes a second or two: these three are 6 stands and about 90 frames, 2 to 5
+      # minutes. The rest of the file is about 45 stands, and `what_the_viewport_costs` is 600 frames at
+      # 1822 by 925 that only print, so they stay on a real GPU.
       - name: The viewport (real cook)
         if: matrix.lane == 'the-rest'
         timeout-minutes: 10
         run: >-
           python3 .github/scripts/app_tests_bundle.py run viewport_stage -- --ignored --test-threads=1 --exact
           a_lost_device_takes_the_stage_and_leaves_the_documents a_short_run_leaves_the_documents_alone
+          a_still_view_draws_its_textures_whole_from_its_first_frame
       # The dev sandbox offscreen on a private port, with a fight running: the tool reads its
       # status, sets a cvar, captures a frame and pushes a document that doesn't parse, which the
       # app must refuse and count while it goes on drawing, and an edit of the fight's moves, which

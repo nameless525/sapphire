@@ -1211,6 +1211,14 @@ impl Content {
         self.gpu.levels.ask(id, top);
     }
 
+    /// Whether every texture on the renderer is at the top wanted of it: what a capture's stage
+    /// ([`crate::Stage::whole_textures`]) holds before each frame draws, and a game's reaches a frame or a few after
+    /// a material binds its textures, as their levels load.
+    #[must_use]
+    pub fn textures_settled(&self) -> bool {
+        self.gpu.levels.settled(&self.gpu.textures)
+    }
+
     /// Texture `id`'s top on the renderer, and its tail's (the deepest it goes), if it's there.
     #[must_use]
     pub fn texture_top(&self, id: AssetId) -> Option<(u32, u32)> {

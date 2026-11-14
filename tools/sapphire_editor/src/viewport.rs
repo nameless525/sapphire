@@ -317,13 +317,24 @@ impl SceneShow for ViewShow {
     }
 }
 
-/// A stage on `gpu` with `host`'s content, and the game's fight stood on it, with everything it can draw built.
+/// A stage on `gpu` with `host`'s content, and the game's fight stood on it, with everything it can draw built and
+/// its textures [whole](Stage::whole_textures).
 pub fn stand(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     // Read first, so a missing cook says how to make one here rather than in `Content::new`.
     let documents = FightDocuments::read(host.content())
         .map_err(|error| AppInitError::msg(format!("{error} (cook it with `cargo xtask content`)")))?;
     let moves = documents.live();
-    stand_fight(host, gpu, &the_fight(), documents, moves)
+    stand_fight(host, gpu, &the_fight(), documents, moves).map(with_whole_textures)
+}
+
+/// `stage` with every texture brought whole before each frame draws, as a capture's are ([`Stage::whole_textures`],
+/// M5 M4), rather than streaming in a level at a time as the game's do: a still view settles for
+/// [`SETTLING_FRAMES`], and a level that came partway through, on a frame that depends on when the asset server's
+/// reads finish, would leave temporal AA's history at a different point each time. A run streams them as the
+/// game does.
+fn with_whole_textures(mut stage: Stage<ViewShow>) -> Stage<ViewShow> {
+    stage.whole_textures = true;
+    stage
 }
 
 /// [`stand`] with `option`'s fight on `documents` and `moves`, as a run plays it: set up as the game's own is,
@@ -348,7 +359,8 @@ pub fn stand_fight(
 }
 
 /// A stage on `gpu` with `host`'s content and no fight, for a zone to be laid out on, with what the character draws
-/// through built: [`Scene::lay_out_zone`] builds what the zone's pack does.
+/// through built: [`Scene::lay_out_zone`] builds what the zone's pack does. Its textures are
+/// [whole](Stage::whole_textures).
 pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     let desc = StageDesc::new(host, gpu, VIEWPORT_FORMAT, QualitySettings::default());
     let content = Content::new(host, desc.character, desc.sky)?;
@@ -358,13 +370,14 @@ pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<View
     // The gizmo is debug lines, whose pass is built here rather than on the frame the first one shows.
     renderer.prewarm(&PipelineInventory { debug_draw: true, ..PipelineInventory::default() });
     sapphire_core::debug_draw::set_enabled(true);
-    Ok(stage)
+    Ok(with_whole_textures(stage))
 }
 
 /// A stage on `gpu` with `host`'s content and no fight, for a screen to draw over, with the interface's pipeline
 /// and an inset's resolve built: a screen stands on a flat color, so what's behind it shows only in an inset. It
 /// draws as the game's screens' goldens capture them (`desktop-high`, 4× MSAA, no shadows, occlusion or fog, the
-/// plain sky and post), so an inset's character is theirs too.
+/// plain sky and post), so an inset's character is theirs too, with its textures [whole](Stage::whole_textures) as
+/// theirs are.
 pub fn stand_screen_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
     let quality = QualitySettings {
         tier: Some(TierId::DesktopHigh),
@@ -384,7 +397,7 @@ pub fn stand_screen_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<Vi
     scene.set_plain_post(true);
     scene.prewarm(&*show, renderer);
     renderer.prewarm(&PipelineInventory { ui: true, insets: true, ..PipelineInventory::default() });
-    Ok(stage)
+    Ok(with_whole_textures(stage))
 }
 
 /// The screens for `shown`, from the cook's screen of its ID, showing what its document reads now over the flat

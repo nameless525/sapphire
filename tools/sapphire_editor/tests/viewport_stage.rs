@@ -367,6 +367,35 @@ fn a_pane_shows_what_a_capture_does() {
     }
 }
 
+/// A still view's textures are whole from its first frame, as a capture's are (M5 M4), the pane's and the stage a
+/// test captures it against alike: streamed, they'd rise a level at a time over the next few frames, on frames that
+/// hang on when the asset server's reads finish, and two views of one scene settled for the same frames would differ
+/// where temporal AA's history caught a level.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_still_view_draws_its_textures_whole_from_its_first_frame() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, SRGB);
+    let mut harness = editor_harness(&painter, (800.0, 520.0), 1.0);
+    let mut view = StageView::default();
+    for _ in 0..10 {
+        harness.step();
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        if view.frames() > 0 {
+            break;
+        }
+    }
+    assert_eq!(view.frames(), 1, "a frame drawn");
+    let content = &view.stage().expect("stood").content;
+    assert!(content.textures_settled(), "the pane's first frame drew every texture whole");
+
+    let mut stage = capture_stage(&gpu, &mut harness);
+    let target = stage.target(64, 64, wgpu::TextureUsages::empty());
+    let target = target.create_view(&wgpu::TextureViewDescriptor::default());
+    stage.render(&target, 1.0, |_, _| {}).expect("draws");
+    assert!(stage.content.textures_settled(), "a capture's first frame drew every texture whole");
+}
+
 /// A resize shows in its own frame, and what it shows is what a capture of those frames does. It builds no
 /// pipeline, and the document that came in built none either.
 #[test]

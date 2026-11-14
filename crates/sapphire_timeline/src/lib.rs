@@ -56,6 +56,6 @@ pub use cooked::{
 };
 pub use document::{
     CameraKey, CameraTrack, CharacterTrack, CueKey, DEFAULT_FACE_BLEND, Ease, EventKey, EyeRule, FaceKey,
-    LookKey, PlaceKey, PlayRange, PostParameter, PostTrack, ScalarKey, ScaleKey, SubtitleKey, TimelineClock,
-    TimelineDocument, TimelineError,
+    FocusKey, FocusOn, LookKey, MAX_FOCUS_BLUR, MAX_FOCUS_RANGE, PlaceKey, PlayRange, PostParameter,
+    PostTrack, ScalarKey, ScaleKey, SubtitleKey, TimelineClock, TimelineDocument, TimelineError,
 };

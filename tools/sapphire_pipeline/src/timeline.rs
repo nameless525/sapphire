@@ -17,8 +17,8 @@ use crate::cache::Stage;
 pub const IMPORTER: Stage = Stage { name: "timeline document", version: 1 };
 
 /// The `.stimeline` writer. Bump the version whenever it changes output for the same document. 2: M5 C5's
-/// faces and looks (`Timeline` version 2).
-pub const COOKER: Stage = Stage { name: "stimeline", version: 2 };
+/// faces and looks (`Timeline` version 2). 3: M5 L8's focus on the camera's keys (`Timeline` version 3).
+pub const COOKER: Stage = Stage { name: "stimeline", version: 3 };
 
 /// What a timeline source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".timeline.ron";

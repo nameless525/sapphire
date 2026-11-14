@@ -3,7 +3,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::timeline::TimelineDocument",
-//!     version: 2,
+//!     version: 3,
 //!     data: (
 //!         // Where the simulation is let go, in seconds. A blend out runs on past it.
 //!         length: 6.0,
@@ -18,8 +18,11 @@
 //!             keys: [
 //!                 (at: 0.0, eye: (0.0, 1.6, -4.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 35.0),
 //!                 (at: 2.5, eye: (1.5, 1.6, -3.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 30.0, ease: Smooth),
-//!                 // A cut: the shot before holds until here, then this one starts.
-//!                 (at: 3.0, eye: (-2.0, 1.2, 2.0), look_at: (0.0, 1.5, 0.0), fov_degrees: 40.0, ease: Cut),
+//!                 // A cut: the shot before holds until here, then this one starts. Its focus keeps the hero's
+//!                 // head sharp, 0.3 m either side, and softens what's behind over 6 m to 1% of the picture's
+//!                 // height; the keys before it have none, so they're sharp everywhere.
+//!                 (at: 3.0, eye: (-2.0, 1.2, 2.0), look_at: (0.0, 1.5, 0.0), fov_degrees: 40.0, ease: Cut,
+//!                     focus: Some((on: Role("hero"), sharp: 0.3, near: 1.0, far: 6.0, blur: 0.01))),
 //!             ],
 //!         )),
 //!         characters: [(
@@ -53,13 +56,28 @@
 //!
 //! - **1** (M3 Q1): everything but a character's faces and looks.
 //! - **2** (M5 C5): a character's `faces` and `looks`. Its `role` may name any character a game can find.
+//! - **3** (M5 L8): a camera key's `focus` (see "Focus" below).
 //!
 //! Every addition so far is to the presentation half, as a field that defaults to nothing, so an older
 //! document is a newer one with nothing in it, and [`TimelineDocument`]'s upgrade decodes it as it is.
-//! The next such field (a shot's focus) costs the same: the field with `#[serde(default)]`, the version
-//! up by one, and the upgrade's arm taking the number before it. The simulation half's digest
+//! The next such field costs the same: the field with `#[serde(default)]`, the version up by one, and the
+//! upgrade's arm taking the number before it. The simulation half's digest
 //! ([`crate::TimelineSimulation::digest`]) is what holds a committed timeline's replays whatever the
 //! version, and `tests/digests.rs` pins every committed timeline's.
+//!
+//! # Focus
+//!
+//! A camera key may say what its shot keeps sharp ([`FocusKey`], M5 L8): depth of field on the desktop
+//! tiers, authored as a cinematographer pulls focus rather than as a lens (no aperture, focal length or
+//! sensor). The sharp plane passes through what [`FocusOn`] names: a distance from the eye, a place in
+//! the timeline's space, or a character's head by its role, followed as it moves. `sharp` metres either
+//! side stay sharp; blur grows to its largest over `near` metres in front of that range and `far` behind
+//! it; and `blur` is the largest blur's radius as a fraction of the picture's height (at most
+//! [`MAX_FOCUS_BLUR`]), so a key blurs alike at any size. Focus moves between keys as the shot does, by
+//! the later key's ease, and a cut changes it at once; between a key with focus and one without, the blur
+//! eases out (or in) around the one target. A move's cinematic is a timeline too, so it keys focus the
+//! same way. Tiers without depth of field (Mobile-Low, and Mobile-High's main view) ignore it. It is
+//! presentation alone, so no digest moves.
 //!
 //! Everything is plain and reflected, so the editor can edit a document by a
 //! reflection path (`camera.keys[1].eye[1]`) and splice the text. Every position is in the timeline's own
@@ -94,6 +112,11 @@ pub const MAX_BLEND: f32 = 60.0;
 pub const MAX_PER_MILLE: u32 = 10_000;
 /// How far a post parameter may move: more than any of them means anything at.
 pub const MAX_POST_VALUE: f32 = 32.0;
+/// The largest blur a focus key may ask for, as a fraction of the picture's height: `sapphire_look`'s
+/// `MAX_FOCUS_BLUR`, which this plain-data crate doesn't link.
+pub const MAX_FOCUS_BLUR: f32 = 0.02;
+/// The longest a focus's ranges may reach, in metres: further than any shot looks.
+pub const MAX_FOCUS_RANGE: f32 = 10_000.0;
 /// Normal speed, in thousandths: where a timeline's first ramp starts from.
 const NORMAL_PER_MILLE: u32 = 1000;
 
@@ -214,13 +237,14 @@ pub struct TimelineDocument {
 }
 
 impl Versioned for TimelineDocument {
-    /// 1: M3 Q1. 2: M5 C5's faces and looks. See the [module docs](self).
-    const VERSION: u32 = 2;
+    /// 1: M3 Q1. 2: M5 C5's faces and looks. 3: M5 L8's focus. See the [module docs](self).
+    const VERSION: u32 = 3;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         match version {
-            // A version 1 document is a version 2 one with no faces or looks.
-            1 => data.decode().map_err(VersionError::Decode),
+            // A version 1 document is a version 3 one with no faces, looks or focus, and a version 2 one
+            // with no focus.
+            1 | 2 => data.decode().map_err(VersionError::Decode),
             found => Err(VersionError::TooOld { found, oldest: 1 }),
         }
     }
@@ -257,7 +281,6 @@ pub struct CameraTrack {
 /// One key of a camera's shot.
 #[derive(
     Clone,
-    Copy,
     Debug,
     PartialEq,
     Serialize,
@@ -284,6 +307,63 @@ pub struct CameraKey {
     pub fov_degrees: f32,
     #[serde(default)]
     pub ease: Ease,
+    /// What the shot keeps sharp, from here (M5 L8; the module docs' "Focus"). `None` is sharp everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<FocusKey>,
+}
+
+/// What a camera key keeps sharp, and how soft the rest goes (M5 L8; the module docs' "Focus").
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[type_path = "sapphire::timeline"]
+#[serde(deny_unknown_fields)]
+pub struct FocusKey {
+    /// What the sharp plane passes through.
+    pub on: FocusOn,
+    /// How far in front of and behind it stays fully sharp, in metres.
+    #[serde(default)]
+    pub sharp: f32,
+    /// Over how many metres in front of the sharp range blur grows to its largest.
+    pub near: f32,
+    /// Over how many metres behind the sharp range blur grows to its largest.
+    pub far: f32,
+    /// The largest blur's radius, as a fraction of the picture's height: above 0, at most
+    /// [`MAX_FOCUS_BLUR`].
+    pub blur: f32,
+}
+
+/// What a [`FocusKey`]'s sharp plane passes through.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[type_path = "sapphire::timeline"]
+pub enum FocusOn {
+    /// This many metres in front of the eye, along its axis.
+    Distance(f32),
+    /// A place in the timeline's space.
+    Point([f32; 3]),
+    /// A character's head, by its role: any character a game can find, as a character track's `role`
+    /// may name. Followed as it moves; while the game can't find it, the focus holds where it last was.
+    Role(String),
 }
 
 /// A character's part: what its animation graph plays, and where it stands.
@@ -672,6 +752,39 @@ pub(crate) fn check_camera(camera: &CameraTrack, length: f32) -> Result<(), Time
             let problem = "it looks at where it stands";
             return Err(TimelineError::invalid(format!("camera.keys[{index}].look_at"), problem));
         }
+        if let Some(focus) = &key.focus {
+            check_focus(&format!("camera.keys[{index}].focus"), focus)?;
+        }
+    }
+    Ok(())
+}
+
+/// A focus key's target and ranges, naming the field that's wrong.
+pub(crate) fn check_focus(field: &str, focus: &FocusKey) -> Result<(), TimelineError> {
+    match &focus.on {
+        FocusOn::Distance(distance) => {
+            if !(distance.is_finite() && *distance > 0.0 && *distance <= MAX_FOCUS_RANGE) {
+                let problem = format!(
+                    "{distance} isn't a distance in front of the eye: above 0, at most {MAX_FOCUS_RANGE}"
+                );
+                return Err(TimelineError::invalid(format!("{field}.on"), problem));
+            }
+        }
+        FocusOn::Point(point) => check_position(|| format!("{field}.on"), *point)?,
+        FocusOn::Role(role) => check_name(|| format!("{field}.on"), role)?,
+    }
+    check_time(|| format!("{field}.sharp"), focus.sharp, MAX_FOCUS_RANGE)?;
+    for (name, growth) in [("near", focus.near), ("far", focus.far)] {
+        check_time(|| format!("{field}.{name}"), growth, MAX_FOCUS_RANGE)?;
+        if growth == 0.0 {
+            let problem = "blur grows over some distance: above 0 metres";
+            return Err(TimelineError::invalid(format!("{field}.{name}"), problem));
+        }
+    }
+    check_time(|| format!("{field}.blur"), focus.blur, MAX_FOCUS_BLUR)?;
+    if focus.blur == 0.0 {
+        let problem = "a focus with no blur blurs nothing: leave `focus` out for a sharp shot";
+        return Err(TimelineError::invalid(format!("{field}.blur"), problem));
     }
     Ok(())
 }

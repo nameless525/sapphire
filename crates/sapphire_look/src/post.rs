@@ -56,6 +56,10 @@ pub struct PostParams {
     /// duotone and speed lines. [`PostEffects::NONE`], the default, draws none and costs
     /// nothing.
     pub effects: PostEffects,
+    /// Depth of field (M5 L8): where the frame is sharp and how soft it goes in front of and behind
+    /// that, as a timeline's shot keys it. [`Focus::NONE`], the default, blurs nothing and costs
+    /// nothing; a tier without depth of field ignores it.
+    pub focus: Focus,
 }
 
 impl Default for PostParams {
@@ -84,6 +88,7 @@ impl Default for PostParams {
             lens_flare: LensFlare::NONE,
             sharpening: 0.0,
             effects: PostEffects::NONE,
+            focus: Focus::NONE,
         }
     }
 }
@@ -93,7 +98,8 @@ impl PostParams {
     /// blooming as the world does, no gradient layers or lens flare, a black vignette and no
     /// sharpening. Without effects, post draws them exactly as it did before the layers existed,
     /// through the same shader code (the fused pass's plain variant). The screen effects
-    /// ([`Self::effects`], M1 P3) stay: they are gameplay's, not the look's.
+    /// ([`Self::effects`], M1 P3) and the focus ([`Self::focus`], M5 L8) stay: they are gameplay's
+    /// and the shot's, not the look's.
     pub fn plain(self) -> Self {
         Self {
             vignette: Vignette { color: Vec3::ZERO, ..self.vignette },
@@ -104,6 +110,86 @@ impl PostParams {
             sharpening: 0.0,
             ..self
         }
+    }
+}
+
+/// The largest blur [`Focus::blur`] may ask for, as a fraction of the picture's height: past it the
+/// renderer's gather spreads its taps too thin to stay smooth.
+pub const MAX_FOCUS_BLUR: f32 = 0.02;
+
+/// The shortest distance over which blur grows ([`Focus::near`], [`Focus::far`]), in metres: what a
+/// shorter or zero growth is held to, so blur ramps rather than steps.
+pub const MIN_FOCUS_GROWTH: f32 = 0.01;
+
+/// Depth of field (M5 L8; look pillar 4): authored focus, as a cinematographer pulls it, never a lens.
+/// There is no aperture, focal length or sensor: a shot says how far away the sharp plane is, how deep
+/// the sharp range around it reaches, how quickly blur grows in front of and behind that range, and the
+/// largest blur, as a share of the picture's height, so a key blurs alike at any output size.
+///
+/// The blur radius of a surface at view depth `z` is `blur × ramp`, where the ramp is 0 within `sharp`
+/// metres of `distance` and grows linearly to 1 over `near` metres in front of that range or `far`
+/// metres behind it ([`Self::share_at`]). The renderer sees only this resolved value (rule R4): the
+/// timeline's keys, the target it follows and the camera's blend are resolved before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Focus {
+    /// How far the sharp plane is, along the camera's axis, in metres.
+    pub distance: f32,
+    /// How far in front of and behind `distance` stays fully sharp, in metres.
+    pub sharp: f32,
+    /// Over how many metres in front of the sharp range blur grows to its largest.
+    pub near: f32,
+    /// Over how many metres behind the sharp range blur grows to its largest.
+    pub far: f32,
+    /// The largest blur's radius, as a fraction of the picture's height, at most [`MAX_FOCUS_BLUR`].
+    /// 0 is no depth of field.
+    pub blur: f32,
+}
+
+impl Focus {
+    /// No depth of field: everything sharp, nothing drawn.
+    pub const NONE: Self = Self { distance: 0.0, sharp: 0.0, near: 1.0, far: 1.0, blur: 0.0 };
+
+    /// Whether it blurs anything: a positive, finite largest blur at a positive, finite distance.
+    pub fn drawn(&self) -> bool {
+        let finite =
+            [self.distance, self.sharp, self.near, self.far, self.blur].iter().all(|value| value.is_finite());
+        finite && self.blur > 0.0 && self.distance > 0.0
+    }
+
+    /// The same focus with every value held to its working range: no negative range, growth at least
+    /// [`MIN_FOCUS_GROWTH`], and the largest blur at most [`MAX_FOCUS_BLUR`]. [`Focus::NONE`] where it isn't
+    /// [`Self::drawn`].
+    pub fn sanitized(&self) -> Self {
+        if !self.drawn() {
+            return Self::NONE;
+        }
+        Self {
+            distance: self.distance,
+            sharp: self.sharp.max(0.0),
+            near: self.near.max(MIN_FOCUS_GROWTH),
+            far: self.far.max(MIN_FOCUS_GROWTH),
+            blur: self.blur.min(MAX_FOCUS_BLUR),
+        }
+    }
+
+    /// How much of the largest blur a surface at view depth `depth` takes: negative in front of the
+    /// sharp range, positive behind it, 0 within it, at most 1 either way (infinitely far is 1). The CPU
+    /// reference for the renderer's `focus_share`.
+    pub fn share_at(&self, depth: f32) -> f32 {
+        let focus = self.sanitized();
+        if focus.blur == 0.0 || depth.is_nan() {
+            return 0.0;
+        }
+        let offset = depth - focus.distance;
+        let far = ((offset - focus.sharp) / focus.far).clamp(0.0, 1.0);
+        let near = ((-offset - focus.sharp) / focus.near).clamp(0.0, 1.0);
+        far - near
+    }
+}
+
+impl Default for Focus {
+    fn default() -> Self {
+        Self::NONE
     }
 }
 
@@ -757,5 +843,48 @@ mod tests {
         assert_eq!(past.radial_blur.strength, 0.0, "and one under 0 as 0");
         let unknown = EffectScale { flash_swing: f32::NAN, motion: 1.0 };
         assert_eq!(all.scaled(unknown).swing, 0.0, "all the way");
+    }
+
+    #[test]
+    fn focus_is_sharp_within_its_range_and_grows_to_its_largest_blur() {
+        let focus = Focus { distance: 4.0, sharp: 0.5, near: 1.0, far: 8.0, blur: 0.01 };
+        assert!(focus.drawn());
+        for depth in [3.5, 4.0, 4.5] {
+            assert_eq!(focus.share_at(depth), 0.0, "{depth} m is within the sharp range");
+        }
+        assert_eq!(focus.share_at(8.5), 0.5);
+        assert_eq!(focus.share_at(12.5), 1.0);
+        assert_eq!(focus.share_at(f32::INFINITY), 1.0, "the sky takes the largest blur");
+        assert_eq!(focus.share_at(3.0), -0.5);
+        assert_eq!(focus.share_at(0.1), -1.0);
+        assert!(focus.share_at(9.0) < focus.share_at(10.0), "more blur further behind");
+    }
+
+    #[test]
+    fn focus_holds_nonsense_to_its_range_and_draws_nothing_without_blur() {
+        assert!(!Focus::NONE.drawn());
+        assert_eq!(Focus::default(), Focus::NONE);
+        assert_eq!(PostParams::default().focus, Focus::NONE);
+        for bad in [
+            Focus { blur: f32::NAN, ..Focus::NONE },
+            Focus { distance: 4.0, blur: -0.01, ..Focus::NONE },
+            Focus { distance: -4.0, blur: 0.01, ..Focus::NONE },
+            Focus { distance: 4.0, far: f32::INFINITY, blur: 0.01, ..Focus::NONE },
+        ] {
+            assert!(!bad.drawn(), "{bad:?}");
+            assert_eq!(bad.sanitized(), Focus::NONE);
+            assert_eq!(bad.share_at(10.0), 0.0);
+        }
+        let wild = Focus { distance: 2.0, sharp: -1.0, near: 0.0, far: 0.0, blur: 1.0 }.sanitized();
+        let held = Focus {
+            distance: 2.0,
+            sharp: 0.0,
+            near: MIN_FOCUS_GROWTH,
+            far: MIN_FOCUS_GROWTH,
+            blur: MAX_FOCUS_BLUR,
+        };
+        assert_eq!(wild, held);
+        assert_eq!(wild.share_at(2.0), 0.0);
+        assert_eq!(wild.share_at(2.5), 1.0);
     }
 }

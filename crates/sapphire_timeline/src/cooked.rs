@@ -40,8 +40,9 @@ pub struct Timeline {
 }
 
 impl Versioned for Timeline {
-    /// 1: M3 Q1. 2: M5 C5's faces and looks, in the presentation half.
-    const VERSION: u32 = 2;
+    /// 1: M3 Q1. 2: M5 C5's faces and looks, in the presentation half. 3: M5 L8's focus, on the camera's
+    /// keys.
+    const VERSION: u32 = 3;
 }
 
 /// All the simulation reads of a timeline. Everything here is in a replay's digest.
@@ -128,6 +129,16 @@ pub struct CookedCue {
 }
 
 impl Timeline {
+    /// Whether any of its camera's keys has focus (M5 L8): what a game that may play it declares for the
+    /// renderer's warm-up (`PipelineInventory::focus`).
+    #[must_use]
+    pub fn has_focus(&self) -> bool {
+        self.presentation
+            .camera
+            .as_ref()
+            .is_some_and(|camera| camera.keys.iter().any(|key| key.focus.is_some()))
+    }
+
     pub fn to_cooked(&self) -> Result<AlignedVec, TimelineError> {
         Ok(sapphire_serialize::to_cooked(self)?)
     }
@@ -396,22 +407,27 @@ mod tests {
         assert_eq!(plain.cook().unwrap().simulation.digest(), digest);
     }
 
-    /// M5 C5: a version 1 document loads as a version 2 one with no faces or looks, which is how every
-    /// committed timeline before C5 still loads; a version past this build's, or before the first, doesn't.
+    /// M5 C5 and L8: a version 1 document loads as a version 3 one with no faces, looks or focus, and a
+    /// version 2 one with no focus, which is how every committed timeline still loads; a version past this
+    /// build's, or before the first, doesn't.
     #[test]
     fn a_version_1_document_loads_and_others_are_refused() {
         assert!(CINEMATIC.contains("version: 1,"), "the cinematic is the version 1 document the tests keep");
         let old = TimelineDocument::from_ron(CINEMATIC).expect("version 1 loads");
         assert!(old.characters.iter().all(|track| track.faces.is_empty() && track.looks.is_empty()));
-        let current = with(CINEMATIC, "version: 1,", "version: 2,").expect("and is a version 2 document");
-        assert_eq!(current, old);
-        for version in ["version: 0,", "version: 3,"] {
+        for version in ["version: 2,", "version: 3,"] {
+            let current = with(CINEMATIC, "version: 1,", version).expect("and is a version 2 and 3 document");
+            assert_eq!(current, old, "{version}");
+        }
+        for version in ["version: 0,", "version: 4,"] {
             let error = with(CINEMATIC, "version: 1,", version).unwrap_err();
             assert!(matches!(error, TimelineError::Document(_)), "{version}: {error}");
         }
-        // Writing it out says version 2, and leaves out the empty tracks a version 1 reader wouldn't know.
+        // Writing it out says version 3, and leaves out the empty tracks and focus an older reader wouldn't
+        // know.
         let text = sapphire_serialize::to_ron(&old).unwrap();
-        assert!(text.contains("version: 2") && !text.contains("faces") && !text.contains("looks"), "{text}");
+        let unknown = ["faces", "looks", "focus"].iter().any(|field| text.contains(field));
+        assert!(text.contains("version: 3") && !unknown, "{text}");
         assert_eq!(TimelineDocument::from_ron(&text).unwrap(), old);
     }
 
@@ -589,4 +605,78 @@ mod tests {
     }
 
     const PINNED_DIGEST: u64 = 2869729819227249548;
+
+    /// The cutscene's first and last camera keys with focus (M5 L8): a version 3 document.
+    fn focused(first: &str, last: &str) -> Result<TimelineDocument, TimelineError> {
+        let text = CUTSCENE.replacen("version: 2,", "version: 3,", 1).replacen(
+            "fov_degrees: 35.0)",
+            &format!("fov_degrees: 35.0, focus: Some({first}))"),
+            1,
+        );
+        with(
+            &text,
+            "fov_degrees: 40.0, ease: Cut)",
+            &format!("fov_degrees: 40.0, ease: Cut, focus: Some({last}))"),
+        )
+    }
+
+    const ON_HERO: &str = "(on: Role(\"hero\"), sharp: 0.3, near: 1.0, far: 6.0, blur: 0.01)";
+
+    /// M5 L8: a focus key reads by each target, cooks into the presentation half and reads back, and moves no
+    /// digest: the same document without it has the same simulation half.
+    #[test]
+    fn focus_keys_read_cook_and_move_no_digest() {
+        let document = focused("(on: Distance(4.0), near: 0.5, far: 3.0, blur: 0.02)", ON_HERO).unwrap();
+        let keys = &document.camera.as_ref().unwrap().keys;
+        let first = keys[0].focus.as_ref().unwrap();
+        assert_eq!((&first.on, first.sharp, first.blur), (&crate::FocusOn::Distance(4.0), 0.0, 0.02));
+        assert!(keys[1].focus.is_none(), "a key without focus is sharp everywhere");
+        assert_eq!(keys[2].focus.as_ref().unwrap().on, crate::FocusOn::Role("hero".to_owned()));
+        let point =
+            focused("(on: Point((0.0, 1.5, 0.0)), near: 1.0, far: 1.0, blur: 0.005)", ON_HERO).unwrap();
+        let point = point.camera.unwrap().keys.swap_remove(0).focus.unwrap();
+        assert!(matches!(point.on, crate::FocusOn::Point(_)));
+
+        let timeline = document.cook().unwrap();
+        assert!(timeline.has_focus() && !cook(CUTSCENE).has_focus() && !cook(CINEMATIC).has_focus());
+        let bytes = timeline.to_cooked().unwrap();
+        assert_eq!(Timeline::read(&bytes).unwrap(), timeline);
+        assert_eq!(timeline.simulation, cook(CUTSCENE).simulation, "focus is presentation alone");
+        assert_ne!(timeline.presentation, cook(CUTSCENE).presentation);
+    }
+
+    /// M5 L8: nonsense in a focus key is refused, naming its field; and a version 2 document (no focus) reads
+    /// as it did, under the version that brought focus.
+    #[test]
+    fn focus_keys_refuse_nonsense_by_field() {
+        let field = |first: &str| field_of(focused(first, ON_HERO).unwrap_err());
+        let key = "camera.keys[0].focus";
+        for (first, wrong) in [
+            ("(on: Distance(0.0), near: 1.0, far: 1.0, blur: 0.01)", "on"),
+            ("(on: Distance(-2.0), near: 1.0, far: 1.0, blur: 0.01)", "on"),
+            ("(on: Point((0.0, 1e9, 0.0)), near: 1.0, far: 1.0, blur: 0.01)", "on"),
+            ("(on: Role(\"\"), near: 1.0, far: 1.0, blur: 0.01)", "on"),
+            ("(on: Distance(4.0), sharp: -1.0, near: 1.0, far: 1.0, blur: 0.01)", "sharp"),
+            ("(on: Distance(4.0), near: 0.0, far: 1.0, blur: 0.01)", "near"),
+            ("(on: Distance(4.0), near: 1.0, far: -1.0, blur: 0.01)", "far"),
+            ("(on: Distance(4.0), near: 1.0, far: 1.0, blur: 0.0)", "blur"),
+            ("(on: Distance(4.0), near: 1.0, far: 1.0, blur: 0.5)", "blur"),
+        ] {
+            assert_eq!(field(first), format!("{key}.{wrong}"), "{first}");
+        }
+        let unknown = focused("(on: Distance(4.0), near: 1.0, far: 1.0, blur: 0.01, aperture: 2.8)", ON_HERO);
+        assert!(unknown.unwrap_err().to_string().contains("aperture"), "unknown fields are errors");
+        let missing = focused("(on: Distance(4.0), far: 1.0, blur: 0.01)", ON_HERO);
+        assert!(missing.unwrap_err().to_string().contains("near"));
+
+        // Version 2 reads unchanged under version 3: no key has focus.
+        let old = TimelineDocument::from_ron(CUTSCENE).unwrap();
+        assert!(old.camera.unwrap().keys.iter().all(|key| key.focus.is_none()));
+        // And a cooked camera key with nonsense in it is refused on read, as a document's would be.
+        let mut timeline =
+            focused("(on: Distance(4.0), near: 1.0, far: 1.0, blur: 0.01)", ON_HERO).unwrap().cook().unwrap();
+        timeline.presentation.camera.as_mut().unwrap().keys[2].focus.as_mut().unwrap().blur = f32::NAN;
+        let bytes = timeline.to_cooked().unwrap();
+        assert_eq!(field_of(Timeline::read(&bytes).unwrap_err()), "camera.keys[2].focus.blur");
+    }
 }

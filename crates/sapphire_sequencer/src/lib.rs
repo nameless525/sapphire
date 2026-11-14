@@ -5,10 +5,13 @@
 //!
 //! - **The playhead** ([`TimelinePlayer`]): one, on the clock its timeline names, which every track reads,
 //!   so a subtitle can't drift from the sound it goes with. It only goes forward.
-//! - **What each track says at the playhead:** the [`Shot`], the post offsets
+//! - **What each track says at the playhead:** the [`Shot`] and its focus ([`ShotFocus`], M5 L8), the post offsets
 //!   ([`TimelinePlayer::apply_post`]), the [`Subtitle`]'s keys, each [`CharacterCue`], and the
 //!   [`FiredCue`]s since the last advance. Each but the last is a pure function of the playhead, so it
 //!   costs a binary search, and there's nothing to get out of step.
+//! - **Following a shot's focus** ([`FocusFollow`], M5 L8): its target found each frame (a role's head
+//!   as it moves), held while lost, eased over a jump, and scaled by the camera's blend, into the plain
+//!   [`Focus`](sapphire_look::Focus) post draws.
 //! - **What a skip means to presentation** ([`TimelinePlayer::skip`]): everything drops at once, and cues it
 //!   jumped never fire.
 //!
@@ -42,8 +45,10 @@
 //! A timeline's camera hands back past its end with the simulation already let go, so a fight underneath is
 //! live when the view reaches it: the director's weights do that, with their spring, on the unscaled clock.
 
+mod focus;
 mod player;
 
+pub use focus::{FOCUS_FOLLOW_HALF_LIFE, FocusAim, FocusFollow, ShotFocus};
 pub use player::{
     CameraTerms, CharacterCue, FaceCue, FiredCue, Origin, Placed, Playing, SequencerStats, Shot, StepClock,
     Subtitle, TimelinePlayer,

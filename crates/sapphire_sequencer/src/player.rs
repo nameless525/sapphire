@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::focus::ShotFocus;
 use glam::{Mat3, Quat, Vec3};
 use sapphire_core::Name;
 use sapphire_look::PostParams;
@@ -22,7 +23,7 @@ pub struct Origin {
 }
 
 impl Origin {
-    fn point(&self, local: [f32; 3]) -> Vec3 {
+    pub(crate) fn point(&self, local: [f32; 3]) -> Vec3 {
         self.position + Quat::from_rotation_y(self.yaw) * Vec3::from(local)
     }
 }
@@ -60,6 +61,9 @@ pub struct Shot {
     /// This frame crossed a [`Ease::Cut`] key: the renderer's history is no use to it, nor the eye's last
     /// place.
     pub cut: bool,
+    /// What the shot keeps sharp (M5 L8), if either key around the playhead has focus: for a
+    /// [`FocusFollow`](crate::FocusFollow) to find and hand post.
+    pub focus: Option<ShotFocus>,
 }
 
 /// How a camera track blends and treats the eye, for the director's takeover terms.
@@ -276,7 +280,9 @@ impl TimelinePlayer {
         let from = camera.keys.partition_point(|key| key.at <= self.before);
         let to = camera.keys.partition_point(|key| key.at <= self.playhead);
         let cut = camera.keys[from..to].iter().any(|key| key.ease == Ease::Cut);
-        Some(Shot { eye, rotation: looking(eye, look_at, roll), fov_y: fov.to_radians(), cut })
+        let (before, after, share) = between(&camera.keys, self.playhead, |key| key.at, |key| key.ease);
+        let focus = ShotFocus::between(before, after, share, &self.origin);
+        Some(Shot { eye, rotation: looking(eye, look_at, roll), fov_y: fov.to_radians(), cut, focus })
     }
 
     /// Where the view will jump to in the next `within` seconds, in order: each camera cut's eye, and the
@@ -560,15 +566,15 @@ mod tests {
     fn a_cut_is_retained_when_the_frame_also_crosses_a_smooth_key() {
         let mut document = TimelineDocument::from_ron(CUTSCENE).unwrap();
         let keys = &mut document.camera.as_mut().unwrap().keys;
-        let mut smooth = *keys.last().unwrap();
+        let mut smooth = keys.last().unwrap().clone();
         smooth.at = 3.5;
         smooth.ease = Ease::Smooth;
         keys.push(smooth);
-        let mut cut = *keys.last().unwrap();
+        let mut cut = keys.last().unwrap().clone();
         cut.at = 4.0;
         cut.ease = Ease::Cut;
         keys.push(cut);
-        let mut smooth = *keys.last().unwrap();
+        let mut smooth = keys.last().unwrap().clone();
         smooth.at = 4.5;
         smooth.ease = Ease::Smooth;
         keys.push(smooth);

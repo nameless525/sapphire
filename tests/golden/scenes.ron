@@ -1079,24 +1079,25 @@
             // Zones bring their look (M5 M6): `zone-trip`'s replay past its first trip, counted in the replay's
             // ticks through the trip's hold, in the proving hub, under the hub's own look whatever hour is asked
             // for: its blue hour, its rigs, its probe grid, its wind and its thicker haze. The hub's look is all
-            // the trip brought: the arena's midday is gone.
+            // the trip brought: the arena's midday is gone. Dry, as before wet surfaces (M5 L4), which `wet-*` show.
             (
                 name: "zone-trip-hub",
                 ticks: 225,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
-                       "--no-reflection-probes"],
+                       "--no-reflection-probes", "--weather", "dry"],
                 ci_seconds: (lavapipe: 32.7, warp: 111.2),
             ),
             // Past its second trip, in the proving ground, which names the look-dev day and rigs and no grid: the
             // hub's look gone with the hub, midday again, and no grid on the renderer. Both trip scenes keep the sky's
-            // reflection alone, as before the zones' reflection probes (M5 L3), which `reflect-*` show.
+            // reflection alone, as before the zones' reflection probes (M5 L3), which `reflect-*` show, and pass
+            // through the hub dry, as before wet surfaces (M5 L4).
             (
                 name: "zone-trip-ground",
                 ticks: 290,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
-                       "--no-reflection-probes"],
+                       "--no-reflection-probes", "--weather", "dry"],
                 ci_seconds: (lavapipe: 58.3, warp: 74.3),
             ),
             // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
@@ -3849,12 +3850,13 @@
                 ci_seconds: (lavapipe: 22.4, warp: 39.5),
             ),
             // Zones' reflection probes (M5 L3). The proving hub's square, at its one key: its paving reflects
-            // the square's one probe, the posts and the hub's blue hour composed into it, over its grid.
+            // the square's one probe, the posts and the hub's blue hour composed into it, over its grid. Dry, as
+            // before wet surfaces (M5 L4): `wet-hub-dusk` is the same square under the hub's own weather.
             (
                 name: "reflect-hub-square",
                 ticks: 90,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32", "--weather", "dry"],
                 ci_seconds: (lavapipe: 6.4, warp: 27.4),
             ),
             // The proving ground's shelter by day, the character standing under its roof facing its back wall,
@@ -3980,6 +3982,45 @@
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 36.5, warp: 45.4),
+            ),
+            // Wet surfaces (M5 L4). The proving ground's yard at night after rain: its paving darkened, glossed
+            // and standing in puddles that mirror the yard's probe (its lanterns and the shelter) and the night
+            // sky beyond it; the lanterns' light streaks across the wet stone.
+            (
+                name: "wet-street-night",
+                ticks: 90,
+                args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
+            ),
+            // The proving hub's square under its own weather (wetness 0.7, a third of its puddles), at the blue
+            // hour it keeps all day: the square's probe and the dusk sky in its puddles.
+            (
+                name: "wet-hub-dusk",
+                ticks: 90,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+            ),
+            // The yard half wet as night falls: darkened and glossed, no puddle standing.
+            (
+                name: "wet-yard-half",
+                ticks: 90,
+                args: ["--zone", "proving_ground:player_start", "--time-of-day", "20", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32", "--weather", "0.5,0"],
+            ),
+            // `wet-street-night` on Mobile-High: all three parts, the puddles reading the probe without the box's
+            // correction.
+            (
+                name: "wet-street-mobile-high",
+                ticks: 90,
+                args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "mobile-high",
+                       "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
+            ),
+            // And on Mobile-Low, which darkens only: no gloss, no puddle.
+            (
+                name: "wet-street-mobile-low",
+                ticks: 90,
+                args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "mobile-low",
+                       "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
             ),
         ],
     ),

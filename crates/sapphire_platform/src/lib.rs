@@ -148,6 +148,7 @@ mod android_loop;
 mod app;
 mod audio_session;
 mod content;
+mod cores;
 mod dirs;
 mod disk;
 mod durable;
@@ -171,6 +172,9 @@ mod window;
 pub use app::__private;
 pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_with};
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
+pub use cores::{
+    CoreKind, CoreLayout, ThreadClass, core_layout, current_core, set_thread_class, thread_class,
+};
 pub use dirs::{cache_dir, user_dir};
 pub use disk::{exclude_from_backup, free_space};
 pub use durable::{OsSteps, ReplaceSteps, durable_append, durable_replace, durable_replace_with};

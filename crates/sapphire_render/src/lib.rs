@@ -960,8 +960,8 @@ pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
     CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, MAX_FOCUS_BLUR, Nebula, SkyDisc, SkyGradient,
     SkyLayers, UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun,
-    UiSource, VfxErosion, VfxFlipbook, VfxFrame, VfxLight, VfxMesh, VfxMeshShape, VfxPattern, VfxRibbonPoint,
-    VfxShape, VfxSprite, VfxStats,
+    UiSource, VfxDecal, VfxDecalBlend, VfxDecalShape, VfxErosion, VfxFlipbook, VfxFrame, VfxLight, VfxMesh,
+    VfxMeshShape, VfxPattern, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};

@@ -203,6 +203,23 @@ impl Harness {
         self.add(mesh)
     }
 
+    /// A square two metres a side in its own XY plane, facing +Z, glowing `emission`, placed by `transform`:
+    /// the decals' ground (M5 L7). [`Self::place`] moves it.
+    pub(super) fn add_surface(&mut self, transform: Mat4, emission: Vec3) -> MeshInstance {
+        let material = self.material(&glowing(emission));
+        let mesh = self.mesh(&wall(0.0, 1.0), material);
+        let id = self.add(mesh);
+        let instance = MeshInstance { id, mesh, transform };
+        self.place(instance);
+        instance
+    }
+
+    /// Draws `instance` as it says from the next frame.
+    pub(super) fn place(&mut self, instance: MeshInstance) {
+        self.added.retain(|added| added.id != instance.id);
+        self.added.push(instance);
+    }
+
     /// Draws one frame, the camera at the origin looking down -Z over 90°, and reads it back as
     /// linear colors. `fill` adds the frame's effects, or changes its look.
     pub(super) fn render(&mut self, fill: impl FnOnce(&mut FramePacket)) -> Frame {

@@ -1819,7 +1819,7 @@ impl Renderer {
                 .flatten(),
             // Only those built so far: none before the first effect, and the meshes' none before the first
             // effect mesh.
-            vfx: self.vfx.rebuild(has(Program::Vfx), has(Program::VfxMesh)),
+            vfx: self.vfx.rebuild(has(Program::Vfx), has(Program::VfxMesh), has(Program::VfxDecal)),
             ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
             changed,
         }
@@ -2131,7 +2131,12 @@ impl Renderer {
                 on,
             ),
             vfx: self.vfx.warm(
-                VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true },
+                VfxParts {
+                    sprites: inventory.effects,
+                    meshes: inventory.effect_meshes,
+                    decals: inventory.decals,
+                    mask: true,
+                },
                 on,
             ),
             ui: inventory.ui.then(|| self.ui.warm()).flatten(),
@@ -2240,8 +2245,13 @@ impl Renderer {
             }
             let on = BuildOn::sources(renderer.edited_shaders);
             renderer.post.prewarm(inventory.post, on);
-            let parts = VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true };
-            if parts.sprites || parts.meshes {
+            let parts = VfxParts {
+                sprites: inventory.effects,
+                meshes: inventory.effect_meshes,
+                decals: inventory.decals,
+                mask: true,
+            };
+            if parts.any() {
                 renderer.vfx.build(&renderer.shaders, parts, on);
             }
             if inventory.ui {
@@ -2900,7 +2910,10 @@ impl Renderer {
             .upscaled_to(output, samples);
         // The frame's effects, if any: a frame with none adds nothing to the graph below.
         let (vfx_upload, vfx_draw) = vfx.split_for_record(output).unzip();
-        let (vfx_main, vfx_after) = vfx_draw.map(|draw| (draw.main, draw.after)).unzip();
+        let (vfx_main, vfx_after, vfx_decals) = match vfx_draw {
+            Some(draw) => (Some(draw.main), draw.after, draw.decals),
+            None => (None, None, None),
+        };
         // A debug view draws through the main view without temporal AA's jitter or the fade's
         // turn, so it holds still (M1 F5), into single-sampled targets. Boxed, so the uploads'
         // pass doesn't grow by a view while none shows.
@@ -3211,7 +3224,24 @@ impl Renderer {
                 sky_draw.draw(pass);
                 view_draws.counter.add(&PassCounts::fullscreen());
             };
-            draw_main_pass(&mut pass, &pipeline, &view_draws, groups, Some(&sky), cards, |_| true);
+            // Ground decals over the opaque world, under outlines and everything after (M5 L7).
+            let counter = &view_draws.counter;
+            let decals = vfx_decals.map(|decals| {
+                move |pass: &mut wgpu::RenderPass<'_>| {
+                    counter.add(&decals.draw(pass, groups.frame.get(FrameGroup::World)));
+                }
+            });
+            let decals = decals.as_ref().map(|draw| draw as &dyn Fn(&mut wgpu::RenderPass<'_>));
+            draw_main_pass_with_decals(
+                &mut pass,
+                &pipeline,
+                &view_draws,
+                groups,
+                Some(&sky),
+                decals,
+                cards,
+                |_| true,
+            );
             // Effects after everything: their mask, and without temporal AA their light.
             if let Some(vfx_main) = &vfx_main {
                 let drawn = vfx_main.draw(&mut pass, groups.frame.get(FrameGroup::World));
@@ -3340,7 +3370,7 @@ impl Renderer {
         // holds them (see the `vfx` module), and post reads the copy. Post hands them its input after depth
         // of field's passes (M5 L8), so an effect is drawn over the blurred frame and is never blurred
         // itself: a slash across a sharp subject's edge isn't half sharp and half soft.
-        let effects = move |graph: &mut FrameGraph<'f>, input: TextureId| match vfx_after.flatten() {
+        let effects = move |graph: &mut FrameGraph<'f>, input: TextureId| match vfx_after {
             Some(after) => {
                 let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(input)));
                 let pass = AfterResolveTargets { resolved: input, composed, depth: targets.depth };
@@ -3808,7 +3838,8 @@ impl Bound {
 ///
 /// Group 1 and the index buffer must be bound. A debug view replays the pass through it
 /// (`debug_view`) with copies of the pipelines, of a subset (`pipeline` gives `None` for what it
-/// leaves out) or of the instance slots `instance` takes.
+/// leaves out) or of the instance slots `instance` takes; it draws no ground decals, which
+/// [`draw_main_pass_with_decals`] adds.
 pub(crate) fn draw_main_pass<'p>(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &MainPassPipeline<'p>,
@@ -3818,12 +3849,36 @@ pub(crate) fn draw_main_pass<'p>(
     cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
     instance: impl Fn(u32) -> bool + Copy,
 ) {
-    let sets = SurfaceVariant::DEPTH_WRITING
-        .map(|variant| (variant, DrawSet::Surfaces))
-        .into_iter()
-        .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
-        .chain(SurfaceVariant::DRAWS_THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
+    draw_main_pass_with_decals(pass, pipeline, draws, groups, sky, None, cards, instance);
+}
+
+/// [`draw_main_pass`], with the frame's ground decals (M5 L7) drawn through `decals` right after the
+/// opaque and alpha-tested surfaces, when every depth they test against is written, and before the
+/// characters' outlines and everything after (the `vfx::decal` module's docs). `decals` binds its own
+/// groups 0 and 2; what follows binds its own again.
+#[expect(clippy::too_many_arguments, reason = "the pass's shared state, then what draws in it")]
+pub(crate) fn draw_main_pass_with_decals<'p>(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &MainPassPipeline<'p>,
+    draws: &MeshDraws<'_>,
+    groups: MeshGroups<'_>,
+    sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
+    decals: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
+    cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
+    instance: impl Fn(u32) -> bool + Copy,
+) {
     let mut bound = Bound::default();
+    for variant in SurfaceVariant::DEPTH_WRITING {
+        draw_main(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Surfaces, instance);
+    }
+    if let Some(decals) = decals {
+        decals(pass);
+        bound = Bound::default();
+    }
+    let sets = SurfaceVariant::OUTLINED
+        .map(|variant| (variant, DrawSet::Outlines))
+        .into_iter()
+        .chain(SurfaceVariant::DRAWS_THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
     for (variant, set) in sets {
         draw_main(pass, pipeline, draws, groups, &mut bound, variant, set, instance);
     }

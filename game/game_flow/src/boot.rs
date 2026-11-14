@@ -593,8 +593,9 @@ impl Boot {
                     inventory.add(&PipelineInventory {
                         skinning: true,
                         effects: true,
-                        // The shipped cue table's skill arc (M5 L5).
+                        // The shipped cue table's skill arc (M5 L5), and its telegraphs and scorches (M5 L7).
                         effect_meshes: true,
+                        decals: true,
                         ui: true,
                         ..content.pipeline_inventory()
                     });

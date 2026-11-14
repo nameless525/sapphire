@@ -2019,6 +2019,7 @@ impl MeshModules {
             | Program::DebugDraw
             | Program::Vfx
             | Program::VfxMesh
+            | Program::VfxDecal
             | Program::Ui => unreachable!("not a mesh program"),
         }
     }
@@ -3348,6 +3349,7 @@ mod tests {
                     Program::Sky,
                     Program::Vfx,
                     Program::VfxMesh,
+                    Program::VfxDecal,
                     Program::DebugView,
                 ],
             ),

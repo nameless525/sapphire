@@ -7,8 +7,8 @@
 //! `debug_draw.wgsl` and the on-screen interface `ui.wgsl`; all five stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
 //! a scene pass. The ambient passes (M1 W5) join `ambient.wgsl`, which the environment and
 //! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program. The
-//! frame's effects (M2 E2) are `frame.wgsl`, `materials.wgsl` and their own `vfx.wgsl`, and their meshes'
-//! (M5 L5) the same two and `vfx_mesh.wgsl`.
+//! frame's effects (M2 E2) are `frame.wgsl`, `materials.wgsl` and their own `vfx.wgsl`, their meshes'
+//! (M5 L5) the same two and `vfx_mesh.wgsl`, and their ground decals' (M5 L7) the same two and `vfx_decal.wgsl`.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -88,12 +88,14 @@ pub enum ShaderFile {
     Vfx,
     /// The frame's effect meshes (M5 L5).
     VfxMesh,
+    /// The frame's ground decals (M5 L7).
+    VfxDecal,
     /// The on-screen interface's quads over the finished frame (M2 I2).
     Ui,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -117,6 +119,7 @@ impl ShaderFile {
         Self::DebugDraw,
         Self::Vfx,
         Self::VfxMesh,
+        Self::VfxDecal,
         Self::Ui,
     ];
 
@@ -146,6 +149,7 @@ impl ShaderFile {
             Self::DebugDraw => "debug_draw.wgsl",
             Self::Vfx => "vfx.wgsl",
             Self::VfxMesh => "vfx_mesh.wgsl",
+            Self::VfxDecal => "vfx_decal.wgsl",
             Self::Ui => "ui.wgsl",
         }
     }
@@ -181,6 +185,7 @@ impl ShaderFile {
             Self::DebugDraw => include_str!("../shaders/debug_draw.wgsl"),
             Self::Vfx => include_str!("../shaders/vfx.wgsl"),
             Self::VfxMesh => include_str!("../shaders/vfx_mesh.wgsl"),
+            Self::VfxDecal => include_str!("../shaders/vfx_decal.wgsl"),
             Self::Ui => include_str!("../shaders/ui.wgsl"),
         }
     }
@@ -222,12 +227,14 @@ pub(crate) enum Program {
     Vfx,
     /// The frame's effect meshes (M5 L5).
     VfxMesh,
+    /// The frame's ground decals (M5 L7).
+    VfxDecal,
     /// The on-screen interface (M2 I2).
     Ui,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -245,6 +252,7 @@ impl Program {
         Self::DebugDraw,
         Self::Vfx,
         Self::VfxMesh,
+        Self::VfxDecal,
         Self::Ui,
     ];
 
@@ -269,6 +277,7 @@ impl Program {
             Self::DebugDraw => &[F::DebugDraw],
             Self::Vfx => &[F::Frame, F::Materials, F::Vfx],
             Self::VfxMesh => &[F::Frame, F::Materials, F::VfxMesh],
+            Self::VfxDecal => &[F::Frame, F::Materials, F::VfxDecal],
             Self::Ui => &[F::Ui],
         }
     }
@@ -293,6 +302,7 @@ impl Program {
             Self::DebugDraw => "debug draw",
             Self::Vfx => "vfx",
             Self::VfxMesh => "vfx mesh",
+            Self::VfxDecal => "vfx decal",
             Self::Ui => "ui",
         }
     }
@@ -653,7 +663,7 @@ mod tests {
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
-    const PASSES: [(Program, &[&str]); 18] = [
+    const PASSES: [(Program, &[&str]); 19] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -753,6 +763,7 @@ mod tests {
         (Program::DebugDraw, &["vs_debug_line", "fs_debug_line"]),
         (Program::Vfx, &["vs_vfx", "fs_vfx", "fs_vfx_mask"]),
         (Program::VfxMesh, &["vs_vfx_mesh", "fs_vfx_mesh", "fs_vfx_mesh_mask"]),
+        (Program::VfxDecal, &["vs_vfx_decal", "fs_vfx_decal"]),
         (Program::Ui, &["vs_ui", "fs_ui"]),
     ];
 
@@ -1140,6 +1151,10 @@ mod tests {
             (Program::VfxMesh, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::VfxMesh, "VfxMesh", size_of::<crate::vfx::mesh::GpuVfxMesh>()),
             (Program::VfxMesh, "VfxMeshUniforms", size_of::<crate::vfx::mesh::GpuVfxMeshUniforms>()),
+            (Program::VfxDecal, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::VfxDecal, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::VfxDecal, "VfxDecal", size_of::<crate::vfx::decal::GpuVfxDecal>()),
+            (Program::VfxDecal, "VfxDecalUniforms", size_of::<crate::vfx::decal::GpuVfxDecalUniforms>()),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
             (Program::Ui, "UiQuad", size_of::<crate::ui::GpuUiQuad>()),
         ];

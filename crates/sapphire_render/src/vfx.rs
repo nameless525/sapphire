@@ -5,6 +5,10 @@
 //! [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx) builds them ahead, so a game's first hit
 //! doesn't compile its pipelines on the frame it lands.
 //!
+//! Ground decals (M5 L7, the `decal` module) are a family of their own here and the exception to what
+//! follows: they draw in the main pass on every tier, right after the opaque surfaces, so this section's
+//! rules, the after-resolve pass and the alpha draw are the sprites', ribbons' and meshes' alone.
+//!
 //! # Where they draw
 //!
 //! Effects are the frame's last world draw, **after every transparent surface and fog card**:
@@ -80,6 +84,7 @@
 
 use std::ops::Range;
 
+pub(crate) mod decal;
 #[cfg(test)]
 mod gpu_tests;
 pub(crate) mod mesh;
@@ -98,6 +103,7 @@ use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
+use decal::{DecalDraw, DecalGpu, DecalPipelines, DecalUpload, VfxDecals};
 use mesh::{ColorStep, MeshBind, MeshDraws, MeshPipelines, MeshUpload, VfxMeshes, WarmedMeshes};
 
 /// The frame graph's pass under temporal AA, whose time is effects' GPU cost, against spec §3.3's
@@ -128,11 +134,13 @@ pub struct VfxRenderStats {
     pub ribbon_points: u32,
     /// Sprites, points and meshes left out because they weren't finite or didn't fit their buffer's limit.
     pub rejected: u32,
-    /// Pipelines built, the sprites' and the meshes': 0 until a frame has effects, or
+    /// Pipelines built, the sprites', the meshes' and the decals': 0 until a frame has effects, or
     /// [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx).
     pub pipelines: u32,
     /// Effect meshes drawn in the last prepared frame (M5 L5, the `mesh` module).
     pub meshes: u32,
+    /// Ground decals drawn in the last prepared frame (M5 L7, the `decal` module), in the main pass.
+    pub decals: u32,
     /// Bytes of instance data the last prepared frame uploads.
     pub bytes: u64,
     /// The ranges of instances the last prepared frame's color draws: one but where a ribbon must draw
@@ -491,6 +499,7 @@ impl Builder {
 pub(crate) struct VfxPipelines {
     sprites: Option<SpritePipelines>,
     meshes: Option<MeshPipelines>,
+    decals: Option<DecalPipelines>,
 }
 
 impl VfxPipelines {
@@ -498,6 +507,7 @@ impl VfxPipelines {
     pub(crate) fn count(&self) -> u32 {
         self.sprites.as_ref().map_or(0, SpritePipelines::count)
             + self.meshes.as_ref().map_or(0, MeshPipelines::count)
+            + self.decals.as_ref().map_or(0, |_| DecalPipelines::COUNT)
     }
 }
 
@@ -580,15 +590,24 @@ impl VfxMaker {
 pub(crate) struct WarmedVfx {
     sprites: Option<WarmedSprites>,
     meshes: Option<WarmedMeshes>,
+    decals: Option<Box<DecalGpu>>,
 }
 
-/// Which of the effects' parts to build: the sprites' (with ribbons), the meshes' (M5 L5), and with either
-/// the mask's pipeline, where post reads scene color's alpha.
+/// Which of the effects' parts to build: the sprites' (with ribbons), the meshes' (M5 L5), the ground decals'
+/// (M5 L7), and with sprites or meshes the mask's pipeline, where post reads scene color's alpha.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct VfxParts {
     pub sprites: bool,
     pub meshes: bool,
+    pub decals: bool,
     pub mask: bool,
+}
+
+impl VfxParts {
+    /// Whether it builds anything.
+    pub(crate) fn any(self) -> bool {
+        self.sprites || self.meshes || self.decals
+    }
 }
 
 /// What a warm-up made of the sprites' first frame: all of it, or the pipelines missing.
@@ -840,6 +859,8 @@ pub(crate) struct Vfx {
     gpu: Option<Box<VfxGpu>>,
     /// The meshes' part (M5 L5), with its own resources, made only for a mesh.
     meshes: VfxMeshes,
+    /// The ground decals' part (M5 L7), made only for a decal.
+    decals: VfxDecals,
     /// This frame's sprites from back to front, and the sort's keys, kept across frames so a warm
     /// frame allocates nothing.
     sprites: Vec<GpuVfxSprite>,
@@ -879,6 +900,7 @@ impl Vfx {
             builds: builds.clone(),
             gpu: None,
             meshes: VfxMeshes::default(),
+            decals: VfxDecals::default(),
             sprites: Vec::new(),
             order: Vec::new(),
             points: Vec::new(),
@@ -909,12 +931,16 @@ impl Vfx {
         if parts.meshes {
             self.meshes.build(&self.maker(), &self.queue, sources, parts.mask, on);
         }
+        if parts.decals {
+            self.decals.build(&self.maker(), sources, on);
+        }
         self.count_pipelines();
     }
 
     fn count_pipelines(&mut self) {
-        self.stats.pipelines =
-            self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count()) + self.meshes.pipelines();
+        self.stats.pipelines = self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count())
+            + self.meshes.pipelines()
+            + self.decals.pipelines();
     }
 
     /// Which parts' pipelines are built, and whether a mask's is: what effects of another tier build before
@@ -926,9 +952,11 @@ impl Vfx {
             .filter(|gpu| gpu.pipelines.color.is_some())
             .map(|gpu| gpu.pipelines.mask.is_some());
         let meshes = self.meshes.held();
-        (sprites.is_some() || meshes.is_some()).then(|| VfxParts {
+        let decals = self.decals.held();
+        (sprites.is_some() || meshes.is_some() || decals).then(|| VfxParts {
             sprites: sprites.is_some(),
             meshes: meshes.is_some(),
+            decals,
             mask: sprites.unwrap_or(false) || meshes.unwrap_or(false),
         })
     }
@@ -939,12 +967,14 @@ impl Vfx {
         let sprites = parts.sprites.then(|| self.warm_sprites(parts.mask, on)).flatten();
         let meshes =
             parts.meshes.then(|| self.meshes.warm(self.maker(), &self.queue, parts.mask, on)).flatten();
-        if sprites.is_none() && meshes.is_none() {
+        let decals = parts.decals.then(|| self.decals.warm(self.maker(), on)).flatten();
+        if sprites.is_none() && meshes.is_none() && decals.is_none() {
             return None;
         }
         Some(Box::new(move |sources, cancel| WarmedVfx {
             sprites: sprites.map(|step| step(sources, cancel)),
             meshes: meshes.map(|step| step(sources, cancel)),
+            decals: decals.map(|step| step(sources, cancel)),
         }))
     }
 
@@ -983,6 +1013,9 @@ impl Vfx {
         if let Some(meshes) = warmed.meshes {
             self.meshes.adopt(meshes);
         }
+        if let Some(decals) = warmed.decals {
+            self.decals.adopt(decals);
+        }
         self.count_pipelines();
     }
 
@@ -999,8 +1032,8 @@ impl Vfx {
 
     /// The CPU half of a frame: orders the frame's effects, back to front from `camera`, sizes their
     /// buffers and builds what they first need from `sources`: the sprites' part only for sprites or
-    /// ribbons, the meshes' only for meshes. `exposure` is the frame's multiplier, and `mask` whether post
-    /// reads scene color's alpha. Empty, it costs this call alone.
+    /// ribbons, the meshes' only for meshes, the decals' only for decals. `exposure` is the frame's multiplier,
+    /// and `mask` whether post reads scene color's alpha. Empty, it costs this call alone.
     pub(crate) fn prepare(
         &mut self,
         frame: &VfxFrame,
@@ -1018,9 +1051,11 @@ impl Vfx {
         self.steps.clear();
         self.plan.draws.clear();
         self.meshes.clear();
+        self.decals.clear();
         self.stats.sprites = 0;
         self.stats.ribbon_points = 0;
         self.stats.meshes = 0;
+        self.stats.decals = 0;
         self.stats.rejected = 0;
         self.stats.bytes = 0;
         self.stats.color_draws = 0;
@@ -1035,6 +1070,7 @@ impl Vfx {
         let parts = VfxParts {
             sprites: !(frame.sprites.is_empty() && frame.ribbon_points.is_empty()),
             meshes: !frame.meshes.is_empty(),
+            decals: !frame.decals.is_empty(),
             mask,
         };
         self.build(sources, parts, on);
@@ -1052,6 +1088,12 @@ impl Vfx {
             self.stats.bytes += self.meshes.bytes();
         } else {
             self.meshes.forget_depth();
+        }
+        if parts.decals {
+            self.decals.prepare(&frame.decals, &self.device, &self.queue);
+            self.stats.decals = self.decals.count();
+            self.stats.rejected += self.decals.rejected;
+            self.stats.bytes += self.decals.bytes();
         }
         self.sprite_depths.extend(self.order.iter().take(self.sprites.len()).map(|&(depth, _)| depth));
         mesh::plan_steps(&self.plan.draws, &self.sprite_depths, self.meshes.depths(), &mut self.steps);
@@ -1145,7 +1187,8 @@ impl Vfx {
             Some((upload, main, after))
         });
         let meshes = self.meshes.split_for_record(output, self.emissive, self.after_resolve, self.mask_read);
-        if sprites.is_none() && meshes.is_none() {
+        let decals = self.decals.split_for_record(self.emissive);
+        if sprites.is_none() && meshes.is_none() && decals.is_none() {
             return None;
         }
         let (sprite_upload, sprite_main, sprite_after) = match sprites {
@@ -1157,20 +1200,25 @@ impl Vfx {
             Some(MeshDraws { main, after }) => (Some(main), after),
             None => (None, None),
         };
-        let upload = VfxUpload { sprites: sprite_upload, meshes: mesh_upload };
+        let (decal_upload, decals) = decals.unzip();
+        let upload = VfxUpload { sprites: sprite_upload, meshes: mesh_upload, decals: decal_upload };
         let main = VfxMainDraw { sprites: sprite_main, meshes: mesh_main, steps: &self.steps };
-        let after = self.after_resolve.then_some(VfxAfterResolve {
-            device: &self.device,
-            sprites: sprite_after,
-            meshes: mesh_after,
-            steps: &self.steps,
-        });
-        Some((upload, VfxDraw { main, after }))
+        // Decals alone add no pass after the resolve: they're the main pass's.
+        let after = (self.after_resolve && (sprite_after.is_some() || mesh_after.is_some())).then_some(
+            VfxAfterResolve {
+                device: &self.device,
+                sprites: sprite_after,
+                meshes: mesh_after,
+                steps: &self.steps,
+            },
+        );
+        Some((upload, VfxDraw { main, after, decals }))
     }
 
     /// The pipelines built so far, to build anew from new sources (`shader_builds`): the sprites' if
-    /// `sprites` changed, the meshes' if `meshes` did. `None` until the first effect: nothing to build.
-    pub(crate) fn rebuild(&self, sprites: bool, meshes: bool) -> Option<Step<VfxPipelines>> {
+    /// `sprites` changed, the meshes' if `meshes` did, the decals' if `decals` did. `None` until the first
+    /// effect: nothing to build.
+    pub(crate) fn rebuild(&self, sprites: bool, meshes: bool, decals: bool) -> Option<Step<VfxPipelines>> {
         let sprites = self.gpu.as_ref().filter(|_| sprites).map(|gpu| {
             let builder = gpu.builder.clone();
             let (color, mask) = (gpu.pipelines.color.is_some(), gpu.pipelines.mask.is_some());
@@ -1184,12 +1232,14 @@ impl Vfx {
             }
         });
         let meshes = meshes.then(|| self.meshes.rebuild()).flatten();
-        if sprites.is_none() && meshes.is_none() {
+        let decals = decals.then(|| self.decals.rebuild()).flatten();
+        if sprites.is_none() && meshes.is_none() && decals.is_none() {
             return None;
         }
         Some(Box::new(move |sources, cancel| VfxPipelines {
             sprites: sprites.map(|build| build(sources)),
             meshes: meshes.map(|step| step(sources, cancel)),
+            decals: decals.map(|step| step(sources, cancel)),
         }))
     }
 
@@ -1206,6 +1256,9 @@ impl Vfx {
         if let Some(meshes) = pipelines.meshes {
             self.meshes.set_pipelines(meshes);
         }
+        if let Some(decals) = pipelines.decals {
+            self.decals.set_pipelines(decals);
+        }
         self.count_pipelines();
     }
 
@@ -1219,6 +1272,7 @@ impl Vfx {
 pub(crate) struct VfxUpload<'a> {
     sprites: Option<SpriteUpload<'a>>,
     meshes: Option<MeshUpload<'a>>,
+    decals: Option<DecalUpload<'a>>,
 }
 
 /// The sprites' and ribbons' uploads.
@@ -1242,6 +1296,9 @@ impl VfxUpload<'_> {
         if let Some(meshes) = &self.meshes {
             meshes.write(belt, encoder);
         }
+        if let Some(decals) = &self.decals {
+            decals.write(belt, encoder);
+        }
     }
 }
 
@@ -1250,8 +1307,11 @@ impl VfxUpload<'_> {
 pub(crate) struct VfxDraw<'a> {
     /// What ends the main pass.
     pub main: VfxMainDraw<'a>,
-    /// What draws over temporal AA's resolve, in [`PASS`]: `None` without temporal AA.
+    /// What draws over temporal AA's resolve, in [`PASS`]: `None` without temporal AA, or with decals alone.
     pub after: Option<VfxAfterResolve<'a>>,
+    /// The ground decals (M5 L7), which draw inside the main pass after its opaque surfaces (the `decal`
+    /// module's docs).
+    pub decals: Option<DecalDraw<'a>>,
 }
 
 /// What draws sprites and ribbons in a pass: groups 2 and 3.
@@ -1328,6 +1388,10 @@ impl VfxMainDraw<'_> {
     /// What it drew, a quad of two triangles an instance.
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) -> PassCounts {
         let mut counts = PassCounts::default();
+        if self.sprites.is_none() && self.meshes.is_none() {
+            // A frame of decals alone: they drew earlier in the pass, and counted there.
+            return counts;
+        }
         pass.set_bind_group(0, frame, &[]);
         let sprite_bind =
             self.sprites.map(|sprites| SpriteBind { buffers: sprites.buffers, textures: sprites.textures });

@@ -153,7 +153,7 @@ impl App for SandboxApp {
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it, and on Android its frame limiter holds it and the window asks for it.
         platform.set_frame_rate(quality.frame_rate());
-        let mut content = Content::new(platform.host(), options.character(), options.sky())?;
+        let mut content = options.mount_content(platform.host())?;
         content.set_tier(quality.tier());
         if options.keeps_character_mesh() {
             content.keep_character_mesh();

@@ -338,6 +338,9 @@ pub(crate) struct Options {
     pub cloud_cover: Option<f32>,
     /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
     pub plain_sky: bool,
+    /// `--no-reflection-probes`: no zone's reflection probes loaded (M5 L3), so glossy surfaces reflect the
+    /// sky alone, as in the scenes captured before them.
+    pub no_reflection_probes: bool,
     /// `--stream`: how the town's zone streams.
     pub stream: StreamChoice,
     /// `--fog off`: no fog (M1 W3): time of day's fog left out of every frame, and no fog cards
@@ -677,6 +680,19 @@ impl Options {
     /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
     pub fn sky(&self) -> sapphire_assets::AssetId {
         if self.look_dev_character() { lookdev::SKY } else { sapphire_stage::content::SKY }
+    }
+
+    /// The content these options draw from, mounted on `host`: their character and sky, and zones'
+    /// reflection probes unless `--no-reflection-probes`.
+    pub fn mount_content(
+        &self,
+        host: &sapphire_platform::Host,
+    ) -> Result<sapphire_stage::Content, sapphire_platform::AppInitError> {
+        let mut content = sapphire_stage::Content::new(host, self.character(), self.sky())?;
+        if self.no_reflection_probes {
+            content.without_reflection_probes();
+        }
+        Ok(content)
     }
 
     /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
@@ -1208,6 +1224,7 @@ impl Options {
                     options.debug_draw = Some(DebugDraw::parse(&value("--debug-draw")?)?);
                 }
                 "--plain-sky" => options.plain_sky = true,
+                "--no-reflection-probes" => options.no_reflection_probes = true,
                 "--stream" => options.stream = StreamChoice::parse(&value("--stream")?)?,
                 "--zone" => {
                     let raw = value("--zone")?;
@@ -2463,6 +2480,8 @@ mod tests {
         let (options, _) = parse(&["--cloud-cover", "0", "--view=120,-15", "--plain-sky"]).unwrap();
         assert_eq!((options.cloud_cover, options.view), (Some(0.0), Some((120.0, -15.0))));
         assert!(options.plain_sky && !Options::default().plain_sky);
+        let probes = parse(&["--no-reflection-probes"]).unwrap().0;
+        assert!(probes.no_reflection_probes && !Options::default().no_reflection_probes);
         assert_eq!(parse(&["--view", " -40.5 , 10 "]).unwrap().0.view, Some((-40.5, 10.0)));
         assert_eq!(parse(&[]).unwrap().0.cloud_cover, None);
         assert!(parse(&["--cloud-cover", "1.5"]).is_err());

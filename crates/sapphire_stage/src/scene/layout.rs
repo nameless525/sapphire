@@ -67,7 +67,7 @@ impl Scene {
             self.close_layout();
         }
         if self.layout.is_none() {
-            content.mount_zone_pack(pack, false, renderer)?;
+            content.mount_zone_pack(pack, false, false, renderer)?;
             self.layout =
                 Some(ZoneLayout { pack: pack.to_owned(), placed: Vec::new(), held: BTreeMap::new() });
         }

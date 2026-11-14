@@ -1,6 +1,7 @@
 //! What a bench of a fight or a walk counts beside its times (M5 B4): what each frame submitted, pass by pass
-//! (`RenderStats::passes`), what it skinned and lit, what the asset server held and let in, and the kind of
-//! core the frame's main thread was on.
+//! (`RenderStats::passes`), the ambient pass's compute dispatches and the reflection probes' among them
+//! (M5 L3), what it skinned and lit, what the asset server held and let in, and the kind of core the frame's
+//! main thread was on.
 //!
 //! - **Counts need no rounds:** the same walk or fight draws the same frames, so a count row's spread is the
 //!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile and its worst
@@ -26,6 +27,10 @@ pub(super) struct Counted {
     pub passes: FrameCounts,
     /// The pipelines, materials and mesh streams the mesh passes set (M5 D1).
     pub state_changes: StateChanges,
+    /// The ambient pass's compute dispatches, and of them the reflection probes' composition and prefilter
+    /// (`AmbientStats::dispatches`, `AmbientStats::probe_dispatches`): compute work, which draws nothing.
+    pub ambient_dispatches: u32,
+    pub probe_dispatches: u32,
     /// Scene instances, and of the skinned ones those skinned this frame, their joints and vertices.
     pub instances: u32,
     pub skinned: u32,
@@ -68,6 +73,8 @@ impl Counted {
         Self {
             passes: render.passes,
             state_changes: render.state_changes,
+            ambient_dispatches: render.ambient.dispatches,
+            probe_dispatches: render.ambient.probe_dispatches,
             instances: render.instances,
             skinned: render.skinning.skinned,
             joints: render.skinning.joints,
@@ -102,9 +109,9 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
     CountRow { name, read, budget: [None; 4] }
 }
 
-/// What's logged, the frame's whole first, then pass by pass, then what culled, the levels drawn, the state
-/// the mesh passes changed, skinning, lights, and the asset server's.
-pub(super) const COUNT_ROWS: [CountRow; 42] = [
+/// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
+/// culled, the levels drawn, the state the mesh passes changed, skinning, lights, and the asset server's.
+pub(super) const COUNT_ROWS: [CountRow; 44] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -128,6 +135,8 @@ pub(super) const COUNT_ROWS: [CountRow; 42] = [
     row("temporal draws", |c| u64::from(c.passes.temporal.draws)),
     row("post draws", |c| u64::from(c.passes.post.draws)),
     row("ui draws", |c| u64::from(c.passes.ui.draws)),
+    row("ambient dispatches", |c| u64::from(c.ambient_dispatches)),
+    row("probe dispatches", |c| u64::from(c.probe_dispatches)),
     row("mesh draws considered", |c| u64::from(c.passes.total().considered)),
     row("culled by view", |c| u64::from(c.passes.total().culled_by_frustum)),
     row("culled by a pass", |c| u64::from(c.passes.total().culled_by_pass)),
@@ -222,7 +231,7 @@ pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
 pub(super) const TRACE_COLUMNS: &str = "walked,core,draw_calls,triangles,draw_instances,considered,culled_view,\
 culled_pass,culled_cutoff,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
 skinned_vertices,lights,admitted,decoded_waiting,reads_held,texture_pool,mesh_pool,over_budget,uploaded,raised,\
-given_back,mesh_pool_capacity,mesh_pool_floor";
+given_back,mesh_pool_capacity,mesh_pool_floor,ambient_dispatches,probe_dispatches";
 
 /// A frame's `--bench-trace` columns, from `walked`.
 pub(super) fn trace_into(frame: &Traced, line: &mut String) {
@@ -243,7 +252,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
     let passes = &c.passes;
     let _ = write!(
         line,
-        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         total.draws,
         total.triangles,
         total.instances,
@@ -273,5 +282,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         c.given_back,
         c.mesh_pool_capacity,
         c.mesh_pool_floor,
+        c.ambient_dispatches,
+        c.probe_dispatches,
     );
 }

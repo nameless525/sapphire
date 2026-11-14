@@ -1078,16 +1078,19 @@
                 name: "zone-trip-hub",
                 ticks: 225,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
-                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
+                       "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 32.7, warp: 111.2),
             ),
             // Past its second trip, in the proving ground, which names the look-dev day and rigs and no grid: the
-            // hub's look gone with the hub, midday again, and no grid on the renderer.
+            // hub's look gone with the hub, midday again, and no grid on the renderer. Both trip scenes keep the sky's
+            // reflection alone, as before the zones' reflection probes (M5 L3), which `reflect-*` show.
             (
                 name: "zone-trip-ground",
                 ticks: 290,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
-                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
+                       "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 58.3, warp: 74.3),
             ),
             // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
@@ -3811,6 +3814,51 @@
                        "--ik", "on", "--ik-ground", "slope", "--time-of-day", "13", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "16", "--capture-step", "1", "--vfx", "decal-slope"],
                 ci_seconds: (lavapipe: 22.4, warp: 39.5),
+            ),
+            // Zones' reflection probes (M5 L3). The proving hub's square, at its one key: its paving reflects
+            // the square's one probe, the posts and the hub's blue hour composed into it, over its grid.
+            (
+                name: "reflect-hub-square",
+                ticks: 90,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+            ),
+            // The proving ground's shelter by day, the character standing under its roof facing its back wall,
+            // the camera at its open front: the floor, walls and roof lie on the probe's box and reflect it
+            // whole, faintly on rough stone (up to 5 code values against `--no-reflection-probes`).
+            (
+                name: "reflect-shelter-day",
+                ticks: 90,
+                args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+            ),
+            // The same at night, from the bake's night key: the lantern-lit yard and the dark roof.
+            (
+                name: "reflect-shelter-night",
+                ticks: 90,
+                args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "22", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+            ),
+            // The character in the open yard by day, reflecting the yard's probe, its paving the yard's.
+            (
+                name: "reflect-yard",
+                ticks: 90,
+                args: ["--zone", "proving_ground:player_start", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "32"],
+            ),
+            // Mobile-High's shelter: the probes read without the box's correction.
+            (
+                name: "reflect-shelter-mobile-high",
+                ticks: 90,
+                args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "mobile-high",
+                       "--ao", "off", "--capture-frames", "32"],
+            ),
+            // Mobile-Low's: characters alone reflect the probes, from one cube a probe composed at 32.
+            (
+                name: "reflect-shelter-mobile-low",
+                ticks: 90,
+                args: ["--zone", "proving_ground:-24,0,30.5,0", "--time-of-day", "13", "--tier", "mobile-low",
+                       "--ao", "off", "--capture-frames", "32"],
             ),
         ],
     ),

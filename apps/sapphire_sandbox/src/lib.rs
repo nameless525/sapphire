@@ -319,9 +319,12 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--no-reflection-probes`: load no zone's reflection probes (M5 L3), so glossy surfaces reflect the
+//!   sky alone, which the golden scenes from before probes pin.
 //! - `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the look-dev character held at a spawner of the zone
-//!   cooked from `<stem>.zone.ron` (`player_start` unless named), under the zone's day, light rigs and probe
-//!   grid, the camera behind it. A game mounts a zone like this, by its pack: no code names one. Not with
+//!   cooked from `<stem>.zone.ron` (`player_start` unless named), or at `x,y,z,yaw` in the zone's space for a
+//!   shot no spawner stands at (M5 L3), under the zone's day, light rigs, probe grid and reflection probes, the
+//!   camera behind it. A game mounts a zone like this, by its pack: no code names one. Not with
 //!   `--look-dev` or `--arena`, whose town is a stage of its own; `--stream` says how it streams.
 //! - `--zone-walk <spline>[:<metres a second>]`: the zone stage's character walks that spline of the zone, the
 //!   camera behind it, each fixed step, at a run's speed unless told. Moves only what's drawn. A bench of it is

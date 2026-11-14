@@ -453,6 +453,9 @@ pub struct Scene {
     arcade: Option<Entity>,
     /// The hours the renderer's probe grid was baked at (`--probes`); empty without one.
     probe_hours: Vec<f32>,
+    /// The hours the shown reflection probes were baked at, which each frame's packet picks the keys they
+    /// compose from by (M5 L3).
+    reflection_hours: Vec<f32>,
     /// The outline row, with `--outline-row`.
     #[cfg(feature = "samples")]
     outline_row: Option<[Entity; ROW.len()]>,
@@ -655,6 +658,7 @@ impl Scene {
             #[cfg(feature = "samples")]
             arcade: None,
             probe_hours: Vec::new(),
+            reflection_hours: Vec::new(),
             #[cfg(feature = "samples")]
             outline_row: None,
             #[cfg(feature = "samples")]
@@ -1285,6 +1289,10 @@ impl Scene {
     /// changed.
     pub fn follow_content(&mut self, content: &mut Content, show: &mut impl SceneShow) {
         self.set_probe_hours(content.probe_hours());
+        if self.reflection_hours != content.reflection_hours() {
+            self.reflection_hours.clear();
+            self.reflection_hours.extend_from_slice(content.reflection_hours());
+        }
         self.zone_air.sky = content.zone_sky_material();
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
@@ -2282,7 +2290,7 @@ impl Scene {
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let focus = self.focus;
-        let probe_hours = &self.probe_hours;
+        let (probe_hours, reflection_hours) = (&self.probe_hours, &self.reflection_hours);
         let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
         let vfx = &mut self.vfx;
         let view_cut = &mut self.view_cut;
@@ -2309,6 +2317,8 @@ impl Scene {
             time_of_day.resolve(probe, alpha).write(packet);
             // The probe grid's bounce keys for the hour (M1 W5): none without a grid.
             packet.probe_keys = time_of_day.probe_keys(probe_hours);
+            // And the reflection probes' keys, by the same blend (M5 L3): none without probes.
+            packet.reflection_keys = time_of_day.probe_keys(reflection_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
             // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's.

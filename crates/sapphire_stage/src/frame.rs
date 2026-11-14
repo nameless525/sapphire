@@ -754,6 +754,8 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
         if self.whole_textures {
             self.content.finish_texture_levels(&mut self.renderer, &self.gpu);
+            // And every reflection probe composed whole, not one a frame (M5 L3).
+            self.renderer.finish_reflection_probes();
         }
         self.renderer.prepare(&self.gpu, packet);
         self.laps.prepare += laps.lap();

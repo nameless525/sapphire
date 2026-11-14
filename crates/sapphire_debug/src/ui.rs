@@ -494,6 +494,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 render.retiring
             )
         );
+        row(ui, "Reflection probes", reflection_probes_text(&render.ambient));
         let mips = &render.mip_streaming;
         row(
             ui,
@@ -1046,6 +1047,23 @@ fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
         "; no pass".to_owned()
     };
     format!("{grid}; {occlusion}{reflections}{pass}")
+}
+
+/// The reflection probes' pool (M5 L3): the sets uploaded with every key, and the shown set's composed cubes.
+fn reflection_probes_text(ambient: &sapphire_render::AmbientStats) -> String {
+    let uploaded = format!("{} sets, {} of keys", ambient.probe_sets, format_bytes(ambient.probe_key_bytes));
+    if ambient.reflection_probes == 0 {
+        return format!("{uploaded}; none shown");
+    }
+    format!(
+        "{uploaded}; {} shown, keys at {}², composed {}² in {} mips ({}), {} compositions",
+        ambient.reflection_probes,
+        ambient.probe_key_size,
+        ambient.composed_size,
+        ambient.composed_mips,
+        format_bytes(ambient.composed_bytes),
+        ambient.compositions
+    )
 }
 
 /// What 3D insets did (M3 U6): shown, drawn for a change, left out, and what they hold and take.

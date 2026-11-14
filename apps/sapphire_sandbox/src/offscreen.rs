@@ -31,9 +31,9 @@ use game_ui::menus::MenuDocument;
 use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
-use sapphire_stage::{Content, StageDesc, headless_gpu};
 #[cfg(feature = "dev")]
 use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
+use sapphire_stage::{StageDesc, headless_gpu};
 use sapphire_ui::Atlas;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
@@ -162,7 +162,7 @@ impl App for OffscreenApp {
 
 /// The stage `options` ask for. Offscreen modes run on desktops only.
 pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, AppInitError> {
-    let mount_content = || Content::new(platform.host(), options.character(), options.sky());
+    let mount_content = || options.mount_content(platform.host());
     let mut content = None;
     let mut show = ShownFight::default();
     let tooling = options.offscreen.as_ref().is_some_and(|offscreen| {

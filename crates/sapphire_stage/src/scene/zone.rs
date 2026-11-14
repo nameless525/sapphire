@@ -30,6 +30,7 @@ use std::f32::consts::PI;
 
 use sapphire_assets::material::Material;
 use sapphire_assets::probes::ProbeGrid;
+use sapphire_assets::reflections::ReflectionProbes;
 use sapphire_assets::{
     AssetId, AssetServer, Handle, LoadPriority, LoadState, MountError, MountState, UnmountReport,
 };
@@ -132,32 +133,40 @@ pub(super) struct NextZone {
     hurried: bool,
     /// Where it's arrived at, once it can be read.
     focus: [f32; 3],
-    /// Its probe grid and sky, coming with it.
+    /// Its probe grid, sky and reflection probes, coming with it.
     look: ComingLook,
 }
 
 /// What of a zone's look comes in with it, ahead of its arrival: its probe grid, whose bytes wait aside in the
-/// server until the arrival puts them on the renderer, and its sky material, on the renderer beside the app's.
+/// server until the arrival puts them on the renderer; its sky material, on the renderer beside the app's; and
+/// its reflection probes (M5 L3), on the renderer unshown until the arrival shows them. A hub that keeps an
+/// exit's pack mounted has them from that pack. They leave with the look: the handles go with it.
 #[derive(Default)]
 struct ComingLook {
     grid: Option<Handle<ProbeGrid>>,
     sky: Option<Handle<Material>>,
-    /// Both are in, or the zone names neither.
+    reflections: Option<Handle<ReflectionProbes>>,
+    /// All are in, or the zone names none.
     ready: bool,
 }
 
+/// The assets of a zone's look its presentation names: its probe grid, sky material and reflection probes.
+type LookNames = (Option<AssetId>, Option<AssetId>, Option<AssetId>);
+
 impl ComingLook {
-    /// Asks for the grid and sky a zone's presentation names, at `priority`.
+    /// Asks for the grid, sky and reflection probes a zone's presentation names, at `priority`.
     fn ask(
         server: &mut AssetServer,
-        (grid, sky): (Option<AssetId>, Option<AssetId>),
+        (grid, sky, reflections): LookNames,
         priority: LoadPriority,
     ) -> Result<Self, String> {
         let grid = grid.map(|grid| server.load_with(grid, priority)).transpose();
         let sky = sky.map(|sky| server.load_with(sky, priority)).transpose();
+        let reflections = reflections.map(|probes| server.load_with(probes, priority)).transpose();
         Ok(Self {
             grid: grid.map_err(|error| error.to_string())?,
             sky: sky.map_err(|error| error.to_string())?,
+            reflections: reflections.map_err(|error| error.to_string())?,
             ready: false,
         })
     }
@@ -166,10 +175,12 @@ impl ComingLook {
     fn follow(&mut self, server: &AssetServer) -> Result<(), String> {
         let grid = self.grid.as_ref().map_or(LoadState::Ready, |grid| server.state(grid));
         let sky = self.sky.as_ref().map_or(LoadState::Ready, |sky| server.state(sky));
-        match (grid, sky) {
-            (LoadState::Failed(error), _) => Err(format!("its probe grid didn't load: {error}")),
-            (_, LoadState::Failed(error)) => Err(format!("its sky material didn't load: {error}")),
-            (LoadState::Ready, LoadState::Ready) => {
+        let reflections = self.reflections.as_ref().map_or(LoadState::Ready, |probes| server.state(probes));
+        match (grid, sky, reflections) {
+            (LoadState::Failed(error), _, _) => Err(format!("its probe grid didn't load: {error}")),
+            (_, LoadState::Failed(error), _) => Err(format!("its sky material didn't load: {error}")),
+            (_, _, LoadState::Failed(error)) => Err(format!("its reflection probes didn't load: {error}")),
+            (LoadState::Ready, LoadState::Ready, LoadState::Ready) => {
                 self.ready = true;
                 Ok(())
             }
@@ -210,13 +221,18 @@ impl NextZone {
                 }
             }
             Coming::Zone(zone) => {
+                let reflects = content.reflects_probes();
                 let (server, _) = content.streaming_parts();
                 match server.state(zone) {
                     LoadState::Ready => {
                         self.focus = arrival(server, zone, self.target.arrive);
                         let presentation = &server.get(zone).expect("the zone is ready").presentation;
-                        let names =
-                            (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied());
+                        let reflections = presentation.reflections.as_ref().copied().filter(|_| reflects);
+                        let names = (
+                            presentation.probes.as_ref().copied(),
+                            presentation.sky.as_ref().copied(),
+                            reflections,
+                        );
                         self.coming = match ComingLook::ask(server, names, self.priority()) {
                             Ok(look) => {
                                 self.look = look;
@@ -260,6 +276,15 @@ impl NextZone {
             tracing::warn!(target: LOG_TARGET, %error, pack = target.pack, "a zone that wasn't needed stays mounted");
         }
     }
+}
+
+/// A place to stand written `x,y,z,yaw`, in the zone's space and degrees, for a shot no spawner stands at (a
+/// reflection probe's room, M5 L3), or `None` for anything else.
+fn standing_place(at: &str) -> Option<(Vec3, f32)> {
+    let mut numbers =
+        at.split(',').map(|number| number.trim().parse::<f32>().ok().filter(|number| number.is_finite()));
+    let place = [numbers.next()??, numbers.next()??, numbers.next()??, numbers.next()??];
+    numbers.next().is_none().then(|| (Vec3::new(place[0], place[1], place[2]), place[3].to_radians()))
 }
 
 /// Where spawner or checkpoint `id` of `zone` stands: the zone's origin for one it hasn't got, as a cook holds
@@ -497,11 +522,11 @@ impl Scene {
         let ZoneShow { stem, at, walk, settings, pose, figure } = show;
         let handle = content.find_zone(stem)?;
         let zone = content.read(&handle).expect("a zone just loaded");
-        let spawner = zone
-            .simulation
-            .spawner(sapphire_core::Name::new(at))
-            .ok_or_else(|| AppInitError::msg(format!("zone {stem} has no spawner {at:?}")))?;
-        let (position, yaw) = (Vec3::from(spawner.position()), spawner.yaw());
+        let (position, yaw) = match zone.simulation.spawner(sapphire_core::Name::new(at)) {
+            Some(spawner) => (Vec3::from(spawner.position()), spawner.yaw()),
+            None => standing_place(at)
+                .ok_or_else(|| AppInitError::msg(format!("zone {stem} has no spawner {at:?}")))?,
+        };
         let look = ZoneLook::read(&zone.presentation)
             .map_err(|error| AppInitError::msg(format!("zone {stem}'s look: {error}")))?;
         let walk = walk
@@ -696,7 +721,7 @@ impl Scene {
             .map(|exit| exit.pack.as_str().to_owned())
             .collect();
         let read = ZoneLook::read(&arrived.presentation);
-        content.arrive_in_zone(look.grid, look.sky);
+        content.arrive_in_zone(look.grid, look.sky, look.reflections);
         let left = self.close_zone_keeping(content, &ahead);
         self.leave_town();
         for mut next in std::mem::take(&mut self.next_zones) {
@@ -1008,5 +1033,15 @@ mod tests {
         assert!((walk.walked() - 1.5).abs() < 1e-5, "{}", walk.walked());
         assert!(walk.advance().is_none(), "it's walked the rail's 2 m");
         assert!(walk.advance().is_none());
+    }
+
+    #[test]
+    fn a_place_to_stand_is_four_numbers() {
+        let (place, yaw) = standing_place("-24, 0, 30.5,90").expect("a place");
+        assert_eq!(place, Vec3::new(-24.0, 0.0, 30.5));
+        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        for not in ["player_start", "1,2,3", "1,2,3,4,5", "1,2,x,4", "1,2,inf,4", ""] {
+            assert!(standing_place(not).is_none(), "{not:?}");
+        }
     }
 }

@@ -97,6 +97,7 @@ use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack;
 use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
+use sapphire_assets::reflections::ReflectionProbes;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{AUDIO_PACK, Sound};
@@ -120,7 +121,8 @@ use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadEr
 use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
-    MaterialHandle, MeshHandle, PipelineInventory, Renderer, WarmUpProgress, WarmUpRequest,
+    MaterialHandle, MeshHandle, PipelineInventory, ReflectionProbesHandle, Renderer, WarmUpProgress,
+    WarmUpRequest,
 };
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
@@ -285,6 +287,16 @@ struct GpuAssets {
     wanted_grid: Option<AssetId>,
     /// Every grid uploaded, by ID: its slot and version, which one put on from its bytes is held by.
     grids: HashMap<AssetId, (AssetSlot, u32)>,
+    /// Every set of reflection probes uploaded, by ID, as its handle on the renderer and its key hours (M5 L3).
+    /// The renderer keeps their texels, which the server doesn't: a zone coming next's waits there unshown until
+    /// a trip arrives in it.
+    reflections: HashMap<AssetId, Held<(ReflectionProbesHandle, Vec<f32>)>>,
+    /// The set the stage wants shown, the zone on stage's, or none.
+    wanted_reflections: Option<AssetId>,
+    /// The set shown, as the renderer was last told.
+    shown_reflections: Option<AssetId>,
+    /// Sets of reflection probes unloaded, for the next [`Self::free_stale`].
+    stale_reflections: Vec<ReflectionProbesHandle>,
     /// Meshes and materials of assets unloaded, for the next [`Self::free_stale`].
     stale_meshes: Vec<MeshHandle>,
     stale_materials: Vec<MaterialHandle>,
@@ -329,6 +341,10 @@ impl GpuAssets {
             probe_grid: None,
             wanted_grid: None,
             grids: HashMap::new(),
+            reflections: HashMap::new(),
+            wanted_reflections: None,
+            shown_reflections: None,
+            stale_reflections: Vec::new(),
             stale_meshes: Vec::new(),
             stale_materials: Vec::new(),
             give_back: GiveBack::Idle,
@@ -383,6 +399,17 @@ impl GpuAssets {
             }
             kept
         });
+        let stale_reflections = &mut self.stale_reflections;
+        self.reflections.retain(|&id, held| {
+            let kept = resident(id);
+            if !kept {
+                stale_reflections.push(held.object.0);
+            }
+            kept
+        });
+        if self.shown_reflections.is_some_and(|id| !self.reflections.contains_key(&id)) {
+            self.shown_reflections = None;
+        }
     }
 
     /// Frees what's been let go of, on the renderer it's held on.
@@ -392,6 +419,10 @@ impl GpuAssets {
         }
         for material in self.stale_materials.drain(..) {
             renderer.free_material(material);
+        }
+        // A shown set is hidden as it goes, and the next to show goes on with `follow_wanted_reflections`.
+        for probes in self.stale_reflections.drain(..) {
+            renderer.free_reflection_probes(probes);
         }
     }
 
@@ -404,6 +435,7 @@ impl GpuAssets {
             levels: self.levels.for_new_renderer(),
             kept_meshes: self.kept_meshes.iter().map(|(id, _)| (*id, None)).collect(),
             wanted_grid: self.wanted_grid,
+            wanted_reflections: self.wanted_reflections,
             ..Self::new(self.character, self.keep_character)
         }
     }
@@ -603,8 +635,48 @@ impl GpuAssets {
             }
             renderer.set_probe_grid(Some(grid))?;
             self.probe_grid = Some((id, Held { slot, generation, object: grid.key_hours().collect() }));
+        } else if let Some(probes) = upload.get::<ReflectionProbes>() {
+            // Every set goes on the renderer as it comes, which keeps their texels; the one wanted is shown by
+            // `follow_wanted_reflections`. A new version (hot reload) replaces the old, which is hidden as it goes.
+            if self
+                .reflections
+                .get(&id)
+                .is_some_and(|held| held.slot == slot && held.generation >= generation)
+            {
+                return Ok(());
+            }
+            let handle = renderer.upload_reflection_probes(probes)?;
+            let object = (handle, probes.key_hours().collect());
+            if let Some(previous) = self.reflections.insert(id, Held { slot, generation, object }) {
+                renderer.free_reflection_probes(previous.object.0);
+                if self.shown_reflections == Some(id) {
+                    self.shown_reflections = None;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Shows the set of reflection probes the stage wants, once it's uploaded, or none for a zone without
+    /// (M5 L3). A trip's arrival changes which it wants; a set that can't be shown is logged and the zone
+    /// reflects its sky.
+    fn follow_wanted_reflections(&mut self, renderer: &mut Renderer) {
+        let wanted = self.wanted_reflections.filter(|id| self.reflections.contains_key(id));
+        if self.shown_reflections == wanted {
+            return;
+        }
+        let handle = wanted.and_then(|id| self.reflections.get(&id)).map(|held| held.object.0);
+        match renderer.set_reflection_probes(handle) {
+            Ok(()) => self.shown_reflections = wanted,
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %error, "a zone's reflection probes didn't reach the renderer");
+                if let Err(error) = renderer.set_reflection_probes(None) {
+                    tracing::error!(target: LOG_TARGET, %error, "hiding a zone's reflection probes failed");
+                }
+                self.shown_reflections = None;
+                self.wanted_reflections = None;
+            }
+        }
     }
 
     /// Puts the grid the stage wants on `renderer` if another is there, from the bytes the server kept of it,
@@ -682,6 +754,14 @@ impl GpuAssets {
         // another on: a trip's arrival unmounts the last zone's pack, and so its grid, before the next update
         // takes that grid off (M5 M6).
         self.grids.retain(|_, (held, _)| *held != slot);
+        if self.reflections.get(&id).is_some_and(|held| held.slot == slot)
+            && let Some(held) = self.reflections.remove(&id)
+        {
+            self.stale_reflections.push(held.object.0);
+            if self.shown_reflections == Some(id) {
+                self.shown_reflections = None;
+            }
+        }
     }
 }
 
@@ -908,6 +988,11 @@ pub struct Content {
     zone_probes: Option<Handle<ProbeGrid>>,
     /// The zone on stage's sky material, if it names one (M5 M6).
     zone_sky: Option<Handle<Material>>,
+    /// The zone on stage's reflection probes, if it has any (M5 L3), which the renderer holds once uploaded.
+    zone_reflections: Option<Handle<ReflectionProbes>>,
+    /// Zones' reflection probes are asked for; off, none is loaded and the sky alone is reflected
+    /// (`--no-reflection-probes`, which the scenes captured before them keep).
+    reflection_probes: bool,
     /// The pipelines of zones coming next and those a load left for after its screen, warming up off the
     /// frame: see [`Self::queue_zone_prewarm`] and [`Self::warm_after_load`].
     zone_prewarms: Vec<OffFrameWarm>,
@@ -1038,6 +1123,7 @@ impl Content {
             meshes: self.server.pipeline_keys(),
             skinning: true,
             probe_grid: self.zone_probes.is_some(),
+            reflection_probes: self.zone_reflections.is_some(),
             ..PipelineInventory::default()
         }
     }
@@ -1046,6 +1132,17 @@ impl Content {
     /// `--inventory-without` leaves it out of the packs': what proves a miss fails, whichever pack lists it.
     pub fn leave_out_of_zones(&mut self, entry: Option<String>) {
         self.left_out_of_zones = entry;
+    }
+
+    /// Asks for no zone's reflection probes from here on (`--no-reflection-probes`, M5 L3): zones reflect
+    /// their sky alone, as before probes, and nothing of theirs is loaded, built or composed.
+    pub fn without_reflection_probes(&mut self) {
+        self.reflection_probes = false;
+    }
+
+    /// Whether zones' reflection probes are asked for ([`Self::without_reflection_probes`]).
+    pub(crate) fn reflects_probes(&self) -> bool {
+        self.reflection_probes
     }
 
     /// What a character built from here moves by: the shipped document, unless a game said otherwise.
@@ -1167,6 +1264,8 @@ impl Content {
             left_out_of_zones: None,
             zone_probes: None,
             zone_sky: None,
+            zone_reflections: None,
+            reflection_probes: true,
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
             warm_up: WarmUpProgress::default(),
@@ -1201,6 +1300,7 @@ impl Content {
         let assets = &mut self.gpu;
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
+        self.gpu.follow_wanted_reflections(renderer);
         self.gpu.follow_levels(&mut self.server, renderer, false);
         self.gpu.follow_give_back(renderer);
     }
@@ -1618,6 +1718,13 @@ impl Content {
         self.gpu.probe_grid.as_ref().map_or(&[], |(_, held)| &held.object)
     }
 
+    /// The hours of the time-of-day keys the shown reflection probes were baked at (M5 L3), for time of day to
+    /// pick the keys a frame composes them from, as [`Self::probe_hours`] are the grid's; empty with none shown.
+    pub fn reflection_hours(&self) -> &[f32] {
+        let shown = self.gpu.shown_reflections.and_then(|id| self.gpu.reflections.get(&id));
+        shown.map_or(&[], |held| &held.object.1)
+    }
+
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,
     /// and returns its mesh: the load screen of `--hard-edges`. It stays loaded from then on.
     #[cfg(feature = "samples")]
@@ -1681,10 +1788,12 @@ impl Content {
         let read = self.server.finish_cpu(&zone, &remaining);
         let read = read.map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
         let probe_grid = read.view().presentation.probes.is_some();
+        let reflection_probes = self.reflection_probes && read.view().presentation.reflections.is_some();
         let pack = sapphire_zone::pack_name(stem);
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(&pack),
             probe_grid,
+            reflection_probes,
             ..PipelineInventory::default()
         };
         if let Some(entry) = &self.left_out_of_zones {
@@ -1728,10 +1837,13 @@ impl Content {
         self.server
             .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
-        let (probes, sky) = self.server.get(&zone).map_or((None, None), |zone| {
-            (zone.presentation.probes.as_ref().copied(), zone.presentation.sky.as_ref().copied())
+        let (probes, sky, reflections) = self.server.get(&zone).map_or((None, None, None), |zone| {
+            let presentation = &zone.presentation;
+            let reflections = presentation.reflections.as_ref().copied();
+            (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections)
         });
-        self.mount_zone_pack(pack, probes.is_some(), renderer)?;
+        let reflections = reflections.filter(|_| self.reflection_probes);
+        self.mount_zone_pack(pack, probes.is_some(), reflections.is_some(), renderer)?;
         // A zone with no grid leaves the renderer the one it had, as a load screen always has.
         if probes.is_some() {
             self.gpu.wanted_grid = probes;
@@ -1758,7 +1870,20 @@ impl Content {
                 Ok::<_, AppInitError>(sky)
             })
             .transpose()?;
+        self.zone_reflections = reflections
+            .map(|probes| {
+                let probes =
+                    self.server.load_with(probes, LoadPriority::Critical).map_err(AppInitError::msg)?;
+                self.server
+                    .finish(&probes, |upload| assets.upload(upload, renderer, gpu))
+                    .map_err(failed("reflection probes"))?;
+                Ok::<_, AppInitError>(probes)
+            })
+            .transpose()?;
+        // A zone without reflection probes reflects its sky alone, whatever the last one had.
+        self.gpu.wanted_reflections = reflections;
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
+        self.gpu.follow_wanted_reflections(renderer);
         Ok(zone)
     }
 
@@ -1767,12 +1892,21 @@ impl Content {
     /// kept of it, in place of the last zone's, or the last zone's comes off for a zone with none; and the sky
     /// draws with the zone's material, or the app's again ([`Self::zone_sky_material`]). What the last zone had
     /// goes with its handles, so a tier's renderer built from here on takes this zone's grid
-    /// ([`Self::zone_probe_grid`]). And the renderer's mesh pool gives back the room the last zone's meshes
-    /// held, from the next update on, under the trip's wipe ([`Self::meshes_given_back`], M5 D9).
-    pub(crate) fn arrive_in_zone(&mut self, grid: Option<Handle<ProbeGrid>>, sky: Option<Handle<Material>>) {
+    /// ([`Self::zone_probe_grid`]). Its reflection probes, uploaded as they came, are shown at the same update
+    /// in place of the last zone's, or none are (M5 L3). And the renderer's mesh pool gives back the room the
+    /// last zone's meshes held, from the next update on, under the trip's wipe ([`Self::meshes_given_back`],
+    /// M5 D9).
+    pub(crate) fn arrive_in_zone(
+        &mut self,
+        grid: Option<Handle<ProbeGrid>>,
+        sky: Option<Handle<Material>>,
+        reflections: Option<Handle<ReflectionProbes>>,
+    ) {
         self.gpu.wanted_grid = grid.as_ref().map(Handle::id);
+        self.gpu.wanted_reflections = reflections.as_ref().map(Handle::id);
         self.zone_probes = grid;
         self.zone_sky = sky;
+        self.zone_reflections = reflections;
         self.gpu.give_back = GiveBack::Arrived;
     }
 
@@ -1805,9 +1939,11 @@ impl Content {
     /// upload finds one unbuilt. No frame in a hub builds any of it or waits for it.
     pub(crate) fn queue_zone_prewarm(&mut self, pack: &str) {
         // A zone's grid is in its pack, which is mounted, where the zone itself isn't read yet (M5 M6).
+        let reflections = !self.server.assets_of_kind(pack, AssetKind::ReflectionProbes).is_empty();
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(pack),
             probe_grid: !self.server.assets_of_kind(pack, AssetKind::ProbeGrid).is_empty(),
+            reflection_probes: self.reflection_probes && reflections,
             ..PipelineInventory::default()
         };
         if let Some(entry) = &self.left_out_of_zones {
@@ -1876,11 +2012,12 @@ impl Content {
     }
 
     /// Mounts zone pack `pack` if it isn't, and builds what every mesh in it draws through on `renderer`,
-    /// lit by a probe grid if `probe_grid`.
+    /// lit by a probe grid if `probe_grid` and reflecting reflection probes if `reflection_probes`.
     pub(crate) fn mount_zone_pack(
         &mut self,
         pack: &str,
         probe_grid: bool,
+        reflection_probes: bool,
         renderer: &mut Renderer,
     ) -> Result<(), AppInitError> {
         if !self.server.is_mounted(pack) {
@@ -1889,6 +2026,7 @@ impl Content {
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(pack),
             probe_grid,
+            reflection_probes,
             ..PipelineInventory::default()
         };
         if let Some(entry) = &self.left_out_of_zones {
@@ -1911,6 +2049,11 @@ impl Content {
             && let Err(error) = self.server.finish(grid, |upload| assets.upload(upload, renderer, gpu))
         {
             tracing::warn!(target: LOG_TARGET, %error, "a zone's probe grid didn't reach the new renderer");
+        }
+        if let Some(probes) = &self.zone_reflections
+            && let Err(error) = self.server.finish(probes, |upload| assets.upload(upload, renderer, gpu))
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "a zone's reflection probes didn't reach the new renderer");
         }
         streamer.finish_held(&mut self.server, |upload| assets.upload(upload, renderer, gpu));
     }

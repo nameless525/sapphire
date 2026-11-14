@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use sapphire_anim::{
-    ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, Skeleton, SpringBones, SpringFrame, SpringQuality,
-    SpringTuning, Substeps, root_motion,
+    ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, Skeleton, SpringBones, SpringFloor, SpringFrame,
+    SpringQuality, SpringTuning, Substeps, root_motion,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig, HumanBone};
@@ -523,6 +523,61 @@ fn the_hero_hair_clears_the_torso_during_knockdown() {
         println!("{quality:?}: tail overlap {tail:.4} m, link overlap {link:.4} m");
         // A link's endpoints may be constrained by different torso colliders.
         assert!(tail < 0.008 && link < 0.008, "{quality:?}: torso overlap {max_depth:?}");
+    }
+}
+
+/// Falling on her back in defeat with the paving as her springs' floor (M5 C2), on every tier, the hero's
+/// hair and clothing end on it, never in it: from the frame they first step, no tail goes below the
+/// paving by more than its hit radius. Without the floor, the hair goes through it.
+#[test]
+fn the_hero_hair_lies_on_the_paving_through_defeat() {
+    let character = Character::load();
+    let bytes = character.key_pose_at("combat/player", "reaction_defeat");
+    let clip = Clip::read(&bytes).expect("a valid clip");
+    let head = character.rig().humanoid.iter().find(|entry| entry.bone == HumanBone::Head).expect("head");
+    let head = usize::from(head.joint.to_native());
+    let end = f64::from(clip.ticks.to_native());
+    for quality in SpringQuality::SHIPPED {
+        let mut deepest = [f32::MIN; 2];
+        for (floored, deepest) in [true, false].into_iter().zip(&mut deepest) {
+            let (mut pose, mut springs) = character.posed(quality.substeps);
+            let substeps = f64::from(quality.substeps.count());
+            for step in 0..=(end + 60.0) as u32 * quality.substeps.count() {
+                let tick = f64::from(step) / substeps;
+                pose.sample(clip, tick.min(end) as f32);
+                pose.finish();
+                let root =
+                    root_motion(clip, tick.min(end) as f32).map_or(Affine3A::IDENTITY, |r| r.to_affine3a());
+                // The paving, world y = 0, in her model's space, as the stage gives it.
+                let model_from_world = root.inverse();
+                springs.set_floor(floored.then(|| SpringFloor {
+                    point: model_from_world.transform_point3(Vec3::ZERO),
+                    normal: model_from_world.transform_vector3(Vec3::Y).normalize(),
+                }));
+                let at = root.transform_point3(Vec3::from(pose.model()[head].translation));
+                let torso_contact = ((0.70 - at.y) / 0.36).clamp(0.0, 1.0);
+                let frame =
+                    SpringFrame { world_from_model: root, ticks: tick, pose_moved: true, active: true };
+                springs.update_with_torso_contact(&mut pose, &frame, torso_contact);
+                if step == 0 {
+                    continue;
+                }
+                for tail in springs.tails() {
+                    *deepest = deepest.max(tail.hit_radius - tail.position.y);
+                }
+            }
+        }
+        let [floored, bare] = deepest;
+        println!(
+            "{:?}: deepest tail past its radius {floored:.4} m with the floor, {bare:.4} m without",
+            quality.substeps
+        );
+        assert!(floored <= 1e-4, "{:?}: a tail {floored} m into the paving", quality.substeps);
+        assert!(
+            bare > 0.01,
+            "{:?}: without the floor the hair should reach through the paving",
+            quality.substeps
+        );
     }
 }
 

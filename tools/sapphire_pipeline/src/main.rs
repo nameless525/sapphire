@@ -52,6 +52,12 @@ Usage:
       scale (ci, budget or double), each with its sidecar, into --out: a source tree for a cook under target/,
       never committed. Files an earlier run left in --out that this one doesn't write are removed;
       --out must be empty or a tree gen-bench wrote.
+  sapphire_pipeline cell-visibility --bench <DIR> --preset <PRESET> --sampling <walk|combat|none> --out <FILE> [--workers <N>]
+      Cook the benchmark district's visible sets by cell (M5 D0's prototype) from its documents under
+      --bench, at a preset's scale and a camera's heights, into FILE beside a cook under target/: what a
+      dev sandbox's --cell-visibility reads. Prints what the cook asked and what the sets hold. `none`
+      reads the district and stops, writing nothing, for timing the sets' own share. --workers sets the
+      threads (default: every core); the file is the same however many.
   sapphire_pipeline icons --source <PNG> --out <DIR>
       Make every platform's icon set from a square, opaque master of at least 1024 px under DIR:
       Apple's asset catalogs (ios/, macos/), Android's adaptive icon and Play's listing icon
@@ -157,6 +163,13 @@ enum Command {
         preset: Preset,
         out: PathBuf,
     },
+    CellVisibility {
+        bench: PathBuf,
+        preset: Preset,
+        sampling: String,
+        out: PathBuf,
+        workers: Option<usize>,
+    },
     Icons {
         source: PathBuf,
         out: PathBuf,
@@ -260,6 +273,9 @@ fn run(command: Command) -> anyhow::Result<()> {
                 generated.created.len() + generated.replaced.len(),
                 generated.unchanged.len()
             );
+        }
+        Command::CellVisibility { bench, preset, sampling, out, workers } => {
+            cell_visibility(&bench, preset, &sampling, &out, workers)?;
         }
         Command::Icons { source, out } => {
             let written = icon::write_sets(&source, &out)?;
@@ -514,6 +530,98 @@ fn print_packs(report: &PackReport, cook: Cook) {
     }
 }
 
+/// Cooks the district's visible sets into `out`, and says what it asked and what they hold.
+fn cell_visibility(
+    bench: &Path,
+    preset: Preset,
+    sampling: &str,
+    out: &Path,
+    workers: Option<usize>,
+) -> anyhow::Result<()> {
+    use sapphire_pipeline::zone::visibility::{self, Sampling};
+    let sampling = match sampling {
+        "walk" => Some(Sampling::WALK),
+        "combat" => Some(Sampling::COMBAT),
+        // Reads the district and stops: what a timed run takes off to leave the sets' own cost.
+        "none" => None,
+        other => bail!("--sampling takes walk, combat or none, not `{other}`"),
+    };
+    let scene = bench::district::visibility_scene(&bench.join(bench::district::PART), preset)
+        .with_context(|| format!("failed to read the {preset} district"))?;
+    let Some(sampling) = sampling else {
+        eprintln!(
+            "cell-visibility: {preset}: read {} cells, {} objects, {} buildings",
+            scene.cells.len(),
+            scene.objects().count(),
+            scene.blockers.len()
+        );
+        return Ok(());
+    };
+    let workers = workers.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from));
+    let (sets, stats) = visibility::cook(&scene, sampling, workers);
+    let bytes = sets.to_bytes();
+    std::fs::write(out, &bytes).with_context(|| format!("failed to write {}", out.display()))?;
+    let summary = |name: &str, mut sizes: Vec<usize>, of: usize| {
+        sizes.sort_unstable();
+        let median = sizes[sizes.len() / 2];
+        eprintln!(
+            "cell-visibility: {name}: of {of}, least {}, median {median}, most {}, mean {:.1}",
+            sizes[0],
+            sizes[sizes.len() - 1],
+            sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
+        );
+    };
+    eprintln!(
+        "cell-visibility: {preset}, {} m to {} m: {} cells, {} objects, {} occluder boxes; {} samples ({} inside an \
+         occluder), {} pieces asked; reach {:?} m",
+        sampling.heights[0],
+        sampling.heights[1],
+        stats.cells,
+        stats.objects,
+        stats.occluders,
+        stats.samples,
+        stats.samples_inside,
+        stats.pieces,
+        sampling.reach(scene.cell_size),
+    );
+    eprintln!(
+        "cell-visibility: cooked on {workers} threads; {} bytes to {} (digest {:#018x})",
+        bytes.len(),
+        out.display(),
+        sets.digest()
+    );
+    let firsts = sets.firsts();
+    let cells_seen: Vec<usize> = (0..sets.cells.len())
+        .map(|from| {
+            (0..sets.cells.len())
+                .filter(|&cell| {
+                    (firsts[cell]..firsts[cell] + sets.cells[cell].objects.len())
+                        .any(|object| sets.sees(from, object))
+                })
+                .count()
+        })
+        .collect();
+    summary("objects a set holds", sets.set_sizes(), sets.object_count());
+    summary("cells a set holds", cells_seen, sets.cells.len());
+    summary("objects by cells", sets.by_cells().set_sizes(), sets.object_count());
+    eprintln!(
+        "cell-visibility: sets' bits: {} bytes by object, {} bytes by cell",
+        sets.bits.len() * 8,
+        sets.cells.len() * sets.cells.len().div_ceil(8)
+    );
+    // Along the tour: what the cell's set holds against what the eye itself sees.
+    if let Some(points) = scene.splines.get(bench::district::TOUR) {
+        let probes = visibility::probe_walk(&scene, &sets, &visibility::walk_eyes(points, 2.0));
+        let held: Vec<usize> = probes.iter().filter_map(|(cell, _)| *cell).collect();
+        let seen: Vec<usize> = probes.iter().map(|(_, seen)| *seen).collect();
+        if !held.is_empty() {
+            summary("tour, every 2 m: objects the eye's cell's set holds", held, sets.object_count());
+        }
+        summary("tour, every 2 m: objects the eye sees itself", seen, sets.object_count());
+    }
+    Ok(())
+}
+
 fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
     let mut args: Vec<String> = args.into_iter().collect();
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
@@ -551,6 +659,13 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             bench: options.required("--bench")?,
             preset: options.required("--preset")?,
             out: options.required("--out")?,
+        },
+        "cell-visibility" => Command::CellVisibility {
+            bench: options.required("--bench")?,
+            preset: options.required("--preset")?,
+            sampling: options.required("--sampling")?,
+            out: options.required("--out")?,
+            workers: options.value("--workers")?,
         },
         "icons" => Command::Icons { source: options.required("--source")?, out: options.required("--out")? },
         "cook-mesh" => {

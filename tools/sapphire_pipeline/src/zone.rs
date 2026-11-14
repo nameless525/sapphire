@@ -119,6 +119,7 @@ use crate::nav::{self, BakeSettings, NavBakeError, Seed};
 use crate::optimize::LodSettings;
 
 pub mod claims;
+pub mod visibility;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -369,7 +370,7 @@ pub fn prefab_sources<'a>(sources: impl Iterator<Item = &'a SourceAsset>) -> Has
 
 /// A placement's transform: `at · turn · scale`. The turn goes through [`det`], as a zone's instances'
 /// do, so a cell's content doesn't hang on a platform's C math library.
-fn placement_transform(at: [f32; 3], turn: f32, scale: [f32; 3]) -> Mat4 {
+pub(crate) fn placement_transform(at: [f32; 3], turn: f32, scale: [f32; 3]) -> Mat4 {
     Mat4::from_scale_rotation_translation(
         Vec3::from(scale),
         det::quat_from_axis_angle(Vec3::Y, turn.to_radians()),

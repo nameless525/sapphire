@@ -74,6 +74,7 @@ use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::procedural::{self, ProceduralSettings, ProceduralTexture, SurfaceMap};
 use crate::samples::noise;
+use crate::zone::visibility::VisibilityScene;
 
 /// This part's folder, under `bench/` and in the output.
 pub const PART: &str = "district";
@@ -386,6 +387,33 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(ZONE, document_bytes(&zone), ImportSettings::Zone(Default::default())));
     Ok(sources)
+}
+
+/// What M5 D0's visible sets cook from for the district at `preset`, from its generated sources in memory: the
+/// zone, and every assembly it places or instances ([`crate::zone::visibility`]).
+pub fn visibility_scene(dir: &Path, preset: Preset) -> Result<VisibilityScene, BenchError> {
+    let invalid = |why: String| BenchError::Invalid { path: dir.join("district.ron"), why };
+    let sources = generate(dir, preset)?;
+    let mut assemblies = BTreeMap::new();
+    let mut zone = None;
+    for source in &sources {
+        match &source.sidecar {
+            Some((ImportSettings::Assembly(_), _)) => {
+                let read = assembly::read(&source.bytes)
+                    .map_err(|error| invalid(format!("{}: {error:#}", source.path)))?;
+                assemblies.insert(asset_id(PART, &source.path), (source.path.clone(), read));
+            }
+            Some((ImportSettings::Zone(_), _)) => {
+                let text = std::str::from_utf8(&source.bytes).map_err(|error| invalid(error.to_string()))?;
+                let document: ZoneDocument =
+                    sapphire_serialize::from_ron(text).map_err(|error| invalid(format!("{error:#}")))?;
+                zone = Some(document);
+            }
+            _ => {}
+        }
+    }
+    let zone = zone.ok_or_else(|| invalid("it makes no zone".to_owned()))?;
+    VisibilityScene::read(asset_id(PART, ZONE), &zone, &assemblies).map_err(invalid)
 }
 
 /// What a document can be wrong about that serde can't see.

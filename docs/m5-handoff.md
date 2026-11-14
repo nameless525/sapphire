@@ -534,6 +534,17 @@ Light shafts are a group on a day's time-of-day keys. Spec §5.12's and §5.21's
 4. **Cost per tier:** two passes, a mask at an eighth and a march at a quarter of post's input (up to 160 taps a pixel, 81 at 1080 rows and length 0.6), and bloom's top level written at half floats on those frames. Longer shafts take more taps; a key with strength 0 draws and costs nothing.
 5. **Look at it:** `--look-dev wide --time-of-day 18.5 --tier desktop-high --shafts-look <strength>,<length>[,<r>,<g>,<b>]` holds a look on the look-dev town, as `shafts-golden-hour` shows it; `--shafts off` takes a tier's away.
 
+### A cut-in (M5 L10)
+
+A cut-in is a live close-up of a character cut across the frame as a big move lands: an entry in [default_cutins.ron](../crates/sapphire_world/default_cutins.ron), named by a cue. Spec §5.17's "As built (M5 L10)" is the reference, and `sapphire_world`'s `cutin` module docs have every field. No step edits Rust, and no replay moves: a cut-in is presentation, and the simulation never knows one played.
+
+1. **The entry:** `name`; optionally `kind`, a playable kind's asset ID, which wins over the entry of that name with none; `clip`, a clip of the kind's graph by its source's name, from `start` seconds at `rate`; `camera`, an `offset` and `look` off a `joint` (`Head`, `Chest`, `Hips`, `RightHand`, `LeftHand`) with a `roll` and `fov`; `light`, a light rig by name with a key and ambient, as a showcase's; `backdrop`, a color or a gradient `to` another along `angle`, with optional speed `lines`; `panel`, `Full` or a slanted `Band`, its `enter` and `exit` (seconds, a curve, and a side or `Centre`), its `hold`, and an optional `border`; and an optional `sound`. The `ultimate` entry is the worked example. Validation names the entry and the field.
+2. **Ask for it:** a cue row with `cutin: Some("<name>")` in [default_cues.ron](../crates/sapphire_cues/default_cues.ron), fired from a move's `cues` or a timeline's `cues` track, as `ultimate_cutin` is from [ultimate.timeline.ron](../content/combat/player/ultimate.timeline.ron). A row naming a cut-in the library hasn't stops the fight's cues from loading, naming it. Only the player's cue or a timeline's plays one; an enemy's is counted as unplayable.
+3. **Its clip:** the clip must be in the kind's graph's `clips` ([character.animgraph.ron](../content/lookdev/character/character.animgraph.ron)), as a move's is. One that isn't is counted as unplayable, and nothing draws.
+4. **Look at it:** `--cues` plays a fight's cut-ins, and `--cutins off` plays none, which every golden from before L10 that fires one pins. The `cutin-*` goldens show a band, a full frame, the enter, a phone and flashes reduced.
+5. **Frame it without a build:** `--cutin-library <ron>` plays a fight's cut-ins from a library document of your own, and `--cutins full` draws each across the whole frame.
+6. **Rust steps:** a joint the five don't name; two characters, a weapon on the stand, or a painted or 2D cut-in are designs of their own (see "Everything deferred").
+
 ### A game screen
 
 The worked examples are the six documents in [content/ui/](../content/ui/). Spec §5.17 is the reference.
@@ -671,6 +682,7 @@ M3's first pillar counts each of these as a bug.
 - **A playable kind's graph under live tuning** (M5 C8): `game_combat::tuning`'s `graph_of` lists the heroine's and the warrior's graphs by path, so an edit to a new kind's `.animgraph.ron` is refused until a cook brings it: Aster's and Wren's (M5 C12), and every kind of enemy's but the warrior's. Listing each loaded kind's graph by its document would make it data.
 - **A second armed kind** (M5 C8): a kind's weapon is its document's, and a swap puts it in the hand, but a renderer rebuilt after a lost device gives the blade the heroine's sword back (`FightShow::set_blade_mesh`). Aster is unarmed and Wren's staff is skinned in (M5 C12), so nothing shows it yet.
 - **An effect mesh's shape, pattern or flipbook sheet** (M5 L5) is one of the generated ones in `sapphire_look::vfx::mesh`. A new one is Rust, and an authored mesh by id or a painted sheet would need the asset pool's mesh handles and residency in the effects' draw.
+- **A cut-in's framed joint** (M5 L10) is one of five a stand knows (`CutInJoint`). Another joint is Rust. Two characters in one cut-in, the character's weapon on its stand, and a painted or 2D cut-in each need a design of their own.
 
 ### By area
 

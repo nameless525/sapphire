@@ -196,6 +196,8 @@ struct Traced {
     streaming: Duration,
     /// A zone streams on the stage: what makes the streaming row's frames count.
     streams: bool,
+    /// Deciding who of a zone's crowd stands, and standing them (M5 C10): `None` with no crowd loaded.
+    ambient: Option<Duration>,
     /// The scripts' hooks and collection, within the steps, or `None` with no script host (M3 Z1).
     script: Option<Duration>,
     /// Zones on their way: the stage's part, then building their pipelines, within [`FrameLaps::content`].
@@ -267,7 +269,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 29] = [
+const ROWS: [Row; 30] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -278,6 +280,8 @@ const ROWS: [Row; 29] = [
     // A fight with no script host, or a frame with no zone streaming, doesn't exercise these, and says so.
     cpu_row("script events", |t| t.script, low(300, 500)),
     cpu_row("streaming activation", |t| t.streams.then_some(t.streaming), low(500, 1_000)),
+    // A zone's crowd comes and goes with its cells, so it takes their budget too (M5 C10).
+    cpu_row("ambient activation", |t| t.ambient, low(500, 1_000)),
     cpu_row("audio update", |t| Some(t.audio), low(200, 300)),
     cpu_row("extract", |t| Some(t.laps.packet.saturating_sub(t.camera + t.hud)), low(700, 1_200)),
     cpu_row("render", |t| Some(t.laps.prepare + t.laps.record), low(4_000, 8_000)),
@@ -568,6 +572,7 @@ impl Run<'_> {
         let after = alloc::stats();
 
         let anim = stage.scene.anim_stats();
+        let ambient = stage.scene.ambient_stats();
         let stats = stage.renderer.stats();
         let cues =
             stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::stats).unwrap_or_default();
@@ -588,7 +593,7 @@ impl Run<'_> {
         let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
         let memory = zone::Held::of(stage, after.live_bytes);
         let assets = stage.content.stats();
-        let counted = counts::Counted::of(&stats, &assets, &self.assets).with_animation(stage);
+        let counted = counts::Counted::of(&stats, &assets, &self.assets).with_stage(stage);
         self.assets = assets;
         Ok(Traced {
             phase,
@@ -611,6 +616,7 @@ impl Run<'_> {
             vfx: stats.vfx.simulation.simulation,
             streaming: stage.scene.stream_stats().map_or(Duration::ZERO, |stream| stream.time),
             streams: stage.scene.stream_stats().is_some(),
+            ambient: (ambient.people > 0).then_some(ambient.activation),
             script,
             prefetch: stage.scene.prefetch_time() + stage.content.zone_prewarm_time(),
             trip: stage.show.fight.show.trip_phase(),
@@ -900,6 +906,7 @@ mod tests {
             streaming: Duration::ZERO,
             streams: false,
             script: None,
+            ambient: None,
             prefetch: Duration::ZERO,
             trip: None,
             memory: zone::Held::default(),

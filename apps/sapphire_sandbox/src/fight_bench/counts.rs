@@ -1,7 +1,8 @@
 //! What a bench of a fight or a walk counts beside its times (M5 B4): what each frame submitted, pass by pass
 //! (`RenderStats::passes`), the ambient pass's compute dispatches and the reflection probes' among them
 //! (M5 L3), what it skinned and lit, what the asset server held and let in, what animation posed, held and
-//! thinned and in how many jobs (M5 C1), and the kind of core the frame's main thread was on.
+//! thinned and in how many jobs (M5 C1), how many of a zone's ambient characters stood and how many of them
+//! were in view (M5 C10), and the kind of core the frame's main thread was on.
 //!
 //! - **Counts need no rounds:** the same walk or fight draws the same frames, so a count row's spread is the
 //!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile, its worst
@@ -73,12 +74,18 @@ pub(super) struct Counted {
     pub thinned: u32,
     pub off_screen: u32,
     pub animation_jobs: u32,
+    /// A zone's ambient characters (M5 C10, `AmbientStats`): those standing, and of them those a view or
+    /// its shadow shows.
+    pub ambient_spawned: u32,
+    pub ambient_in_view: u32,
 }
 
 impl Counted {
-    /// These counts with what animation did in the stage's last frame (`Scene::anim_stats`).
-    pub(super) fn with_animation(self, stage: &Stage) -> Self {
+    /// These counts with the stage's own in its last frame: what animation did (`Scene::anim_stats`) and
+    /// which of a zone's ambient characters stood (`Scene::ambient_stats`).
+    pub(super) fn with_stage(self, stage: &Stage) -> Self {
         let anim = stage.scene.anim_stats();
+        let ambient = stage.scene.ambient_stats();
         Self {
             animated: anim.characters,
             posed: anim.evaluated,
@@ -86,6 +93,8 @@ impl Counted {
             thinned: anim.thinned,
             off_screen: anim.off_screen,
             animation_jobs: anim.jobs,
+            ambient_spawned: ambient.spawned,
+            ambient_in_view: ambient.in_view,
             ..self
         }
     }
@@ -140,9 +149,9 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 }
 
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
-/// culled, the levels drawn, the state the mesh passes changed, skinning, lights, the asset server's, and
-/// animation's.
-pub(super) const COUNT_ROWS: [CountRow; 52] = [
+/// culled, the levels drawn, the state the mesh passes changed, skinning, lights, the asset server's,
+/// animation's, and a zone's crowd's.
+pub(super) const COUNT_ROWS: [CountRow; 54] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -205,6 +214,8 @@ pub(super) const COUNT_ROWS: [CountRow; 52] = [
     row("characters thinned", |c| u64::from(c.thinned)),
     row("held off screen", |c| u64::from(c.off_screen)),
     row("animation jobs", |c| u64::from(c.animation_jobs)),
+    row("ambient characters spawned", |c| u64::from(c.ambient_spawned)),
+    row("ambient characters in view", |c| u64::from(c.ambient_in_view)),
 ];
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.
@@ -294,7 +305,7 @@ impl DrawnCounts {
     pub(crate) fn frame(&mut self, stage: &Stage, frame: u64, drawn: bool) {
         let assets = stage.content.stats();
         if drawn {
-            let counted = Counted::of(&stage.renderer.stats(), &assets, &self.assets).with_animation(stage);
+            let counted = Counted::of(&stage.renderer.stats(), &assets, &self.assets).with_stage(stage);
             self.frames.push((counted, frame, stage.scene.zone_walked()));
         }
         self.assets = assets;
@@ -312,7 +323,7 @@ pub(super) const TRACE_COLUMNS: &str = "walked,core,draw_calls,triangles,draw_in
 culled_pass,culled_cutoff,culled_distance,culled_size,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
 skinned_vertices,lights,admitted,decoded_waiting,reads_held,texture_pool,mesh_pool,over_budget,uploaded,raised,\
 given_back,mesh_pool_capacity,mesh_pool_floor,ambient_dispatches,probe_dispatches,animated,posed,held,thinned,\
-off_screen,animation_jobs";
+off_screen,animation_jobs,ambient_spawned,ambient_in_view";
 
 /// A frame's `--bench-trace` columns, from `walked`.
 pub(super) fn trace_into(frame: &Traced, line: &mut String) {
@@ -333,7 +344,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
     let passes = &c.passes;
     let _ = write!(
         line,
-        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         total.draws,
         total.triangles,
         total.instances,
@@ -373,5 +384,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         c.thinned,
         c.off_screen,
         c.animation_jobs,
+        c.ambient_spawned,
+        c.ambient_in_view,
     );
 }

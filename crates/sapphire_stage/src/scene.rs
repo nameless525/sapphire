@@ -112,8 +112,8 @@ use sapphire_render::color_vision::COLOR_VISION;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
-    MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers,
-    ViewData, Weather, Wind,
+    MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, ShadowRole,
+    SkyLayers, ViewData, Weather, Wind,
 };
 #[cfg(feature = "samples")]
 use sapphire_render::{LightKind, LocalLight};
@@ -188,6 +188,7 @@ type Characters = Query<
         Option<&'static RimKey>,
         Option<&'static Figure>,
         Option<&'static NearFade>,
+        Option<&'static AmbientPerson>,
     ),
     With<RenderMesh>,
 >;
@@ -517,8 +518,10 @@ pub struct Scene {
     graph_show: Option<Box<GraphShow>>,
     /// Made once, like the others.
     graph_players: GraphPlayers,
-    /// What animation did in the last frame (rule R9).
+    /// What animation did in the last frame (rule R9), but for the zone's crowd.
     anim_stats: AnimStats,
+    /// The zone's ambient characters (M5 C10), boxed: a scene moves on the main thread.
+    ambient: Box<ambient::Crowd>,
     /// How the tier runs spring bones ([`Self::set_spring_quality`]).
     spring_quality: SpringQuality,
     /// Frames animated, which turn the rotation of who steps their springs (M5 C2): a count, never a clock.
@@ -699,6 +702,7 @@ impl Scene {
             graph_show: None,
             graph_players,
             anim_stats: AnimStats::default(),
+            ambient: Box::default(),
             spring_quality: SpringQuality::DESKTOP_HIGH,
             spring_turn: 0,
             spring_floor: true,
@@ -1642,6 +1646,7 @@ impl Scene {
             self.animate_graph(&content.character_clips(), alpha);
         }
         show.animate(self, content, alpha);
+        self.animate_ambient(content, alpha);
     }
 
     /// Plays the show's frame on the character. Allocates nothing: the show has one character, so
@@ -1768,9 +1773,9 @@ impl Scene {
         self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
     }
 
-    /// What animation did in the last frame.
+    /// What animation did in the last frame, the zone's crowd (M5 C10) with everyone else.
     pub fn anim_stats(&self) -> AnimStats {
-        self.anim_stats
+        ambient::sum(self.anim_stats, self.ambient.anim_stats())
     }
 
     /// Runs spring bones as a quality tier does, from the next frame on.
@@ -1779,10 +1784,11 @@ impl Scene {
     }
 
     /// Runs secondary motion and thins animation as `tier` does, from the next frame on: its springs'
-    /// quality and its animation levels (M5 C1).
+    /// quality, its animation levels (M5 C1) and how many ambient characters it draws (M5 C10).
     pub fn set_motion_tier(&mut self, tier: TierId) {
         self.spring_quality = spring_quality(tier);
         self.anim_levels = anim_levels(tier);
+        self.set_ambient_tier(tier);
     }
 
     /// Thins a crowd's animation by `levels` from the next frame on (M5 C1).
@@ -2474,7 +2480,7 @@ impl Scene {
         if let Some(camera) = packet.main_view().map(|view| view.camera) {
             let frame = time_of_day.frame();
             let listed = packet.characters.len();
-            for (entity, character, transform, key, figure, near) in &characters {
+            for (entity, character, transform, key, figure, near, ambient) in &characters {
                 let figure = figure.copied().unwrap_or(scene_figure);
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
@@ -2500,6 +2506,8 @@ impl Scene {
                     figure.body_radius,
                 )
                 .transformed(transform.0);
+                // A zone's crowd casts its capsule alone and takes no other character's shadow (M5 C10).
+                let body = if ambient.is_some() { body.with_role(ShadowRole::Ambient) } else { body };
                 let opacity = fade.opacity(camera.position, &body, near);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
@@ -2514,7 +2522,7 @@ impl Scene {
             // query lists them in the same order again, so nothing is gathered.
             if matches!(fade, Fade::Proximity(_)) {
                 let listed = listed..packet.characters.len();
-                for (at, (.., near)) in listed.clone().zip(&characters) {
+                for (at, (.., near, _)) in listed.clone().zip(&characters) {
                     let Some(&NearFade::With(holder)) = near else { continue };
                     let holder = extract::instance_id(holder);
                     let held = packet.characters[listed.clone()].iter().find(|listed| listed.id == holder);
@@ -2743,6 +2751,8 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
     [bounds.min, bounds.max]
 }
 
+mod ambient;
+pub use ambient::{AmbientCap, AmbientPerson, AmbientStats, ambient_cap};
 mod layout;
 pub use layout::{LaidOut, Layout};
 mod zone;

@@ -10,6 +10,8 @@
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order
 #   vertex buffers bound: bound when the next draw's mesh differs, so it follows the draws' order
 
+desktop-high-dusk | ambient characters in view | not exercised
+desktop-high-dusk | ambient characters spawned | not exercised
 desktop-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 desktop-high-dusk | animation jobs | not exercised
 desktop-high-dusk | bytes admitted | not exercised
@@ -69,6 +71,8 @@ desktop-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 3740180
 desktop-high-dusk | triangles | p50 3393886 p95 3939651 worst 4005448 total 1698754264
 desktop-high-dusk | ui draws | not exercised
 
+desktop-high-night | ambient characters in view | not exercised
+desktop-high-night | ambient characters spawned | not exercised
 desktop-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 desktop-high-night | animation jobs | not exercised
 desktop-high-night | bytes admitted | not exercised
@@ -128,6 +132,8 @@ desktop-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 374018
 desktop-high-night | triangles | p50 3297578 p95 4016773 worst 4102451 total 1718263880
 desktop-high-night | ui draws | not exercised
 
+desktop-low-dusk | ambient characters in view | not exercised
+desktop-low-dusk | ambient characters spawned | not exercised
 desktop-low-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 desktop-low-dusk | animation jobs | not exercised
 desktop-low-dusk | bytes admitted | not exercised
@@ -187,6 +193,8 @@ desktop-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800
 desktop-low-dusk | triangles | p50 3229858 p95 3791364 worst 3884794 total 1612609523
 desktop-low-dusk | ui draws | not exercised
 
+desktop-low-night | ambient characters in view | not exercised
+desktop-low-night | ambient characters spawned | not exercised
 desktop-low-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 desktop-low-night | animation jobs | not exercised
 desktop-low-night | bytes admitted | not exercised
@@ -246,6 +254,8 @@ desktop-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 3740180
 desktop-low-night | triangles | p50 3051760 p95 3865135 worst 3958119 total 1614034982
 desktop-low-night | ui draws | not exercised
 
+mobile-high-dusk | ambient characters in view | not exercised
+mobile-high-dusk | ambient characters spawned | not exercised
 mobile-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 mobile-high-dusk | animation jobs | not exercised
 mobile-high-dusk | bytes admitted | not exercised
@@ -305,6 +315,8 @@ mobile-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800
 mobile-high-dusk | triangles | p50 2155040 p95 2869439 worst 2953453 total 1101504100
 mobile-high-dusk | ui draws | not exercised
 
+mobile-high-night | ambient characters in view | not exercised
+mobile-high-night | ambient characters spawned | not exercised
 mobile-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
 mobile-high-night | animation jobs | not exercised
 mobile-high-night | bytes admitted | not exercised
@@ -364,6 +376,8 @@ mobile-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 3740180
 mobile-high-night | triangles | p50 2106283 p95 2923483 worst 3035197 total 1104666505
 mobile-high-night | ui draws | not exercised
 
+mobile-low-dusk | ambient characters in view | not exercised
+mobile-low-dusk | ambient characters spawned | not exercised
 mobile-low-dusk | ambient dispatches | not exercised
 mobile-low-dusk | animation jobs | not exercised
 mobile-low-dusk | bytes admitted | not exercised
@@ -423,6 +437,8 @@ mobile-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 
 mobile-low-dusk | triangles | p50 1526500 p95 1801429 worst 1870888 total 759171900
 mobile-low-dusk | ui draws | not exercised
 
+mobile-low-night | ambient characters in view | not exercised
+mobile-low-night | ambient characters spawned | not exercised
 mobile-low-night | ambient dispatches | not exercised
 mobile-low-night | animation jobs | not exercised
 mobile-low-night | bytes admitted | not exercised

@@ -320,6 +320,9 @@ pub(crate) struct Options {
     /// `--anim-jobs on|off`: whether a fight's crowd is posed in jobs or one after another (M5 C1). On
     /// unless it says off. Needs `--arena`.
     pub anim_jobs: Option<bool>,
+    /// `--ambient on|off`: whether a zone's ambient characters stand about and walk (M5 C10). On unless it
+    /// says off; a golden from before them in a zone that has them pins it off.
+    pub ambient: Option<bool>,
     /// `--spring-turns <n>`: the character takes turns with `n - 1` others, as a party member off the field
     /// does, in the tier's rotation (M5 C2), to see a waiting character's chains. Needs `--clip` or `--graph`.
     pub spring_turns: Option<u32>,
@@ -457,6 +460,9 @@ pub(crate) struct Options {
     /// `--zone-walk <spline>[:<metres a second>]`: the zone stage's character walks that rail of the zone's, at
     /// the game's run speed unless told.
     pub zone_walk: Option<(String, f32)>,
+    /// `--mount <pack>`, repeatable: mounts that pack beside the ones the scene mounts itself (M5 C10), as the
+    /// bench district's crowd, whose cast is the proving hub's, needs `zone_proving_hub`.
+    pub mount: Vec<String>,
     /// `--inventory-without <entry>`: a bench leaves this entry out of what it prewarms, by the name a miss gives
     /// it: `mesh` and a key, `post`, `effects`, `skinning`, `ui`, `sky` or `ambient` (M3 K1). A bench of a fight
     /// then fails naming what it had to build, and a bench of the zone stage says so.
@@ -706,8 +712,8 @@ impl Options {
         if self.look_dev_character() { lookdev::SKY } else { sapphire_stage::content::SKY }
     }
 
-    /// The content these options draw from, mounted on `host`: their character and sky, and zones'
-    /// reflection probes unless `--no-reflection-probes`.
+    /// The content these options draw from, mounted on `host`: their character and sky, zones' reflection
+    /// probes unless `--no-reflection-probes`, and `--mount`'s packs.
     pub fn mount_content(
         &self,
         host: &sapphire_platform::Host,
@@ -715,6 +721,9 @@ impl Options {
         let mut content = sapphire_stage::Content::new(host, self.character(), self.sky())?;
         if self.no_reflection_probes {
             content.without_reflection_probes();
+        }
+        for pack in &self.mount {
+            content.mount_pack(pack)?;
         }
         Ok(content)
     }
@@ -1164,6 +1173,13 @@ impl Options {
                         other => return Err(format!("--anim-jobs expects on or off, got {other:?}")),
                     });
                 }
+                "--ambient" => {
+                    options.ambient = Some(match value("--ambient")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--ambient expects on or off, got {other:?}")),
+                    });
+                }
                 "--spring-turns" => {
                     let raw = value("--spring-turns")?;
                     let turns = raw.parse::<u32>().ok().filter(|turns| (2..=32).contains(turns));
@@ -1277,6 +1293,7 @@ impl Options {
                     let (stem, at) = raw.split_once(':').unwrap_or((&raw, "player_start"));
                     options.zone = Some((stem.to_owned(), at.to_owned()));
                 }
+                "--mount" => options.mount.push(value("--mount")?),
                 "--zone-walk" => {
                     let raw = value("--zone-walk")?;
                     let (spline, speed) =
@@ -2509,6 +2526,29 @@ mod tests {
         assert_eq!((crowd.anim_levels, crowd.anim_jobs), (Some(false), Some(true)));
         assert!(parse(&["--look-dev", "hero", "--anim-jobs", "off"]).unwrap_err().contains("--arena"));
         assert!(parse(&["--arena", "--anim-levels", "half"]).unwrap_err().contains("on or off"));
+        assert_eq!(
+            parse(&["--zone", "proving_hub", "--capture", "x.png", "--ambient", "off"]).unwrap().0.ambient,
+            Some(false)
+        );
+        assert_eq!(parse(&["--zone", "proving_hub", "--capture", "x.png"]).unwrap().0.ambient, None);
+        let mounts = parse(&[
+            "--zone",
+            "district",
+            "--capture",
+            "x.png",
+            "--mount",
+            "zone_proving_hub",
+            "--mount",
+            "fonts",
+        ])
+        .unwrap()
+        .0;
+        assert_eq!(mounts.mount, ["zone_proving_hub", "fonts"]);
+        assert!(
+            parse(&["--zone", "proving_hub", "--capture", "x.png", "--ambient", "few"])
+                .unwrap_err()
+                .contains("on or off")
+        );
         assert_eq!(
             parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "3"]).unwrap().0.spring_turns,
             Some(3)

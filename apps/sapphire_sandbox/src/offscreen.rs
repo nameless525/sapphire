@@ -243,6 +243,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     scene.set_spring_turns(options.spring_turns.unwrap_or(0));
     scene.set_anim_levels_on(options.anim_levels != Some(false));
     scene.set_anim_jobs(options.anim_jobs != Some(false));
+    scene.set_ambient_on(options.ambient != Some(false));
+    scene.set_ambient_tier(quality.active().id);
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -364,6 +366,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 .ok_or_else(|| AppInitError::msg("a fight in a zone needs it open: not with --stream off"))?;
             let zone = sapphire_stage::scene::ZoneShow { stem, at, walk: None, settings, pose, figure };
             scene.stand_in_zone(zone, content, renderer, gpu)?;
+            scene.finish_ambient(content, renderer, gpu);
             fight.spawn_zone_arena(scene, game_combat::fight::ZoneArena { shot, ground, enemy, held });
         } else {
             let town = content.town(renderer, gpu)?;
@@ -436,6 +439,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             renderer,
             gpu,
         )?;
+        // Its people, all there on the first frame, as its cells are.
+        scene.finish_ambient(content, renderer, gpu);
     }
     if options.blade() {
         let sword = fight.load_sword(&playable, content, renderer, gpu)?;

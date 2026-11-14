@@ -243,6 +243,10 @@
 //! - `--anim-levels on|off` and `--anim-jobs on|off` (with `--arena`): whether a fight's crowd is posed less
 //!   often far off and not at all out of sight, and whether it's posed in jobs, both on by default (M5 C1).
 //!   Neither moves anything the simulation reads; the fight bench's animation rows compare them.
+//! - `--ambient on|off`: whether a zone's ambient characters stand about its posts and walk its walks, on by
+//!   default (M5 C10). Presentation alone: nothing the simulation reads moves. Scenes from before them in a
+//!   zone that has them pin it off; `zone-hub-people-*` show them. `--mount <pack>` (repeatable) mounts a pack
+//!   beside the scene's own: the bench district's crowd is the proving hub's cast, in `zone_proving_hub`.
 //! - `--spring-turns <n>` (with `--clip` or `--graph`): the character takes its springs' turns among `n`, as a
 //!   party member off the field does (M5 C2), so a capture shows a waiting character's chains.
 //! - `--playable <name>` (with `--look-dev`): the character draws as the playable kind this build holds as

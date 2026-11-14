@@ -49,5 +49,30 @@
         exits: [
             (name: "to_proving_ground", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true),
         ],
+        // People about the square (M5 C10), as its presentation alone: two by the posts, a pair talking
+        // on the north side, one watching the door's road, and three walking a lap outside the posts.
+        // The cast is `content/ambient/`'s; nothing here reaches the simulation or the zone's digest.
+        ambient: Some((
+            seed: 11,
+            graph: "9fb02cf8-5a3d-4ed9-9651-c89bc8ccfecd",
+            cast: [
+                (name: "lady", mesh: "39c1b8aa-15aa-5345-b654-309b4acbefb8"),
+                (name: "dockhand", mesh: "db819d3f-6470-5a18-b07a-5da4af03919b"),
+                (name: "porter", mesh: "834df6ef-6b41-5841-8746-8fd871250ded"),
+            ],
+            posts: [
+                (name: "west_post", position: (-7.5, 0.0, 4.5), yaw_degrees: 121.0, gestures: ["shift", "look_around"]),
+                (name: "east_post", position: (8.0, 0.0, 7.5), yaw_degrees: 227.0, who: Some("porter"), gestures: ["shift"]),
+                (name: "talker_west", position: (-3.0, 0.0, 12.0), yaw_degrees: 70.0, who: Some("lady"),
+                 gestures: ["shift"], every: (6.0, 12.0)),
+                (name: "talker_east", position: (-1.8, 0.0, 12.4), yaw_degrees: 250.0, who: Some("dockhand"),
+                 gestures: ["shift", "look_around"], every: (6.0, 12.0)),
+                (name: "door_watch", position: (12.5, 0.0, -3.0), yaw_degrees: 270.0, gestures: ["look_around"]),
+            ],
+            walks: [
+                (name: "lap", points: [(-10.0, 0.0, -10.0), (10.0, 0.0, -10.0), (10.0, 0.0, 10.0), (-10.0, 0.0, 10.0)],
+                 closed: true, pace: 1.25, count: 3),
+            ],
+        )),
     ),
 )

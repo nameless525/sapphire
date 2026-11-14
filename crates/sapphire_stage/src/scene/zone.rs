@@ -89,7 +89,7 @@ pub struct ZoneStage {
     pub(super) stand: Vec3,
     /// Where it streams from, in its own space, until the camera's had a frame there:
     /// [`Scene::arrive_in_zone`] to [`Scene::end_arrival`].
-    held_focus: Option<[f32; 3]>,
+    pub(super) held_focus: Option<[f32; 3]>,
 }
 
 /// Where a way out of a zone leads: an exit, as a show reads it.
@@ -963,6 +963,7 @@ impl Scene {
             let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
             zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
         }
+        self.follow_ambient(content);
         let stopwatch = sapphire_time::Stopwatch::start();
         // A tool's weather is the frame's whatever a zone says (M5 L4), declared with the scene's if wet.
         let tool_weather = self.weather.is_some();
@@ -975,6 +976,7 @@ impl Scene {
     /// Draws what the zone has placed with its meshes on a new `renderer`: after device loss or for a new
     /// quality tier.
     pub fn set_zone_meshes(&mut self, content: &mut Content, renderer: &mut Renderer, gpu: &GpuContext) {
+        self.set_ambient_meshes(content);
         for next in &mut self.next_zones {
             if let Coming::Near(streamer) = &mut next.coming {
                 content.finish_zone_meshes(streamer.as_mut(), renderer, gpu);

@@ -230,6 +230,8 @@ impl App for SandboxApp {
         scene.set_spring_turns(options.spring_turns.unwrap_or(0));
         scene.set_anim_levels_on(options.anim_levels != Some(false));
         scene.set_anim_jobs(options.anim_jobs != Some(false));
+        scene.set_ambient_on(options.ambient != Some(false));
+        scene.set_ambient_tier(quality.active().id);
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;

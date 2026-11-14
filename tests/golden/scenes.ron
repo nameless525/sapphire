@@ -1064,7 +1064,7 @@
                 name: "trip-wipe-mid",
                 ticks: 135,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--time-of-day", "13",
-                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32", "--ambient", "off"],
                 ci_seconds: (lavapipe: 38.9, warp: 65.4),
             ),
             // The same wipe covering the screen: however soon the hub comes in behind it, no step's time
@@ -1073,7 +1073,7 @@
                 name: "trip-wipe-covered",
                 ticks: 154,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--time-of-day", "13",
-                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32", "--ambient", "off"],
                 ci_seconds: (lavapipe: 10.8, warp: 32.6),
             ),
             // Zones bring their look (M5 M6): `zone-trip`'s replay past its first trip, counted in the replay's
@@ -1085,7 +1085,7 @@
                 ticks: 225,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
-                       "--no-reflection-probes", "--weather", "dry"],
+                       "--no-reflection-probes", "--weather", "dry", "--ambient", "off"],
                 ci_seconds: (lavapipe: 32.7, warp: 111.2),
             ),
             // Past its second trip, in the proving ground, which names the look-dev day and rigs and no grid: the
@@ -1097,7 +1097,7 @@
                 ticks: 290,
                 args: ["--arena", "--replay", "tests/replays/zone-trip.sreplay", "--capture-through-trips",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32",
-                       "--no-reflection-probes", "--weather", "dry"],
+                       "--no-reflection-probes", "--weather", "dry", "--ambient", "off"],
                 ci_seconds: (lavapipe: 58.3, warp: 74.3),
             ),
             // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor,
@@ -3856,7 +3856,7 @@
                 name: "reflect-hub-square",
                 ticks: 90,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32", "--weather", "dry"],
+                       "--capture-frames", "32", "--weather", "dry", "--ambient", "off"],
                 ci_seconds: (lavapipe: 6.4, warp: 27.4),
             ),
             // The proving ground's shelter by day, the character standing under its roof facing its back wall,
@@ -3994,12 +3994,13 @@
                 ci_seconds: (lavapipe: 11.8, warp: 22.8),
             ),
             // The proving hub's square under its own weather (wetness 0.7, a third of its puddles), at the blue
-            // hour it keeps all day: the square's probe and the dusk sky in its puddles.
+            // hour it keeps all day: the square's probe and the dusk sky in its puddles. Without its people
+            // (M5 C10), which `zone-hub-people` shows.
             (
                 name: "wet-hub-dusk",
                 ticks: 90,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32", "--ambient", "off"],
                 ci_seconds: (lavapipe: 8.5, warp: 24.4),
             ),
             // The yard half wet as night falls: darkened and glossed, no puddle standing.
@@ -4026,6 +4027,33 @@
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "mobile-low",
                        "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
                 ci_seconds: (lavapipe: 9.3, warp: 21.3),
+            ),
+            // A zone's ambient characters (M5 C10): the proving hub's people from where its player starts, under
+            // its blue hour, which it keeps at every hour, so there's no day and dusk of it to show. The pair
+            // talking on the square's north side, one by each of the near posts, and the lap's walkers crossing
+            // beyond them, each drawn as the zone's data and seed put them at the tick. Dry, as before wet
+            // surfaces (M5 L4), which `wet-hub-dusk` shows on this square. Metal only.
+            (
+                name: "zone-hub-people",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--weather", "dry"],
+            ),
+            // The same square looking east along the lap from its south-west corner, later: walkers coming on
+            // and going away, mid-stride, and the one watching the door's road.
+            (
+                name: "zone-hub-people-east",
+                ticks: 1500,
+                args: ["--zone", "proving_hub:-12,0,-12,60", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32", "--weather", "dry"],
+            ),
+            // A phone's: Mobile-High draws up to 30 of a zone's people, within 48 m of the focus, with a
+            // crowd's shadows, capsules alone.
+            (
+                name: "zone-hub-people-mobile-high",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--ao", "off",
+                       "--capture-frames", "32", "--weather", "dry"],
             ),
         ],
     ),

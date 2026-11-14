@@ -378,6 +378,98 @@ fn the_arena_goes_between_zones_and_reaches_its_checksums() {
     assert!(capture.exists(), "{log}");
 }
 
+/// A zone's ambient characters (M5 C10) are presentation alone: `zone-trip`'s replay, whose trips stand it in the
+/// proving hub among its people and take it out again, reaches every one of a headless run's checksums with them
+/// and without them, tick for tick against the committed trail, with no allocation in a fixed step.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_zones_ambient_characters_change_nothing_the_checksums_see() {
+    let replay = workspace().join("tests").join("replays").join("zone-trip.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    for ambient in ["on", "off"] {
+        let output = run_app(&[
+            "--bench",
+            "1",
+            "--draw-every",
+            "8",
+            "--size",
+            "64x36",
+            "--arena",
+            "--replay",
+            replay.to_str().expect("UTF-8"),
+            "--ambient",
+            ambient,
+        ]);
+        let log = log_of(&output);
+        assert!(output.status.success(), "ambient {ambient}: {log}");
+        assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "ambient {ambient}: {log}");
+        assert!(log.contains("replay reached its recorded checksums"), "ambient {ambient}: {log}");
+        assert!(log.contains("allocations=0"), "ambient {ambient}: {log}");
+        assert_eq!(log.lines().filter(|line| line.contains("arrived in a zone")).count(), 5, "{log}");
+    }
+}
+
+/// A zone's people stand where its data and their seed put them at a tick (M5 C10): the proving hub drawn at one
+/// tick twice is the same picture to the byte, and drawn there over frames twice as far apart, as at half the
+/// frame rate, the same people in the same poses, to within what a pose's float rounding and its gestures'
+/// blend show; and none of them stands with `--ambient off`.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_zones_people_stand_the_same_at_a_tick_however_the_frames_came() {
+    use sapphire_testkit::golden::Image;
+    let temp = Temp::new("ambient_people");
+    let capture = |name: &str, step: &str, ambient: &str| -> Image {
+        let path = temp.path(&format!("{name}.png"));
+        let output = sandbox(
+            &[
+                "--capture",
+                path.to_str().expect("UTF-8"),
+                "--zone",
+                "proving_hub:player_start",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--aa",
+                "off",
+                "--size",
+                "320x180",
+                "--capture-ticks",
+                "900",
+                "--capture-frames",
+                "4",
+                "--capture-step",
+                step,
+                "--ambient",
+                ambient,
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content(),
+        );
+        assert!(output.status.success(), "{name}: {}", log_of(&output));
+        Image::read_png(&path).expect("a PNG")
+    };
+    // Pixels whose worst channel differs by more than `by`.
+    let apart = |a: &Image, b: &Image, by: u8| {
+        a.rgba
+            .chunks(4)
+            .zip(b.rgba.chunks(4))
+            .filter(|(a, b)| a.iter().zip(*b).any(|(a, b)| a.abs_diff(*b) > by))
+            .count()
+    };
+    let once = capture("once", "1", "on");
+    let again = capture("again", "1", "on");
+    assert!(once.rgba == again.rgba, "two runs at one tick: {} pixels apart", apart(&once, &again, 0));
+    let halved = capture("halved", "2", "on");
+    let moved = apart(&once, &halved, 24);
+    assert!(moved < 40, "at half the frame rate, {moved} pixels move by more than 24");
+    let nobody = capture("nobody", "1", "off");
+    let people = apart(&once, &nobody, 24);
+    assert!(people > 400, "the hub's people cover {people} pixels");
+}
+
 /// The rule that governs a zone's streaming (M3 W2): the simulation streams nothing. The arena's replay
 /// walks through the town with the town's zone off, on as its tier has it, on another budget and radius
 /// by which cells come and go all the way, and on a phone's settings, and every run reaches every one of

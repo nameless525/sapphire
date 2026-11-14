@@ -6,6 +6,7 @@ use glam::{Quat, Vec3};
 use sapphire_look::{VfxFrame, VfxRibbonPoint, VfxSprite, VfxStats};
 
 use crate::budget::VfxBudget;
+use crate::decal::DecalLayerDesc;
 use crate::document::{
     Effect, EffectId, EffectLibrary, EmitterDesc, Facing, MAX_EMITTERS, MAX_TRAIL_SAMPLES, Source, Spawn,
     TrailDesc,
@@ -100,6 +101,9 @@ struct Slot {
     emitters: [EmitterState; MAX_EMITTERS],
     /// Its place in the trails, if its effect has one and there was room.
     trail: Option<u16>,
+    /// Seconds on the owner's clock from its start to its actor's next strike, where its cue knew one
+    /// ([`VfxWorld::set_strike`]): what a telegraph's decal lives until.
+    strike: Option<f32>,
 }
 
 impl Slot {
@@ -117,6 +121,7 @@ impl Slot {
             particles: 0,
             emitters: [EmitterState::default(); MAX_EMITTERS],
             trail: None,
+            strike: None,
         }
     }
 }
@@ -175,6 +180,7 @@ pub struct VfxWorld {
     dropped_effects: u64,
     dropped_trails: u64,
     dropped_meshes: u64,
+    dropped_decals: u64,
 }
 
 impl VfxWorld {
@@ -200,6 +206,7 @@ impl VfxWorld {
             dropped_effects: 0,
             dropped_trails: 0,
             dropped_meshes: 0,
+            dropped_decals: 0,
         }
     }
 
@@ -259,16 +266,23 @@ impl VfxWorld {
         self.dropped_ribbon_points = 0;
         self.dropped_effects = 0;
         self.dropped_trails = 0;
+        self.dropped_meshes = 0;
+        self.dropped_decals = 0;
     }
 
     /// Starts `effect` at `placement` on `owner`'s clock. `None` if the library has no such effect
     /// or the budget's cap on effects is full, which is counted. An effect whose trail didn't fit
     /// spawns without it, also counted. A [mark](Effect::mark) takes its numbers from the marks'
-    /// stream, so it moves no other effect's.
+    /// stream, so it moves no other effect's. An effect of ground decals alone (M5 L7) takes no stream at
+    /// all, as it uses no random numbers: playing one moves no spark of any effect spawned after it.
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
-        let mark = self.library.effect(effect)?.mark;
+        let desc = self.library.effect(effect)?;
+        let mark = desc.mark;
+        if desc.emitters.is_empty() && desc.trail.is_none() && desc.meshes.is_empty() {
+            return self.start(effect, owner, placement);
+        }
         let handle = self.start(effect, owner, placement)?;
         let stream = if mark {
             self.marks += 1;
@@ -341,6 +355,15 @@ impl VfxWorld {
     pub fn set_placement(&mut self, handle: EffectHandle, placement: Placement) {
         if let Some(slot) = self.slot_mut(handle) {
             slot.placement = placement;
+        }
+    }
+
+    /// Says when `handle`'s actor's next strike lands: `seconds` on its owner's clock from the effect's start,
+    /// which a decal that lives `until_strike` lives until (M5 L7). A cue's dispatcher sets it as it plays a
+    /// telegraph; nothing else reads it. Ignored unless it's finite and above 0.
+    pub fn set_strike(&mut self, handle: EffectHandle, seconds: f32) {
+        if let Some(slot) = self.slot_mut(handle) {
+            slot.strike = (seconds.is_finite() && seconds > 0.0).then_some(seconds);
         }
     }
 
@@ -489,7 +512,7 @@ impl VfxWorld {
     }
 
     fn retire_effects(&mut self) {
-        let Self { library, slots, free_slots, rings, effects, .. } = self;
+        let Self { library, budget, slots, free_slots, rings, effects, .. } = self;
         for (index, slot) in slots.iter_mut().enumerate() {
             if !slot.live || slot.particles > 0 {
                 continue;
@@ -500,7 +523,8 @@ impl VfxWorld {
                 Some(trail) => slot.stopped && rings[usize::from(trail)].len == 0,
                 // Without one: an effect whose trail didn't fit plays out as if it had none.
                 None => slot.stopped || emitters_done(effect, slot),
-            } && meshes_done(effect, slot);
+            } && meshes_done(effect, slot)
+                && decals_done(effect, slot, budget);
             if !done {
                 continue;
             }
@@ -552,10 +576,12 @@ impl VfxWorld {
             ribbons += u32::from(drawn);
         }
         self.write_meshes(frame, unplayed);
+        self.write_decals(frame, unplayed);
         frame.stats = VfxStats {
             ribbons,
             ribbon_points: frame.ribbon_points.len() as u32,
             meshes: frame.meshes.len() as u32,
+            decals: frame.decals.len() as u32,
             ..self.stats()
         };
     }
@@ -565,58 +591,38 @@ impl VfxWorld {
     /// rest are counted in `dropped_meshes`, once a frame each. Two passes, no allocation.
     fn write_meshes(&mut self, frame: &mut VfxFrame, unplayed: f32) {
         let Self { library, slots, budget, dropped_meshes, .. } = self;
-        let mut showing = [0_u32; 256];
-        let mut total = 0_u32;
-        let each = |visit: &mut dyn FnMut(&MeshLayerDesc, &Slot, f32)| {
-            for slot in slots.iter().filter(|slot| slot.live) {
-                let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
-                let age = slot.age - unplayed * slot.step;
-                for layer in &effect.meshes {
-                    visit(layer, slot, age);
-                }
-            }
-        };
-        each(&mut |layer, _, age| {
-            let local = age - layer.delay;
-            if (0.0..layer.lifetime).contains(&local) {
-                showing[usize::from(layer.priority)] += 1;
-                total += 1;
-            }
-        });
-        if total == 0 {
-            return;
-        }
-        // The lowest priority that draws, and how many of it fit.
-        let cap = budget.max_meshes;
-        let (mut floor, mut room) = (0_usize, cap);
-        let mut above = 0_u32;
-        for priority in (0..256).rev() {
-            if above + showing[priority] >= cap {
-                floor = priority;
-                room = cap - above;
-                break;
-            }
-            above += showing[priority];
-        }
-        frame.meshes.reserve(total.min(cap) as usize);
-        each(&mut |layer, slot, age| {
-            let priority = usize::from(layer.priority);
-            if priority < floor {
-                return;
-            }
-            if priority == floor {
-                if room == 0 {
-                    return;
-                }
-                if let Some(mesh) = layer.resolve(&slot.placement, age) {
-                    room -= 1;
-                    frame.meshes.push(mesh);
-                }
-            } else if let Some(mesh) = layer.resolve(&slot.placement, age) {
-                frame.meshes.push(mesh);
-            }
-        });
-        *dropped_meshes = dropped_meshes.saturating_add(u64::from(total) - frame.meshes.len() as u64);
+        let (library, slots): (&EffectLibrary, &[Slot]) = (library, slots);
+        let dropped = write_capped(
+            slots,
+            unplayed,
+            budget.max_meshes,
+            move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.meshes[..]),
+            |layer: &MeshLayerDesc, _, age| {
+                (0.0..layer.lifetime).contains(&(age - layer.delay)).then_some(layer.priority)
+            },
+            |layer, slot, age| layer.resolve(&slot.placement, age),
+            &mut frame.meshes,
+        );
+        *dropped_meshes = dropped_meshes.saturating_add(dropped);
+    }
+
+    /// The live effects' ground decals, by the budget, as [`Self::write_meshes`] does meshes:
+    /// past [`VfxBudget::max_decals`], counted in `dropped_decals`.
+    fn write_decals(&mut self, frame: &mut VfxFrame, unplayed: f32) {
+        let Self { library, slots, budget, dropped_decals, .. } = self;
+        let (library, slots, budget): (&EffectLibrary, &[Slot], VfxBudget) = (library, slots, *budget);
+        let dropped = write_capped(
+            slots,
+            unplayed,
+            budget.max_decals,
+            move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.decals[..]),
+            |layer: &DecalLayerDesc, slot, age| {
+                layer.shows(age, slot.strike, &budget).then_some(layer.priority)
+            },
+            |layer, slot, age| layer.resolve(&slot.placement, age, slot.strike, &budget),
+            &mut frame.decals,
+        );
+        *dropped_decals = dropped_decals.saturating_add(dropped);
     }
 
     /// What it holds and what it has dropped. Ribbons and their points are those of the last frame
@@ -630,6 +636,7 @@ impl VfxWorld {
             dropped_effects: self.dropped_effects,
             dropped_trails: self.dropped_trails,
             dropped_meshes: self.dropped_meshes,
+            dropped_decals: self.dropped_decals,
             ..VfxStats::default()
         }
     }
@@ -684,6 +691,69 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
             }
         }
     }
+}
+
+/// Appends the live slots' layers (`layers` of each) that show at the frame's age to `out`, by priority up to
+/// `cap`: the highest priority first, and of equal priority those of the oldest slots, so what's kept doesn't
+/// flicker. `shows` gives a layer's priority where it shows then, and `resolve` what it draws. Returns how
+/// many didn't fit. Two passes, no allocation once `out` has held as much.
+fn write_capped<'a, L: 'a, T>(
+    slots: &'a [Slot],
+    unplayed: f32,
+    cap: u32,
+    layers: impl Fn(&Slot) -> &'a [L],
+    shows: impl Fn(&L, &Slot, f32) -> Option<u8>,
+    resolve: impl Fn(&L, &Slot, f32) -> Option<T>,
+    out: &mut Vec<T>,
+) -> u64 {
+    let mut showing = [0_u32; 256];
+    let mut total = 0_u32;
+    let live = || {
+        slots.iter().filter(|slot| slot.live).flat_map(|slot| {
+            let age = slot.age - unplayed * slot.step;
+            layers(slot).iter().map(move |layer| (layer, slot, age))
+        })
+    };
+    for (layer, slot, age) in live() {
+        if let Some(priority) = shows(layer, slot, age) {
+            showing[usize::from(priority)] += 1;
+            total += 1;
+        }
+    }
+    if total == 0 {
+        return 0;
+    }
+    // The lowest priority that draws, and how many of it fit.
+    let (mut floor, mut room) = (0_usize, cap);
+    let mut above = 0_u32;
+    for priority in (0..256).rev() {
+        if above + showing[priority] >= cap {
+            floor = priority;
+            room = cap - above;
+            break;
+        }
+        above += showing[priority];
+    }
+    let before = out.len();
+    out.reserve(total.min(cap) as usize);
+    for (layer, slot, age) in live() {
+        let Some(priority) = shows(layer, slot, age).map(usize::from) else { continue };
+        if priority < floor || (priority == floor && room == 0) {
+            continue;
+        }
+        if let Some(item) = resolve(layer, slot, age) {
+            if priority == floor {
+                room -= 1;
+            }
+            out.push(item);
+        }
+    }
+    u64::from(total) - (out.len() - before) as u64
+}
+
+/// Whether every decal of `effect` has played out (M5 L7): as a mesh layer, a stop doesn't cut one short.
+fn decals_done(effect: &Effect, slot: &Slot, budget: &VfxBudget) -> bool {
+    effect.decals.iter().all(|layer| slot.age >= layer.end(slot.strike, budget))
 }
 
 /// Whether every mesh layer of `effect` has played out: a stop doesn't cut one short, as it doesn't a

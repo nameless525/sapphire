@@ -12,6 +12,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::curve::Curve;
+use crate::decal::{DecalLayerDesc, MAX_DECAL_LAYERS};
 use crate::mesh::{MAX_MESH_LAYERS, MeshLayerDesc};
 
 /// The shipped effects (see [`EffectLibrary::default_effects`]).
@@ -285,6 +286,10 @@ pub struct Effect {
     /// written. Left out of a document that has none, so a library without them writes as it did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub meshes: Vec<MeshLayerDesc>,
+    /// Its ground decals (M5 L7), at most [`MAX_DECAL_LAYERS`]: flat on the ground where it plays, drawn in the
+    /// main pass over the world. Left out of a document that has none, as `meshes` are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decals: Vec<DecalLayerDesc>,
 }
 
 impl Effect {
@@ -293,7 +298,7 @@ impl Effect {
     /// or it holds its place in the budget for good.
     #[must_use]
     pub fn is_endless(&self) -> bool {
-        // A mesh layer has a lifetime: it never makes an effect endless.
+        // A mesh layer or a decal has a lifetime: it never makes an effect endless.
         self.trail.is_some()
             || self
                 .emitters
@@ -317,18 +322,20 @@ pub enum EffectLibraryError {
     DuplicateName(String),
     #[error("more effects than an effect ID can name")]
     TooMany,
-    #[error("effect `{0}`: it has no emitter, trail or mesh layer")]
+    #[error("effect `{0}`: it has no emitter, trail, mesh layer or decal")]
     Nothing(String),
     #[error("effect `{0}`: it has more than {MAX_EMITTERS} emitters")]
     TooManyEmitters(String),
     #[error("effect `{0}`: it has more than {MAX_MESH_LAYERS} mesh layers")]
     TooManyMeshLayers(String),
-    /// A field of an emitter, a trail or a mesh layer: `part` says which.
+    #[error("effect `{0}`: it has more than {MAX_DECAL_LAYERS} decal layers")]
+    TooManyDecalLayers(String),
+    /// A field of an emitter, a trail, a mesh layer or a decal: `part` says which.
     #[error("effect `{effect}`, {part}: `{field}` {problem}")]
     Invalid { effect: String, part: String, field: &'static str, problem: &'static str },
 }
 
-/// Named effects (an `EffectLibrary` document, schema 2).
+/// Named effects (an `EffectLibrary` document, schema 3).
 ///
 /// A library has at least one effect, its names are distinct and not empty, and every emitter and
 /// trail is valid: it is valid however it was made, deserialization included.
@@ -341,13 +348,13 @@ pub struct EffectLibrary {
 }
 
 impl Versioned for EffectLibrary {
-    /// 1: M2 E2. 2: M5 L5's mesh layers, which an effect without needn't say, so a version 1 document
-    /// decodes as it is.
-    const VERSION: u32 = 2;
+    /// 1: M2 E2. 2: M5 L5's mesh layers. 3: M5 L7's ground decals. An effect without either needn't say,
+    /// so an older document decodes as it is.
+    const VERSION: u32 = 3;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         match version {
-            1 => data.decode().map_err(VersionError::Decode),
+            1 | 2 => data.decode().map_err(VersionError::Decode),
             found => Err(VersionError::TooOld { found, oldest: 1 }),
         }
     }
@@ -385,7 +392,11 @@ impl EffectLibrary {
             if !names.insert(effect.name.as_str()) {
                 return Err(EffectLibraryError::DuplicateName(effect.name.clone()));
             }
-            if effect.emitters.is_empty() && effect.trail.is_none() && effect.meshes.is_empty() {
+            if effect.emitters.is_empty()
+                && effect.trail.is_none()
+                && effect.meshes.is_empty()
+                && effect.decals.is_empty()
+            {
                 return Err(EffectLibraryError::Nothing(effect.name.clone()));
             }
             if effect.emitters.len() > MAX_EMITTERS {
@@ -393,6 +404,21 @@ impl EffectLibrary {
             }
             if effect.meshes.len() > MAX_MESH_LAYERS {
                 return Err(EffectLibraryError::TooManyMeshLayers(effect.name.clone()));
+            }
+            if effect.decals.len() > MAX_DECAL_LAYERS {
+                return Err(EffectLibraryError::TooManyDecalLayers(effect.name.clone()));
+            }
+            for (layer_index, layer) in effect.decals.iter().enumerate() {
+                layer.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
+                    effect: effect.name.clone(),
+                    part: if layer.name.is_empty() {
+                        format!("decal layer {layer_index}")
+                    } else {
+                        format!("decal layer `{}`", layer.name)
+                    },
+                    field,
+                    problem,
+                })?;
             }
             for (layer_index, layer) in effect.meshes.iter().enumerate() {
                 layer.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
@@ -434,7 +460,8 @@ impl EffectLibrary {
     /// `hit_spark`, `sword_trail` and `dust_puff`, and what a fight's cues play (M2 E3): `cut_spark`,
     /// `break_ring`, `heavy_spark` and `finish_burst`, and what a fight's blades leave: `blade_trail` and
     /// `warrior_trail`; and effect meshes (M5 L5): the skill's `skill_arc`, and `shock_ring`, `ember_dome` and
-    /// `burst_card` for `--vfx`. Their colors and curves are starting points for art direction.
+    /// `burst_card` for `--vfx`; and ground decals (M5 L7): a wind-up's `telegraph_ground` and a heavy landing's
+    /// `scorch_mark`. Their colors and curves are starting points for art direction.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped effects are checked by this module's tests")
     }
@@ -464,6 +491,13 @@ impl EffectLibrary {
     #[must_use]
     pub fn has_meshes(&self) -> bool {
         self.effects.iter().any(|effect| !effect.meshes.is_empty())
+    }
+
+    /// Whether any of its effects has a ground decal: what a scene declares so the renderer builds the decal
+    /// family ahead (M5 L7), and builds none of it otherwise.
+    #[must_use]
+    pub fn has_decals(&self) -> bool {
+        self.effects.iter().any(|effect| !effect.decals.is_empty())
     }
 
     /// Its effects' names, in order.
@@ -638,6 +672,7 @@ mod tests {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         }])
     }
 
@@ -664,6 +699,7 @@ mod tests {
             trail: Some(bad),
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         };
         match EffectLibrary::new(vec![effect]) {
             Err(EffectLibraryError::Invalid { effect, part, field, .. }) => {
@@ -683,6 +719,7 @@ mod tests {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         };
         let mut duplicate = first.clone();
         duplicate.emitters.clear();
@@ -718,7 +755,9 @@ mod tests {
                 "skill_arc",
                 "shock_ring",
                 "ember_dome",
-                "burst_card"
+                "burst_card",
+                "telegraph_ground",
+                "scorch_mark"
             ]
         );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
@@ -797,14 +836,21 @@ mod tests {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         };
         assert_eq!(EffectLibrary::new(vec![effect("")]), Err(EffectLibraryError::EmptyName(0)));
         assert_eq!(
             EffectLibrary::new(vec![effect("a"), effect("a")]),
             Err(EffectLibraryError::DuplicateName("a".to_owned()))
         );
-        let nothing =
-            Effect { name: "a".to_owned(), emitters: vec![], trail: None, mark: false, meshes: Vec::new() };
+        let nothing = Effect {
+            name: "a".to_owned(),
+            emitters: vec![],
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+            decals: Vec::new(),
+        };
         assert_eq!(EffectLibrary::new(vec![nothing]), Err(EffectLibraryError::Nothing("a".to_owned())));
         let many = Effect { emitters: vec![emitter(); MAX_EMITTERS + 1], ..effect("a") };
         assert_eq!(EffectLibrary::new(vec![many]), Err(EffectLibraryError::TooManyEmitters("a".to_owned())));

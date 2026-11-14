@@ -4,7 +4,7 @@
 
 /// How much effects may hold at once. Everything is sized from it when a [`VfxWorld`](crate::VfxWorld)
 /// starts: past a cap the simulation counts what it dropped and keeps drawing, never growing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VfxBudget {
     /// Live particles, and so the most births a step does: what doesn't fit is only counted.
     pub max_particles: u32,
@@ -19,6 +19,14 @@ pub struct VfxBudget {
     /// Effect meshes a frame draws (M5 L5). Past it the lowest priority aren't drawn that frame, and are
     /// counted: a mesh is a whole draw, so this caps the effects' draws, not their pixels.
     pub max_meshes: u32,
+    /// Ground decals a frame draws (M5 L7). Past it the lowest priority aren't drawn that frame, and are
+    /// counted: a telegraph should outrank a scorch, so a crowded frame keeps its warnings.
+    pub max_decals: u32,
+    /// Whether a decal's edge is broken by its noise: off, a scorch draws a clean edge.
+    pub decal_noise: bool,
+    /// What a decal's fixed life is multiplied by, 0 to 1: under 1, scorches go sooner. A telegraph's life,
+    /// till its strike, is never shortened.
+    pub decal_life: f32,
 }
 
 impl VfxBudget {
@@ -31,6 +39,9 @@ impl VfxBudget {
         max_trails: 16,
         trail_subdivisions: 4,
         max_meshes: 32,
+        max_decals: 24,
+        decal_noise: true,
+        decal_life: 1.0,
     };
     pub const DESKTOP_LOW: Self = Self {
         max_particles: 2048,
@@ -39,6 +50,9 @@ impl VfxBudget {
         max_trails: 12,
         trail_subdivisions: 3,
         max_meshes: 24,
+        max_decals: 16,
+        decal_noise: true,
+        decal_life: 1.0,
     };
     pub const MOBILE_HIGH: Self = Self {
         max_particles: 1024,
@@ -47,6 +61,9 @@ impl VfxBudget {
         max_trails: 8,
         trail_subdivisions: 3,
         max_meshes: 16,
+        max_decals: 12,
+        decal_noise: true,
+        decal_life: 1.0,
     };
     pub const MOBILE_LOW: Self = Self {
         max_particles: 512,
@@ -55,6 +72,9 @@ impl VfxBudget {
         max_trails: 6,
         trail_subdivisions: 2,
         max_meshes: 8,
+        max_decals: 8,
+        decal_noise: false,
+        decal_life: 0.6,
     };
 }
 

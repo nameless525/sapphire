@@ -25,10 +25,12 @@
 //!
 //! # Owns
 //!
-//! - **Effect documents** ([`EffectLibrary`], schema 2): effects of emitters, each a set of modules
+//! - **Effect documents** ([`EffectLibrary`], schema 3): effects of emitters, each a set of modules
 //!   (`spawn`, `source`, `motion`, `shape`, `facing`, `light`) and curves over a particle's life
-//!   ([`Curve`]), at most one trail, and up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
-//!   shapes with scrolling, erosion and flipbooks), checked whole so an author's mistake names its field.
+//!   ([`Curve`]), at most one trail, up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
+//!   shapes with scrolling, erosion and flipbooks) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
+//!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), checked
+//!   whole so an author's mistake names its field.
 //!   [`EffectLibrary::default_effects`] compiles in a hit spark, a sword trail and a dust puff.
 //! - **The simulation** ([`VfxWorld`]): CPU particles and trail samples, in pools sized from a
 //!   [`VfxBudget`] when it starts. Past a cap it counts what it dropped and keeps drawing, and it
@@ -57,12 +59,13 @@
 //!
 //! # Later milestones
 //!
-//! GPU particles, flipbooks and mesh particles, distortion, decals, and half-resolution smoke on
+//! GPU particles, mesh particles, distortion, projected decals, and half-resolution smoke on
 //! phones (spec §5.16); more ribbons than trails (E2's plan row cuts them first); effects in cooked
 //! packs and hot reload. [`VfxWorld::set_library`] is the hook a reload takes.
 
 mod budget;
 mod curve;
+mod decal;
 mod document;
 mod mesh;
 mod rng;
@@ -71,6 +74,7 @@ mod world;
 
 pub use budget::VfxBudget;
 pub use curve::{Curve, CurveValue, MAX_KEYS};
+pub use decal::{DecalBlend, DecalLayerDesc, DecalShape, MAX_DECAL_LAYERS, MAX_DECAL_SIZE, on_ground};
 pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
     MAX_TRAIL_SAMPLES, Motion, Range, Shape, Source, Spawn, TrailCore, TrailDesc,

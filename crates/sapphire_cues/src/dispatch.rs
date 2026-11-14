@@ -1063,6 +1063,7 @@ mod tests {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         });
         VfxLibrary::new(effects.collect()).expect("valid")
     }

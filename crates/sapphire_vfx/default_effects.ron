@@ -15,7 +15,7 @@
 //   own life. The last four effects are the meshes: the skill's arc, and three `--vfx` shows.
 (
     type: "sapphire::vfx::EffectLibrary",
-    version: 2,
+    version: 3,
     data: (
         effects: [
             (
@@ -469,6 +469,46 @@
                         color: [(0.0, (2.6, 2.0, 1.2)), (1.0, (1.6, 0.8, 0.4))],
                         pattern: Burst,
                         flipbook: Some((columns: 4, rows: 4, frames: 16)),
+                    ),
+                ],
+            ),
+            (
+                // Ground decals (M5 L7). A heavy's wind-up (`telegraph`) on the ground in front of the foe: the
+                // outline its blow's reach, the fill its time, full on the step the blow lands. Its color is the
+                // telegraph mark's, dimmer (`tests/marks.rs` holds them to one color). On its actor's clock,
+                // so a hitstop holds it and slow motion slows it with the wind-up.
+                name: "telegraph_ground",
+                decals: [
+                    (
+                        name: "reach",
+                        shape: Sector(radius: 2.6, angle: 110.0),
+                        lifetime: 0.75,
+                        until_strike: true,
+                        linger: 0.15,
+                        fill: [(0.0, 0.0), (1.0, 1.0)],
+                        color: [(0.0, (0.9, 0.225, 0.072))],
+                        alpha: [(0.0, 0.0), (0.06, 1.0), (1.0, 1.0)],
+                        outline: 0.07,
+                        body: 0.22,
+                        priority: 2,
+                    ),
+                ],
+            ),
+            (
+                // Where a heavy's blade lands (`heavy_land`): the ground scorched in front of the fighter, its
+                // edge burnt, fading over three seconds.
+                name: "scorch_mark",
+                decals: [
+                    (
+                        name: "scorch",
+                        shape: Disc(radius: 0.85),
+                        blend: Darken,
+                        offset: (0.0, 1.35),
+                        lifetime: 3.0,
+                        color: [(0.0, (0.22, 0.16, 0.13))],
+                        alpha: [(0.0, 0.0), (0.03, 0.85), (0.5, 0.7), (1.0, 0.0)],
+                        noise: 0.16,
+                        priority: 1,
                     ),
                 ],
             ),

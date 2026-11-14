@@ -26,7 +26,8 @@
 //!   vignette, the compositing layers and combat's screen effects ([`PostParams`]).
 //! - **The frame's effects** ([`vfx`]): the sprites and ribbon points `sapphire_vfx` resolves and
 //!   the renderer draws ([`VfxFrame`]), the shapes of their generated map ([`VfxShape`]), and effect
-//!   meshes' generated shapes and patterns ([`VfxMesh`], [`VfxMeshShape`], [`VfxPattern`], M5 L5).
+//!   meshes' generated shapes and patterns ([`VfxMesh`], [`VfxMeshShape`], [`VfxPattern`], M5 L5), and ground
+//!   decals' signed distance shapes ([`VfxDecal`], M5 L7).
 //! - **Colour vision** ([`color_vision`], M4 A5): the three dichromacies by Machado et al. (2009), which
 //!   the renderer's colour-vision debug view and the cue tests share, and Oklab's distance.
 //! - **The on-screen interface's draw list** ([`ui`], M2 I2): quads over a distance field atlas
@@ -73,5 +74,6 @@ pub use ui::{
     UI_COVERAGE, UI_FIELD, UI_MULTI_FIELD, UI_PICTURE, UiAtlas, UiDrawList, UiFieldFormat, UiGlyphStats,
     UiInsetRun, UiMask, UiPageBands, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, UiTreeStats,
 };
+pub use vfx::decal::{VfxDecal, VfxDecalBlend, VfxDecalShape};
 pub use vfx::mesh::{VfxErosion, VfxFlipbook, VfxGeometry, VfxMesh, VfxMeshShape, VfxMeshVertex, VfxPattern};
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

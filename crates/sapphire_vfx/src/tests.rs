@@ -42,6 +42,7 @@ fn burst(count: u32) -> Effect {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     }
 }
 
@@ -64,6 +65,7 @@ fn trail(max_samples: u32) -> Effect {
         }),
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     }
 }
 
@@ -325,6 +327,7 @@ fn what_a_step_cant_fit_is_counted_without_being_walked() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     for max_particles in [0, 512] {
         let budget = VfxBudget { max_particles, ..VfxBudget::MOBILE_LOW };
@@ -352,6 +355,7 @@ fn overlapping_bursts_past_the_cap_count_what_didnt_fit() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let budget = VfxBudget::DESKTOP_HIGH;
     let mut world = world_of(vec![full], budget);
@@ -382,6 +386,7 @@ fn what_a_full_world_keeps_is_what_it_would_have_made_first() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let sprites = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -407,6 +412,7 @@ fn a_rate_owes_the_same_with_room_or_without() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let owed = |max_particles| {
         let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
@@ -432,6 +438,7 @@ fn a_step_too_long_to_count_owes_what_a_count_holds() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -451,6 +458,7 @@ fn a_continuous_emitter_recovers_after_large_finite_steps() {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
@@ -478,6 +486,7 @@ fn a_large_step_respects_delayed_finite_emission_and_pauses() {
             trail: None,
             mark: false,
             meshes: Vec::new(),
+            decals: Vec::new(),
         };
         let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
         let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
@@ -710,6 +719,7 @@ fn a_rate_emits_at_its_rate_and_stops_when_stopped() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
@@ -736,6 +746,7 @@ fn an_effect_is_endless_exactly_when_it_never_ends_by_itself() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let (once, brief) = (Spawn::Burst { count: 2 }, Spawn::Rate { per_second: 60.0, duration: 0.5 });
     let endless = Spawn::Rate { per_second: 60.0, duration: 0.0 };
@@ -819,6 +830,7 @@ fn a_rates_duration_bounds_how_many_it_emits() {
         trail: None,
         mark: false,
         meshes: Vec::new(),
+        decals: Vec::new(),
     };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
     world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");

@@ -3776,6 +3776,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--focus", "3,0.35,0.6,4,0.012", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 38.1, warp: 66.2),
             ),
             // The same on Desktop-Low at render scale 0.667, so the depth the blur reads is smaller than
             // the resolved frame it blurs.
@@ -3784,6 +3785,7 @@
                 ticks: 90,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-low", "--ao", "off",
                        "--render-scale", "0.667", "--focus", "3,0.35,0.6,4,0.012", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 15.7, warp: 40.6),
             ),
         ],
     ),

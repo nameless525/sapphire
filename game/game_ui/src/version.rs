@@ -5,6 +5,11 @@
 //! doesn't read either: the app hands it the label ([`MenuSetup::version`](crate::menus::MenuSetup::version)),
 //! so the sandbox can pin it and no golden moves when the version does.
 
+/// The label the goldens pin (`--ui-version` in `tests/golden/scenes.ron`), a packaged build's longer form, so
+/// a new version moves none of them: what a screen's sample model shows
+/// ([`ScreenModel::sample`](crate::menus::ScreenModel::sample)).
+pub const PINNED_LABEL: &str = "v0.1.0 (1234)";
+
 /// A build's version and, in a packaged build, its number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BuildVersion<'a> {
@@ -56,6 +61,12 @@ mod tests {
         assert_eq!(packaged.label(), "v0.1.0 (1234)");
         assert_eq!(packaged.line("Sapphire"), "Sapphire 0.1.0 (1234)");
         assert_eq!(packaged.line("Sapphire Sandbox"), "Sapphire Sandbox 0.1.0 (1234)");
+    }
+
+    #[test]
+    fn the_pinned_label_is_the_one_the_goldens_pin() {
+        let scenes = include_str!("../../../tests/golden/scenes.ron");
+        assert!(scenes.contains(&format!("\"--ui-version\", \"{PINNED_LABEL}\"")), "{PINNED_LABEL}");
     }
 
     #[test]

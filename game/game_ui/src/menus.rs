@@ -50,6 +50,7 @@ pub use self::settings::{
     SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use crate::screen::{ScreenStack, StackSetup};
+use crate::version::PINNED_LABEL;
 
 /// The key of the window's title, the one string the game shows outside a screen (M3 Z5b): the app names
 /// its window by it, in the menus' language ([`GameMenus::window_title`]).
@@ -60,13 +61,19 @@ pub const OPENED_BY_CODE: [&str; 4] = ["title", "pause", "hud", "dialogue"];
 
 impl ScreenModel {
     /// Its model as a golden shows it: as it stands with nothing yet said, but for the HUD, which shows every
-    /// word it has. Its model document (`content/ui/<`[`Self::file`]`>`) is this one's paths
+    /// word it has, and the menus, which label the build's version as the goldens pin it ([`PINNED_LABEL`]).
+    /// Its model document (`content/ui/<`[`Self::file`]`>`) is this one's paths
     /// ([`UiModel::of_model`](sapphire_assets::ui::UiModel::of_model)): its type's, and the menus' glyph for
     /// each binding a player may remap.
     #[must_use]
     pub fn sample(self) -> Box<dyn PartialReflect> {
         match self {
-            Self::Menu => Box::new(MenuModel::of(&PlayerSettings::default(), true, false, true)),
+            Self::Menu => {
+                let mut menu = MenuModel::of(&PlayerSettings::default(), true, false, true);
+                PINNED_LABEL.clone_into(&mut menu.version);
+                menu.shows_version = true;
+                Box::new(menu)
+            }
             Self::Character => Box::new(CharacterModel::default()),
             Self::Dialogue => Box::new(DialogueModel::default()),
             // Every word the HUD can say, the document's own: a foe's name and an objective too.

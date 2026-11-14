@@ -54,7 +54,10 @@ fn generating_twice_writes_the_same_bytes() {
 fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
     const PINNED: &[(&str, &str)] = &[
         (".", "cf2cdaca935a3bdde3fe9ab9de1e40c800aa7ada5c7371e8f23155de27b1dd72"),
-        ("cast/stand_in_00", "f8aa3907ea259b4cd8718e762b4ebc61f9d654faa7132dee4ee3dbbf271a3c9d"),
+        ("cast/ambient_a_00", "403a0cd7ff30c8e7d2d84eb7298d00dd96d84715801b6df9704e02d111a1ad4c"),
+        ("cast/ambient_b_00", "a8fc041b56341744077c5846701d8b134ade32a74b08e2cb78072bbbb41294e7"),
+        ("cast/enemy_00", "a4d4bf649b5df5e3e778fac27194fa8062a9e8905919a6bb630453de7c7f47d4"),
+        ("cast/hero_00", "b627dd928a11da43905f0bd5dffeb539eb5f5165be37e9b8329c9f2d879df764"),
         ("district", "3ad95515a63dc940ace97b511b8b2d5285f5b67e1d61fa41f48ffe95f8dbe482"),
         ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
@@ -90,11 +93,11 @@ fn a_preset_scales_the_district_and_the_cast() {
     };
     assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3);
     assert_eq!(count(Preset::Budget, ".ptex.ron"), 160 * 3);
-    assert_eq!(count(Preset::Ci, ".glb"), 1);
-    assert_eq!(count(Preset::Budget, ".glb"), 2);
+    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3));
+    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6));
 
-    // Every source but the control maps and the district's day has a sidecar, every sidecar's ID is its
-    // own, and the zone reaches every material.
+    // Every source but the control maps, the face's threshold masks and the district's day has a
+    // sidecar, every sidecar's ID is its own, and the zone reaches every material.
     let day = format!("district/{}", district::DAY);
     let files = tree(&dir.path().join("budget"));
     let mut ids = BTreeSet::new();
@@ -107,7 +110,11 @@ fn a_preset_scales_the_district_and_the_cast() {
                 meta.id,
                 asset_id(&path[..path.find('/').unwrap()], &source[source.find('/').unwrap() + 1..])
             );
-        } else if path != MARKER && !path.ends_with("_control.png") && *path != day {
+        } else if path != MARKER
+            && !path.ends_with("_control.png")
+            && !path.contains("_threshold_")
+            && *path != day
+        {
             assert!(files.contains_key(&format!("{path}.meta")), "{path} has no sidecar");
         }
     }
@@ -125,7 +132,7 @@ fn what_an_earlier_run_wrote_goes() {
     generate(&bench_dir(), Preset::Budget, &out).unwrap();
     generate(&bench_dir(), Preset::Ci, &out).unwrap();
     assert!(!out.join("district/textures/set_004.color.ptex.ron").exists());
-    assert!(!out.join("cast/stand_in_01").exists(), "an emptied folder goes too");
+    assert!(!out.join("cast/hero_01").exists(), "an emptied folder goes too");
     let fresh = dir.path().join("fresh");
     generate(&bench_dir(), Preset::Ci, &fresh).unwrap();
     assert_eq!(tree(&out), tree(&fresh));

@@ -1,12 +1,65 @@
-// The benchmark's cast (M5 B1's placeholder; M5 B3 builds the cast): each figure spec in `figures/`, as many
-// copies as a preset says (`sapphire_pipeline::bench::cast`).
+// The benchmark's cast (M5 B3): each figure spec in `figures/`, and what each preset makes of it
+// (`sapphire_pipeline::bench::cast`). `budget` is spec §3.4's rows: three heroes, a party, at the hero's row
+// (80,000 triangles, 2K maps); three kinds of enemy at 8,000 with 1K maps, which a fight of twelve draws
+// from; and six ambient figures, a crowd's kinds, sharing one skeleton. `ci` is one of each kind of thing:
+// a small hero (the same skeleton, chains, materials and expressions, cut coarser), an enemy, and two
+// ambient figures, one sharing the other's skeleton.
 (
     type: "sapphire::pipeline::BenchCast",
-    version: 1,
+    version: 2,
     data: (
-        presets: (
-            ci: (copies: 1),
-            budget: (copies: 2),
-        ),
+        figures: [
+            (
+                spec: "hero",
+                // LOD1 aims at the mobile row, 30,000 of LOD0's 80,000, and is the mobile cook's LOD0.
+                lods: Some((
+                    levels: [
+                        (triangle_ratio: 0.375, max_error: 0.02),
+                        (triangle_ratio: 0.15, max_error: 0.03),
+                        (triangle_ratio: 0.06, max_error: 0.05),
+                    ],
+                )),
+                presets: (
+                    ci: Some((copies: 1)),
+                    budget: Some((copies: 3, detail: Some(4), maps: Some(2048), triangles: Some(80000))),
+                ),
+            ),
+            (
+                spec: "enemy",
+                presets: (
+                    ci: Some((copies: 1)),
+                    budget: Some((copies: 3, maps: Some(1024))),
+                ),
+            ),
+            (
+                spec: "ambient_a",
+                presets: (ci: Some((copies: 1)), budget: Some((copies: 1, maps: Some(512)))),
+            ),
+            (
+                spec: "ambient_b",
+                skeleton: Some("ambient_a"),
+                presets: (ci: Some((copies: 1)), budget: Some((copies: 1, maps: Some(512)))),
+            ),
+            (
+                spec: "ambient_c",
+                skeleton: Some("ambient_a"),
+                presets: (ci: None, budget: Some((copies: 1, maps: Some(512)))),
+            ),
+            (
+                spec: "ambient_d",
+                skeleton: Some("ambient_a"),
+                presets: (ci: None, budget: Some((copies: 1, maps: Some(512)))),
+            ),
+            (
+                spec: "ambient_e",
+                skeleton: Some("ambient_a"),
+                presets: (ci: None, budget: Some((copies: 1, maps: Some(512)))),
+            ),
+            (
+                spec: "ambient_f",
+                skeleton: Some("ambient_a"),
+                presets: (ci: None, budget: Some((copies: 1, maps: Some(512)))),
+            ),
+        ],
     ),
 )

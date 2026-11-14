@@ -203,14 +203,12 @@ impl GltfWriter {
     }
 
     /// Sets root extension `name` to `value`, and lists it as used.
-    #[cfg(test)]
     pub fn set_extension(&mut self, name: &str, value: Value) {
         self.extensions.insert(name.to_owned(), value);
         self.use_extension(name);
     }
 
     /// Lists extension `name` as used, for extensions on materials or nodes.
-    #[cfg(test)]
     pub fn use_extension(&mut self, name: &str) {
         if let Err(at) = self.extensions_used.binary_search_by(|used| used.as_str().cmp(name)) {
             self.extensions_used.insert(at, name.to_owned());

@@ -20,7 +20,7 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 | Folder | Whose | What |
 |---|---|---|
 | `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`) |
-| `cast/` | M5 B3 (B1's placeholder) | `cast.ron`: each preset's scale. `figures/`: figure specs, built as `tools/figures/` specs are |
+| `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
 
 Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`),
 which reads only its folder, so the district and the cast grow without touching each other's files. A part
@@ -30,8 +30,8 @@ The presets:
 
 | Preset | District | Cast |
 |---|---|---|
-| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | each figure once |
-| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool | each figure twice |
+| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels |
+| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton |
 | `double` | the budget's district at 320 texture sets: twice the pool | the budget's |
 
 To open the district after a cook, a `dev` sandbox reads the shipped packs and the district's pack side by

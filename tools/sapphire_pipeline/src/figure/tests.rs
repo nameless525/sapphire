@@ -55,7 +55,7 @@ fn small() -> Figure {
 #[test]
 fn a_loft_faces_outward_and_its_mirror_across_x() {
     let built = build(&small()).unwrap();
-    let geometry = &built.geometry;
+    let geometry = &built.primitives[0].geometry;
     let set = &geometry.influences[0];
     let (upper_left, upper_right) =
         (built.rig.find("upperarm.l").unwrap(), built.rig.find("upperarm.r").unwrap());
@@ -99,7 +99,7 @@ fn a_loft_faces_outward_and_its_mirror_across_x() {
 fn its_uvs_lie_in_their_regions_cells() {
     let figure = small();
     let built = build(&figure).unwrap();
-    for uv in &built.geometry.uvs {
+    for uv in &built.primitives[0].geometry.uvs {
         let cell = (uv[0] * figure.regions.len() as f32).floor();
         assert!(cell == 0.0 || cell == 1.0, "{uv:?}");
         assert!((uv[0] * 2.0).fract() == 0.5, "{uv:?} isn't at a cell's middle");
@@ -123,7 +123,7 @@ fn the_model_imports_with_its_skeleton_at_rest() {
     assert_eq!(names[0], "rig");
     assert_eq!(names[1..], spec);
     assert_eq!(skin.weights.len(), mesh.vertices.len());
-    assert_eq!(mesh.indices.len(), built.geometry.indices.len());
+    assert_eq!(mesh.indices.len(), built.primitives[0].geometry.indices.len());
     // A joint's inverse bind takes its rest place to the origin.
     assert_eq!(skin.binds.len(), figure.joints.len());
     for bind in &skin.binds {
@@ -170,7 +170,8 @@ fn a_bad_spec_says_what_is_wrong() {
 
     let mut figure = small();
     figure.regions[0].albedo[0].1 = "teal".to_owned();
-    let error = paint::palette_png(&figure).unwrap_err().to_string();
+    let regions: Vec<&Region> = figure.regions.iter().collect();
+    let error = paint::palette_png(&regions, None).unwrap_err().to_string();
     assert!(error.contains("\"cloth\"") && error.contains("#rrggbb"), "{error}");
 }
 
@@ -178,8 +179,9 @@ fn a_bad_spec_says_what_is_wrong() {
 fn the_control_map_holds_each_region_s_id_and_the_mask_its_glow() {
     use sapphire_assets::character_maps::ilm::decode_material_id;
     let figure = small();
-    let control = image::load_from_memory(&paint::control_png(&figure).unwrap()).unwrap().to_rgba8();
-    let layers = image::load_from_memory(&paint::layers_png(&figure).unwrap()).unwrap().to_rgba8();
+    let regions: Vec<&Region> = figure.regions.iter().collect();
+    let control = image::load_from_memory(&paint::control_png(&regions, None).unwrap()).unwrap().to_rgba8();
+    let layers = image::load_from_memory(&paint::layers_png(&regions, None).unwrap()).unwrap().to_rgba8();
     let (width, height) = control.dimensions();
     for (index, _) in figure.regions.iter().enumerate() {
         let x = (index as u32 * 2 + 1) * width / 4;
@@ -296,4 +298,162 @@ fn every_figure_cooks_under_its_budget() {
             );
         }
     }
+}
+
+/// Chains hang after the spec's joints, level by level, so every prefix of the skeleton holds each
+/// joint's parent; copies turned around are named by copy and placed by turning.
+#[test]
+fn chains_hang_level_by_level() {
+    let mut figure = small();
+    figure.chains = vec![
+        Chain {
+            name: "panel".to_owned(),
+            parent: "hips".to_owned(),
+            from: [0.0, 1.0, 0.15],
+            to: [0.0, 0.6, 0.25],
+            joints: 3,
+            around: Some(Around { count: 4, step: 90.0 }),
+        },
+        Chain {
+            name: "tail".to_owned(),
+            parent: "head".to_owned(),
+            from: [0.0, 1.9, -0.1],
+            to: [0.0, 1.5, -0.2],
+            joints: 2,
+            around: None,
+        },
+    ];
+    let joints = build::all_joints(&figure).unwrap();
+    let names: Vec<&str> = joints.iter().map(|joint| joint.name.as_str()).collect();
+    let own = figure.joints.len();
+    assert_eq!(
+        names[own..],
+        [
+            "panel_00_0",
+            "panel_01_0",
+            "panel_02_0",
+            "panel_03_0",
+            "tail_0",
+            "panel_00_1",
+            "panel_01_1",
+            "panel_02_1",
+            "panel_03_1",
+            "tail_1",
+            "panel_00_2",
+            "panel_01_2",
+            "panel_02_2",
+            "panel_03_2",
+        ]
+    );
+    for (index, joint) in joints.iter().enumerate() {
+        if let Some(parent) = &joint.parent {
+            assert!(names[..index].contains(&parent.as_str()), "{}'s parent comes after it", joint.name);
+        }
+    }
+    // A quarter turn from +X toward −Z takes the front panel (+Z) to the figure's left (+X).
+    let at = |name: &str| Vec3::from(joints.iter().find(|joint| joint.name == name).unwrap().at);
+    assert!(at("panel_01_0").distance(Vec3::new(0.15, 1.0, 0.0)) < 1e-5, "{}", at("panel_01_0"));
+    assert!(at("panel_02_2").distance(Vec3::new(0.0, 0.6, -0.25)) < 1e-5, "{}", at("panel_02_2"));
+    let copies = build::chain_copies(&figure).unwrap();
+    let springs: Vec<&str> = copies.iter().map(|(copy, _)| copy.name.as_str()).collect();
+    assert_eq!(springs, ["panel_00", "panel_01", "panel_02", "panel_03", "tail"]);
+    // Built, the chains' joints skin a shape that names them with `*`.
+    if let Shape::Loft(loft) = &mut figure.shapes[2] {
+        loft.bones = vec!["hips".to_owned(), "panel_*".to_owned()];
+    }
+    let built = build(&figure).unwrap();
+    assert_eq!(built.rig.names.len(), own + 14);
+    let skinned: std::collections::BTreeSet<u16> =
+        built.primitives[0].geometry.influences[0].joints.iter().map(|joints| joints[0]).collect();
+    assert!(
+        skinned.iter().any(|&joint| built.rig.names[usize::from(joint)].starts_with("panel_")),
+        "{skinned:?}"
+    );
+}
+
+/// `detail` cuts every loft finer, and `maps` unwraps each shape across its cell, clear of its sides.
+#[test]
+fn detail_cuts_finer_and_maps_unwrap() {
+    let coarse = build(&small()).unwrap().triangles();
+    let mut figure = small();
+    figure.detail = 2;
+    figure.maps = Some(Maps { size: 64, grain: 0.1 });
+    let built = build(&figure).unwrap();
+    assert!(built.triangles() > 3 * coarse, "{} against {coarse}", built.triangles());
+    let margin = 1.5 / 64.0;
+    let (mut low, mut high) = (f32::MAX, f32::MIN);
+    for uv in &built.primitives[0].geometry.uvs {
+        let within = (uv[0] * 2.0).fract();
+        assert!(
+            within >= margin * 2.0 - 1e-5 && within <= 1.0 - margin * 2.0 + 1e-5,
+            "{uv:?} is in a cell's margin"
+        );
+        if uv[0] < 0.5 {
+            (low, high) = (low.min(uv[0]), high.max(uv[0]));
+        }
+    }
+    assert!(high - low > 0.4, "the cloth spans {low}..{high} of its cell");
+    // Exactly as many triangles as `triangles` says, or an error saying how many.
+    figure.triangles = Some(built.triangles() as u32 + 2);
+    let error = build(&figure).unwrap_err().to_string();
+    assert!(error.contains(&format!("{} triangles", built.triangles())), "{error}");
+    figure.triangles = None;
+    // Painted at the maps' size, the grain moving the albedo off its gradient.
+    let regions: Vec<&Region> = figure.regions.iter().collect();
+    let palette =
+        image::load_from_memory(&paint::palette_png(&regions, figure.maps).unwrap()).unwrap().to_rgb8();
+    assert_eq!(palette.dimensions(), (64, 64));
+    assert_ne!(palette.get_pixel(3, 10), palette.get_pixel(4, 10));
+    figure.maps = Some(Maps { size: 100, grain: 0.0 });
+    let error = build(&figure).unwrap_err().to_string();
+    assert!(error.contains("power of two"), "{error}");
+}
+
+/// Several materials make a primitive and a set of maps each; a region's material is its own.
+#[test]
+fn materials_split_the_regions() {
+    let mut figure = small();
+    figure.materials = vec![
+        MaterialSpec { name: "cloth".to_owned(), surface: Surface::Body, double_sided: false },
+        MaterialSpec { name: "glow".to_owned(), surface: Surface::Body, double_sided: true },
+    ];
+    figure.regions[0].material = Some("cloth".to_owned());
+    let error = build(&figure).unwrap_err().to_string();
+    assert!(error.contains("\"glow\"") && error.contains("names no material"), "{error}");
+    figure.regions[1].material = Some("glow".to_owned());
+    let built = build(&figure).unwrap();
+    let names: Vec<&str> = built.primitives.iter().map(|primitive| primitive.material.as_str()).collect();
+    assert_eq!(names, ["cloth", "glow"]);
+    let files = figure_files(&figure).unwrap();
+    let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "test/small.glb",
+            "test/small_cloth_palette.png",
+            "test/small_cloth_control.png",
+            "test/small_cloth_layers.png",
+            "test/small_glow_palette.png",
+            "test/small_glow_control.png",
+            "test/small_glow_layers.png",
+            "test/small_matcap.png",
+        ]
+    );
+    let dir = TempDir::new("figure_materials");
+    let path = dir.path().join("small.glb");
+    fs::write(&path, &files[0].bytes).unwrap();
+    let mesh = gltf::import(&path).expect("it imports");
+    let slots: Vec<&str> = mesh.materials.iter().map(|slot| slot.name.as_str()).collect();
+    assert_eq!(slots, ["cloth", "glow"]);
+    // Expressions need a face material to move.
+    figure.expressions = vec![ExpressionSpec {
+        preset: "aa".to_owned(),
+        moves: vec![Move::Pull { at: [0.0, 1.3, 0.1], radius: 0.2, by: [0.0, 0.01, 0.0], mirror: false }],
+        binary: false,
+        override_blink: None,
+        override_look_at: None,
+        override_mouth: None,
+    }];
+    let error = build(&figure).unwrap_err().to_string();
+    assert!(error.contains("face material"), "{error}");
 }

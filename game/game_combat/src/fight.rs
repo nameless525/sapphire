@@ -61,7 +61,7 @@ use crate::playable;
 #[cfg(feature = "dev")]
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
-use sapphire_stage::animate::{self, ClipPlayer};
+use sapphire_stage::animate::{self, ClipPlayer, SpringKey, SpringRole};
 use sapphire_stage::audio::{CueSounds, Said};
 use sapphire_stage::content::{Content, GraphKey};
 use sapphire_stage::{FrameLaps, HeldWeapon, PlayableLook, StageDesc, lookdev, vfx};
@@ -1566,8 +1566,14 @@ impl FightShow {
         let held_ticks = self.held_ticks;
         let kinds = &self.assets.kinds;
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
-        let view = scene.spring_view();
+        let mut view = scene.spring_view();
         let world = scene.world_mut();
+        // Everyone with springs takes their place in the frame's rotation before anyone runs (M5 C2).
+        for index in 0..arena.fighter_count() {
+            if world.get::<GraphDriver>(arena.entity(index)).is_some_and(GraphDriver::has_springs) {
+                view.enter(spring_key(index, arena.kind(index)));
+            }
+        }
         let stick_released = arena
             .player_seen()
             .is_some_and(|actor| actor.controls.current.stick == sapphire_gameplay::Stick::CENTER);
@@ -1633,8 +1639,14 @@ impl FightShow {
                 if ready {
                     let (mut render, mut figure, mut rig) = (render, figure, rig);
                     stats.characters += 1;
-                    let (evaluated, springs, elapsed) =
-                        fixed.renderer.publish(&mut driver, &mut render, &mut figure, &mut rig, &view);
+                    let (evaluated, springs, elapsed) = fixed.renderer.publish(
+                        &mut driver,
+                        &mut render,
+                        &mut figure,
+                        &mut rig,
+                        &view,
+                        spring_key(index, drawn),
+                    );
                     if evaluated {
                         stats.evaluated += 1;
                         stats.joints += driver.player.pose().joint_count() as u32;
@@ -1695,7 +1707,8 @@ impl FightShow {
                     FootContact::Sole
                 });
             }
-            let mut job = GraphEvaluation::new(driver, render, figure, rig, input, place, &view);
+            let key = spring_key(index, drawn);
+            let mut job = GraphEvaluation::new(driver, render, figure, rig, input, place, &view, key);
             job.run(clips);
             stats.teleports += job.driver.player.teleports();
             if job.evaluated {
@@ -1912,6 +1925,18 @@ fn load_kind(
     };
     kind.versions = versions_of(&kind, content);
     Ok(kind)
+}
+
+/// Where the fighter at `index` on the roster, drawn as `kind`, stands in the frame's rotation of who
+/// steps their springs (M5 C2): the scene's character on field leads, any other playable is the party's,
+/// and warriors take turns by their place on the roster.
+fn spring_key(index: usize, kind: FighterKind) -> SpringKey {
+    let place = u32::try_from(index).unwrap_or(u32::MAX);
+    match kind {
+        FighterKind::Playable if index == 0 => SpringKey::LEAD,
+        FighterKind::Playable => SpringKey::new(SpringRole::Party, place),
+        FighterKind::Enemy(_) => SpringKey::new(SpringRole::Enemy, place),
+    }
 }
 
 /// The versions `kind`'s mesh and skeleton are at.

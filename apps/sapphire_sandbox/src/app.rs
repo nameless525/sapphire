@@ -226,6 +226,8 @@ impl App for SandboxApp {
             input.listen_for_fight_restart()?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
+        scene.set_spring_floor(options.spring_floor != Some(false));
+        scene.set_spring_turns(options.spring_turns.unwrap_or(0));
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;

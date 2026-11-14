@@ -310,6 +310,13 @@ pub(crate) struct Options {
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
+    /// `--spring-floor on|off`: whether springs and cloth lie on the ground the feet's IK probes find
+    /// (M5 C2). On unless it says off; a golden from before it pins it off. Needs `--clip`, `--graph` or
+    /// `--arena`.
+    pub spring_floor: Option<bool>,
+    /// `--spring-turns <n>`: the character takes turns with `n - 1` others, as a party member off the field
+    /// does, in the tier's rotation (M5 C2), to see a waiting character's chains. Needs `--clip` or `--graph`.
+    pub spring_turns: Option<u32>,
     /// `--arena`: the combat stage (M2 O5, [`game_combat::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
@@ -1085,6 +1092,21 @@ impl Options {
                         other => return Err(format!("--springs expects on or off, got {other:?}")),
                     });
                 }
+                "--spring-floor" => {
+                    options.spring_floor = Some(match value("--spring-floor")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--spring-floor expects on or off, got {other:?}")),
+                    });
+                }
+                "--spring-turns" => {
+                    let raw = value("--spring-turns")?;
+                    let turns = raw.parse::<u32>().ok().filter(|turns| (2..=32).contains(turns));
+                    options.spring_turns =
+                        Some(turns.ok_or_else(|| {
+                            format!("--spring-turns expects 2 to 32 characters, got {raw:?}")
+                        })?);
+                }
                 "--graph" => {
                     let raw = value("--graph")?;
                     options.graph = Some(GraphScript::from_name(&raw).ok_or_else(|| {
@@ -1506,6 +1528,19 @@ impl Options {
             return Err(
                 "--springs runs under a clip or a graph: it needs --clip, --graph or --arena".to_owned()
             );
+        }
+        if options.spring_floor.is_some()
+            && options.clip.is_none()
+            && options.graph.is_none()
+            && options.arena.is_none()
+        {
+            return Err(
+                "--spring-floor lays springs on the ground: it needs --clip, --graph or --arena".to_owned()
+            );
+        }
+        if options.spring_turns.is_some() && options.clip.is_none() && options.graph.is_none() {
+            return Err("--spring-turns takes the character's springs in turns: it needs --clip or --graph"
+                .to_owned());
         }
         if ik && options.clip.is_none() && options.graph.is_none() {
             return Err("--ik solves over a clip or a graph: it needs --clip or --graph".to_owned());
@@ -2288,6 +2323,16 @@ mod tests {
         assert_eq!(parse(&springs).unwrap().0.springs, Some(false));
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.springs, None);
         assert!(parse(&["--look-dev", "hero", "--springs", "on"]).unwrap_err().contains("--clip"));
+        let floor = ["--look-dev", "down", "--graph", "defeat", "--spring-floor", "off"];
+        assert_eq!(parse(&floor).unwrap().0.spring_floor, Some(false));
+        assert_eq!(parse(&["--look-dev", "down", "--graph", "defeat"]).unwrap().0.spring_floor, None);
+        assert!(parse(&["--look-dev", "hero", "--spring-floor", "on"]).unwrap_err().contains("--graph"));
+        assert_eq!(
+            parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "3"]).unwrap().0.spring_turns,
+            Some(3)
+        );
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "1"]).is_err());
+        assert!(parse(&["--look-dev", "hero", "--spring-turns", "3"]).unwrap_err().contains("--clip"));
         let wrong = ["--look-dev", "hero", "--clip", "strike", "--springs", "maybe"];
         assert!(parse(&wrong).unwrap_err().contains("on or off"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());

@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use sapphire_anim::{
-    BodyTuning, CharacterIk, CharacterMotion, CharacterPose, FeetInput, FootContact, HeldWeapon, IkInput,
-    IkRig, LookInput,
+    BodyTuning, CharacterIk, CharacterMotion, CharacterPose, FeetInput, FootContact, FootProbe, GroundHit,
+    HeldWeapon, IkInput, IkRig, LookInput, SpringFloor,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape, StaticCollider, StaticShape};
@@ -370,6 +370,43 @@ impl IkDriver {
         self.solved = Some((self.controls, transform));
         // A later solve in the same presented time, for a grip, must not take this time again.
         self.dt = 0.0;
+    }
+
+    /// The floor a character standing at `transform` lays its hair and cloth on (M5 C2), in its model's
+    /// space: the ground the feet's own probes find, by their reach and their limit on steepness, under
+    /// whichever foot stands lower, so at a stair's edge it's the step below and nothing hangs in the air
+    /// over it. A foot's plane is its ankle's, or its ball's where the ankle finds none. `None` where
+    /// neither foot finds ground, as the feet then let go of it: no floor, and the springs run as before.
+    /// Allocates nothing.
+    pub(crate) fn spring_floor(&self, pose: &mut CharacterPose, transform: Mat4) -> Option<SpringFloor> {
+        let world_from_model = Affine3A::from_mat4(transform);
+        let probes = self.ik.foot_probes(pose, &world_from_model)?;
+        let settings = self.ik.feet()?.settings();
+        let ground = |at: Vec3| {
+            ground_under(&self.ground, at, settings).filter(|hit| hit.normal.y >= settings.min_normal_y)
+        };
+        let under = |probe: FootProbe| ground(probe.ankle).or_else(|| probe.ball.and_then(ground));
+        let [left, right] = probes;
+        let middle = (left.ankle + right.ankle) * 0.5;
+        // How high a plane stands under the feet's middle.
+        let height = |hit: &GroundHit| {
+            hit.point.y
+                - (hit.normal.x * (middle.x - hit.point.x) + hit.normal.z * (middle.z - hit.point.z))
+                    / hit.normal.y
+        };
+        let hit = match (under(left), under(right)) {
+            (Some(left), Some(right)) => {
+                if height(&left) <= height(&right) {
+                    left
+                } else {
+                    right
+                }
+            }
+            (left, right) => left.or(right)?,
+        };
+        let model_from_world = world_from_model.inverse();
+        let normal = model_from_world.transform_vector3(hit.normal).try_normalize()?;
+        Some(SpringFloor { point: model_from_world.transform_point3(hit.point), normal })
     }
 }
 

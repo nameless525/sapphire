@@ -236,6 +236,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let Some(scale) = options.effect_scale {
         fight.set_effect_scale(scale);
     }
+    scene.set_spring_floor(options.spring_floor != Some(false));
+    scene.set_spring_turns(options.spring_turns.unwrap_or(0));
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }

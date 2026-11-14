@@ -232,6 +232,11 @@
 //! - `--springs on|off` (with `--clip` or `--graph`): runs the character's spring bones or not, on by default
 //!   (M2 N5). Scenes that don't show them pin them off; `lookdev-strike-springs-*` and
 //!   `lookdev-clip-run-springs` do.
+//! - `--spring-floor on|off` (with `--clip`, `--graph` or `--arena`): lays springs and cloth on the ground
+//!   the feet's IK probes find, on by default (M5 C2). Scenes from before it whose springs touch the
+//!   ground pin it off; `lookdev-death-back-springs` shows it.
+//! - `--spring-turns <n>` (with `--clip` or `--graph`): the character takes its springs' turns among `n`, as a
+//!   party member off the field does (M5 C2), so a capture shows a waiting character's chains.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
 //!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
 //!   and `--size <cell>` set the grid, `--sheet-ticks <a,b,..>` and `--sheet-views <yaw,yaw,..>` name

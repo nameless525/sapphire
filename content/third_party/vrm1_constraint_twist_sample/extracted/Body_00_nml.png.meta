@@ -9,6 +9,10 @@
                 flip_y: false,
                 astc_block: B4x4,
             )),
+            max_size: (
+                desktop: None,
+                mobile: Some(1024),
+            ),
         )),
     ),
 )

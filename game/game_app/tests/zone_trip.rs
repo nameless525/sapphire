@@ -107,6 +107,15 @@ struct Seen {
     /// The real time its frames took, and the longest of them (M4 H2's measure of a trip's hold).
     took: Duration,
     longest: Duration,
+    /// The mesh pool's capacity as the wipe started, the most it and the buffers it gave back held at once, and its
+    /// capacity and floor as the arrival ended, on the trip's first frame uncovering (M5 D9).
+    pool_before: u64,
+    pool_peak: u64,
+    pool_after: Option<(u64, u64)>,
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / f64::from(1 << 20))
 }
 
 /// The tier changed to the other desktop one at a pause after the trips (M4 H4): its renderer is built for the
@@ -211,11 +220,17 @@ impl App for OutsideCaller {
             frames += 1;
             assert!(frames < 20_000, "it never got to tick {TICKS}");
             let on_stage = stage.scene.zone_on_stage();
+            let stats = stage.renderer.stats();
             if let Some(phase) = phase {
                 if phase == TripPhase::Covering && trips.last().is_none_or(|seen| !seen.covered.is_empty()) {
-                    trips.push(Seen::default());
+                    trips.push(Seen { pool_before: stats.mesh_pool_capacity, ..Seen::default() });
                 }
                 let seen = trips.last_mut().expect("one's under way");
+                seen.pool_peak = seen.pool_peak.max(stats.mesh_pool_capacity + stats.mesh_pool.retired);
+                if phase == TripPhase::Uncovering {
+                    // The arrival's just over.
+                    seen.pool_after.get_or_insert((stats.mesh_pool_capacity, stats.mesh_pool.floor));
+                }
                 if phase.holds_simulation() {
                     seen.held += 1;
                 }
@@ -251,6 +266,17 @@ impl App for OutsideCaller {
             assert!(
                 seen.covered.windows(2).all(|pair| pair[0] == pair[1]),
                 "trip {index}: every covered frame is the same picture"
+            );
+            // M5 D9: the pool gave back the zone it left under the wipe, and stood at its floor as the arrival
+            // ended.
+            let (after, floor) = seen.pool_after.expect("it arrived");
+            assert_eq!(after, floor, "trip {index}: the mesh pool ended above its floor");
+            println!(
+                "zone_trip: trip {index}'s mesh pool: {} MiB before, {} MiB after (its floor), at most {} MiB with \
+                 the buffers it gave back",
+                mib(seen.pool_before),
+                mib(after),
+                mib(seen.pool_peak),
             );
         }
         let last = stage.show.shown.fight.show.last_trip().expect("it went");

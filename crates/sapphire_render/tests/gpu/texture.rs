@@ -363,7 +363,7 @@ fn every_class_samples_back_within_tolerance() {
     let mut failures = Vec::new();
     for case in cases() {
         let prepared =
-            texture::prepare(&case.image, &TextureSettings { class: case.class }, case.cook).expect("plan");
+            texture::prepare(&case.image, &TextureSettings::from(case.class), case.cook).expect("plan");
         let format = prepared.desc.format;
         let file = prepared.encode().expect("encode").to_ktx2();
         let cooked = Texture::from_ktx2(&file).expect("the cooked file reads back");
@@ -434,7 +434,7 @@ fn unsupported_formats_fail_with_the_cook_they_need() {
     // An invalid texture never reaches wgpu.
     let cooked = texture::cook(
         &pattern(8, ChannelLayout::Rgba, color),
-        &TextureSettings { class: TextureClass::Color(ColorSettings::default()) },
+        &TextureSettings::from(TextureClass::Color(ColorSettings::default())),
         Cook::Desktop,
     )
     .expect("cook");

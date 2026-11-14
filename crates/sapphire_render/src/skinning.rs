@@ -117,6 +117,9 @@ pub struct SkinningStats {
     pub skinned: u32,
     /// Vertices those instances skin: each one's drawn LOD prefix.
     pub vertices: u32,
+    /// Joints those poses move: their palettes' matrices, every posed instance's (M5 B4). A morph's
+    /// weights alone move none.
+    pub joints: u32,
     /// Palette bytes those poses upload, 48 per matrix.
     pub palette_bytes: u32,
     /// Bytes of output streams in use, 32 per vertex: positions twice (for velocity) and
@@ -452,7 +455,7 @@ impl Skinning {
             }
         }
 
-        let (mut skinned, mut vertices, mut palette_bytes, mut past_bounds) = (0, 0, 0, 0);
+        let (mut skinned, mut vertices, mut joints, mut past_bounds) = (0, 0, 0, 0);
         for &slot in &self.live {
             past_bounds += u32::from(slots.posed(slot).is_some());
             let state = self.instances[slot as usize].as_ref().expect("live slots are deformed");
@@ -462,14 +465,15 @@ impl Skinning {
             vertices += record.lod_vertices[DRAWN_LOD];
             if let Pending::Pose { .. } = pending {
                 let source = record.deform().expect("deformed instances have deformable meshes");
-                palette_bytes += source.palette_len() * size_of::<PaletteRows>() as u32;
+                joints += source.palette_len();
             }
         }
         self.stats = SkinningStats {
             instances: self.live.len() as u32,
             skinned,
             vertices,
-            palette_bytes,
+            joints,
+            palette_bytes: joints * size_of::<PaletteRows>() as u32,
             output_bytes: u64::from(self.ranges.end()) * OUTPUT_VERTEX_BYTES,
             ignored_poses: ignored,
             unplaced: self.unplaced.len() as u32,

@@ -30,6 +30,7 @@ pub use sapphire_body_pose::{AuthoredHeadLook, GroundTurn, SolvedBody, graph_foo
 pub use sapphire_body_pose::{BodyRoot, BodySample, BodyStep, BodyStepError, FixedBody, FixedBodyPolicy};
 pub use sapphire_body_pose::{BodyTuning, BodyTuningError};
 pub use springs::{
-    ClearanceQuality, ClothError, ClothSheet, HeroineClearance, MAX_CLOTH_ITERATIONS, SPRING_TICK_HZ,
-    SpringBones, SpringCollider, SpringFrame, SpringQuality, SpringTail, SpringTuning, SpringWork, Substeps,
+    ClearanceQuality, ClothError, ClothSheet, HeroineClearance, LONGEST_STRIDE, MAX_CLOTH_ITERATIONS,
+    SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFloor, SpringFrame, SpringPace, SpringQuality,
+    SpringTail, SpringTuning, SpringWork, StaggerQuality, Substeps,
 };

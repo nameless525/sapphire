@@ -113,6 +113,7 @@ use glam::Mat4;
 use sapphire_rhi::{TransientDesc, wgpu};
 
 use crate::bind_cache::CachedBindGroup;
+use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
@@ -799,7 +800,8 @@ impl TemporalPasses {
     /// then the resolve, a compute pass,
     /// from `inputs` and last frame's history and depth into `targets.output`. `slot` is the
     /// frame's write slot ([`TemporalTextures::write_slot`]), which picks the bind groups for
-    /// its textures.
+    /// its textures. The mask's draw counts in `counter`.
+    #[expect(clippy::too_many_arguments, reason = "the passes' inputs, targets and counts")]
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
@@ -808,6 +810,7 @@ impl TemporalPasses {
         targets: TemporalTargets,
         slot: usize,
         labels: bool,
+        counter: &'f Counter,
     ) {
         let Self {
             ref device,
@@ -829,6 +832,7 @@ impl TemporalPasses {
             let views = [ctx.view(characters), ctx.view(depth), ctx.view(outlines)];
             let group = mask_group.get(device, label, mask_layout, &views);
             draw_fullscreen(ctx, label, mask, mask_pipeline, shared, group);
+            counter.add(&PassCounts::fullscreen());
         });
 
         let resolve_group = &mut resolve_groups[slot];

@@ -24,6 +24,9 @@
 //!         instances: [(mesh: "e94f690f-38e2-4630-aeb3-4d34d06fc233", at: (-15.6, 0.0, -15.4), turn: 20.0)],
 //!         lights: [(position: (0.3, 2.4, -35.4), color: (1.0, 0.7, 0.4), intensity: 6.0, range: 9.0, at_night: true)],
 //!         probes: Some("44f04da1-31ba-4d3f-9e65-3e38a30fff43"),
+//!         // Where its reflections are baked from (the `reflections` module), each with the box they're
+//!         // corrected against.
+//!         reflections: [(name: "gate", position: (3.2, 1.6, -20.0), parallax: (min: (-6.0, 0.0, -30.0), max: (12.0, 9.0, -10.0)))],
 //!         day: Some("../lookdev/lookdev_day.ron"),
 //!         rigs: Some("../lookdev/lookdev_light_rigs.ron"),
 //!         // Its own sky, and its air (the `look` module): what it looks like as itself, after a trip too.
@@ -84,6 +87,7 @@ use crate::cooked::{
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
+use crate::reflections::{self, ReflectionProbe};
 
 /// The most entries any list of a zone may hold.
 pub const MAX_ENTRIES: usize = 1 << 20;
@@ -111,6 +115,10 @@ pub struct ZoneDocument {
     /// The zone's ambient probe grid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probes: Option<AssetId>,
+    /// Its reflection probes (M5 L2), which the cook bakes into an asset of the zone's own: the
+    /// [`reflections`] module. At most [`reflections::MAX_PROBES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflections: Vec<ReflectionProbe>,
     /// A time-of-day timeline's document, from this document's directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<String>,
@@ -419,6 +427,8 @@ pub struct ZoneGeometry {
     pub navigation: Option<AssetId>,
     /// The pack each of the document's exits leads into, in its order.
     pub exit_packs: Vec<String>,
+    /// The reflection probes baked for the document's `reflections`, if it has any.
+    pub reflections: Option<AssetId>,
 }
 
 impl ZoneDocument {
@@ -502,6 +512,21 @@ impl ZoneDocument {
         }
         if let Some(rigs) = &self.rigs {
             check_path(rigs).map_err(invalid("rigs".to_owned()))?;
+        }
+        if self.reflections.len() > reflections::MAX_PROBES {
+            let problem = format!(
+                "{} probes is more than the {} a zone may hold: the renderer keeps a zone's probes in one array \
+                 of the device floor's 256 layers, six to a probe, so place fewer",
+                self.reflections.len(),
+                reflections::MAX_PROBES,
+            );
+            return Err(ZoneError::invalid("reflections", problem));
+        }
+        check_names("reflections", self.reflections.iter().map(|probe| probe.name.as_str()))?;
+        for (index, probe) in self.reflections.iter().enumerate() {
+            probe.check().map_err(|(field, problem)| {
+                ZoneError::invalid(format!("reflections[{index}].{field}"), problem)
+            })?;
         }
         if let Some(wind) = &self.wind {
             wind.check().map_err(invalid("wind".to_owned()))?;
@@ -707,6 +732,14 @@ impl ZoneDocument {
             return Err(ZoneError::invalid("navigation", problem));
         }
         simulation.navigation = geometry.navigation;
+        if geometry.reflections.is_some() == self.reflections.is_empty() {
+            let problem = format!(
+                "the document places {} probes and the cook baked {}",
+                self.reflections.len(),
+                if geometry.reflections.is_some() { "an asset of them" } else { "none" },
+            );
+            return Err(ZoneError::invalid("reflections", problem));
+        }
         if geometry.exit_packs.len() != self.exits.len() {
             let problem = format!("{} packs for {} exits", geometry.exit_packs.len(), self.exits.len());
             return Err(ZoneError::invalid("exits", problem));
@@ -744,6 +777,7 @@ impl ZoneDocument {
             instances: Vec::with_capacity(self.instances.len()),
             lights: Vec::with_capacity(self.lights.len()),
             probes: self.probes,
+            reflections: geometry.reflections,
             day: geometry.day,
             rigs: geometry.rigs,
             splines: self.cooked_splines()?,
@@ -1301,5 +1335,67 @@ mod tests {
         document.navigation = Some(ZoneNavigation { min: [-8.0; 2], max: [8.0; 2], seeds: vec![[0.0; 3]] });
         assert!(document.cook(ZoneGeometry::default()).is_err(), "asked for one and none came");
         assert_eq!(document.cook(with).expect("cooks").simulation.navigation, Some(id));
+    }
+
+    /// The `reflections` module's example, and what a document can get wrong about its probes: each names
+    /// its field, more than [`reflections::MAX_PROBES`] says why, and the cooked zone names the asset baked
+    /// of them exactly when the document places some.
+    #[test]
+    fn reflection_probes_are_checked_and_named_by_the_cooked_zone() {
+        let probe = |name: &str, x: f32| {
+            format!(
+                "(name: \"{name}\", position: ({x}, 1.6, 0.0), parallax: (min: ({}, 0.0, -4.0), max: ({}, 4.0, 4.0)))",
+                x - 4.0,
+                x + 4.0
+            )
+        };
+        let document = parse(&format!("reflections: [{}, {}]", probe("hall", -24.0), probe("yard", 8.0)))
+            .expect("a good document");
+        assert_eq!(document.reflections[1].parallax.max, [12.0, 4.0, 4.0]);
+        let text = sapphire_serialize::to_ron(&document).expect("write");
+        assert_eq!(ZoneDocument::from_ron(&text).expect("read"), document);
+        assert!(
+            !sapphire_serialize::to_ron(&full()).expect("write").contains("reflections"),
+            "left out with none"
+        );
+
+        type Tamper = fn(&mut ZoneDocument);
+        let cases: [(&str, Tamper); 6] = [
+            ("reflections[1].name", |d| d.reflections[1].name = "hall".to_owned()),
+            ("reflections[0].name", |d| d.reflections[0].name.clear()),
+            ("reflections[0].position", |d| d.reflections[0].position[1] = f32::NAN),
+            ("reflections[1].parallax", |d| d.reflections[1].position[0] = 20.0),
+            ("reflections[1].parallax", |d| d.reflections[1].parallax.max[1] = 0.05),
+            ("reflections[0].parallax.min", |d| d.reflections[0].parallax.min[2] = f32::NEG_INFINITY),
+        ];
+        for (field, tamper) in cases {
+            let mut tampered = document.clone();
+            tamper(&mut tampered);
+            let message = tampered.check().expect_err(field).to_string();
+            assert!(message.contains(&format!("`{field}`")), "`{message}` must name `{field}`");
+        }
+        let mut crowded = document.clone();
+        crowded.reflections = (0..=reflections::MAX_PROBES)
+            .map(|index| ReflectionProbe {
+                name: format!("probe_{index}"),
+                ..document.reflections[0].clone()
+            })
+            .collect();
+        let message = crowded.check().expect_err("43 probes").to_string();
+        assert!(
+            message.contains("`reflections`") && message.contains("43 probes") && message.contains("42"),
+            "{message}"
+        );
+        crowded.reflections.pop();
+        crowded.check().expect("42 probes are a zone's most");
+
+        let id: AssetId = PREFAB.parse().expect("an ID");
+        let baked = ZoneGeometry { reflections: Some(id), ..ZoneGeometry::default() };
+        assert!(document.cook(ZoneGeometry::default()).is_err(), "placed some and none were baked");
+        assert_eq!(document.cook(baked.clone()).expect("cooks").presentation.reflections, Some(id));
+        let mut none = document;
+        none.reflections.clear();
+        assert!(none.cook(baked).is_err(), "baked some nobody placed");
+        assert_eq!(none.cook(ZoneGeometry::default()).expect("cooks").presentation.reflections, None);
     }
 }

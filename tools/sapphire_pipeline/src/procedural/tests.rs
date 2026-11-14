@@ -240,7 +240,7 @@ fn each_map_cooks_as_its_class() {
         (SurfaceMap::Mask, TextureFormat::Bc7RgbaUnorm, false),
     ];
     for (map, desktop, srgb) in expected {
-        let settings = ProceduralSettings { map };
+        let settings = ProceduralSettings::from(map);
         let cooked = cook_source(BRICK.as_bytes(), &settings, Cook::Desktop).unwrap();
         let texture = Texture::from_ktx2(&cooked).unwrap();
         assert_eq!(texture.desc.format, desktop, "{map:?} on desktop");
@@ -260,7 +260,7 @@ fn write_set(root: &Path, name: &str, document: &str) -> [AssetId; 3] {
         let path = root.join(format!("{name}.{}.ptex.ron", format!("{map:?}").to_ascii_lowercase()));
         fs::write(&path, document).unwrap();
         let id = TEST_ROOT.sub_asset(&format!("{name}/{map:?}"));
-        let meta = AssetMeta::new(id, ImportSettings::ProceduralTexture(ProceduralSettings { map }));
+        let meta = AssetMeta::new(id, ImportSettings::ProceduralTexture(ProceduralSettings::from(map)));
         fs::write(sidecar_path(&path), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
         id
     })
@@ -312,7 +312,7 @@ fn an_environment_material_reads_a_procedural_set() {
         for (map, surface) in
             [("color", SurfaceMap::Color), ("normal", SurfaceMap::Normal), ("mask", SurfaceMap::Mask)]
         {
-            let settings = ProceduralSettings { map: surface };
+            let settings = ProceduralSettings::from(surface);
             assert_eq!(planned_levels(large.as_bytes(), &settings, cook), 2, "{map} on {cook:?}");
             let tail_file = fs::read(out.join(format!("brick.{map}.ktx2"))).unwrap();
             let tail = TextureTail::from_ktx2(&tail_file).unwrap();
@@ -331,4 +331,28 @@ fn an_environment_material_reads_a_procedural_set() {
     fs::write(&path, sapphire_serialize::to_ron(&swapped).unwrap()).unwrap();
     let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
     assert!(cook_dir(&source, &dir.path().join("swapped"), &options).is_err());
+}
+
+/// A procedural map takes a texture's cap by the same field (M5 M1): one document cooks to its whole
+/// size on desktop and to the levels under its cap on mobile, the uncapped cook's levels byte for byte.
+#[test]
+fn a_map_is_capped_per_cook_as_a_texture_is() {
+    let large = BRICK.replace("size: 32", "size: 256");
+    let max_size = MaxSize { mobile: std::num::NonZeroU32::new(64), ..MaxSize::NONE };
+    for map in SurfaceMap::ALL {
+        let whole = ProceduralSettings::from(map);
+        let capped = ProceduralSettings { map, max_size };
+        let desktop = cook_chain(large.as_bytes(), &capped, Cook::Desktop).unwrap();
+        assert_eq!(desktop, cook_chain(large.as_bytes(), &whole, Cook::Desktop).unwrap(), "{map:?}");
+        assert_eq!(cooked_size(large.as_bytes(), &capped, Cook::Desktop).unwrap(), (256, 256));
+
+        let uncapped = cook_chain(large.as_bytes(), &whole, Cook::Mobile).unwrap();
+        let mobile = cook_chain(large.as_bytes(), &capped, Cook::Mobile).unwrap();
+        assert_eq!((mobile.desc.width, mobile.desc.height), (64, 64), "{map:?}");
+        assert!(mobile.levels == uncapped.levels[2..], "{map:?}: the uncapped cook's levels under the cap");
+        assert_eq!(cooked_size(large.as_bytes(), &capped, Cook::Mobile).unwrap(), (64, 64));
+        // 64 is under the tail's 128, so the capped map stays whole.
+        assert_eq!(planned_levels(large.as_bytes(), &capped, Cook::Mobile), 0);
+        assert_eq!(planned_levels(large.as_bytes(), &capped, Cook::Desktop), 1);
+    }
 }

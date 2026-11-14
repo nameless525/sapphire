@@ -33,6 +33,9 @@
 //!   a game.
 //! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
+//! - Reflection probes ([`reflections`], `.sreflect`, M5 L2): a zone's local cubes per time-of-day key,
+//!   the scene without the sky and how much of the sky each direction sees, which the renderer blends,
+//!   adds the live sky to and prefilters.
 //! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their
 //!   format and checks are `sapphire_colliders`', which has no reason to know about packs.
 //! - Where zones go (`.szone`, M3 W1): [`AssetKind::Zone`] packs and loads them and says what they
@@ -128,6 +131,7 @@ pub mod mouth;
 pub mod pack;
 mod pipeline_key;
 pub mod probes;
+pub mod reflections;
 pub mod rig;
 pub mod score;
 mod server;

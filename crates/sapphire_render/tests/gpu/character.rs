@@ -597,7 +597,7 @@ fn material_ids_are_read_unfiltered_from_level_zero() {
     use sapphire_pipeline::texture::{self, IlmSettings, TextureClass, TextureSettings};
     let pixels: Vec<[f32; 4]> = (0..64 * 64).map(|i| alternating(i % 64, 0)).collect();
     let image = SourceImage::new(64, 64, ChannelLayout::Rgba, pixels).expect("image");
-    let settings = TextureSettings { class: TextureClass::Ilm(IlmSettings { mips: true }) };
+    let settings = TextureSettings::from(TextureClass::Ilm(IlmSettings { mips: true }));
     for cook in [Cook::Desktop, Cook::Mobile] {
         let cooked = texture::cook(&image, &settings, cook).expect("cook");
         let cooked = cooked.texture();

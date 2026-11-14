@@ -10,7 +10,7 @@ use sapphire_time::SUBTICKS_PER_TICK;
 use sapphire_world::light_rig::CharacterLightRig;
 
 use super::{ClipTable, GraphDriver};
-use crate::animate::SpringView;
+use crate::animate::{SpringKey, SpringView};
 use crate::scene::Figure;
 use crate::{RenderPose, RenderTransform};
 /// A render consumer of an authoritative simulation body.
@@ -145,6 +145,7 @@ impl FixedBodyRenderer {
         figure: &mut Figure,
         rig: &mut CharacterLightRig,
         view: &SpringView,
+        key: SpringKey,
     ) -> (bool, SpringWork, Duration) {
         assert!(self.ready, "presenting requires a body read");
         let span = self.sample.span().expect("read a stamped body");
@@ -158,7 +159,7 @@ impl FixedBodyRenderer {
         }
         self.last_generation = Some(span.after.generation);
         let root = self.sample.root().affine();
-        let active = driver.springs_run(view, &RenderTransform(Mat4::from(root)), figure);
+        let active = driver.springs_run(view, &RenderTransform(Mat4::from(root)), figure, key);
         let retained = self.impact_release.map_or(0.0, |(retained, _)| retained);
         let key = self.sample.pose_key().map(|key| (key, retained));
         let pose_moved = key != self.last_pose;
@@ -176,7 +177,12 @@ impl FixedBodyRenderer {
             pose_moved,
             active,
         };
-        let (springs, elapsed) = driver.run_springs(&frame, self.sample.grounded(), figure);
+        let (springs, elapsed) = driver.run_springs(
+            &frame,
+            self.sample.grounded(),
+            figure,
+            view.floor().then(|| Mat4::from(root)),
+        );
         let pose = driver.player.pose();
         assert!(
             self.sample.protected_matches_with_morph(pose, self.cosmetic_morph),

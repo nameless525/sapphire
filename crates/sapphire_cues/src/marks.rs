@@ -33,12 +33,14 @@ pub const NAMED_PHASE: &str = "named_phase";
 /// or arm, and close enough to read as its.
 pub const CROWN_CLEARANCE: f32 = 0.45;
 
-/// Where a fighter stands, for a cue's effects: its feet, and the top of its body.
+/// Where a fighter stands, for a cue's effects: its feet, the top of its body, and which way it faces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stand {
     pub feet: Vec3,
     /// Over its feet, as high as its highest hurtbox reaches as it stands.
     pub crown: Vec3,
+    /// Radians about +Y from facing +Z, as the simulation turns it (M5 L5, `EffectPlace::Facing`).
+    pub yaw: f32,
 }
 
 impl Stand {
@@ -54,13 +56,13 @@ impl Stand {
             .iter()
             .map(|hurtbox| hurtbox.local.translation[1] + reach(hurtbox.shape))
             .fold(0.0, f32::max);
-        Some(Self { feet: view.position, crown: view.position + Vec3::Y * top })
+        Some(Self { feet: view.position, crown: view.position + Vec3::Y * top, yaw: view.yaw })
     }
 
-    /// The same stand moved to `feet`, its crown as high over them.
+    /// The same stand moved to `feet`, its crown as high over them, facing as it did.
     #[must_use]
     pub fn moved_to(self, feet: Vec3) -> Self {
-        Self { feet, crown: feet + (self.crown - self.feet) }
+        Self { feet, crown: feet + (self.crown - self.feet), yaw: self.yaw }
     }
 }
 

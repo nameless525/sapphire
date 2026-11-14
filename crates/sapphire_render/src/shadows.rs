@@ -19,11 +19,11 @@
 //! | | casts into | receives |
 //! |---|---|---|
 //! | environment | the cascades | the cascades, every character's own shadow |
-//! | character | its own shadow only (a map on desktop, a capsule on phones) | the cascades only |
+//! | character | its own shadow only (a map on desktop, a capsule on phones) | the cascades, and a few other characters' own shadows (M5 L12) |
 //!
 //! So a character never shadows itself, C2's contract for `cast_shadow`: the cascades hold
-//! environment casters alone, and a character's own shadow is received only by the environment.
-//! Characters don't shadow each other either (optional in the contract; see "Later milestones").
+//! environment casters alone, and a character's own shadow is received by the environment and by
+//! the other characters, never by its own instances ("Characters shadowing each other").
 //!
 //! - **Character bodies** ([`CharacterBody`](crate::CharacterBody)) group a character's
 //!   instances: instances whose entries have equal bodies are one character, which draws one
@@ -58,11 +58,23 @@
 //!   records, and the cascades a frame planned without that mark are drawn again with the
 //!   next.
 //! - **Casters** are the depth-writing surfaces of environment instances (opaque and
-//!   alpha-tested, drawn solid; transparent ones cast nothing, as in the prepasses), culled per
+//!   alpha-tested, drawn solid but for the anime character family's, below; transparent ones cast
+//!   nothing, as in the prepasses), culled per
 //!   cascade by their bounding spheres; skinned and morphed environment instances go into every
 //!   cascade, since the cascades don't read their posed bounds yet. Outline hulls cast nothing.
 //!   Casters are drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
 //!   (`CASTER_BIAS`).
+//! - **Masked casters** (M5 L12): the alpha-tested anime character variants cast through a
+//!   pipeline of their own (`prepass.wgsl`'s, built with the format's first of them while shadows
+//!   are on) that cuts them as the main pass does, into the cascades and the character atlas alike:
+//!   a hair card casts its cutout rather than its quad, a dissolving character's cut part casts
+//!   nothing, and a see-through region casts its share through the dither, which holds still in a
+//!   shadow view and which the receivers' tent filters into a lighter shadow. The proximity fade
+//!   leaves a shadow whole, and a character faded or dissolved all the way casts nothing (the
+//!   `characters` module's groups). It costs a texture read in the depth pass only for those
+//!   variants: opaque casters keep the shared pipelines, with no fragment stage. A fading or
+//!   dissolving character's opaque draws, which the draw list moves to those variants, go through
+//!   it too, and so keep the dissolve's cut.
 //! - **Foliage** (M1 W6) casts through casters of its own (the [`foliage`](crate::foliage)
 //!   module's, built with its surfaces): displaced by the wind as the main pass draws it, so
 //!   shadows sway with the leaves, and its alpha-tested cards cut out by their base color's
@@ -118,7 +130,48 @@
 //! - **Phones,** and characters past the desktop's maps: the body's capsule casts a soft shadow
 //!   analytically (the closest approach of the light's ray from the receiver to the capsule's
 //!   axis, against a radius that softens with distance). No map, no pass. At most
-//!   [`MAX_CAPSULES`].
+//!   [`MAX_CAPSULES`]. A crowd's ambient characters ([`ShadowRole::Ambient`](crate::ShadowRole))
+//!   cast their capsules on desktop too, leaving the maps to the named ones.
+//!
+//! # Characters shadowing each other (M5 L12)
+//!
+//! A named character receives the own shadows of up to [`ShadowSettings::others`] other characters
+//! (4 on Desktop-High, 2 on the other tiers; at most [`MAX_OTHERS`]): their tiles of the atlas
+//! where they draw one, their capsules otherwise, which on phones is always. No pass, map or
+//! binding is added: the receiver samples the tiles and capsules every frame already has.
+//!
+//! - **Who:** the planner chooses for each named character within the shadow distance, after the
+//!   maps and capsules are given out (`plan::ShadowPlan::receive`). A caster is every other
+//!   character casting a map or a capsule whose shadow can fall on the receiver: in light space
+//!   their spheres' discs overlap, the caster isn't wholly behind the receiver and the receiver
+//!   isn't wholly past the caster's reach (40 m for a map, 8 m for a capsule). Each candidate's
+//!   weight grows from 0 to 1 over a quarter metre past each of those edges, where its shadow
+//!   can't yet touch the receiver, so its fading never shows.
+//! - **The pick, and why it never pops:** candidates rank by their distance from the receiver
+//!   along the light, a weight below 1 pushing them far back, and the nearest take the slots. The
+//!   last one chosen yields its weight to the first left out as their ranks come within half a
+//!   metre, so two casters trade a slot only at weight 0, and a caster entering or leaving the set
+//!   fades. Nothing is kept between frames: the weights follow the characters' positions
+//!   continuously, frame after frame (a CPU test walks casters across every edge and holds each
+//!   weight's step). A character changing between a map and its capsule (the ninth nearest the
+//!   camera on desktop) still switches shadows at once, as the environment sees it do.
+//! - **Where it's read:** each character's entry carries its slots (`GpuReceived`: a caster index
+//!   and a weight each, 32 bytes, in R4's `CharacterShadow` after the face pass's visibility, so
+//!   `drive` stays last), which the `characters` module takes from the plan before it uploads
+//!   them. The anime character shader multiplies the cascades' visibility by each slot's map or
+//!   capsule lookup (the environment's own `character_map_lookup` and `capsule_lookup`, the same
+//!   tent and bias), taken by its weight; a character with no slot taken reads exactly 1, so one
+//!   alone draws as before.
+//! - **How it looks:** the visibility goes into the light split as occlusion, as the cascades' does,
+//!   so another character's shadow lands in the receiver's authored shadow tones and shade hue: no
+//!   grey multiply. Its tiles are the caster's own, which never hold the receiver, so there's no
+//!   acne, and they're texel-snapped under the quantized light, so their edges hold still as either
+//!   character or the camera moves. Faces and eyes take it per pixel, multiplied into the face
+//!   pass's environment shadow: the light split then takes the darker of the face map's shadow and
+//!   the cast one, and always-lit eyes and brows go into it with the face.
+//! - **Crowds:** an ambient character ([`ShadowRole::Ambient`](crate::ShadowRole)) receives none and
+//!   casts only its capsule, so dozens of them cost the named ones a few capsule slots and each
+//!   other nothing.
 //!
 //! # Passes and bindings
 //!
@@ -141,9 +194,9 @@
 //!
 //! # Later milestones
 //!
-//! - **Alpha-tested casters cut out** for the other families (hair cards), as foliage's do (W6).
-//! - **Characters shadowing each other** through their maps, which the contract allows; and
-//!   skinned environment instances culled per cascade by their posed bounds (the `bounds`
+//! - **Alpha-tested casters cut out** for the environment family, as foliage's and the anime
+//!   character family's do (W6, M5 L12).
+//! - **Skinned environment instances culled per cascade** by their posed bounds (the `bounds`
 //!   module's, which only the character maps, outlines and light lists read so far).
 //! - **A static far term:** NTE's camera-anchored tiled cache or a baked shadow per time-of-day
 //!   phase past the cascades (research notes, world lighting §4), and the cascades' distance and
@@ -172,14 +225,16 @@ use sapphire_rhi::wgpu;
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
-use crate::characters::{CharacterTable, GpuCharacter};
+use crate::characters::{CharacterTable, GpuCharacter, GpuReceived};
+use crate::counts::{Counted, PassCounters};
 use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
 use crate::mesh_pool::MeshRecord;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, Layouts, MeshPass, Part, Pipelines, Shading, SurfaceVariant, format_index,
+    Coverage, DEPTH_FORMAT, Layouts, MeshPass, MeshPipelines, Part, Pipelines, Shading, SurfaceVariant,
+    format_index,
 };
 use crate::renderer::pass_weight;
 use crate::scene::{DrawList, InstanceSlots};
@@ -195,6 +250,9 @@ pub const MAX_CASCADES: usize = 4;
 pub const MAX_CHARACTER_MAPS: usize = 8;
 /// The most characters that cast a capsule shadow in a frame, nearest the camera first.
 pub const MAX_CAPSULES: usize = 16;
+/// The most other characters' shadows a character receives (M5 L12): the slots of its entry's
+/// `received` ([`ShadowSettings::others`] per tier).
+pub const MAX_OTHERS: usize = 4;
 
 /// The character atlas's tiles across and down.
 const ATLAS_COLUMNS: u32 = 4;
@@ -253,6 +311,12 @@ pub struct ShadowSettings {
     /// How receivers filter the maps. A table without it reads the desktop's.
     #[serde(default)]
     pub filter: ShadowFilter,
+    /// The most other characters' shadows a named character receives (M5 L12), 0..=[`MAX_OTHERS`]:
+    /// their maps where they draw one, else their capsules, those that can fall on it nearest
+    /// along the light first. 0 receives none: characters take the cascades alone, as before. A
+    /// table without it receives none.
+    #[serde(default)]
+    pub others: u32,
 }
 
 /// How receivers filter a shadow map: a tent over `N × N` texels (Castaño 2013), smooth and
@@ -288,6 +352,7 @@ impl Default for ShadowSettings {
             character_shadow: true,
             character_resolution: Self::default_character_resolution(),
             filter: ShadowFilter::Tent5,
+            others: MAX_OTHERS as u32,
         }
     }
 }
@@ -318,6 +383,9 @@ impl ShadowSettings {
         let texels = self.character_resolution;
         if !(texels.is_power_of_two() && (128..=4096).contains(&texels)) {
             return Err(("shadows.character_resolution", "must be a power of two in 128..=4096"));
+        }
+        if self.others > MAX_OTHERS as u32 {
+            return Err(("shadows.others", "must be within 0..=4"));
         }
         Ok(())
     }
@@ -370,6 +438,9 @@ pub struct ShadowStats {
     /// Characters casting nothing of their own this frame: past the shadow distance, or past
     /// the maps and capsules there are.
     pub uncast_characters: u32,
+    /// Other characters' shadows the characters receive this frame (M5 L12): receiver and caster
+    /// pairs, at most [`ShadowSettings::others`] a receiver.
+    pub received: u32,
     /// Draws in this frame's shadow passes: every cascade drawn and every character map.
     pub caster_draws: u32,
     /// Environment draws culled from the cascades drawn, one for each cascade they missed.
@@ -795,6 +866,13 @@ impl Shadows {
         self.plan.not_drawn();
     }
 
+    /// Per body group of the last frame with a view ([`CharacterTable::bodies`]), the other
+    /// characters' shadows it receives (M5 L12), for the character entries; none while shadows are
+    /// off.
+    pub(crate) fn received(&self) -> &[GpuReceived] {
+        &self.plan.received
+    }
+
     /// Counters from the last frame with a view.
     pub(crate) fn stats(&self) -> ShadowStats {
         self.plan.stats
@@ -842,12 +920,14 @@ impl Shadows {
     /// cascade drawn, the character maps and the face pass. `draws` are the frame's mesh draws;
     /// the shadows' views are `first` views into the view buffer (`stride` bytes apart), bound
     /// through `view_group`; `casters` holds the scene groups that bind the instances and
-    /// foliage's casters.
+    /// foliage's casters. Each cascade's draws count in its own of `counts`, and every character
+    /// map's together.
     #[expect(clippy::too_many_arguments, reason = "the frame's shared bindings, all borrowed for the graph")]
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         draws: MeshDraws<'f>,
+        counts: &'f PassCounters,
         view_group: &'f wgpu::BindGroup,
         casters: CasterBindings<'f>,
         first: u32,
@@ -866,6 +946,7 @@ impl Shadows {
             }
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
+            let draws = MeshDraws { counter: counts.get(Counted::Cascade(index)), ..draws };
             graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
@@ -879,6 +960,7 @@ impl Shadows {
         }
         if let Some(settings) = self.settings.filter(|_| !self.plan.maps.is_empty()) {
             let (tile, maps) = (settings.character_resolution, self.plan.maps.len());
+            let draws = MeshDraws { counter: counts.get(Counted::CharacterMaps), ..draws };
             graph.add_pass(CHARACTER_PASS).side_effect().weight(pass_weight::CHARACTERS).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let atlas = &self.textures.atlas;
@@ -947,7 +1029,8 @@ pub(crate) struct CasterBindings<'f> {
 }
 
 /// Draws the depth-writing surfaces of the instances `include` takes, by slot: static meshes per
-/// format, then skinned and morphed ones, through the shared caster pipelines, then foliage
+/// format, then skinned and morphed ones, through the shared caster pipelines, the alpha-tested
+/// anime character variants through the masked caster where it's built (M5 L12), then foliage
 /// through its own.
 fn draw_casters(
     pass: &mut wgpu::RenderPass<'_>,
@@ -957,23 +1040,51 @@ fn draw_casters(
     include: impl Fn(u32) -> bool + Copy,
 ) {
     pass.set_bind_group(2, bindings.scene_group, &[]);
+    let masked_caster = |format| bindings.mesh.mesh(format).and_then(MeshPipelines::masked_caster);
+    // The variants the shared casters draw in `format`: all but those the masked caster cuts.
+    let shared = |format, variant: &SurfaceVariant| {
+        masked_caster(format).is_none() || !SurfaceVariant::CHARACTER_ALPHA_TEST.contains(variant)
+    };
     for format in PositionFormat::ALL {
         let Some(pipeline) = &pipelines.casters[format_index(format)] else { continue };
-        if !SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| draws.has_static(format, variant)) {
-            continue;
+        let variants = SurfaceVariant::SHARED_DEPTH.iter().filter(|variant| shared(format, variant));
+        if variants.clone().any(|&variant| draws.has_static(format, variant)) {
+            pass.set_pipeline(pipeline);
+            for &variant in variants {
+                draws.draw_static_where(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces, include);
+            }
         }
-        pass.set_pipeline(pipeline);
-        for variant in SurfaceVariant::SHARED_DEPTH {
-            draws.draw_static_where(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces, include);
+        let Some(masked) = masked_caster(format) else { continue };
+        if SurfaceVariant::CHARACTER_ALPHA_TEST.iter().any(|&variant| draws.has_static(format, variant)) {
+            pass.set_pipeline(masked);
+            for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
+                draws.draw_static_where(
+                    pass,
+                    MeshPass::MaskedShadow,
+                    format,
+                    variant,
+                    DrawSet::Surfaces,
+                    include,
+                );
+            }
         }
     }
-    let float = &pipelines.casters[format_index(PositionFormat::Float32)];
-    if let Some(pipeline) = float
-        && SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| draws.has_deformed(variant))
+    let float = PositionFormat::Float32;
+    let variants = SurfaceVariant::SHARED_DEPTH.iter().filter(|variant| shared(float, variant));
+    if let Some(pipeline) = &pipelines.casters[format_index(float)]
+        && variants.clone().any(|&variant| draws.has_deformed(variant))
     {
         pass.set_pipeline(pipeline);
-        for variant in SurfaceVariant::SHARED_DEPTH {
+        for &variant in variants {
             draws.draw_deformed_where(pass, MeshPass::Shadow, variant, DrawSet::Surfaces, include);
+        }
+    }
+    if let Some(masked) = masked_caster(float)
+        && SurfaceVariant::CHARACTER_ALPHA_TEST.iter().any(|&variant| draws.has_deformed(variant))
+    {
+        pass.set_pipeline(masked);
+        for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
+            draws.draw_deformed_where(pass, MeshPass::MaskedShadow, variant, DrawSet::Surfaces, include);
         }
     }
     // Foliage, static meshes only, through its casters per coverage.

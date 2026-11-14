@@ -97,7 +97,7 @@ impl TextureKind {
                 TextureClass::Sdf(_) => Self::Sdf,
                 TextureClass::Hdr(_) => Self::Hdr,
             },
-            ImportSettings::CharacterMap(settings) => match settings.kind() {
+            ImportSettings::CharacterMap(settings, _) => match settings.kind() {
                 MapKind::FaceSdf => Self::Sdf,
                 MapKind::Ramp => Self::Ramp,
                 MapKind::Ilm => Self::Ilm,
@@ -306,7 +306,7 @@ fn texture<'a>(
 mod tests {
     use super::*;
     use crate::character_maps::MapKind;
-    use crate::texture::{ColorSettings, TextureSettings};
+    use crate::texture::{ColorSettings, MaxSize, TextureSettings};
 
     #[test]
     fn material_sources_cook_beside_their_textures() {
@@ -331,13 +331,15 @@ mod tests {
 
     #[test]
     fn character_maps_count_as_the_textures_they_cook_to() {
-        let kind = |kind: MapKind| TextureKind::of(&ImportSettings::CharacterMap(kind.default_settings()));
+        let kind = |kind: MapKind| {
+            TextureKind::of(&ImportSettings::CharacterMap(kind.default_settings(), MaxSize::NONE))
+        };
         assert_eq!(kind(MapKind::FaceSdf), Some(TextureKind::Sdf));
         assert_eq!(kind(MapKind::Ramp), Some(TextureKind::Ramp));
         assert_eq!(kind(MapKind::Ilm), Some(TextureKind::Ilm));
         assert_eq!(kind(MapKind::LayerMask), Some(TextureKind::Mask), "a body's layer mask (M1 C7)");
         let color =
-            ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) });
+            ImportSettings::Texture(TextureSettings::from(TextureClass::Color(ColorSettings::default())));
         assert_eq!(TextureKind::of(&color), Some(TextureKind::Color));
         assert_eq!(TextureKind::of(&ImportSettings::Material(MaterialSettings::default())), None);
     }
@@ -345,7 +347,7 @@ mod tests {
     #[test]
     fn procedural_maps_count_as_the_textures_they_cook_to() {
         use crate::procedural::ProceduralSettings;
-        let kind = |map| TextureKind::of(&ImportSettings::ProceduralTexture(ProceduralSettings { map }));
+        let kind = |map| TextureKind::of(&ImportSettings::ProceduralTexture(ProceduralSettings::from(map)));
         assert_eq!(kind(SurfaceMap::Color), Some(TextureKind::Color));
         assert_eq!(kind(SurfaceMap::Normal), Some(TextureKind::Normal));
         assert_eq!(kind(SurfaceMap::Mask), Some(TextureKind::Mask));

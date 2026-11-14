@@ -41,10 +41,16 @@ struct Sample {
     pair: (f32, f32),
     #[serde(default)]
     shape: Form,
+    #[serde(default = "two_marks")]
+    marks: Vec<u32>,
 }
 
 fn half() -> f32 {
     0.5
+}
+
+fn two_marks() -> Vec<u32> {
+    vec![1, 2]
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
@@ -327,6 +333,22 @@ fn a_list_grows_and_shrinks_in_its_own_layout() {
     let mut document = sample(LAID_OUT);
     assert!(matches!(document.insert("add", &list, 0, &3_u32), Err(Refused::WrongType { .. })));
     assert_eq!(document.text(), LAID_OUT);
+}
+
+/// A list the file leaves out whose default holds entries: an entry in or out writes what the list then
+/// holds, the default's entries too, and undo takes the field away again.
+#[test]
+fn a_list_left_out_keeps_its_defaults_entries() {
+    let marks = path("marks");
+    let mut document = sample("(count: 1)");
+    assert_eq!(document.insert("add", &marks, 2, &7_u32), Ok(Outcome::Changed));
+    assert_eq!(document.text(), "(count: 1, marks: [1, 2, 7])");
+    assert!(document.undo());
+    assert_eq!(document.text(), "(count: 1)");
+    assert_eq!(document.remove("off", &path("marks[0]")), Ok(Outcome::Changed));
+    assert_eq!(document.text(), "(count: 1, marks: [2])");
+    assert!(document.undo());
+    assert_eq!(document.text(), "(count: 1)");
 }
 
 #[test]

@@ -166,6 +166,7 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Texture
         | AssetKind::TextureLevel
         | AssetKind::ProbeGrid
+        | AssetKind::ReflectionProbes
         | AssetKind::Font => Codec::Zstd,
         AssetKind::Material
         | AssetKind::Rig

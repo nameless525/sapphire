@@ -31,7 +31,12 @@
 //! **A walk through a zone** (M3 Z1) is a fight like any other here: `--arena --replay` of a replay whose
 //! scenario walks one, such as `walk-the-ward`, or that goes between zones, such as `zone-trip`. §3.2's script
 //! and streaming rows read as they do in a fight, and say `not exercised` where nothing gave them anything to
-//! time; [`zone`] adds memory across the walk and each trip's steps.
+//! time; [`zone`] adds memory across the walk and each trip's steps. So is a zone stage's walk with no fight in
+//! it (`--zone <stem> --zone-walk <rail>`, M5 B4): each phase walks the rail from its start, so `first` is the
+//! tour cold and `cpu` and `gpu` the same tour again, and a row's worst frame says how far along it fell.
+//!
+//! [`mod@counts`] logs what each frame submitted, skinned, lit and loaded beside the times, and its frames split by
+//! the kind of core they ran on (M5 B4).
 //!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
 //! two tiers. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
@@ -44,7 +49,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc::{self, AllocScope};
 use sapphire_ecs::prelude::WorldClock;
-use sapphire_platform::AppInitError;
+use sapphire_platform::{AppInitError, CoreKind};
 use sapphire_render::graph::GpuTimings;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
@@ -62,6 +67,7 @@ use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
 
+mod counts;
 mod zone;
 
 /// What a phase measures.
@@ -222,6 +228,12 @@ struct Traced {
     /// Post work of this submitted frame, used when its delayed timestamps arrive.
     bloom_chain: bool,
     bloom_levels: u32,
+    /// How far a zone stage's walk had gone along its rail, in metres, if there is one.
+    walked: Option<f32>,
+    /// The kind of core the main thread was on as the frame's CPU work ended, where the OS says.
+    core: Option<CoreKind>,
+    /// What the frame submitted, skinned, lit and loaded.
+    counted: counts::Counted,
 }
 
 /// A number the bench tracks per frame, and the budget the spec gives it on each tier.
@@ -312,6 +324,7 @@ pub(crate) fn frame_length(rate: u32) -> Duration {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Spread {
     p50: Duration,
+    p95: Duration,
     p99: Duration,
     worst: Duration,
     worst_tick: u64,
@@ -323,7 +336,7 @@ fn spread(values: impl Iterator<Item = (Duration, u64)>) -> Option<Spread> {
     sorted.sort_unstable();
     let (worst, worst_tick) = *sorted.last()?;
     let at = |percent: usize| sorted[(sorted.len() - 1) * percent / 100].0;
-    Some(Spread { p50: at(50), p99: at(99), worst, worst_tick })
+    Some(Spread { p50: at(50), p95: at(95), p99: at(99), worst, worst_tick })
 }
 
 /// Whether `row` counts this frame in `phase`: a frame that started a fight over is reported on its own,
@@ -339,7 +352,8 @@ fn counts(row: &Row, frame: &Traced, phase: Phase) -> bool {
 struct Run<'a> {
     stage: &'a mut Stage,
     view: &'a wgpu::TextureView,
-    option: &'a CombatOption,
+    /// The fight, or `None` for a zone stage's walk.
+    option: Option<&'a CombatOption>,
     audio: Option<OfflineAudio>,
     steps: u32,
     bloom_levels: u32,
@@ -351,6 +365,8 @@ struct Run<'a> {
     first_traced: usize,
     /// The newest graph frame whose timings came back.
     last_timed: u64,
+    /// The asset server's counters after the last frame, for what the next one admitted.
+    assets: sapphire_assets::AssetStats,
 }
 
 /// The render and compute pipelines the stage's device has: zero where its backend can't say.
@@ -360,11 +376,11 @@ fn pipelines(stage: &Stage) -> usize {
     })
 }
 
-/// Plays and measures the fight the stage holds. See the [module docs](self). `frames` is the least any
-/// phase measures, and `startup` what loading took.
+/// Plays and measures the fight the stage holds, or walks its zone stage's rail (`option` `None`). See the
+/// [module docs](self). `frames` is the least any phase measures, and `startup` what loading took.
 pub(crate) fn run(
     stage: &mut Stage,
-    option: &CombatOption,
+    option: Option<&CombatOption>,
     options: &Options,
     (frames, width, height): (u32, u32, u32),
     startup: Duration,
@@ -383,6 +399,7 @@ pub(crate) fn run(
     // A fight's length, for what to reserve. A fight with no file measures just `frames`.
     let length = stage.show.fight.combat.as_ref().and_then(Combat::ticks_left).unwrap_or(0);
     let per_phase = u64::from(frames).max(length / u64::from(steps) + 1) as usize;
+    let assets = stage.content.stats();
     let mut run = Run {
         stage,
         view: &view,
@@ -395,6 +412,7 @@ pub(crate) fn run(
         first_graph_frame: 1,
         first_traced: 0,
         last_timed: 0,
+        assets,
     };
     if run.draw_every.is_some() {
         run.phase(Phase::First, frames)?;
@@ -489,7 +507,7 @@ impl Run<'_> {
         let stage = &mut *self.stage;
         stage.laps = FrameLaps::default();
         // Checking the last one's checksums and logging is the bench's, not a frame's.
-        if start_over && matches!(self.option, CombatOption::Replay { .. }) {
+        if start_over && matches!(self.option, Some(CombatOption::Replay { .. })) {
             stage.show.fight.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)?;
         }
         let cues_before =
@@ -503,15 +521,17 @@ impl Run<'_> {
         let mut restart = Duration::ZERO;
         if start_over {
             match self.option {
-                CombatOption::Replay { .. } => {
-                    let combat = stage.show.fight.prepare_stock_combat(self.option, &mut stage.content)?;
+                Some(option @ CombatOption::Replay { .. }) => {
+                    let combat = stage.show.fight.prepare_stock_combat(option, &mut stage.content)?;
                     stage.show.fight.attach_prepared_combat(combat, &mut stage.scene, &stage.content)?;
                 }
-                _ => {
+                Some(_) => {
                     if let Some(combat) = &mut stage.show.fight.combat {
                         combat.restart();
                     }
                 }
+                // A walk starts its tour again.
+                None => stage.scene.restart_zone_walk(),
             }
             restart = stopwatch.lap();
         }
@@ -535,6 +555,7 @@ impl Run<'_> {
         stage.render(self.view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let cpu = cpu.elapsed();
+        let core = sapphire_platform::current_core();
         stopwatch.lap();
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
@@ -561,6 +582,9 @@ impl Run<'_> {
         let script = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
         let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
         let memory = zone::Held::of(stage, after.live_bytes);
+        let assets = stage.content.stats();
+        let counted = counts::Counted::of(&stats, &assets, &self.assets);
+        self.assets = assets;
         Ok(Traced {
             phase,
             frame,
@@ -605,6 +629,9 @@ impl Run<'_> {
             gpu: GpuTimes::default(),
             bloom_chain: stats.post.bloom_chain,
             bloom_levels: self.bloom_levels,
+            walked: stage.scene.zone_walked(),
+            core,
+            counted,
         })
     }
 
@@ -647,24 +674,30 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         let frames = || run.trace.iter().filter(move |frame| frame.phase == phase);
         let measured = || frames().filter(|frame| frame.restart.is_zero());
         for row in ROWS.iter().filter(|row| row.gpu == (phase == Phase::Gpu)) {
+            // Each value with its frame's place in the phase, which names the worst frame's tick and where a
+            // walk was.
             let values = frames()
-                .filter(|frame| counts(row, frame, phase))
-                .filter_map(|frame| Some(((row.read)(frame)?, frame.tick)));
+                .enumerate()
+                .filter(|(_, frame)| counts(row, frame, phase))
+                .filter_map(|(at, frame)| Some(((row.read)(frame)?, at as u64)));
             let Some(spread) = spread(values) else {
                 // Not 0: nothing on this walk or fight gave it anything to time.
                 tracing::info!(target: LOG_TARGET, phase = phase.name(), row = row.name, "fight row not exercised");
                 continue;
             };
             let budget = row.budget[column];
+            let worst = frames().nth(spread.worst_tick as usize).expect("the spread's frame");
             tracing::info!(
                 target: LOG_TARGET,
                 phase = phase.name(),
                 row = row.name,
                 samples = frames().filter(|frame| counts(row, frame, phase)).count(),
                 p50_us = format_args!("{:.1}", micros(spread.p50)),
+                p95_us = format_args!("{:.1}", micros(spread.p95)),
                 p99_us = format_args!("{:.1}", micros(spread.p99)),
                 worst_us = format_args!("{:.1}", micros(spread.worst)),
-                worst_tick = spread.worst_tick,
+                worst_tick = worst.tick,
+                worst_walked_m = worst.walked.map(|walked| format!("{walked:.1}")),
                 budget_us = ?budget,
                 over_p50 = budget.is_some_and(|budget| micros(spread.p50) > f64::from(budget)),
                 over_worst = budget.is_some_and(|budget| micros(spread.worst) > f64::from(budget)),
@@ -704,6 +737,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             "fight phase",
         );
         zone::report(run.stage, &run.trace, phase);
+        counts::report(&run.trace, phase, column);
     }
 }
 
@@ -714,7 +748,7 @@ live_bytes,step_allocations,sim_allocations,animation_allocations,packet_allocat
 prepare_bytes,record_allocations,record_bytes,sprites,ribbon_points,cues_read,effects,sounds,screens,layers,\
 hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span,gpu_main,gpu_prepasses,\
 gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui,\
-script,prefetch,trip,resident,mesh_pool,textures,entities,process";
+script,prefetch,trip,resident,mesh_pool,textures,entities,process,";
 
 /// One frame's line of `--bench-trace`'s file.
 fn trace_line_into(frame: &Traced, line: &mut String) {
@@ -813,6 +847,7 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
     });
     let _ = write!(line, ",{:.1},{trip},", frame.prefetch.as_secs_f64() * 1e6);
     frame.memory.trace_into(line);
+    counts::trace_into(frame, line);
 }
 
 #[cfg(test)]
@@ -824,7 +859,7 @@ fn trace_line(frame: &Traced) -> String {
 
 fn write_trace(path: &Path, trace: &[Traced]) -> std::io::Result<()> {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(file, "{TRACE_HEADER}")?;
+    writeln!(file, "{TRACE_HEADER}{}", counts::TRACE_COLUMNS)?;
     let mut line = String::with_capacity(2048);
     for frame in trace {
         trace_line_into(frame, &mut line);
@@ -882,6 +917,9 @@ mod tests {
             gpu: GpuTimes::default(),
             bloom_chain: false,
             bloom_levels: 0,
+            walked: None,
+            core: None,
+            counted: counts::Counted::default(),
         }
     }
 
@@ -1013,7 +1051,8 @@ mod tests {
     #[test]
     fn a_trace_line_matches_its_header() {
         let line = trace_line(&traced(12, 345));
-        assert_eq!(line.split(',').count(), TRACE_HEADER.split(',').count(), "{line}");
+        let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
+        assert_eq!(line.split(',').count(), header.split(',').count(), "{line}");
         assert!(line.starts_with("cpu,0,0,12,1,345.0,"), "{line}");
     }
 }

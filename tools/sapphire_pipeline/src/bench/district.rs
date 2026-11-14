@@ -52,6 +52,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use bevy_reflect::TypePath;
@@ -74,6 +75,7 @@ use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::procedural::{self, ProceduralSettings, ProceduralTexture, SurfaceMap};
 use crate::samples::noise;
+use crate::texture::MaxSize;
 
 /// This part's folder, under `bench/` and in the output.
 pub const PART: &str = "district";
@@ -364,6 +366,7 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         instances,
         lights,
         probes: None,
+        reflections: Vec::new(),
         day: Some(DAY.to_owned()),
         rigs: None,
         sky: None,
@@ -1396,7 +1399,10 @@ fn texture_sets(
         let maps = SurfaceMap::ALL.map(|map| {
             let path = format!("textures/{name}.{}.ptex.ron", map_name(map));
             let id = asset_id(PART, &path);
-            let settings = ImportSettings::ProceduralTexture(ProceduralSettings { map });
+            let settings = ImportSettings::ProceduralTexture(ProceduralSettings {
+                map,
+                max_size: set_cap(scale.texture_size),
+            });
             sources.push(Source::asset(path, text.clone(), settings));
             id
         });
@@ -1413,6 +1419,16 @@ fn texture_sets(
         ));
     }
     Ok(materials)
+}
+
+/// The longest side a set's maps store on the mobile cook (M5 M1): one level below the budget's 2K, the
+/// level whose bytes over the budget's sets come nearest the mobile texture pool (spec §3.4: 600 MB
+/// against the desktop's 2.5 GB, which the budget fills).
+pub const MOBILE_SET_SIZE: u32 = 1024;
+
+/// The cap of a set at `size` texels: [`MOBILE_SET_SIZE`] on mobile, written only when the set is over it.
+fn set_cap(size: u32) -> MaxSize {
+    MaxSize { mobile: NonZeroU32::new(MOBILE_SET_SIZE).filter(|cap| size > cap.get()), ..MaxSize::NONE }
 }
 
 fn map_name(map: SurfaceMap) -> &'static str {

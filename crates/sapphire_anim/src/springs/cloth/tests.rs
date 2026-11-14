@@ -262,6 +262,57 @@ fn cloth_at_30_60_and_120_hz() {
     }
 }
 
+/// `motion` for `seconds` at 60 Hz with the skirt taking a turn every `every`th frame (`0` leads, at
+/// `hz`): every tail at every fifth of a second, when every rotation here has just stepped.
+fn turn_paths(
+    substeps: Substeps,
+    iterations: u32,
+    hz: u32,
+    every: u32,
+    motion: Motion,
+    seconds: u32,
+) -> Vec<Vec<Vec3>> {
+    let mut character = Character::new(&Skirt::SMALL, substeps, Some(iterations));
+    let mut paths = Vec::new();
+    for frame in 0..=seconds * hz {
+        character.springs.set_pace(match every {
+            0 => SpringPace::Lead,
+            every if frame.is_multiple_of(every) => SpringPace::Step,
+            _ => SpringPace::Wait,
+        });
+        let ticks = f64::from(frame) * 60.0 / f64::from(hz);
+        character.frame(motion, ticks);
+        if (frame * 60) % (hz * 12) == 0 {
+            paths.push(character.tails());
+        }
+    }
+    paths
+}
+
+/// The cloth taking turns (M5 C2): one step over the time it waited, its constraints solved once over
+/// it, stays stable and follows the 120 Hz lead within these at 30, 20 and 15 Hz, at every sub-step and
+/// iteration count that ships. As built, at most 70 mm on the walk (35 mm as springs alone) and 172 mm
+/// on the strike's kick (201 mm alone), both at two sub-steps: a coarser step through a kick that turns
+/// the leg's capsule 1.2 rad into the skirt in 6 ticks.
+#[test]
+fn cloth_takes_turns_at_30_20_and_15_hz() {
+    for (motion, most) in [(walk as Motion, 0.08), (strike, 0.19)] {
+        for substeps in [Substeps::One, Substeps::Two] {
+            for iterations in [4, 2, 1] {
+                let reference = turn_paths(substeps, iterations, 120, 0, motion, 3);
+                for every in [2, 3, 4] {
+                    let a =
+                        furthest_apart(&turn_paths(substeps, iterations, 60, every, motion, 3), &reference);
+                    assert!(
+                        a.is_finite() && a <= most,
+                        "{substeps:?}, {iterations} iterations, every {every}: {a} m from 120 Hz"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A clock that stands still holds the cloth to the bit and runs nothing, and it carries on as if it
 /// never stopped.
 #[test]

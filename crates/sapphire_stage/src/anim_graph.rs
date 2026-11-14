@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use sapphire_anim::{
     ArchivedClip, AuthoredHeadLook, ClipSource, CombatInput, FaceLayer, GraphInput, GraphPlayer, GroundTurn,
-    LocomotionInput, ReactionInput, SpringBones, SpringFrame, SpringWork, graph_foot_contact,
+    LocomotionInput, ReactionInput, SpringBones, SpringFrame, SpringPace, SpringWork, graph_foot_contact,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::graph::MAX_GRAPH_CLIPS;
@@ -53,7 +53,7 @@ use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticColli
 use sapphire_time::{SUBTICKS_PER_TICK, SimDuration, SimTime, Stopwatch};
 use sapphire_world::light_rig::CharacterLightRig;
 
-use crate::animate::SpringView;
+use crate::animate::{SpringKey, SpringView};
 use crate::extract::{RenderPose, RenderTransform};
 use crate::ik::{IkControls, IkDriver};
 use crate::lookdev::FigureJoints;
@@ -550,18 +550,33 @@ impl GraphDriver {
         view: &SpringView,
         transform: &RenderTransform,
         figure: &Figure,
+        key: SpringKey,
     ) -> bool {
-        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
+        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key))
     }
 
+    /// Whether it has springs, which a frame enters in its rotation ([`SpringView::enter`]).
+    pub fn has_springs(&self) -> bool {
+        self.springs.is_some()
+    }
+
+    /// Runs its springs for `frame`, on the floor under its feet at `floor` (where the ground sees it)
+    /// when the view lays springs on the floor and it's grounded (M5 C2).
     fn run_springs(
         &mut self,
         frame: &SpringFrame,
         grounded: bool,
         figure: &Figure,
+        floor: Option<Mat4>,
     ) -> (SpringWork, Duration) {
         let Some(springs) = &mut self.springs else { return (SpringWork::default(), Duration::ZERO) };
         let started = Stopwatch::start();
+        // A waiting frame steps nothing, and a resting one does nothing, so they need no ground.
+        let due = frame.pose_moved || springs.is_due(frame.ticks, &frame.world_from_model);
+        if frame.active && due && springs.pace() != SpringPace::Wait {
+            let ground = floor.filter(|_| grounded).zip(self.ik.as_ref());
+            springs.set_floor(ground.and_then(|(place, ik)| ik.spring_floor(self.player.pose_mut(), place)));
+        }
         // Ease in torso contact as a grounded fall lowers the head into the body's reach.
         let torso_contact = if grounded { ((0.70 - figure.head.y) / 0.36).clamp(0.0, 1.0) } else { 0.0 };
         let work = springs.update_with_torso_contact(self.player.pose_mut(), frame, torso_contact);
@@ -639,13 +654,17 @@ pub struct GraphEvaluation<'a> {
     pub(crate) place: Mat4,
     /// Whether its springs run this frame ([`GraphDriver::springs_run`]).
     pub(crate) springs_run: bool,
+    /// Whether its springs lie on the ground under its feet ([`SpringView::floor`]).
+    pub(crate) floor: bool,
     pub evaluated: bool,
     pub spring_work: SpringWork,
     pub spring_time: Duration,
 }
 
 impl<'a> GraphEvaluation<'a> {
-    /// `driver`'s frame, for a character drawn at `place` and playing `input`, where `view` sees it.
+    /// `driver`'s frame, for the character `key` names, drawn at `place` and playing `input`, where
+    /// `view` sees it.
+    #[expect(clippy::too_many_arguments, reason = "one character's components and its frame")]
     pub fn new(
         mut driver: Mut<'a, GraphDriver>,
         render: Mut<'a, RenderPose>,
@@ -654,8 +673,9 @@ impl<'a> GraphEvaluation<'a> {
         input: GraphInput,
         place: Mat4,
         view: &SpringView,
+        key: SpringKey,
     ) -> Self {
-        let springs_run = driver.springs_run(view, &RenderTransform(place), &figure);
+        let springs_run = driver.springs_run(view, &RenderTransform(place), &figure, key);
         Self {
             driver,
             render,
@@ -665,6 +685,7 @@ impl<'a> GraphEvaluation<'a> {
             world_from_model: Affine3A::from_mat4(place),
             place,
             springs_run,
+            floor: view.floor(),
             evaluated: false,
             spring_work: SpringWork::default(),
             spring_time: Duration::ZERO,
@@ -686,8 +707,9 @@ impl<'a> GraphEvaluation<'a> {
             pose_moved: self.evaluated,
             active: self.springs_run,
         };
+        let floor = self.floor.then_some(self.place);
         (self.spring_work, self.spring_time) =
-            driver.run_springs(&frame, self.input.locomotion.grounded, &self.figure);
+            driver.run_springs(&frame, self.input.locomotion.grounded, &self.figure, floor);
         // `Extract` watches the pose: a frame with nothing to do must not touch it. A face that moved on
         // its own clock is something to do (M5 C5).
         let face_moved = driver.take_face_moved();

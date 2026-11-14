@@ -288,6 +288,23 @@ struct GpuAssets {
     /// Meshes and materials of assets unloaded, for the next [`Self::free_stale`].
     stale_meshes: Vec<MeshHandle>,
     stale_materials: Vec<MaterialHandle>,
+    /// Where a trip's arrival has got in giving the mesh pool's room back (M5 D9).
+    give_back: GiveBack,
+}
+
+/// Where a trip's arrival has got in giving the renderer's mesh pool back what the last zone held
+/// ([`Content::meshes_given_back`], M5 D9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GiveBack {
+    /// Nothing asked: no trip is arriving, or its pool is given back.
+    #[default]
+    Idle,
+    /// A zone arrived: what the last zone held is freed at the next update, which asks for the pool's
+    /// compaction after it.
+    Arrived,
+    /// Asked of the renderer, which compacts until the pool is at its floor. Each update asks again,
+    /// since what it uploads may grow the pool past its floor while the trip waits for its first cells.
+    Asked { at_floor: bool },
 }
 
 impl GpuAssets {
@@ -314,7 +331,23 @@ impl GpuAssets {
             grids: HashMap::new(),
             stale_meshes: Vec::new(),
             stale_materials: Vec::new(),
+            give_back: GiveBack::Idle,
         }
+    }
+
+    /// Moves a trip's giving back along, after this update's frees and uploads: the frees of the zone
+    /// left reach the renderer on the update after the arrival, and the frame that update prepares
+    /// retires them before it compacts.
+    fn follow_give_back(&mut self, renderer: &mut Renderer) {
+        match self.give_back {
+            GiveBack::Idle => return,
+            GiveBack::Arrived => self.give_back = GiveBack::Asked { at_floor: false },
+            // As of the frame last prepared, with what this update uploaded: the frees it sees retired.
+            GiveBack::Asked { .. } => {
+                self.give_back = GiveBack::Asked { at_floor: renderer.meshes_at_floor() }
+            }
+        }
+        renderer.compact_meshes();
     }
 
     /// Lets go of what's held of any asset `resident` no longer says is: this renderer was set aside
@@ -1169,6 +1202,7 @@ impl Content {
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
         self.gpu.follow_levels(&mut self.server, renderer, false);
+        self.gpu.follow_give_back(renderer);
     }
 
     /// Brings every texture on `renderer` to the top wanted of it before a frame draws, loading and
@@ -1223,6 +1257,19 @@ impl Content {
     #[must_use]
     pub fn texture_top(&self, id: AssetId) -> Option<(u32, u32)> {
         self.gpu.textures.get(&id).map(|held| (held.object.top(), held.object.above()))
+    }
+
+    /// Whether the mesh pool has given back what the zone a trip left held (M5 D9): true once a renderer
+    /// compacting since the arrival is at its floor, with what the new zone has uploaded so far, and when no
+    /// trip is arriving. [`Self::end_giving_back`] ends it.
+    #[must_use]
+    pub fn meshes_given_back(&self) -> bool {
+        matches!(self.gpu.give_back, GiveBack::Idle | GiveBack::Asked { at_floor: true })
+    }
+
+    /// The trip's over: the pool stops being asked to compact, and uploads from here grow it as they need.
+    pub fn end_giving_back(&mut self) {
+        self.gpu.give_back = GiveBack::Idle;
     }
 
     /// Loads until the character is on `renderer`, then returns its mesh and bounds: the load
@@ -1720,11 +1767,13 @@ impl Content {
     /// kept of it, in place of the last zone's, or the last zone's comes off for a zone with none; and the sky
     /// draws with the zone's material, or the app's again ([`Self::zone_sky_material`]). What the last zone had
     /// goes with its handles, so a tier's renderer built from here on takes this zone's grid
-    /// ([`Self::zone_probe_grid`]).
+    /// ([`Self::zone_probe_grid`]). And the renderer's mesh pool gives back the room the last zone's meshes
+    /// held, from the next update on, under the trip's wipe ([`Self::meshes_given_back`], M5 D9).
     pub(crate) fn arrive_in_zone(&mut self, grid: Option<Handle<ProbeGrid>>, sky: Option<Handle<Material>>) {
         self.gpu.wanted_grid = grid.as_ref().map(Handle::id);
         self.zone_probes = grid;
         self.zone_sky = sky;
+        self.gpu.give_back = GiveBack::Arrived;
     }
 
     /// The zone on stage's sky material on the renderer, once it's there: what the sky draws with in place of the

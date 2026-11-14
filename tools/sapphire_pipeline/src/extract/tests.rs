@@ -95,7 +95,7 @@ fn extraction_writes_textures_maps_and_bound_documents() {
         }
     );
     assert_eq!(ilm.material_id, MaterialIdInput::Constant(0));
-    assert!(matches!(importer(&ilm_path), ImportSettings::CharacterMap(MapSettings::Ilm(_))));
+    assert!(matches!(importer(&ilm_path), ImportSettings::CharacterMap(MapSettings::Ilm(_), _)));
 
     // Skin's layer mask (M1 C7): its rim multiply texture's brightest channel, R, decoded from
     // sRGB, masks its matcap; nothing else is painted.
@@ -120,7 +120,7 @@ fn extraction_writes_textures_maps_and_bound_documents() {
             stocking: layer_mask::unpainted(),
         }
     );
-    assert!(matches!(importer(&layers_path), ImportSettings::CharacterMap(MapSettings::LayerMask(_))));
+    assert!(matches!(importer(&layers_path), ImportSettings::CharacterMap(MapSettings::LayerMask(_), _)));
 
     // The Skin document is the mapping with the extracted textures and maps bound.
     let skin_path = extracted(&scratch, "materials/Skin.material.ron");
@@ -503,7 +503,7 @@ fn fbx_images_beside_the_file_are_bound_where_they_lie() {
     let bumps = source.parent().unwrap().join("textures/bumps.png");
     let mask = AssetMeta::new(
         id(&bumps),
-        ImportSettings::Texture(TextureSettings { class: TextureClass::Mask(MaskSettings::default()) }),
+        ImportSettings::Texture(TextureSettings::from(TextureClass::Mask(MaskSettings::default()))),
     );
     meta::rewrite(&meta::sidecar_path(&bumps), &mask).unwrap();
     let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
@@ -520,7 +520,7 @@ fn fbx_images_beside_the_file_are_bound_where_they_lie() {
     let flipped = TextureClass::Normal(NormalSettings { flip_y: true, ..NormalSettings::default() });
     meta::rewrite(
         &meta::sidecar_path(&bumps),
-        &AssetMeta::new(id(&bumps), ImportSettings::Texture(TextureSettings { class: flipped })),
+        &AssetMeta::new(id(&bumps), ImportSettings::Texture(TextureSettings::from(flipped))),
     )
     .unwrap();
     let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();

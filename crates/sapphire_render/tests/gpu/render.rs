@@ -19,9 +19,11 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
+mod counts;
 mod insets;
 mod lost_frames;
 mod sequences;
+mod uploads;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -1673,7 +1675,7 @@ fn textured_materials_sample_through_their_swizzle() {
     let image =
         SourceImage::new(16, 16, ChannelLayout::GrayAlpha, vec![[0.75, 0.75, 0.75, 0.25]; 256]).unwrap();
     let mask = MaskSettings { channels: MaskChannels::Two, ..MaskSettings::default() };
-    let settings = TextureSettings { class: TextureClass::Mask(mask) };
+    let settings = TextureSettings::from(TextureClass::Mask(mask));
     let cooked = texture::cook(&image, &settings, Cook::Mobile).unwrap();
     let astc = cooked.texture();
     if check_format(&gpu, astc.desc.format).is_err() {

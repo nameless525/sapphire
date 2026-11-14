@@ -226,6 +226,8 @@ impl App for SandboxApp {
             input.listen_for_fight_restart()?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
+        scene.set_spring_floor(options.spring_floor != Some(false));
+        scene.set_spring_turns(options.spring_turns.unwrap_or(0));
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;
@@ -268,6 +270,9 @@ impl App for SandboxApp {
         }
         if options.outline_row {
             scene.spawn_outline_row(renderer.character);
+        }
+        if let Some(count) = options.shadow_party {
+            scene.spawn_shadow_party(count, renderer.character);
         }
         if let Some(mesh) = renderer.hard_edges {
             scene.spawn_hard_edges(mesh);
@@ -1514,6 +1519,7 @@ pub(crate) fn set_meshes(
         scene.set_arcade_mesh(arcade);
     }
     scene.set_outline_row_mesh(renderer.character);
+    scene.set_shadow_party_mesh(renderer.character);
     if let Some(mesh) = renderer.hard_edges {
         scene.set_hard_edges_mesh(mesh);
     }

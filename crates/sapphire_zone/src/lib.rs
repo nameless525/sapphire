@@ -18,6 +18,9 @@
 //! - **The digest** ([`ArchivedZone::simulation_digest`]): what a replay pins.
 //! - **A zone's air** ([`look`], M5 M6): its wind, weather and fog, beside its day, rigs, probes and sky in
 //!   [`ZonePresentation`].
+//! - **Reflection probes** ([`reflections`], M5 L2): where a zone's reflections are baked from and the box
+//!   each is corrected against, at most [`reflections::MAX_PROBES`]. The cooked zone names the asset the cook
+//!   bakes of them (`sapphire_assets::reflections`).
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //!
@@ -50,6 +53,7 @@ pub mod document;
 pub mod encounter;
 pub mod grid;
 pub mod look;
+pub mod reflections;
 
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
@@ -69,6 +73,7 @@ pub use encounter::{
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
+pub use reflections::{ParallaxBox, ReflectionProbe};
 
 /// The pack a zone's own assets go in, from the zone source's file stem (`town.zone.ron` →
 /// `zone_town`): the packer writes it and whoever loads the zone mounts it.

@@ -61,7 +61,10 @@
 // capsule instead, which costs no pass. The filter is a 5 × 5 tent on desktop and 3 × 3 on
 // phones, whose lower cascade resolution already softens it. Distances end where the anime look
 // still reads a shadow's shape at each tier's resolution; past them a baked far term will take
-// over (shadows module docs, "Later milestones").
+// over (shadows module docs, "Later milestones"). Characters shadow each other (M5 L12): `others`
+// is how many other characters' shadows a named character receives, their tiles on desktop and
+// their capsules on phones, nearest along the light first; a party of three needs two, and
+// Desktop-High takes four for a party standing among named enemies.
 //
 // Antialiasing (M1 R7, look pillar 6): desktop tiers resolve with temporal AA and MSAA off.
 // TAA's jittered history resolves edges inside a surface (painted shadow-bias steps, the
@@ -107,6 +110,7 @@
                     character_shadow: true,
                     character_resolution: 1024,
                     filter: Tent5,
+                    others: 4,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
@@ -148,6 +152,7 @@
                     character_shadow: true,
                     character_resolution: 512,
                     filter: Tent5,
+                    others: 2,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
@@ -189,6 +194,7 @@
                     cached_cascades: 1,
                     character_shadow: false,
                     filter: Tent3,
+                    others: 2,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 1, steps: 4, radius: 0.75))),
                 volumetric_fog: false,
@@ -231,6 +237,7 @@
                     cached_cascades: 1,
                     character_shadow: false,
                     filter: Tent3,
+                    others: 2,
                 ),
                 ambient_occlusion: (capsules: true, gtao: None),
                 volumetric_fog: false,

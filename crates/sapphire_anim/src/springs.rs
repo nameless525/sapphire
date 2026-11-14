@@ -100,6 +100,36 @@
 //! axis (`overrun_give`). The heroine also resolves garment and limb contact at the drawn pose,
 //! with a bounded coherent change to each strand rather than more bend at the tip.
 //!
+//! # Taking turns
+//!
+//! A frame with several characters shares secondary motion's budget among them (M5 C2): the stage's
+//! schedule gives each a [`SpringPace`] a frame ([`SpringBones::set_pace`]). The one on field leads,
+//! stepping every sub-step due as above, and keeps the clearance pass. The others step or wait:
+//!
+//! - **A step** covers all the time since its last, as one step: a sub-step stretched over that many,
+//!   its `keep` the product of theirs, its pushes their sum, its tails' motion stretched to match and
+//!   back after (`Rate::over`). What the bone and the colliders did counts at most whole, as at
+//!   one sub-step a tick: counted for more, a swing would grow. A longer wait than [`LONGEST_STRIDE`]
+//!   ticks runs as even strides of at most that. `springs_take_turns_at_30_20_and_15_hz` states the
+//!   tolerance, and `a_turn_every_few_frames_is_a_frame_every_few` that waiting changes nothing the
+//!   solver keeps.
+//! - **A wait** steps nothing. Its chains keep their turns from their parents, so they ride with the
+//!   body however it moves, drawn on from the step before the last toward the last across as long as
+//!   the last step was: one step behind, as the lead is one sub-step behind, so a chain moves on
+//!   smoothly through the frames that wait and never jumps on the frame that steps.
+//!
+//! Only the lead runs the clearance pass; the others hold it, and a lead joining the rotation sleeps it,
+//! so coming back to lead solves it whole.
+//!
+//! # Floor
+//!
+//! [`SpringBones::set_floor`] gives the springs and the cloth a plane they lie on (M5 C2), which the
+//! stage takes from the ground the feet's IK probes find. Every tail keeps its hit radius above it,
+//! inside the step as a collider is, then again once the limits have had their say, since no limit
+//! holds a tail in the paving. Pushed out, a tail's slide along it is held back as hard as it was
+//! pressed in, so hair lying on paving comes to rest rather than buzzing or creeping down a slope. No
+//! floor, or one nothing reaches, changes nothing to the bit.
+//!
 //! # Cloth
 //!
 //! [`SpringBones::set_cloth`] wears sheets of neighbouring chains as cloth: XPBD links across the
@@ -212,19 +242,33 @@ pub struct SpringQuality {
     pub distance: f32,
     /// How often the clothes' clearance solves, where a character has one.
     pub clearance: ClearanceQuality,
+    /// How the characters other than the one on the field share the frame (M5 C2).
+    pub stagger: StaggerQuality,
 }
 
 impl SpringQuality {
     /// Desktop-High's: 120 Hz out to 40 m, and clearance solved on every frame near the camera.
-    pub const DESKTOP_HIGH: Self =
-        Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::FULL };
+    pub const DESKTOP_HIGH: Self = Self {
+        substeps: Substeps::Two,
+        distance: 40.0,
+        clearance: ClearanceQuality::FULL,
+        stagger: StaggerQuality::DESKTOP_HIGH,
+    };
     /// Desktop-Low's: Desktop-High's springs, with clearance solved every fourth tick.
-    pub const DESKTOP_LOW: Self =
-        Self { substeps: Substeps::Two, distance: 40.0, clearance: ClearanceQuality::DESKTOP_LOW };
+    pub const DESKTOP_LOW: Self = Self {
+        substeps: Substeps::Two,
+        distance: 40.0,
+        clearance: ClearanceQuality::DESKTOP_LOW,
+        stagger: StaggerQuality::LIGHT,
+    };
     /// The phones': one sub-step a tick, the 60 Hz VRM's parameters are tuned at, out to 25 m, with
     /// clearance solved every fourth tick.
-    pub const MOBILE: Self =
-        Self { substeps: Substeps::One, distance: 25.0, clearance: ClearanceQuality::MOBILE };
+    pub const MOBILE: Self = Self {
+        substeps: Substeps::One,
+        distance: 25.0,
+        clearance: ClearanceQuality::MOBILE,
+        stagger: StaggerQuality::LIGHT,
+    };
     /// Every setting that ships, for tests that must hold on each.
     pub const SHIPPED: [Self; 3] = [Self::DESKTOP_HIGH, Self::DESKTOP_LOW, Self::MOBILE];
 
@@ -234,6 +278,70 @@ impl SpringQuality {
         distance <= if running { self.distance } else { self.distance * WAKE_MARGIN }
     }
 }
+
+/// How a tier shares a frame's secondary motion among the characters other than the one on the field
+/// (M5 C2): the stage's schedule steps this many of them a frame, in a fixed rotation, and each of the
+/// rest waits its turn ([`SpringPace`]). Counts, never times, so two runs of a scene schedule alike on any
+/// machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaggerQuality {
+    /// How many of the others step in a frame.
+    pub per_frame: u32,
+    /// The most frames any of them waits between steps: more others than this many frames can carry at
+    /// [`Self::per_frame`] step more a frame instead.
+    pub longest_wait: u32,
+}
+
+impl StaggerQuality {
+    /// Desktop-High's, which has no budget row: two others a frame, so a party's both step every frame.
+    pub const DESKTOP_HIGH: Self = Self { per_frame: 2, longest_wait: 2 };
+    /// Desktop-Low's and the phones': one other a frame, so a party's two take turns, stepping every other
+    /// frame, and more others step more a frame rather than wait longer: a step over two frames holds
+    /// the tolerance better than one over three or four (`springs_take_turns_at_30_20_and_15_hz`).
+    pub const LIGHT: Self = Self { per_frame: 1, longest_wait: 2 };
+
+    /// How many of `others` step in a frame: [`Self::per_frame`], or more if they wouldn't all have
+    /// stepped within [`Self::longest_wait`] frames.
+    #[must_use]
+    pub fn stepping(&self, others: u32) -> u32 {
+        self.per_frame.max(others.div_ceil(self.longest_wait.max(1))).max(1)
+    }
+}
+
+/// How a character's springs take this frame, which the stage's schedule decides (M5 C2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpringPace {
+    /// Every sub-step of the tier as it falls due, and the clothes' clearance at its interval: the
+    /// character on the field, and any character alone.
+    #[default]
+    Lead,
+    /// Its turn in the rotation: one step over all the time since its last, in strides of at most
+    /// [`LONGEST_STRIDE`] ticks, with the clearance held as it last solved.
+    Step,
+    /// Waiting for its turn: nothing steps, and the chains keep their turns from their parents, drawn
+    /// on toward the last step's, so they ride with the body.
+    Wait,
+}
+
+/// The longest one step a character taking turns runs, in ticks: what waited longer runs as several.
+/// Springs and cloth stay stable and within their tolerance of the 120 Hz run at steps of 2, 3 and 4
+/// ticks (`springs_take_turns_at_30_20_and_15_hz`, `cloth_takes_turns_at_30_20_and_15_hz`); at 60 Hz the
+/// tiers' rotations step every other frame, 2 ticks, and at 30 Hz 4.
+pub const LONGEST_STRIDE: u32 = 4;
+
+/// The ground under a character, which its tails stay above ([`SpringBones::set_floor`]): a plane, in
+/// the model's space as the frame's `world_from_model` places it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpringFloor {
+    /// A point on it.
+    pub point: Vec3,
+    /// Up out of it, unit length.
+    pub normal: Vec3,
+}
+
+/// How hard the floor holds a tail resting on it from sliding: the most it stops, as a share of how far
+/// it pushed the tail out. A tail pressed into the paving by more than its pull along it is held still.
+const FLOOR_FRICTION: f32 = 1.0;
 
 /// How often a tier solves a character's clothes' clearance (the heroine's shirt against the hair and
 /// face), by distance from the camera. Between solves the last one's corrections are held, carried
@@ -485,6 +593,10 @@ struct Rate {
     force: f32,
     /// The share of what the bone and the colliders moved it that counts as its motion.
     carry: f32,
+    /// For a stride (`Rate::over`): the share of the motion and the meters of push its last sub-step
+    /// would end on, which is the motion it keeps. A sub-step's own are `keep` and `force`.
+    keep_end: f32,
+    force_end: f32,
 }
 
 impl Rate {
@@ -494,7 +606,41 @@ impl Rate {
         let keep = substeps.root(1.0 - drag);
         // Each sub-step's share of a tick's push. It tends to `1 / n` as drag goes to nothing.
         let carry = if drag > 1e-4 { (1.0 - keep) / drag } else { 1.0 / count };
-        Self { keep, force: tick * carry / count, carry }
+        Self { keep, force: tick * carry / count, carry, keep_end: keep, force_end: tick * carry / count }
+    }
+
+    /// The rate of a step `stride` sub-steps long, for a character taking turns, with its tails' motion
+    /// counted over the whole stride: the sub-steps' own recurrence, summed. Each keeps `r` of the motion
+    /// and adds a push `f`, so over `L` of them a tail moving `v` a sub-step goes `v·A + f·B`, where
+    /// `A = r(1 − rᴸ)/(1 − r)` and `B = (L − A)/(1 − r)`, and ends moving `v·rᴸ + f(1 − rᴸ)/(1 − r)` a
+    /// sub-step. What the bone and the colliders did counts so that taking out the motion the tail went
+    /// with leaves none, as at a sub-step. Powers by multiplying, the same to the bit on every OS.
+    fn over(drag: f32, substeps: Substeps, stride: u32) -> Self {
+        let one = Self::new(drag, substeps);
+        if stride <= 1 {
+            return one;
+        }
+        let length = stride as f32;
+        let r = one.keep;
+        let last = (0..stride).fold(1.0, |kept, _| kept * r);
+        let (sum, ends) = if 1.0 - r > 1e-6 {
+            let sum = r * (1.0 - last) / (1.0 - r);
+            (sum, (length - sum) / (1.0 - r))
+        } else {
+            (length, length * (length + 1.0) * 0.5)
+        };
+        let settles = if 1.0 - r > 1e-6 { (1.0 - last) / (1.0 - r) } else { length };
+        // The motion it steps with is the stride's, `length` sub-steps' worth.
+        Self {
+            keep: sum / length,
+            force: one.force * ends,
+            // What a sub-step's correction does to the motion it moves with, in the share the stride's
+            // last sub-step keeps of the motion it went with: a correction taking out all the motion it
+            // went with, as the bone's length does of the radial, leaves none.
+            carry: one.carry * (length * last / sum),
+            keep_end: last,
+            force_end: one.force * settles * length,
+        }
     }
 }
 
@@ -634,6 +780,38 @@ fn clear_of(head: Vec3, length: f32, out: Vec3, placed: &Placed, reach: f32, fal
     point
 }
 
+/// Where a tail going from `from` to `next` over a step belongs above a floor `level` along `up`: pushed
+/// out of it with its hit radius, its slide along it held back by friction as hard as it was pressed in,
+/// so a strand lying on paving comes to rest, then swung to the nearest point its bone reaches that isn't
+/// below it. A head so far under the floor that no point clears it points straight up.
+fn on_floor(up: Vec3, level: f32, bone: &Bone, from: Vec3, next: Vec3) -> Vec3 {
+    let Bone { head, length, hit_radius, fallback } = *bone;
+    let level = level + hit_radius;
+    let depth = level - up.dot(next);
+    if depth <= 0.0 {
+        return next;
+    }
+    let out = next + up * depth;
+    let travel = out - from;
+    let slide = travel - up * up.dot(travel);
+    let (slid, held) = (slide.length(), FLOOR_FRICTION * depth);
+    let out = if slid <= held { out - slide } else { out - slide * (held / slid) };
+    // How far the floor's level is above the bone's head.
+    let height = level - up.dot(head);
+    if height >= length {
+        return head + up * length;
+    }
+    let point = head + (out - head).try_normalize().unwrap_or(fallback) * length;
+    if up.dot(point) >= level {
+        return point;
+    }
+    // Where the bone's reach meets the floor, on the side the tail went.
+    let ring = (length * length - height * height).max(0.0).sqrt();
+    let toward = out - head;
+    let side = (toward - up * up.dot(toward)).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
+    head + up * height + side * ring
+}
+
 /// One character's springs: what its rig says, read once, and where its tails are. The `springs`
 /// module's docs say how they run.
 #[derive(Clone, Debug, PartialEq)]
@@ -708,6 +886,23 @@ pub struct SpringBones {
     clearance_interval: Option<u32>,
     /// Sheets of its chains worn as cloth ([`Self::set_cloth`]).
     cloth: Option<Box<cloth::Cloth>>,
+
+    /// How it takes this frame ([`Self::set_pace`]).
+    pace: SpringPace,
+    /// The sub-steps the step running covers: 1 but in a stride of a character taking turns.
+    stride: u32,
+    /// Each swing's rate over [`Self::stride`], when that is more than one.
+    stride_rates: Vec<Rate>,
+    /// The sub-steps the last step covered, which a frame draws the chains across.
+    drawn_stride: u32,
+    /// The presented time last drawn.
+    shown_at: f64,
+    /// The pose moved while it waited its turn, so the next step reads its places again.
+    moved_waiting: bool,
+    /// The ground under it, which its tails stay above ([`Self::set_floor`]).
+    floor: Option<SpringFloor>,
+    /// That floor this frame, in the simulation's space: up, and how far up it is along that.
+    plane: Option<(Vec3, f32)>,
 }
 
 /// Presentation contact fitted to the heroine's cooked strands and shirt ([`SpringBones::with_clearance`]):
@@ -962,6 +1157,17 @@ impl SpringBones {
             clearance: None,
             clearance_interval: Some(1),
             cloth: None,
+            pace: SpringPace::Lead,
+            stride: 1,
+            stride_rates: vec![
+                Rate { keep: 1.0, force: 0.0, carry: 1.0, keep_end: 1.0, force_end: 0.0 };
+                swing_count
+            ],
+            drawn_stride: 1,
+            shown_at: 0.0,
+            moved_waiting: false,
+            floor: None,
+            plane: None,
         })
     }
 
@@ -1043,11 +1249,46 @@ impl SpringBones {
         self.clearance_interval = interval;
     }
 
+    /// Takes the next update as `pace` says: in the lead, a step in its turn, or waiting for it. Its
+    /// tails go on from wherever they are, so a character changing pace doesn't pop. Leaving the lead,
+    /// the clothes' clearance holds what it last solved from then on; coming back, it solves whole.
+    pub fn set_pace(&mut self, pace: SpringPace) {
+        if pace == self.pace {
+            return;
+        }
+        if self.pace == SpringPace::Lead
+            && let Some(clearance) = &mut self.clearance
+        {
+            clearance.sleep();
+        }
+        self.pace = pace;
+    }
+
+    /// How it takes the next update.
+    #[must_use]
+    pub fn pace(&self) -> SpringPace {
+        self.pace
+    }
+
+    /// Keeps its tails, with their hit radius, above `floor` from the next update, or above nothing for
+    /// `None`. The plane is in the model's space, as the next frame's `world_from_model` places it, so a
+    /// caller gives it each frame from what it finds under the feet (spec §5.13, M5 C2).
+    pub fn set_floor(&mut self, floor: Option<SpringFloor>) {
+        self.floor = floor.filter(|floor| floor.normal.is_finite() && floor.point.is_finite());
+    }
+
+    /// The floor it keeps its tails above.
+    #[must_use]
+    pub fn floor(&self) -> Option<SpringFloor> {
+        self.floor
+    }
+
     /// Runs `substeps` from now on. A tail's speed is kept across the change, and its place.
     pub fn set_substeps(&mut self, substeps: Substeps) {
         if substeps == self.substeps {
             return;
         }
+        self.drawn_stride = 1;
         let ratio = self.substeps.count() as f32 / substeps.count() as f32;
         for tail in &mut self.tails {
             tail.before = tail.now - (tail.now - tail.before) * ratio;
@@ -1109,6 +1350,10 @@ impl SpringBones {
         self.origin = other.origin;
         self.drawn_at = other.drawn_at;
         self.index = other.index;
+        self.drawn_stride = other.drawn_stride;
+        self.shown_at = other.shown_at;
+        self.pace = other.pace;
+        self.floor = other.floor;
         self.still_for = 0;
         self.settling = false;
         self.resting = false;
@@ -1128,6 +1373,10 @@ impl SpringBones {
     /// do anything. A frame that evaluated nothing asks this before giving the character a job.
     #[must_use]
     pub fn is_due(&self, ticks: f64, world: &Affine3A) -> bool {
+        if self.pace == SpringPace::Wait {
+            // Waiting draws its chains on toward the last step, and nothing more.
+            return self.settling || (!self.resting && ticks > self.shown_at);
+        }
         self.settling || (ticks > self.drawn_at && (!self.resting || *world != self.world))
     }
 
@@ -1179,8 +1428,8 @@ impl SpringBones {
             self.targets_stale |= frame.pose_moved;
             return SpringWork::default();
         }
-        let pose_moved = frame.pose_moved || self.targets_stale;
-        if pose_moved {
+        let read = frame.pose_moved || self.targets_stale;
+        if read {
             self.read_pose(pose);
         }
         let world_moved = frame.world_from_model != self.world;
@@ -1188,11 +1437,20 @@ impl SpringBones {
             let wake_elapsed = (frame.ticks - self.drawn_at).max(0.0) as f32;
             self.settle(pose, frame);
             if let Some(clearance) = &mut self.clearance {
-                clearance.settle(pose, wake_elapsed);
+                if self.pace == SpringPace::Lead {
+                    clearance.settle(pose, wake_elapsed);
+                } else {
+                    clearance.update(pose, frame.ticks, 0.0, None);
+                }
             }
             return SpringWork { substeps: 0, wrote_pose: true };
         }
         let ticks = frame.ticks.max(self.drawn_at);
+        if self.pace == SpringPace::Wait {
+            return self.wait(pose, ticks, read);
+        }
+        let moved_waiting = std::mem::take(&mut self.moved_waiting);
+        let pose_moved = read || moved_waiting;
         let last = self.index_at(ticks);
         if !pose_moved && !world_moved && (self.resting || ticks == self.drawn_at) {
             self.index = last;
@@ -1201,15 +1459,35 @@ impl SpringBones {
         }
         self.resting = false;
         self.place_anchors(frame, world_moved, pose_moved);
+        self.place_floor(&frame.world_from_model);
 
         let due = (last - self.index).clamp(0, MAX_SUBSTEPS_PER_FRAME);
         let span = ticks - self.drawn_at;
         let count = f64::from(self.substeps.count());
+        let drawn_at = self.drawn_at;
+        let between = |step: i64| {
+            let between = if span > 0.0 { ((step as f64 / count - drawn_at) / span) as f32 } else { 1.0 };
+            between.clamp(0.0, 1.0)
+        };
         let mut fastest = 0.0_f32;
-        for step in (last - due + 1)..=last {
-            let between =
-                if span > 0.0 { ((step as f64 / count - self.drawn_at) / span) as f32 } else { 1.0 };
-            fastest = fastest.max(self.substep(pose, between.clamp(0.0, 1.0), torso_contact));
+        if self.pace == SpringPace::Lead {
+            for step in (last - due + 1)..=last {
+                fastest = fastest.max(self.substep(pose, between(step), torso_contact));
+            }
+            self.drawn_stride = 1;
+        } else if due > 0 {
+            // One step over the time it waited, in as few strides as the longest allows, as even as they
+            // can be.
+            let longest = i64::from(LONGEST_STRIDE * self.substeps.count());
+            let strides = (due + longest - 1) / longest;
+            let mut end = last - due;
+            for stride in 0..strides {
+                let length = due / strides + i64::from(stride < due % strides);
+                end += length;
+                let at = between(end);
+                fastest = fastest.max(self.stride(pose, length as u32, at, torso_contact));
+                self.drawn_stride = length as u32;
+            }
         }
         self.index = last;
         self.drawn_at = ticks;
@@ -1221,9 +1499,65 @@ impl SpringBones {
         self.note_stillness(due as u32, fastest, pose_moved || world_moved);
         self.draw(pose, ticks);
         if let Some(clearance) = &mut self.clearance {
-            clearance.update(pose, ticks, span, self.clearance_interval);
+            match self.pace {
+                SpringPace::Lead => clearance.update(pose, ticks, span, self.clearance_interval),
+                _ => clearance.update(pose, ticks, 0.0, None),
+            }
         }
         SpringWork { substeps: due as u32, wrote_pose: true }
+    }
+
+    /// A frame waiting its turn: nothing steps, and the chains keep their turns from their parents, drawn
+    /// on toward the last step's, so they ride with the body however it moves. `read` says the pose held
+    /// a new evaluation, which the next step must place again since this one writes over it.
+    fn wait(&mut self, pose: &mut CharacterPose, ticks: f64, read: bool) -> SpringWork {
+        self.moved_waiting |= read;
+        if !read && (self.resting || ticks <= self.shown_at) {
+            return SpringWork::default();
+        }
+        self.draw(pose, ticks);
+        if let Some(clearance) = &mut self.clearance {
+            clearance.update(pose, ticks, 0.0, None);
+        }
+        SpringWork { substeps: 0, wrote_pose: true }
+    }
+
+    /// One step `length` sub-steps long, ending `between` of the way from the last frame to this one:
+    /// a sub-step with its rates and its tails' motion stretched to cover them.
+    fn stride(&mut self, pose: &CharacterPose, length: u32, between: f32, torso_contact: f32) -> f32 {
+        if length <= 1 {
+            return self.substep(pose, between, torso_contact);
+        }
+        let scale = length as f32;
+        for tail in &mut self.tails {
+            tail.before = tail.now - (tail.now - tail.before) * scale;
+        }
+        for (rate, swing) in self.stride_rates.iter_mut().zip(&self.swings) {
+            *rate = Rate::over(swing.drag, self.substeps, length);
+        }
+        self.stride = length;
+        let fastest = self.substep(pose, between, torso_contact);
+        self.stride = 1;
+        for tail in &mut self.tails {
+            tail.before = tail.now - (tail.now - tail.before) / scale;
+        }
+        // Its motion as a sub-step's, which is what stillness measures.
+        fastest / (scale * scale)
+    }
+
+    /// Swing `at`'s rate over the step running.
+    fn rate(&self, at: usize) -> Rate {
+        if self.stride > 1 { self.stride_rates[at] } else { self.rates[at] }
+    }
+
+    /// The floor this frame in the simulation's space, for a character at `world_from_model`.
+    fn place_floor(&mut self, world_from_model: &Affine3A) {
+        self.plane = self.floor.map(|floor| {
+            let world = Frame::of(world_from_model);
+            let normal = (world.rotation * floor.normal).normalize_or(Vec3::Y);
+            let point = world.rotation * (floor.point * world.scale);
+            (normal, normal.dot(point))
+        });
     }
 
     fn index_at(&self, ticks: f64) -> i64 {
@@ -1301,6 +1635,9 @@ impl SpringBones {
         self.world_rotation = world.rotation;
         self.origin = world.position;
         self.drawn_at = frame.ticks;
+        self.shown_at = frame.ticks;
+        self.drawn_stride = 1;
+        self.moved_waiting = false;
         self.index = self.index_at(frame.ticks);
         for (now, model) in self.anchors_now.iter_mut().zip(&self.model_anchors) {
             *now = model.in_world(&world);
@@ -1392,7 +1729,7 @@ impl SpringBones {
             } else {
                 let at = usize::from(step.swing);
                 let swing = &self.swings[at];
-                let Rate { keep, force, carry } = self.rates[at];
+                let Rate { keep, force, carry, keep_end, force_end } = self.rate(at);
                 let mut tail = self.tails[at];
                 let center = usize::from(swing.center);
                 if self.centers[center].carried > 0.0 {
@@ -1405,9 +1742,9 @@ impl SpringBones {
                 let posed = parent_posed * self.targets[at];
                 self.posed[index] = posed;
                 let length = swing.length * scale;
-                let moved = tail.now
-                    + (tail.now - tail.before) * keep
-                    + (toward_pose * swing.stiffness + swing.gravity) * force;
+                let velocity = tail.now - tail.before;
+                let push = toward_pose * swing.stiffness + swing.gravity;
+                let moved = tail.now + velocity * keep + push * force;
                 let next = position + (moved - position).try_normalize().unwrap_or(toward_pose) * length;
                 let (first, end) = swing.colliders;
                 let hit_radius = swing.hit_radius * scale;
@@ -1456,6 +1793,14 @@ impl SpringBones {
                         next = position + aim * length;
                     }
                 }
+                // The ground has the last word: no limit holds a tail in the paving.
+                if let Some((up, level)) = self.plane {
+                    let held = on_floor(up, level, &bone, tail.now, next);
+                    if held != next {
+                        aim = (held - position).try_normalize().unwrap_or(aim);
+                        next = position + aim * length;
+                    }
+                }
                 // A tail the cloth moves is measured once the cloth has.
                 if !(solving && cloth.as_ref().is_some_and(|cloth| cloth.moves(at))) {
                     fastest = fastest.max((next - tail.now).length_squared());
@@ -1463,7 +1808,12 @@ impl SpringBones {
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
                 let turned = (parent.rotation.inverse() * rotation).normalize();
                 // What the bone and the colliders did counts toward its motion by this sub-step's share.
-                let motion = (moved - tail.now) + (next - moved) * carry;
+                let motion = if self.stride > 1 {
+                    // A stride keeps the motion its last sub-step would end on.
+                    velocity * keep_end + push * force_end + (next - moved) * carry
+                } else {
+                    (moved - tail.now) + (next - moved) * carry
+                };
                 self.tails[at] = Tail { now: next, before: next - motion };
                 self.solved[at] = [self.solved[at][1], turned];
                 rotation
@@ -1508,7 +1858,10 @@ impl SpringBones {
                 next = clear_of(head, length, out, now, reach, fallback);
             }
         }
-        next
+        match self.plane {
+            Some((up, level)) => on_floor(up, level, bone, from, next),
+            None => next,
+        }
     }
 
     /// Whether every tail has stopped for long enough, with nothing moving them.
@@ -1528,10 +1881,13 @@ impl SpringBones {
         }
     }
 
-    /// Writes each swing's turn at `ticks` into `pose`, and finishes it.
-    fn draw(&self, pose: &mut CharacterPose, ticks: f64) {
+    /// Writes each swing's turn at `ticks` into `pose`, and finishes it: one step behind, across the last
+    /// step, which for a character taking turns is as long as it waited.
+    fn draw(&mut self, pose: &mut CharacterPose, ticks: f64) {
+        self.shown_at = ticks;
         let count = f64::from(self.substeps.count());
-        let along = (ticks * count - self.index as f64).clamp(0.0, 1.0) as f32;
+        let along =
+            ((ticks * count - self.index as f64) / f64::from(self.drawn_stride)).clamp(0.0, 1.0) as f32;
         let locals = pose.locals_mut();
         for (swing, [before, last]) in self.swings.iter().zip(&self.solved) {
             locals[usize::from(swing.joint)].rotation = before.lerp(*last, along);

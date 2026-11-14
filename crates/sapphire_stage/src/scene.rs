@@ -127,7 +127,7 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
-use crate::animate::{ClipPlayer, Evaluation, SpringView};
+use crate::animate::{ClipPlayer, Evaluation, SpringKey, SpringRole, SpringView};
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::content::GraphKey;
@@ -151,6 +151,8 @@ use crate::orbit::OrbitCamera;
 #[cfg(feature = "samples")]
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
+#[cfg(feature = "samples")]
+use crate::shadow_party::{self, OTHERS};
 use crate::show::{ContentChanges, SceneShow};
 use crate::showcase::{self, InsetShot, Showcased};
 use crate::skinned::{self, Sway};
@@ -457,6 +459,12 @@ pub struct Scene {
     /// The hard-edged outline sample, with `--hard-edges`.
     #[cfg(feature = "samples")]
     hard_edges: Option<Entity>,
+    /// The others of the shadow party, with `--shadow-party`.
+    #[cfg(feature = "samples")]
+    shadow_party: Vec<Entity>,
+    /// Whether the camera frames the shadow party, with `--shadow-party` (of one too).
+    #[cfg(feature = "samples")]
+    shadow_party_framed: bool,
     /// The studio's pieces, with `--stage`.
     studio: Vec<(Entity, Piece)>,
     /// How the studio is laid out, and toward the key light it was built for.
@@ -508,6 +516,13 @@ pub struct Scene {
     anim_stats: AnimStats,
     /// How the tier runs spring bones ([`Self::set_spring_quality`]).
     spring_quality: SpringQuality,
+    /// Frames animated, which turn the rotation of who steps their springs (M5 C2): a count, never a clock.
+    spring_turn: u64,
+    /// Whether springs lie on the ground under the feet ([`Self::set_spring_floor`]).
+    spring_floor: bool,
+    /// How many characters the look-dev character takes turns with, itself among them, or 0 to lead
+    /// ([`Self::set_spring_turns`]).
+    spring_turns: u32,
     /// The shape of the last frame drawn, which [`Self::animate`] reads before this frame's.
     aspect: f32,
     /// The ground IK casts for, and the blocks drawn for it, with `--ik on`.
@@ -640,6 +655,10 @@ impl Scene {
             outline_row: None,
             #[cfg(feature = "samples")]
             hard_edges: None,
+            #[cfg(feature = "samples")]
+            shadow_party: Vec::new(),
+            #[cfg(feature = "samples")]
+            shadow_party_framed: false,
             studio: Vec::new(),
             studio_layout: None,
             town_stand: None,
@@ -663,6 +682,9 @@ impl Scene {
             graph_players,
             anim_stats: AnimStats::default(),
             spring_quality: SpringQuality::DESKTOP_HIGH,
+            spring_turn: 0,
+            spring_floor: true,
+            spring_turns: 0,
             aspect: 16.0 / 9.0,
             ik_ground: None,
             ik_blocks: Vec::new(),
@@ -1548,6 +1570,7 @@ impl Scene {
     /// here rather than as a `Presentation` system, which would cost allocations and a worker's wake-up
     /// per frame (the module docs).
     pub fn animate(&mut self, content: &Content, alpha: f32, show: &mut impl SceneShow) {
+        self.spring_turn = self.spring_turn.wrapping_add(1);
         if self.animating {
             self.animate_clip(content.clip(), alpha);
         }
@@ -1569,7 +1592,8 @@ impl Scene {
         let travel = show.travel(alpha);
         let world = self.ecs.world_mut();
         let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
-        let view = SpringView::new(&camera, self.spring_quality);
+        let mut view = SpringView::new(&camera, self.spring_quality, self.spring_turn, self.spring_floor);
+        let key = look_dev_key(&mut view, self.spring_turns);
         if let Ok((mut driver, render, figure, rig, mut transform)) =
             self.graph_players.get_mut(world, self.character)
         {
@@ -1580,7 +1604,7 @@ impl Scene {
                     let target = Some(look.at(input.ticks, height));
                     ik.set_controls(IkControls { look_target: target, ..ik.controls() });
                 }
-                let springs_run = driver.springs_run(&view, &transform, &figure);
+                let springs_run = driver.springs_run(&view, &transform, &figure, key);
                 let mut job = GraphEvaluation {
                     driver,
                     render,
@@ -1590,6 +1614,7 @@ impl Scene {
                     world_from_model: Affine3A::from_translation(travel) * Affine3A::from_mat4(transform.0),
                     place: transform.0,
                     springs_run,
+                    floor: view.floor(),
                     evaluated: false,
                     spring_work: SpringWork::default(),
                     spring_time: Duration::ZERO,
@@ -1627,7 +1652,8 @@ impl Scene {
         if let Some((clip, version)) = clip {
             let world = self.ecs.world_mut();
             let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
-            let view = SpringView::new(&camera, self.spring_quality);
+            let mut view = SpringView::new(&camera, self.spring_quality, self.spring_turn, self.spring_floor);
+            let key = look_dev_key(&mut view, self.spring_turns);
             for (mut player, clock, render, figure, rig, transform) in self.players.iter_mut(world) {
                 stats.characters += 1;
                 stats.teleports += player.teleports();
@@ -1640,7 +1666,7 @@ impl Scene {
                     ik.set_controls(IkControls { look_target: target, ..ik.controls() });
                 }
                 let position = player.next_position(clip, version, ticks, transform.0);
-                let springs_run = player.springs_run(&view, &transform, &figure);
+                let springs_run = player.springs_run(&view, &transform, &figure, key);
                 if position.is_none() && !(springs_run && player.springs_due(ticks, &transform)) {
                     continue;
                 }
@@ -1658,6 +1684,7 @@ impl Scene {
                     position,
                     ticks,
                     springs_run,
+                    floor: view.floor(),
                     spring_work: SpringWork::default(),
                     spring_time: Duration::ZERO,
                 };
@@ -1685,6 +1712,19 @@ impl Scene {
     /// Runs spring bones as a quality tier does, from the next frame on.
     pub fn set_spring_quality(&mut self, quality: SpringQuality) {
         self.spring_quality = quality;
+    }
+
+    /// Lays springs and cloth on the ground under the feet, or not, from the next frame on (M5 C2): on
+    /// unless told otherwise. A golden from before it pins it off.
+    pub fn set_spring_floor(&mut self, floor: bool) {
+        self.spring_floor = floor;
+    }
+
+    /// Puts the character playing a clip or a graph here in a rotation of `characters`, itself the first,
+    /// as a party member off the field would be, from the next frame on (M5 C2), or in the lead for 0 or
+    /// 1: to see a waiting character's chains on the one character a look-dev scene has.
+    pub fn set_spring_turns(&mut self, characters: u32) {
+        self.spring_turns = characters;
     }
 
     /// Runs everything standing here by `motion` from now on: its hair and cloth and how much of its IK
@@ -1806,7 +1846,7 @@ impl Scene {
     /// the tier's quality.
     pub fn spring_view(&self) -> SpringView {
         let camera = self.camera().camera_data(self.aspect);
-        SpringView::new(&camera, self.spring_quality)
+        SpringView::new(&camera, self.spring_quality, self.spring_turn, self.spring_floor)
     }
 
     /// Says what animation did in this frame, for a show that evaluates its own (rule R9).
@@ -2017,6 +2057,45 @@ impl Scene {
             Some(places.map(|place| world.spawn((RenderMesh(mesh), RenderTransform(place), rig)).id()));
     }
 
+    /// Makes the character one of a shadow party of `count` (`--shadow-party`, M5 L12; 1 to 3), its
+    /// others drawing `mesh` (the character's), each a character lit by the default light rig.
+    /// [`Self::frame_shadow_party`] places them and the camera at the scene's hour.
+    #[cfg(feature = "samples")]
+    pub fn spawn_shadow_party(&mut self, count: usize, mesh: MeshHandle) {
+        let world = self.ecs.world_mut();
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: self.figure.head };
+        self.shadow_party_framed = true;
+        self.shadow_party = (1..count.clamp(1, OTHERS.len() + 1))
+            .map(|_| world.spawn((RenderMesh(mesh), RenderTransform(Mat4::IDENTITY), rig)).id())
+            .collect();
+    }
+
+    /// Stands the shadow party's others toward the sun at the scene's hour, and points the camera
+    /// at the three from the sun's side; nothing without them. Call after the hour is set.
+    #[cfg(feature = "samples")]
+    pub fn frame_shadow_party(&mut self) {
+        if !self.shadow_party_framed {
+            return;
+        }
+        let mut packet = FramePacket::default();
+        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
+        let toward_sun = -packet.sun.direction;
+        let world = self.ecs.world_mut();
+        for (&entity, place) in self.shadow_party.iter().zip(shadow_party::places(self.bounds, toward_sun)) {
+            world.entity_mut(entity).insert(RenderTransform(place));
+        }
+        world.insert_resource(shadow_party::camera(self.bounds, toward_sun));
+    }
+
+    /// Sets the mesh the shadow party's others draw again: after GPU device loss.
+    #[cfg(feature = "samples")]
+    pub fn set_shadow_party_mesh(&mut self, mesh: MeshHandle) {
+        for &entity in &self.shadow_party {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
+    }
+
     /// Sets the mesh the outline row draws again: after GPU device loss.
     #[cfg(feature = "samples")]
     pub fn set_outline_row_mesh(&mut self, mesh: MeshHandle) {
@@ -2143,6 +2222,7 @@ impl Scene {
         let mut inventory = PipelineInventory {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
+            effect_meshes: self.vfx.as_ref().is_some_and(VfxPlayer::has_meshes),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
             debug_draw: demo || debug_draw::enabled(),
@@ -2522,6 +2602,18 @@ mod zone;
 pub use zone::{
     ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneStanding, ZoneTarget, stream_settings,
 };
+
+/// The look-dev character's place in `view`'s rotation: the lead, or the first of `characters` taking
+/// turns ([`Scene::set_spring_turns`]), the others entered as if they stood beside it.
+fn look_dev_key(view: &mut SpringView, characters: u32) -> SpringKey {
+    if characters < 2 {
+        return SpringKey::LEAD;
+    }
+    for place in 0..characters {
+        view.enter(SpringKey::new(SpringRole::Party, place));
+    }
+    SpringKey::new(SpringRole::Party, 0)
+}
 
 #[cfg(test)]
 mod spring_tests;

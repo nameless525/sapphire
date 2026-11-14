@@ -10,7 +10,7 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants,
-    RenderSettings, Wind,
+    RenderSettings, ShadowSettings, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -310,6 +310,13 @@ pub(crate) struct Options {
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
+    /// `--spring-floor on|off`: whether springs and cloth lie on the ground the feet's IK probes find
+    /// (M5 C2). On unless it says off; a golden from before it pins it off. Needs `--clip`, `--graph` or
+    /// `--arena`.
+    pub spring_floor: Option<bool>,
+    /// `--spring-turns <n>`: the character takes turns with `n - 1` others, as a party member off the field
+    /// does, in the tier's rotation (M5 C2), to see a waiting character's chains. Needs `--clip` or `--graph`.
+    pub spring_turns: Option<u32>,
     /// `--arena`: the combat stage (M2 O5, [`game_combat::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
@@ -342,6 +349,10 @@ pub(crate) struct Options {
     /// `--view-culling off`: draw every static world instance in the main view, culling none
     /// (review RA-O01), for comparisons. `--view-culling on` is the default.
     pub view_culling_off: bool,
+    /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
+    /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
+    /// the default.
+    pub own_shadows_only: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
@@ -351,7 +362,8 @@ pub(crate) struct Options {
     /// `--effect-scale <flashes>:<motion>`: the player's flashes (`normal` or `reduced`) and camera motion (0 to
     /// 1) on the fight's screen effects (M4 A2, A3; `FightShow::set_effect_scale`). None draws them as authored.
     pub effect_scale: Option<EffectScale>,
-    /// `--vfx arc|hit|dust|duel`: plays effects at fixed ticks (M2 E2).
+    /// `--vfx arc|hit|dust|duel|mesh-scroll|mesh-erosion|mesh-flipbook|mesh-one|mesh-eight`: plays effects at fixed
+    /// ticks (M2 E2, M5 L5).
     pub vfx: Option<VfxShow>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
@@ -366,6 +378,9 @@ pub(crate) struct Options {
     /// `--outline-row`: place more of the character behind it, out to past the outline cutoff
     /// (M1 C4).
     pub outline_row: bool,
+    /// `--shadow-party <1..3>`: make the character one of a party of that many standing toward the
+    /// sun, seen from the sun's side, each shadowing the next (M5 L12).
+    pub shadow_party: Option<usize>,
     /// `--hard-edges`: show the hard-edged outline sample instead of the character (M1 C4).
     pub hard_edges: bool,
     /// `--outline-distance <scale>`: the scale on outlines' LOD cutoffs (`r.outline_distance`)
@@ -519,6 +534,7 @@ impl Options {
             scene.set_camera_rim(share)?;
         }
         scene.frame_foliage();
+        scene.frame_shadow_party();
         if let Some(wind) = self.wind() {
             scene.set_wind(wind);
         }
@@ -686,6 +702,10 @@ impl Options {
             light_path: self.light_path.unwrap_or(tier.light_path),
             post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
             view_culling: tier.view_culling && !self.view_culling_off,
+            shadows: tier.shadows.map(|shadows| ShadowSettings {
+                others: if self.own_shadows_only { 0 } else { shadows.others },
+                ..shadows
+            }),
             ..tier
         }
     }
@@ -1072,6 +1092,21 @@ impl Options {
                         other => return Err(format!("--springs expects on or off, got {other:?}")),
                     });
                 }
+                "--spring-floor" => {
+                    options.spring_floor = Some(match value("--spring-floor")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--spring-floor expects on or off, got {other:?}")),
+                    });
+                }
+                "--spring-turns" => {
+                    let raw = value("--spring-turns")?;
+                    let turns = raw.parse::<u32>().ok().filter(|turns| (2..=32).contains(turns));
+                    options.spring_turns =
+                        Some(turns.ok_or_else(|| {
+                            format!("--spring-turns expects 2 to 32 characters, got {raw:?}")
+                        })?);
+                }
                 "--graph" => {
                     let raw = value("--graph")?;
                     options.graph = Some(GraphScript::from_name(&raw).ok_or_else(|| {
@@ -1120,6 +1155,13 @@ impl Options {
                     options.zoom = Some(factor);
                 }
                 "--outline-row" => options.outline_row = true,
+                "--shadow-party" => {
+                    let count: usize = number(&value("--shadow-party")?, "--shadow-party")?;
+                    if !(1..=3).contains(&count) {
+                        return Err(format!("--shadow-party expects 1 to 3, got {count}"));
+                    }
+                    options.shadow_party = Some(count);
+                }
                 "--hard-edges" => options.hard_edges = true,
                 "--outline-distance" => {
                     let scale: f32 = number(&value("--outline-distance")?, "--outline-distance")?;
@@ -1179,6 +1221,15 @@ impl Options {
                     };
                 }
                 "--plain-post" => options.plain_post = true,
+                "--character-shadows" => {
+                    options.own_shadows_only = match value("--character-shadows")?.as_str() {
+                        "others" => false,
+                        "own" => true,
+                        other => {
+                            return Err(format!("--character-shadows expects own or others, got {other:?}"));
+                        }
+                    };
+                }
                 "--view-culling" => {
                     options.view_culling_off = match value("--view-culling")?.as_str() {
                         "on" => false,
@@ -1425,6 +1476,20 @@ impl Options {
         if options.graph.is_some() && options.clip.is_some() {
             return Err("--graph and --clip are exclusive: the graph chooses what plays".to_owned());
         }
+        if options.shadow_party.is_some()
+            && (options.look_dev.is_some()
+                || arena_flag
+                || options.outline_row
+                || options.faces.is_some()
+                || options.rim_rig.is_some()
+                || options.hard_edges)
+        {
+            return Err(
+                "--shadow-party frames the camera on its party: drop --look-dev, --arena, --outline-row, \
+                 --faces, --rim-rig and --hard-edges"
+                    .to_owned(),
+            );
+        }
         options.arena = match (arena_flag, arena_shot) {
             (true, shot) => Some(shot.unwrap_or_default()),
             (false, Some(_)) => return Err("--arena-shot needs --arena".to_owned()),
@@ -1463,6 +1528,19 @@ impl Options {
             return Err(
                 "--springs runs under a clip or a graph: it needs --clip, --graph or --arena".to_owned()
             );
+        }
+        if options.spring_floor.is_some()
+            && options.clip.is_none()
+            && options.graph.is_none()
+            && options.arena.is_none()
+        {
+            return Err(
+                "--spring-floor lays springs on the ground: it needs --clip, --graph or --arena".to_owned()
+            );
+        }
+        if options.spring_turns.is_some() && options.clip.is_none() && options.graph.is_none() {
+            return Err("--spring-turns takes the character's springs in turns: it needs --clip or --graph"
+                .to_owned());
         }
         if ik && options.clip.is_none() && options.graph.is_none() {
             return Err("--ik solves over a clip or a graph: it needs --clip or --graph".to_owned());
@@ -1597,10 +1675,12 @@ impl Options {
         }
         if options.bench_trace.is_some()
             && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
-                && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
+                && (matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }))
+                    || options.zone_walk.is_some()))
         {
             return Err(format!(
-                "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+                "--bench-trace needs {BENCH_FLAG} of a fight or a walk: --replay, --fight with --script, or \
+                 --zone-walk"
             ));
         }
         if options.zone_walk.is_some() && options.zone.is_none() {
@@ -2243,6 +2323,16 @@ mod tests {
         assert_eq!(parse(&springs).unwrap().0.springs, Some(false));
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.springs, None);
         assert!(parse(&["--look-dev", "hero", "--springs", "on"]).unwrap_err().contains("--clip"));
+        let floor = ["--look-dev", "down", "--graph", "defeat", "--spring-floor", "off"];
+        assert_eq!(parse(&floor).unwrap().0.spring_floor, Some(false));
+        assert_eq!(parse(&["--look-dev", "down", "--graph", "defeat"]).unwrap().0.spring_floor, None);
+        assert!(parse(&["--look-dev", "hero", "--spring-floor", "on"]).unwrap_err().contains("--graph"));
+        assert_eq!(
+            parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "3"]).unwrap().0.spring_turns,
+            Some(3)
+        );
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "1"]).is_err());
+        assert!(parse(&["--look-dev", "hero", "--spring-turns", "3"]).unwrap_err().contains("--clip"));
         let wrong = ["--look-dev", "hero", "--clip", "strike", "--springs", "maybe"];
         assert!(parse(&wrong).unwrap_err().contains("on or off"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());
@@ -2532,6 +2622,27 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    #[test]
+    fn the_shadow_party_frames_the_camera_alone() {
+        assert_eq!(parse(&["--shadow-party", "3", "--stage", "floor"]).unwrap().0.shadow_party, Some(3));
+        assert!(parse(&["--shadow-party", "4"]).is_err() && parse(&["--shadow-party", "0"]).is_err());
+        for other in [&["--faces"][..], &["--outline-row"], &["--hard-edges"], &["--look-dev", "hero"]] {
+            assert!(parse(&[&["--shadow-party", "2"][..], other].concat()).is_err(), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn characters_receive_the_tiers_shadows_of_each_other_unless_told_their_own() {
+        let tier = RenderSettings { shadows: Some(ShadowSettings::default()), ..RenderSettings::default() };
+        let others = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).shadows.map(|s| s.others);
+        assert_eq!(others(&[]), Some(ShadowSettings::default().others), "the tier's");
+        assert_eq!(others(&["--character-shadows", "own"]), Some(0));
+        assert_eq!(others(&["--character-shadows=others"]), Some(ShadowSettings::default().others));
+        assert!(parse(&["--character-shadows", "all"]).is_err());
+        let off = RenderSettings { shadows: None, ..tier };
+        assert_eq!(parse(&["--character-shadows", "own"]).unwrap().0.render_settings(off).shadows, None);
     }
 
     /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under
@@ -3131,7 +3242,8 @@ mod tests {
 
     #[test]
     fn a_bench_trace_goes_with_a_bench_of_a_fight() {
-        for fight in [&["--replay", "x"][..], &["--fight", "--arena", "--script", "idle"]] {
+        let walk = &["--zone", "district", "--zone-walk", "tour"][..];
+        for fight in [&["--replay", "x"][..], &["--fight", "--arena", "--script", "idle"], walk] {
             let args = [&["--bench", "1", "--bench-trace", "t.csv"], fight].concat();
             let (options, _) = parse(&args).unwrap();
             assert_eq!(options.bench_trace, Some(PathBuf::from("t.csv")));
@@ -3139,6 +3251,7 @@ mod tests {
         for args in [
             &["--bench", "1", "--bench-trace", "t.csv"][..],
             &["--capture", "x.png", "--replay", "x", "--bench-trace", "t.csv"],
+            &["--capture", "x.png", "--zone", "district", "--zone-walk", "tour", "--bench-trace", "t.csv"],
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");

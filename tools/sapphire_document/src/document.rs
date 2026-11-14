@@ -498,6 +498,8 @@ where
         // Perform that fallible conversion before calling it, just as assignment does.
         let entry = converted_entry(items, value, &self.registry)
             .ok_or_else(|| wrong_type(list, "that isn't what its entries are"))?;
+        // A list the file leaves out may still hold its default's entries, which a new list of one would lose.
+        let was_empty = items.is_empty();
         items.insert(at, entry);
         let new_item = walk::get(expected.as_partial_reflect(), &list.join(Step::Index(at)))?;
         let new_text = write::canonical(new_item, &self.registry)?;
@@ -515,8 +517,8 @@ where
                 Some(literal) => patch.insert_text(node, at, literal)?,
                 None => patch.insert_item(node, at, new_item)?,
             }
-        } else if let (true, Step::Field(name)) =
-            (taken + 1 == list.steps().len(), &list.steps()[list.steps().len() - 1])
+        } else if let (true, true, Step::Field(name)) =
+            (was_empty, taken + 1 == list.steps().len(), &list.steps()[list.steps().len() - 1])
         {
             patch.new_list(node, walk::get(new_root, &written)?, name, new_item, literal)?;
         } else {
@@ -593,10 +595,20 @@ where
             return Err(wrong_type(&list, "it isn't a list"));
         };
         drop(items.remove(at));
-        let (node, _) =
-            walk::place(parsed.value.as_partial_reflect(), body(&parsed.tree), &self.text, &list)?;
+        let old_root = parsed.value.as_partial_reflect();
+        let (node, taken) = walk::place(old_root, body(&parsed.tree), &self.text, &list)?;
         let mut patch = RonPatch::new(&self.text, &self.registry);
-        patch.remove_item(node, at);
+        if taken == list.steps().len() {
+            patch.remove_item(node, at);
+        } else {
+            // The file leaves the list out and its default holds entries: what's left of them is written.
+            let written = list.prefix(taken);
+            patch.diff(
+                node,
+                walk::get(old_root, &written)?,
+                walk::get(expected.as_partial_reflect(), &written)?,
+            )?;
+        }
         let splices = patch.into_splices();
         let (parsed, next, comments_lost) = self.check_splices(&splices, &expected, path)?;
         let record = ChangeRecord {

@@ -22,6 +22,13 @@
 //!   after a clip holds, until it has stopped. Their time is the pose's too, presented time, so hair
 //!   never leads the body. They sleep off screen and past the tier's distance ([`SpringView`]), and
 //!   coming back starts from the pose. `--springs off` leaves them out.
+//! - **Sharing the budget** (M5 C2): a frame with several characters enters each in its [`SpringView`]
+//!   by a [`SpringKey`], its role and place. The one on field steps every frame; the others take turns
+//!   in a fixed rotation by the frame's count, as many a frame as the tier's [`StaggerQuality`] says, and
+//!   wait between ([`SpringPace`]). A scene with one character schedules it as before.
+//! - **A floor** (M5 C2): a character with IK lays its springs and cloth on the ground its feet's probes
+//!   find, under the lower foot ([`IkDriver`]'s `spring_floor`), while it's grounded and its feet show.
+//!   No ground found, or no IK, is no floor. `--spring-floor off` leaves it out.
 //! - **IK** ([`IkDriver`], `--ik on`, M2 N4) runs between sampling and `finish`, so the rig's helpers
 //!   and the springs follow it, and everything [`Figure`] reads does too. It has a say in what's
 //!   evaluated at all.
@@ -29,8 +36,8 @@
 use std::time::Duration;
 
 use sapphire_anim::{
-    ArchivedClip, CharacterPose, SPRING_TICK_HZ, SpringBones, SpringFrame, SpringQuality, SpringWork,
-    Substeps, root_motion,
+    ArchivedClip, CharacterPose, SPRING_TICK_HZ, SpringBones, SpringFrame, SpringPace, SpringQuality,
+    SpringWork, StaggerQuality, Substeps, root_motion,
 };
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Frustum, Mat4, Sphere, Vec3};
@@ -71,33 +78,148 @@ fn loop_teleports(clip: &ArchivedClip) -> bool {
     })
 }
 
-/// What decides whose springs run this frame: the view and the tier's distance.
+/// What a character is to the frame's secondary motion (M5 C2), most important first: what decides
+/// whether it steps every frame or takes turns, and in what order it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SpringRole {
+    /// The one the player controls, whom the camera follows: steps every frame, with the clearance pass.
+    OnField,
+    /// The party's others.
+    Party,
+    Enemy,
+    /// Townsfolk and passers-by.
+    Ambient,
+}
+
+/// Where a character stands in the frame's rotation: its role, then its place among the role's (a
+/// roster's index, a party slot), never a pointer, a hash or the order it arrived in. Keys sort by role,
+/// then place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpringKey {
+    pub role: SpringRole,
+    pub place: u32,
+}
+
+impl SpringKey {
+    /// The on-field character: a scene with one character schedules it as before.
+    pub const LEAD: Self = Self { role: SpringRole::OnField, place: 0 };
+
+    pub const fn new(role: SpringRole, place: u32) -> Self {
+        Self { role, place }
+    }
+}
+
+/// How many characters besides the one on field can take turns in a frame's rotation. Past it, the
+/// least important sleep, whatever order they were entered in.
+pub const MAX_TAKING_TURNS: usize = 32;
+
+/// Who steps this frame (M5 C2): the on-field character always, and the others in a fixed rotation by
+/// the frame's own count, [`StaggerQuality::stepping`] of them a frame, so none waits longer than the
+/// tier's longest wait. Built fresh every frame from what the frame enters. Allocates nothing.
+#[derive(Clone, Copy, Debug)]
+struct SpringSchedule {
+    /// The frame's count, which turns the rotation.
+    frame: u64,
+    stagger: StaggerQuality,
+    /// The characters taking turns, least first: the most important `MAX_TAKING_TURNS` entered.
+    others: [SpringKey; MAX_TAKING_TURNS],
+    count: usize,
+}
+
+impl SpringSchedule {
+    fn new(frame: u64, stagger: StaggerQuality) -> Self {
+        Self { frame, stagger, others: [SpringKey::LEAD; MAX_TAKING_TURNS], count: 0 }
+    }
+
+    /// Adds `key` to the rotation, keeping the most important when full, in any order of entry.
+    fn enter(&mut self, key: SpringKey) {
+        if key.role == SpringRole::OnField {
+            return;
+        }
+        let Err(at) = self.others[..self.count].binary_search(&key) else { return };
+        if at == MAX_TAKING_TURNS {
+            return;
+        }
+        let end = self.count.min(MAX_TAKING_TURNS - 1);
+        self.others.copy_within(at..end, at + 1);
+        self.others[at] = key;
+        self.count = (self.count + 1).min(MAX_TAKING_TURNS);
+    }
+
+    /// `key`'s pace this frame, or `None` for one the rotation has no room for, which sleeps.
+    fn pace(&self, key: SpringKey) -> Option<SpringPace> {
+        if key.role == SpringRole::OnField {
+            return Some(SpringPace::Lead);
+        }
+        let Ok(rank) = self.others[..self.count].binary_search(&key) else {
+            // Never entered: a frame that doesn't take turns steps everyone every frame, as before.
+            return (self.count < MAX_TAKING_TURNS).then_some(SpringPace::Step);
+        };
+        let turns = self.count as u64;
+        let stepping = u64::from(self.stagger.stepping(self.count as u32));
+        if stepping >= turns {
+            return Some(SpringPace::Step);
+        }
+        // This frame's turn starts `first` along the rotation and takes the next `stepping`.
+        let first = (self.frame % turns) * stepping % turns;
+        let along = (rank as u64 + turns - first) % turns;
+        Some(if along < stepping { SpringPace::Step } else { SpringPace::Wait })
+    }
+}
+
+/// What decides whose springs run this frame and how: the view, the tier's distance, and the frame's
+/// rotation of who steps ([`SpringKey`]). A frame enters every character with springs
+/// ([`SpringView::enter`]) before it decides any.
 pub struct SpringView {
     frustum: Frustum,
     eye: Vec3,
     quality: SpringQuality,
+    schedule: SpringSchedule,
+    /// Whether the springs lie on the ground under the feet.
+    floor: bool,
 }
 
 impl SpringView {
-    pub(crate) fn new(camera: &CameraData, quality: SpringQuality) -> Self {
+    pub(crate) fn new(camera: &CameraData, quality: SpringQuality, frame: u64, floor: bool) -> Self {
         let frustum = Frustum::from_view_proj(&(camera.proj * camera.view));
-        Self { frustum, eye: camera.position, quality }
+        let schedule = SpringSchedule::new(frame, quality.stagger);
+        Self { frustum, eye: camera.position, quality, schedule, floor }
     }
 
-    /// Whether `springs` run this frame, for a character standing as `transform` and `figure` say, at the
-    /// tier's substeps and, by its distance, the tier's clearance interval. Those that don't go to sleep
-    /// at once, at no further cost.
+    /// Puts the character `key` names into this frame's rotation. Enter every character with springs
+    /// before deciding any; the order doesn't matter.
+    pub fn enter(&mut self, key: SpringKey) {
+        self.schedule.enter(key);
+    }
+
+    /// Whether springs lie on the ground under the feet this frame.
+    pub(crate) fn floor(&self) -> bool {
+        self.floor
+    }
+
+    /// Whether `springs` run this frame, for the character `key` names standing as `transform` and
+    /// `figure` say, at the tier's substeps and, by its distance, the tier's clearance interval, and with
+    /// its pace in the frame's rotation: the on-field character leads, stepping every frame; the others
+    /// step or wait their turn. Those that don't run go to sleep at once, at no further cost.
+    ///
+    /// Everything that decides a character's springs by its role or distance belongs here, beside these:
+    /// cloth's iterations, a crowd's cut-off, characters sharing a graph.
     pub(crate) fn decide(
         &self,
         springs: &mut SpringBones,
         transform: &RenderTransform,
         figure: &Figure,
+        key: SpringKey,
     ) -> bool {
         springs.set_substeps(self.substeps());
         let center = transform.0.transform_point3((figure.head + figure.feet) * 0.5);
         let distance = self.eye.distance(center);
         springs.set_clearance_interval(self.quality.clearance.interval_at(distance));
-        let runs = self.sees(center, distance, springs.is_running());
+        let pace = self.schedule.pace(key);
+        let runs = pace.is_some() && self.sees(center, distance, springs.is_running());
+        if let Some(pace) = pace {
+            springs.set_pace(pace);
+        }
         if !runs {
             springs.sleep();
         }
@@ -331,8 +453,9 @@ impl ClipPlayer {
         view: &SpringView,
         transform: &RenderTransform,
         figure: &Figure,
+        key: SpringKey,
     ) -> bool {
-        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
+        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure, key))
     }
 
     /// Whether running springs have anything to do at `ticks` on a frame whose pose didn't move.
@@ -366,6 +489,8 @@ pub(crate) struct Evaluation<'a> {
     pub(crate) ticks: f64,
     /// Whether its springs run this frame ([`ClipPlayer::springs_run`]).
     pub(crate) springs_run: bool,
+    /// Whether its springs lie on the ground under its feet ([`SpringView::floor`]).
+    pub(crate) floor: bool,
     /// What its springs did.
     pub(crate) spring_work: SpringWork,
     pub(crate) spring_time: Duration,
@@ -391,6 +516,13 @@ impl Evaluation<'_> {
         }
         if let Some(springs) = &mut player.springs {
             let started = Stopwatch::start();
+            // On the ground its IK's feet stand on, while they show at all (M5 C2).
+            let due =
+                self.position.is_some() || springs.is_due(self.ticks, &Affine3A::from_mat4(self.transform.0));
+            if self.springs_run && due && springs.pace() != SpringPace::Wait {
+                let ik = player.ik.as_ref().filter(|ik| self.floor && ik.feet_weight() > 0.0);
+                springs.set_floor(ik.and_then(|ik| ik.spring_floor(&mut player.pose, self.transform.0)));
+            }
             let frame = SpringFrame {
                 world_from_model: Affine3A::from_mat4(self.transform.0),
                 ticks: self.ticks,
@@ -405,5 +537,124 @@ impl Evaluation<'_> {
             player.pose.write_palette(&mut render.palette);
             render.morph_weights.copy_from_slice(player.pose.weights());
         }
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    const TIERS: [StaggerQuality; 2] = [StaggerQuality::DESKTOP_HIGH, StaggerQuality::LIGHT];
+
+    fn party(count: u32) -> Vec<SpringKey> {
+        (0..count)
+            .map(|place| match place % 3 {
+                0 => SpringKey::new(SpringRole::Party, place),
+                1 => SpringKey::new(SpringRole::Enemy, place),
+                _ => SpringKey::new(SpringRole::Ambient, place),
+            })
+            .collect()
+    }
+
+    fn schedule(frame: u64, stagger: StaggerQuality, keys: &[SpringKey]) -> SpringSchedule {
+        let mut schedule = SpringSchedule::new(frame, stagger);
+        for &key in keys {
+            schedule.enter(key);
+        }
+        schedule
+    }
+
+    /// The rotation is the keys', never the order they came in: entered forwards, backwards and shuffled,
+    /// every frame gives everyone the same pace, the lead included wherever it's entered.
+    #[test]
+    fn the_rotation_is_the_same_in_any_order_of_entry() {
+        for stagger in TIERS {
+            for count in [1, 2, 3, 5, 8, 40] {
+                let keys = party(count);
+                let mut backwards = keys.clone();
+                backwards.reverse();
+                backwards.push(SpringKey::LEAD);
+                let mut shuffled = keys.clone();
+                for at in 0..shuffled.len() {
+                    let other = (at * 7 + 3) % shuffled.len();
+                    shuffled.swap(at, other);
+                }
+                shuffled.insert(shuffled.len() / 2, SpringKey::LEAD);
+                for frame in 0..24 {
+                    let [a, b, c] = [&keys, &backwards, &shuffled].map(|keys| schedule(frame, stagger, keys));
+                    for &key in keys.iter().chain([&SpringKey::LEAD]) {
+                        assert_eq!(a.pace(key), b.pace(key), "{count} at {frame}: {key:?}");
+                        assert_eq!(a.pace(key), c.pace(key), "{count} at {frame}: {key:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The character on field steps every frame, however many others there are; the others step the
+    /// tier's share a frame, and none waits longer than the tier's longest wait.
+    #[test]
+    fn the_lead_steps_every_frame_and_nobody_waits_past_the_bound() {
+        for stagger in TIERS {
+            for count in 1..=MAX_TAKING_TURNS as u32 {
+                let keys = party(count);
+                let mut waited = vec![0_u32; keys.len()];
+                for frame in 0..120 {
+                    let schedule = schedule(frame, stagger, &keys);
+                    assert_eq!(schedule.pace(SpringKey::LEAD), Some(SpringPace::Lead));
+                    let mut stepping = 0;
+                    for (key, waited) in keys.iter().zip(&mut waited) {
+                        match schedule.pace(*key) {
+                            Some(SpringPace::Step) => {
+                                stepping += 1;
+                                *waited = 0;
+                            }
+                            Some(SpringPace::Wait) => *waited += 1,
+                            other => panic!("{key:?} is {other:?}"),
+                        }
+                        assert!(
+                            *waited < stagger.longest_wait,
+                            "{count} with {stagger:?}: {key:?} waited {waited} frames at {frame}"
+                        );
+                    }
+                    assert_eq!(stepping, stagger.stepping(count).min(count), "{count} at {frame}");
+                }
+            }
+        }
+    }
+
+    /// A swap changes who steps at once: the new character on field leads from the frame it swaps, and
+    /// the old one takes its place in the rotation.
+    #[test]
+    fn a_swap_changes_who_leads_at_once() {
+        let [first, second, third] = [0, 1, 2].map(|place| SpringKey::new(SpringRole::Party, place));
+        for frame in 0..6 {
+            // Before the swap the first is on field; after, the second.
+            let before = schedule(frame, StaggerQuality::LIGHT, &[SpringKey::LEAD, second, third]);
+            assert_eq!(before.pace(SpringKey::LEAD), Some(SpringPace::Lead));
+            let after = schedule(frame, StaggerQuality::LIGHT, &[first, SpringKey::LEAD, third]);
+            assert_eq!(after.pace(SpringKey::LEAD), Some(SpringPace::Lead), "the new lead at {frame}");
+            assert!(matches!(after.pace(first), Some(SpringPace::Step | SpringPace::Wait)));
+        }
+    }
+
+    /// Past the rotation's room the least important sleep, whatever order they came in, and someone the
+    /// frame never entered steps every frame, as everyone did before turns.
+    #[test]
+    fn past_its_room_the_least_important_sleep() {
+        let keys = party(MAX_TAKING_TURNS as u32 + 4);
+        let mut sorted = keys.clone();
+        sorted.sort();
+        let mut reversed = keys.clone();
+        reversed.reverse();
+        for keys in [&keys, &reversed] {
+            let schedule = schedule(0, StaggerQuality::DESKTOP_HIGH, keys);
+            for (rank, key) in sorted.iter().enumerate() {
+                assert_eq!(schedule.pace(*key).is_none(), rank >= MAX_TAKING_TURNS, "{key:?}");
+            }
+        }
+        let unentered = SpringKey::new(SpringRole::Enemy, 99);
+        assert_eq!(schedule(0, StaggerQuality::LIGHT, &party(3)).pace(unentered), Some(SpringPace::Step));
+        assert_eq!(schedule(5, StaggerQuality::LIGHT, &[]).pace(unentered), Some(SpringPace::Step));
     }
 }

@@ -67,7 +67,7 @@ impl Scratch {
         write_sidecar(
             &path,
             ALBEDO,
-            ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) }),
+            ImportSettings::Texture(TextureSettings::from(TextureClass::Color(ColorSettings::default()))),
         );
     }
 

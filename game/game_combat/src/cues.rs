@@ -293,6 +293,12 @@ impl CueShow {
         })
     }
 
+    /// Whether its effects have mesh layers (M5 L5): what the fight declares, so the renderer builds the effect
+    /// meshes' pipelines ahead, and none of them for a library without.
+    pub(crate) fn has_meshes(&self) -> bool {
+        self.world.library().has_meshes()
+    }
+
     /// Plays effects within `budget` from now on: a quality tier's change, at a pause or a wipe (M4 T3). Effects
     /// playing end.
     pub(crate) fn set_budget(&mut self, budget: VfxBudget) {
@@ -361,7 +367,7 @@ impl CueShow {
         // On one character's stage everyone stands where it does, as tall as they are.
         let stand_of = |id| match stand {
             Some(feet) => {
-                Some(Stand::of(sim, id).map_or(Stand { feet, crown: feet }, |at| at.moved_to(feet)))
+                Some(Stand::of(sim, id).map_or(Stand { feet, crown: feet, yaw: 0.0 }, |at| at.moved_to(feet)))
             }
             None => Stand::of(sim, id),
         };
@@ -1166,7 +1172,7 @@ mod tests {
         let mut clock = sapphire_time::ScaledClock::new();
         let mut screen = EffectStack::new(clock.new_local_clock());
         let mut fired = FiredShakes::default();
-        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y });
+        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y, yaw: 0.0 });
         let mut step = CueStep {
             vfx: &mut show.world,
             screen: &mut screen,

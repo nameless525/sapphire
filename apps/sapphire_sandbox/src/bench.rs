@@ -34,9 +34,13 @@
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 //!
-//! A fight is measured whole, by phases: `crate::fight_bench`. A zone stage (`--zone`, M3 C1) adds what
-//! walking a zone costs, from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a
-//! pipeline, as a fight's bench does.
+//! A fight is measured whole, by phases: `crate::fight_bench`, and so is a zone stage's walk (`--zone
+//! --zone-walk`, M5 B4) but with `--draw-every`. A zone stage (`--zone`, M3 C1) adds what walking a zone costs,
+//! from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a pipeline, as a fight's bench does.
+//!
+//! Every bench first logs the class its OS schedules its threads in, the main thread's and the compute pool's,
+//! then asks for the main thread to be scheduled as user-interactive, as a game the user started is
+//! ([`schedule`]): a run started from a background shell would otherwise measure what the shell's class allows.
 
 use std::time::Duration;
 
@@ -158,8 +162,13 @@ pub(crate) fn run(
     let startup = Stopwatch::start();
     let mut stage = crate::offscreen::stage(platform, options)?;
     let startup = startup.elapsed();
+    // After the stage, which starts the job system with the app's settings.
+    schedule();
     if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {
-        return crate::fight_bench::run(&mut stage, fight, options, (frames, width, height), startup);
+        return crate::fight_bench::run(&mut stage, Some(fight), options, (frames, width, height), startup);
+    }
+    if options.zone_walk.is_some() && options.draw_every.is_none() {
+        return crate::fight_bench::run(&mut stage, None, options, (frames, width, height), startup);
     }
 
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
@@ -171,7 +180,7 @@ pub(crate) fn run(
     let (mut tod_total, mut tod_max) = (Duration::ZERO, Duration::ZERO);
     // The effects' simulation and frame write per measured frame (`--vfx`), and what they held.
     let (mut vfx_total, mut vfx_max) = (Duration::ZERO, Duration::ZERO);
-    let (mut vfx_particles, mut vfx_points) = (0_u64, 0_u64);
+    let (mut vfx_particles, mut vfx_points, mut vfx_meshes) = (0_u64, 0_u64, 0_u64);
     // The HUD's update and draw, with `--hud`: its total and its slowest.
     let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
@@ -214,6 +223,7 @@ pub(crate) fn run(
             vfx_max = vfx_max.max(effects.simulation.simulation);
             vfx_particles += u64::from(effects.sprites);
             vfx_points += u64::from(effects.ribbon_points);
+            vfx_meshes += u64::from(effects.meshes);
             if let Some(hud) = &stage.show.hud {
                 let (_, cost) = hud.last_frame();
                 hud_total += cost;
@@ -330,6 +340,7 @@ pub(crate) fn run(
         vfx_sim_us_max = format_args!("{:.2}", micros(vfx_max)),
         vfx_sprites_mean = vfx_particles / u64::from(frames),
         vfx_ribbon_points_mean = vfx_points / u64::from(frames),
+        vfx_meshes_mean = vfx_meshes / u64::from(frames),
         hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
         ui_quads = stage.renderer.stats().ui.quads,
@@ -362,6 +373,39 @@ pub(crate) fn run(
     gpu_times(&mut stage, &view, settings.bloom_levels, spin)?;
     stage.check_gpu()?;
     stage.show.fight.finish().map_err(AppInitError::msg)
+}
+
+/// Logs the classes the OS schedules the bench's threads in as it was started, the main thread's and the compute
+/// pool's (a sample of its workers), and the kinds of core they were on; then asks for the main thread to be
+/// scheduled as user-interactive, as an app the user starts has its main thread, and logs whether it took. Where
+/// the OS has no classes, it logs that they're unknown.
+fn schedule() {
+    let class = |class: Option<sapphire_platform::ThreadClass>| class.map_or("unknown", |class| class.name());
+    let core = |core: Option<sapphire_platform::CoreKind>| core.map_or("unknown", |core| core.name());
+    let main = (sapphire_platform::thread_class(), sapphire_platform::current_core());
+    let workers = sapphire_jobs::scope(|scope| {
+        for _ in 0..sapphire_jobs::system().compute_pool().thread_num() {
+            scope.spawn(|| (sapphire_platform::thread_class(), sapphire_platform::current_core()));
+        }
+    });
+    let mut classes = String::new();
+    for (worker_class, worker_core) in &workers {
+        classes.push_str(class(*worker_class));
+        classes.push('/');
+        classes.push_str(core(*worker_core));
+        classes.push(' ');
+    }
+    let took = sapphire_platform::set_thread_class(sapphire_platform::ThreadClass::UserInteractive);
+    tracing::info!(
+        target: LOG_TARGET,
+        main = class(main.0),
+        main_core = core(main.1),
+        workers = classes.trim_end(),
+        layout = ?sapphire_platform::core_layout(),
+        set_user_interactive = took,
+        now = class(sapphire_platform::thread_class()),
+        "bench scheduling",
+    );
 }
 
 /// Turns the screen's insets by `across` (`--ui-spin`), so they draw again this frame.

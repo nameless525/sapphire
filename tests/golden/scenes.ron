@@ -458,7 +458,7 @@
                 ticks: 90,
                 args: ["--plain-post", "--faces", "--stage", "pillar", "--time-of-day", "14",
                        "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
-                       "--fog", "off", "--ao", "off"],
+                       "--fog", "off", "--ao", "off", "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 17.8, warp: 34.0),
             ),
             // The courtyard (W4) by day with shadows: the colonnade, the wall and the boulders cast
@@ -665,7 +665,8 @@
                 ticks: 228,
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 31.9, warp: 73.6),
             ),
             // The ward's boss (M3 C2) on its terrace, a moment after its second wind's toll threw the
@@ -1228,7 +1229,8 @@
                 name: "arena-ultimate-chop",
                 ticks: 126,
                 args: ["--arena", "--replay", "tests/replays/arena-ultimate.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 50.5, warp: 81.4),
             ),
             // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with a crisp
@@ -1244,7 +1246,8 @@
                 ticks: 240,
                 args: ["--cues", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-skirmish.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 56.8, warp: 132.4),
             ),
             // A boss (M3 B3) a few steps past the hit that took it under half its health, at tick 652 of its
@@ -1255,7 +1258,8 @@
                 ticks: 670,
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-boss.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 45.3, warp: 64.1),
             ),
             // Two kinds of enemy in one fight (M3 B3b): the captain, a head over the warrior beside it, each
@@ -1265,7 +1269,8 @@
                 ticks: 90,
                 args: ["--cues", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-captain.sreplay", "--time-of-day", "10",
-                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
+                       "--character-shadows", "own"],
                 ci_seconds: (lavapipe: 45.2, warp: 90.4),
             ),
             (
@@ -1304,7 +1309,8 @@
             ),
             // The character dissolving partway in the courtyard (M5 L11): a value noise over its UVs
             // cuts it away in every pass, its outlines too, and the points just above the cut glow
-            // orange, unlit, blooming as the world's light; it takes no rim, and its shadow stays whole.
+            // orange, unlit, blooming as the world's light; it takes no rim, and its shadow has the
+            // same cut (M5 L12's masked caster).
             (
                 name: "dissolve-partway",
                 ticks: 90,
@@ -1458,6 +1464,17 @@
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 10.5, warp: 29.7),
+            ),
+            // The same fall with springs on, and their floor (M5 C2): the feet's probes find the paving, and
+            // the long hair and the hem that fall with her lie on it, spread on the stone, where with no
+            // floor the hair goes through it. IK is on for the probes.
+            (
+                name: "lookdev-death-back-springs",
+                ticks: 150,
+                args: ["--look-dev", "down", "--graph", "defeat", "--ik", "on", "--time-of-day", "17",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 8.8, warp: 28.9),
             ),
             // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
             // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines
@@ -3676,6 +3693,77 @@
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 69.6, warp: 100.6),
+            ),
+            // Effect meshes (M5 L5), at dusk over the look-dev character, each a quarter of the way or more into its
+            // life: a shockwave ring opening on the paving with a pillar of light in it, streaks scrolling round
+            // both; a dome of warm light burning away, a pale edge where it burns; and a burst's flipbook on a card
+            // on the phones' path, drawn in the main pass against its depth with no soft fade, its frames stepped.
+            (
+                name: "vfxmesh-scroll",
+                ticks: 76,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-scroll"],
+                ci_seconds: (lavapipe: 20.3, warp: 44.3),
+            ),
+            (
+                name: "vfxmesh-erosion",
+                ticks: 80,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-erosion"],
+                ci_seconds: (lavapipe: 13.8, warp: 45.5),
+            ),
+            (
+                name: "vfxmesh-flipbook",
+                ticks: 72,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-flipbook"],
+                ci_seconds: (lavapipe: 15.5, warp: 35.7),
+            ),
+            // The skill's first cut as the cue table fires it (`skill_hit`, `skill_arc` at `Facing`), from
+            // `dodge-dash`'s recording, landing on the look-dev character as the `hit-*` scenes do: six ticks in,
+            // the crescent sweeping round from behind the character's right to in front of its hips, streaks
+            // running toward its head.
+            (
+                name: "vfxmesh-skill-hit",
+                ticks: 184,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/dodge-dash.sreplay", "--cues"],
+                ci_seconds: (lavapipe: 20.4, warp: 50.6),
+            ),
+            // Characters shadowing each other (M5 L12): three of the character in a row toward a low
+            // golden-hour sun, seen from its side. The nearest the sun shades the middle one's lit
+            // side through its tile of the atlas, the middle one the farthest, in their own shade
+            // tones; nothing shades itself, and the floor takes all three.
+            (
+                name: "shadows-party",
+                ticks: 90,
+                args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 2.3, warp: 17.3),
+            ),
+            // The same on Mobile-Low: each takes the others' capsules instead of their tiles, soft
+            // shadows sized by the light's angle, on the middle and farthest figures and the middle
+            // one's pedestal (the mannequin's own).
+            (
+                name: "shadows-party-mobile",
+                ticks: 90,
+                args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
+                       "--tier", "mobile-low", "--plain-sky", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 3.6),
+            ),
+            // The face rig under a low morning sun along its rows: each head's neighbor toward the sun
+            // shades it, per pixel on the face. The second head's face map keeps its left half in
+            // shadow and the cast shadow takes the lit half: the face shows the darker of the two,
+            // eyes and brows with it.
+            (
+                name: "shadows-party-faces",
+                ticks: 90,
+                args: ["--plain-post", "--faces", "--stage", "floor", "--time-of-day", "7",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 11.0, warp: 40.6),
             ),
         ],
     ),

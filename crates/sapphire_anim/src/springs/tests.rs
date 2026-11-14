@@ -222,6 +222,101 @@ fn springs_at_30_60_and_120_hz() {
     }
 }
 
+/// How a test's character is driven a frame: leading, or taking a turn every `n`th frame and waiting
+/// between.
+#[derive(Clone, Copy, Debug)]
+enum Turns {
+    Lead,
+    Every(u32),
+}
+
+/// `motion` for `seconds` at `hz` with `turns` and `tuning`: the solver's tails, in the world, at every
+/// fifth of a second (every 12 ticks), when every rotation here has just stepped.
+fn turns_path_tuned(
+    rig: &CharacterRig,
+    substeps: Substeps,
+    tuning: SpringTuning,
+    hz: u32,
+    turns: Turns,
+    motion: Motion,
+    seconds: u32,
+) -> Vec<Vec3> {
+    let mut character = Character::new(rig, substeps);
+    character.springs.set_tuning(tuning);
+    let mut tails = Vec::new();
+    for frame in 0..=seconds * hz {
+        character.springs.set_pace(match turns {
+            Turns::Lead => SpringPace::Lead,
+            Turns::Every(n) if frame.is_multiple_of(n) => SpringPace::Step,
+            Turns::Every(_) => SpringPace::Wait,
+        });
+        let ticks = f64::from(frame) * 60.0 / f64::from(hz);
+        character.frame(motion, ticks);
+        if (frame * 60) % (hz * 12) == 0 {
+            tails.extend(character.springs.tails().map(|tail| tail.position));
+        }
+    }
+    tails
+}
+
+/// The promise kept for a character taking turns (M5 C2): one step over the time it waited, stable and
+/// near the path every frame's sub-steps take. At 60 Hz, a turn every 2nd, 3rd and 4th frame steps at
+/// 30, 20 and 15 Hz. At each sub-step count that ships, the solver's tails stay within these of where the
+/// 120 Hz lead has them, at every fifth of a second, with the shipped tuning and with VRM's, which throws
+/// the strand much further (a lead at the same rates stays within 3.5 mm of it: a step's length, not the
+/// frame rate, is what moves it). The rotation goes no further than every other frame on any tier.
+#[test]
+fn springs_take_turns_at_30_20_and_15_hz() {
+    let shipped = CharacterMotion::shipped().springs;
+    // As built, the most either motion reached at either sub-step count: shipped 20, 26 and 29 mm, VRM's
+    // 109, 134 and 154 mm, on the strike at two sub-steps.
+    for (every, most_shipped, most_vrm) in [(2, 0.025, 0.12), (3, 0.03, 0.15), (4, 0.035, 0.17)] {
+        for (motion, name) in [(sway as Motion, "sway"), (strike, "strike")] {
+            for substeps in [Substeps::One, Substeps::Two] {
+                for (tuning, most) in [(shipped, most_shipped), (SpringTuning::VRM, most_vrm)] {
+                    let reference = turns_path_tuned(&hair(), substeps, tuning, 120, Turns::Lead, motion, 3);
+                    let tails =
+                        turns_path_tuned(&hair(), substeps, tuning, 60, Turns::Every(every), motion, 3);
+                    let apart = furthest_apart(&tails, &reference);
+                    assert!(
+                        apart.is_finite() && apart <= most,
+                        "{name} {substeps:?} every {every}: {apart} m off"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A turn every `n`th frame steps exactly as a frame every `n`th would: waiting changes nothing the
+/// solver keeps.
+#[test]
+fn a_turn_every_few_frames_is_a_frame_every_few() {
+    for substeps in [Substeps::One, Substeps::Two] {
+        for every in [2_u32, 3, 4] {
+            let mut turns = Character::new(&hair(), substeps);
+            let mut slow = Character::new(&hair(), substeps);
+            slow.springs.set_pace(SpringPace::Step);
+            for frame in 0_u32..=180 {
+                turns.springs.set_pace(if frame.is_multiple_of(every) {
+                    SpringPace::Step
+                } else {
+                    SpringPace::Wait
+                });
+                turns.frame(strike, f64::from(frame));
+                if frame.is_multiple_of(every) {
+                    slow.frame(strike, f64::from(frame));
+                    assert_eq!(
+                        turns.springs.tails, slow.springs.tails,
+                        "{substeps:?} every {every} at {frame}"
+                    );
+                    assert_eq!(turns.bits(), slow.bits(), "the step's frame draws the same");
+                }
+            }
+        }
+    }
+}
+
 /// A character standing in a bare pose converges on its rest and stays there, with no jitter, at every
 /// sub-step count. Then it stops: updates write nothing, so the character isn't skinned again.
 #[test]
@@ -542,6 +637,189 @@ fn a_frozen_clock_holds_to_the_bit_and_carries_on() {
             running.frame(strike, f64::from(tick) + 0.25);
             assert_eq!(stopping.bits(), running.bits(), "{substeps:?} at {tick}");
         }
+    }
+}
+
+/// A frozen clock steps nobody, whatever their turn: a character stepping or waiting holds to the bit,
+/// and carries on as if the clock never stopped.
+#[test]
+fn a_frozen_clock_steps_nobody_taking_turns() {
+    for pace in [SpringPace::Step, SpringPace::Wait] {
+        let mut stopping = Character::new(&hair(), Substeps::Two);
+        let mut running = Character::new(&hair(), Substeps::Two);
+        let turn = |frame: u32| if frame.is_multiple_of(3) { SpringPace::Step } else { SpringPace::Wait };
+        for frame in 0..40 {
+            stopping.springs.set_pace(turn(frame));
+            running.springs.set_pace(turn(frame));
+            stopping.frame(strike, f64::from(frame) + 0.25);
+            running.frame(strike, f64::from(frame) + 0.25);
+        }
+        let held = stopping.bits();
+        let tails = stopping.springs.tails.clone();
+        stopping.springs.set_pace(pace);
+        for _ in 0..12 {
+            let frame = stopping.frame_at(39.25, false, true);
+            assert!(!stopping.springs.is_due(frame.ticks, &frame.world_from_model), "{pace:?}");
+            assert_eq!(
+                stopping.springs.update(&mut stopping.pose, &frame),
+                SpringWork::default(),
+                "{pace:?}"
+            );
+            assert_eq!(stopping.bits(), held, "{pace:?}");
+            let work = stopping.frame(strike, 39.25);
+            assert_eq!(work.substeps, 0);
+            assert_eq!(stopping.bits(), held, "{pace:?}: the same pose evaluated again draws the same");
+            assert_eq!(stopping.springs.tails, tails);
+        }
+        for frame in 40..70 {
+            stopping.springs.set_pace(turn(frame));
+            running.springs.set_pace(turn(frame));
+            stopping.frame(strike, f64::from(frame) + 0.25);
+            running.frame(strike, f64::from(frame) + 0.25);
+            assert_eq!(stopping.bits(), running.bits(), "{pace:?} at {frame}");
+        }
+    }
+}
+
+/// The tip's path drawn at 60 Hz through `motion`, taking a turn every `every`th frame (every frame
+/// leads for 1), past the first second: its biggest move a frame, its biggest bend (the change of move
+/// from one frame to the next), and its biggest move on a frame that waited.
+fn drawn_path(every: u32, motion: Motion) -> (f32, f32, f32) {
+    let mut character = Character::new(&hair(), Substeps::Two);
+    let mut path = Vec::new();
+    for frame in 0_u32..=240 {
+        character.springs.set_pace(match every {
+            1 => SpringPace::Lead,
+            _ if frame.is_multiple_of(every) => SpringPace::Step,
+            _ => SpringPace::Wait,
+        });
+        let work = character.frame(motion, f64::from(frame));
+        if every > 1 && frame % every != 0 {
+            assert_eq!(work.substeps, 0, "frame {frame}");
+        }
+        if frame > 60 {
+            path.push((frame % every != 0, character.world_of(TIP)));
+        }
+    }
+    let steps: Vec<(bool, Vec3)> = path.windows(2).map(|pair| (pair[1].0, pair[1].1 - pair[0].1)).collect();
+    let bend = steps.windows(2).map(|pair| (pair[1].1 - pair[0].1).length()).fold(0.0, f32::max);
+    let speed = steps.iter().map(|(_, step)| step.length()).fold(0.0, f32::max);
+    let waiting =
+        steps.iter().filter(|(waited, _)| *waited).map(|(_, step)| step.length()).fold(0.0, f32::max);
+    (speed, bend, waiting)
+}
+
+/// Between its turns a waiting character's chains ride with the body in their bones' own space, drawn
+/// on toward the last step: the tip moves on through the frames that wait no faster than through any
+/// other, so nothing jumps, and its path bends where the strides meet by no more than these times the
+/// lead's own bend on the same motion: a stride's change of motion comes at once, where the lead's
+/// comes a sub-step at a time.
+#[test]
+fn waiting_chains_draw_on_smoothly() {
+    for motion in [sway as Motion, strike] {
+        let (_, lead_bend, _) = drawn_path(1, motion);
+        for (every, most) in [(2, 3.0), (3, 4.5), (4, 6.0)] {
+            let (speed, bend, waiting) = drawn_path(every, motion);
+            eprintln!(
+                "every {every}: speed {speed} bend {bend} waiting {waiting}, the lead's bend {lead_bend}"
+            );
+            assert!(waiting <= speed, "every {every}: {waiting} m on a frame that waited against {speed}");
+            assert!(
+                bend <= lead_bend * most,
+                "every {every}: a bend of {bend} m against the lead's {lead_bend}"
+            );
+        }
+    }
+}
+
+/// Lying on its back, a character's strand falls on the floor (M5 C2).
+fn lying(_: f64) -> Posed {
+    Posed {
+        root: Vec3::new(0.0, 0.3, 0.0),
+        turn: Quat::from_rotation_x(core::f32::consts::FRAC_PI_2),
+        ..Posed::default()
+    }
+}
+
+/// The world's floor at `height` with its `up`, in the model's space of a character [`lying`].
+fn floor_under_lying(height: f32, up: Vec3) -> SpringFloor {
+    let Posed { root, turn, .. } = lying(0.0);
+    let point = turn.inverse() * (Vec3::new(0.0, height, UNDER_THE_HEAD) - root);
+    SpringFloor { point, normal: turn.inverse() * up }
+}
+
+/// How far `tail` is above the world's floor at `height` with its `up`, past its hit radius.
+fn above(tail: &SpringTail, height: f32, up: Vec3) -> f32 {
+    up.dot(tail.position - Vec3::new(0.0, height, UNDER_THE_HEAD)) - tail.hit_radius
+}
+
+/// Where along the world's z the floor's height is measured: under the strand of a character [`lying`].
+const UNDER_THE_HEAD: f32 = 1.2;
+
+/// A strand falling on a floor, flat or sloping, stops on it with its hit radius between and never goes
+/// below, at every rate and pace; then it comes to rest, doesn't creep along the slope, and stops work.
+#[test]
+fn a_strand_falling_on_a_floor_settles_above_it_and_rests() {
+    // Heavy hair that a body lying down lets fall: 30 cm under its head.
+    let heavy = rig(vec![strand(0.05, 0.4, 1.0)]);
+    let slope = Vec3::new(0.0, 1.0, 0.35).normalize();
+    for (up, ground) in [(Vec3::Y, "flat"), (slope, "slope")] {
+        for substeps in [Substeps::One, Substeps::Two] {
+            for turns in [Turns::Lead, Turns::Every(3)] {
+                let mut character = Character::new(&heavy, substeps);
+                character.springs.set_floor(Some(floor_under_lying(0.12, up)));
+                let mut rested = 0;
+                let mut tip_at_rest = None;
+                for frame in 0..=900 {
+                    character.springs.set_pace(match turns {
+                        Turns::Every(n) if frame % n != 0 => SpringPace::Wait,
+                        Turns::Every(_) => SpringPace::Step,
+                        Turns::Lead => SpringPace::Lead,
+                    });
+                    // Lying still: the pose evaluated once, then frames with nothing new but time.
+                    let work = if frame == 0 {
+                        character.frame(lying, 0.0)
+                    } else {
+                        let at = character.frame_at(f64::from(frame), false, true);
+                        character.springs.update(&mut character.pose, &at)
+                    };
+                    let lowest =
+                        character.springs.tails().map(|tail| above(&tail, 0.12, up)).fold(f32::MAX, f32::min);
+                    assert!(
+                        lowest >= -1e-4,
+                        "{ground} {substeps:?} {turns:?}: {lowest} m into it at {frame}"
+                    );
+                    rested = if work.wrote_pose { 0 } else { rested + 1 };
+                    if frame == 600 {
+                        tip_at_rest = character.springs.tails().last().map(|tail| tail.position);
+                    }
+                }
+                let lowest =
+                    character.springs.tails().map(|tail| above(&tail, 0.12, up)).fold(f32::MAX, f32::min);
+                assert!(
+                    lowest < 0.002,
+                    "{ground} {substeps:?} {turns:?}: it lies on the floor, {lowest} m up"
+                );
+                assert!(rested > 60, "{ground} {substeps:?} {turns:?}: it comes to rest ({rested} frames)");
+                let tip = character.springs.tails().last().map(|tail| tail.position);
+                let crept = tip.zip(tip_at_rest).map_or(0.0, |(tip, was)| tip.distance(was));
+                assert!(crept < 1e-4, "{ground} {substeps:?} {turns:?}: crept {crept} m");
+            }
+        }
+    }
+}
+
+/// A floor nothing reaches changes nothing, to the bit, and neither does taking it away.
+#[test]
+fn a_floor_out_of_reach_changes_nothing() {
+    let mut plain = Character::new(&hair(), Substeps::Two);
+    let mut floored = Character::new(&hair(), Substeps::Two);
+    let far_below = SpringFloor { point: Vec3::new(0.0, -0.5, 0.0), normal: Vec3::Y };
+    for frame in 0..120 {
+        floored.springs.set_floor((frame % 50 < 40).then_some(far_below));
+        plain.frame(strike, f64::from(frame));
+        floored.frame(strike, f64::from(frame));
+        assert_eq!(plain.bits(), floored.bits(), "at {frame}");
     }
 }
 

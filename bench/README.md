@@ -41,5 +41,12 @@ side (a shipping build mounts only what its release manifest names): put `target
 --zone-walk tour --time-of-day 19.75 --capture-ticks 300` (`--time-of-day 23` for the night key, `--bench
 <frames>` in place of `--capture` to time the walk).
 
+A `--bench` of the walk (M5 B4) measures it as a fight is measured, by phases: a cold walk from the tour's
+start, then a walk again for the CPU rows and another for the GPU rows, each `<frames>` long (a lap of the
+tour at run speed is about 7,560 frames, half that on Mobile-Low's two steps a frame). It logs every row's
+median, p95 and worst with the metres walked at the worst frame, each counter of what the frame drew against
+spec §3.4's budgets (`count row`), and how the frames split between performance and efficiency cores (`frames
+by core`); `--bench-trace <csv>` writes every frame. Spec §3.8 is its first reading.
+
 See `docs/m5-plan.md` (B1 to B4) and the spec's §5.27 for the route, and `sapphire_pipeline::procedural` for
 the procedural texture documents.

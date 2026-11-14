@@ -1,12 +1,13 @@
 //! `sapphire_testkit`: runs test suites that need a built app, as a process, because nothing may
 //! depend on a tool crate (rule R1). `cargo xtask golden` builds the sandbox and this binary,
-//! then runs `golden`, and `cargo xtask store-shots` runs `store-shots`. `measure` reads lines and edges from
-//! two captures of one shot.
+//! then runs `golden`, `cargo xtask store-shots` runs `store-shots` and `cargo xtask counts` runs
+//! `counts`. `measure` reads lines and edges from two captures of one shot.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use sapphire_testkit::counts;
 use sapphire_testkit::flashes::{FlashAnalyser, Verdict};
 use sapphire_testkit::golden::{self, Image, Thresholds};
 use sapphire_testkit::look::{Lines, Region, Spread};
@@ -29,6 +30,16 @@ Usage:
                                [--scene-timeout <seconds>]
       Draw the stores' screenshots (sapphire_testkit::store_shots) into <out>/<store>/<size>/
       <language>/, emptied first, with each capture's log in <out>/logs/.
+  sapphire_testkit counts --sandbox <exe> --content <dir> --table <file> --out <dir>
+                          [--sources <dir>] [--update] [--walk <name>]... [--walk-timeout <seconds>]
+      Walk the benchmark district's tour with the sandbox's walk bench at each tier's
+      settings, dusk and night, and compare each walk's count rows with the table: one line
+      for each row that moved, with what the table holds, what the walk saw and which way.
+      --content is a desktop cook with the district's pack and a release manifest naming it
+      (`cargo xtask counts` makes it). --sources is the district's generated sources, whose
+      digest the table names. --walk runs one walk (more than once for more); --update
+      rewrites those walks' rows. Each walk's log is <out>/<walk>.log, and what every walk
+      counted is <out>/counts.txt, a table (sapphire_testkit::counts).
   sapphire_testkit measure <with lines.png> <without lines.png> [--region <x,y,width,height>]
       Measure two captures of one shot, drawn with lines and without (the sandbox's
       --outline-distance 0), over the region or the whole image, in output pixels: the
@@ -69,9 +80,11 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         Some("measure") => return measure(&args[1..]).map(|()| Vec::new()),
         Some("compare") => return compare(&args[1..]).map(|()| Vec::new()),
         Some("flashes") => return flashes(&args[1..]),
+        Some("counts") => return counts(args.split_off(1)),
         _ => {
             return Err(
-                "expected the `golden`, `store-shots`, `measure`, `compare` or `flashes` command".into()
+                "expected the `golden`, `store-shots`, `counts`, `measure`, `compare` or `flashes` command"
+                    .into(),
             );
         }
     }
@@ -118,14 +131,47 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
     scenes::run(&paths, mode, selection, timeout)
 }
 
+/// `counts`: the scale lane's walks against its table.
+fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
+    let update = args.iter().position(|arg| arg == "--update").map(|i| args.remove(i)).is_some();
+    let mode = if update { Mode::Update } else { Mode::Compare };
+    let mut value = |name: &str| -> Result<Option<String>, String> {
+        let Some(i) = args.iter().position(|arg| arg == name) else { return Ok(None) };
+        args.remove(i);
+        (i < args.len()).then(|| args.remove(i)).map(Some).ok_or_else(|| format!("{name} needs a value"))
+    };
+    let mut walks = Vec::new();
+    while let Some(walk) = value("--walk")? {
+        walks.push(walk);
+    }
+    let mut path = |name: &str| value(name)?.map(PathBuf::from).ok_or_else(|| format!("missing {name}"));
+    let paths = counts::Paths {
+        sandbox: path("--sandbox")?,
+        content: path("--content")?,
+        table: path("--table")?,
+        out: path("--out")?,
+        sources: value("--sources")?.map(PathBuf::from),
+    };
+    let timeout = seconds("--walk-timeout", value("--walk-timeout")?, counts::DEFAULT_WALK_TIMEOUT)?;
+    if let Some(unexpected) = args.first() {
+        return Err(format!("unexpected argument `{unexpected}`"));
+    }
+    counts::run(&paths, mode, &walks, timeout)
+}
+
 /// `--scene-timeout`'s value, or the default.
 fn timeout(text: Option<String>) -> Result<Duration, String> {
+    seconds("--scene-timeout", text, DEFAULT_SCENE_TIMEOUT)
+}
+
+/// A flag's whole seconds from 1, or `default`.
+fn seconds(flag: &str, text: Option<String>, default: Duration) -> Result<Duration, String> {
     match text {
         Some(text) => match text.parse::<u64>() {
             Ok(seconds) if seconds > 0 => Ok(Duration::from_secs(seconds)),
-            _ => Err(format!("invalid --scene-timeout {text:?}: expected whole seconds from 1")),
+            _ => Err(format!("invalid {flag} {text:?}: expected whole seconds from 1")),
         },
-        None => Ok(DEFAULT_SCENE_TIMEOUT),
+        None => Ok(default),
     }
 }
 

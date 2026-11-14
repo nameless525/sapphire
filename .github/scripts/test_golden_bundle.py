@@ -30,8 +30,8 @@ class GoldenBundleTests(unittest.TestCase):
         files = {
             f"target/debug/sapphire_sandbox{suffix}": b"sandbox bytes",
             f"target/debug/sapphire_testkit{suffix}": b"testkit bytes",
-            "target/content/desktop/shared.spack": b"shared pack bytes",
-            "target/content/desktop/zones/forest.spack": b"zone pack bytes",
+            f"{golden_bundle.CONTENT}/shared.spack": b"shared pack bytes",
+            f"{golden_bundle.CONTENT}/zones/forest.spack": b"zone pack bytes",
         }
         if family == "dx12-warp":
             files["target/debug/d3d10warp.dll"] = b"pinned driver bytes"
@@ -136,7 +136,7 @@ class GoldenBundleTests(unittest.TestCase):
         (self.workspace / "target/debug/d3d10warp.dll").unlink()
         with self.assertRaisesRegex(ValueError, "Missing"):
             golden_bundle.create(self.workspace, self.archive, self.commit, "dx12-warp")
-        (self.workspace / "target/content/desktop/shared.spack").unlink()
+        (self.workspace / golden_bundle.CONTENT / "shared.spack").unlink()
         with self.assertRaisesRegex(ValueError, "completed desktop cook"):
             golden_bundle.create(self.workspace, self.archive, self.commit, "dx12-warp")
 

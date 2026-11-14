@@ -1,13 +1,15 @@
 //! `cargo xtask golden [--update] [--scene <name> | --shard <index>/<count>]
 //! [--scene-timeout <seconds>]`: golden-image tests (spec §9 gate 3).
 //!
-//! Cooks the desktop content, builds the sandbox and `sapphire_testkit` for the host, then
+//! Cooks the desktop content and the benchmark's `ci` district beside it (`bench::with_content`, M5 X4: the
+//! district's scenes draw it), builds the sandbox and `sapphire_testkit` for the host, then
 //! runs `sapphire_testkit golden`, which owns the scenes, their deadlines, the split into shards
 //! and the comparison (`sapphire_testkit::scenes`). It runs as a process because nothing may
 //! depend on a tool crate (rule R1), as with `sapphire_pipeline`.
 
 use std::process::Command;
 
+use crate::bench;
 use crate::platforms::{self, App, Options, SANDBOX};
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -26,6 +28,7 @@ pub fn run(golden: &Golden<'_>) -> anyhow::Result<()> {
     // Held while the sandbox runs, so no other xtask run recooks the content under it, and the copy of
     // the sandbox every scene launches stays what this built.
     let (content, sandbox) = platforms::desktop_build(&App::load(SANDBOX)?, &Options::default())?;
+    let content = bench::with_content(content)?;
     let env = platforms::host_build_env()?;
     let testkit = workspace::build_binary(
         &CargoBuild { package: TESTKIT, target: None, profile: BuildProfile::Dev, features: &[], env: &env },

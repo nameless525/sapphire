@@ -13,9 +13,15 @@
 //!
 //! Generating takes `target/bench/<preset>/generate.lock` and a cook `target/bench/<preset>/<cook>.lock`, as
 //! `content` locks its cooks, so a desktop and a mobile cook of one preset can run at once.
+//!
+//! **What tests draw** ([`with_content`], M5 X4): the golden scenes and CI's scale lane (`cargo xtask counts`)
+//! run a shipping build, which mounts only what its release manifest names, so they take the shipped desktop
+//! cook with the `ci` district's pack beside it, in `target/bench/ci/with-content/desktop/`, and a manifest
+//! naming both that the pipeline writes (`sapphire_pipeline manifest`). The folder is a test's, never an
+//! app's or a release's.
 
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
@@ -140,6 +146,87 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
     Ok(BenchCooked { dir: out, _lock: lock })
 }
 
+/// The district's pack in a preset's cook: the zone the generated sources are.
+pub const DISTRICT_PACK: &str = "zone_district.spack";
+
+/// The shipped desktop cook with the `ci` district's pack beside it, for tests, held under a shared lock
+/// until dropped (see the module docs).
+#[derive(Debug)]
+pub struct WithContent {
+    pub dir: PathBuf,
+    _lock: File,
+    _content: content::Cooked,
+    _bench: BenchCooked,
+}
+
+/// The folder the golden scenes and the scale lane mount: `target/bench/ci/with-content/desktop/`.
+pub fn with_content_dir() -> PathBuf {
+    output_dir().join(Preset::Ci.name()).join("with-content").join(Cook::Desktop.name())
+}
+
+/// Cooks the `ci` district for desktop and puts it together with `shipped`, the desktop cook of `content/`,
+/// for a shipping build: every file of the shipped cook but its manifest, linked (or copied where links can't
+/// be made), the district's pack beside them, and a manifest of the folder from the pipeline. It takes the
+/// shipped cook already held, since a run that holds it can't cook it again.
+pub fn with_content(shipped: content::Cooked) -> anyhow::Result<WithContent> {
+    if shipped.dir != content::cooked_dir(Cook::Desktop) {
+        bail!("the district goes beside the desktop cook, not {}", shipped.dir.display());
+    }
+    let bench = cook(Preset::Ci, Cook::Desktop)?;
+    let out = with_content_dir();
+    fs::create_dir_all(out.parent().expect("under target/bench"))?;
+    let lock = workspace::lock_file(&out.with_extension("lock"))?;
+    let waiting = "to finish putting the content and the district together";
+    workspace::wait_for_lock(&lock, File::try_lock, File::lock, waiting)?;
+    if out.exists() {
+        fs::remove_dir_all(&out)?;
+    }
+    fs::create_dir_all(&out)?;
+    link_tree(&shipped.dir, &out, &|name| name != MANIFEST)?;
+    let district = bench.dir.join(DISTRICT_PACK);
+    if !district.is_file() {
+        bail!("the {} cook in {} has no {DISTRICT_PACK}", Preset::Ci.name(), bench.dir.display());
+    }
+    link(&district, &out.join(DISTRICT_PACK))?;
+    let mut manifest = Command::new(content::pipeline()?);
+    manifest.arg("manifest").arg("--packs").arg(&out).args(["--cook", Cook::Desktop.name()]);
+    workspace::run(&mut manifest)?;
+    lock.unlock()?;
+    workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, waiting)?;
+    Ok(WithContent { dir: out, _lock: lock, _content: shipped, _bench: bench })
+}
+
+/// A cook's release manifest, which [`with_content`] writes anew.
+const MANIFEST: &str = "release.smanifest";
+
+/// Links every file under `from` into `to`, keeping the tree, but a top-level entry `keep` refuses.
+fn link_tree(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) -> anyhow::Result<()> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !keep(&name.to_string_lossy()) {
+            continue;
+        }
+        let (source, target) = (entry.path(), to.join(&name));
+        if entry.file_type()?.is_dir() {
+            fs::create_dir_all(&target)?;
+            link_tree(&source, &target, &|_| true)?;
+        } else {
+            link(&source, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// A hard link from `to` to `from`'s bytes, or a copy where the filesystem won't link.
+fn link(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if fs::hard_link(from, to).is_err() {
+        fs::copy(from, to)
+            .map_err(|error| anyhow!("failed to copy {} to {}: {error}", from.display(), to.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -163,6 +250,24 @@ mod tests {
         assert!(cooked_dir(Preset::Ci, Cook::Mobile).ends_with("target/bench/ci/mobile"));
         assert!(loose_dir(Preset::Ci, Cook::Desktop).ends_with("target/bench/ci/loose/desktop"));
         assert!(cache_dir().ends_with("target/bench/cache"));
+        assert!(with_content_dir().ends_with("target/bench/ci/with-content/desktop"));
+    }
+
+    #[test]
+    fn a_tree_links_but_what_it_leaves_out() {
+        let root = std::env::temp_dir().join(format!("xtask_link_tree_{}", std::process::id()));
+        let (from, to) = (root.join("from"), root.join("to"));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(from.join("documents")).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        for (name, text) in [("shared.spack", "a"), (MANIFEST, "b"), ("documents/game.ron", "c")] {
+            fs::write(from.join(name), text).unwrap();
+        }
+        link_tree(&from, &to, &|name| name != MANIFEST).unwrap();
+        assert_eq!(fs::read_to_string(to.join("shared.spack")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(to.join("documents/game.ron")).unwrap(), "c");
+        assert!(!to.join(MANIFEST).exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

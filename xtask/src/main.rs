@@ -48,13 +48,16 @@ Commands:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
       `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
       target/content/editor/, which no app ships.
-  bench-content [--preset ci|budget|double] [--cook desktop|mobile]
+  bench-content [--preset ci|budget|double] [--cook desktop|mobile] [--with-content]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
       target/bench/<preset>/sources/, then cook them into target/bench/<preset>/loose/<cook>/ and
       pack them into target/bench/<preset>/<cook>/ (defaults: ci, desktop; cache:
       target/bench/cache/). `ci` is small, for CI; `budget` is the shipped game's load, gigabytes
       of 2K texture sets: check the disk first; `double` is the budget at twice the texture pool.
-      Nothing it writes is committed or shipped.
+      Nothing it writes is committed or shipped. --with-content also cooks content/ for desktop
+      and puts the two together in target/bench/ci/with-content/desktop/ with a release manifest
+      naming both, which a shipping sandbox mounts: what `golden` and `counts` draw, and what
+      CI's golden jobs bundle.
   release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
       --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
       Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte
@@ -297,9 +300,23 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             Ok(())
         }
         "bench-content" => {
-            let preset = args.value::<bench::Preset>("--preset")?.unwrap_or(bench::Preset::Ci);
-            let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
+            let preset = args.value::<bench::Preset>("--preset")?;
+            let cook = args.value::<Cook>("--cook")?;
+            let with_content = args.flag("--with-content");
             args.finish(false)?;
+            if with_content {
+                if preset.is_some_and(|preset| preset != bench::Preset::Ci)
+                    || cook.is_some_and(|cook| cook != Cook::Desktop)
+                {
+                    bail!(
+                        "--with-content puts the ci preset's desktop cook beside the shipped one, and no other"
+                    );
+                }
+                let together = bench::with_content(content::cook(Cook::Desktop)?)?;
+                eprintln!("put the content and the ci district together in {}", together.dir.display());
+                return Ok(());
+            }
+            let (preset, cook) = (preset.unwrap_or(bench::Preset::Ci), cook.unwrap_or(Cook::Desktop));
             let cooked = bench::cook(preset, cook)?;
             eprintln!("cooked the {} benchmark for {cook} into {}", preset.name(), cooked.dir.display());
             Ok(())

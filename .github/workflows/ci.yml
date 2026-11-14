@@ -252,8 +252,9 @@ jobs:
           save-if: ${{ env.SAVE_RUST_CACHE }}
       - name: Build capture executables
         run: cargo build --package sapphire_sandbox --package sapphire_testkit --locked
-      - name: Cook the desktop content
-        run: cargo --locked xtask --locked content
+      # The content and the benchmark's `ci` district beside it, which three scenes draw (M5 X4).
+      - name: Cook the desktop content and the district
+        run: cargo --locked xtask --locked bench-content --with-content
       - name: Package exact-commit golden inputs
         shell: bash
         env:
@@ -290,8 +291,9 @@ jobs:
           save-if: ${{ env.SAVE_RUST_CACHE }}
       - name: Build capture executables
         run: cargo build --package sapphire_sandbox --package sapphire_testkit --locked
-      - name: Cook the desktop content
-        run: cargo --locked xtask --locked content
+      # The content and the benchmark's `ci` district beside it, which three scenes draw (M5 X4).
+      - name: Cook the desktop content and the district
+        run: cargo --locked xtask --locked bench-content --with-content
       - name: Install WARP 1.0.21
         shell: pwsh
         run: |
@@ -512,13 +514,14 @@ jobs:
           path: target/golden/
           if-no-files-found: ignore
           retention-days: 7
-      # AArch64's desktop cook, which the golden run made, for Cooks agree (Linux, macOS).
+      # AArch64's desktop cook and the district beside it, which the golden run made, for Cooks agree
+      # (Linux, macOS).
       - name: Upload the cook
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cooked-desktop-metal
-          path: target/content/desktop/*.spack
+          path: target/bench/ci/with-content/desktop/*.spack
           compression-level: 0
           if-no-files-found: ignore
           retention-days: 1

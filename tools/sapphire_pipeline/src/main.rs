@@ -97,6 +97,10 @@ Usage:
       unless an install of the earlier one would take it (same cook, newer, a key it names). It
       prints what an install of the earlier release fetches, by kind, and warns when that's over
       5% of the cook or the two were cooked on different architectures (manifests/<N>.arch).
+  sapphire_pipeline manifest --packs <DIR> --cook <COOK>
+      Write the unsigned release.smanifest of what DIR holds, as cook --packs does last: for a
+      folder put together from more than one cook, such as the shipped packs with the benchmark
+      district's pack beside them, which a shipping build then mounts (cargo xtask counts).
   sapphire_pipeline release-key new <FILE>
       Write a new release key to FILE, which mustn't be there: an ed25519 seed from the OS's
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
@@ -194,6 +198,11 @@ enum Command {
         packs: PathBuf,
         out: PathBuf,
         options: ReleaseOptions,
+    },
+    /// `manifest`: the unsigned manifest of a folder of packs.
+    Manifest {
+        packs: PathBuf,
+        cook: Cook,
     },
     Help,
     Version,
@@ -338,6 +347,10 @@ fn run(command: Command) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Manifest { packs, cook } => match release::write_manifest(&packs, cook)? {
+            Some(path) => println!("wrote {}", path.display()),
+            None => println!("{}'s manifest already names what's there", packs.display()),
+        },
         Command::Release { packs, out, options } => {
             let keys = release::keys_from_env(std::env::var(release::KEY_VAR).ok().as_deref())?;
             let published = release::publish(&packs, &out, &options, &keys)?;
@@ -597,6 +610,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
                 patch_from: options.value("--patch-from")?,
             },
         },
+        "manifest" => {
+            Command::Manifest { packs: options.required("--packs")?, cook: options.required("--cook")? }
+        }
         "release-key" => {
             let [action, file] = options.positional()?;
             let new = match action.as_str() {
@@ -812,6 +828,11 @@ mod tests {
             patch_from: None,
         };
         assert_eq!(parsed, Command::Release { packs: "p".into(), out: "o".into(), options: options.clone() });
+        assert_eq!(
+            parse(&["manifest", "--packs", "p", "--cook", "desktop"]).unwrap(),
+            Command::Manifest { packs: "p".into(), cook: Cook::Desktop }
+        );
+        assert!(parse(&["manifest", "--packs", "p"]).is_err(), "missing --cook");
         let patch = parse(&[
             "release",
             "--packs",

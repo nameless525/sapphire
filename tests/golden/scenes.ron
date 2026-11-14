@@ -1465,6 +1465,17 @@
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 10.5, warp: 29.7),
             ),
+            // The same fall with springs on, and their floor (M5 C2): the feet's probes find the paving, and
+            // the long hair and the hem that fall with her lie on it, spread on the stone, where with no
+            // floor the hair goes through it. IK is on for the probes.
+            (
+                name: "lookdev-death-back-springs",
+                ticks: 150,
+                args: ["--look-dev", "down", "--graph", "defeat", "--ik", "on", "--time-of-day", "17",
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
+                       "--capture-step", "1"],
+                ci_seconds: (lavapipe: 10.5, warp: 29.7),
+            ),
             // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
             // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines
             // stay on all of it, as hulls read the same palette.

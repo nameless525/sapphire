@@ -237,6 +237,9 @@
 //! - `--spring-floor on|off` (with `--clip`, `--graph` or `--arena`): lays springs and cloth on the ground
 //!   the feet's IK probes find, on by default (M5 C2). Scenes from before it whose springs touch the
 //!   ground pin it off; `lookdev-death-back-springs` shows it.
+//! - `--anim-levels on|off` and `--anim-jobs on|off` (with `--arena`): whether a fight's crowd is posed less
+//!   often far off and not at all out of sight, and whether it's posed in jobs, both on by default (M5 C1).
+//!   Neither moves anything the simulation reads; the fight bench's animation rows compare them.
 //! - `--spring-turns <n>` (with `--clip` or `--graph`): the character takes its springs' turns among `n`, as a
 //!   party member off the field does (M5 C2), so a capture shows a waiting character's chains.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as

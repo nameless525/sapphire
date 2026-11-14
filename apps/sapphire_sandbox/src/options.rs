@@ -314,6 +314,12 @@ pub(crate) struct Options {
     /// (M5 C2). On unless it says off; a golden from before it pins it off. Needs `--clip`, `--graph` or
     /// `--arena`.
     pub spring_floor: Option<bool>,
+    /// `--anim-levels on|off`: whether a fight's crowd is posed less often far off and not at all out of
+    /// sight (M5 C1). On unless it says off. Needs `--arena`.
+    pub anim_levels: Option<bool>,
+    /// `--anim-jobs on|off`: whether a fight's crowd is posed in jobs or one after another (M5 C1). On
+    /// unless it says off. Needs `--arena`.
+    pub anim_jobs: Option<bool>,
     /// `--spring-turns <n>`: the character takes turns with `n - 1` others, as a party member off the field
     /// does, in the tier's rotation (M5 C2), to see a waiting character's chains. Needs `--clip` or `--graph`.
     pub spring_turns: Option<u32>,
@@ -1125,6 +1131,20 @@ impl Options {
                         other => return Err(format!("--spring-floor expects on or off, got {other:?}")),
                     });
                 }
+                "--anim-levels" => {
+                    options.anim_levels = Some(match value("--anim-levels")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--anim-levels expects on or off, got {other:?}")),
+                    });
+                }
+                "--anim-jobs" => {
+                    options.anim_jobs = Some(match value("--anim-jobs")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--anim-jobs expects on or off, got {other:?}")),
+                    });
+                }
                 "--spring-turns" => {
                     let raw = value("--spring-turns")?;
                     let turns = raw.parse::<u32>().ok().filter(|turns| (2..=32).contains(turns));
@@ -1586,6 +1606,9 @@ impl Options {
             return Err(
                 "--spring-floor lays springs on the ground: it needs --clip, --graph or --arena".to_owned()
             );
+        }
+        if (options.anim_levels.is_some() || options.anim_jobs.is_some()) && options.arena.is_none() {
+            return Err("--anim-levels and --anim-jobs pose a fight's crowd: they need --arena".to_owned());
         }
         if options.spring_turns.is_some() && options.clip.is_none() && options.graph.is_none() {
             return Err("--spring-turns takes the character's springs in turns: it needs --clip or --graph"
@@ -2408,6 +2431,11 @@ mod tests {
         assert_eq!(parse(&floor).unwrap().0.spring_floor, Some(false));
         assert_eq!(parse(&["--look-dev", "down", "--graph", "defeat"]).unwrap().0.spring_floor, None);
         assert!(parse(&["--look-dev", "hero", "--spring-floor", "on"]).unwrap_err().contains("--graph"));
+        let crowd = ["--arena", "--anim-levels", "off", "--anim-jobs", "on"];
+        let crowd = parse(&crowd).unwrap().0;
+        assert_eq!((crowd.anim_levels, crowd.anim_jobs), (Some(false), Some(true)));
+        assert!(parse(&["--look-dev", "hero", "--anim-jobs", "off"]).unwrap_err().contains("--arena"));
+        assert!(parse(&["--arena", "--anim-levels", "half"]).unwrap_err().contains("on or off"));
         assert_eq!(
             parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "3"]).unwrap().0.spring_turns,
             Some(3)

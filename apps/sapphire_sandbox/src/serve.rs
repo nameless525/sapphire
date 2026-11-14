@@ -220,7 +220,7 @@ impl Serving {
                 stage.quality.restore(previous);
             }
         }
-        stage.scene.set_spring_quality(sapphire_stage::animate::spring_quality(stage.quality.active().id));
+        stage.scene.set_motion_tier(stage.quality.active().id);
         stage.content.set_tier(stage.quality.tier());
     }
 

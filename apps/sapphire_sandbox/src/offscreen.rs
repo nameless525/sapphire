@@ -238,6 +238,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     }
     scene.set_spring_floor(options.spring_floor != Some(false));
     scene.set_spring_turns(options.spring_turns.unwrap_or(0));
+    scene.set_anim_levels_on(options.anim_levels != Some(false));
+    scene.set_anim_jobs(options.anim_jobs != Some(false));
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -316,7 +318,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+            scene.set_motion_tier(quality.active().id);
         }
         if let Some(script) = options.graph {
             content.load_graph(playable.kind, renderer, gpu)?;
@@ -332,7 +334,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 driver.with_springs_on(options.springs != Some(false)),
                 sapphire_stage::anim_graph::GraphShow::new(script),
             );
-            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+            scene.set_motion_tier(quality.active().id);
         }
         if let Some(model) = options.model {
             let held = sapphire_stage::lookdev::model::hold(content, renderer, gpu, model)?;
@@ -400,7 +402,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+            scene.set_motion_tier(quality.active().id);
         }
         if options.combat.is_some() {
             content.load_graph(playable.kind, renderer, gpu)?;
@@ -415,7 +417,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                 enemy,
             );
-            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+            scene.set_motion_tier(quality.active().id);
         }
     }
     if let Some((stem, at)) = &options.zone {

@@ -228,6 +228,8 @@ impl App for SandboxApp {
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_spring_floor(options.spring_floor != Some(false));
         scene.set_spring_turns(options.spring_turns.unwrap_or(0));
+        scene.set_anim_levels_on(options.anim_levels != Some(false));
+        scene.set_anim_jobs(options.anim_jobs != Some(false));
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;
@@ -304,7 +306,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+                scene.set_motion_tier(quality.active().id);
             }
             if let Some(script) = options.graph {
                 content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
@@ -319,7 +321,7 @@ impl App for SandboxApp {
                     driver.with_springs_on(options.springs != Some(false)),
                     sapphire_stage::anim_graph::GraphShow::new(script),
                 );
-                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+                scene.set_motion_tier(quality.active().id);
             }
             if let Some(meshes) = renderer.enemy {
                 let held = show.fight.show.held_enemy(&content)?;
@@ -371,7 +373,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+                scene.set_motion_tier(quality.active().id);
             }
             if options.combat.is_some() {
                 content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
@@ -386,7 +388,7 @@ impl App for SandboxApp {
                     player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                     enemy,
                 );
-                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
+                scene.set_motion_tier(quality.active().id);
             }
         }
         if let Some(sword) = renderer.sword {
@@ -1214,7 +1216,7 @@ impl SandboxApp {
                 self.quality.restore(previous);
             }
         }
-        self.scene.set_spring_quality(sapphire_stage::animate::spring_quality(self.quality.active().id));
+        self.scene.set_motion_tier(self.quality.active().id);
         self.content.set_tier(self.quality.tier());
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())

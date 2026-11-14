@@ -297,6 +297,41 @@ fn the_arena_plays_its_committed_replay() {
     assert!(capture.exists(), "{log}");
 }
 
+/// Animation levels and jobs (M5 C1) change nothing the simulation sees: the arena's skirmish and its waves,
+/// posed in jobs and less often far off and not at all out of sight, reach the headless run's checksum with no
+/// allocation in a step, as they do with every fighter posed every frame one after another.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn animation_levels_change_nothing_the_checksums_see() {
+    let temp = Temp::new("levels");
+    for name in ["arena-skirmish", "arena-waves"] {
+        let replay = workspace().join("tests").join("replays").join(format!("{name}.sreplay"));
+        let played = headless(&fs::read(&replay).expect("committed"));
+        for (levels, jobs) in [("on", "on"), ("off", "off")] {
+            let capture = temp.path(&format!("{name}-{levels}.png"));
+            let output = run_app(&[
+                "--capture",
+                capture.to_str().expect("UTF-8"),
+                "--arena",
+                "--replay",
+                replay.to_str().expect("UTF-8"),
+                "--anim-levels",
+                levels,
+                "--anim-jobs",
+                jobs,
+            ]);
+            let log = log_of(&output);
+            assert!(output.status.success(), "{name}, levels {levels}: {log}");
+            assert!(
+                log.contains(&format!("checksum={:016x}", played.trail.end())),
+                "{name}, levels {levels}: {log}"
+            );
+            assert!(log.contains("allocations=0"), "{name}, levels {levels}: {log}");
+            assert!(capture.exists(), "{log}");
+        }
+    }
+}
+
 /// A replay that goes between zones (M3 W4), in the arena, as its goldens play it: each trip holds the fight
 /// under the wipe while the next zone comes in, and every tick reaches the headless run's checksum, with no
 /// allocation in a fixed step. A bench plays it to its end, however long the loads held it, and so does a

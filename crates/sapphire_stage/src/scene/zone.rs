@@ -871,12 +871,40 @@ impl Scene {
             let (server, meshes) = content.streaming_parts();
             let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
             zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
+            #[cfg(feature = "dev")]
+            if let (Some(sets), Some(cooked)) = (&mut self.cell_sets, server.get(zone.streamer.zone())) {
+                sets.check(&cooked.presentation);
+            }
         }
         let stopwatch = sapphire_time::Stopwatch::start();
         for next in &mut self.next_zones {
             next.advance(content);
         }
         self.prefetch_time = stopwatch.elapsed();
+    }
+
+    /// Hides the open zone's meshes from the main view by visible sets by cell (M5 D0's prototype), or stops.
+    #[cfg(feature = "dev")]
+    pub fn set_cell_sets(&mut self, sets: Option<super::CellSets>) {
+        self.cell_sets = sets;
+    }
+
+    /// The visible sets, and what they did last frame.
+    #[cfg(feature = "dev")]
+    #[must_use]
+    pub fn cell_sets(&self) -> Option<&super::CellSets> {
+        self.cell_sets.as_ref()
+    }
+
+    /// Names in this frame's packet what the visible sets let the main view skip: nothing without sets, a zone
+    /// or a main view.
+    #[cfg(feature = "dev")]
+    pub(super) fn hide_by_cell(&mut self) {
+        let (Some(sets), Some(zone)) = (&mut self.cell_sets, &self.zone) else { return };
+        let mut extract = self.ecs.world_mut().resource_mut::<crate::extract::RenderExtract>();
+        let packet = extract.packet_mut();
+        let Some(eye) = packet.main_view().map(|view| view.camera.position) else { return };
+        sets.hide((eye + zone.stand).to_array(), &zone.streamer, packet);
     }
 
     /// Draws what the zone has placed with its meshes on a new `renderer`: after device loss or for a new

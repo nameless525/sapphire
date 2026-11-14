@@ -419,6 +419,13 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             gpu,
         )?;
     }
+    #[cfg(feature = "dev")]
+    if let Some((path, by_cells)) = &options.cell_visibility {
+        let failed = |why: String| AppInitError::msg(format!("--cell-visibility {}: {why}", path.display()));
+        let bytes = std::fs::read(path).map_err(|error| failed(error.to_string()))?;
+        let sets = sapphire_stage::scene::CellSets::read(&bytes, *by_cells).map_err(failed)?;
+        scene.set_cell_sets(Some(sets));
+    }
     if options.blade() {
         let sword = fight.load_sword(&playable, content, renderer, gpu)?;
         fight.spawn_blade(scene, sword, content).map_err(AppInitError::msg)?;

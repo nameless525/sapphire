@@ -310,6 +310,11 @@
 //!   camera behind it, each fixed step, at a run's speed unless told. Moves only what's drawn. A bench of it adds
 //!   a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks) and fails if any
 //!   frame built a pipeline; `--inventory-without ambient` shows that failing, by leaving its grid undeclared.
+//! - `--cell-visibility <file>[:cells]` (`dev` builds): the zone's main view and its prepass skip what visible
+//!   sets by cell leave out (M5 D0's prototype: `sapphire_zone::visibility`, written beside a cook by
+//!   `sapphire_pipeline cell-visibility`), by object, or with `:cells` a whole cell at a time. The same pixels;
+//!   a camera outside the space sampled draws by the frustum alone. A bench of a zone walk adds a `cell sets`
+//!   row (the main view's draws and triangles by the frustum alone and with the sets: median, p95, worst).
 //! - `--stream off|<entities>:<metres>`: how the town's zone streams (M3 W2): not at all, so the town has
 //!   no cells, or with that many entities a frame and that activation radius, instead of the tier's.
 //! - `--fog on|off`: draw time of day's fog (M1 W3), on by default. Off leaves it out of every

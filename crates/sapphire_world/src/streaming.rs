@@ -339,6 +339,15 @@ impl<P> Streamer<P> {
         self.places.iter_mut().flat_map(|place| place.placed.iter_mut())
     }
 
+    /// What exists in each of the zone's cells, by its index in the cooked zone: a prefix of the cell's
+    /// items, its merged mesh first, then its instances, then its lights. The backdrop isn't a cell.
+    pub fn placed_by_cell(&self) -> impl Iterator<Item = (usize, &[P])> {
+        self.places
+            .iter()
+            .filter(|place| place.index != BACKDROP && !place.placed.is_empty())
+            .map(|place| (place.index as usize, place.placed.as_slice()))
+    }
+
     /// The load screen's half: loads until the meshes of everything within the activation radius of
     /// `focus` (in the zone's space) are ready, sending what lands through `upload`, so that the next
     /// [`Self::update`] places all of them in one frame. Call with the zone ready. A mesh that doesn't

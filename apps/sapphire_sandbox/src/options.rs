@@ -341,6 +341,10 @@ pub(crate) struct Options {
     /// `--view-culling off`: draw every static world instance in the main view, culling none
     /// (review RA-O01), for comparisons. `--view-culling on` is the default.
     pub view_culling_off: bool,
+    /// `--cell-visibility <file>[:cells]` (`dev` builds): the zone's main view skips what visible sets by cell
+    /// (M5 D0's prototype, written by `sapphire_pipeline cell-visibility`) leave out, by object, or with
+    /// `:cells` by cell. A bench of a zone walk adds a `cell sets` row.
+    pub cell_visibility: Option<(PathBuf, bool)>,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
@@ -1185,6 +1189,20 @@ impl Options {
                         other => return Err(format!("--view-culling expects on or off, got {other:?}")),
                     };
                 }
+                "--cell-visibility" => {
+                    let raw = value("--cell-visibility")?;
+                    if cfg!(not(feature = "dev")) {
+                        return Err(
+                            "--cell-visibility is a prototype only `dev` builds have (`--features dev`)"
+                                .to_owned(),
+                        );
+                    }
+                    let (path, by_cells) = match raw.strip_suffix(":cells") {
+                        Some(path) => (path, true),
+                        None => (raw.as_str(), false),
+                    };
+                    options.cell_visibility = Some((PathBuf::from(path), by_cells));
+                }
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
                     if !(0.0..=1.0).contains(&amount) {
@@ -1601,6 +1619,9 @@ impl Options {
             return Err(format!(
                 "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
             ));
+        }
+        if options.cell_visibility.is_some() && options.zone.is_none() {
+            return Err("--cell-visibility needs --zone".to_owned());
         }
         if options.zone_walk.is_some() && options.zone.is_none() {
             return Err("--zone-walk needs --zone".to_owned());

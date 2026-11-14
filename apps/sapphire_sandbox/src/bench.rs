@@ -129,6 +129,74 @@ impl ZoneWalk {
     }
 }
 
+/// What visible sets by cell saved the main view on a zone walk (`--cell-visibility`, M5 D0's prototype): each
+/// measured frame's surface draws and its zone's triangles by the frustum alone and with the sets, and where
+/// the camera stood. A bench counts its measured frames, a capture every frame it draws.
+#[cfg(feature = "dev")]
+#[derive(Default)]
+pub(crate) struct CellTally {
+    frustum_draws: Vec<u32>,
+    set_draws: Vec<u32>,
+    frustum_triangles: Vec<u32>,
+    set_triangles: Vec<u32>,
+    /// Per frame, the share of the frustum's draws the sets took away, in thousandths.
+    saved: Vec<u32>,
+    /// Frames in a cell's sampled space, and frames drawn by the frustum alone, by why.
+    in_cell: u32,
+    unchecked: u32,
+    no_cell: u32,
+    height: u32,
+    in_occluder: u32,
+}
+
+#[cfg(feature = "dev")]
+impl CellTally {
+    pub(crate) fn frame(&mut self, stage: &Stage) {
+        use sapphire_stage::scene::{CellSetsUse, Outside};
+        let Some(sets) = stage.scene.cell_sets() else { return };
+        let stats = stage.renderer.stats().view_culling;
+        let frustum = stats.drawn + stats.hidden_draws;
+        self.frustum_draws.push(frustum);
+        self.set_draws.push(stats.drawn);
+        self.frustum_triangles.push(stats.triangles + stats.hidden_triangles);
+        self.set_triangles.push(stats.triangles);
+        self.saved.push(if frustum == 0 { 0 } else { stats.hidden_draws * 1000 / frustum });
+        match sets.last() {
+            CellSetsUse::Cell(_) => self.in_cell += 1,
+            CellSetsUse::Unchecked => self.unchecked += 1,
+            CellSetsUse::Outside(Outside::NoCell) => self.no_cell += 1,
+            CellSetsUse::Outside(Outside::Height) => self.height += 1,
+            CellSetsUse::Outside(Outside::InOccluder) => self.in_occluder += 1,
+        }
+    }
+
+    pub(crate) fn log(mut self) {
+        if self.frustum_draws.is_empty() {
+            return;
+        }
+        let row = |frames: &mut Vec<u32>| {
+            frames.sort_unstable();
+            let at = |p: usize| frames[(frames.len() - 1) * p / 100];
+            format!("{}/{}/{}", at(50), at(95), at(100))
+        };
+        tracing::info!(
+            target: LOG_TARGET,
+            frames = self.frustum_draws.len(),
+            frustum_draws_p50_p95_worst = row(&mut self.frustum_draws),
+            set_draws_p50_p95_worst = row(&mut self.set_draws),
+            frustum_triangles_p50_p95_worst = row(&mut self.frustum_triangles),
+            set_triangles_p50_p95_worst = row(&mut self.set_triangles),
+            saved_permille_p50_p95_worst = row(&mut self.saved),
+            in_cell = self.in_cell,
+            unchecked = self.unchecked,
+            no_cell = self.no_cell,
+            height = self.height,
+            in_occluder = self.in_occluder,
+            "cell sets"
+        );
+    }
+}
+
 /// Exit test 7: a load leaves no frame anything to build, wherever it would come from; and exit test 1: after
 /// the first frame no frame builds a pipeline itself, the warm-up building them off the frame (M4 H1).
 pub(crate) fn check_first_uses(stage: &Stage) -> Result<(), AppInitError> {
@@ -184,6 +252,8 @@ pub(crate) fn run(
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     let mut zone_walk = ZoneWalk::default();
+    #[cfg(feature = "dev")]
+    let mut cell_tally = CellTally::default();
     let spin = options.ui_screen.as_ref().map_or(0.0, |shown| shown.spin);
     // `--draw-every`, on a zone (M3 K1): every frame steps, streams, prepares and records, and one in `n` runs its
     // graph, so a pipeline any of them builds still counts, on the frame it's built or the next one drawn.
@@ -202,6 +272,8 @@ pub(crate) fn run(
         let after = alloc::stats();
         zone_walk.frame(&mut stage);
         if frame >= u64::from(WARMUP_FRAMES) {
+            #[cfg(feature = "dev")]
+            cell_tally.frame(&stage);
             cpu.push(frame_cpu);
             gpu_wait += wait;
             allocations += after.total_allocations - before.total_allocations;
@@ -253,6 +325,8 @@ pub(crate) fn run(
     };
     stage.lose_frames = false;
     zone_walk.log(&stage, options);
+    #[cfg(feature = "dev")]
+    cell_tally.log();
     if options.zone.is_some() {
         check_first_uses(&stage)?;
     }

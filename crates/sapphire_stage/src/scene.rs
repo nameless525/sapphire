@@ -468,6 +468,9 @@ pub struct Scene {
     zone: Option<ZoneStage>,
     /// The zone stage's walk along a rail (`--zone-walk`).
     zone_walk: Option<zone::ZoneWalk>,
+    /// Visible sets by cell to hide the open zone's meshes by (M5 D0's prototype).
+    #[cfg(feature = "dev")]
+    cell_sets: Option<CellSets>,
     /// Where the view will be soon, in the world, for the zone to stream ahead ([`Self::stream_ahead`]), and
     /// how many of them there are.
     stream_ahead: ([Vec3; sapphire_world::streaming::AHEAD], usize),
@@ -645,6 +648,8 @@ impl Scene {
             town_stand: None,
             zone: None,
             zone_walk: None,
+            #[cfg(feature = "dev")]
+            cell_sets: None,
             stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
             next_zones: Vec::new(),
             zone_air: zone::ZoneAir::default(),
@@ -2331,6 +2336,8 @@ impl Scene {
             let packet = extract.packet_mut();
             show.inset_shots(&mut |shot| shoot_inset(packet, &rigs, &showcases, &shot));
         }
+        #[cfg(feature = "dev")]
+        self.hide_by_cell();
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.
         profiling::scope!("debug draw");
@@ -2522,6 +2529,11 @@ mod zone;
 pub use zone::{
     ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneStanding, ZoneTarget, stream_settings,
 };
+
+#[cfg(feature = "dev")]
+mod cell_sets;
+#[cfg(feature = "dev")]
+pub use cell_sets::{CellSets, CellSetsUse, Outside};
 
 #[cfg(test)]
 mod spring_tests;

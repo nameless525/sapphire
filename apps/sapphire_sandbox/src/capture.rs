@@ -179,6 +179,8 @@ pub(crate) fn run(
         std::fs::create_dir_all(dir)?;
     }
     let mut history_only_frames = 0_u32;
+    #[cfg(feature = "dev")]
+    let mut cell_tally = crate::bench::CellTally::default();
     // Frames whose graph ran, the captured one among them.
     let mut drawn = 1_u32;
     let first =
@@ -202,8 +204,17 @@ pub(crate) fn run(
                     .map(|()| false),
                 _ => stage.render_capture_warmup(&view, history_only),
             };
+            #[cfg(feature = "dev")]
+            let lost = stage.lose_frames;
             stage.lose_frames = false;
             history_only_frames += u32::from(drawn?);
+            #[cfg(feature = "dev")]
+            if !lost {
+                cell_tally.frame(stage);
+                if sequence.is_some() {
+                    log_cell_sets(stage, frame);
+                }
+            }
             stage.scene.end_frame();
             stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
             // The frames still to come, the captured one included, each this many ticks later.
@@ -217,6 +228,12 @@ pub(crate) fn run(
     // Every step has run: a world that isn't the recorded one doesn't become a picture.
     stage.show.fight.check().map_err(AppInitError::msg)?;
     let pixels = render(stage, width, height)?;
+    #[cfg(feature = "dev")]
+    {
+        cell_tally.frame(stage);
+        log_cell_sets(stage, earlier);
+        cell_tally.log();
+    }
     write_capture(&stage.gpu, path, (width, height), &pixels)?;
     if let Some(dir) = &sequence {
         write_png(&sequence_frame(dir, earlier), width, height, &pixels)?;
@@ -239,6 +256,22 @@ pub(crate) fn run(
         "captured frame"
     );
     Ok(())
+}
+
+/// What visible sets by cell hid from frame `frame`'s main view, with `--cell-visibility` (M5 D0's prototype).
+#[cfg(feature = "dev")]
+fn log_cell_sets(stage: &Stage, frame: u32) {
+    let Some(sets) = stage.scene.cell_sets() else { return };
+    let stats = stage.renderer.stats().view_culling;
+    tracing::info!(
+        target: LOG_TARGET,
+        frame,
+        last = ?sets.last(),
+        drawn = stats.drawn,
+        hidden_draws = stats.hidden_draws,
+        culled = stats.culled,
+        "cell sets"
+    );
 }
 
 /// Writes `pixels` and the adapter's note beside them, unless the GPU has reported an error: then there's

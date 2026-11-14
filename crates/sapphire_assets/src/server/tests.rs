@@ -288,10 +288,15 @@ fn a_split_textures_levels_load_only_when_asked() {
     assert_eq!(kept.view().data()[0], 10, "kept past the upload");
     assert!(server.get(&held).is_none(), "the server let go of its bytes as ever");
 
-    // Held, it isn't given back; unused, it is, and its tail stays for the material.
+    // Held, it isn't given back; unused, it is, and its tail stays for the material. The server counts
+    // its bytes as given back, not evicted (M5 B4).
     assert!(!server.unload(level));
+    assert_eq!(server.stats().given_back, 0);
     drop(held);
+    let level_bytes = server.stats().resident[AssetKind::TextureLevel.index()];
+    assert!(level_bytes > 0);
     assert!(server.unload(level));
+    assert_eq!((server.stats().given_back, server.stats().evicted_bytes), (level_bytes, 0));
     assert_eq!(server.take_unloaded().iter().map(|unloaded| unloaded.id).collect::<Vec<_>>(), [level]);
     assert!(server.is_resident(id(TEXTURE)));
     let again: Handle<TextureLevel> = server.load(level).unwrap();
@@ -622,16 +627,26 @@ fn a_cached_mesh_doesnt_keep_a_kind_over_budget() {
     let second = load(&mut server, 22);
     server.update();
     assert_eq!(gone(&mut server), sorted(vec![id(10), id(11), id(12)]));
-    assert_eq!(server.stats().resident[AssetKind::Texture.index()], size);
+    let stats = server.stats();
+    assert_eq!(stats.resident[AssetKind::Texture.index()], size);
+    // The trim counts the texture pool's bytes it unloaded, and leaves it within budget.
+    let texture = AssetKind::Texture.index();
+    assert_eq!((stats.evicted_bytes, stats.over_budget[texture]), (size, 0), "{stats:?}");
 
-    // Over budget with all of it in use: nothing goes, and what's in use holds its own.
+    // Over budget with all of it in use: nothing goes, and what's in use holds its own, counted as
+    // what a budget that refused would have refused.
     let third = load(&mut server, 32);
     server.update();
     assert!(gone(&mut server).is_empty());
-    assert_eq!(server.stats().resident[AssetKind::Texture.index()], 2 * size);
+    let stats = server.stats();
+    assert_eq!(stats.resident[texture], 2 * size);
+    assert_eq!((stats.evicted_bytes, stats.over_budget[texture]), (size, size), "{stats:?}");
+    assert_eq!(stats.over_budget.iter().sum::<u64>(), size, "the other pools are within theirs");
     drop(third);
     server.update();
     assert_eq!(gone(&mut server), sorted(vec![id(30), id(31), id(32)]));
+    let stats = server.stats();
+    assert_eq!((stats.evicted_bytes, stats.over_budget[texture]), (2 * size, 0), "{stats:?}");
 
     // A cached mesh of a texture the app holds through another isn't worth anything to evict.
     let first = load(&mut server, 12);

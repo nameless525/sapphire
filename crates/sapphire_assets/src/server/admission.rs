@@ -80,6 +80,8 @@ impl AssetServer {
         self.slots[key].held = Some(order);
         self.held_back.insert(order, key);
         self.admit();
+        // Counted as held when the cap kept it back, not when it went at once.
+        self.reads_held += u64::from(self.slots[key].held.is_some());
     }
 
     /// Admits the reads held back that fit, most urgent first, oldest first within a priority, skipping
@@ -151,6 +153,7 @@ impl AssetServer {
     fn reserve(&mut self, key: SlotKey, size: u64) {
         *self.reading_admission(key) = Some(size);
         self.admitted += size;
+        self.admitted_total += size;
         self.admitted_peak = self.admitted_peak.max(self.admitted);
     }
 

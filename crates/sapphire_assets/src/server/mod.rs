@@ -421,8 +421,30 @@ pub struct AssetStats {
     /// [`AssetBudgets::admission`], and the most there have been since the server started.
     pub admitted: u64,
     pub admitted_peak: u64,
+    /// Bytes admitted since the server started (M5 B4): a frame's admissions are the difference
+    /// between two updates' counts, against [`AssetBudgets::admission`].
+    pub admitted_total: u64,
     /// Reads waiting for admission: loading, but not yet asked of the source.
     pub held_back: u32,
+    /// Reads that waited for admission since the server started, rather than going at once: the
+    /// times the cap refused a read (M5 B4).
+    pub reads_held: u64,
+    /// Of [`Self::admitted`], the bytes decoded and waiting for their dependencies or in the upload
+    /// queue, main versions and next ones alike (M5 B4); the rest are being read or decoded.
+    pub decoded_waiting: u64,
+    /// Bytes each budget still held over its limit after the last [`AssetServer::update`] trimmed
+    /// it, by its pool's kind ([`AssetBudgets::pool`]): bytes in use, which residency doesn't
+    /// unload, so a budget that refuses nothing yet would have refused them (M5 B4).
+    pub over_budget: [u64; AssetKind::ALL.len()],
+    /// Bytes residency unloaded to bring budgets within their limits since the server started,
+    /// of the pools trimmed (M5 B4).
+    pub evicted_bytes: u64,
+    /// Bytes the app gave back of its own accord through [`AssetServer::unload`] since the server
+    /// started: a texture's levels it lowered (M5 M4), apart from what residency trimmed
+    /// ([`Self::evicted_bytes`]). A level read and decoded and not yet uploaded is in
+    /// [`Self::decoded_waiting`]; once uploaded, its kept bytes count in the texture pool until the
+    /// renderer raises the texture (`RenderStats::mip_streaming` there).
+    pub given_back: u64,
     pub reads_in_flight: u32,
     /// Packs mounted, and packs still having their header read ([`AssetServer::mount`]).
     pub mounts: u32,
@@ -752,6 +774,14 @@ pub struct AssetServer {
     /// Bytes admitted and not yet on the GPU, and the most there have been.
     admitted: u64,
     admitted_peak: u64,
+    /// Bytes admitted, and reads held back, since the server started.
+    admitted_total: u64,
+    reads_held: u64,
+    /// Each pool's bytes over budget after the last trim, by its kind, and the bytes trims
+    /// unloaded since the server started.
+    over_budget: [u64; AssetKind::ALL.len()],
+    evicted_bytes: u64,
+    given_back: u64,
     /// Reused while choosing what to admit.
     admission_scratch: Vec<ReadOrder>,
     resident_peak: [u64; AssetKind::ALL.len()],
@@ -814,6 +844,11 @@ impl AssetServer {
             read_sequence: 0,
             admitted: 0,
             admitted_peak: 0,
+            admitted_total: 0,
+            reads_held: 0,
+            over_budget: [0; AssetKind::ALL.len()],
+            evicted_bytes: 0,
+            given_back: 0,
             admission_scratch: Vec::new(),
             resident_peak: [0; AssetKind::ALL.len()],
             sender,
@@ -1340,6 +1375,7 @@ impl AssetServer {
         let Some(&key) = self.by_id.get(&id) else { return false };
         let evictable = Self::evictable(&self.slots[key]);
         if evictable {
+            self.given_back += self.slots[key].resident_size();
             self.remove(key);
         }
         evictable
@@ -1376,7 +1412,12 @@ impl AssetServer {
             resident_peak: self.resident_peak,
             admitted: self.admitted,
             admitted_peak: self.admitted_peak,
+            admitted_total: self.admitted_total,
             held_back: self.held_back.len() as u32,
+            reads_held: self.reads_held,
+            over_budget: self.over_budget,
+            evicted_bytes: self.evicted_bytes,
+            given_back: self.given_back,
             reads_in_flight: self.reads_in_flight,
             mounts: self.mounts.len() as u32,
             mounting: self.pending_mounts.len() as u32,
@@ -1396,6 +1437,12 @@ impl AssetServer {
                 SlotState::Failed(_) => stats.failed += 1,
             }
             stats.resident[slot.handle.kind().index()] += slot.resident_size();
+            if matches!(slot.state, SlotState::Waiting | SlotState::Queued) {
+                stats.decoded_waiting += slot.admitted.unwrap_or(0);
+            }
+            if let Some(next) = slot.next.as_ref().filter(|next| next.stage != NextStage::Loading) {
+                stats.decoded_waiting += next.admitted.unwrap_or(0);
+            }
             stats.unused += u32::from(slot.users() == 0);
             stats.pinned += u32::from(slot.pins > 0);
             stats.reloading += u32::from(slot.next.is_some());
@@ -1600,17 +1647,21 @@ impl AssetServer {
                     .map(Slot::resident_size)
                     .sum();
             }
-            let excess = resident[kind.index()].saturating_sub(self.budgets.resident(kind));
+            let mut excess = resident[kind.index()].saturating_sub(self.budgets.resident(kind));
             if excess > 0 && (removed || has_candidates) {
-                removed |= self.evict(kind, excess);
+                let (evicted, left) = self.evict(kind, excess);
+                self.evicted_bytes += excess - left;
+                removed |= evicted;
+                excess = left;
             }
+            self.over_budget[kind.index()] = excess;
         }
     }
 
     /// Unloads unused assets in `kind`'s pool ([`AssetBudgets::pool`]), least recently used first, until
     /// `excess` bytes are gone or none are left. Reports whether removing one could have released
-    /// dependencies.
-    fn evict(&mut self, kind: AssetKind, mut excess: u64) -> bool {
+    /// dependencies, and the bytes of `excess` left.
+    fn evict(&mut self, kind: AssetKind, mut excess: u64) -> (bool, u64) {
         let mut candidates = std::mem::take(&mut self.eviction_scratch);
         candidates.clear();
         candidates.extend(
@@ -1631,17 +1682,20 @@ impl AssetServer {
         }
         self.eviction_scratch = candidates;
         if excess > 0 {
-            removed |= self.evict_holders(kind, excess);
+            let (holders, left) = self.evict_holders(kind, excess);
+            removed |= holders;
+            excess = left;
         }
-        removed
+        (removed, excess)
     }
 
     /// Unloads the unused assets that hold `kind`'s for nobody, least recently used first, with all they
     /// alone hold, until `excess` bytes of `kind`'s pool are gone or none are left. A cached mesh keeps its
     /// material in use, and that its textures, so without this a kind could stay over budget with nothing
     /// the app holds to blame. What the app holds or pins, and all that holds up, stays, and a cached
-    /// asset that shares only that isn't touched: it would free nothing. Reports whether it removed any.
-    fn evict_holders(&mut self, kind: AssetKind, mut excess: u64) -> bool {
+    /// asset that shares only that isn't touched: it would free nothing. Reports whether it removed any,
+    /// and the bytes of `excess` left.
+    fn evict_holders(&mut self, kind: AssetKind, mut excess: u64) -> (bool, u64) {
         // Down from what the app holds: a handle beyond the parents' is the app's.
         let mut held = HashSet::new();
         let mut stack: Vec<SlotKey> = self
@@ -1687,7 +1741,7 @@ impl AssetServer {
                 excess = excess.saturating_sub(self.remove_with_what_it_holds(key, kind));
             }
         }
-        removed
+        (removed, excess)
     }
 
     /// Unloads an asset nothing uses, and those it was the last user of. Returns how many bytes of

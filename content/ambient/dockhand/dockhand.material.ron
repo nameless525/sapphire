@@ -1,0 +1,98 @@
+// A zone's ambient cast (M5 C10), in the anime character family: a dock hand: an ochre jacket over a pale shirt, slate trousers and a flat cap.
+// Bound to its model's `dockhand` slot by the model's sidecar. One material with a region per part, which the
+// control map's material ID picks per pixel, in its spec's order: 0 skin, 1 hair, 2 jacket, 3 trousers, 4 shirt, 5 cap.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("3ce6fa7e-00af-565e-b502-1f5e4bbe5922"),
+        alpha: Opaque,
+        control_map: Some("3baa5445-e608-5a74-9924-651bbd57c7b0"),
+        light_split: (
+            threshold: 0.2,
+            softness: 0.015,
+        ),
+        diffuse: Ramp((
+            map: "9c3355f9-f5c7-5387-88cb-24d0246f17c8",
+            mix: 1.0,
+        )),
+        regions: [
+            (
+                // Skin: a warm rose shadow and a soft line.
+                rim_color: (1.0, 0.86, 0.78),
+                outline_color: (0.16, 0.07, 0.05),
+                matcap: (channel: Off),
+            ),
+            (
+                // Hair: near black, a cool sheen.
+                rim_color: (0.72, 0.74, 0.86),
+                outline_color: (0.02, 0.02, 0.03),
+                matcap: (channel: Off),
+            ),
+            (
+                // Jacket: ochre, shading to a warm umber.
+                rim_color: (1.0, 0.86, 0.62),
+                outline_color: (0.12, 0.06, 0.01),
+                matcap: (channel: Off),
+            ),
+            (
+                // Trousers: slate, a cool line.
+                rim_color: (0.74, 0.82, 0.94),
+                outline_color: (0.03, 0.04, 0.06),
+                matcap: (channel: Off),
+            ),
+            (
+                // Shirt: off white, shading lavender.
+                rim_color: (0.96, 0.95, 0.9),
+                outline_color: (0.09, 0.08, 0.1),
+                matcap: (channel: Off),
+            ),
+            (
+                // Cap: brown felt.
+                rim_color: (0.9, 0.78, 0.7),
+                outline_color: (0.06, 0.03, 0.02),
+                matcap: (channel: Off),
+            ),
+        ],
+        rim: (
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.1,
+            fresnel: 0.45,
+            light_gate: 0.7,
+            back_light: 0.6,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.04,
+            albedo: 0.35,
+        ),
+        matcap: Some((
+            map: "d51acace-37a9-5b31-b6d3-17fb9ecc91bf",
+            strength: 1.0,
+            shadow_strength: 0.55,
+        )),
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.4),
+                mid: 3.0,
+                far: (20.0, 0.5),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+        layer_mask: Some("176dc5c6-1219-56dd-9985-6b87f895b0f1"),
+        emission: (
+            period: 2.0,
+            depth: 0.3,
+            bloom: 1.0,
+        ),
+    ),
+)

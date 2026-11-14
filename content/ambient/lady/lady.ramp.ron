@@ -1,0 +1,107 @@
+// The lady's shadow ramps (M5 C10): every row multiplies the albedo on the shadow side, from the deepest
+// shadow (0) to the terminator (1), in its spec's region order (`tools/figures/ambient_lady.figure.ron`).
+// Skin falls into a warm rose, warm cloth into a wine that keeps its red, cool cloth into violet and white
+// into lavender, as the Lancer's do. Night rows, which time of day blends in from dusk, lean further blue.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "skin",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#c4848e"),
+                        (at: 0.7, color: "#dea2a6"),
+                        (at: 1.0, color: "#f0c0bc"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#9a7aa4"),
+                        (at: 1.0, color: "#c8a2bc"),
+                    ],
+                )),
+            ),
+            (
+                name: "hair",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#665a8c"),
+                        (at: 1.0, color: "#8a7ca8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#525090"),
+                        (at: 1.0, color: "#7872aa"),
+                    ],
+                )),
+            ),
+            (
+                name: "dress",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a5a78"),
+                        (at: 0.7, color: "#a6728a"),
+                        (at: 1.0, color: "#bc8c9c"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6c5486"),
+                        (at: 1.0, color: "#94709a"),
+                    ],
+                )),
+            ),
+            (
+                name: "shawl",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a8cc2"),
+                        (at: 0.7, color: "#a6a8d2"),
+                        (at: 1.0, color: "#c0bfe0"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#767cb6"),
+                        (at: 1.0, color: "#9ea2ce"),
+                    ],
+                )),
+            ),
+            (
+                name: "lace",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a8cc2"),
+                        (at: 0.7, color: "#a6a8d2"),
+                        (at: 1.0, color: "#c0bfe0"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#767cb6"),
+                        (at: 1.0, color: "#9ea2ce"),
+                    ],
+                )),
+            ),
+            (
+                name: "pin",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a7894"),
+                        (at: 1.0, color: "#b2a0ae"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6e6a9a"),
+                        (at: 1.0, color: "#9a92b6"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

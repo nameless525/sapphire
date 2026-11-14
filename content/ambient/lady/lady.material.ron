@@ -1,0 +1,100 @@
+// A zone's ambient cast (M5 C10), in the anime character family: a woman of the street: a rose dress under a white shawl, her auburn hair in a bun.
+// Bound to its model's `lady` slot by the model's sidecar. One material with a region per part, which the
+// control map's material ID picks per pixel, in its spec's order: 0 skin, 1 hair, 2 dress, 3 shawl, 4 lace, 5 pin.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("18fc15fa-93f9-5521-b671-13fb62e77ef8"),
+        alpha: Opaque,
+        control_map: Some("f161caeb-6917-5f76-a391-4d8c7dd945fb"),
+        light_split: (
+            threshold: 0.2,
+            softness: 0.015,
+        ),
+        diffuse: Ramp((
+            map: "8a06ac26-a670-5d7d-9f55-6ecb29c63f05",
+            mix: 1.0,
+        )),
+        regions: [
+            (
+                // Skin: a warm rose shadow and a soft line.
+                rim_color: (1.0, 0.86, 0.8),
+                outline_color: (0.16, 0.06, 0.06),
+                matcap: (channel: Off),
+            ),
+            (
+                // Hair: auburn, a gentle sheen.
+                rim_color: (0.9, 0.74, 0.7),
+                outline_color: (0.08, 0.02, 0.02),
+                matcap: (channel: Off),
+            ),
+            (
+                // Dress: rose, falling into a wine that keeps its red.
+                rim_color: (1.0, 0.78, 0.84),
+                outline_color: (0.14, 0.03, 0.07),
+                matcap: (channel: Off),
+            ),
+            (
+                // Shawl: white, shading lavender.
+                rim_color: (0.92, 0.95, 1.0),
+                outline_color: (0.08, 0.08, 0.14),
+                matcap: (channel: Off),
+            ),
+            (
+                // Lace: the dress's pale trim.
+                rim_color: (1.0, 0.9, 0.95),
+                outline_color: (0.12, 0.06, 0.09),
+                matcap: (channel: Off),
+            ),
+            (
+                // Pin: brass, catching the light.
+                specular_color: (1.0, 0.94, 0.8),
+                specular_size: 60.0,
+                rim_color: (1.0, 0.92, 0.7),
+                outline_color: (0.12, 0.08, 0.02),
+                matcap: (channel: Rgb, blend: Add, color: (0.8, 0.7, 0.5)),
+            ),
+        ],
+        rim: (
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.1,
+            fresnel: 0.45,
+            light_gate: 0.7,
+            back_light: 0.6,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.04,
+            albedo: 0.35,
+        ),
+        matcap: Some((
+            map: "f4e59f02-cb08-5109-a27d-1cfbfcbc9d9f",
+            strength: 1.0,
+            shadow_strength: 0.55,
+        )),
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.4),
+                mid: 3.0,
+                far: (20.0, 0.5),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+        layer_mask: Some("db860ece-4648-5e75-9231-b8d642ff493e"),
+        emission: (
+            period: 2.0,
+            depth: 0.3,
+            bloom: 1.0,
+        ),
+    ),
+)

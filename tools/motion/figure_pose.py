@@ -405,9 +405,10 @@ def motion(clip, samples, weapon):
     return '\n'.join(lines)
 
 
-def main(tool, figure, rig_id, clips, description, weapon=None):
+def main(tool, figure, rig_id, clips, description, weapon=None, folder=None, model=None):
     """Checks every clip, and writes each with `--write`: `figure` is the folder under
-    `content/combat/` and its model's stem. With `--motion`, prints each clip's root and its weapon's
+    `content/combat/` and its model's stem, unless `folder` names another under the repository and
+    `model` the model whose rest it poses. With `--motion`, prints each clip's root and its weapon's
     hit path (`weapon`, as [`motion`] takes it) for its move in `<figure>.moves.ron`."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('clips', nargs='*', help='only these clips')
@@ -415,8 +416,8 @@ def main(tool, figure, rig_id, clips, description, weapon=None):
     parser.add_argument('--motion', action='store_true', help="print each clip's move motion: root and hit path")
     parser.add_argument('-v', '--verbose', action='store_true', help='print each sample')
     args = parser.parse_args()
-    folder = REPO / 'content/combat' / figure
-    rig = Rig(folder / f'{figure}.glb')
+    folder = REPO / (folder or f'content/combat/{figure}')
+    rig = Rig(REPO / model if model else folder / f'{figure}.glb')
     problems = []
     for clip in clips:
         if args.clips and clip.name not in args.clips:

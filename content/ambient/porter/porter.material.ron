@@ -1,0 +1,98 @@
+// A zone's ambient cast (M5 C10), in the anime character family: a porter: an orange tunic and a blue headband, dark trousers and a tall pack.
+// Bound to its model's `porter` slot by the model's sidecar. One material with a region per part, which the
+// control map's material ID picks per pixel, in its spec's order: 0 skin, 1 hair, 2 tunic, 3 pants, 4 pack, 5 band.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("95ca7fa7-760c-50d5-a434-98085305c275"),
+        alpha: Opaque,
+        control_map: Some("c9923728-4a0c-51e3-87f9-0f7b6c31a0ea"),
+        light_split: (
+            threshold: 0.2,
+            softness: 0.015,
+        ),
+        diffuse: Ramp((
+            map: "f99f087c-ab7a-5e41-90cd-4b07eca57103",
+            mix: 1.0,
+        )),
+        regions: [
+            (
+                // Skin: tanned, a warm rose shadow.
+                rim_color: (1.0, 0.82, 0.7),
+                outline_color: (0.14, 0.06, 0.03),
+                matcap: (channel: Off),
+            ),
+            (
+                // Hair: black, a cool sheen.
+                rim_color: (0.7, 0.72, 0.84),
+                outline_color: (0.01, 0.01, 0.02),
+                matcap: (channel: Off),
+            ),
+            (
+                // Tunic: orange, shading to a red brown.
+                rim_color: (1.0, 0.78, 0.56),
+                outline_color: (0.12, 0.04, 0.0),
+                matcap: (channel: Off),
+            ),
+            (
+                // Trousers: dark brown.
+                rim_color: (0.82, 0.78, 0.74),
+                outline_color: (0.03, 0.025, 0.02),
+                matcap: (channel: Off),
+            ),
+            (
+                // Pack: canvas and leather.
+                rim_color: (0.94, 0.88, 0.76),
+                outline_color: (0.07, 0.05, 0.03),
+                matcap: (channel: Off),
+            ),
+            (
+                // Headband: blue.
+                rim_color: (0.7, 0.84, 1.0),
+                outline_color: (0.02, 0.05, 0.12),
+                matcap: (channel: Off),
+            ),
+        ],
+        rim: (
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.1,
+            fresnel: 0.45,
+            light_gate: 0.7,
+            back_light: 0.6,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.04,
+            albedo: 0.35,
+        ),
+        matcap: Some((
+            map: "be073dfc-b958-5195-9dd0-24c271882288",
+            strength: 1.0,
+            shadow_strength: 0.55,
+        )),
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.4),
+                mid: 3.0,
+                far: (20.0, 0.5),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+        layer_mask: Some("1de7aaab-9507-5f70-9f25-a39502c9ca7d"),
+        emission: (
+            period: 2.0,
+            depth: 0.3,
+            bloom: 1.0,
+        ),
+    ),
+)

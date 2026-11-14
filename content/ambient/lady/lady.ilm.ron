@@ -1,0 +1,24 @@
+// The lady's control map (M5 C10): what `gen-figures` paints from its spec (`lady_control.png`),
+// a column for each region, whose material ID picks the region's ramp row, highlight, outline and rim.
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Image(
+            path: "lady_control.png",
+            channel: R,
+        ),
+        shadow_bias: Image(
+            path: "lady_control.png",
+            channel: G,
+        ),
+        specular_threshold: Image(
+            path: "lady_control.png",
+            channel: B,
+        ),
+        material_id: Image(
+            path: "lady_control.png",
+            channel: A,
+        ),
+    ),
+)

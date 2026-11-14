@@ -1,0 +1,125 @@
+// A zone's ambient cast (M5 C10): a woman of the street in a long flared rose dress with a white shawl, her hair in a bun: slighter
+// than the others, every ring of the bench's figure 0.94 as wide.
+// One material at the crowd's row of about 3,000 triangles and 512² maps (spec §3.4), on the Lancer's
+// joints exactly, so its model plays on the Lancer's skeleton (`skeleton` in its sidecar) and every clip
+// cooked for the Lancer plays on it. Adapted from the benchmark's crowd (`bench/cast/figures/`).
+//
+// `sapphire_pipeline gen-figures --specs tools/figures --out content` writes `content/ambient/lady/`. Metres, +Y up,
+// facing +Z, its left toward +X, in a T-pose.
+(
+    type: "sapphire::pipeline::Figure",
+    version: 2,
+    data: (
+        dir: "ambient/lady",
+        name: "lady",
+        max_triangles: 3200,
+        maps: Some((size: 512, grain: 0.04)),
+        joints: [
+            (name: "root", at: (0.0, 0.0, 0.0), aim: Some((0.0, 1.0, 0.0))),
+            (name: "hips", parent: Some("root"), at: (0.0, 0.8, 0.0)),
+            (name: "spine", parent: Some("hips"), at: (0.0, 0.9, 0.0)),
+            (name: "chest", parent: Some("spine"), at: (0.0, 1.05, 0.0)),
+            (name: "head", parent: Some("chest"), at: (0.0, 1.27, 0.01), aim: Some((0.0, 1.45, 0.01))),
+            (name: "upperarm.l", parent: Some("chest"), at: (0.16, 1.2, -0.01)),
+            (name: "lowerarm.l", parent: Some("upperarm.l"), at: (0.41, 1.2, -0.01)),
+            (name: "wrist.l", parent: Some("lowerarm.l"), at: (0.63, 1.2, -0.01)),
+            (name: "hand.l", parent: Some("wrist.l"), at: (0.68, 1.2, -0.01)),
+            (name: "handslot.l", parent: Some("hand.l"), at: (0.72, 1.2, 0.0), aim: Some((0.72, 1.2, 1.0))),
+            (name: "upperarm.r", parent: Some("chest"), at: (-0.16, 1.2, -0.01)),
+            (name: "lowerarm.r", parent: Some("upperarm.r"), at: (-0.41, 1.2, -0.01)),
+            (name: "wrist.r", parent: Some("lowerarm.r"), at: (-0.63, 1.2, -0.01)),
+            (name: "hand.r", parent: Some("wrist.r"), at: (-0.68, 1.2, -0.01)),
+            (name: "handslot.r", parent: Some("hand.r"), at: (-0.72, 1.2, 0.0), aim: Some((-0.72, 1.2, 1.0))),
+            (name: "upperleg.l", parent: Some("hips"), at: (0.085, 0.78, 0.0)),
+            (name: "lowerleg.l", parent: Some("upperleg.l"), at: (0.085, 0.43, 0.01)),
+            (name: "foot.l", parent: Some("lowerleg.l"), at: (0.085, 0.075, -0.01)),
+            (name: "toes.l", parent: Some("foot.l"), at: (0.085, 0.02, 0.11), aim: Some((0.085, 0.015, 0.17))),
+            (name: "upperleg.r", parent: Some("hips"), at: (-0.085, 0.78, 0.0)),
+            (name: "lowerleg.r", parent: Some("upperleg.r"), at: (-0.085, 0.43, 0.01)),
+            (name: "foot.r", parent: Some("lowerleg.r"), at: (-0.085, 0.075, -0.01)),
+            (name: "toes.r", parent: Some("foot.r"), at: (-0.085, 0.02, 0.11), aim: Some((-0.085, 0.015, 0.17))),
+        ],
+        regions: [
+            (name: "skin", albedo: [(0.0, "#fbe6da"), (1.0, "#e8c4b0")], specular: 0.15, specular_size: 0.3),
+            (name: "hair", albedo: [(0.0, "#7a3a2a"), (1.0, "#3a1410")], specular: 0.45, specular_size: 0.35),
+            (name: "dress", albedo: [(0.0, "#e88aa4"), (1.0, "#9a3a58")], shadow_bias: 0.55),
+            (name: "shawl", albedo: [(0.0, "#fafafa"), (1.0, "#c8ccd8")]),
+            (name: "lace", albedo: [(0.0, "#f8e4ec"), (1.0, "#d4a8b8")]),
+            (name: "pin", albedo: [(0.0, "#f4e4a8"), (1.0, "#a8843a")], specular: 1.0, specular_size: 0.8, matcap: 1.0),
+        ],
+        shapes: [
+            // The head, the torso, arms and hands, legs and feet.
+            Loft((
+                region: "skin", bones: ["head"], sides: 26,
+                from: (0.0, 1.25, 0.01), to: (0.0, 1.46, 0.01),
+                rings: [(at: 0.0, radius: (0.0376, 0.0423)), (at: 0.15, radius: (0.0639, 0.0733), shift: (0.0, -0.01)), (at: 0.45, radius: (0.0808, 0.0921), shift: (0.0, -0.01)), (at: 0.75, radius: (0.078, 0.0884), shift: (0.0, -0.005)), (at: 0.95, radius: (0.047, 0.0517)), (at: 1.0, radius: (0.0113, 0.0113))],
+            )),
+            Loft((
+                region: "dress", bones: ["hips", "spine", "chest"], sides: 28, blend: 0.06, v: (0.9, 0.1),
+                from: (0.0, 0.8, 0.0), to: (0.0, 1.22, 0.0),
+                rings: [(at: 0.0, radius: (0.1222, 0.094)), (at: 0.2, radius: (0.1072, 0.0808)), (at: 0.55, radius: (0.1278, 0.0884)), (at: 0.8, radius: (0.1391, 0.0884)), (at: 0.93, radius: (0.1128, 0.0752)), (at: 1.0, radius: (0.0658, 0.0611))],
+            )),
+            Loft((
+                region: "dress", bones: ["upperarm.l", "lowerarm.l"], sides: 22, blend: 0.05, mirror: true,
+                from: (0.14, 1.2, -0.01), to: (0.42, 1.2, -0.01),
+                rings: [(at: 0.0, radius: (0.0489, 0.0489)), (at: 1.0, radius: (0.0395, 0.0414))],
+            )),
+            Loft((
+                region: "dress", bones: ["lowerarm.l", "wrist.l"], sides: 22, mirror: true,
+                from: (0.41, 1.2, -0.01), to: (0.635, 1.2, -0.01),
+                rings: [(at: 0.0, radius: (0.0395, 0.0414)), (at: 1.0, radius: (0.032, 0.032))],
+            )),
+            Loft((
+                region: "skin", bones: ["wrist.l", "hand.l"], sides: 8, mirror: true,
+                from: (0.625, 1.2, -0.01), to: (0.765, 1.2, 0.0),
+                rings: [(at: 0.0, radius: (0.0282, 0.0263)), (at: 0.45, radius: (0.0376, 0.0301)), (at: 1.0, radius: (0.0244, 0.0226))],
+            )),
+            Loft((
+                region: "lace", bones: ["upperleg.l", "lowerleg.l"], sides: 22, mirror: true,
+                from: (0.085, 0.82, 0.0), to: (0.085, 0.43, 0.01),
+                rings: [(at: 0.0, radius: (0.0733, 0.0733)), (at: 0.5, radius: (0.0602, 0.0602)), (at: 1.0, radius: (0.047, 0.0489))],
+            )),
+            Loft((
+                region: "lace", bones: ["lowerleg.l", "foot.l"], sides: 22, mirror: true,
+                from: (0.085, 0.43, 0.01), to: (0.085, 0.08, -0.005),
+                rings: [(at: 0.0, radius: (0.047, 0.0489)), (at: 0.4, radius: (0.0451, 0.047)), (at: 1.0, radius: (0.0376, 0.0395))],
+            )),
+            Loft((
+                region: "pin", bones: ["foot.l", "toes.l"], sides: 22, mirror: true, v: (0.4, 0.9),
+                from: (0.085, 0.055, -0.06), to: (0.085, 0.03, 0.16),
+                rings: [(at: 0.0, radius: (0.0395, 0.0517)), (at: 0.3, radius: (0.047, 0.047)), (at: 0.8, radius: (0.0376, 0.0329)), (at: 1.0, radius: (0.0188, 0.0141))],
+            )),
+            Loft((
+                region: "hair", bones: ["head"], sides: 14, arc: Some((-30.0, 210.0)), thickness: 0.02,
+                from: (0.0, 1.3, 0.0), to: (0.0, 1.47, 0.0),
+                rings: [(at: 0.0, radius: (0.0752, 0.0846)), (at: 0.4, radius: (0.0902, 0.1015)), (at: 0.8, radius: (0.0846, 0.094)), (at: 1.0, radius: (0.0564, 0.0611))],
+            )),
+            // The bun and its pin, the dress's skirt to the ground and the shawl over the shoulders.
+            Loft((
+                region: "hair", bones: ["head"], sides: 12,
+                from: (0.0, 1.42, -0.09), to: (0.0, 1.5, -0.13),
+                rings: [(at: 0.0, radius: (0.0282, 0.0282)), (at: 0.5, radius: (0.0517, 0.047)), (at: 1.0, radius: (0.0188, 0.0188))],
+            )),
+            Loft((
+                region: "pin", bones: ["head"], sides: 6,
+                from: (-0.07, 1.47, -0.11), to: (0.07, 1.47, -0.11),
+                rings: [(at: 0.0, radius: (0.0047, 0.0047)), (at: 1.0, radius: (0.0047, 0.0047))],
+            )),
+            Loft((
+                region: "dress", bones: ["hips", "upperleg.l", "upperleg.r", "lowerleg.l", "lowerleg.r"], sides: 22, blend: 0.1, v: (0.2, 1.0), thickness: 0.01,
+                from: (0.0, 0.86, 0.0), to: (0.0, 0.03, 0.0),
+                rings: [(at: 0.0, radius: (0.1269, 0.0987)), (at: 0.3, radius: (0.188, 0.1598)), (at: 0.7, radius: (0.2726, 0.2444)), (at: 1.0, radius: (0.3196, 0.2914))],
+            )),
+            Loft((
+                region: "lace", bones: ["hips", "lowerleg.l", "lowerleg.r"], sides: 22, blend: 0.1, thickness: 0.012,
+                from: (0.0, 0.06, 0.0), to: (0.0, 0.03, 0.0),
+                rings: [(at: 0.0, radius: (0.3102, 0.282)), (at: 1.0, radius: (0.3243, 0.2961))],
+            )),
+            Loft((
+                region: "shawl", bones: ["chest", "upperarm.l", "upperarm.r"], sides: 18, blend: 0.08, thickness: 0.01,
+                from: (0.0, 1.27, 0.0), to: (0.0, 1.02, 0.0),
+                rings: [(at: 0.0, radius: (0.0752, 0.0705)), (at: 0.4, radius: (0.188, 0.1128)), (at: 1.0, radius: (0.2068, 0.1222))],
+            )),
+        ],
+    ),
+)

@@ -1253,6 +1253,7 @@ impl FightShow {
             // A shot's focus fades with the blend back to the gameplay camera.
             self.frame_focus = self.focus.follow(None, weight, 0.0, |_| None);
             scene.stream_ahead([]);
+            scene.keep_textures_whole([]);
             return;
         };
         let shown = show.present(alpha, self.arena.as_mut().and_then(|arena| arena.director_mut()));
@@ -1268,6 +1269,14 @@ impl FightShow {
         let unready_before = *self.timeline_unready.get_or_insert(unready);
         // Where its camera cuts to soon, streamed for ahead of the cut (M3 Q3).
         scene.stream_ahead(show.player().cuts_ahead(CUT_LOOKAHEAD));
+        // And the warriors' textures held whole through a cut's lookahead, so the shot it frames opens sharp
+        // rather than sharpening as the streamer sees it (M5 M5). The party's draw the character's textures,
+        // which the stage always holds whole.
+        let cut_ahead = show.player().cuts_ahead(CUT_LOOKAHEAD).next().is_some();
+        let stocks = if cut_ahead { &self.stocks[..] } else { &[] };
+        let warriors =
+            stocks.iter().flat_map(|stock| std::iter::once(stock.meshes.warrior).chain(stock.meshes.blade));
+        scene.keep_textures_whole(warriors);
         if shown.cut {
             scene.cut_view();
         }

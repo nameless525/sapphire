@@ -3699,6 +3699,17 @@
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-flipbook"],
             ),
+            // The skill's first cut as the cue table fires it (`skill_hit`, `skill_arc` at `Facing`), from
+            // `dodge-dash`'s recording, landing on the look-dev character as the `hit-*` scenes do: six ticks in,
+            // the crescent sweeping round from behind the character's right to in front of its hips, streaks
+            // running toward its head.
+            (
+                name: "vfxmesh-skill-hit",
+                ticks: 184,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/dodge-dash.sreplay", "--cues"],
+            ),
         ],
     ),
 )

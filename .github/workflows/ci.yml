@@ -365,16 +365,16 @@ jobs:
             "$RUNNER_TEMP/macos" --across-architectures
 
   golden-linux:
-    name: Golden images (vulkan-lavapipe ${{ matrix.shard }}/3)
+    name: Golden images (vulkan-lavapipe ${{ matrix.shard }}/5)
     needs: golden-build-linux
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-24.04
-    # Two shards took 43 and 28 minutes on M3's last run (2026-11-10): the cost table lacked 75 scenes,
-    # Q4's `game-ward-gate-*` among them at 3 to 6 minutes each. With the table refreshed (M4 I1), three
-    # shards' scenes come to 21 to 25 minutes on M3's last three runs' times.
+    # Lavapipe is the runner's CPU, and runners differ: on run 43539383630 every scene took 0.81, 1.70
+    # and 1.46 times main's time on the three shards' runners, and two were cancelled here with scenes
+    # left. Five shards: the cost table's 84 minutes come to 17 a shard, 29 on a runner 1.7 times slower.
     timeout-minutes: 45
     env:
       SAPPHIRE_GPU_BACKEND: vulkan
@@ -392,7 +392,7 @@ jobs:
         with:
           family: vulkan-lavapipe
           shard: ${{ matrix.shard }}
-          shards: '3'
+          shards: '5'
           artifact: golden-inputs-vulkan-lavapipe
       - name: Gather crash diagnostics
         if: failure() || cancelled()
@@ -412,7 +412,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: golden-vulkan-lavapipe-${{ matrix.shard }}of3
+          name: golden-vulkan-lavapipe-${{ matrix.shard }}of5
           path: target/golden/
           if-no-files-found: ignore
           retention-days: 7

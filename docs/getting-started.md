@@ -149,7 +149,7 @@ On a phone, use `xcrun simctl io booted screenshot <png>` on the iOS Simulator, 
 
 - **Families:**
   - `metal`: any Apple GPU;
-  - `vulkan-lavapipe`: Linux CI, in 3 shards;
+  - `vulkan-lavapipe`: Linux CI, in 5 shards;
   - `dx12-warp`: Windows CI, in 6 shards.
 
   Every pull request runs all three.

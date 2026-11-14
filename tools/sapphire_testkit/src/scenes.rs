@@ -693,7 +693,7 @@ mod tests {
         }
     }
 
-    /// The shard counts CI runs (lavapipe 3, WARP 6), one, and a few more.
+    /// The shard counts CI runs (lavapipe 5, WARP 6), one, and a few more.
     const SHARD_COUNTS: [usize; 6] = [1, 2, 3, 4, 5, 6];
     const FAMILIES: [Option<Family>; 3] = [None, Some(Family::Lavapipe), Some(Family::Warp)];
 
@@ -764,9 +764,9 @@ mod tests {
 
     #[test]
     fn splitting_by_cost_shortens_ci_s_slowest_shard() {
-        // CI's split: lavapipe in 3, WARP in 6.
+        // CI's split: lavapipe in 5, WARP in 6.
         let scenes = committed_scenes();
-        for (family, count) in [(Family::Lavapipe, 3), (Family::Warp, 6)] {
+        for (family, count) in [(Family::Lavapipe, 5), (Family::Warp, 6)] {
             let costs = costs(&scenes, Some(family));
             let slowest = |slices: &[usize]| {
                 let mut loads = vec![0_u64; count];

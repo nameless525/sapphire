@@ -3677,6 +3677,28 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 69.6, warp: 100.6),
             ),
+            // Effect meshes (M5 L5), at dusk over the look-dev character, each a quarter of the way or more into its
+            // life: a shockwave ring opening on the paving with a pillar of light in it, streaks scrolling round
+            // both; a dome of warm light burning away, a pale edge where it burns; and a burst's flipbook on a card
+            // on the phones' path, drawn in the main pass against its depth with no soft fade, its frames stepped.
+            (
+                name: "vfxmesh-scroll",
+                ticks: 76,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-scroll"],
+            ),
+            (
+                name: "vfxmesh-erosion",
+                ticks: 80,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-erosion"],
+            ),
+            (
+                name: "vfxmesh-flipbook",
+                ticks: 72,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-flipbook"],
+            ),
         ],
     ),
 )

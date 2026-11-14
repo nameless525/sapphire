@@ -6,6 +6,10 @@
 //!
 //! The attacker's and the victim's effects run on the character's own clock, so its hitstop (the
 //! `hit` show's, or a key press's) freezes them through it, and world effects keep running.
+//!
+//! The `mesh-*` shows play the shipped effect meshes (M5 L5): one effect each, started again each second, for
+//! their goldens; `mesh-one` and `mesh-eight` keep one or eight of the skill's arcs always playing round the
+//! character, the bench's load.
 
 use std::time::Duration;
 
@@ -37,10 +41,30 @@ pub enum VfxShow {
     /// A duel's worst moment held still (the bench's load): two sword trails always swinging, about
     /// 200 sparks and 50 dust particles alive at once.
     Duel,
+    /// A shockwave and a pillar of light on the ground every second, their streaks scrolling (M5 L5).
+    MeshScroll,
+    /// A shell of light burning away by an erosion every second (M5 L5).
+    MeshErosion,
+    /// A burst's flipbook on a card every second (M5 L5).
+    MeshFlipbook,
+    /// One of the skill's arcs, always playing in front of the character (the meshes' bench).
+    MeshOne,
+    /// Eight of them, always playing all round it.
+    MeshEight,
 }
 
 impl VfxShow {
-    pub const ALL: [Self; 4] = [Self::Arc, Self::Hit, Self::Dust, Self::Duel];
+    pub const ALL: [Self; 9] = [
+        Self::Arc,
+        Self::Hit,
+        Self::Dust,
+        Self::Duel,
+        Self::MeshScroll,
+        Self::MeshErosion,
+        Self::MeshFlipbook,
+        Self::MeshOne,
+        Self::MeshEight,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -48,6 +72,11 @@ impl VfxShow {
             Self::Hit => "hit",
             Self::Dust => "dust",
             Self::Duel => "duel",
+            Self::MeshScroll => "mesh-scroll",
+            Self::MeshErosion => "mesh-erosion",
+            Self::MeshFlipbook => "mesh-flipbook",
+            Self::MeshOne => "mesh-one",
+            Self::MeshEight => "mesh-eight",
         }
     }
 
@@ -68,6 +97,8 @@ pub fn budget(tier: TierId) -> VfxBudget {
 
 /// Where dust rises: paving the look-dev shots can see, as a close shot can't the character's feet.
 const DUST_SPOT: Vec3 = Vec3::new(0.7, 0.02, -2.3);
+/// Where the flipbook's card stands, beside the character at the height of its blade's hits.
+const CARD_SPOT: Vec3 = Vec3::new(-0.1, 1.05, 0.4);
 
 /// The ticks a swing takes: a sixth of a second, as a light attack's strike.
 const SWING_TICKS: f32 = 10.0;
@@ -137,6 +168,10 @@ pub(crate) struct VfxPlayer {
     spark: EffectId,
     sword: EffectId,
     dust: EffectId,
+    /// The effect a `mesh-*` show plays, if it's one.
+    mesh: Option<EffectId>,
+    /// The arcs `mesh-one` and `mesh-eight` keep playing.
+    arcs: [Option<EffectHandle>; 8],
     /// The blades' trails, while they're swinging.
     blades: [Option<EffectHandle>; 2],
     /// Ticks on the world's clock, and on the character's, which stops through a hitstop.
@@ -156,12 +191,22 @@ impl VfxPlayer {
         let library = EffectLibrary::default_effects();
         let effect = |name: &str| library.find(name).expect("a shipped effect");
         let (spark, sword, dust) = (effect("hit_spark"), effect("sword_trail"), effect("dust_puff"));
+        let mesh = match show {
+            VfxShow::MeshScroll => Some("shock_ring"),
+            VfxShow::MeshErosion => Some("ember_dome"),
+            VfxShow::MeshFlipbook => Some("burst_card"),
+            VfxShow::MeshOne | VfxShow::MeshEight => Some("skill_arc"),
+            VfxShow::Arc | VfxShow::Hit | VfxShow::Dust | VfxShow::Duel => None,
+        }
+        .map(effect);
         Self {
             show,
             world: VfxWorld::new(library, budget, SEED),
             spark,
             sword,
             dust,
+            mesh,
+            arcs: [None; 8],
             blades: [None, None],
             world_ticks: 0,
             character_ticks: 0,
@@ -176,6 +221,11 @@ impl VfxPlayer {
         }
     }
 
+    /// Whether its show plays effect meshes: what the scene declares (M5 L5).
+    pub(crate) fn has_meshes(&self) -> bool {
+        self.mesh.is_some()
+    }
+
     /// One fixed step, with how long each clock moved by: the character's stops in hitstop. Returns
     /// a hitstop to start on the character's clock, if a hit landed. Allocates nothing.
     ///
@@ -186,6 +236,10 @@ impl VfxPlayer {
         let hitstop = self.start_what_starts(world_step, character_step);
         let owners = [(ATTACKER, character_step), (VICTIM, character_step)];
         self.world.advance(&OwnerSteps { world: world_step, owners: &owners });
+        // After the step, which ended what had played out: so the frame always holds them all.
+        if matches!(self.show, VfxShow::MeshOne | VfxShow::MeshEight) && world_step > 0.0 {
+            self.keep_arcs_playing();
+        }
         if character_step > 0.0 {
             self.sample_blades(character_step);
             self.character_ticks += 1;
@@ -221,6 +275,15 @@ impl VfxPlayer {
                 self.start_duels_moment();
                 None
             }
+            VfxShow::MeshScroll | VfxShow::MeshErosion | VfxShow::MeshFlipbook
+                if world_step > 0.0 && self.world_ticks.is_multiple_of(SWING_PERIOD) =>
+            {
+                let at = if self.show == VfxShow::MeshFlipbook { CARD_SPOT } else { DUST_SPOT };
+                if let Some(mesh) = self.mesh {
+                    self.world.spawn(mesh, OwnerId::WORLD, Placement::at(at));
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -242,6 +305,20 @@ impl VfxPlayer {
         for (index, owner) in [ATTACKER, VICTIM].into_iter().enumerate() {
             if self.blades[index].is_none() {
                 self.blades[index] = self.world.spawn(self.sword, owner, Placement::default());
+            }
+        }
+    }
+
+    /// Starts again each of the bench's arcs that has ended, so one or eight always play: turned an eighth of a
+    /// turn apart round the character. After the step that ended them, so no frame is short of one.
+    fn keep_arcs_playing(&mut self) {
+        let Some(arc) = self.mesh else { return };
+        let count = if self.show == VfxShow::MeshEight { self.arcs.len() } else { 1 };
+        for (index, slot) in self.arcs.iter_mut().take(count).enumerate() {
+            if slot.is_none_or(|handle| !self.world.is_playing(handle)) {
+                let rotation =
+                    sapphire_math::det::quat_from_rotation_y(index as f32 * std::f32::consts::FRAC_PI_4);
+                *slot = self.world.spawn(arc, OwnerId::WORLD, Placement { position: Vec3::ZERO, rotation });
             }
         }
     }
@@ -278,7 +355,12 @@ impl VfxPlayer {
                     }
                 }
             }
-            VfxShow::Dust => {}
+            VfxShow::Dust
+            | VfxShow::MeshScroll
+            | VfxShow::MeshErosion
+            | VfxShow::MeshFlipbook
+            | VfxShow::MeshOne
+            | VfxShow::MeshEight => {}
         }
     }
 
@@ -430,6 +512,31 @@ mod tests {
             assert_eq!(frame.stats.dropped_ribbon_points, 0, "{budget:?}");
             assert_eq!(frame.stats.dropped_effects, 0, "{budget:?}");
         }
+    }
+
+    /// Each mesh show draws its meshes: the goldens' at their schedule, and the bench's one or eight always.
+    #[test]
+    fn the_mesh_shows_draw_their_meshes() {
+        for (show, meshes) in [
+            (VfxShow::MeshScroll, 2),
+            (VfxShow::MeshErosion, 1),
+            (VfxShow::MeshFlipbook, 1),
+            (VfxShow::MeshOne, 1),
+        ] {
+            let (_, frame) = frame_after(show, VfxBudget::DESKTOP_HIGH, 16);
+            assert_eq!(frame.meshes.len(), meshes, "{show:?}");
+            assert!(frame.sprites.is_empty() && frame.ribbon_points.is_empty(), "{show:?}");
+        }
+        let mut player = VfxPlayer::new(VfxShow::MeshEight, VfxBudget::DESKTOP_HIGH);
+        let mut frame = VfxFrame::default();
+        for _ in 0..200 {
+            player.tick();
+            player.write(&mut frame, 1.0);
+            assert_eq!(frame.meshes.len(), 8);
+        }
+        // Mobile-Low's budget is eight: all of them still draw.
+        let (_, frame) = frame_after(VfxShow::MeshEight, VfxBudget::MOBILE_LOW, 30);
+        assert_eq!((frame.meshes.len(), frame.stats.dropped_meshes), (8, 0));
     }
 
     #[test]

@@ -3765,6 +3765,26 @@
                        "--fog", "off", "--ao", "off"],
                 ci_seconds: (lavapipe: 11.0, warp: 40.6),
             ),
+            // Depth of field (M5 L8): the hero shot at golden hour with the character sharp at 3 m, its hair
+            // and outline crisp, and the pavilion, the gate wall and the street behind it soft, as a close-up
+            // pulls focus in the reference games. One character, so characters shadowing each other (M5 L12)
+            // has nothing to draw and neither scene pins `--character-shadows`. The sharp range is post's input
+            // bit for bit, so the main pass's occasional one-code change on a few of the character's pixels on
+            // Metal, which `lookdev-town-hero` shows at the same pixels, reaches this capture as it is.
+            (
+                name: "dof-closeup",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--focus", "3,0.35,0.6,4,0.012", "--capture-frames", "32"],
+            ),
+            // The same on Desktop-Low at render scale 0.667, so the depth the blur reads is smaller than
+            // the resolved frame it blurs.
+            (
+                name: "dof-closeup-upsampled",
+                ticks: 90,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-low", "--ao", "off",
+                       "--render-scale", "0.667", "--focus", "3,0.35,0.6,4,0.012", "--capture-frames", "32"],
+            ),
         ],
     ),
 )

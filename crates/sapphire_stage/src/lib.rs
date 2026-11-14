@@ -108,6 +108,7 @@ pub mod skinned;
 pub mod studio;
 #[cfg(feature = "samples")]
 pub mod swatches;
+mod texture_levels;
 pub mod turntable;
 pub mod vfx;
 

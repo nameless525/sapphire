@@ -44,7 +44,9 @@ impl Held {
         Self {
             resident: assets.resident.iter().sum(),
             resident_meshes: assets.resident[AssetKind::Mesh.index()],
-            resident_textures: assets.resident[AssetKind::Texture.index()],
+            // Tails and the levels above them alike (M5 M4).
+            resident_textures: assets.resident[AssetKind::Texture.index()]
+                + assets.resident[AssetKind::TextureLevel.index()],
             mesh_pool: render.mesh_pool_bytes,
             textures: stage.content.texture_bytes(),
             meshes: render.meshes,

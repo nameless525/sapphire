@@ -504,7 +504,7 @@ fn blocks_in(pack: &[u8]) -> HashMap<AssetId, Vec<[u8; 32]>> {
         .collect()
 }
 
-/// A texture's levels are packed with it, load with whatever binds it, and are patched apart from it.
+/// A texture's levels are packed with it, load when asked for (M5 M4), and are patched apart from it.
 #[test]
 fn a_textures_levels_go_with_it_and_patch_alone() {
     let scratch = Scratch::new("pack_texture_levels");
@@ -523,7 +523,7 @@ fn a_textures_levels_go_with_it_and_patch_alone() {
         }
     }
 
-    // The mesh loads its material, the tail, then the levels, before the material.
+    // The mesh loads its material and the tail alone; the levels load when asked for.
     let source = Arc::new(MemoryPackSource::new());
     source.insert(SHARED, bytes.clone());
     let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
@@ -537,7 +537,19 @@ fn a_textures_levels_go_with_it_and_patch_alone() {
         })
         .unwrap();
     use AssetKind::{Material as M, Mesh as Me, Texture as T, TextureLevel as L};
-    assert_eq!(order, [T, L, L, M, Me]);
+    assert_eq!(order, [T, M, Me]);
+    assert!(levels.iter().all(|&level| !server.is_resident(level)));
+    let asked: Vec<Handle<TextureLevel>> = levels.iter().map(|&level| server.load(level).unwrap()).collect();
+    let mut order = Vec::new();
+    for level in &asked {
+        server
+            .finish(level, |upload| {
+                order.push(upload.kind());
+                Ok(())
+            })
+            .unwrap();
+    }
+    assert_eq!(order, [L, L]);
 
     // A change to level 0 alone moves level 0's blocks and no other asset's.
     let before = blocks_in(&bytes);

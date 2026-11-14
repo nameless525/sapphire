@@ -196,10 +196,10 @@ fn an_admitted_asset_read_again_takes_its_new_dependencies_in() {
     assert_eq!((stats.admitted, stats.held_back), (0, 0), "{stats:?}");
 }
 
-/// A split texture under a one-byte cap loads whole (M5 M3's levels): its tail is admitted first, then the
-/// level that depends on it, then the material that holds both, one read at a time and none let over the
-/// cap. It loads whole again after a remount changes the tail and the level, and after a new renderer asks
-/// for everything again.
+/// A split texture under a one-byte cap loads whole (M5 M3's levels), its level asked for beside the mesh
+/// as the stage asks (M5 M4): the tail is admitted first, then the material that holds it, the mesh, and the
+/// level, which waits its turn like any load, one read at a time and none let over the cap. It loads whole
+/// again after a remount changes the tail and the level, and after a new renderer asks for everything again.
 #[test]
 fn a_split_texture_loads_whole_one_read_at_a_time() {
     let budgets = AssetBudgets { admission: 1, ..unlimited() };
@@ -207,27 +207,42 @@ fn a_split_texture_loads_whole_one_read_at_a_time() {
     let level = TextureLevel::id(id(TEXTURE), 0);
     let largest = split_texture(10).iter().map(|asset| asset.size).max().unwrap();
     let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
-    assert!(server.stats().held_back > 0);
-    let mut order = Vec::new();
-    for _ in 0..100 {
-        order.extend(frame(&mut server));
-        if server.state(&mesh) == LoadState::Ready {
-            break;
-        }
-    }
-    assert_eq!(order, [id(TEXTURE), level, id(MATERIAL), id(MESH)]);
     let held: Handle<TextureLevel> = server.load(level).unwrap();
-    assert_eq!(server.state(&held), LoadState::Ready);
+    assert!(server.stats().held_back > 0);
+    // Frames until the mesh and the level are both ready, and what they uploaded.
+    let whole = |server: &mut AssetServer| {
+        let mut order = Vec::new();
+        for _ in 0..100 {
+            order.extend(frame(server));
+            if server.state(&mesh) == LoadState::Ready && server.state(&held) == LoadState::Ready {
+                return order;
+            }
+        }
+        panic!("loads stalled: {:?}", server.stats());
+    };
+    assert_eq!(whole(&mut server), [id(TEXTURE), id(MATERIAL), id(MESH), level]);
     assert!(server.stats().admitted_peak <= largest, "{:?}", server.stats());
 
     source.insert("shared", write_pack(split_texture(40)).unwrap());
     server.remount("shared").unwrap();
-    frames_until_ready(&mut server, std::slice::from_ref(&mesh));
+    // The mesh and the level are ready throughout, as their new versions load behind them.
+    let mut order = whole(&mut server);
     for _ in 0..100 {
-        frame(&mut server);
+        order.extend(frame(&mut server));
     }
+    assert!(
+        order.contains(&id(TEXTURE)) && order.contains(&level),
+        "the tail and the level again: {order:?}"
+    );
     server.reupload_all();
-    frames_until_ready(&mut server, &[mesh]);
+    let mut order = whole(&mut server);
+    for _ in 0..100 {
+        order.extend(frame(&mut server));
+    }
+    assert!(
+        order.contains(&id(TEXTURE)) && order.contains(&level),
+        "the tail and the level again: {order:?}"
+    );
     let stats = server.stats();
     // A reload may let a tail in over the cap for a level already admitted that waits on it.
     assert_eq!(

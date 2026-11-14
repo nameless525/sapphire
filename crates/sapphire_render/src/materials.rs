@@ -23,6 +23,9 @@
 //!   when the instance buffer or its family's buffer grows. The sky (W2) draws one material at a
 //!   time and reads its block from the mirror ([`Materials::params`]), binding only its group 3.
 //!
+//! A raise or a lower of a texture (M5 M4) replaces it with a new object, and [`Materials::rebind`] makes
+//! again the group 3 of every material binding it, which is why each keeps what its slots bind.
+//!
 //! A freed material ([`Materials::free`], M3 W3) gives its slot to later uploads and lets go of its
 //! group 3, and with it its textures, once no mesh draws with it and no frame can be reading it (the
 //! `retire` module). An upload of several materials that fails partway takes back the ones it took
@@ -135,7 +138,7 @@ pub(crate) struct MaterialRecord {
     /// cube: the ambient pass prefilters it while one draws.
     pub reflects: bool,
     /// Group 3: `None` once it's freed, which lets go of its textures.
-    bind_group: Option<wgpu::BindGroup>,
+    group: Option<Group3>,
     /// Its handle's generation: another names nothing.
     generation: u64,
     /// Meshes drawing with it, whose draws name its slot.
@@ -147,8 +150,17 @@ pub(crate) struct MaterialRecord {
 impl MaterialRecord {
     /// Group 3. Only a material that draws is asked: nothing draws one that's been freed.
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
-        self.bind_group.as_ref().expect("nothing draws a freed material")
+        &self.group.as_ref().expect("nothing draws a freed material").bind_group
     }
+}
+
+/// A material's group 3, and what each of its texture slots binds: the texture's asset ID, if one is bound,
+/// and the view bound, so that the group can be made again when a texture is replaced by a raise or a lower
+/// ([`Materials::rebind`], M5 M4).
+#[derive(Debug)]
+struct Group3 {
+    bind_group: wgpu::BindGroup,
+    slots: Vec<(Option<AssetId>, wgpu::TextureView)>,
 }
 
 /// A family's parameter buffer and its CPU mirror.
@@ -216,7 +228,7 @@ impl Materials {
         std::mem::swap(&mut left.flags, &mut right.flags);
         std::mem::swap(&mut left.layer, &mut right.layer);
         std::mem::swap(&mut left.reflects, &mut right.reflects);
-        std::mem::swap(&mut left.bind_group, &mut right.bind_group);
+        std::mem::swap(&mut left.group, &mut right.group);
     }
 
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
@@ -308,7 +320,7 @@ impl Materials {
         if self.free_records.is_empty() && u32::try_from(self.records.len()).is_err() {
             return Err(RenderError::MaterialPoolFull(family));
         }
-        let bind_group = self.bind_group(device, layouts, material, textures)?;
+        let group = self.group(device, layouts, material, textures)?;
         let buffer = &mut self.families[family.index()];
         let (slot, replaced) = if let Some(slot) = buffer.free.pop() {
             buffer.write(slot, material.params());
@@ -337,7 +349,7 @@ impl Materials {
             flags,
             layer,
             reflects,
-            bind_group: Some(bind_group),
+            group: Some(group),
             generation,
             uses: 0,
             upload,
@@ -403,7 +415,7 @@ impl Materials {
 
     fn take_back(&mut self, index: u32) {
         let record = &mut self.records[index as usize];
-        record.bind_group = None;
+        record.group = None;
         let family = &mut self.families[record.family.index()];
         family.free.push(record.slot);
         family.dirty.retain(|&slot| slot != record.slot);
@@ -426,9 +438,9 @@ impl Materials {
         if record.family != material.family {
             return Err(RenderError::MaterialFamilyChanged { from: record.family, to: material.family });
         }
-        let bind_group = self.bind_group(device, layouts, material, textures)?;
+        let group = self.group(device, layouts, material, textures)?;
         let record = &mut self.records[handle.index()];
-        record.bind_group = Some(bind_group);
+        record.group = Some(group);
         record.flags = material.flags();
         record.layer = layer(material);
         record.reflects = reflects(material);
@@ -437,19 +449,19 @@ impl Materials {
     }
 
     /// Group 3 for `material`, with each slot's texture checked against its binding.
-    fn bind_group<'t>(
+    fn group<'t>(
         &self,
         device: &wgpu::Device,
         layouts: &[wgpu::BindGroupLayout],
         material: &ArchivedMaterial,
         textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
-    ) -> Result<wgpu::BindGroup, RenderError> {
+    ) -> Result<Group3, RenderError> {
         let family = material.family;
-        let slots = family.texture_slots();
-        let mut views = Vec::with_capacity(slots.len());
-        for (desc, binding) in slots.iter().zip(material.textures.iter()) {
+        let descs = family.texture_slots();
+        let mut slots = Vec::with_capacity(descs.len());
+        for (desc, binding) in descs.iter().zip(material.textures.iter()) {
             let Some(id) = binding.texture() else {
-                views.push(&self.fallback);
+                slots.push((None, self.fallback.clone()));
                 continue;
             };
             let texture = textures(id).ok_or(RenderError::MissingTexture { slot: desc.name, id })?;
@@ -465,12 +477,24 @@ impl Materials {
             if holds_data(desc.usage) && format.is_srgb() {
                 return Err(RenderError::SrgbData { slot: desc.name, format });
             }
-            views.push(texture.view());
+            slots.push((Some(id), texture.view().clone()));
         }
-        let mut entries: Vec<wgpu::BindGroupEntry<'_>> = views
+        let bind_group = self.bind_group(device, &layouts[family.index()], family, &slots);
+        Ok(Group3 { bind_group, slots })
+    }
+
+    /// A family's group 3 binding `slots`' views.
+    fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        family: MaterialFamily,
+        slots: &[(Option<AssetId>, wgpu::TextureView)],
+    ) -> wgpu::BindGroup {
+        let mut entries: Vec<wgpu::BindGroupEntry<'_>> = slots
             .iter()
             .zip(0..)
-            .map(|(view, binding)| wgpu::BindGroupEntry {
+            .map(|((_, view), binding)| wgpu::BindGroupEntry {
                 binding,
                 resource: wgpu::BindingResource::TextureView(view),
             })
@@ -487,13 +511,44 @@ impl Materials {
             binding: material_binding::ID_SAMPLER,
             resource: wgpu::BindingResource::Sampler(&self.id_sampler),
         });
-        Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(family.name()),
-            layout: &layouts[family.index()],
+            layout,
             entries: &entries,
-        }))
+        })
     }
 
+    /// Makes group 3 again, binding `texture` in every slot that binds texture `id`, for every material that
+    /// binds it: what a raise or a lower of the texture asks, which replaces it with another object of the
+    /// same format and swizzle (M5 M4).
+    /// Returns how many groups it made.
+    pub(crate) fn rebind(
+        &mut self,
+        device: &wgpu::Device,
+        layouts: &[wgpu::BindGroupLayout],
+        id: AssetId,
+        texture: &GpuTexture,
+    ) -> u32 {
+        let mut rebound = 0;
+        for index in 0..self.records.len() {
+            let record = &self.records[index];
+            let Some(group) =
+                record.group.as_ref().filter(|group| group.slots.iter().any(|(bound, _)| *bound == Some(id)))
+            else {
+                continue;
+            };
+            let family = record.family;
+            let slots: Vec<_> = group
+                .slots
+                .iter()
+                .map(|(bound, view)| (*bound, if *bound == Some(id) { texture.view() } else { view }.clone()))
+                .collect();
+            let bind_group = self.bind_group(device, &layouts[family.index()], family, &slots);
+            self.records[index].group = Some(Group3 { bind_group, slots });
+            rebound += 1;
+        }
+        rebound
+    }
     /// Where the materials are now, for [`Self::roll_back`].
     pub(crate) fn mark(&self) -> MaterialsMark {
         MaterialsMark { uploads: self.uploads }
@@ -508,7 +563,7 @@ impl Materials {
         // been tried: the free lists are stacks.
         for index in (0..self.records.len()).rev() {
             let record = &mut self.records[index];
-            if record.upload > mark.uploads && record.bind_group.is_some() {
+            if record.upload > mark.uploads && record.group.is_some() {
                 record.generation = new_generation();
                 self.take_back(index as u32);
             }
@@ -519,7 +574,7 @@ impl Materials {
     pub(crate) fn record(&self, handle: MaterialHandle) -> Option<&MaterialRecord> {
         self.records
             .get(handle.index())
-            .filter(|record| record.generation == handle.generation && record.bind_group.is_some())
+            .filter(|record| record.generation == handle.generation && record.group.is_some())
     }
 
     /// Material `handle`'s block as its family's mirror holds it: what its slot uploads. The sky

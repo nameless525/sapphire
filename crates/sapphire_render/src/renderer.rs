@@ -14,6 +14,8 @@ use glam::Mat4;
 use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_assets::probes::ArchivedProbeGrid;
+use sapphire_assets::texture::TextureTail;
+use sapphire_assets::texture_level::ArchivedTextureLevel;
 use sapphire_assets::{AssetId, PipelineKey};
 use sapphire_core::debug_draw::DebugLine;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
@@ -39,6 +41,7 @@ use crate::inset::{
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
+use crate::mip_streaming::{MipStreaming, MipStreamingStats};
 use crate::outlines::OutlineCull;
 use crate::pipeline_builds::{
     FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats, PipelineWarmup,
@@ -61,7 +64,7 @@ use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
-use crate::texture::GpuTexture;
+use crate::texture::{GpuTexture, TextureError};
 use crate::ui::{Ui, UiPicture, UiStats};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
@@ -309,6 +312,10 @@ pub enum RenderError {
          loads it before the mesh, for `upload_material` and then `upload_slot_materials`"
     )]
     UnresolvedMaterial { slot: String, id: AssetId },
+    /// A raise, a lower or a rewrite of a texture's level asked for what the texture can't take
+    /// ([`Renderer::raise_texture`]).
+    #[error("texture: {0}")]
+    Texture(#[from] TextureError),
     #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
     ProbeGridTooLarge { bricks: u32 },
     /// A [`RenderSettings`] field holds a value out of its range ([`ShadowSettings::validate`] and its
@@ -467,6 +474,9 @@ pub struct RenderStats {
     pub post: PostStats,
     /// The fog's layers and the fog cards drawn (M1 W3).
     pub fog: FogStats,
+    /// Textures raised and lowered a level at a time since the frame before the last prepared one, and
+    /// what they replaced and still hold (M5 M4).
+    pub mip_streaming: MipStreamingStats,
     /// The shadows' cascades, character maps, capsules and caster draws; all zero when they are
     /// off.
     pub shadows: ShadowStats,
@@ -620,6 +630,8 @@ pub struct Renderer {
     materials: Materials,
     /// Which frames the GPU has finished, which what's freed waits on.
     fence: FrameFence,
+    /// Raised and lowered textures' copies, the textures they replaced, and their counters (M5 M4).
+    mip_streaming: MipStreaming,
     /// A packet named a mesh that isn't current, which is logged once.
     warned_stale_mesh: bool,
     /// Instances, draw records and the draw list, persistent across frames.
@@ -1012,6 +1024,7 @@ impl Renderer {
             edited_shaders,
             device_lost: false,
             fence: FrameFence::default(),
+            mip_streaming: MipStreaming::new(),
             warned_stale_mesh: false,
             stats: RenderStats {
                 temporal: TemporalStats { enabled: settings.temporal, ..TemporalStats::default() },
@@ -1284,6 +1297,111 @@ impl Renderer {
         }
     }
 
+    /// Raises `texture`, asset `id`, by `levels`, the levels just above its top, from the new top down
+    /// (M5 M4): a new texture holding them and the levels it kept, which every material binding `id`
+    /// binds from now on ([`GpuTexture::raised`], the `mip_streaming` module). The new levels' writes and
+    /// the kept ones' copies reach the GPU ahead of the next frame's work, outside its passes, and the old
+    /// texture is let go of once no frame can be reading it. Several levels at once make one new texture.
+    ///
+    /// Ask [`Self::may_raise`] first to keep to the frame's budget: the renderer counts the bytes and
+    /// doesn't refuse a raise past it. Fails, changing nothing, if `levels` aren't
+    /// the texture's levels just above its top.
+    pub fn raise_texture(
+        &mut self,
+        id: AssetId,
+        texture: &mut GpuTexture,
+        levels: &[&ArchivedTextureLevel],
+    ) -> Result<(), RenderError> {
+        profiling::scope!("Renderer::raise_texture");
+        let label = self.labels.then_some("raised texture");
+        let encoder = self.mip_streaming.encoder(&self.device);
+        let raised = texture.raised(&self.device, &self.queue, encoder, levels, label)?;
+        let written = levels.iter().map(|level| level.data().len() as u64).sum();
+        self.replace_texture(id, texture, raised, Some(written));
+        Ok(())
+    }
+
+    /// Lowers `texture`, asset `id`, to level `top`, under its top and no deeper than its tail's: a new
+    /// texture of the levels from `top` down, which every material binding `id` binds from now on, as
+    /// [`Self::raise_texture`] makes and binds one. The levels it dropped are the caller's to give back.
+    pub fn lower_texture(
+        &mut self,
+        id: AssetId,
+        texture: &mut GpuTexture,
+        top: u32,
+    ) -> Result<(), RenderError> {
+        profiling::scope!("Renderer::lower_texture");
+        let label = self.labels.then_some("lowered texture");
+        let encoder = self.mip_streaming.encoder(&self.device);
+        let lowered = texture.lowered(&self.device, encoder, top, label)?;
+        self.replace_texture(id, texture, lowered, None);
+        Ok(())
+    }
+
+    /// Swaps `new` in for `texture`, rebinds the materials binding `id` to it and retires the old one
+    /// until the frame that submits the copies out of it is finished.
+    fn replace_texture(
+        &mut self,
+        id: AssetId,
+        texture: &mut GpuTexture,
+        new: GpuTexture,
+        written: Option<u64>,
+    ) {
+        let copied = new.bytes() - written.unwrap_or(0);
+        let old = std::mem::replace(texture, new);
+        let rebinds = self.materials.rebind(&self.device, &self.layouts.materials, id, texture);
+        // Frames up to the one being prepared or recorded may draw the old texture, and the copies out of
+        // it are submitted by the next at the latest.
+        let last_read = self.fence.frame() + 1;
+        self.mip_streaming.replaced(old, last_read, written, copied, rebinds);
+    }
+
+    /// Writes `level` over `texture`'s, as hot reload hands a changed level: one of the levels it holds
+    /// above its tail, of the same size and format. The texture stays the same object, so nothing
+    /// rebinds; copies into it from a raise not yet submitted go first.
+    pub fn rewrite_texture_level(
+        &mut self,
+        texture: &GpuTexture,
+        level: &ArchivedTextureLevel,
+    ) -> Result<(), RenderError> {
+        self.mip_streaming.submit(&self.queue);
+        texture.write_level(&self.queue, level)?;
+        Ok(())
+    }
+
+    /// Writes `tail`'s levels over `texture`'s tail, as hot reload hands a new version of the same shape:
+    /// the levels above stay as they are, and nothing rebinds. A tail of another shape makes a new
+    /// texture ([`GpuTexture::upload_tail`]) that the materials binding it are uploaded again with.
+    pub fn rewrite_texture_tail(
+        &mut self,
+        texture: &GpuTexture,
+        tail: &TextureTail<'_>,
+    ) -> Result<(), RenderError> {
+        self.mip_streaming.submit(&self.queue);
+        texture.write_tail(&self.queue, tail)?;
+        Ok(())
+    }
+
+    /// Submits the copies of the textures raised and lowered since the last frame was prepared, which
+    /// the next [`Self::prepare`] or [`Self::record`] does anyway: for an app that reads a raised texture
+    /// outside the renderer's frames, as a test does.
+    pub fn submit_texture_copies(&mut self) {
+        self.mip_streaming.submit(&self.queue);
+    }
+
+    /// Whether a raise writing `bytes` of levels fits what's left of the frame's budget for raising
+    /// textures ([`Self::set_mip_budget`]) before the next [`Self::prepare`]: the first raise of a frame
+    /// always does, however large, as the asset server lets one upload through.
+    pub fn may_raise(&self, bytes: u64) -> bool {
+        self.mip_streaming.may_write(bytes)
+    }
+
+    /// Sets the bytes each frame may write by raising textures ([`crate::DEFAULT_MIP_BUDGET`] until
+    /// then): a tier's and a device's choice, as the asset server's upload budget is.
+    pub fn set_mip_budget(&mut self, bytes: u64) {
+        self.mip_streaming.set_budget(bytes);
+    }
+
     /// Counts no frame past `frame` as finished, or with `None` goes back to the queue's word, for tests
     /// of what a slow GPU would do.
     #[cfg(test)]
@@ -1301,6 +1419,11 @@ impl Renderer {
     /// retired, and what no unfinished frame can read goes back to the free lists. Only a frame with
     /// something retired pays for asking the queue.
     fn settle_freed(&mut self) {
+        let finished = self.fence.finished();
+        self.mip_streaming.release_finished(finished);
+        if self.mip_streaming.retiring() > 0 {
+            self.fence.ask(&self.queue);
+        }
         if self.meshes.retiring() + self.materials.retiring() == 0 {
             return;
         }
@@ -2135,6 +2258,8 @@ impl Renderer {
             "prepare() needs the GpuContext the renderer was created with"
         );
         let (device, queue) = (gpu.device(), gpu.queue());
+        // Copies of raised and lowered textures go ahead of anything this frame submits.
+        self.mip_streaming.submit(queue);
         self.pipeline_builds.frame_started();
         self.settle_last_frame();
         self.device_lost = gpu.is_lost();
@@ -2169,6 +2294,7 @@ impl Renderer {
         self.wind.prepare(packet);
         self.skinning.prepare(device, queue, packet, self.scene.slots_mut(), self.meshes.records());
         self.settle_freed();
+        self.stats.mip_streaming = self.mip_streaming.take_stats();
         let lists_replaced =
             self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
@@ -2482,6 +2608,8 @@ impl Renderer {
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
+        // A texture raised after `prepare` is bound already: its copies go ahead of this frame's.
+        self.mip_streaming.submit(&self.queue);
         let PreparedFrame { camera, constants, wind } = self.prepared.take()?;
         let cut = self.pending_cut;
         let output = graph.size(target);

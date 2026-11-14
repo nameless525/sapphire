@@ -134,9 +134,14 @@ fn a_changed_asset_reloads_behind_its_handle_and_its_dependents_follow() {
 #[test]
 fn a_split_texture_reloads_its_tail_then_its_levels() {
     let (mut server, source) = serve(split_texture(10), unlimited());
-    let (_mesh, slots) = loaded_character(&mut server);
+    let (_mesh, mut slots) = loaded_character(&mut server);
     let level = TextureLevel::id(id(TEXTURE), 0);
-    assert!(slots.contains_key(&level), "the level was uploaded with the character");
+    let _level: Handle<TextureLevel> = server.load(level).unwrap();
+    settle(&mut server, |upload| {
+        slots.insert(upload.id(), upload.slot());
+        Ok(())
+    });
+    assert!(slots.contains_key(&level), "the level was asked for and uploaded");
 
     source.insert("shared", write_pack(split_texture(40)).unwrap());
     let report = server.remount("shared").unwrap();

@@ -18,6 +18,10 @@
 //! `TextureDesc::validate`), so the deepest level a texture can stream down to is the last of
 //! the leading levels that are whole blocks: level k of a base W × H is a top only when the
 //! block's size times 2^k divides W and H.
+//!
+//! M5 M4 streams the same way through the renderer's own types: a tail uploaded alone
+//! (`GpuTexture::upload_tail`) and raised a level at a time (`GpuTexture::raised`) is, byte for
+//! byte, the whole texture uploaded at once.
 
 use std::f32::consts::TAU;
 
@@ -463,6 +467,103 @@ fn raising_a_2k_texture_by_one_level_keeps_every_block() {
     }
 }
 
+/// The cost of one raise of a 2048² texture from its 1024² top through the renderer (M5 M4):
+/// `Renderer::raise_texture` (create, eleven copies recorded, a 4 MiB write, materials rebound,
+/// the old texture retired), its copies submitted, and the GPU done. Logged for the package's
+/// report and checked byte for byte; time it alone, on a quiet machine.
+#[test]
+#[ignore = "needs a GPU"]
+#[allow(clippy::disallowed_methods, reason = "timing needs the OS clock, and nothing here ships")]
+fn raising_a_2k_texture_through_the_renderer() {
+    use std::time::Instant;
+
+    use sapphire_render::{RenderSettings, Renderer};
+    const RUNS: usize = 9;
+    let gpu = gpu();
+    let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
+        .expect("renderer");
+    let id = AssetId::from_bytes([7; 16]);
+    for format in
+        [TextureFormat::Bc7RgbaUnormSrgb, TextureFormat::Astc { block: AstcBlock::B4x4, srgb: true }]
+    {
+        if let Err(error @ TextureError::Unsupported { .. }) = check_format(&gpu, format) {
+            eprintln!("skipped {format:?}: {error}");
+            continue;
+        }
+        let desc = TextureDesc {
+            format,
+            width: 2048,
+            height: 2048,
+            mip_level_count: 12,
+            swizzle: Default::default(),
+        };
+        let levels: Vec<Vec<u8>> = (0..desc.mip_level_count)
+            .map(|level| blocks(format, desc.level_byte_len(level) / 16, u64::from(level)))
+            .collect();
+        let top = TextureLevel {
+            texture: id,
+            level: 0,
+            format: format.vk_format(),
+            width: 2048,
+            height: 2048,
+            data: levels[0].clone(),
+        }
+        .to_cooked()
+        .expect("cooked");
+        let top = TextureLevel::read(&top).expect("a valid level");
+        let tail = TextureTail {
+            texture: Texture {
+                desc: from_level(&desc, 1),
+                levels: levels[1..].iter().map(Vec::as_slice).collect(),
+            },
+            above: 1,
+        };
+        let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        // Milliseconds: the raise, its copies submitted, done on the GPU.
+        let mut phases = vec![[0.0f64; 3]; RUNS];
+        let mut raised = None;
+        for phase in &mut phases {
+            let mut texture = GpuTexture::upload_tail(&gpu, &tail, "2K").expect("upload the tail");
+            renderer.submit_texture_copies();
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let start = Instant::now();
+            renderer.raise_texture(id, &mut texture, &[top]).expect("raise");
+            let raise = start.elapsed();
+            renderer.submit_texture_copies();
+            let submit = start.elapsed();
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let done = start.elapsed();
+            *phase = [raise, submit - raise, done - submit].map(|time| time.as_secs_f64() * 1e3);
+            raised = Some(texture);
+        }
+        assert!(pollster::block_on(scope.pop()).is_none(), "{format:?}: validation error");
+        let raised = raised.expect("raised");
+        assert_eq!(raised.top(), 0);
+        assert!(
+            read_levels(&gpu, raised.texture(), &desc) == levels,
+            "{format:?}: the raised texture differs"
+        );
+        let median = |i: usize| {
+            let mut times: Vec<f64> = phases[1..].iter().map(|phase| phase[i]).collect();
+            times.sort_by(f64::total_cmp);
+            times[times.len() / 2]
+        };
+        let mut totals: Vec<f64> = phases[1..].iter().map(|phase| phase.iter().sum()).collect();
+        totals.sort_by(f64::total_cmp);
+        eprintln!(
+            "{format:?} on {} ({:?}): Renderer::raise_texture 1024 to 2048, median of {}: raise {:.3}, \
+             submit {:.3}, GPU wait {:.3}, total {:.3} ms",
+            gpu.caps().adapter.name,
+            gpu.caps().backend(),
+            RUNS - 1,
+            median(0),
+            median(1),
+            median(2),
+            totals[totals.len() / 2],
+        );
+    }
+}
+
 /// Whether `a` and `b` sample alike at every level, bit for bit.
 fn sample_alike(gpu: &GpuContext, sampler: &LevelSampler, a: &wgpu::Texture, b: &wgpu::Texture) -> bool {
     let (a, b) = (sampler.sample(gpu, a), sampler.sample(gpu, b));
@@ -470,14 +571,19 @@ fn sample_alike(gpu: &GpuContext, sampler: &LevelSampler, a: &wgpu::Texture, b: 
         && a.iter().flatten().map(|v| v.map(f32::to_bits)).eq(b.iter().flatten().map(|v| v.map(f32::to_bits)))
 }
 
-/// M5 M3's entry for the app: a texture cooked as a tail and levels, uploaded as its tail with the whole
-/// texture made at once ([`GpuTexture::upload_tail`]) and its levels written in place as they arrive, in
-/// any order, samples bit for bit as the whole texture uploaded at once. A new version of the same shape
-/// (hot reload) is written over it in place, and what isn't one of its levels is refused.
+/// M5 M4's raise and lower: a texture cooked as a tail and levels, uploaded as its tail
+/// ([`GpuTexture::upload_tail`]) and raised a level at a time ([`GpuTexture::raised`]) to the whole
+/// texture, holds the cook's blocks byte for byte at every step and samples as those levels uploaded at
+/// once; lowered back to its tail ([`GpuTexture::lowered`]) and raised again by all its levels at once, it
+/// is byte for byte what it was. Only a texture that can rise is a copy source, and what isn't the level
+/// above a texture's top, or a top it can lower to, is refused.
 #[test]
 #[ignore = "needs a GPU"]
-fn a_tail_and_its_levels_written_in_place_sample_as_the_whole_texture() {
+fn a_tail_raised_level_by_level_is_the_whole_texture() {
+    const UNSTREAMED: wgpu::TextureUsages =
+        wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_DST);
     let gpu = gpu();
+    let (device, queue) = (gpu.device(), gpu.queue());
     let sampler = LevelSampler::new(&gpu);
     let id = AssetId::from_bytes([5; 16]);
     let mut skipped = Vec::new();
@@ -485,50 +591,74 @@ fn a_tail_and_its_levels_written_in_place_sample_as_the_whole_texture() {
         let settings = TextureSettings {
             class: TextureClass::Color(ColorSettings { mips: true, astc_block: case.block }),
         };
-        let (width, height) = case.size;
-        let cooked = texture::cook(&image(width, height), &settings, case.cook).expect("cook");
+        let cooked = texture::cook(&image(case.size.0, case.size.1), &settings, case.cook).expect("cook");
         if let Err(error @ TextureError::Unsupported { .. }) = check_format(&gpu, cooked.desc.format) {
             skipped.push(format!("{}: {error}", case.name));
             continue;
         }
         let above = cooked.levels_above(&settings);
         assert!(above >= 1, "{}: the case should split", case.name);
-        let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let levels: Vec<_> = (0..above).map(|level| cooked.level(id, level).expect("a level")).collect();
+        let level = |index: u32| TextureLevel::read(&levels[index as usize]).expect("valid");
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let tail_file = cooked.tail(above);
         let tail = TextureTail::from_ktx2(&tail_file).expect("a tail");
-        let mut split = GpuTexture::upload_tail(&gpu, &tail, case.name).expect("upload the tail");
-        assert_eq!((split.desc(), split.is_whole()), (cooked.desc, false), "{}", case.name);
-        // The levels arrive deepest first, as a streamer raises a texture.
-        for level in (0..above).rev() {
-            let bytes = cooked.level(id, level).expect("a level");
-            split.write_level(&gpu, TextureLevel::read(&bytes).expect("valid")).expect("write the level");
+        let mut streamed = GpuTexture::upload_tail(&gpu, &tail, case.name).expect("upload the tail");
+        assert_eq!((streamed.whole(), streamed.top(), streamed.above()), (cooked.desc, above, above));
+        assert_eq!(streamed.texture().usage(), UNSTREAMED | wgpu::TextureUsages::COPY_SRC, "{}", case.name);
+        check(&gpu, &sampler, &case, &cooked, above, streamed.texture());
+        // Up a level at a time, as levels arrive.
+        for top in (0..above).rev() {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            streamed = streamed.raised(device, queue, &mut encoder, &[level(top)], None).expect("raise");
+            queue.submit([encoder.finish()]);
+            assert_eq!(
+                (streamed.top(), streamed.desc()),
+                (top, from_level(&cooked.desc, top)),
+                "{}",
+                case.name
+            );
+            check(&gpu, &sampler, &case, &cooked, top, streamed.texture());
         }
+        // The whole texture, uploaded at once, isn't a copy source.
         let whole = GpuTexture::upload(&gpu, &cooked.texture(), case.name).expect("upload whole");
-        assert!(split.is_whole(), "{}", case.name);
-        assert_eq!(split.bytes(), whole.bytes(), "{}", case.name);
-        assert!(sample_alike(&gpu, &sampler, split.texture(), whole.texture()), "{}: differs", case.name);
+        assert_eq!(whole.texture().usage(), UNSTREAMED, "{}: an unstreamed texture's usage", case.name);
+        assert_eq!(streamed.bytes(), whole.bytes(), "{}", case.name);
+        assert!(sample_alike(&gpu, &sampler, streamed.texture(), whole.texture()), "{}: differs", case.name);
+        let full = read_levels(&gpu, streamed.texture(), &cooked.desc);
 
-        // A new version of the same shape, written over it in place: the tail, then its levels again.
-        let mut source = image(width, height);
-        source.pixels.reverse();
-        let next = texture::cook(&source, &settings, case.cook).expect("cook");
-        let next_tail_file = next.tail(above);
-        split.write_tail(&gpu, &TextureTail::from_ktx2(&next_tail_file).expect("a tail")).expect("in place");
-        for level in 0..above {
-            let bytes = next.level(id, level).expect("a level");
-            split.write_level(&gpu, TextureLevel::read(&bytes).expect("valid")).expect("write the level");
-        }
-        let next_whole = GpuTexture::upload(&gpu, &next.texture(), case.name).expect("upload whole");
-        assert_eq!(split.bytes(), whole.bytes(), "{}: rewriting counts nothing twice", case.name);
-        assert!(sample_alike(&gpu, &sampler, split.texture(), next_whole.texture()), "{}: reload", case.name);
+        // Down to the tail, then up by every level at once: one new texture, the same blocks.
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let lowered = streamed.lowered(device, &mut encoder, above, None).expect("lower");
+        queue.submit([encoder.finish()]);
+        check(&gpu, &sampler, &case, &cooked, above, lowered.texture());
+        let all: Vec<_> = (0..above).map(level).collect();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let raised = lowered.raised(device, queue, &mut encoder, &all, None).expect("raise at once");
+        queue.submit([encoder.finish()]);
+        assert!(
+            read_levels(&gpu, raised.texture(), &cooked.desc) == full,
+            "{}: lowered and raised",
+            case.name
+        );
 
-        // The tail's top isn't a level above it, and a whole texture isn't this one's tail.
-        let top = cooked.level(id, above).expect("a level");
-        let refused = split.write_level(&gpu, TextureLevel::read(&top).expect("valid"));
+        // A whole texture can't rise, a lowered one takes only the level above its top, and a texture
+        // lowers only under its top and no deeper than its tail.
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let refused = raised.raised(device, queue, &mut encoder, &[level(0)], None);
         assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
-        let refused = split.write_tail(&gpu, &TextureTail { texture: cooked.texture(), above: 0 });
-        assert!(matches!(refused, Err(TextureError::OtherShape { .. })), "{}: {refused:?}", case.name);
+        if above > 1 {
+            let refused = lowered.raised(device, queue, &mut encoder, &[level(0)], None);
+            assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
+        }
+        let refused = lowered.raised(device, queue, &mut encoder, &[], None);
+        assert!(matches!(refused, Err(TextureError::NotALevel { .. })), "{}: {refused:?}", case.name);
+        for to in [0, above + 1] {
+            let refused = raised.lowered(device, &mut encoder, to, None);
+            assert!(matches!(refused, Err(TextureError::CantLower { .. })), "{}: {refused:?}", case.name);
+        }
+        queue.submit([encoder.finish()]);
         assert!(pollster::block_on(scope.pop()).is_none(), "{}: validation error", case.name);
     }
     for skip in &skipped {

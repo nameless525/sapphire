@@ -1,5 +1,6 @@
 //! Hot reload in the renderer (M1 A8): new shader sources rebuild pipelines, broken ones keep
-//! the pipelines the renderer has, and meshes, materials and textures are replaced in place.
+//! the pipelines the renderer has, and meshes, materials and textures are replaced in place, textures
+//! raised and lowered a level at a time too (M5 M4).
 //! They need a GPU: run with `cargo test -p sapphire_render --tests -- --ignored`.
 
 use std::f32::consts::{PI, TAU};
@@ -13,9 +14,10 @@ use sapphire_assets::material::{
 use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
-use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
+use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat, TextureTail};
+use sapphire_assets::texture_level::TextureLevel;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
-use sapphire_render::texture::GpuTexture;
+use sapphire_render::texture::{GpuTexture, TextureError};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle,
     MeshInstance, PostParams, RenderError, RenderSettings, Renderer, ShaderError, ShaderFile, ShaderSources,
@@ -586,4 +588,102 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 22 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 10, "the same set, rebuilt");
+}
+
+/// Textures the app holds handles to, by wgpu's count.
+fn textures_held(gpu: &GpuContext) -> usize {
+    gpu.instance().raw().generate_report().expect("a wgpu-core backend").hub.textures.num_kept_from_user
+}
+
+/// M5 M4's raise and lower through the renderer: a material binding a texture uploaded as its tail draws
+/// the tail's top; raised, it draws the new level from the next frame, through a group 3 made again, and
+/// the old texture is let go of once the frames that may read it are finished. Lowered, it draws the
+/// tail again; a level written over in place, as hot reload writes one, draws at once.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_raised_texture_draws_its_new_level_and_lets_the_old_go() {
+    let gpu = gpu();
+    let mut frames = Frames::new(&gpu);
+    let texture_id = AssetId::from_bytes([3; 16]);
+    let material_id = AssetId::from_bytes([4; 16]);
+    // An 8×8 texture: a red tail of 4×4 down, and a blue level 0 above it.
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 4,
+        height: 4,
+        mip_level_count: 3,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let red: Vec<Vec<u8>> = [16, 4, 1].map(|texels| [255, 0, 0, 255].repeat(texels)).into();
+    let tail =
+        TextureTail { texture: Texture { desc, levels: red.iter().map(Vec::as_slice).collect() }, above: 1 };
+    let level_bytes = |rgba: [u8; 4]| {
+        let format = desc.format.vk_format();
+        let level = TextureLevel {
+            texture: texture_id,
+            level: 0,
+            format,
+            width: 8,
+            height: 8,
+            data: rgba.repeat(64),
+        };
+        level.to_cooked().expect("cook")
+    };
+    let blue = level_bytes([0, 0, 255, 255]);
+    let blue = TextureLevel::read(&blue).expect("a valid level");
+    let mut texture = GpuTexture::upload_tail(&gpu, &tail, "streamed").expect("upload the tail");
+    let material_bytes = cooked(&flat([0.8; 3], Some(texture_id))).to_cooked().expect("cook");
+    let material = Material::read(&material_bytes).expect("a valid material");
+    let handle = frames
+        .renderer
+        .upload_material(material, |id| (id == texture_id).then_some(&texture))
+        .expect("upload");
+    let mesh_bytes = sphere(1.0, SlotMaterial::Asset(material_id)).to_cooked().expect("cook");
+    let mesh = Mesh::read(&mesh_bytes).expect("a valid mesh");
+    let materials =
+        frames.renderer.upload_slot_materials(mesh, |id| (id == material_id).then_some(handle)).unwrap();
+    let mesh_handle = frames.renderer.upload_mesh(mesh, &materials).unwrap();
+    frames.show(mesh_handle);
+    let tail_color = center(&frames.render(&gpu));
+    assert!(tail_color[0] > 150 && tail_color[2] < 10, "the tail draws: {tail_color:?}");
+    let held = textures_held(&gpu);
+
+    // Raised: the next frame draws level 0, and the tail's texture waits for its frames.
+    frames.renderer.raise_texture(texture_id, &mut texture, &[blue]).expect("raise");
+    assert_eq!((texture.top(), texture.desc().width), (0, 8));
+    assert_eq!(textures_held(&gpu), held + 1, "the old texture is kept for the frames that may read it");
+    let pixels = frames.render(&gpu);
+    let raised = center(&pixels);
+    assert!(raised[2] > 150 && raised[0] < 10, "the raised level draws: {raised:?}");
+    let stats = frames.renderer.stats().mip_streaming;
+    assert_eq!((stats.raises, stats.lowers, stats.rebinds), (1, 0, 1), "{stats:?}");
+    assert_eq!((stats.bytes_written, stats.bytes_copied), (256, 84), "{stats:?}");
+    let mut retired = stats.retired;
+    for _ in 0..3 {
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        assert_eq!(center(&frames.render(&gpu)), raised);
+        retired += frames.renderer.stats().mip_streaming.retired;
+    }
+    let stats = frames.renderer.stats().mip_streaming;
+    assert_eq!((retired, stats.retiring, stats.retiring_bytes), (1, 0, 0), "{stats:?}");
+    assert_eq!(textures_held(&gpu), held, "nothing holds the old texture");
+
+    // A level written over in place draws from the next frame, rebinding nothing.
+    let green = level_bytes([0, 255, 0, 255]);
+    frames
+        .renderer
+        .rewrite_texture_level(&texture, TextureLevel::read(&green).expect("valid"))
+        .expect("rewrite");
+    let rewritten = center(&frames.render(&gpu));
+    assert!(rewritten[1] > 150 && rewritten[0] < 10 && rewritten[2] < 10, "{rewritten:?}");
+    assert_eq!(frames.renderer.stats().mip_streaming.rebinds, 0);
+
+    // Lowered to the tail: it draws red again. A lower deeper than the tail is refused, changing nothing.
+    frames.renderer.lower_texture(texture_id, &mut texture, 1).expect("lower");
+    assert_eq!(center(&frames.render(&gpu)), tail_color);
+    let stats = frames.renderer.stats().mip_streaming;
+    assert_eq!((stats.raises, stats.lowers, stats.bytes_written), (0, 1, 0), "{stats:?}");
+    let error = frames.renderer.lower_texture(texture_id, &mut texture, 2).unwrap_err();
+    assert!(matches!(error, RenderError::Texture(TextureError::CantLower { .. })), "{error}");
+    assert_eq!(texture.top(), 1);
 }

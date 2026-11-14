@@ -896,6 +896,7 @@ mod interface_screen;
 mod lights;
 mod materials;
 mod mesh_pool;
+mod mip_streaming;
 mod outlines;
 mod pipeline_builds;
 mod pipelines;
@@ -948,6 +949,7 @@ pub use post::{
 };
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.
+pub use mip_streaming::{DEFAULT_MIP_BUDGET, MipStreamingStats};
 pub use renderer::{
     CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,
     RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, TierBuild, TierRefused, scaled_size,

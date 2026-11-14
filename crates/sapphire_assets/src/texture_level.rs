@@ -7,10 +7,9 @@
 //! residency, unmounting and patching take it as they take any asset, and packs hold it as they hold any.
 //!
 //! A level depends on its tail: loading one loads the tail first and keeps it loaded, so a level always
-//! arrives for a texture the renderer already holds. Nothing in a pack depends on a level. For now the
-//! asset server loads every level of a texture with whatever holds the texture, so a texture is whole by
-//! the time a material binds it (`AssetServer`'s "Texture levels"); raising and lowering a texture a level
-//! at a time is M4's and M5's.
+//! arrives for a texture the renderer already holds. Nothing in a pack depends on a level, so what loads a
+//! texture loads its tail alone, and an app loads the levels it wants and raises the texture with them
+//! (`AssetServer`'s "Texture levels", M5 M4).
 //!
 //! Every level above a tail can be its texture's top: its size is whole blocks of its format, as WebGPU
 //! asks of a texture's level 0 (M5 M0). Levels are counted from the base, so level 0 is the texture at full

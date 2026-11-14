@@ -217,13 +217,17 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
     // A capture builds what its load uploads as it goes, and none of that stalls a frame: what it logs as a first
     // use is what one of its frames built.
-    desc.warm_load = options.offscreen.as_ref().is_some_and(|run| {
+    let capture = options.offscreen.as_ref().is_some_and(|run| {
         matches!(run.mode, OffscreenMode::Capture { .. } | OffscreenMode::ContactSheet { .. })
     });
+    desc.warm_load = capture;
     desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
     let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
+    // A capture sees every texture whole, as its load left it before textures streamed (M5 M4); a bench lets
+    // them stream in, as a game does.
+    stage.whole_textures = capture;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;

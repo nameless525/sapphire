@@ -9,6 +9,7 @@ use crate::mesh::{
 };
 use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat, TextureTail};
+use crate::texture_level::TextureLevel;
 
 mod admission;
 mod lifetime;
@@ -253,67 +254,32 @@ fn split_texture(fill: u8) -> Vec<PackAsset> {
     ]
 }
 
-/// What holds a texture holds its levels, so a material is ready only once its textures are whole: tail,
-/// then levels, then the material. A texture loaded on its own is its tail alone, which M4 builds on.
+/// What holds a texture holds its tail alone, so a material is ready once its textures' tails are; a level
+/// loads only when asked, after its tail, and holds the tail while it's loaded (M5 M4). Given back unused, it
+/// goes at once, and a load reads and uploads it again.
 #[test]
-fn a_split_texture_is_whole_before_its_material_is_ready() {
+fn a_split_textures_levels_load_only_when_asked() {
     let level = TextureLevel::id(id(TEXTURE), 0);
     let (mut server, _) = serve(split_texture(10), unlimited());
     let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
     let mut order = Vec::new();
-    server
-        .finish(&mesh, |upload| {
-            if let Some(level) = upload.get::<TextureLevel>() {
-                assert_eq!(
-                    (level.texture(), level.level(), level.extent(), level.data()[0]),
-                    (id(TEXTURE), 0, (16, 16), 10)
-                );
-            }
-            order.push((upload.kind(), upload.id()));
-            Ok(())
-        })
-        .unwrap();
+    server.finish(&mesh, record(&mut order)).unwrap();
     assert_eq!(
         order,
-        [
-            (AssetKind::Texture, id(TEXTURE)),
-            (AssetKind::TextureLevel, level),
-            (AssetKind::Material, id(MATERIAL)),
-            (AssetKind::Mesh, id(MESH)),
-        ]
+        [(AssetKind::Texture, id(TEXTURE)), (AssetKind::Material, id(MATERIAL)), (AssetKind::Mesh, id(MESH)),]
     );
-    // The material holds the level, so it isn't unused while the mesh is held.
-    server.update();
-    assert_eq!(server.stats().unused, 0);
-    drop(mesh);
-    server.update();
-    server.unload_unused();
-    assert_eq!(server.stats().assets, 0, "no cycle keeps a level or its tail");
+    assert!(!server.is_resident(level));
 
-    let (mut server, _) = serve(split_texture(10), unlimited());
-    let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
-    let mut order = Vec::new();
-    server.finish(&texture, record(&mut order)).unwrap();
-    assert_eq!(order, [(AssetKind::Texture, id(TEXTURE))]);
-    let level: Handle<TextureLevel> = server.load(level).unwrap();
-    let mut order = Vec::new();
-    server.finish(&level, record(&mut order)).unwrap();
-    assert_eq!(order, [(AssetKind::TextureLevel, TextureLevel::id(id(TEXTURE), 0))]);
-}
-
-/// A level kept past its upload keeps its checked bytes, though the server lets go of them; given back
-/// unused, it goes at once, its tail staying, and a load reads and uploads it again (M5 M4).
-#[test]
-fn a_level_kept_past_its_upload_and_given_back_loads_again() {
-    let level = TextureLevel::id(id(TEXTURE), 0);
-    let (mut server, _) = serve(split_texture(10), unlimited());
     let held: Handle<TextureLevel> = server.load(level).unwrap();
     let mut kept = None;
     server
         .finish(&held, |upload| {
-            if upload.kind() == AssetKind::TextureLevel {
-                kept = upload.keep::<TextureLevel>();
-            }
+            let view = upload.get::<TextureLevel>().expect("only the level uploads");
+            assert_eq!(
+                (view.texture(), view.level(), view.extent(), view.data()[0]),
+                (id(TEXTURE), 0, (16, 16), 10)
+            );
+            kept = upload.keep::<TextureLevel>();
             Ok(())
         })
         .unwrap();
@@ -321,7 +287,8 @@ fn a_level_kept_past_its_upload_and_given_back_loads_again() {
     assert_eq!(kept.view().data()[0], 10, "kept past the upload");
     assert!(server.get(&held).is_none(), "the server let go of its bytes as ever");
 
-    assert!(!server.unload(level), "held, it isn't given back");
+    // Held, it isn't given back; unused, it is, and its tail stays for the material.
+    assert!(!server.unload(level));
     drop(held);
     assert!(server.unload(level));
     assert_eq!(server.take_unloaded().iter().map(|unloaded| unloaded.id).collect::<Vec<_>>(), [level]);
@@ -330,32 +297,62 @@ fn a_level_kept_past_its_upload_and_given_back_loads_again() {
     let mut order = Vec::new();
     server.finish(&again, record(&mut order)).unwrap();
     assert_eq!(order, [(AssetKind::TextureLevel, level)], "read and uploaded again");
+
+    // A level holds its tail, and nothing keeps either once nothing holds them.
+    drop((mesh, again));
+    server.update();
+    server.unload_unused();
+    assert_eq!(server.stats().assets, 0, "no cycle keeps a level or its tail");
 }
 
-/// A split texture's tail and levels count against one texture pool (M5 M2): a pool that holds them
-/// together keeps them cached, and one a byte short of that lets them go, though the tail alone would fit.
+/// A split texture's tail and levels count against one texture pool (M5 M2), least recently used first
+/// across them. With its level asked for on its own (M5 M4) and another texture beside it, a pool that holds
+/// all three keeps them cached, and one a byte short lets go of whichever of the level and the other texture
+/// was used longest ago, though the textures alone, or the level alone, would fit.
 #[test]
 fn a_texture_and_its_levels_share_the_texture_pool() {
-    let cached = |pool: u64| {
-        let budgets = unlimited().with_resident(AssetKind::Texture, pool);
-        let (mut server, _) = serve(split_texture(10), budgets);
+    const OTHER: u8 = 9;
+    let level_id = TextureLevel::id(id(TEXTURE), 0);
+    // Loads the mesh, the level and the other texture, lets go of the level and the other texture a few
+    // frames apart, the level first or not, then trims the pool to `pool`. Returns the textures' and the
+    // level's bytes before the trim, whether the level and the other texture are left, and the pool's peak.
+    let cached = |pool: u64, level_first: bool| {
+        let mut assets = split_texture(10);
+        assets.push(packed(id(OTHER), AssetKind::Texture, &texture_bytes(16, 16, 3)));
+        let (mut server, _) = serve(assets, unlimited());
         let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+        let mut level = Some(server.load::<TextureLevel>(level_id).unwrap());
+        let mut other = Some(server.load::<TextureAsset>(id(OTHER)).unwrap());
         server.finish(&mesh, |_| Ok(())).unwrap();
+        server.finish(level.as_ref().unwrap(), |_| Ok(())).unwrap();
+        server.finish(other.as_ref().unwrap(), |_| Ok(())).unwrap();
+        for level_now in [level_first, !level_first] {
+            if level_now {
+                drop(level.take());
+            } else {
+                drop(other.take());
+            }
+            for _ in 0..3 {
+                server.update();
+            }
+        }
         let resident = server.stats().resident;
-        let (tail, level) = (resident[AssetKind::Texture.index()], resident[AssetKind::TextureLevel.index()]);
-        drop(mesh);
+        let bytes = (resident[AssetKind::Texture.index()], resident[AssetKind::TextureLevel.index()]);
+        server.set_budgets(unlimited().with_resident(AssetKind::Texture, pool));
         server.update();
-        let stats = server.stats();
-        let left =
-            (stats.resident[AssetKind::Texture.index()], stats.resident[AssetKind::TextureLevel.index()]);
-        (tail, level, left, stats.resident_peak[AssetKind::Texture.index()])
+        let peak = server.stats().resident_peak[AssetKind::Texture.index()];
+        (bytes, server.is_resident(level_id), server.is_resident(id(OTHER)), peak)
     };
-    let (tail, level, left, peak) = cached(u64::MAX);
-    assert!(tail > 0 && level > tail, "a level above its tail is the larger: {tail}, {level}");
-    assert_eq!(peak, tail + level, "the pool's peak counts both");
-    assert_eq!(cached(tail + level).2, (tail, level), "within the pool, both stay cached");
-    assert_eq!(cached(tail + level - 1).2, (0, 0), "over it, the cached mesh goes with both");
-    assert_eq!(left, (tail, level));
+    let ((textures, level), ..) = cached(u64::MAX, true);
+    assert!(textures > 0 && level > 0, "{textures}, {level}");
+    let total = textures + level;
+    let (_, level_left, other_left, peak) = cached(total, true);
+    assert_eq!(peak, total, "the pool's peak counts tails and levels together");
+    assert_eq!((level_left, other_left), (true, true), "within the pool, all stay cached");
+    let (_, level_left, other_left, _) = cached(total - 1, true);
+    assert_eq!((level_left, other_left), (false, true), "over it, the level, used longest ago, goes");
+    let (_, level_left, other_left, _) = cached(total - 1, false);
+    assert_eq!((level_left, other_left), (true, false), "over it, the other texture, used longest ago, goes");
     assert_eq!(AssetBudgets::DESKTOP.resident(AssetKind::TextureLevel), 2560 << 20, "the textures' pool");
 }
 

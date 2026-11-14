@@ -145,6 +145,7 @@ use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
 #[cfg(feature = "samples")]
 use crate::swatches::{self, SWATCHES};
+use crate::texture_levels::TextureLevels;
 use sapphire_loc::StringTable;
 use sapphire_world::streaming::{StreamSettings, Streamer};
 use sapphire_zone::Zone;
@@ -232,10 +233,10 @@ impl PackSource for PlatformPacks {
 
 /// What the renderer holds of an uploaded asset: the slot and generation it was uploaded for,
 /// and the renderer's object.
-struct Held<T> {
+pub(crate) struct Held<T> {
     slot: AssetSlot,
     generation: u32,
-    object: T,
+    pub(crate) object: T,
 }
 
 /// A mesh on the renderer, with its bounds.
@@ -247,13 +248,15 @@ struct GpuMesh {
 
 /// What the renderer holds of loaded assets, by asset ID.
 struct GpuAssets {
+    /// Textures, each from its tail's top up to the levels above it raised so far (M5 M4).
     textures: HashMap<AssetId, Held<GpuTexture>>,
     /// The bytes of [`Self::textures`], against the zone texture pool's budget (spec §3.4).
     texture_bytes: u64,
-    /// The levels above textures' tails written into [`Self::textures`] (M5 M3), as what they were
-    /// uploaded for: their bytes are their texture's.
-    levels: HashMap<AssetId, Held<()>>,
+    /// What's wanted of the textures' levels above their tails, and held of them (M5 M4).
+    levels: TextureLevels,
     materials: HashMap<AssetId, Held<MaterialHandle>>,
+    /// The textures each material binds, which [`Self::levels`] counts.
+    material_textures: HashMap<AssetId, Vec<AssetId>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
     /// The character's ID, whose mesh [`Self::character_mesh`] copies.
@@ -293,8 +296,9 @@ impl GpuAssets {
         Self {
             textures: HashMap::new(),
             texture_bytes: 0,
-            levels: HashMap::new(),
+            levels: TextureLevels::default(),
             materials: HashMap::new(),
+            material_textures: HashMap::new(),
             meshes: HashMap::new(),
             character,
             character_mesh: None,
@@ -325,12 +329,16 @@ impl GpuAssets {
             kept
         });
         self.texture_bytes = texture_bytes;
-        self.levels.retain(|&id, _| resident(id));
-        let stale_materials = &mut self.stale_materials;
+        self.levels.take_stale(&resident);
+        let (stale_materials, levels) = (&mut self.stale_materials, &mut self.levels);
+        let material_textures = &mut self.material_textures;
         self.materials.retain(|&id, held| {
             let kept = resident(id);
             if !kept {
                 stale_materials.push(held.object);
+                for texture in material_textures.remove(&id).into_iter().flatten() {
+                    levels.unbind(texture);
+                }
             }
             kept
         });
@@ -360,6 +368,7 @@ impl GpuAssets {
         Self {
             overrides: self.overrides,
             watcher: self.watcher.as_ref().map(|watcher| watcher.for_new_renderer()),
+            levels: self.levels.for_new_renderer(),
             kept_meshes: self.kept_meshes.iter().map(|(id, _)| (*id, None)).collect(),
             wanted_grid: self.wanted_grid,
             ..Self::new(self.character, self.keep_character)
@@ -392,38 +401,28 @@ impl GpuAssets {
             if self.textures.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
                 return Ok(());
             }
-            // The whole texture, its levels above the tail written as they arrive (M5 M3).
+            // The texture as its tail, which rises as its levels arrive (M5 M4).
             let tail = TextureTail::from_ktx2(upload.bytes())?;
             if tail.above > 0
                 && let Some(held) = self.textures.get_mut(&id).filter(|held| held.slot == slot)
-                && held.object.desc() == tail.whole()
+                && (held.object.whole(), held.object.above()) == (tail.whole(), tail.above)
             {
                 // A new version of a split texture of the same shape, written in place: the levels above
                 // stay, and are sent again only if they changed. A whole texture is replaced, as ever.
-                let before = held.object.bytes();
-                held.object.write_tail(gpu, &tail)?;
+                renderer.rewrite_texture_tail(&held.object, &tail)?;
                 held.generation = generation;
-                self.texture_bytes = self.texture_bytes - before + held.object.bytes();
                 return Ok(());
             }
             let object = GpuTexture::upload_tail(gpu, &tail, "texture asset")?;
             self.texture_bytes += object.bytes();
             if let Some(old) = self.textures.insert(id, Held { slot, generation, object }) {
                 self.texture_bytes -= old.object.bytes();
+                // Another shape: the materials binding it come again, and its levels are asked for again.
+                self.levels.reshaped(id);
             }
         } else if let Some(level) = upload.get::<TextureLevel>() {
-            if self.levels.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
-                return Ok(());
-            }
-            // A level depends on its tail, which is uploaded first.
-            let texture = level.texture();
-            let held = self.textures.get_mut(&texture).ok_or_else(|| {
-                format!("texture level {} came before its texture {texture}", level.level())
-            })?;
-            let before = held.object.bytes();
-            held.object.write_level(gpu, level)?;
-            self.texture_bytes = self.texture_bytes - before + held.object.bytes();
-            self.levels.insert(id, Held { slot, generation, object: () });
+            let texture = self.textures.get(&level.texture()).map(|held| &held.object);
+            self.levels.arrive(upload, level, texture, renderer)?;
         } else if let Some(material) = upload.get::<Material>() {
             if self.materials.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation)
             {
@@ -462,6 +461,13 @@ impl GpuAssets {
                 && previous.object != object
             {
                 renderer.free_material(previous.object);
+            }
+            let bound = material.textures.iter().filter_map(|binding| binding.texture()).collect::<Vec<_>>();
+            for &texture in &bound {
+                self.levels.bind(texture);
+            }
+            for texture in self.material_textures.insert(id, bound).into_iter().flatten() {
+                self.levels.unbind(texture);
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
             if self.meshes.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
@@ -605,25 +611,34 @@ impl GpuAssets {
         }
     }
 
+    /// Raises and lowers textures toward what's wanted of them ([`TextureLevels::follow`]).
+    fn follow_levels(&mut self, server: &mut AssetServer, renderer: &mut Renderer, unlimited: bool) {
+        let change = self.levels.follow(&mut self.textures, server, renderer, unlimited);
+        self.texture_bytes = self.texture_bytes.saturating_add_signed(change);
+    }
+
     /// Gives an unloaded asset's GPU objects back. A texture's is let go of here, and goes when the last
     /// material bound to it has (its `wgpu::Texture` is shared with their bind groups). A mesh or
     /// material goes to the next [`Self::free_stale`], and from there when nothing draws it and no frame
     /// can be reading it, which the renderer sees to.
     fn unload(&mut self, unloaded: Unloaded) {
-        let Unloaded { id, slot, .. } = unloaded;
+        let Unloaded { id, kind, slot } = unloaded;
         if self.textures.get(&id).is_some_and(|held| held.slot == slot)
             && let Some(held) = self.textures.remove(&id)
         {
             self.texture_bytes -= held.object.bytes();
         }
-        // A level stays written in its texture, which goes when its tail does: a level depends on it.
-        if self.levels.get(&id).is_some_and(|held| held.slot == slot) {
-            self.levels.remove(&id);
+        // A tail takes what's held of its levels with it, and a level the texture under it.
+        if matches!(kind, AssetKind::Texture | AssetKind::TextureLevel) {
+            self.levels.unloaded(id, slot);
         }
         if self.materials.get(&id).is_some_and(|held| held.slot == slot)
             && let Some(held) = self.materials.remove(&id)
         {
             self.stale_materials.push(held.object);
+            for texture in self.material_textures.remove(&id).into_iter().flatten() {
+                self.levels.unbind(texture);
+            }
         }
         if self.meshes.get(&id).is_some_and(|held| held.slot == slot)
             && let Some(held) = self.meshes.remove(&id)
@@ -1153,6 +1168,53 @@ impl Content {
         let assets = &mut self.gpu;
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
+        self.gpu.follow_levels(&mut self.server, renderer, false);
+    }
+
+    /// Brings every texture on `renderer` to the top wanted of it before a frame draws, loading and
+    /// raising without the frame's budgets: a capture's, which must see every texture whole as a load
+    /// left it before textures streamed (M5 M4). The levels' loads drain the server's upload queue as
+    /// any finished load does. A level that fails, or doesn't come within half a minute, leaves its texture
+    /// under it, with a warning.
+    pub fn finish_texture_levels(&mut self, renderer: &mut Renderer, gpu: &GpuContext) {
+        let stopwatch = Stopwatch::start();
+        loop {
+            self.gpu.follow_levels(&mut self.server, renderer, true);
+            if self.gpu.levels.settled(&self.gpu.textures) {
+                return;
+            }
+            let waiting = self.gpu.levels.waiting();
+            if waiting.is_empty() || stopwatch.elapsed() > std::time::Duration::from_secs(30) {
+                tracing::warn!(target: LOG_TARGET, waiting = waiting.len(), "textures aren't whole for a capture");
+                return;
+            }
+            for handle in waiting {
+                let assets = &mut self.gpu;
+                if let Err(error) = self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+                {
+                    tracing::warn!(target: LOG_TARGET, id = %handle.id(), %error, "a texture level didn't load");
+                }
+            }
+            for unloaded in self.server.take_unloaded() {
+                self.gpu.unload(unloaded);
+            }
+        }
+    }
+
+    /// Asks for texture `id` at level `top` of its levels from now on (M5's seam): 0 is the whole texture,
+    /// and its tail's top the least it holds. A wanted top under the texture's raises it as its levels load
+    /// and arrive, one new texture a frame within the renderer's budget; one over it lowers it at the next
+    /// [`Self::update`], giving its dropped levels back to the asset server. `None` gives it back to the
+    /// stage's choice: the whole texture while a material on the renderer binds it. Either way a texture no
+    /// material binds goes to its tail. The ask outlasts the texture and the renderer.
+    pub fn want_texture_top(&mut self, id: AssetId, top: Option<u32>) {
+        self.gpu.levels.ask(id, top);
+    }
+
+    /// Texture `id`'s top on the renderer, and its tail's (the deepest it goes), if it's there.
+    #[must_use]
+    pub fn texture_top(&self, id: AssetId) -> Option<(u32, u32)> {
+        self.gpu.textures.get(&id).map(|held| (held.object.top(), held.object.above()))
     }
 
     /// Loads until the character is on `renderer`, then returns its mesh and bounds: the load
@@ -4776,6 +4838,210 @@ mod tests {
                 "forward frames must sample the changed clip through the same driver"
             );
         }
+    }
+
+    /// A texture cooked as a tail and levels, for [`split_texture_pack`].
+    const SPLIT: AssetId = AssetId::from_bytes([0x65; 16]);
+    /// The material that binds [`SPLIT`].
+    const SPLIT_MATERIAL: AssetId = AssetId::from_bytes([0x66; 16]);
+
+    /// Each level of an RGBA8 texture of `shades.len()` levels, square, level `l` all `shades[l]` red.
+    fn split_levels(shades: &[u8]) -> Vec<Vec<u8>> {
+        let side = 1u32 << (shades.len() - 1);
+        (0..shades.len())
+            .map(|level| [shades[level], 0, 0, 255].repeat(((side >> level) as usize).pow(2)))
+            .collect()
+    }
+
+    /// A pack with the mannequin character drawn through a material that binds [`SPLIT`], cooked as a tail
+    /// and `above` levels above it, its levels [`split_levels`]`(shades)`.
+    fn split_texture_pack(shades: &[u8], above: u32) -> Vec<u8> {
+        use sapphire_assets::mesh::SlotMaterial;
+        use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
+        let levels = split_levels(shades);
+        let side = 1u32 << (shades.len() - 1);
+        let format = TextureFormat::Rgba8UnormSrgb;
+        let desc = TextureDesc {
+            format,
+            width: side >> above,
+            height: side >> above,
+            mip_level_count: shades.len() as u32 - above,
+            swizzle: Swizzle::IDENTITY,
+        };
+        let tail = TextureTail {
+            texture: Texture { desc, levels: levels[above as usize..].iter().map(Vec::as_slice).collect() },
+            above,
+        };
+        let mut assets = vec![packed(SPLIT, AssetKind::Texture, &tail.to_ktx2().expect("a tail"))];
+        for level in 0..above {
+            let (width, data) = (side >> level, levels[level as usize].clone());
+            let level = TextureLevel {
+                texture: SPLIT,
+                level,
+                format: format.vk_format(),
+                width,
+                height: width,
+                data,
+            };
+            let id = TextureLevel::id(SPLIT, level.level);
+            assets.push(packed_with(
+                id,
+                AssetKind::TextureLevel,
+                &level.to_cooked().expect("cooked"),
+                vec![SPLIT],
+            ));
+        }
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let document =
+            AnimeCharacterMaterial { base_color_map: Some(SPLIT), ..AnimeCharacterMaterial::default() };
+        let material = Material::from_document(&document, &swizzles).expect("a valid material");
+        assets.push(packed_with(
+            SPLIT_MATERIAL,
+            AssetKind::Material,
+            &material.to_cooked().expect("cooked"),
+            vec![SPLIT],
+        ));
+        let mut mesh = triangle(0.0);
+        mesh.materials[0].material = SlotMaterial::Asset(SPLIT_MATERIAL);
+        let bytes = mesh.to_cooked().expect("cooked");
+        assets.push(packed_with(MESH, AssetKind::Mesh, &bytes, vec![SPLIT_MATERIAL]));
+        write_pack(assets).expect("a pack")
+    }
+
+    impl Stage {
+        /// The character alone over a pack of [`split_texture_pack`].
+        fn split_texture(shades: &[u8], above: u32) -> Self {
+            let pack = split_texture_pack(shades, above);
+            Self::over_pack_with(pack, |_, _, _, mesh, bounds| Scene::with_character(mesh, bounds, false))
+        }
+
+        /// [`SPLIT`]'s top on the renderer, and its tail's.
+        fn split_top(&self) -> (u32, u32) {
+            self.content.texture_top(SPLIT).expect("on the renderer")
+        }
+
+        /// Every level [`SPLIT`] holds on the GPU, read back.
+        fn split_on_gpu(&self) -> Vec<Vec<u8>> {
+            let texture = self.content.gpu.textures[&SPLIT].object.texture();
+            let device = self.gpu.device();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut buffers = Vec::new();
+            for level in 0..texture.mip_level_count() {
+                let side = (texture.width() >> level).max(1);
+                let padded = (side * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: u64::from(padded * side),
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: level,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(side),
+                        },
+                    },
+                    wgpu::Extent3d { width: side, height: side, depth_or_array_layers: 1 },
+                );
+                buffers.push((buffer, side as usize * 4, padded as usize));
+            }
+            self.gpu.queue().submit([encoder.finish()]);
+            for (buffer, ..) in &buffers {
+                buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            buffers
+                .iter()
+                .map(|(buffer, row, padded)| {
+                    let mapped = buffer.get_mapped_range(..).expect("mapped");
+                    mapped.chunks(*padded).flat_map(|line| &line[..*row]).copied().collect()
+                })
+                .collect()
+        }
+
+        /// The pack re-cooked as `pack`, as a watched file hands it over.
+        fn recook_as(&mut self, pack: Vec<u8>) {
+            self.source.insert(PACK, pack);
+            self.content.remount(PACK).expect("the new pack");
+        }
+    }
+
+    /// M5 M4: a material is ready, and draws, once its texture's tail is, and the stage raises the texture to
+    /// whole as its levels load, which it asked for. Hot reload writes a changed tail and a changed level
+    /// in place, and a chain that grows makes a new texture, which rises in turn. A texture asked to a top
+    /// lowers to it, and its dropped levels go back to the server; asked back, it rises again.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_split_texture_rises_whole_and_reloads_in_place() {
+        let shades = [10, 20, 30, 40];
+        let mut stage = Stage::split_texture(&shades, 2);
+        assert_eq!(stage.split_top(), (2, 2), "the material came with its texture's tail alone");
+        assert!(!stage.content.server.is_resident(TextureLevel::id(SPLIT, 1)));
+        let tail_bytes = stage.content.texture_bytes();
+        stage.frames_until(|stage| stage.split_top() == (0, 2));
+        assert_eq!(stage.split_on_gpu(), split_levels(&shades), "whole, as cooked");
+        assert_eq!(stage.content.texture_bytes(), tail_bytes + 4 * (8 * 8 + 4 * 4));
+
+        // A changed level: written over in place.
+        let shades = [11, 20, 30, 40];
+        stage.recook_as(split_texture_pack(&shades, 2));
+        stage.frames_until(|stage| stage.split_on_gpu() == split_levels(&shades));
+        assert_eq!(stage.split_top(), (0, 2), "never lowered");
+
+        // A changed tail of the same shape: written in place, keeping the levels above.
+        let shades = [11, 20, 31, 41];
+        stage.recook_as(split_texture_pack(&shades, 2));
+        stage.frames_until(|stage| stage.split_on_gpu() == split_levels(&shades));
+        assert_eq!(stage.split_top(), (0, 2), "never lowered");
+
+        // A chain that grows: a new texture from its new tail, raised whole as its levels come.
+        let shades = [5, 11, 20, 31, 41];
+        stage.recook_as(split_texture_pack(&shades, 3));
+        stage.frames_until(|stage| {
+            stage.split_top() == (0, 3) && stage.split_on_gpu() == split_levels(&shades)
+        });
+        let whole = stage.content.texture_bytes();
+
+        // Lowered when asked, its levels given back; then whole again.
+        stage.content.want_texture_top(SPLIT, Some(2));
+        stage.frame();
+        assert_eq!(stage.split_top(), (2, 3));
+        assert_eq!(stage.split_on_gpu(), split_levels(&shades)[2..]);
+        for level in 0..2 {
+            assert!(
+                !stage.content.server.is_resident(TextureLevel::id(SPLIT, level)),
+                "level {level} went back"
+            );
+        }
+        assert!(stage.content.server.is_resident(TextureLevel::id(SPLIT, 2)));
+        stage.content.want_texture_top(SPLIT, None);
+        stage.frames_until(|stage| stage.split_top() == (0, 3));
+        assert_eq!(stage.split_on_gpu(), split_levels(&shades));
+        assert_eq!(stage.content.texture_bytes(), whole);
+
+        // Its material and its pack's entries go, as a trip's last zone's do (M5 M6): the texture lowers to
+        // its tail, which gives its levels back to the server, and then the tail goes, leaving nothing held.
+        let bytes = triangle(0.0).to_cooked().expect("cooked");
+        stage.recook_as(write_pack(vec![packed(MESH, AssetKind::Mesh, &bytes)]).expect("a pack"));
+        stage.frames_until(|stage| stage.content.texture_top(SPLIT).is_none());
+        assert!(!stage.content.server.is_resident(SPLIT));
+        for level in 0..3 {
+            assert!(!stage.content.server.is_resident(TextureLevel::id(SPLIT, level)), "level {level} went");
+        }
+        assert_eq!(
+            stage.content.texture_bytes(),
+            whole - 4 * (16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1),
+            "all of it"
+        );
     }
 }
 

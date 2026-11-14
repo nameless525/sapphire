@@ -460,6 +460,21 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 render.retiring
             )
         );
+        let mips = &render.mip_streaming;
+        row(
+            ui,
+            "Mip streaming",
+            format!(
+                "{} raised, {} lowered, {} written of {}, {} retired, {} retiring ({})",
+                mips.raises,
+                mips.lowers,
+                format_bytes(mips.bytes_written),
+                format_bytes(mips.budget),
+                mips.retired,
+                mips.retiring,
+                format_bytes(mips.retiring_bytes)
+            ),
+        );
         let skinning = &render.skinning;
         let skinned = if skinning.instances == 0 {
             "no skinned or morphed instances".to_owned()

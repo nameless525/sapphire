@@ -28,7 +28,6 @@ use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
 use crate::manifest::{Manifest, ReleasedPack};
 use crate::pack::{Decoder, Entry, PackError, PackMetadataBudget, PackMetadataRead, Toc};
-use crate::texture_level::{MAX_LEVELS, TextureLevel};
 use crate::{AssetId, AssetKind, PipelineKey};
 
 const LOG_TARGET: &str = "sapphire::assets";
@@ -576,11 +575,14 @@ enum Completion {
 /// # Texture levels
 ///
 /// A large texture is cooked as a tail and levels ([`crate::texture_level`], M5 M3): the texture's own
-/// asset is its tail, and each level above it is a [`TextureLevel`] that depends on the tail. For now,
-/// whatever loads a texture as a dependency also loads every level of it the mounted packs hold, as
-/// children of its own, after the tail: so a material is ready only once its textures are whole, and the
-/// picture is what it was before textures split. Raising and lowering a texture a level at a time, by
-/// distance and budget, replaces this (M5 M4, M5).
+/// asset is its tail, and each level above it is a [`TextureLevel`](crate::texture_level::TextureLevel)
+/// that depends on the tail. What loads a texture as a dependency loads its tail alone, so a material is
+/// ready once its textures' tails are. The app loads the levels it wants as assets of their own, and
+/// raises the texture as they arrive (M5 M4). A level loads like any asset: its read waits for
+/// [admission](AssetServer#admission) by its priority, after its tail's, and its bytes count in the
+/// textures' pool with the tail's ([`AssetBudgets::pool`]) from its load until it goes. A level is
+/// uploaded once, so an app that lowers a texture gives the levels it dropped back
+/// ([`AssetServer::unload`]) and loads them again to raise it.
 ///
 /// # Admission
 ///
@@ -953,8 +955,7 @@ impl AssetServer {
 
     /// Requests an asset's dependencies, which its pack lists, then its own read, so the
     /// dependencies' reads queue first. Dependencies must be of a lower kind
-    /// ([`AssetKind::may_depend_on`]), so this recursion is at most three deep, and four through a
-    /// texture's levels, which depend only on their texture ("Texture levels"). Dependencies it
+    /// ([`AssetKind::may_depend_on`]), so this recursion is at most three deep. Dependencies it
     /// already holds are kept, failed ones are tried again, and ones its entry no longer lists
     /// (after a remount) are released.
     fn resolve(&mut self, key: SlotKey) {
@@ -995,21 +996,7 @@ impl AssetServer {
                 Some(_) => self.load_untyped(dependency, priority),
             };
             match child {
-                Ok(child) => {
-                    // What holds a texture holds its levels too, for now: see "Texture levels". A level
-                    // holds only its tail.
-                    let texture = child.kind() == AssetKind::Texture && kind != AssetKind::TextureLevel;
-                    children.push(child);
-                    for level in if texture { self.levels_of(dependency) } else { Vec::new() } {
-                        match self.load_untyped(level, priority) {
-                            Ok(level) => children.push(level),
-                            Err(error) => {
-                                tracing::warn!(target: LOG_TARGET, %id, dependency = %level, %error, "texture level failed to load");
-                                return Err(LoadError::Dependency { id, dependency: level });
-                            }
-                        }
-                    }
-                }
+                Ok(child) => children.push(child),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, %id, %dependency, %error, "dependency failed to load");
                     return Err(match error {
@@ -1020,15 +1007,6 @@ impl AssetServer {
             }
         }
         Ok(children)
-    }
-
-    /// The levels a mounted pack holds of texture `texture` above its tail, from its top: levels 0, 1
-    /// and so on while there's one ([`TextureLevel::id`]).
-    fn levels_of(&self, texture: AssetId) -> Vec<AssetId> {
-        (0..MAX_LEVELS)
-            .map(|level| TextureLevel::id(texture, level))
-            .take_while(|&level| self.kind_of(level) == Some(AssetKind::TextureLevel))
-            .collect()
     }
 
     /// Makes `children` the dependencies of the asset in `key`, releasing those it had and no

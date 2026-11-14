@@ -123,6 +123,8 @@ pub fn capture_with(
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         (Box::new(stage), None)
     };
+    // A capture sees every texture whole, as its load left it before textures streamed (M5 M4).
+    stage.whole_textures = true;
     if let Some(command) = capture.choose {
         // A booted game's play waits on its title for what its fades draw through (M4 C7), as a player's does.
         while stage.show.play_waits() {

@@ -242,6 +242,10 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub measure_gpu: bool,
     /// Only TAA captures without instrumentation can discard their warmup's display output.
     pub history_only_capture: bool,
+    /// Bring every texture to the top wanted of it before each frame draws, waiting for its levels
+    /// ([`Content::finish_texture_levels`], M5 M4): a capture's, which must see textures whole, as loads
+    /// left them before textures streamed. A bench and a game let them stream in.
+    pub whole_textures: bool,
     /// Prepare and record the next frames but run none of it, as a frame whose surface was lost (M3 K1). A
     /// load's inventory is checked this way where drawing is what costs: everything but the graph's passes runs.
     pub lose_frames: bool,
@@ -359,6 +363,7 @@ impl Stage {
             character,
             measure_gpu: false,
             history_only_capture: false,
+            whole_textures: false,
             lose_frames: false,
             laps: FrameLaps::default(),
             gpu,
@@ -384,6 +389,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
+            whole_textures,
             lose_frames,
             laps,
             gpu,
@@ -405,6 +411,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
+            whole_textures,
             lose_frames,
             laps,
             gpu,
@@ -442,6 +449,7 @@ impl<S: SceneShow> Stage<S> {
             character,
             measure_gpu,
             history_only_capture,
+            whole_textures,
             lose_frames,
             laps,
             gpu,
@@ -463,6 +471,7 @@ impl<S: SceneShow> Stage<S> {
             character,
             measure_gpu,
             history_only_capture,
+            whole_textures,
             lose_frames,
             laps,
             gpu,
@@ -717,6 +726,9 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.renderer.set_outline_distance(self.quality.outline_distance());
         self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
         self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
+        if self.whole_textures {
+            self.content.finish_texture_levels(&mut self.renderer, &self.gpu);
+        }
         self.renderer.prepare(&self.gpu, packet);
         self.laps.prepare += laps.lap();
         self.laps.prepare_allocations = next_scope(&mut scope);

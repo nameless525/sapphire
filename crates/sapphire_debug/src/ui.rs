@@ -429,6 +429,40 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 render.instances
             ),
         );
+        // What each pass submitted (M5 B4): the frame's calls, and where they went.
+        let passes = &render.passes;
+        let total = passes.total();
+        row(
+            ui,
+            "Submitted",
+            format!(
+                "{} calls, {} instances, {} triangles: main {}, prepasses {}, shadows {}, insets {}, post {}, \
+                 interface {}",
+                total.draws,
+                total.instances,
+                total.triangles,
+                passes.main.draws,
+                passes.character_prepass.draws + passes.scene_prepass.draws,
+                passes.shadows().draws,
+                passes.insets.iter().map(|inset| inset.draws).sum::<u32>(),
+                passes.post.draws + passes.temporal.draws,
+                passes.ui.draws
+            ),
+        );
+        row(
+            ui,
+            "Culled",
+            format!(
+                "{} of {} mesh draws looked at: {} by the view, {} by a pass's pick, {} past outline cutoffs",
+                total.culled(),
+                total.considered,
+                total.culled_by_frustum,
+                total.culled_by_pass,
+                total.culled_by_cutoff
+            ),
+        );
+        let [lod0, lod1, lod2, lod3] = total.levels;
+        row(ui, "Levels drawn", format!("LOD0 {lod0}, LOD1 {lod1}, LOD2 {lod2}, LOD3+ {lod3}"));
         let prepass = &render.character_prepass;
         row(
             ui,
@@ -480,10 +514,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             "no skinned or morphed instances".to_owned()
         } else {
             format!(
-                "{} of {} instances, {} vertices, {} of palettes",
+                "{} of {} instances, {} vertices, {} joints, {} of palettes",
                 skinning.skinned,
                 skinning.instances,
                 skinning.vertices,
+                skinning.joints,
                 format_bytes(u64::from(skinning.palette_bytes))
             )
         };
@@ -759,7 +794,12 @@ fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
                 .map(|counted| assets.resident[counted.index()])
                 .sum::<u64>();
             let budget = assets.budgets.resident(kind);
-            let over = if resident > budget { ", over budget" } else { "" };
+            // What the last trim couldn't unload, in use.
+            let over = match assets.over_budget[kind.index()] {
+                0 if resident > budget => ", over budget".to_owned(),
+                0 => String::new(),
+                over => format!(", {} over budget in use", format_bytes(over)),
+            };
             row(
                 ui,
                 &format!("  {kind}s"),
@@ -775,9 +815,10 @@ fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             ui,
             "Admitted",
             format!(
-                "{} of {}, at most {}, {} held back",
+                "{} of {} ({} decoded, waiting), at most {}, {} held back",
                 format_bytes(assets.admitted),
                 format_bytes(assets.budgets.admission),
+                format_bytes(assets.decoded_waiting),
                 format_bytes(assets.admitted_peak),
                 assets.held_back
             ),
@@ -798,7 +839,16 @@ fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
         row(
             ui,
             "Since start",
-            format!("{} loads, {} unloads, {} failures", assets.loads, assets.unloads, assets.failures),
+            format!(
+                "{} loads, {} unloads, {} failures; {} admitted, {} reads held, {} trimmed, {} given back",
+                assets.loads,
+                assets.unloads,
+                assets.failures,
+                format_bytes(assets.admitted_total),
+                assets.reads_held,
+                format_bytes(assets.evicted_bytes),
+                format_bytes(assets.given_back)
+            ),
         );
     });
 }

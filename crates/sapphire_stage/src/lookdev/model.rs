@@ -6,11 +6,18 @@
 //!
 //! The model's entity holds its assets ([`ModelAssets`]), so they stay loaded while it stands. A clip's
 //! root motion moves it from its place, as the contact sheet shows travel.
+//!
+//! A model cooked from a VRM file has a rig beside its mesh (M5 B3's hero): `+<preset>` shows one of its
+//! expression presets at full weight through a face layer, and its spring chains settle under gravity
+//! for [`SETTLE_TICKS`] before the pose is drawn, so hair and a skirt hang as they would at rest.
 
 use std::str::FromStr;
 
-use sapphire_anim::{CharacterPose, Clip, Skeleton, root_motion};
+use sapphire_anim::{
+    CharacterPose, Clip, FaceLayer, FaceOrder, Skeleton, SpringBones, SpringFrame, root_motion,
+};
 use sapphire_assets::mesh::Mesh;
+use sapphire_assets::rig::{CharacterRig, ExpressionPreset};
 use sapphire_assets::{AssetId, Handle};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
@@ -34,13 +41,22 @@ const HEAD: &str = "head";
 const HEAD_CENTER_SHARE: f32 = 0.06;
 const BODY_RADIUS_SHARE: f32 = 0.11;
 
-/// A model to stand on the stage: `<mesh>[:<clip>[@<tick>]]`, by asset IDs.
+/// How long a model's springs settle before it's drawn, in ticks (60 a second).
+pub const SETTLE_TICKS: u32 = 240;
+
+/// The rig a VRM's cook makes beside its mesh: the mesh's sub-asset.
+const RIG_SUB_ASSET: &str = "rig";
+
+/// A model to stand on the stage: `<mesh>[:<clip>[@<tick>]][+<preset>]`, by asset IDs and a VRM 1.0
+/// expression preset's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Model {
     pub mesh: AssetId,
     /// The clip whose pose it holds, at `tick`: none holds its rest pose.
     pub clip: Option<AssetId>,
     pub tick: u32,
+    /// The expression it shows, through its rig: one is needed for this.
+    pub face: Option<ExpressionPreset>,
 }
 
 impl FromStr for Model {
@@ -48,6 +64,14 @@ impl FromStr for Model {
 
     fn from_str(text: &str) -> Result<Self, String> {
         let id = |text: &str| text.parse::<AssetId>().map_err(|_| format!("{text:?} isn't an asset ID"));
+        let (text, face) = match text.split_once('+') {
+            Some((text, name)) => {
+                let preset = ExpressionPreset::from_name(name)
+                    .ok_or_else(|| format!("{name:?} isn't one of VRM 1.0's expression presets"))?;
+                (text, Some(preset))
+            }
+            None => (text, None),
+        };
         let (mesh, clip) = match text.split_once(':') {
             Some((mesh, clip)) => (mesh, Some(clip)),
             None => (text, None),
@@ -59,7 +83,7 @@ impl FromStr for Model {
             }
             None => (None, 0),
         };
-        Ok(Self { mesh: id(mesh)?, clip, tick })
+        Ok(Self { mesh: id(mesh)?, clip, tick, face })
     }
 }
 
@@ -69,6 +93,7 @@ pub struct ModelAssets {
     _mesh: Handle<Mesh>,
     _skeleton: Handle<Skeleton>,
     _clip: Option<Handle<Clip>>,
+    _rig: Option<Handle<CharacterRig>>,
 }
 
 /// A model loaded and posed, ready to [`spawn`].
@@ -96,6 +121,9 @@ pub fn hold(
     let skeleton_id = skeleton_id.ok_or_else(|| failed("its mesh has no skin with a skeleton".to_owned()))?;
     let skeleton: Handle<Skeleton> = content.hold(skeleton_id, renderer, gpu)?;
     let clip: Option<Handle<Clip>> = model.clip.map(|id| content.hold(id, renderer, gpu)).transpose()?;
+    // A rig is held only for an expression, and before the reads below borrow `content`.
+    let rig: Option<Handle<CharacterRig>> =
+        model.face.map(|_| content.hold(model.mesh.sub_asset(RIG_SUB_ASSET), renderer, gpu)).transpose()?;
     let copy = content.mesh_copy(model.mesh).expect("a ready mesh's copy was kept here");
     let skin = copy.skin.as_ref().expect("its skin was read above");
     let skeleton_view =
@@ -112,6 +140,32 @@ pub fn hold(
         root = root_motion(clip, position).map_or(Mat4::IDENTITY, |root| root.to_mat4());
     }
     pose.finish();
+    let place = Mat4::from_rotation_translation(Quat::from_rotation_y(FACES_DEGREES.to_radians()), STANDS_AT);
+    let morph_weights = match (model.face, &rig) {
+        (Some(preset), Some(rig)) => {
+            let rig_view = content.read(rig).ok_or_else(|| failed("its rig isn't resident".to_owned()))?;
+            if let Some(mut springs) = SpringBones::new(rig_view, &pose) {
+                let world_from_model = Affine3A::from_mat4(place * root);
+                for tick in 0..=SETTLE_TICKS {
+                    let frame = SpringFrame {
+                        world_from_model,
+                        ticks: f64::from(tick),
+                        pose_moved: tick == 0,
+                        active: true,
+                    };
+                    springs.update(&mut pose, &frame);
+                }
+            }
+            let mut weights = vec![0.0; copy.morph_targets.len()];
+            let mut face = FaceLayer::new(rig_view, weights.len(), None)
+                .ok_or_else(|| failed("its rig has no expression presets".to_owned()))?;
+            let expression = sapphire_core::Name::new(preset.name());
+            face.show(FaceOrder { key: 1, expression, weight: 1.0, blend: 0.0, since: 0.0 });
+            face.apply(&mut weights);
+            weights
+        }
+        _ => Vec::new(),
+    };
     let height = copy.streams.bounds.max[1].max(0.1);
     let (_, head_rotation, head) = pose.model()[head].to_scale_rotation_translation();
     let figure = Figure {
@@ -124,13 +178,12 @@ pub fn hold(
     let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
     pose.write_palette(&mut palette);
     let handle = content.mesh_on_renderer(model.mesh).expect("a ready mesh was uploaded here");
-    let place = Mat4::from_rotation_translation(Quat::from_rotation_y(FACES_DEGREES.to_radians()), STANDS_AT);
     Ok(HeldModel {
         mesh: handle,
-        pose: RenderPose { palette, morph_weights: Vec::new() },
+        pose: RenderPose { palette, morph_weights },
         figure,
         place: place * root,
-        assets: ModelAssets { _mesh: mesh, _skeleton: skeleton, _clip: clip },
+        assets: ModelAssets { _mesh: mesh, _skeleton: skeleton, _clip: clip, _rig: rig },
     })
 }
 
@@ -159,9 +212,22 @@ mod tests {
     fn a_model_reads_as_a_mesh_and_maybe_a_clip_at_a_tick() {
         let mesh = AssetId::from_text(MESH);
         let clip = AssetId::from_text(CLIP);
-        assert_eq!(MESH.parse(), Ok(Model { mesh, clip: None, tick: 0 }));
-        assert_eq!(format!("{MESH}:{CLIP}").parse(), Ok(Model { mesh, clip: Some(clip), tick: 0 }));
-        assert_eq!(format!("{MESH}:{CLIP}@19").parse(), Ok(Model { mesh, clip: Some(clip), tick: 19 }));
+        assert_eq!(MESH.parse(), Ok(Model { mesh, clip: None, tick: 0, face: None }));
+        assert_eq!(
+            format!("{MESH}:{CLIP}").parse(),
+            Ok(Model { mesh, clip: Some(clip), tick: 0, face: None })
+        );
+        assert_eq!(
+            format!("{MESH}:{CLIP}@19").parse(),
+            Ok(Model { mesh, clip: Some(clip), tick: 19, face: None })
+        );
+        let happy = Some(ExpressionPreset::Happy);
+        assert_eq!(format!("{MESH}+happy").parse(), Ok(Model { mesh, clip: None, tick: 0, face: happy }));
+        assert_eq!(
+            format!("{MESH}:{CLIP}@3+happy").parse(),
+            Ok(Model { mesh, clip: Some(clip), tick: 3, face: happy })
+        );
+        assert!(format!("{MESH}+grin").parse::<Model>().unwrap_err().contains("expression presets"));
         assert!("lancer".parse::<Model>().unwrap_err().contains("asset ID"));
         assert!(format!("{MESH}:{CLIP}@soon").parse::<Model>().unwrap_err().contains("tick"));
     }

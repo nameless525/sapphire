@@ -293,10 +293,11 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
-    /// `--model <mesh>[:<clip>[@<tick>]]`: a skinned model by its asset ID, standing where the enemy
-    /// shot's warrior does and in its place, at scale 1, in its rest pose or the clip's pose at that
-    /// tick (M3 C2, [`lookdev::model`]): a new enemy, looked at before anything plays it. Needs
-    /// `--look-dev`.
+    /// `--model <mesh>[:<clip>[@<tick>]][+<preset>]`: a skinned model by its asset ID, standing where
+    /// the enemy shot's warrior does and in its place, at scale 1, in its rest pose or the clip's pose
+    /// at that tick (M3 C2, [`lookdev::model`]): a new enemy, looked at before anything plays it. With
+    /// `+<preset>`, a model cooked from a VRM shows that expression and its springs settle (M5 B3).
+    /// Needs `--look-dev`.
     pub model: Option<lookdev::model::Model>,
     /// `--face <preset>[:<weight>]` and `--face-mouth <openness>`: the held character's face, through its
     /// face layer (M5 C5): a VRM expression preset at a weight, 1 if it doesn't say, and a mouth open by 0 to 1
@@ -2221,7 +2222,10 @@ mod tests {
         // A model, by asset IDs, on the look-dev stage only.
         let model = "41e229ad-28a3-41f9-aeb8-ba214e06be6a:0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4@12";
         let parsed = parse(&["--look-dev", "enemy", "--model", model]).unwrap().0.model.unwrap();
-        assert_eq!((parsed.clip.is_some(), parsed.tick), (true, 12));
+        assert_eq!((parsed.clip.is_some(), parsed.tick, parsed.face), (true, 12, None));
+        let parsed =
+            parse(&["--look-dev", "enemy", "--model", &format!("{model}+aa")]).unwrap().0.model.unwrap();
+        assert_eq!(parsed.face, Some(ExpressionPreset::Aa));
         assert!(parse(&["--model", model]).unwrap_err().contains("--look-dev"));
         assert!(parse(&["--look-dev", "enemy", "--model", "lancer"]).unwrap_err().contains("--model"));
         // The sword: where a scene asks, and on the shot made for reading moves.

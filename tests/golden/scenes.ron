@@ -1474,7 +1474,7 @@
                 args: ["--look-dev", "down", "--graph", "defeat", "--ik", "on", "--time-of-day", "17",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
-                ci_seconds: (lavapipe: 10.5, warp: 29.7),
+                ci_seconds: (lavapipe: 8.8, warp: 28.9),
             ),
             // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
             // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines

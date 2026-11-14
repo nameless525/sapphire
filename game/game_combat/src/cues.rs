@@ -299,6 +299,11 @@ impl CueShow {
         self.world.library().has_meshes()
     }
 
+    /// Whether its effects have ground decals (M5 L7): what the fight declares, as it does meshes.
+    pub(crate) fn has_decals(&self) -> bool {
+        self.world.library().has_decals()
+    }
+
     /// Plays effects within `budget` from now on: a quality tier's change, at a pause or a wipe (M4 T3). Effects
     /// playing end.
     pub(crate) fn set_budget(&mut self, budget: VfxBudget) {
@@ -367,7 +372,7 @@ impl CueShow {
         // On one character's stage everyone stands where it does, as tall as they are.
         let stand_of = |id| match stand {
             Some(feet) => {
-                Some(Stand::of(sim, id).map_or(Stand { feet, crown: feet, yaw: 0.0 }, |at| at.moved_to(feet)))
+                Some(Stand::of(sim, id).map_or(Stand::standing(feet, 0.0, 0.0), |at| at.moved_to(feet)))
             }
             None => Stand::of(sim, id),
         };
@@ -1172,7 +1177,7 @@ mod tests {
         let mut clock = sapphire_time::ScaledClock::new();
         let mut screen = EffectStack::new(clock.new_local_clock());
         let mut fired = FiredShakes::default();
-        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y, yaw: 0.0 });
+        let stand_of = |_| Some(Stand::standing(Vec3::ZERO, 1.0, 0.0));
         let mut step = CueStep {
             vfx: &mut show.world,
             screen: &mut screen,

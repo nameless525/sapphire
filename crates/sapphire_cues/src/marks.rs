@@ -33,7 +33,8 @@ pub const NAMED_PHASE: &str = "named_phase";
 /// or arm, and close enough to read as its.
 pub const CROWN_CLEARANCE: f32 = 0.45;
 
-/// Where a fighter stands, for a cue's effects: its feet, the top of its body, and which way it faces.
+/// Where a fighter stands, for a cue's effects: its feet, the top of its body, which way it faces, the ground
+/// under it, and when its running move next strikes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stand {
     pub feet: Vec3,
@@ -41,6 +42,13 @@ pub struct Stand {
     pub crown: Vec3,
     /// Radians about +Y from facing +Z, as the simulation turns it (M5 L5, `EffectPlace::Facing`).
     pub yaw: f32,
+    /// The ground's normal under its feet, as its controller last read it: +Y where it has none (M5 L7,
+    /// `EffectPlace::Ground`).
+    pub ground: Vec3,
+    /// Seconds on its own clock from the start of the step just taken until its running move's next strike
+    /// lands, if one is still to come: what an effect spawned on its clock after that step lives until, since
+    /// that step's time is the first the effect ages by (M5 L7, a telegraph's decal).
+    pub strike: Option<f32>,
 }
 
 impl Stand {
@@ -49,20 +57,45 @@ impl Stand {
     #[must_use]
     pub fn of(sim: &Simulation, actor: ActorId) -> Option<Self> {
         let view = sim.actor(actor)?;
-        let set = view.moves.set.and_then(|set| sim.move_library().current(set));
+        let library = sim.move_library();
+        let set = view.moves.set.and_then(|set| library.current(set));
         let hurtboxes =
             set.and_then(|set| set.fighter()).map(|fighter| &fighter.hurtboxes[..]).unwrap_or_default();
         let top = hurtboxes
             .iter()
             .map(|hurtbox| hurtbox.local.translation[1] + reach(hurtbox.shape))
             .fold(0.0, f32::max);
-        Some(Self { feet: view.position, crown: view.position + Vec3::Y * top, yaw: view.yaw })
+        // The next strike as `DodgeWindows` finds it, on the actor's own clock.
+        let strike = view.moves.current.and_then(|current| {
+            let mv = library.get(current.at)?;
+            let strikes = mv.hitboxes.iter().filter(|hitbox| hitbox.attack.is_some());
+            let next =
+                strikes.map(|hitbox| hitbox.span.start()).filter(|&start| start > current.elapsed).min()?;
+            Some((next - current.elapsed).as_secs_f32() + view.clock_delta.as_secs_f32())
+        });
+        let ground = view.controller.state.ground_normal;
+        let ground =
+            if ground.is_finite() && ground.length_squared() > 1e-6 { ground.normalize() } else { Vec3::Y };
+        Some(Self {
+            feet: view.position,
+            crown: view.position + Vec3::Y * top,
+            yaw: view.yaw,
+            ground,
+            strike,
+        })
     }
 
-    /// The same stand moved to `feet`, its crown as high over them, facing as it did.
+    /// Standing at `feet` facing `yaw` on flat ground, its crown as high as `height`, with no strike to come:
+    /// what a stage with no simulation behind it stands its effects on.
+    #[must_use]
+    pub fn standing(feet: Vec3, height: f32, yaw: f32) -> Self {
+        Self { feet, crown: feet + Vec3::Y * height, yaw, ground: Vec3::Y, strike: None }
+    }
+
+    /// The same stand moved to `feet`, its crown as high over them, facing as it did on the same ground.
     #[must_use]
     pub fn moved_to(self, feet: Vec3) -> Self {
-        Self { feet, crown: feet + (self.crown - self.feet), yaw: self.yaw }
+        Self { feet, crown: feet + (self.crown - self.feet), ..self }
     }
 }
 

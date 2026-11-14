@@ -41,6 +41,10 @@ pub enum EffectPlace {
     /// Where the subject stands, turned the way it faces, so the effect's +Z is its front: a swing's arc round
     /// its body (M5 L5).
     Facing,
+    /// On the ground where the subject stands, its +Y the ground's normal there and its +Z the subject's front
+    /// (M5 L7): a decal's place. On the subject's own clock (`clock: Actor` on its own cue), an effect here
+    /// also learns when the subject's running move next strikes, which a telegraph's decal fills until.
+    Ground,
 }
 
 /// Whose clock a row's effect runs on, so what can freeze it.

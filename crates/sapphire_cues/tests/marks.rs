@@ -36,12 +36,15 @@ fn shown(color: [f32; 3]) -> Vec3 {
     color / color.max_element()
 }
 
-/// The mark `cue`'s row fires: one effect, over its subject's head, a mark with one upright emitter.
+/// The mark `cue`'s row fires: one effect over its subject's head (the telegraph's also lays a decal on the
+/// ground, M5 L7), a mark with one upright emitter.
 fn mark_of(table: &CueTable, effects: &EffectLibrary, cue: &str) -> Mark {
     let row = table.rows().iter().find(|row| row.cue == cue && row.weight.is_none());
     let row = row.unwrap_or_else(|| panic!("`{cue}` has a row"));
-    let [fire] = &row.effects[..] else { panic!("`{cue}` fires one effect: {:?}", row.effects) };
-    assert_eq!(fire.at, EffectPlace::Crown, "`{cue}` marks over its subject's head");
+    let over_head: Vec<_> = row.effects.iter().filter(|fire| fire.at == EffectPlace::Crown).collect();
+    let [fire] = &over_head[..] else {
+        panic!("`{cue}` marks over its subject's head once: {:?}", row.effects)
+    };
     let effect = effects.find(&fire.effect).and_then(|id| effects.effect(id));
     let effect = effect.unwrap_or_else(|| panic!("`{}` is an effect", fire.effect));
     assert!(effect.mark, "`{}` draws a mark's random numbers", fire.effect);

@@ -510,6 +510,9 @@ pub struct FightShow {
     said: Option<Said>,
     /// How much of the screen effects shows, as the player's flashes and camera motion say (M4 A2).
     effect_scale: EffectScale,
+    /// The cues' ground decals aren't drawn (`--decals off`, M5 L7): what keeps an older golden's frame as it
+    /// was. They still play, unseen, as they take no random numbers.
+    decals_off: bool,
 }
 
 impl FightShow {
@@ -1362,6 +1365,12 @@ impl FightShow {
         self.effect_scale = scale;
     }
 
+    /// Whether the cues' ground decals draw (M5 L7): on where it starts. Off, they play unseen and the renderer
+    /// builds nothing of them, which keeps a frame that predates them as it was.
+    pub fn set_decals(&mut self, on: bool) {
+        self.decals_off = !on;
+    }
+
     /// The screen effects' scale, as [`Self::set_effect_scale`] last said.
     #[must_use]
     pub const fn effect_scale(&self) -> EffectScale {
@@ -2027,6 +2036,7 @@ impl SceneShow for FightShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         inventory.effects |= self.cues.is_some();
         inventory.effect_meshes |= self.cues.as_ref().is_some_and(|cues| cues.has_meshes());
+        inventory.decals |= !self.decals_off && self.cues.as_ref().is_some_and(|cues| cues.has_decals());
         // Depth of field's passes, where a timeline it may play keys focus (M5 L8).
         inventory.focus |= self.timelines.iter().any(|timeline| timeline.has_focus());
     }
@@ -2098,6 +2108,9 @@ impl SceneShow for FightShow {
     fn write_effects(&mut self, frame: &mut VfxFrame, alpha: f32) {
         if let Some(cues) = &mut self.cues {
             cues.write(frame, alpha);
+            if self.decals_off {
+                frame.decals.clear();
+            }
         }
     }
 

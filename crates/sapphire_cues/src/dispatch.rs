@@ -9,7 +9,9 @@ use sapphire_gameplay::{ActorId, ActorTable, ActorView, CueEvent, HitCue, Simula
 use sapphire_math::{Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::Weight;
 use sapphire_render::PostVariants;
-use sapphire_vfx::{Effect, EffectId, EffectLibrary as VfxLibrary, OwnerId, OwnerSteps, Placement, VfxWorld};
+use sapphire_vfx::{
+    Effect, EffectId, EffectLibrary as VfxLibrary, OwnerId, OwnerSteps, Placement, VfxWorld, on_ground,
+};
 use sapphire_world::screen_effects::{
     EffectLibrary as ScreenLibrary, EffectPreset, EffectPresetId, EffectStack,
 };
@@ -387,7 +389,7 @@ impl CueDispatcher {
     }
 
     fn fire_effect(&mut self, effect: &RowEffect, site: Site, step: &mut CueStep<'_>) {
-        let (placement, owner) = match site {
+        let (placement, owner, strike) = match site {
             Site::Actor { actor, hit } => {
                 let subject = hit.map_or(actor, |hit| hit.target);
                 let stand = (step.stand_of)(subject);
@@ -400,6 +402,9 @@ impl CueDispatcher {
                         position: stand.feet,
                         rotation: sapphire_math::det::quat_from_rotation_y(stand.yaw),
                     }),
+                    (EffectPlace::Ground, _) => {
+                        stand.map(|stand| on_ground(stand.feet, stand.yaw, stand.ground))
+                    }
                     _ => stand.map(|stand| Placement::at(stand.feet)),
                 };
                 let owner = match effect.clock {
@@ -407,11 +412,19 @@ impl CueDispatcher {
                     EffectOwner::Subject => owner_of(subject),
                     EffectOwner::Actor => owner_of(actor),
                 };
-                (placement, owner)
+                let on_its_clock = owner == owner_of(subject);
+                let strike = stand
+                    .and_then(|stand| stand.strike)
+                    .filter(|_| effect.at == EffectPlace::Ground && on_its_clock);
+                (placement, owner, strike)
             }
-            Site::Place(place) => (Some(Placement::at(place)), OwnerId::WORLD),
+            Site::Place(place) => (Some(Placement::at(place)), OwnerId::WORLD, None),
         };
         let spawned = placement.and_then(|placement| step.vfx.spawn(effect.effect, owner, placement));
+        // A ground effect on its subject's own clock learns when the subject next strikes, on that clock.
+        if let (Some(handle), Some(strike)) = (spawned, strike) {
+            step.vfx.set_strike(handle, strike);
+        }
         match spawned {
             Some(_) => self.stats.effects += 1,
             None => self.stats.effects_dropped += 1,
@@ -653,14 +666,10 @@ mod tests {
             // The attacker stands two metres tall, the target one.
             let stand_of = |actor: ActorId| match actor {
                 // Facing +X.
-                ATTACKER => Some(Stand {
-                    feet: Vec3::new(0.0, 0.0, -1.0),
-                    crown: Vec3::new(0.0, 2.0, -1.0),
-                    yaw: std::f32::consts::FRAC_PI_2,
-                }),
-                TARGET => {
-                    Some(Stand { feet: Vec3::new(0.0, 0.0, 1.0), crown: Vec3::new(0.0, 1.0, 1.0), yaw: 0.0 })
+                ATTACKER => {
+                    Some(Stand::standing(Vec3::new(0.0, 0.0, -1.0), 2.0, std::f32::consts::FRAC_PI_2))
                 }
+                TARGET => Some(Stand::standing(Vec3::new(0.0, 0.0, 1.0), 1.0, 0.0)),
                 _ => None,
             };
             let mut step = CueStep {
@@ -940,13 +949,57 @@ mod tests {
         assert!((arc.rotation * Vec3::Z - Vec3::X).length() < 1e-4, "{}", arc.rotation * Vec3::Z);
     }
 
+    /// `Ground` lays an effect on the ground under its subject, its +Y the ground's normal and its front the
+    /// subject's; on the subject's own clock its decal learns when the subject next strikes and fills until then,
+    /// and on the world's it plays its own length (M5 L7).
+    #[test]
+    fn a_ground_effect_lies_on_the_ground_and_fills_until_its_subjects_strike() {
+        let slope = Vec3::new(-0.5, 1.0, 0.0).normalize();
+        let fills = |clock: EffectOwner| {
+            let fire = EffectFire { effect: "telegraph_ground".to_owned(), at: EffectPlace::Ground, clock };
+            let mut dispatcher = dispatcher(vec![CueRow { effects: vec![fire], ..row("telegraph") }]);
+            let mut sinks = Sinks::new();
+            let stand_of = |_| {
+                let stand = Stand::standing(Vec3::new(1.0, 0.5, 0.0), 2.0, std::f32::consts::FRAC_PI_2);
+                Some(Stand { ground: slope, strike: Some(0.5), ..stand })
+            };
+            let mut step = CueStep {
+                vfx: &mut sinks.vfx,
+                screen: &mut sinks.screen,
+                presets: &sinks.presets,
+                shakes: &mut sinks.shakes,
+                view_projection: Mat4::IDENTITY,
+                stand_of: &stand_of,
+            };
+            dispatcher.read_step(1, [event("telegraph", None)], &mut step);
+            let mut frame = VfxFrame::default();
+            let mut fills = Vec::new();
+            for _ in 0..2 {
+                sinks.vfx.advance(&OwnerSteps { world: 0.25, owners: &[(owner_of(ATTACKER), 0.25)] });
+                sinks.vfx.write_frame(&mut frame, 1.0);
+                let decal = frame.decals.first().expect("the telegraph");
+                assert!((decal.position - Vec3::new(1.0, 0.5, 0.0)).length() < 1e-4, "{}", decal.position);
+                assert!((decal.rotation * Vec3::Y - slope).length() < 1e-4, "{}", decal.rotation * Vec3::Y);
+                // Its front is the subject's, +X, lifted into the slope's plane.
+                assert!((decal.rotation * Vec3::Z).dot(Vec3::X) > 0.85, "{}", decal.rotation * Vec3::Z);
+                fills.push(decal.fill);
+            }
+            fills
+        };
+        let on_its_clock = fills(EffectOwner::Actor);
+        assert!((on_its_clock[0] - 0.5).abs() < 1e-4 && on_its_clock[1] == 1.0, "{on_its_clock:?}");
+        let on_the_worlds = fills(EffectOwner::World);
+        let own_length = 0.75;
+        assert!((on_the_worlds[1] - 0.5 / own_length).abs() < 1e-4, "{on_the_worlds:?}");
+    }
+
     /// A cue the simulation didn't publish fires on its actor as one with no hit would (M4 A5).
     #[test]
     fn a_cue_fired_on_an_actor_plays_its_row_there() {
         let mut dispatcher =
             dispatcher(vec![with_effect("dodge_window", EffectPlace::Crown, EffectOwner::World)]);
         let mut sinks = Sinks::new();
-        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y, yaw: 0.0 });
+        let stand_of = |_| Some(Stand::standing(Vec3::ZERO, 1.0, 0.0));
         let mut step = CueStep {
             vfx: &mut sinks.vfx,
             screen: &mut sinks.screen,

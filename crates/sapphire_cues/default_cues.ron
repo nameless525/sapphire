@@ -142,7 +142,8 @@
             ),
             (
                 cue: "heavy_land",
-                effects: [(effect: "dust_puff", at: Feet)],
+                // The dust, then the scorch where the blade lands (M5 L7), which takes no random numbers.
+                effects: [(effect: "dust_puff", at: Feet), (effect: "scorch_mark", at: Ground)],
                 sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
                 shake: Some((preset: "hit_light")),
             ),
@@ -208,7 +209,14 @@
             // told by colour alone (m4-plan §3, "Colour"). A heavy's wind-up; and two cues `CueMarks` fires
             // that no document names: a dodge pressed now being perfect, read from the moves, and an enemy
             // crossing any named phase, so a new boss's phases are marked with no row of their own.
-            (cue: "telegraph", effects: [(effect: "telegraph_mark", at: Crown)]),
+            // The wind-up's reach on the ground too (M5 L7), filling on its actor's clock until the blow lands.
+            (
+                cue: "telegraph",
+                effects: [
+                    (effect: "telegraph_mark", at: Crown),
+                    (effect: "telegraph_ground", at: Ground, clock: Actor),
+                ],
+            ),
             (cue: "dodge_window", effects: [(effect: "dodge_glint", at: Crown)]),
             // A named phase tears the picture as well (M5 L9): a glitch, a full-screen flash, with a CRT's
             // lines fading after it.

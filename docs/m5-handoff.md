@@ -360,7 +360,7 @@ A zone's look is its own since M5 M6, as it opens and when a trip arrives in it:
    weather: Some((wetness: 0.7, puddles: 0.3)),
    fog: Some((density: 1.5, height_base: Some(0.0))),
    ```
-   Wind is the way it blows, which must have a horizontal part, and a strength up to 8. `gustiness` is a share and defaults to 0. Weather is two shares, `puddles` defaulting to 0, and holds all day. No shader draws it until wet surfaces (M5 L4). Fog's `density` scales the day's near, far and height layers (0 to 16, 1 by default). `height_base` puts the height layer's floor at that height in the zone's space. Leave it out to keep the day's.
+   Wind is the way it blows, which must have a horizontal part, and a strength up to 8. `gustiness` is a share and defaults to 0. Weather is two shares, `puddles` defaulting to 0, and holds all day unless the day keys its own: "A zone's weather and wet surfaces" below says how it draws. Fog's `density` scales the day's near, far and height layers (0 to 16, 1 by default). `height_base` puts the height layer's floor at that height in the zone's space. Leave it out to keep the day's.
 5. **Its reflection probes** (M5 L2): a few, by hand, where a reflection would read wrong under the open sky alone: one in each interior or covered street, and one in each open place.
    ```ron
    reflections: [
@@ -380,6 +380,18 @@ A probe is a row of the zone's `reflections` ("A zone's look", step 5): the cook
 3. **Cook and look:** `cargo xtask content`, then `cargo run -p sapphire_sandbox --features dev --locked -- --zone <stem>:<x>,<y>,<z>,<yaw> --capture probe.png` stands the character at that place in the zone's space, the camera behind it; `--no-reflection-probes` takes the zone's probes away for the same shot, to compare, and `--time-of-day` picks the hour. The debug overlay's "Reflection probes" row counts the sets uploaded, their keys' bytes, the probes shown, the composed cubes' size and bytes, and the compositions so far. Views of the cell table and the boxes are X1's.
 4. **What each tier draws:** Desktop-High and Desktop-Low reflect probes on the environment, corrected by the box, and on characters; Mobile-High on the environment without the correction, and on characters; Mobile-Low on characters only, from one cube a probe composed when the zone shows them, from the hour's heaviest key, at 32 texels.
 5. **A golden** of it is a row ("A golden"), as the `reflect-*` scenes are. A scene from before probes that shows a zone with them keeps `--no-reflection-probes`.
+
+### A zone's weather and wet surfaces (M5 L4)
+
+Weather is data in three places and wet surfaces need no authoring to show it: no Rust step, no recook of materials from before it, and no replay moved, since the simulation never reads it. Spec §5.12's "Wet surfaces (M5 L4)" is the reference; the `wet-*` goldens are the worked examples.
+
+1. **The zone's weather:** `weather: Some((wetness: 0.8, puddles: 0.4))` in its presentation ("A zone's look", step 4). `wetness` darkens and glosses; `puddles` is how far the ground's puddles have filled, 0 none and 1 every flat place under water. It holds all day and applies when the zone opens and when a trip arrives in it, under the trip's wipe; a zone with none is dry.
+2. **A day that rains:** a `weather: Some((wetness: 1.0, puddles: 0.6))` in every key of the zone's day (an optional group: every key or none, as the post layers are). It lies over the zone's by the keys' share, so a shower at 16:00 is keys either side at the zone's weather; a time-of-day volume or a cutscene's day that keys it blends it in by its own weight. A day that keys none leaves the zone's.
+3. **A material's response,** only where the default reads wrong. Left out, a rough dielectric soaks water up and darkens (paving, plaster, wood, cloth) and a smooth one or a metal takes the gloss alone; every flat, upward face may hold a puddle. `porosity: 0.0` to `1.0` overrides the first (glazed tile 0, unsealed stone 1), and `puddles: 0.0` keeps a material free of them (a table top, a raised walk), a part holding fewer. Old cooks keep the defaults: only an authored value changes a material's bytes.
+4. **Look:** `cargo xtask content`, then the sandbox's `--weather <wetness>,<puddles>` sets the weather over the zone's and its day's for a shot (`--weather dry` takes it away, to compare). The puddles lie where the world puts them, the same for every material, so moving a prop moves it over other puddles, not its own.
+5. **What each tier draws:** Desktop-High and Desktop-Low darken, gloss and stand puddles reflecting the probes (box-corrected) and the sky; Mobile-High the same, its probes uncorrected; Mobile-Low darkens only. A tier change keeps the weather.
+6. **Its pipelines** are declared for you: a wet frame draws through environment pipelines of its own, swapped in for the whole frame, and the stage declares them (`PipelineInventory::wet_surfaces`, entry `wet`) when the zone's weather, its day's keys or `--weather` can be wet, and for a trip's next zone as it comes. A game that builds its own inventory sets `wet_surfaces` the same way; one that doesn't is told by the first-use counters on its first wet frame. `--inventory-without wet` proves the miss.
+7. **A golden** of it is a row ("A golden"), as the `wet-*` scenes are. A scene from before wet surfaces that shows a wet zone keeps `--weather dry`, as `zone-trip-hub`, `zone-trip-ground` and `reflect-hub-square` do.
 
 ### A dialogue, with story flags
 

@@ -6,6 +6,11 @@
 //! savings spec §6.2 and m4-plan §3's ladder name first, neither touching the look's pillars. Heat past `Light`
 //! takes the ladder deeper as it would anyway.
 //!
+//! **A trip's wipe waits for a tier on its way,** so a change the ladder asks for mid-fight lands under the next
+//! trip's wipe whatever the device's speed: the renderer built for it before the trip is stale after it (the new
+//! zone's pipelines came to the live one), and is built again while the wipe stays down, rather than racing the
+//! wipe's lifting and waiting for the next wipe or pause.
+//!
 //! **Pacing:** a phone's cap is its frame rate, which its display link or limiter paces to
 //! (`Platform::set_frame_rate`): the least of the tier's rate, the ladder's cap and the player's 30 or 60. A
 //! desktop's player cap, under the ladder's, gates frames on the clock (`Platform::set_frame_cap`), and the
@@ -162,7 +167,8 @@ impl TierFollower {
     }
 
     /// Before a frame's drawn: `reading` (the platform's heat) to the ladder, the wanted tier's renderer built
-    /// off the frame, and changed to while the show holds still. Returns how to pace frames when that changed.
+    /// off the frame, and changed to while the show holds still, a trip's wipe staying down until it is
+    /// (`FightShow::hold_trip_for_tier`). Returns how to pace frames when that changed.
     pub fn frame(&mut self, stage: &mut Stage<GameShow>, reading: ThermalReading) -> Option<Pacing> {
         stage.thermal = self.graphics.heat(reading);
         stage.prepare_tier_change();
@@ -172,6 +178,9 @@ impl TierFollower {
             tracing::info!(target: LOG_TARGET, tier = tier.name(), "the game changed its quality tier");
             self.changes.push(tier);
         }
+        // A trip's wipe stays down until a change on its way lands under it.
+        let coming = stage.tier_change_coming();
+        stage.show.shown.fight.show.hold_trip_for_tier(coming);
         let pacing = self.graphics.pacing(&stage.quality);
         (self.paced != Some(pacing)).then(|| {
             self.paced = Some(pacing);

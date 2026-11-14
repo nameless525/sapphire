@@ -1,7 +1,11 @@
 //! The quality tier in the game, from outside the crates (M4 T3): heat forced on the tier's thermal ladder
 //! steps it down at once (its scale, its optional passes, a 30 fps cap the platform's told of), and the tier the
 //! ladder then asks for is built off the frame and changed to only while `zone-trip`'s wipe covers the screen,
-//! keeping every mesh and the run, with no frame building a pipeline.
+//! keeping every mesh and the run, with no frame building a pipeline. It lands under the first trip's wipe, which
+//! waits for it, on any machine: the renderer built before that trip is stale after it, and its second build
+//! takes however long it takes. The Desktop phase makes every build take 300 frames, longer than the walk to
+//! the second trip, which a wipe that didn't wait would fail every time; the Mobile phase builds at the machine's
+//! own speed.
 //!
 //! It starts on Desktop-High, held as a player's choice, and goes to automatic, so the ladder's tier rung is
 //! there whatever the device (lavapipe's own tier is Desktop-Low, which has none). Then it does the same from
@@ -40,6 +44,11 @@ const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
 /// Past the replay's second entry, at tick 240, and the trip after it.
 const TICKS: u64 = 260;
+/// The replay's second zone entry: the tier changes under the first trip's wipe, before it.
+const SECOND_ENTRY: u64 = 240;
+/// The frames the Desktop phase makes each tier build take, as a slow machine's might: more than a trip and the
+/// walk between two trips, so that a wipe lifting before the build finished would leave the tier unchanged.
+const SLOW_BUILD: u32 = 300;
 
 /// Draws the stage's next frame into a new texture and reads it back.
 fn frame(stage: &mut Stage<GameShow>) -> Result<Vec<u8>, AppInitError> {
@@ -67,8 +76,8 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        walk(platform, TierId::DesktopHigh)?;
-        walk(platform, TierId::MobileHigh)?;
+        walk(platform, TierId::DesktopHigh, SLOW_BUILD)?;
+        walk(platform, TierId::MobileHigh, 0)?;
         Ok(Self)
     }
 
@@ -82,8 +91,9 @@ impl App for OutsideCaller {
 }
 
 /// Boots on `high`, held as a player's choice, goes to automatic under critical heat, and follows the ladder to
-/// the tier below at the second trip's wipe.
-fn walk(platform: &Platform, high: TierId) -> Result<(), AppInitError> {
+/// the tier below under the first trip's wipe, which stays down until the change lands however slow its build:
+/// each takes at least `slow` frames ([`Stage::slow_tier_builds`]).
+fn walk(platform: &Platform, high: TierId, slow: u32) -> Result<(), AppInitError> {
     let class = high.class();
     let low = high.lower().expect("a class's higher tier");
     // A phone's class of device, where the tier's a phone's, on this one's GPU.
@@ -106,6 +116,7 @@ fn walk(platform: &Platform, high: TierId) -> Result<(), AppInitError> {
         waited += 1;
     }
     stage.show.open_fight();
+    stage.slow_tier_builds(slow);
     assert_eq!(stage.quality.active().id, high);
     let character = stage.character;
 
@@ -145,7 +156,11 @@ fn walk(platform: &Platform, high: TierId) -> Result<(), AppInitError> {
         FormFactor::Mobile => pacing.rate == thirty && pacing.cap.is_none(),
     };
     assert!(caps.iter().any(capped), "{high}: the ladder's 30 fps rung reached the pacing: {caps:?}");
-    let (at_frame, at_tick) = changed_at.expect("the ladder's tier changed by the second trip");
+    let (at_frame, at_tick) = changed_at.expect("the ladder's tier changed");
+    assert!(
+        at_tick < SECOND_ENTRY,
+        "{high}: the tier changed at tick {at_tick}, not under the first trip's wipe"
+    );
     assert_eq!(tiers.changes(), [low]);
     assert_eq!(stage.quality.active().id, low);
     assert_eq!(stage.quality.active().source, TierSource::Ladder);

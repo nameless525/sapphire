@@ -433,6 +433,10 @@ struct TierChange {
     /// The device's errors when the build started ([`GpuContext::errors`]): one since, a pipeline its driver
     /// refused or memory it couldn't give, and the build isn't taken (M4 H9).
     errors_at_build: u32,
+    /// The frames the build has been asked after since it started, and how many a lane makes it wait before it
+    /// counts as built ([`Stage::slow_tier_builds`]).
+    frames: u32,
+    slow_by: u32,
 }
 
 impl<S: SceneShow> Stage<S> {
@@ -542,7 +546,11 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             change.failed = None;
         }
         let Some(id) = wanted else { return };
-        if change.build.is_some() || change.failed == Some(id) {
+        if change.build.is_some() {
+            change.frames = change.frames.saturating_add(1);
+            return;
+        }
+        if change.failed == Some(id) {
             return;
         }
         let errors = self.gpu.errors();
@@ -550,6 +558,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             Ok(build) => {
                 change.build = Some((id, build));
                 change.errors_at_build = errors;
+                change.frames = 0;
             }
             Err(error) => {
                 tracing::warn!(target: LOG_TARGET, tier = id.name(), %error, "a tier's renderer can't be built");
@@ -560,7 +569,24 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
 
     /// Whether a tier's renderer is built, for [`Self::take_tier_change`] to take. Never waits.
     pub fn tier_change_ready(&mut self) -> bool {
-        self.tier_change.build.as_mut().is_some_and(|(_, build)| build.is_ready())
+        let change = &mut self.tier_change;
+        change.frames >= change.slow_by && change.build.as_mut().is_some_and(|(_, build)| build.is_ready())
+    }
+
+    /// Makes every tier's renderer count as built only once `frames` frames have asked after it since its build
+    /// started ([`Self::prepare_tier_change`]), however soon its pipelines are: a slow device's build, for a lane
+    /// that proves what waits for one holds on any machine. Zero, the default, is none.
+    pub fn slow_tier_builds(&mut self, frames: u32) {
+        self.tier_change.slow_by = frames;
+    }
+
+    /// Whether a tier change is on its way: quality wants another tier, whose renderer is building, or built and
+    /// waiting, or due to be built again, and hasn't failed. What a game's wipe waits for, so that the change lands
+    /// while it covers ([`Self::take_tier_change`]): a renderer built before a zone's trip is always stale after
+    /// it, and is built again under the wipe. Never waits.
+    #[must_use]
+    pub fn tier_change_coming(&self) -> bool {
+        self.quality.wanted_tier().is_some_and(|id| self.tier_change.failed != Some(id))
     }
 
     /// Changes to the tier quality wants, if [`Self::prepare_tier_change`] has its renderer built: the game

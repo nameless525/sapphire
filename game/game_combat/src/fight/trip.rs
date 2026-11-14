@@ -16,6 +16,12 @@
 //!    `prefetch` exits come in behind it, which is what makes it a hub.
 //! 4. **Uncovering.** Steps run again, and the trip's over when the wipe says the screen's clear.
 //!
+//! A quality tier change on its way holds a wiped trip in Arriving until it lands
+//! ([`FightShow::hold_trip_for_tier`]): a tier changes only while the show holds still, and its renderer, built
+//! before the trip, is always stale after it, since the new zone's pipelines came to the live renderer. So the
+//! wipe stays down while it's built again, however long that takes, rather than lifting first and leaving the
+//! change to the next wipe or pause.
+//!
 //! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The zone arrived in brings its look
 //! (M5 M6): its day, light rigs, probe grid, sky, wind, weather and fog, which came in with its prefetch, or the
 //! stage's own for what it names none of.
@@ -117,6 +123,8 @@ pub(super) struct Trips {
     wiped: bool,
     covered: bool,
     clear: bool,
+    /// A quality tier change is on its way, and a wiped trip's arrival waits under the wipe until it lands.
+    tier_waits: bool,
     /// How a zone streams on this stage's tier.
     pub(super) settings: Option<StreamSettings>,
     /// The real time given to the camera during a trip since the wipe last took it.
@@ -208,6 +216,13 @@ impl FightShow {
     pub fn say_trip_wipe(&mut self, covered: bool, clear: bool) {
         self.trips.covered = covered;
         self.trips.clear = clear;
+    }
+
+    /// Says whether a quality tier change is on its way (`Stage::tier_change_coming`), once a frame: while it is,
+    /// a trip under a wipe stays in [`TripPhase::Arriving`], so the change lands while the wipe covers rather
+    /// than after it lifts (see the [module docs](self)). With no wipe, nothing waits.
+    pub fn hold_trip_for_tier(&mut self, coming: bool) {
+        self.trips.tier_waits = coming;
     }
 }
 
@@ -338,6 +353,8 @@ impl Fight {
                     swap = true;
                 }
             },
+            // The wipe stays down for a tier change on its way, which lands only while it covers.
+            TripPhase::Arriving if trips.wiped && trips.tier_waits => {}
             TripPhase::Arriving => {
                 if scene.zone_arrived(content) || trip.error.is_some() {
                     scene.end_arrival(content);

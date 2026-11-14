@@ -232,6 +232,7 @@ impl SyntheticZone {
                 instances,
                 lights,
                 probes: None,
+                reflections: None,
                 day: None,
                 rigs: None,
                 splines: Vec::new(),

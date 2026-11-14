@@ -29,6 +29,7 @@ use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_look::Dichromacy;
 use sapphire_rhi::{TransientDesc, wgpu};
 
+use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, TextureId};
 
 /// The view's pass in the frame graph, for GPU timings.
@@ -171,12 +172,14 @@ impl ColorVisionDraw {
     }
 
     /// Adds the pass that writes `input` into `target` as the dichromacy sees it: the frame's last.
+    /// Its draw counts in `counter`.
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         input: TextureId,
         target: TextureId,
         labels: bool,
+        counter: &'f Counter,
     ) {
         graph.add_pass(COLOR_VISION_PASS).read(input).write(target).record(move |ctx| {
             let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -205,6 +208,7 @@ impl ColorVisionDraw {
             pass.set_bind_group(0, &self.shared, &[]);
             pass.set_bind_group(1, &group, &[]);
             pass.draw(0..3, 0..1);
+            counter.add(&PassCounts::fullscreen());
         });
     }
 }

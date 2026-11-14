@@ -13,6 +13,8 @@ pub(crate) struct GrowableBuffer {
     label: &'static str,
     usage: wgpu::BufferUsages,
     max_size: u64,
+    /// What it was made to hold: the least [`Self::floor`] gives back to.
+    initial: u64,
     /// Times the buffer was replaced by a larger one (rule R9 stats).
     growths: u32,
 }
@@ -29,8 +31,25 @@ impl GrowableBuffer {
     ) -> Self {
         // COPY_DST for queue writes, COPY_SRC to carry contents over when growing.
         let usage = usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
-        let buffer = create(device, label, usage, capacity.min(max_size));
-        Self { buffer, label, usage, max_size, growths: 0 }
+        let initial = capacity.min(max_size);
+        let buffer = create(device, label, usage, initial);
+        Self { buffer, label, usage, max_size, initial, growths: 0 }
+    }
+
+    /// The size of this buffer at its floor holding `needed` bytes (M5 D9): the room growing from
+    /// empty would reach, at the growth step [`Self::reserve`] takes (powers of two), and never less
+    /// than it was made with.
+    pub(crate) fn floor(&self, needed: u64) -> u64 {
+        allocated(needed.next_power_of_two().max(self.initial).min(self.max_size))
+    }
+
+    /// Replaces the buffer with one at [`Self::floor`] for `needed` bytes, empty, and returns the old
+    /// one, whose contents the caller copies over and then retires: frames already submitted may be
+    /// reading it. Bind groups that hold the old buffer must be rebuilt.
+    pub(crate) fn replace_at_floor(&mut self, device: &wgpu::Device, needed: u64) -> wgpu::Buffer {
+        let floor = create(device, self.label, self.usage, self.floor(needed));
+        tracing::debug!(target: crate::LOG_TARGET, label = self.label, capacity = floor.size(), "gave GPU buffer back");
+        std::mem::replace(&mut self.buffer, floor)
     }
 
     pub(crate) fn buffer(&self) -> &wgpu::Buffer {
@@ -55,6 +74,11 @@ impl GrowableBuffer {
 
     pub(crate) fn growths(&self) -> u32 {
         self.growths
+    }
+
+    /// Whether [`Self::reserve`] of `needed` bytes would replace the buffer, copying what it keeps.
+    pub(crate) fn grows(&self, needed: u64) -> bool {
+        needed > self.buffer.size()
     }
 
     /// A new buffer of this one's label and use that holds at most `max_size` bytes, starting at
@@ -123,6 +147,11 @@ pub(crate) struct RangeAllocator {
 }
 
 impl RangeAllocator {
+    /// Ranges filling `0..end` with no gaps between them, as a compaction leaves them.
+    pub(crate) fn packed(end: u32) -> Self {
+        Self { free: Vec::new(), end }
+    }
+
     /// The start of a new range of `len` units: the first free range that fits, or the end. An
     /// empty range takes no room: it starts at 0.
     pub(crate) fn allocate(&mut self, len: u32) -> u32 {
@@ -188,11 +217,16 @@ impl RangeAllocator {
 fn create(device: &wgpu::Device, label: &str, usage: wgpu::BufferUsages, capacity: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        // Bindings can't be empty, and copies need 4-byte multiples.
-        size: capacity.max(16).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+        size: allocated(capacity),
         usage,
         mapped_at_creation: false,
     })
+}
+
+/// The size a buffer asked to hold `capacity` bytes is made: bindings can't be empty, and copies need
+/// 4-byte multiples.
+fn allocated(capacity: u64) -> u64 {
+    capacity.max(16).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
 }
 
 #[cfg(test)]

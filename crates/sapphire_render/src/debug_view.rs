@@ -136,6 +136,7 @@ use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_rhi::{TransientDesc, wgpu};
 
 use crate::LOG_TARGET;
+use crate::counts::PassCounts;
 use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::{FrameGraph, TextureId};
@@ -1261,6 +1262,7 @@ impl DebugViews {
                         if let Some(sky) = sky {
                             pass.set_pipeline(sky);
                             pass.draw(0..3, 0..1);
+                            draws.counter.add(&PassCounts::fullscreen());
                         }
                     };
                     let cards = Some((card_group, cards));
@@ -1332,6 +1334,7 @@ impl DebugViews {
         }
         let (device, view_bind_group, layouts) = (&self.device, &self.view_bind_group, &self.layouts);
         let (frame_bind_group, labels) = (frame.groups.frame.get(FrameGroup::World), frame.labels);
+        let counter = frame.draws.counter;
         builder.record(move |ctx| {
             let aspect = |aspect| {
                 ctx.texture(replayed.depth)
@@ -1384,6 +1387,7 @@ impl DebugViews {
             pass.set_bind_group(1, view_bind_group, &[0]);
             pass.set_bind_group(2, &inputs, &[]);
             pass.draw(0..3, 0..1);
+            counter.add(&PassCounts::fullscreen());
         });
     }
 }

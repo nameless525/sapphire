@@ -95,7 +95,7 @@ impl InterfaceScreen {
                 uploads.finish_and_recall_on_submit(ctx.encoder);
             });
         }
-        ui.record(graph, target, size, std::array::from_fn::<_, MAX_INSETS, _>(|_| None));
+        ui.record(graph, target, size, std::array::from_fn::<_, MAX_INSETS, _>(|_| None), None);
     }
 
     /// The interface's counters, as a renderer's.

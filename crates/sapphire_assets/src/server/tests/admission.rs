@@ -104,6 +104,9 @@ fn a_gibibyte_of_loads_never_holds_more_than_the_cap() {
     let handles: Vec<Handle<TextureAsset>> = (0..COUNT).map(|n| server.load(numbered(n)).unwrap()).collect();
     let stats = server.stats();
     assert!(stats.held_back > 0 && stats.admitted <= cap, "{stats:?}");
+    // Every read the cap kept back counts, and none it let through; nothing is decoded yet.
+    assert_eq!(stats.reads_held, u64::from(stats.held_back), "{stats:?}");
+    assert_eq!((stats.admitted_total, stats.decoded_waiting), (stats.admitted, 0), "{stats:?}");
     let mut frames = 0u32;
     while !handles.iter().all(|handle| server.state(handle) == LoadState::Ready) {
         frames += 1;
@@ -112,6 +115,9 @@ fn a_gibibyte_of_loads_never_holds_more_than_the_cap() {
             assert!(server.wait(Duration::from_secs(10)));
             assert!(server.stats().admitted <= cap);
         }
+        // With every read landed, all that's admitted is decoded and waiting for the GPU.
+        let stats = server.stats();
+        assert_eq!(stats.decoded_waiting, stats.admitted, "{stats:?}");
         server.update();
         server.upload(|upload| {
             assert_eq!(upload.bytes().len() as u64, size);
@@ -127,6 +133,9 @@ fn a_gibibyte_of_loads_never_holds_more_than_the_cap() {
     // It held back what didn't fit, rather than reading a gibibyte and waiting.
     assert!(most > cap - size, "{most} of {cap}");
     assert_eq!((stats.admitted, stats.held_back, stats.ready), (0, 0, u32::from(COUNT)), "{stats:?}");
+    // Each texture was admitted once, and the ones that waited were counted once, when they first did.
+    assert_eq!((stats.admitted_total, stats.decoded_waiting), (size * u64::from(COUNT), 0), "{stats:?}");
+    assert!(stats.reads_held > 0 && stats.reads_held < u64::from(COUNT), "{stats:?}");
     // The uploads were the bottleneck, as without a cap: a frame's budget, every frame.
     let per_frame = budgets.upload_per_frame / size;
     assert!(u64::from(frames) <= u64::from(COUNT).div_ceil(per_frame) + 2, "{frames} frames");

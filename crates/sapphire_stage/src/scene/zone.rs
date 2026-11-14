@@ -83,7 +83,7 @@ pub struct ZoneStage {
     /// The zone's origin's place in the world is `-stand`.
     pub(super) stand: Vec3,
     /// Where it streams from, in its own space, until the camera's had a frame there:
-    /// [`Scene::arrive_in_zone`] to [`Scene::release_zone_focus`].
+    /// [`Scene::arrive_in_zone`] to [`Scene::end_arrival`].
     held_focus: Option<[f32; 3]>,
 }
 
@@ -423,6 +423,12 @@ impl ZoneWalk {
         Self { points, leg: 0, along: 0.0, metres_per_step }
     }
 
+    /// How far along the rail it's walked, in metres.
+    fn walked(&self) -> f32 {
+        let legs = self.points.windows(2).take(self.leg);
+        legs.map(|leg| leg[0].distance(leg[1])).sum::<f32>() + self.along
+    }
+
     /// Moves on a step, and says where that's reached and which way it's facing. It stops at the rail's end.
     fn advance(&mut self) -> Option<(Vec3, Vec3)> {
         let mut left = self.metres_per_step;
@@ -674,7 +680,8 @@ impl Scene {
     /// ([`Self::prefetch_exits`]). What the new zone prefetches stays mounted, and coming if it was: a hub's
     /// next zone, the one just left among them, isn't mounted again on every visit (M5 M6). Under a wipe,
     /// because everything moves at once. The new zone's cells come from the next frame on, within its budget,
-    /// until [`Self::zone_settled`]. `None` for a zone that isn't ready.
+    /// until [`Self::zone_settled`], and the mesh pool gives back the last zone's room meanwhile: the wipe holds
+    /// until [`Self::zone_arrived`], and [`Self::end_arrival`] lets it go. `None` for a zone that isn't ready.
     pub fn arrive_in_zone(&mut self, zone: AssetId, content: &mut Content) -> Option<ArrivedZone> {
         let at = self.next_zones.iter().position(|next| next.target.zone == zone && next.is_ready())?;
         let NextZone { target, coming, focus, look, .. } = self.next_zones.remove(at);
@@ -749,11 +756,21 @@ impl Scene {
         self.zone.as_ref().is_some_and(|zone| zone.streamer.first_cells_in())
     }
 
-    /// Streaming goes by the camera's eye from here on.
-    pub fn release_zone_focus(&mut self) {
+    /// Whether a trip's arrival can end, its wipe let go: the zone's first cells are in, and the renderer's
+    /// mesh pool has given back what the zone left held, down to its floor (M5 D9,
+    /// [`Content::meshes_given_back`]).
+    #[must_use]
+    pub fn zone_arrived(&self, content: &Content) -> bool {
+        self.zone_settled() && content.meshes_given_back()
+    }
+
+    /// The arrival's over: streaming goes by the camera's eye from here on, and the mesh pool grows as the
+    /// zone needs, no longer asked to compact.
+    pub fn end_arrival(&mut self, content: &mut Content) {
         if let Some(zone) = &mut self.zone {
             zone.held_focus = None;
         }
+        content.end_giving_back();
     }
 
     /// The zone on stage's exit called `name`, the hash of it, if there's a zone on stage with that exit.
@@ -817,6 +834,20 @@ impl Scene {
     /// they're arrived at, beside `Content::zone_prewarm_time`: a bench's prefetch cost (M3 Z1).
     pub fn prefetch_time(&self) -> std::time::Duration {
         self.prefetch_time
+    }
+
+    /// How far the zone stage's walk has gone along its rail, in metres: where a bench's frame was on its
+    /// tour (M5 B4). `None` without a walk.
+    pub fn zone_walked(&self) -> Option<f32> {
+        self.zone_walk.as_ref().map(ZoneWalk::walked)
+    }
+
+    /// Puts the zone stage's walk back at its rail's start, for a bench to walk the same tour again; the next
+    /// step moves the character and the camera there. Nothing without a walk.
+    pub fn restart_zone_walk(&mut self) {
+        if let Some(walk) = &mut self.zone_walk {
+            (walk.leg, walk.along) = (0, 0.0);
+        }
     }
 
     /// What the zone's streaming did this frame and where it stands, with a zone open.
@@ -967,12 +998,14 @@ mod tests {
     fn a_zone_walk_goes_round_its_corners_and_stops_at_the_end() {
         let points = vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 1.0)];
         let mut walk = ZoneWalk::new(points, 0.75);
+        assert_eq!(walk.walked(), 0.0);
         let (place, facing) = walk.advance().expect("under way");
         assert!(place.distance(Vec3::new(0.0, 0.0, 0.75)) < 1e-5, "{place}");
         assert!(facing.distance(Vec3::Z) < 1e-5);
         let (place, facing) = walk.advance().expect("past the corner");
         assert!(place.distance(Vec3::new(0.5, 0.0, 1.0)) < 1e-5, "{place}");
         assert!(facing.distance(Vec3::X) < 1e-5);
+        assert!((walk.walked() - 1.5).abs() < 1e-5, "{}", walk.walked());
         assert!(walk.advance().is_none(), "it's walked the rail's 2 m");
         assert!(walk.advance().is_none());
     }

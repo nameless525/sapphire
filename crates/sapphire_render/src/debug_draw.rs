@@ -59,6 +59,7 @@ use sapphire_rhi::wgpu;
 
 use crate::CameraData;
 use crate::buffer::{GrowableBuffer, stage};
+use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
@@ -291,13 +292,14 @@ impl DebugDraw {
     }
 
     /// Adds the pass, over `target`, which post (and any debug view) finished. `depth` is the scene
-    /// prepass's, which this makes run.
+    /// prepass's, which this makes run. Its draw counts in `counter`, a quad of two triangles a line.
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         target: TextureId,
         depth: TextureId,
         labels: bool,
+        counter: &'f Counter,
     ) {
         graph.add_pass(PASS).read(depth).read(target).write(target).record(move |ctx| {
             // A new one a frame: the depth's view changes with TAA's pair and the transient pool,
@@ -328,6 +330,7 @@ impl DebugDraw {
             pass.set_bind_group(0, &inputs, &[]);
             pass.set_vertex_buffer(0, self.buffer.buffer().slice(..));
             pass.draw(0..4, 0..self.lines.len() as u32);
+            counter.add(&PassCounts::call(self.lines.len() as u32, 2));
         });
     }
 }

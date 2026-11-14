@@ -8,6 +8,7 @@
 // probe grid of its posts and ground (`proving_hub.probes.ron`, whose meshes are the prefabs, cooked for it),
 // a gustier breeze than the stage's, wet paving after rain (which no shader draws until M5 L4's wet surfaces),
 // and haze half again as thick as the day's, its height layer on the paving. The `zone-trip-hub` golden shows it.
+// One reflection probe (M5 L2) stands in the open square among the posts, its box the paving's whole square.
 (
     type: "sapphire::zone::ZoneDocument",
     version: 1,
@@ -23,6 +24,9 @@
         ],
         colliders: Some("b27e4d19-63a8-4c55-8e0f-12d9f7a6c340"),
         probes: Some("3d0efdb0-bb5d-4245-92a2-367504ef1ac8"),
+        reflections: [
+            (name: "square", position: (0.0, 1.6, 0.0), parallax: (min: (-24.0, 0.0, -24.0), max: (24.0, 12.0, 24.0))),
+        ],
         day: Some("proving_hub_day.ron"),
         rigs: Some("proving_hub_rigs.ron"),
         wind: Some((direction: (-0.6, 0.0, 0.8), strength: 1.6, gustiness: 0.5)),

@@ -2068,6 +2068,21 @@ impl Renderer {
         update
     }
 
+    /// Makes the environment's surfaces the frame's weather's (M5 L4, [`Pipelines::set_wet`]): a wet frame draws
+    /// through surfaces built with the weather, a dry one through those built without it, which are the shader as
+    /// it was before weather. The swap is the whole frame's, so draw lists don't change. A load that declared
+    /// [`PipelineInventory::wet_surfaces`] has both weathers' built, and the swap builds nothing; one that didn't
+    /// builds the wet surfaces here, on the frame's thread, as first uses.
+    fn follow_weather(&mut self, wet: bool) {
+        if self.pipelines.wet() == wet {
+            return;
+        }
+        let built = self.checked_build(|renderer| renderer.pipelines.set_wet(&renderer.device, wet));
+        // Held inset pictures were drawn through the surfaces just swapped out.
+        self.insets.redraw();
+        tracing::debug!(target: LOG_TARGET, wet, built, "the environment's surfaces follow the weather");
+    }
+
     /// Runs `build`, which may build pipelines from the current shader sources. Edited sources
     /// were checked against the pipelines built when they were applied, not against those built
     /// later (another permutation, f32 positions, the skinning pass): if wgpu refuses one of
@@ -2216,6 +2231,7 @@ impl Renderer {
             ambient: (grid || probes).then(|| self.ambient.constants_expecting(grid, probes)),
             fades: inventory.fades,
             scene_prepass: inventory.debug_draw,
+            wet_surfaces: inventory.wet_surfaces,
             keys,
         };
         let debug_draw = (inventory.debug_draw && self.debug_draw.is_none()).then(|| {
@@ -2397,6 +2413,9 @@ impl Renderer {
                 renderer.pipelines.keep_scene_prepass(&renderer.device, on);
                 renderer.make_debug_draw();
             }
+            if inventory.wet_surfaces {
+                renderer.pipelines.keep_wet_surfaces(&renderer.device, on);
+            }
         });
         self.prewarmed_keys.extend(inventory.meshes.iter().copied());
         let built = self.pipeline_builds.stats().prewarmed - before;
@@ -2480,6 +2499,8 @@ impl Renderer {
         self.stats.shader_builds = self.builds.stats();
         // And a finished warm-up is taken in, after it: one built from sources just replaced starts again.
         self.poll_warm_ups();
+        // Then the weather's surfaces, before anything reads a pipeline (M5 L4).
+        self.follow_weather(packet.weather.is_wet());
 
         if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
             self.scene_bind_groups = create_scene_bind_groups(

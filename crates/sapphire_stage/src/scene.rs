@@ -2330,8 +2330,8 @@ impl Scene {
 
     /// What this scene and `show` may draw through that no pack's table can say (M3 K1): the post variants of the
     /// screen effects it may push, its effects if it plays any, its sky, its characters' fades if they fade or
-    /// dissolve (M5 L11: a dissolve draws through the fades' pipelines), its debug lines if it draws any, and what
-    /// the show declares.
+    /// dissolve (M5 L11: a dissolve draws through the fades' pipelines), its debug lines if it draws any, its wet
+    /// surfaces if its frames may go wet ([`Self::may_be_wet`]), and what the show declares.
     pub fn declared_pipelines(&self, show: &impl SceneShow) -> PipelineInventory {
         #[cfg(feature = "samples")]
         let demo = self.debug_draw_demo.is_some();
@@ -2348,10 +2348,20 @@ impl Scene {
             focus: self.focus.is_some_and(|focus| focus.drawn()),
             debug_draw: demo || debug_draw::enabled(),
             color_vision: COLOR_VISION.get().dichromacy().into_iter().collect(),
+            wet_surfaces: self.may_be_wet(),
             ..PipelineInventory::default()
         };
         show.declare_pipelines(&mut inventory);
         inventory
+    }
+
+    /// Whether this scene's frames may draw wet (M5 L4): a tool's weather if it set one, or else the zone's or any
+    /// its day keys. A trip into a zone that may go wet declares it as the zone comes.
+    pub fn may_be_wet(&self) -> bool {
+        match self.weather {
+            Some(weather) => weather.is_wet(),
+            None => self.zone_air.weather.is_wet() || self.time_of_day().timeline().may_be_wet(),
+        }
     }
 
     /// Readies `renderer` for what this scene and `show` declare ([`Self::declared_pipelines`]), so none of it
@@ -2736,6 +2746,7 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 mod layout;
 pub use layout::{LaidOut, Layout};
 mod zone;
+pub(crate) use zone::may_be_wet;
 pub use zone::{
     ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneStanding, ZoneTarget, stream_settings,
 };
@@ -4456,9 +4467,13 @@ mod tests {
         };
         let mut scene = scene();
         assert_eq!(weather(&mut scene), Weather::DRY, "dry by default");
+        assert!(!scene.declared_pipelines(&()).wet_surfaces, "a dry scene declares no wet surfaces");
         let zone = Weather { wetness: 0.7, puddles: 0.3 };
         scene.zone_air.weather = zone;
         assert_eq!(weather(&mut scene), zone, "a day that keys none leaves the zone's");
+        assert!(scene.declared_pipelines(&()).wet_surfaces, "a wet zone's are declared");
+        scene.zone_air.weather = Weather::DRY;
+        assert!(!scene.time_of_day().timeline().may_be_wet());
 
         let mut keys = scene.time_of_day().timeline().keys().to_vec();
         for key in &mut keys {
@@ -4466,6 +4481,8 @@ mod tests {
         }
         let day = tod::TodTimeline::new(keys).expect("a day keyed wet");
         scene.time_of_day_mut().set_timeline(day).expect("it takes");
+        assert!(scene.declared_pipelines(&()).wet_surfaces, "a day keyed wet declares them");
+        scene.zone_air.weather = zone;
         let keyed = Weather { wetness: 1.0, puddles: 0.5 };
         assert_eq!(weather(&mut scene), keyed, "the day's over the zone's");
 
@@ -4474,6 +4491,7 @@ mod tests {
         assert_eq!(weather(&mut scene), flag, "a tool's over both");
         scene.set_weather(Some(Weather::DRY));
         assert_eq!(weather(&mut scene), Weather::DRY, "dry is a tool's weather too");
+        assert!(!scene.declared_pipelines(&()).wet_surfaces, "a tool's dry weather declares none");
         scene.set_weather(None);
         assert_eq!(weather(&mut scene), keyed);
     }

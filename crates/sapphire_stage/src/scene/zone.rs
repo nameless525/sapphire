@@ -194,8 +194,8 @@ impl ComingLook {
 }
 
 impl NextZone {
-    /// A frame of it.
-    fn advance(&mut self, content: &mut Content) {
+    /// A frame of it. With `tool_weather`, its own weather never draws ([`Scene::set_weather`]).
+    fn advance(&mut self, content: &mut Content, tool_weather: bool) {
         let pack = self.target.pack.as_str();
         match &self.coming {
             Coming::Mounting => {
@@ -237,6 +237,9 @@ impl NextZone {
                             presentation.sky.as_ref().copied(),
                             reflections,
                         );
+                        // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
+                        // couldn't say, with the zone unread.
+                        let wet = !tool_weather && may_be_wet(presentation);
                         self.coming = match ComingLook::ask(server, names, self.priority()) {
                             Ok(look) => {
                                 self.look = look;
@@ -244,6 +247,9 @@ impl NextZone {
                             }
                             Err(error) => Coming::Failed(error),
                         };
+                        if wet {
+                            content.queue_wet_prewarm(pack);
+                        }
                     }
                     LoadState::Failed(error) => self.coming = Coming::Failed(error.to_string()),
                     LoadState::Loading => {}
@@ -256,6 +262,10 @@ impl NextZone {
             streamer.prefetch(self.focus, server, self.hurried);
             if let Err(error) = self.look.follow(server) {
                 self.coming = Coming::Failed(error);
+            }
+            // Its wet surfaces are part of its look: not ready until they're built.
+            if content.prewarms_pack(pack) {
+                self.look.ready = false;
             }
         }
     }
@@ -369,6 +379,20 @@ impl ZoneLook {
             fog: presentation.fog.as_ref().map(|fog| fog.to_native()),
         })
     }
+}
+
+/// Whether a zone's frames may draw wet (M5 L4): its own weather is, or its day keys any. What a load or a trip
+/// declares for it (`PipelineInventory::wet_surfaces`), so its first wet frame builds nothing.
+pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
+    let own = presentation.weather.as_ref().is_some_and(|weather| {
+        let weather = weather.to_native();
+        Weather { wetness: weather.wetness, puddles: weather.puddles }.is_wet()
+    });
+    let day = || {
+        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str()));
+        day.is_some_and(|day| day.is_ok_and(|day| day.may_be_wet()))
+    };
+    own || day()
 }
 
 /// What a zone's look leaves on the scene beyond its day and rigs (M5 M6), which the frame's packet takes, and
@@ -940,8 +964,10 @@ impl Scene {
             zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
         }
         let stopwatch = sapphire_time::Stopwatch::start();
+        // A tool's weather is the frame's whatever a zone says (M5 L4), declared with the scene's if wet.
+        let tool_weather = self.weather.is_some();
         for next in &mut self.next_zones {
-            next.advance(content);
+            next.advance(content, tool_weather);
         }
         self.prefetch_time = stopwatch.elapsed();
     }

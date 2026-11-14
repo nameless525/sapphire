@@ -94,11 +94,34 @@
 // the spec's screen-space edge pass (a desktop option, later); props that should read like
 // characters use the anime character family.
 //
-// Wetness (later): the frame carries the weather's wetness and puddle coverage
-// (`frame.weather`, `FramePacket::weather`) for the wet surface model that arrives with weather
-// (Lagarde's: porous albedo darkened, roughness lowered toward 0.05–0.1, puddles filled to a flat
-// smooth normal by a mask and height threshold, rain ripples as an animated normal atlas). They
-// will apply to the surface below, before any light is computed; nothing reads them yet.
+// Wet surfaces (M5 L4) take the frame's weather (`frame.weather`: x wetness, y how far puddles
+// have filled) before any light is computed, in three parts an author tells apart. They change the
+// surface the lighting reads, never how the lighting responds to it: the terminator, its band, the
+// wrap and the shadow tint shade a wet surface as a dry one, so a wet street stays painted.
+// - **Darkening by porosity.** A porous surface soaks water up and goes darker and richer in color:
+//   its albedo's color is pushed away from its luminance and the whole scaled down, by the same
+//   share for a light surface and a dark one, by its porosity times the water on it
+//   (`wet_albedo`), so a lamp's pool on wet paving still reads as lit. Porosity
+//   is the material's (`EnvironmentMaterial::porosity`), or, left out, the surface's own: a rough
+//   dielectric is porous, a smooth one or a metal isn't (`derived_porosity`).
+// - **Gloss.** A film of water lowers the roughness toward a wet film's (less on a porous surface,
+//   which drinks some of it), takes the reflectance to at least water's, and lifts the material's
+//   specular clamp toward a wet ceiling, so the surface picks up its reflection (the probe's, L3)
+//   and the lights' highlights as flat-topped, painted glints rather than physical ones.
+// - **Puddles.** Where water stands the surface goes flat (its normal map's tilt goes) and as
+//   smooth as water, mirroring its probe and the sky at a stylized reflectance above water's
+//   (`PUDDLE_F0`), so it reads at the angles a camera sees the ground from. Where puddles lie is a
+//   world-space mask, stable as the camera moves and the same for every material: two octaves of
+//   value noise over the ground's plane, filled from its high values down until the share of the
+//   ground under water is the frame's `puddles` times the material's share (`EnvironmentMaterial::puddles`) times how flat and upward-facing the surface
+//   is. The edge is one pixel wide at any distance (by the mask's own screen derivative), and where
+//   the mask changes faster than a pixel can show it fades to the share it fills, so far puddles
+//   neither shimmer nor swim (`puddle_cover`).
+// All of it is in the pipelines built for a wet frame (`WET_SURFACES`), which the renderer swaps in
+// while the frame's weather is wet. A dry frame draws through pipelines built without it, the shader
+// as it was before weather, and so draws exactly as before: a uniform branch alone moved some of
+// Metal's pixels by up to 13 code values through fast math. Mobile-Low, with no specular, darkens
+// only: no gloss and no puddles (it has no probe to reflect).
 
 // The specular models, by tier (`EnvironmentSpecular`).
 const ENVIRONMENT_SPECULAR_OFF: u32 = 0u;
@@ -111,11 +134,38 @@ const DIELECTRIC_F0: f32 = 0.04;
 // The smoothest a surface gets, so GGX's peak stays finite (Filament's floor at full precision).
 const MIN_ROUGHNESS: f32 = 0.045;
 
+// Wet surfaces (M5 L4; see the top of this file).
+// Water's reflectance at normal incidence: a film's.
+const WATER_F0: f32 = 0.02;
+// A puddle's, stylized: water's 2% shows a reflection only at grazing angles, where a third-person
+// camera sees the ground at 30 to 60 degrees, and the reference games' puddles read as mirrors.
+const PUDDLE_F0: f32 = 0.12;
+// The roughness a film of water lowers a surface toward, and a puddle's.
+const WET_FILM_ROUGHNESS: f32 = 0.15;
+const PUDDLE_ROUGHNESS: f32 = 0.06;
+// How much of the film a fully porous surface drinks, so it glosses less.
+const WET_FILM_SOAKED: f32 = 0.3;
+// The specular clamp a film lifts the material's toward, as a multiple of the light's radiance.
+const WET_SPECULAR_CLAMP: f32 = 0.4;
+// A soaked, fully porous albedo: its color `1 + WET_SATURATION` times as far from its luminance,
+// then scaled by `1 - WET_DARKENING`.
+const WET_SATURATION: f32 = 0.3;
+const WET_DARKENING: f32 = 0.4;
+// The puddle mask's two octaves' cell sizes, metres, and their weights.
+const PUDDLE_CELL: f32 = 2.5;
+const PUDDLE_DETAIL_CELL: f32 = 1.1;
+const PUDDLE_DETAIL: f32 = 0.35;
+// The upward facing (the geometric normal's y) over which puddles come in: flat ground holds them,
+// a ramp holds fewer, a slope none.
+const PUDDLE_FACING: vec2<f32> = vec2<f32>(0.95, 0.99);
+
 // Static permutation bits and the tier's specular model (`pipelines::SurfaceVariant`,
 // `environment::EnvironmentSpecular`), set per pipeline.
 override PERMUTATION_ALPHA_TEST: bool = false;
 override PERMUTATION_TRANSPARENT: bool = false;
 override ENVIRONMENT_SPECULAR: u32 = 2u;
+// Wet surfaces (M5 L4, `environment::WET_CONSTANT`): set in the pipelines a wet frame draws through.
+override WET_SURFACES: bool = false;
 // The ambient terms beyond the hemisphere (M1 W5, `ambient::override_constant`): a probe grid,
 // set while the renderer has one, read per vertex rather than per pixel on the tiers that say so
 // (`ProbeLookup`), and the tier's capsule AO and GTAO. Pipelines without them compile to the
@@ -389,6 +439,97 @@ fn local_lighting(
     return surface.diffuse * diffuse + specular_light;
 }
 
+// What the weather does to one surface (M5 L4; see the top of this file).
+struct WetSurface {
+    // How much water lies on it: the frame's wetness, and all of it in a puddle.
+    film: f32,
+    // How far it darkens: its porosity × the film.
+    soak: f32,
+    // How much of a puddle stands here, 0 to 1.
+    puddle: f32,
+}
+
+// A surface's porosity where its material leaves it out: rough dielectrics are porous (paving,
+// plaster, wood, cloth), smooth ones (glazed tile, lacquer) and metals aren't. `roughness` is the
+// perceptual roughness the pixel has before any water.
+fn derived_porosity(roughness: f32, metallic: f32) -> f32 {
+    return (1.0 - metallic) * smoothstep(0.6, 0.9, roughness);
+}
+
+// A lattice point's value for the puddle mask, 0 to 1: an integer hash, so every backend and every
+// frame agrees on it.
+fn puddle_hash(cell: vec2<i32>) -> f32 {
+    var h = (bitcast<u32>(cell.x) * 0x8da6b343u) ^ (bitcast<u32>(cell.y) * 0xd8163841u);
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// Value noise over the plane, 0 to 1, smooth across lattice cells of side 1.
+fn puddle_noise(p: vec2<f32>) -> f32 {
+    let cell = floor(p);
+    let t = p - cell;
+    let corner = vec2<i32>(cell);
+    let u = t * t * (3.0 - 2.0 * t);
+    let low = mix(puddle_hash(corner), puddle_hash(corner + vec2<i32>(1, 0)), u.x);
+    let high = mix(puddle_hash(corner + vec2<i32>(0, 1)), puddle_hash(corner + vec2<i32>(1, 1)), u.x);
+    return mix(low, high, u.y);
+}
+
+// The puddle mask's level at a point of the ground's plane: puddles fill from its high values down.
+fn puddle_level(ground: vec2<f32>) -> f32 {
+    let broad = puddle_noise(ground / PUDDLE_CELL);
+    let detail = puddle_noise(ground / PUDDLE_DETAIL_CELL + vec2<f32>(17.3, -9.1));
+    return mix(broad, detail, PUDDLE_DETAIL);
+}
+
+// How much of a puddle stands at a point whose mask level is `level`, `fill` of the ground its mask
+// reaches filled: 1 inside, 0 outside, across a one-pixel edge (`width`, the level's change across
+// the pixel), fading to `fill` where the level changes too fast for a pixel to show its shapes.
+fn puddle_cover(level: f32, width: f32, fill: f32) -> f32 {
+    // The level a share `fill` of the mask lies above: a fit of the mask's own distribution, odd
+    // about the middle, past either end at 0 and 1 so neither leaves a speck.
+    let u = 1.0 - 2.0 * fill;
+    let u4 = u * u * u * u;
+    let threshold = 0.5 + u * (0.22 + 0.3 * u4 * u4);
+    let edge = saturate((level - threshold) / max(width, 1e-5) + 0.5);
+    return mix(edge, fill, saturate(width * 4.0 - 1.0));
+}
+
+// The weather at a surface (`WetSurface`): its porosity (the material's, or the surface's own at
+// `roughness`), its puddle where specular can show one. Called in uniform control flow, for the
+// mask's screen derivative.
+fn wet_surface(in: EnvironmentVaryings, material: u32, roughness: f32) -> WetSurface {
+    let weather = frame.weather;
+    let modes = environment_materials[material].modes.x;
+    var porosity = derived_porosity(roughness, environment_materials[material].surface.y);
+    if (modes & ENVIRONMENT_FLAG_POROSITY) != 0u {
+        porosity = environment_materials[material].shadow_tint.w;
+    }
+    var wet: WetSurface;
+    wet.puddle = 0.0;
+    if ENVIRONMENT_SPECULAR != ENVIRONMENT_SPECULAR_OFF {
+        var share = 1.0;
+        if (modes & ENVIRONMENT_FLAG_PUDDLES) != 0u {
+            share = environment_materials[material].distance.w;
+        }
+        let facing = smoothstep(PUDDLE_FACING.x, PUDDLE_FACING.y, safe_normalize(in.world_normal).y);
+        let level = puddle_level(in.world_position.xz);
+        wet.puddle = puddle_cover(level, fwidth(level), weather.y * share * facing);
+    }
+    wet.film = max(weather.x, wet.puddle);
+    wet.soak = porosity * wet.film;
+    return wet;
+}
+
+// A wet albedo: darker and richer in color by how far it soaks (`WetSurface::soak`).
+fn wet_albedo(albedo: vec3<f32>, soak: f32) -> vec3<f32> {
+    let luminance = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let richer = max(mix(vec3<f32>(luminance), albedo, 1.0 + WET_SATURATION * soak), vec3<f32>(0.0));
+    return richer * (1.0 - WET_DARKENING * soak);
+}
+
 @fragment
 fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     let material = in.material;
@@ -428,6 +569,19 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     let terminator = environment_materials[material].terminator;
     surface.terminator = terminator.x + terminator.y * distance;
     surface.specular_clamp = surface_params.w;
+    // The weather (M5 L4): only in the pipelines a wet frame draws through.
+    let wet_frame = WET_SURFACES;
+    var wet: WetSurface;
+    if wet_frame {
+        wet = wet_surface(in, material, surface.roughness);
+        base = vec4<f32>(wet_albedo(base.rgb, wet.soak), base.a);
+        // A puddle is flat whatever the normal map says; the film glosses, the puddle more.
+        surface.normal = safe_normalize(mix(surface.normal, safe_normalize(in.world_normal), wet.puddle));
+        let film_gloss = frame.weather.x * (1.0 - WET_FILM_SOAKED * wet.soak);
+        surface.roughness = mix(surface.roughness, min(surface.roughness, WET_FILM_ROUGHNESS), film_gloss);
+        surface.roughness = max(mix(surface.roughness, PUDDLE_ROUGHNESS, wet.puddle), MIN_ROUGHNESS);
+        surface.specular_clamp = mix(surface.specular_clamp, max(surface.specular_clamp, WET_SPECULAR_CLAMP), wet.film);
+    }
 
     // Distance desaturation, on the albedo alone: the frame's light keeps its hue.
     let stylization = environment_materials[material].distance;
@@ -441,6 +595,12 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
         let metallic = surface_params.y;
         surface.diffuse = albedo * (1.0 - metallic);
         surface.f0 = mix(vec3<f32>(DIELECTRIC_F0), albedo, metallic) * mask.b;
+        if wet_frame {
+            // Water reflects at least its own share wherever it lies, the specular mask's matte
+            // texels too, and a puddle as a puddle does, whatever lies under it.
+            surface.f0 = max(surface.f0, vec3<f32>(WATER_F0 * wet.film));
+            surface.f0 = mix(surface.f0, vec3<f32>(PUDDLE_F0), wet.puddle);
+        }
     }
 
     // The key light: the world's, through the terminator, with its shadow tint.

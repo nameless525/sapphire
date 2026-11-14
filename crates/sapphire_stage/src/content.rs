@@ -185,6 +185,17 @@ pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866
 /// they read, all told.
 const SCREENS_ALONE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// What a zone's look asks its pack's pipelines for ([`Content::mount_zone_pack`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ZoneLookPipelines {
+    /// Lit by a probe grid: the ambient pass and the grid's constants.
+    pub probe_grid: bool,
+    /// Reflecting reflection probes (M5 L3).
+    pub reflection_probes: bool,
+    /// It may go wet: the environment's wet surfaces (M5 L4).
+    pub wet: bool,
+}
+
 /// What warms up off the frame from [`Content::update`]: what a zone coming next draws through
 /// ([`Content::queue_zone_prewarm`]), or what a load left for after its screen ([`Content::warm_after_load`]).
 struct OffFrameWarm {
@@ -1947,7 +1958,8 @@ impl Content {
     }
 
     /// What the zone whose source's stem is `stem` draws through as [`Self::open_zone`] opens it: its pack's keys,
-    /// and the ambient pass and the grid's constants if a probe grid comes with it. Its pack is mounted and its
+    /// the ambient pass and the grid's constants if a probe grid comes with it, and its wet surfaces if it may go
+    /// wet (M5 L4). Its pack is mounted and its
     /// zone read, not uploaded, to say, so what else is loading waits for an uploader. For a boot that warms its
     /// first zone up off the frame before it stands it (M4 H2), so the open's prewarm finds everything built.
     pub fn zone_pipelines(&mut self, stem: &str) -> Result<PipelineInventory, AppInitError> {
@@ -1959,11 +1971,13 @@ impl Content {
         let read = read.map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
         let probe_grid = read.view().presentation.probes.is_some();
         let reflection_probes = self.reflection_probes && read.view().presentation.reflections.is_some();
+        let wet_surfaces = scene::may_be_wet(&read.view().presentation);
         let pack = sapphire_zone::pack_name(stem);
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(&pack),
             probe_grid,
             reflection_probes,
+            wet_surfaces,
             ..PipelineInventory::default()
         };
         if let Some(entry) = &self.left_out_of_zones {
@@ -2007,13 +2021,17 @@ impl Content {
         self.server
             .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
-        let (probes, sky, reflections) = self.server.get(&zone).map_or((None, None, None), |zone| {
-            let presentation = &zone.presentation;
-            let reflections = presentation.reflections.as_ref().copied();
-            (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections)
-        });
+        let (probes, sky, reflections, wet) =
+            self.server.get(&zone).map_or((None, None, None, false), |zone| {
+                let presentation = &zone.presentation;
+                let reflections = presentation.reflections.as_ref().copied();
+                let wet = scene::may_be_wet(presentation);
+                (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections, wet)
+            });
         let reflections = reflections.filter(|_| self.reflection_probes);
-        self.mount_zone_pack(pack, probes.is_some(), reflections.is_some(), renderer)?;
+        let look =
+            ZoneLookPipelines { probe_grid: probes.is_some(), reflection_probes: reflections.is_some(), wet };
+        self.mount_zone_pack(pack, look, renderer)?;
         // A zone with no grid leaves the renderer the one it had, as a load screen always has.
         if probes.is_some() {
             self.gpu.wanted_grid = probes;
@@ -2122,6 +2140,19 @@ impl Content {
         self.zone_prewarms.push(OffFrameWarm { pack: Some(pack.to_owned()), inventory, request: None });
     }
 
+    /// Warms up the environment's wet surfaces off the frame (M5 L4), for zone pack `pack`'s zone, which may go wet:
+    /// what [`Self::queue_zone_prewarm`] couldn't say before the zone was read. [`Self::prewarms_pack`] says when
+    /// it's done, and a load that declared them already finds it done at once.
+    pub(crate) fn queue_wet_prewarm(&mut self, pack: &str) {
+        let mut inventory = PipelineInventory { wet_surfaces: true, ..PipelineInventory::default() };
+        if let Some(entry) = &self.left_out_of_zones {
+            inventory.remove(entry);
+        }
+        if inventory.wet_surfaces {
+            self.zone_prewarms.push(OffFrameWarm { pack: Some(pack.to_owned()), inventory, request: None });
+        }
+    }
+
     /// Whether what [`Self::queue_zone_prewarm`] asked for has yet to be built.
     pub(crate) fn prewarms_pack(&self, pack: &str) -> bool {
         self.zone_prewarms.iter().any(|prewarm| prewarm.pack.as_deref() == Some(pack))
@@ -2181,22 +2212,23 @@ impl Content {
         self.server.cooked_bytes(id)
     }
 
-    /// Mounts zone pack `pack` if it isn't, and builds what every mesh in it draws through on `renderer`,
-    /// lit by a probe grid if `probe_grid` and reflecting reflection probes if `reflection_probes`.
+    /// Mounts zone pack `pack` if it isn't, and builds what every mesh in it draws through on `renderer`, for
+    /// what its zone's `look` says.
     pub(crate) fn mount_zone_pack(
         &mut self,
         pack: &str,
-        probe_grid: bool,
-        reflection_probes: bool,
+        look: ZoneLookPipelines,
         renderer: &mut Renderer,
     ) -> Result<(), AppInitError> {
         if !self.server.is_mounted(pack) {
             self.server.mount_now(pack).map_err(AppInitError::msg)?;
         }
+        let ZoneLookPipelines { probe_grid, reflection_probes, wet } = look;
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(pack),
             probe_grid,
             reflection_probes,
+            wet_surfaces: wet,
             ..PipelineInventory::default()
         };
         if let Some(entry) = &self.left_out_of_zones {

@@ -657,8 +657,10 @@
 //!   `shadow_visibility()` (`frame.wgsl`): the key light's visibility past the cascades (the
 //!   environment's casters) and every character's own shadow (its map on desktop, its capsule on
 //!   phones). It joins the terminator's input, so shadows take its remap, tint and band.
-//! - **Wetness:** the frame carries the weather's wetness and puddles ([`Weather`]) to the GPU for
-//!   the wet surface model that comes with weather; no shader reads them yet.
+//! - **Wet surfaces (M5 L4):** the frame's weather ([`Weather`]) darkens porous surfaces, glosses
+//!   every surface with a film of water and fills puddles in a world-space mask on flat ground,
+//!   which reflect the zone's probes; a dry frame skips it in a uniform branch (the `environment`
+//!   module's "Wet surfaces"). Mobile-Low darkens only.
 //! - **Outlines:** the environment draws no inverted hull in M1 (decision): its edges are the
 //!   spec's screen-space edge pass, a later desktop option; props that should read like
 //!   characters use the anime character family.
@@ -830,8 +832,8 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **The environment shader** (see above): the wet surface model reads the frame's weather (M5 L4,
-//!   reflecting M5 L3's probes); screen-space edges for the environment (desktop).
+//! - **The environment shader** (see above): ripples in puddles and shelter from rain under
+//!   roofs, over M5 L4's wet surfaces; screen-space edges for the environment (desktop).
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   a cheaper sky filling the view, and its cubes as frame graph resources.
 //! - **The anime character shader** (see above): screen-space reflections on the desktop tiers

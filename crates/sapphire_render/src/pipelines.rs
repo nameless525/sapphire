@@ -1964,6 +1964,31 @@ pub(crate) struct Pipelines {
     /// a tier that never reads it, as Mobile-Low, pays nothing for a pass the frame graph culls
     /// ([`Self::keep_scene_prepass`]).
     scene_prepass: bool,
+    /// The environment's surfaces for the weather the frame isn't in (M5 L4, [`Self::set_wet`]).
+    other_weather: OtherWeather,
+}
+
+/// The environment's surfaces built for the weather the frame isn't in (M5 L4): what [`Pipelines::set_wet`]
+/// swaps in for those the frame draws through, keeping those for the swap back.
+#[derive(Clone, Debug, Default)]
+struct OtherWeather {
+    /// A load declared that its frames may go wet (`PipelineInventory::wet_surfaces`): every environment surface
+    /// built has its twin here, so the frame's weather changes without building any
+    /// ([`Pipelines::keep_wet_surfaces`]).
+    kept: bool,
+    /// Per position format and surface variant.
+    twins: Vec<(PositionFormat, SurfaceVariant, wgpu::RenderPipeline)>,
+}
+
+impl OtherWeather {
+    fn has(&self, format: PositionFormat, variant: SurfaceVariant) -> bool {
+        self.twins.iter().any(|&(of, is, _)| of == format && is == variant)
+    }
+}
+
+/// The environment's surface variants: what the weather builds twice (M5 L4).
+fn environment_variants() -> impl Iterator<Item = SurfaceVariant> {
+    SurfaceVariant::ALL.into_iter().filter(|variant| variant.shading == Shading::Environment)
 }
 
 /// What a warm-up builds of the mesh pipelines ([`Pipelines::warm`]), as a prewarm on the frame's thread would.
@@ -1977,17 +2002,25 @@ pub(crate) struct MeshWarm {
     pub fades: bool,
     /// The scene prepass's, kept from then on: debug lines read it.
     pub scene_prepass: bool,
+    /// The environment's surfaces for both weathers, kept from then on: its frames may go wet (M5 L4).
+    pub wet_surfaces: bool,
 }
 
 /// What a renderer's mesh pipelines have built, as pieces per [`PositionFormat::ALL`] entry
-/// ([`Pipelines::shape`], M4 T3).
+/// ([`Pipelines::shape`], M4 T3), and for which weather (M5 L4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MeshShape([Option<Vec<Piece>>; 2]);
+pub(crate) struct MeshShape {
+    pieces: [Option<Vec<Piece>>; 2],
+    /// The environment's surfaces are a wet frame's ([`Pipelines::set_wet`]).
+    wet: bool,
+    /// Both weathers' are kept ([`Pipelines::keep_wet_surfaces`]).
+    kept_wet: bool,
+}
 
 impl MeshShape {
     /// The position formats it has pipelines for.
     pub(crate) fn formats(&self) -> impl Iterator<Item = PositionFormat> + '_ {
-        PositionFormat::ALL.into_iter().filter(|&format| self.0[format_index(format)].is_some())
+        PositionFormat::ALL.into_iter().filter(|&format| self.pieces[format_index(format)].is_some())
     }
 }
 
@@ -2078,6 +2111,9 @@ struct PipelineTarget {
     /// The environment shader's ambient constants (M1 W5, `ambient::constants`): only those on,
     /// so without a probe grid or ambient occlusion it is the shader as it was without them.
     ambient: Vec<(&'static str, f64)>,
+    /// The environment's surfaces are built for a wet frame (M5 L4, `environment::WET_CONSTANT`):
+    /// off, they are the shader as it was without weather.
+    wet: bool,
     /// A debug view's copy ([`Pipelines::build_replay`]): what it is built for. `None` for the
     /// renderer's own pipelines.
     replay: Option<ReplayTarget>,
@@ -2182,6 +2218,7 @@ impl Pipelines {
             card_depth_fade,
             velocity,
             ambient,
+            wet: false,
             replay: None,
         };
         let programs = [
@@ -2203,7 +2240,9 @@ impl Pipelines {
             prepass: next(),
             foliage: next(),
         };
-        let mut pipelines = Self { mesh: [None, None], target, modules, generation: 0, scene_prepass };
+        let other_weather = OtherWeather::default();
+        let mut pipelines =
+            Self { mesh: [None, None], target, modules, generation: 0, scene_prepass, other_weather };
         pipelines.prepare_format(device, PositionFormat::Unorm16, BuildOn::Jobs);
         pipelines
     }
@@ -2225,6 +2264,9 @@ impl Pipelines {
         Some(Box::new(move |_, cancel| {
             if let Some(constants) = warm.ambient {
                 pipelines.set_ambient_constants(&device, constants);
+            }
+            if warm.wet_surfaces {
+                pipelines.keep_wet_surfaces(&device, on);
             }
             for format in PositionFormat::ALL {
                 let keys = warm.keys.iter().filter(|key| key.format == format);
@@ -2249,6 +2291,7 @@ impl Pipelines {
     fn lacks(&self, warm: &MeshWarm) -> bool {
         if warm.ambient.as_ref().is_some_and(|constants| *constants != self.target.ambient)
             || (warm.scene_prepass && !self.scene_prepass)
+            || (warm.wet_surfaces && !self.other_weather.kept)
         {
             return true;
         }
@@ -2285,15 +2328,22 @@ impl Pipelines {
     /// What these have built, per position format (M4 T3): what a renderer for another tier builds for its own
     /// settings before it takes their place ([`Self::build_shape`]).
     pub(crate) fn shape(&self) -> MeshShape {
-        MeshShape(self.mesh.each_ref().map(|mesh| mesh.as_ref().map(MeshPipelines::built_pieces)))
+        MeshShape {
+            pieces: self.mesh.each_ref().map(|mesh| mesh.as_ref().map(MeshPipelines::built_pieces)),
+            wet: self.target.wet,
+            kept_wet: self.other_weather.kept,
+        }
     }
 
     /// Builds what `shape` lists, for these pipelines' own target, where `on` says: each format's own, every
     /// surface's draws as this target draws them (the scene prepass's or the casters' variants its settings add),
-    /// then any piece `shape` has beyond those. What's built is left as it is.
+    /// then any piece `shape` has beyond those, for its weather (M5 L4: a wet frame's surfaces, and both weathers'
+    /// if it keeps them). What's built is left as it is.
     pub(crate) fn build_shape(&mut self, device: &wgpu::Device, shape: &MeshShape, on: BuildOn) {
+        self.set_wet(device, shape.wet);
+        self.other_weather.kept |= shape.kept_wet;
         for format in PositionFormat::ALL {
-            let Some(pieces) = &shape.0[format_index(format)] else { continue };
+            let Some(pieces) = &shape.pieces[format_index(format)] else { continue };
             self.prepare_format(device, format, on);
             let draws: Vec<Drawn> = pieces
                 .iter()
@@ -2321,6 +2371,7 @@ impl Pipelines {
                 mesh.store(piece, built);
             }
         }
+        self.build_twins(device, on);
     }
 
     /// Builds what a fading character draws through (M1 C7): for every opaque anime character surface built, its
@@ -2457,11 +2508,21 @@ impl Pipelines {
             }
             mesh[format_index(format)] = Some(pipelines);
         }
+        // The other weather's surfaces (M5 L4), from the same new module.
+        let other = PipelineTarget { wet: !target.wet, ..target.clone() };
+        let twins = self.other_weather.twins.iter().map(|(format, variant, old)| {
+            let pipeline = rebuild(Program::Environment, old, &|| {
+                build_surface(device, &other, &modules, *format, *variant)
+            });
+            (*format, *variant, pipeline)
+        });
+        let other_weather = OtherWeather { kept: self.other_weather.kept, twins: twins.collect() };
         // Copies of the main pass's pipelines are stale once any of them is built again.
         let main = changed.iter().any(|&program| program.is_mesh() && program != Program::Prepass);
         let generation = self.generation + u32::from(main);
         let scene_prepass = self.scene_prepass;
-        let pipelines = Self { mesh, target: self.target.clone(), modules, generation, scene_prepass };
+        let pipelines =
+            Self { mesh, target: self.target.clone(), modules, generation, scene_prepass, other_weather };
         (pipelines, built)
     }
 
@@ -2591,11 +2652,13 @@ impl Pipelines {
         for (&piece, built) in pieces.iter().zip(built) {
             mesh.store(piece, built);
         }
+        self.build_twins(device, on);
     }
 
     /// Sets the environment and foliage shaders' ambient constants (M1 W5: a probe grid arrived or
     /// left) and builds every environment and foliage surface pipeline built so far again with
-    /// them, on this thread. Returns the pipelines built: none if the constants didn't change.
+    /// them, the environment's for the other weather too (M5 L4), on this thread. Returns the
+    /// pipelines built: none if the constants didn't change.
     pub(crate) fn set_ambient_constants(
         &mut self,
         device: &wgpu::Device,
@@ -2619,7 +2682,88 @@ impl Pipelines {
                 }
             }
         }
+        // The other weather's were built with the old constants: kept ones are built again, and any
+        // others go, to be built when the weather next changes.
+        self.other_weather.twins.clear();
+        built + self.build_twins(device, BuildOn::ThisThread)
+    }
+
+    /// Whether the environment's surfaces are a wet frame's ([`Self::set_wet`]).
+    pub(crate) fn wet(&self) -> bool {
+        self.target.wet
+    }
+
+    /// Makes the environment's surfaces a wet frame's (M5 L4: built with `environment::WET_CONSTANT` on), or a dry
+    /// frame's again: each built so far swaps with its twin for the other weather, which keeps it for the swap
+    /// back. Where it has no twin (a load that didn't declare `PipelineInventory::wet_surfaces`), it builds one on
+    /// this thread, which counts as a first use like any other undeclared build. Draw lists don't change: the
+    /// weather is the frame's, and a surface draws through the same variant either way. Returns the pipelines
+    /// built: none if both weathers' were kept, or the weather didn't change.
+    pub(crate) fn set_wet(&mut self, device: &wgpu::Device, wet: bool) -> u32 {
+        if self.target.wet == wet {
+            return 0;
+        }
+        self.target.wet = wet;
+        // Copies of the old surfaces (a debug view's) are stale.
+        self.generation += 1;
+        let mut twins = std::mem::take(&mut self.other_weather.twins);
+        let (mut kept, mut built) = (Vec::with_capacity(twins.len()), 0);
+        for format in PositionFormat::ALL {
+            let Some(mesh) = self.mesh[format_index(format)].as_mut() else { continue };
+            for variant in environment_variants() {
+                let Some(old) = mesh.surfaces[variant.index()].take() else { continue };
+                let twin = match twins.iter().position(|&(of, is, _)| of == format && is == variant) {
+                    Some(at) => twins.swap_remove(at).2,
+                    None => {
+                        built += 1;
+                        build_surface(device, &self.target, &self.modules, format, variant)
+                    }
+                };
+                mesh.surfaces[variant.index()] = Some(twin);
+                kept.push((format, variant, old));
+            }
+        }
+        self.other_weather.twins = kept;
         built
+    }
+
+    /// Keeps the environment's surfaces for both weathers from here on (M5 L4, `PipelineInventory::wet_surfaces`):
+    /// builds the other weather's twin of every one built so far, where `on` says, and from here on of every one
+    /// built with it, so [`Self::set_wet`] builds nothing.
+    pub(crate) fn keep_wet_surfaces(&mut self, device: &wgpu::Device, on: BuildOn) {
+        self.other_weather.kept = true;
+        self.build_twins(device, on);
+    }
+
+    /// Builds the other weather's twin of every environment surface built that has none, where `on` says, while
+    /// both weathers' are kept. Returns the pipelines built.
+    fn build_twins(&mut self, device: &wgpu::Device, on: BuildOn) -> u32 {
+        if !self.other_weather.kept {
+            return 0;
+        }
+        let mut wanted = Vec::new();
+        for format in PositionFormat::ALL {
+            let Some(mesh) = self.mesh(format) else { continue };
+            let lacking = |variant: &SurfaceVariant| {
+                mesh.surface(*variant).is_some() && !self.other_weather.has(format, *variant)
+            };
+            wanted.extend(environment_variants().filter(lacking).map(|variant| (format, variant)));
+        }
+        if wanted.is_empty() {
+            return 0;
+        }
+        let other = PipelineTarget { wet: !self.target.wet, ..self.target.clone() };
+        let (target, modules) = (&other, &self.modules);
+        let builds: Vec<_> = wanted
+            .iter()
+            .map(|&(format, variant)| move || build_surface(device, target, modules, format, variant))
+            .collect();
+        let built = on.run(builds);
+        let count = built.len() as u32;
+        let twins =
+            wanted.into_iter().zip(built).map(|((format, variant), pipeline)| (format, variant, pipeline));
+        self.other_weather.twins.extend(twins);
+        count
     }
 
     /// Pipelines of `family` built so far, across formats: anime character surfaces and
@@ -2638,7 +2782,8 @@ impl Pipelines {
         };
         let families =
             |mesh: &MeshPipelines| MESH_FAMILIES.iter().map(|&family| mesh.built(family)).sum::<u32>();
-        self.mesh.iter().flatten().map(|mesh| shared(mesh) + families(mesh)).sum()
+        let twins = self.other_weather.twins.len() as u32;
+        self.mesh.iter().flatten().map(|mesh| shared(mesh) + families(mesh)).sum::<u32>() + twins
     }
 
     /// The mesh pipelines for `format`, once [`Self::prepare_format`] built them.
@@ -2711,6 +2856,10 @@ fn build_surface(
         Shading::Environment => {
             constants.push((environment::SPECULAR_CONSTANT, target.environment.specular.constant()));
             constants.extend(target.ambient.iter().copied());
+            // Left out of a dry frame's, which are the shader as it was before weather (M5 L4).
+            if target.wet {
+                constants.push((environment::WET_CONSTANT, 1.0));
+            }
             "environment"
         }
         Shading::FogCard => {

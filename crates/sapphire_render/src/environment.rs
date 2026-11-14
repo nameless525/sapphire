@@ -15,6 +15,23 @@
 //! stylization (`wrapped`, `distance_amount`, which moved unchanged into `frame.wgsl`), its
 //! terminator remap and time of day's shadow tint, so trees stand in the world's picture.
 //!
+//! # Wet surfaces (M5 L4)
+//!
+//! The frame's weather ([`Weather`](crate::Weather)) wets the world before any light is computed:
+//! a porous surface darkens and saturates by its porosity, a film of water glosses every surface
+//! toward a wet film's roughness and lifts its specular clamp toward a wet ceiling, and puddles
+//! stand in a world-space mask on flat, upward-facing ground, flat and mirror-like, reflecting the
+//! zone's probes (M5 L3) and the sky. Porosity and a puddle share are material inputs with defaults
+//! that need no authoring (`EnvironmentMaterial::porosity`, `EnvironmentMaterial::puddles`); the
+//! header of `environment.wgsl` has the model. It is all in the environment surfaces built with
+//! `WET_CONSTANT` on, which the renderer swaps in for the frame's surfaces while its weather is
+//! wet, and out again when it dries, the swap frame-global, so draw lists don't change. A dry frame
+//! draws through pipelines built without it, the shader as it was before weather, byte for byte (a
+//! uniform branch alone moved Metal's pixels through fast math). A load that may go wet declares it
+//! (`PipelineInventory::wet_surfaces`): both weathers' surfaces are then built and kept, so the
+//! swap builds nothing. Undeclared, nothing wet is built until a frame goes wet, which then builds
+//! the wet surfaces on its thread as first uses.
+//!
 //! # Tiers
 //!
 //! What phones can't afford is the specular, so each tier picks a specular model
@@ -22,7 +39,9 @@
 //! visibility and Fresnel into one term on Mobile-High, and none on Mobile-Low, where the world
 //! reads by its painted diffuse alone. Everything else (the terminator, wrap, shadow tint, band,
 //! desaturation, emission, local lights) runs on every tier: it is a handful of ALU operations
-//! that the look depends on.
+//! that the look depends on. Wet surfaces follow the specular: the desktop tiers and Mobile-High
+//! darken, gloss and fill puddles (Mobile-High reflecting its probe without the box's correction),
+//! and Mobile-Low, with no specular and no probe on the environment, darkens only.
 //!
 //! # Later milestones
 //!
@@ -30,10 +49,8 @@
 //!   visibility (M1 W5, the [`ambient`](crate::ambient) module), are the only reflection, and
 //!   without a grid the ambient hemisphere stands in for it. Local reflection probes (early M2),
 //!   then SSR on desktop and Mobile-High, come after them.
-//! - **Wetness:** the frame carries the weather's wetness and puddle coverage
-//!   ([`Weather`](crate::Weather)) to the GPU; the wet surface model (Lagarde's: darker porous
-//!   albedo, lower roughness, puddles, ripples) reads them when weather arrives (M2), with a
-//!   porosity input in the material.
+//! - **Rain on the surface:** ripples in puddles and streaks down walls, an animated normal over
+//!   the wet response (M5 L4 left them out with rain itself), and shelter from rain under roofs.
 //! - **Distance stylization** beyond desaturation: a hue drift toward the fog's and the sky's
 //!   colors on top of the fog (M1 W3), and the painterly lower-mip read of distant surfaces.
 //! - **Screen-space edges** for the environment, from the prepass's normals and depth: the
@@ -96,6 +113,11 @@ pub struct EnvironmentSettings {
 
 /// The name of the shader's specular constant (`environment.wgsl`).
 pub(crate) const SPECULAR_CONSTANT: &str = "ENVIRONMENT_SPECULAR";
+
+/// The name of the shader's wet surfaces constant (`environment.wgsl`, M5 L4): on in the
+/// pipelines a wet frame draws through, and left out of a dry frame's, which are the shader as it
+/// was before weather.
+pub(crate) const WET_CONSTANT: &str = "WET_SURFACES";
 
 #[cfg(test)]
 mod tests {

@@ -215,6 +215,10 @@ pub struct PipelineInventory {
     /// environment surfaces with the probes' constant on, so that showing them builds nothing. Part of the
     /// `ambient` entry.
     pub reflection_probes: bool,
+    /// Its frames may go wet (M5 L4: a zone's weather, its day's keyed weather or a tool's): the environment surfaces
+    /// for a wet frame beside a dry frame's, both kept from then on, so that the weather changes without building
+    /// any. Undeclared, nothing wet is built until a frame goes wet, which builds them as first uses.
+    pub wet_surfaces: bool,
     /// Its characters may fade (M1 C7, `--fade` or the proximity fade): the alpha-tested variants of the anime
     /// character surfaces built by then and of [`Self::meshes`]' own, with their outlines, eyes through hair and
     /// the prepasses' masked pipelines, which a fading character's opaque draws move to.
@@ -229,8 +233,7 @@ pub struct PipelineInventory {
 
 impl PipelineInventory {
     /// The name of each entry: `mesh` and a key, `post`, `effects`, `effect-meshes`, `decals`, `distortion`,
-    /// `skinning`, `ui`,
-    /// `inset`, `focus`, `sky` and `ambient` as a miss names them, and `fades` and `debug`.
+    /// `skinning`, `ui`, `inset`, `focus`, `sky` and `ambient` as a miss names them, and `fades`, `wet` and `debug`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
         let others = [
@@ -246,6 +249,7 @@ impl PipelineInventory {
             (PipelineFamily::Sky.name(), !self.sky.is_empty()),
             (PipelineFamily::Ambient.name(), self.probe_grid || self.reflection_probes),
             ("fades", self.fades),
+            ("wet", self.wet_surfaces),
             (PipelineFamily::Debug.name(), self.debug_draw || !self.color_vision.is_empty()),
         ];
         entries.extend(others.into_iter().filter(|&(_, listed)| listed).map(|(name, _)| name.to_owned()));
@@ -272,6 +276,7 @@ impl PipelineInventory {
                 self.reflection_probes = false;
             }
             "fades" => self.fades = false,
+            "wet" => self.wet_surfaces = false,
             "debug" => {
                 self.debug_draw = false;
                 self.color_vision.clear();
@@ -298,6 +303,7 @@ impl PipelineInventory {
             sky,
             probe_grid,
             reflection_probes,
+            wet_surfaces,
             fades,
             debug_draw,
             color_vision,
@@ -319,6 +325,7 @@ impl PipelineInventory {
         }
         self.probe_grid |= probe_grid;
         self.reflection_probes |= reflection_probes;
+        self.wet_surfaces |= wet_surfaces;
         self.fades |= fades;
         self.debug_draw |= debug_draw;
         for dichromacy in color_vision {

@@ -38,3 +38,4 @@ mod vfx_decal;
 mod vfx_distortion;
 mod vfx_mesh;
 mod view_culling;
+mod wet;

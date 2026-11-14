@@ -70,6 +70,15 @@ impl TodTimeline {
         &self.keys
     }
 
+    /// Whether the day can draw wet (M5 L4): any key's weather is. Between keys each share
+    /// blends from one key's to the next, so a day whose keys are all dry stays dry.
+    pub fn may_be_wet(&self) -> bool {
+        self.keys
+            .iter()
+            .filter_map(|key| key.weather)
+            .any(|weather| weather.wetness > 0.0 || weather.puddles > 0.0)
+    }
+
     /// The groups every key sets.
     pub fn groups(&self) -> TodGroups {
         self.groups

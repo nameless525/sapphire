@@ -20,7 +20,7 @@ use sapphire_render::Renderer;
 use sapphire_rhi::GpuContext;
 
 use super::{LOG_TARGET, Scene};
-use crate::content::Content;
+use crate::content::{Content, ZoneLookPipelines};
 use crate::extract::{RenderMesh, RenderTransform};
 
 /// One thing to lay out: a mesh of the zone's pack, and where it goes in the zone.
@@ -67,7 +67,7 @@ impl Scene {
             self.close_layout();
         }
         if self.layout.is_none() {
-            content.mount_zone_pack(pack, false, false, renderer)?;
+            content.mount_zone_pack(pack, ZoneLookPipelines::default(), renderer)?;
             self.layout =
                 Some(ZoneLayout { pack: pack.to_owned(), placed: Vec::new(), held: BTreeMap::new() });
         }

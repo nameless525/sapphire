@@ -1100,6 +1100,7 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
         seen.expect("a packet")
     };
 
+    let first_uses = walk.renderer.stats().pipelines.first_use_builds;
     walk.trip(0, settings);
     let in_first = packet(&mut walk);
     let on_renderer = |walk: &Walk| {
@@ -1114,6 +1115,8 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(in_first.sky_material, walk.content.zone_sky_material());
     assert_eq!((in_first.wind.strength, in_first.wind.direction), (2.5, Vec3::Z), "its wind");
     assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (0.7, 0.3), "its weather");
+    let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
+    assert_eq!(built, 0, "its wet surfaces (M5 L4) built as it came, none on its frames");
 
     // The next one coming leaves the grid as it is.
     walk.scene.prefetch_exits(&mut walk.content, settings);
@@ -1139,6 +1142,7 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     let (server, _) = walk.content.streaming_parts();
     assert!(matches!(server.mount_state(&room_pack(0)), MountState::Unmounted), "room 1 doesn't lead back");
 
+    let first_uses = walk.renderer.stats().pipelines.first_use_builds;
     walk.trip(2, settings);
     let in_third = packet(&mut walk);
     assert!(walk.content.probe_hours().is_empty(), "a zone with no grid takes the last one's off");
@@ -1149,6 +1153,8 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(in_third.fog.height.density, 2.0 * in_second.fog.height.density);
     // Its weather (M5 L4), taken at the arrival, which a trip's wipe covers.
     assert_eq!((in_third.weather.wetness, in_third.weather.puddles), (0.25, 0.5), "its weather");
+    let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
+    assert_eq!(built, 0, "wet again, building nothing");
     assert_eq!(in_third.fog.height.base, 1.5, "on its floor");
 
     walk.trip(0, settings);

@@ -37,7 +37,7 @@ use crate::import::vrm::{VrmSettings, VrmVersion};
 use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::optimize::LodSettings;
-use crate::texture::{ColorSettings, MaskChannels, MaskSettings, TextureClass, TextureSettings};
+use crate::texture::{ColorSettings, MaskChannels, MaskSettings, MaxSize, TextureClass, TextureSettings};
 
 /// This part's folder, under `bench/` and in the output.
 pub const PART: &str = "cast";
@@ -238,7 +238,7 @@ fn figure_sources(
     let stem = |group: &MaterialGroup, suffix: &str| in_dir(format!("{}{suffix}", group.stem));
     let id = |path: &str| asset_id(PART, path);
     let color =
-        || ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) });
+        || ImportSettings::Texture(TextureSettings::from(TextureClass::Color(ColorSettings::default())));
     let matcap = in_dir(format!("{}_matcap.png", figure.name));
 
     let mesh = MeshSettings {
@@ -258,12 +258,12 @@ fn figure_sources(
             }
             FileKind::Model => Some(ImportSettings::Gltf(mesh.clone())),
             FileKind::Palette(_) | FileKind::Matcap => Some(color()),
-            FileKind::Layers(_) => Some(ImportSettings::Texture(TextureSettings {
-                class: TextureClass::Mask(MaskSettings {
+            FileKind::Layers(_) => {
+                Some(ImportSettings::Texture(TextureSettings::from(TextureClass::Mask(MaskSettings {
                     channels: MaskChannels::Four,
                     ..MaskSettings::default()
-                }),
-            })),
+                }))))
+            }
             // The control map and the face's masks are documents' inputs, not textures of their own.
             FileKind::Control(_) => None,
             FileKind::FaceMask(group, angle) => {
@@ -285,12 +285,12 @@ fn figure_sources(
         sources.push(Source::asset(
             stem(group, ".ilm.ron"),
             ilm_document(&file_name("_control.png")),
-            ImportSettings::CharacterMap(MapKind::Ilm.default_settings()),
+            ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE),
         ));
         sources.push(Source::asset(
             stem(group, ".ramp.ron"),
             ramp_document(&regions),
-            ImportSettings::CharacterMap(MapKind::Ramp.default_settings()),
+            ImportSettings::CharacterMap(MapKind::Ramp.default_settings(), MaxSize::NONE),
         ));
         let surface = match group.surface {
             Surface::Body => CharacterSurface::Body,
@@ -299,7 +299,7 @@ fn figure_sources(
                 sources.push(Source::asset(
                     stem(group, ".facesdf.ron"),
                     face_sdf_document(&masks[index]),
-                    ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings()),
+                    ImportSettings::CharacterMap(MapKind::FaceSdf.default_settings(), MaxSize::NONE),
                 ));
                 CharacterSurface::Face(FaceShading::new(id(&stem(group, ".facesdf.ron"))))
             }

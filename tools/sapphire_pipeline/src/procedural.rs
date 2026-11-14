@@ -5,8 +5,10 @@
 //! (bricks, tiles, boards) or stones, a fractal grain over it, its colours and its relief. Its sidecar
 //! says which of the surface's maps the source cooks to ([`ProceduralSettings`], `importer:
 //! ProceduralTexture((map: Normal))`), as a texture's sidecar names its class, and the map cooks as that
-//! class's texture does ([`crate::texture`]). The three maps the environment family reads are three
-//! sources with one surface, so they agree texel for texel:
+//! class's texture does ([`crate::texture`]). Its sidecar caps its size per cook as a texture's does,
+//! by dropping top levels (M5 M1, `importer: ProceduralTexture((map: Color, max_size: (desktop: None,
+//! mobile: Some(1024))))`), so one document gives a 2K desktop map and a 1K mobile one. The three maps
+//! the environment family reads are three sources with one surface, so they agree texel for texel:
 //!
 //! | `map` | Texture class | What it holds |
 //! |---|---|---|
@@ -58,7 +60,7 @@ use crate::cook::Cook;
 use crate::import::image::{ChannelLayout, SourceImage};
 use crate::samples::noise;
 use crate::texture::{
-    self, ColorSettings, CookedTexture, MaskChannels, MaskSettings, NormalSettings, TextureClass,
+    self, ColorSettings, CookedTexture, MaskChannels, MaskSettings, MaxSize, NormalSettings, TextureClass,
     TextureError, TextureSettings,
 };
 
@@ -180,12 +182,23 @@ impl Default for Grain {
 #[serde(default)]
 pub struct ProceduralSettings {
     pub map: SurfaceMap,
+    /// The longest side each cook stores, as a texture's ("Size per cook" in [`crate::texture`]).
+    /// Written only when a cook has one.
+    #[serde(skip_serializing_if = "MaxSize::is_none")]
+    pub max_size: MaxSize,
+}
+
+impl From<SurfaceMap> for ProceduralSettings {
+    /// `map`, at its document's size on every cook.
+    fn from(map: SurfaceMap) -> Self {
+        Self { map, max_size: MaxSize::NONE }
+    }
 }
 
 impl ProceduralSettings {
-    /// The texture settings its map cooks with: its class's defaults.
+    /// The texture settings its map cooks with: its class's defaults, under its cap.
     pub fn texture(self) -> TextureSettings {
-        TextureSettings { class: self.map.class() }
+        TextureSettings { class: self.map.class(), max_size: self.max_size }
     }
 }
 
@@ -539,6 +552,18 @@ pub fn cook_chain(
 pub fn planned_levels(bytes: &[u8], settings: &ProceduralSettings, cook: Cook) -> u32 {
     ProceduralTexture::read(bytes)
         .map_or(0, |document| texture::levels_above(&settings.texture(), cook, document.size, document.size))
+}
+
+/// The size the document `bytes` stores for `cook`, by its size alone, as a texture of its map's class
+/// of that size does ([`texture::cooked_size`]).
+pub fn cooked_size(
+    bytes: &[u8],
+    settings: &ProceduralSettings,
+    cook: Cook,
+) -> Result<(u32, u32), ProceduralError> {
+    let document = ProceduralTexture::read(bytes)?;
+    texture::cooked_size(&settings.texture(), cook, document.size, document.size)
+        .map_err(|error| ProceduralError::Texture(Box::new(error)))
 }
 
 #[cfg(test)]

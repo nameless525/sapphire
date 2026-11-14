@@ -408,7 +408,7 @@ fn write_tree(dir: &Path, floor_color: [f32; 4], wall: Wall) {
         ImportSettings::Material(Default::default()),
         ImportSettings::Material(Default::default()),
         ImportSettings::ProbeGrid(Default::default()),
-        ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) }),
+        ImportSettings::Texture(TextureSettings::from(TextureClass::Color(ColorSettings::default()))),
     ];
     for ((file, text), importer) in ids.iter().zip(importers) {
         let meta = AssetMeta::new(id(text), importer);
@@ -657,7 +657,7 @@ fn a_color_map_reads_as_its_texture_does() {
     for (name, file, bytes, class, expected) in rows {
         let path = scratch.path().join(file);
         fs::write(&path, bytes).unwrap();
-        let settings = ImportSettings::Texture(TextureSettings { class });
+        let settings = ImportSettings::Texture(TextureSettings::from(class));
         let input = |_| Some(ProbeInput { source: &path, settings: &settings, mesh: false, cooked: None });
         let read = color_map(Some(AssetId::from_bytes([1; 16])), &input);
         match read {
@@ -672,7 +672,7 @@ fn a_color_map_reads_as_its_texture_does() {
     let path = scratch.path().join("leaves.png");
     let leaves = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([40, 200, 40, 128]));
     leaves.save_with_format(&path, Png).unwrap();
-    let settings = ImportSettings::Texture(TextureSettings { class: color() });
+    let settings = ImportSettings::Texture(TextureSettings::from(color()));
     let input = |_| Some(ProbeInput { source: &path, settings: &settings, mesh: false, cooked: None });
     let map = color_map(Some(AssetId::from_bytes([1; 16])), &input).unwrap().unwrap();
     assert!(map.alpha.iter().all(|&alpha| alpha == 128.0 / 255.0));
@@ -698,7 +698,7 @@ fn an_hdr_emission_map_bounces_at_its_own_strength() {
         };
         fs::write(source.join("floor.material.ron"), sapphire_serialize::to_ron(&material).unwrap()).unwrap();
         fs::write(source.join(file), map).unwrap();
-        let settings = ImportSettings::Texture(TextureSettings { class });
+        let settings = ImportSettings::Texture(TextureSettings::from(class));
         let meta = AssetMeta::new(glow, settings);
         fs::write(sidecar_path(&source.join(file)), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
         let out = scratch.path().join(name).join("out");

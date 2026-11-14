@@ -1397,7 +1397,7 @@ fn texture_sets(
         let maps = SurfaceMap::ALL.map(|map| {
             let path = format!("textures/{name}.{}.ptex.ron", map_name(map));
             let id = asset_id(PART, &path);
-            let settings = ImportSettings::ProceduralTexture(ProceduralSettings { map });
+            let settings = ImportSettings::ProceduralTexture(ProceduralSettings::from(map));
             sources.push(Source::asset(path, text.clone(), settings));
             id
         });

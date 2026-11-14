@@ -56,6 +56,26 @@
 //! are the chain a whole cook writes, level for level ([`CookedTexture::tail`],
 //! [`CookedTexture::level`]). Ramps, ILM and SDF maps stay whole: they decide a character's tones.
 //!
+//! # Size per cook (M5 M1)
+//!
+//! A sidecar can cap the size a cook stores, its longer side in texels ([`MaxSize`]):
+//!
+//! ```ron
+//! importer: Texture((
+//!     class: Color((mips: true, astc_block: B4x4)),
+//!     max_size: (desktop: None, mobile: Some(1024)),
+//! )),
+//! ```
+//!
+//! The cook builds the source's whole mip chain as always, then drops its top levels until the
+//! longer side is at most the cap, so every level it keeps is byte for byte that level of an
+//! uncapped cook: no second filter ever resizes a texture. A cap at or over the source's size
+//! changes nothing, and neither does a cap on the other cook. The level a cap lands on becomes the
+//! texture's top, so it must be whole blocks as any top must; a texture over its cap with no mips
+//! fails its cook, since it has no level to drop to. A capped texture splits into its tail and levels
+//! from its new top. Spec §3.4's budget is 2K a character part on desktop and 1K on mobile, which a
+//! content test holds every map a character material binds to ([`cooked_size`] plans the size).
+//!
 //! # Determinism
 //!
 //! A cook's output depends only on its inputs, on every machine of an architecture (spec §5.27,
@@ -75,8 +95,6 @@
 //!   as further shapes of the same container.
 //! - Mips that preserve alpha-tested coverage, for hair and lashes (ctt's issue #107 is the
 //!   same problem in its own mip generator).
-//! - Per-cook size caps from the content budgets (spec §3.4: 2K desktop, 1K mobile), by
-//!   dropping the top levels on mobile.
 //! - Parallel encoding (blocks encode independently, so splitting a level into runs of blocks
 //!   can't change its bytes) once content is large enough; a 2048² color texture takes 1.2 s (BC7) and 0.5 s (ASTC)
 //!   serially on an M5.
@@ -88,6 +106,7 @@ mod kernels;
 
 pub use self::kernels::EncodeError;
 
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use sapphire_assets::AssetId;
@@ -127,6 +146,48 @@ const HALF_MAX: f32 = 65504.0;
 pub struct TextureSettings {
     /// What the texture holds, which decides how it cooks.
     pub class: TextureClass,
+    /// The longest side each cook stores ("Size per cook" in the [module docs](self)). Written only
+    /// when a cook has one.
+    #[serde(skip_serializing_if = "MaxSize::is_none")]
+    pub max_size: MaxSize,
+}
+
+impl From<TextureClass> for TextureSettings {
+    /// A texture of `class`, at its source's size on every cook.
+    fn from(class: TextureClass) -> Self {
+        Self { class, max_size: MaxSize::NONE }
+    }
+}
+
+/// The longest side, in texels, a texture's cook stores, per cook: `None` stores the source's size.
+/// A cook drops its chain's top levels to meet its cap ("Size per cook" in the [module docs](self)).
+///
+/// Both cooks are always written once one is set: cache keys encode import settings with postcard,
+/// which doesn't name fields, so leaving out the unset one would key a desktop cap and a mobile cap
+/// of one size alike.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MaxSize {
+    pub desktop: Option<NonZeroU32>,
+    pub mobile: Option<NonZeroU32>,
+}
+
+impl MaxSize {
+    /// No cap on either cook.
+    pub const NONE: Self = Self { desktop: None, mobile: None };
+
+    /// Whether neither cook has a cap.
+    pub fn is_none(&self) -> bool {
+        *self == Self::NONE
+    }
+
+    /// `cook`'s cap, if it has one.
+    pub fn of(self, cook: Cook) -> Option<NonZeroU32> {
+        match cook {
+            Cook::Desktop => self.desktop,
+            Cook::Mobile => self.mobile,
+        }
+    }
 }
 
 /// What a texture holds. See the [module docs](self) for how each cooks.
@@ -367,6 +428,16 @@ pub enum TextureError {
     Channels { class: &'static str, needed: usize, found: usize },
     #[error("can't cook as {:?}", .0.format)]
     Shape(TextureDesc, #[source] TextureFormatError),
+    #[error("{width} × {height} is over the {cook} cook's max_size of {cap}, with no mips to drop to it")]
+    OverCap { cook: Cook, cap: u32, width: u32, height: u32 },
+    #[error("the {cook} cook's max_size of {cap} lands on level {level}, which can't be a top")]
+    CapLevel {
+        cook: Cook,
+        cap: u32,
+        level: u32,
+        #[source]
+        source: TextureFormatError,
+    },
     #[error("failed to encode mip level {level} as {format:?}")]
     Encode {
         level: u32,
@@ -570,9 +641,7 @@ impl CookedTexture {
 
     /// Its tail, below its first `above` levels: the texture's own asset, a KTX2 file.
     pub fn tail(&self, above: u32) -> Vec<u8> {
-        let (width, height) = self.desc.level_extent(above);
-        let desc =
-            TextureDesc { width, height, mip_level_count: self.desc.mip_level_count - above, ..self.desc };
+        let desc = below(&self.desc, above);
         let levels = self.levels[above as usize..].iter().map(Vec::as_slice).collect();
         TextureTail { texture: Texture { desc, levels }, above }
             .to_ktx2()
@@ -622,12 +691,13 @@ fn prepare_pixels(
     pixels: impl FnOnce(Texel) -> Vec<[f32; 4]>,
 ) -> Result<PreparedTexture, TextureError> {
     let plan = plan(&settings.class, cook, layout)?;
-    let mip_level_count = if settings.class.mips() { full_mip_count(width, height) } else { 1 };
-    let desc = TextureDesc { format: plan.format, width, height, mip_level_count, swizzle: plan.swizzle };
-    // Before any work: a size the format can't hold fails here, not after encoding.
-    desc.validate().map_err(|error| TextureError::Shape(desc, error))?;
+    // Before any work: a size the format can't hold, or a cap the chain can't meet, fails here, not
+    // after encoding.
+    let (desc, dropped) = shape(&plan, settings, cook, width, height)?;
     let level0 = Level { width, height, pixels: pixels(plan.texel) };
-    let mut levels = mips::chain(level0, plan.filter, mip_level_count);
+    // The source's whole chain, less the levels over the cap: the levels an uncapped cook keeps there.
+    let mut levels = mips::chain(level0, plan.filter, desc.mip_level_count + dropped);
+    levels.drain(..dropped as usize);
     if let Texel::Normal { .. } = plan.texel {
         // Back from unit vectors to the stored X and Y.
         for level in &mut levels {
@@ -722,17 +792,7 @@ pub fn levels_above(settings: &TextureSettings, cook: Cook, width: u32, height: 
     if !settings.class.streams() || !settings.class.mips() {
         return 0;
     }
-    // A class's block doesn't depend on the source's channels (only whether there are enough), so
-    // the plan for four stands for every source.
-    let Ok(plan) = plan(&settings.class, cook, ChannelLayout::Rgba) else {
-        return 0;
-    };
-    let mip_level_count = full_mip_count(width, height);
-    let desc = TextureDesc { format: plan.format, width, height, mip_level_count, swizzle: plan.swizzle };
-    if desc.validate().is_err() {
-        return 0;
-    }
-    tail_top(&desc)
+    sized_shape(settings, cook, width, height).map_or(0, |(desc, _)| tail_top(&desc))
 }
 
 /// [`levels_above`] for the texture source `bytes` read from `path`, by its header: 0 if that doesn't
@@ -740,6 +800,68 @@ pub fn levels_above(settings: &TextureSettings, cook: Cook, width: u32, height: 
 pub fn planned_levels(path: &Path, bytes: &[u8], settings: &TextureSettings, cook: Cook) -> u32 {
     let size = SourceFormat::from_path(path).and_then(|format| image_import::header_size(bytes, format));
     size.map_or(0, |(width, height)| levels_above(settings, cook, width, height))
+}
+
+/// The size a texture of `settings`, cooked for `cook` from a source of `width × height`, stores: its
+/// top level, under the cook's [`MaxSize`]. What the cook plans with, before any texel is read, or why
+/// it won't cook.
+pub fn cooked_size(
+    settings: &TextureSettings,
+    cook: Cook,
+    width: u32,
+    height: u32,
+) -> Result<(u32, u32), TextureError> {
+    let (desc, _) = sized_shape(settings, cook, width, height)?;
+    Ok((desc.width, desc.height))
+}
+
+/// [`shape`] from the size alone. A class's block doesn't depend on the source's channels (only
+/// whether there are enough), so the plan for four stands for every source.
+fn sized_shape(
+    settings: &TextureSettings,
+    cook: Cook,
+    width: u32,
+    height: u32,
+) -> Result<(TextureDesc, u32), TextureError> {
+    shape(&plan(&settings.class, cook, ChannelLayout::Rgba)?, settings, cook, width, height)
+}
+
+/// The shape a cook of `settings` in `plan` stores for a source of `width × height`, and how many top
+/// levels of the source's chain it drops to meet the cook's [`MaxSize`]: the first level whose longer
+/// side is within the cap, which must be able to be the texture's top.
+fn shape(
+    plan: &Plan,
+    settings: &TextureSettings,
+    cook: Cook,
+    width: u32,
+    height: u32,
+) -> Result<(TextureDesc, u32), TextureError> {
+    let mip_level_count = if settings.class.mips() { full_mip_count(width, height) } else { 1 };
+    let desc = TextureDesc { format: plan.format, width, height, mip_level_count, swizzle: plan.swizzle };
+    desc.validate().map_err(|error| TextureError::Shape(desc, error))?;
+    let Some(cap) = settings.max_size.of(cook).map(NonZeroU32::get) else {
+        return Ok((desc, 0));
+    };
+    let within = |level| {
+        let (width, height) = desc.level_extent(level);
+        width.max(height) <= cap
+    };
+    // A chain with mips ends at 1 × 1, within any cap; one without has only its source's size.
+    let dropped = (0..mip_level_count).find(|&level| within(level)).ok_or(TextureError::OverCap {
+        cook,
+        cap,
+        width,
+        height,
+    })?;
+    let capped = below(&desc, dropped);
+    capped.validate().map_err(|source| TextureError::CapLevel { cook, cap, level: dropped, source })?;
+    Ok((capped, dropped))
+}
+
+/// The shape of `desc`'s levels from `level` down, that level its top.
+fn below(desc: &TextureDesc, level: u32) -> TextureDesc {
+    let (width, height) = desc.level_extent(level);
+    TextureDesc { width, height, mip_level_count: desc.mip_level_count - level, ..*desc }
 }
 
 fn prepare_texel(texel: Texel, layout: ChannelLayout, pixel: [f32; 4]) -> [f32; 4] {
@@ -807,7 +929,17 @@ mod tests {
     }
 
     fn settings(class: TextureClass) -> TextureSettings {
-        TextureSettings { class }
+        TextureSettings::from(class)
+    }
+
+    /// `class` capped at `cap` on `cook` alone.
+    fn capped(class: TextureClass, cook: Cook, cap: u32) -> TextureSettings {
+        let cap = NonZeroU32::new(cap);
+        let max_size = match cook {
+            Cook::Desktop => MaxSize { desktop: cap, ..MaxSize::NONE },
+            Cook::Mobile => MaxSize { mobile: cap, ..MaxSize::NONE },
+        };
+        TextureSettings { class, max_size }
     }
 
     fn format(class: TextureClass, cook: Cook, layout: ChannelLayout) -> (TextureFormat, Swizzle) {
@@ -1176,9 +1308,13 @@ mod tests {
         }
 
         fn set_class(&self, relative: &str, class: TextureClass) {
+            self.set(relative, TextureSettings::from(class));
+        }
+
+        fn set(&self, relative: &str, settings: TextureSettings) {
             let sidecar = sidecar_path(&self.source().join(relative));
             let mut meta = meta::read(&sidecar).unwrap();
-            meta.importer = ImportSettings::Texture(TextureSettings { class });
+            meta.importer = ImportSettings::Texture(settings);
             fs::write(&sidecar, sapphire_serialize::to_ron::<AssetMeta>(&meta).unwrap()).unwrap();
         }
     }
@@ -1232,7 +1368,7 @@ mod tests {
         assert_eq!(importer("characters/albedo.png"), ImportSettings::Texture(TextureSettings::default()));
         assert!(matches!(
             importer("sky.exr"),
-            ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_) })
+            ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_), .. })
         ));
         // The PNG and the TGA hold the same pixels, so they cook to the same bytes.
         let out = tree.out(Cook::Desktop);
@@ -1469,5 +1605,222 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A cap drops the chain's top levels down to the first within it, and the levels kept are the
+    /// uncapped cook's, byte for byte, in every class and format, at sizes that aren't powers of two and
+    /// caps that aren't either. The plan says the same from the size alone, and the other cook doesn't
+    /// move.
+    #[test]
+    fn a_cap_drops_top_levels_and_keeps_the_rest_byte_for_byte() {
+        use AstcBlock::*;
+        use TextureClass as C;
+        let color = |astc_block| C::Color(ColorSettings { mips: true, astc_block });
+        // (class, cook, source, cap, levels dropped).
+        let cases = [
+            (color(B4x4), Cook::Desktop, (64, 32), 16, 2),
+            (color(B4x4), Cook::Desktop, (64, 64), 50, 1),
+            // 40 × 24 halves to 20 × 12, whole 4 × 4 blocks.
+            (color(B4x4), Cook::Desktop, (40, 24), 20, 1),
+            (color(B4x4), Cook::Mobile, (64, 64), 64, 0),
+            (color(B4x4), Cook::Mobile, (64, 64), 4096, 0),
+            (color(B6x6), Cook::Mobile, (192, 96), 48, 2),
+            (C::Normal(NormalSettings::default()), Cook::Desktop, (64, 64), 8, 3),
+            (
+                C::Normal(NormalSettings { astc_block: B8x8, ..NormalSettings::default() }),
+                Cook::Mobile,
+                (128, 64),
+                64,
+                1,
+            ),
+            (
+                C::Mask(MaskSettings { channels: MaskChannels::One, ..MaskSettings::default() }),
+                Cook::Desktop,
+                (32, 32),
+                4,
+                3,
+            ),
+            (C::Mask(MaskSettings::default()), Cook::Mobile, (32, 16), 16, 1),
+            (C::Ilm(IlmSettings::default()), Cook::Desktop, (32, 32), 16, 1),
+            (C::Sdf(SdfSettings::default()), Cook::Mobile, (32, 32), 16, 1),
+            (C::Hdr(HdrSettings::default()), Cook::Desktop, (32, 16), 8, 2),
+            // Uncompressed levels take any size: RGB9E5 down to 3 × 2, a ramp's 7 × 3 to 3 × 1.
+            (C::Hdr(HdrSettings::default()), Cook::Mobile, (24, 16), 3, 3),
+            (C::Ramp(RampSettings { mips: true }), Cook::Desktop, (7, 3), 3, 1),
+        ];
+        for (class, cook, (width, height), cap, dropped) in cases {
+            let name = format!("{} {cook} {width}x{height} capped at {cap}", class.name());
+            let source = gradient(width, height);
+            let whole = super::cook(&source, &settings(class), cook).unwrap();
+            let settings = capped(class, cook, cap);
+            let cooked = super::cook(&source, &settings, cook).unwrap();
+            assert_eq!(cooked.desc, below(&whole.desc, dropped), "{name}");
+            assert!(
+                cooked.levels == whole.levels[dropped as usize..],
+                "{name}: the kept levels are the whole cook's"
+            );
+            let longer = |level| {
+                let (width, height) = whole.desc.level_extent(level);
+                width.max(height)
+            };
+            assert!(longer(dropped) <= cap, "{name}");
+            assert!(dropped == 0 || longer(dropped - 1) > cap, "{name}: it dropped no level within the cap");
+            let (top_width, top_height) = (cooked.desc.width, cooked.desc.height);
+            if dropped == 0 {
+                assert!(
+                    cooked.to_ktx2() == whole.to_ktx2(),
+                    "{name}: a cap the source is within changes nothing"
+                );
+            }
+            // The plan from the size alone.
+            assert_eq!(
+                cooked_size(&settings, cook, width, height).unwrap(),
+                (top_width, top_height),
+                "{name}"
+            );
+            assert_eq!(
+                levels_above(&settings, cook, width, height),
+                cooked.levels_above(&settings),
+                "{name}"
+            );
+            // A cap on one cook is nothing to the other.
+            let other = Cook::ALL.into_iter().find(|&other| other != cook).unwrap();
+            assert_eq!(
+                super::cook(&source, &settings, other).unwrap(),
+                super::cook(&source, &TextureSettings::from(class), other).unwrap(),
+                "{name}: on {other}"
+            );
+        }
+    }
+
+    /// The level a cap lands on becomes the texture's top, so it must be whole blocks: a cap that lands
+    /// between them fails the cook, and the plan says the same.
+    #[test]
+    fn a_cap_must_land_on_a_level_of_whole_blocks() {
+        let color = |astc_block| TextureClass::Color(ColorSettings { mips: true, astc_block });
+        // (class, cook, source, cap, the level it lands on, that level's size).
+        let cases = [
+            (color(AstcBlock::B4x4), Cook::Desktop, (36, 36), 20, 1, (18, 18)),
+            (color(AstcBlock::B6x6), Cook::Mobile, (72, 36), 18, 2, (18, 9)),
+        ];
+        for (class, cook, (width, height), cap, landed, extent) in cases {
+            let settings = capped(class, cook, cap);
+            let refused = |error: TextureError| match error {
+                TextureError::CapLevel {
+                    cook: c,
+                    cap: n,
+                    level,
+                    source: TextureFormatError::NotWholeBlocks { width, height, .. },
+                } => (c, n, level, (width, height)) == (cook, cap, landed, extent),
+                _ => false,
+            };
+            let error = super::cook(&gradient(width, height), &settings, cook).unwrap_err();
+            assert!(refused(error), "{cook} {width}x{height} capped at {cap}");
+            let error = cooked_size(&settings, cook, width, height).unwrap_err();
+            assert!(refused(error), "{cook} {width}x{height} capped at {cap}: the plan");
+            assert_eq!(levels_above(&settings, cook, width, height), 0);
+        }
+    }
+
+    /// Dropping levels is the one way a cook shrinks a texture, so a texture without mips that is over
+    /// its cap fails its cook rather than shipping over it, and one within its cap cooks as it did.
+    #[test]
+    fn a_cap_over_a_texture_without_mips_fails_and_one_within_it_changes_nothing() {
+        let flat = TextureClass::Color(ColorSettings { mips: false, ..ColorSettings::default() });
+        let source = gradient(64, 32);
+        let error = cook(&source, &capped(flat, Cook::Mobile, 32), Cook::Mobile).unwrap_err();
+        assert!(
+            matches!(error, TextureError::OverCap { cook: Cook::Mobile, cap: 32, width: 64, height: 32 }),
+            "{error:?}"
+        );
+        assert!(cooked_size(&capped(flat, Cook::Mobile, 32), Cook::Mobile, 64, 32).is_err());
+        for (class, cap) in [(flat, 64), (TextureClass::Ramp(RampSettings::default()), 1024)] {
+            assert_eq!(
+                cook(&source, &capped(class, Cook::Mobile, cap), Cook::Mobile).unwrap(),
+                cook(&source, &settings(class), Cook::Mobile).unwrap(),
+                "{}",
+                class.name()
+            );
+        }
+    }
+
+    /// A capped texture splits into its tail and levels from its new top, and they hold the uncapped
+    /// cook's levels below the cap.
+    #[test]
+    fn a_capped_texture_splits_from_its_new_top() {
+        let class = TextureClass::Color(ColorSettings::default());
+        let source = gradient(512, 256);
+        let whole = cook(&source, &settings(class), Cook::Mobile).unwrap();
+        assert_eq!(whole.levels_above(&settings(class)), 2);
+        let settings = capped(class, Cook::Mobile, 256);
+        let cooked = cook(&source, &settings, Cook::Mobile).unwrap();
+        // 256 × 128 above a tail whose top is 128 × 64.
+        assert_eq!(cooked.levels_above(&settings), 1);
+        assert_eq!(levels_above(&settings, Cook::Mobile, 512, 256), 1);
+        let tail = cooked.tail(1);
+        let tail = TextureTail::from_ktx2(&tail).unwrap();
+        assert_eq!((tail.above, tail.whole()), (1, cooked.desc));
+        let level = cooked.level(AssetId::from_bytes([5; 16]), 0).unwrap();
+        let level = TextureLevel::read(&level).unwrap();
+        assert_eq!((level.level(), level.extent()), (0, (256, 128)));
+        assert!(level.data() == whole.levels[1]);
+        let kept: Vec<&[u8]> = tail.texture.levels.clone();
+        assert!(kept.iter().zip(&whole.levels[2..]).all(|(kept, whole)| *kept == whole.as_slice()));
+        assert_eq!(kept.len(), whole.levels.len() - 2);
+    }
+
+    /// A sidecar names `max_size` only when a cook has one, reads it as written by hand, and refuses a
+    /// cap of 0 or a cook there isn't.
+    #[test]
+    fn a_sidecar_writes_max_size_only_when_set() {
+        use sapphire_serialize::{from_ron, to_ron};
+        let id = AssetId::from_bytes([7; 16]);
+        let class = TextureClass::Color(ColorSettings::default());
+        let plain = AssetMeta::new(id, ImportSettings::Texture(settings(class)));
+        assert!(!to_ron(&plain).unwrap().contains("max_size"));
+        let meta = AssetMeta::new(id, ImportSettings::Texture(capped(class, Cook::Mobile, 1024)));
+        let text = to_ron(&meta).unwrap();
+        assert!(text.contains("max_size"), "{text}");
+        assert_eq!(from_ron::<AssetMeta>(&text).unwrap(), meta);
+
+        let sidecar = |max_size: &str| {
+            to_ron(&plain).unwrap().replace("importer: Texture((", &format!("importer: Texture(({max_size}"))
+        };
+        let read = |max_size: &str| from_ron::<AssetMeta>(&sidecar(max_size)).map(|meta| meta.importer);
+        assert_eq!(read("max_size: (mobile: 1024), ").unwrap(), meta.importer);
+        assert!(read("max_size: (mobile: 0), ").is_err(), "a cap of 0");
+        assert!(read("max_size: (tablet: 512), ").is_err(), "a cook there isn't");
+    }
+
+    /// A cap is part of its texture's key: setting one recooks that texture alone, on both cooks, and only
+    /// the capped cook's bytes move. A desktop cap and a mobile cap of one size are different keys.
+    #[test]
+    fn a_cap_recooks_its_texture_alone() {
+        let tree = Tree::new("texture_caps");
+        let before = Cook::ALL.map(|cook| tree.cook(cook, true));
+        let class = TextureClass::Color(ColorSettings::default());
+        tree.set("characters/albedo.png", capped(class, Cook::Mobile, 16));
+        let after = Cook::ALL.map(|cook| tree.cook(cook, true));
+        for (cook, (before, after)) in Cook::ALL.into_iter().zip(before.iter().zip(&after)) {
+            assert_eq!(
+                statuses(after),
+                [CookStatus::Cooked, CookStatus::UpToDate, CookStatus::UpToDate],
+                "{cook}"
+            );
+            assert_ne!(after.assets[0].key, before.assets[0].key, "{cook}");
+            let (old, new) =
+                (fs::read(&before.assets[0].output).unwrap(), fs::read(&after.assets[0].output).unwrap());
+            let desc = Texture::from_ktx2(&new).unwrap().desc;
+            match cook {
+                Cook::Desktop => assert!(new == old, "the desktop cook doesn't move"),
+                Cook::Mobile => assert_eq!((desc.width, desc.height), (16, 8)),
+            }
+        }
+        tree.set("characters/albedo.png", capped(class, Cook::Desktop, 16));
+        let desktop = tree.cook(Cook::Desktop, true);
+        assert_eq!(statuses(&desktop)[0], CookStatus::Cooked);
+        assert_ne!(desktop.assets[0].key, after[0].assets[0].key);
+        let desc = Texture::from_ktx2(&fs::read(&desktop.assets[0].output).unwrap()).unwrap().desc;
+        assert_eq!((desc.width, desc.height), (16, 8));
     }
 }

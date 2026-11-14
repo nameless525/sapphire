@@ -316,7 +316,7 @@ impl Recipe {
                 extension: TEXTURE_EXTENSION,
             },
             // The importer generates the map as an image, which the texture cooker cooks.
-            ImportSettings::CharacterMap(settings) => Self {
+            ImportSettings::CharacterMap(settings, _) => Self {
                 importer: settings.kind().importer(),
                 cooker: texture::COOKER,
                 format: TEXTURE_VERSION,
@@ -1646,7 +1646,7 @@ fn sub_assets(
         ImportSettings::ProceduralTexture(settings) => {
             Ok(texture_levels(meta.id, procedural::planned_levels(&read()?, settings, cook), own))
         }
-        ImportSettings::CharacterMap(_)
+        ImportSettings::CharacterMap(..)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::Colliders(_)
@@ -2599,9 +2599,9 @@ fn cook_source(
             let chain = assets.textures.cook(path, bytes, settings, cook, assets.memory)?;
             Ok(chain.tail(chain.levels_above(texture)))
         }
-        ImportSettings::CharacterMap(settings) => {
+        ImportSettings::CharacterMap(settings, max_size) => {
             let _held = assets.memory.hold(map_memory(path, bytes, settings));
-            character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
+            character_maps::cook_source(path, bytes, settings, *max_size, cook).map_err(map_error(path))
         }
         // A procedural texture splits as a texture of its map's class does (M5 M3).
         ImportSettings::ProceduralTexture(procedural) => {
@@ -3215,7 +3215,7 @@ fn source_dependencies(
             let id = enemy::read(bytes).expect("`enemy_moves` read it").moves;
             Ok(vec![Dependency::File { path: format!("#moves {id}"), hash: blake3::hash(&moves) }])
         }
-        ImportSettings::CharacterMap(settings) => {
+        ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
                 .into_iter()
@@ -3684,7 +3684,7 @@ fn imported_mesh(
         ImportSettings::Assembly(_) => assembly::import(path, bytes, assembly_detail(cook))
             .map_err(|source| CookError::Assembly { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Texture(_)
-        | ImportSettings::CharacterMap(_)
+        | ImportSettings::CharacterMap(..)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
@@ -3857,7 +3857,7 @@ mod tests {
     use crate::samples;
     use crate::test_util::{TempDir, read_aligned};
     use crate::texture::{
-        ColorSettings, MaskChannels, MaskSettings, RampSettings, TextureClass, TextureSettings,
+        ColorSettings, MaskChannels, MaskSettings, MaxSize, RampSettings, TextureClass, TextureSettings,
     };
 
     #[test]
@@ -4357,7 +4357,7 @@ mod tests {
         shade(10).save(&input).unwrap();
         let map = scratch.source().join("body.ilm.ron");
         fs::write(&map, ilm_document("bias.png")).unwrap();
-        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings());
+        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE);
         let (result, cached) =
             finish_after(&scratch, &map, settings.clone(), || shade(200).save(&input).unwrap());
         let error = result.unwrap_err();
@@ -4394,7 +4394,7 @@ mod tests {
         assert_eq!(cached, None);
 
         // A file gone by then is the error that says so.
-        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings());
+        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE);
         let other = scratch.source().join("other.ilm.ron");
         let gone = scratch.source().join("gone.png");
         shade(30).save(&gone).unwrap();
@@ -4837,7 +4837,7 @@ mod tests {
                 ::image::Rgba([(x * 16) as u8 ^ seed, (y * 16) as u8, seed, 255 - (x * 8) as u8])
             });
             image.save_with_format(&path, ::image::ImageFormat::Png).unwrap();
-            write_sidecar(&path, id, ImportSettings::Texture(TextureSettings { class }));
+            write_sidecar(&path, id, ImportSettings::Texture(TextureSettings::from(class)));
             path
         }
 
@@ -5328,7 +5328,7 @@ mod tests {
         ::image::RgbaImage::from_pixel(16, 16, ::image::Rgba([9, 8, 7, 255]))
             .save_with_format(&upper, ::image::ImageFormat::Tga)
             .unwrap();
-        write_sidecar(&upper, RAMP, ImportSettings::Texture(TextureSettings { class: color() }));
+        write_sidecar(&upper, RAMP, ImportSettings::Texture(TextureSettings::from(color())));
         let error = scratch_error(&scratch);
         let CookError::CaseCollision { first, second, outputs } = &error else { panic!("{error:?}") };
         assert_eq!((first, second), (&upper, &lower), "both sources are named, in tree order");
@@ -5356,8 +5356,10 @@ mod tests {
         let scratch = Scratch::new("cook_uncooked_maps");
         let map = scratch.source().join("maps/body.ilm.ron");
         fs::create_dir_all(map.parent().unwrap()).unwrap();
-        let mut meta =
-            AssetMeta::new(id(HAIR), ImportSettings::CharacterMap(MapKind::Ilm.default_settings()));
+        let mut meta = AssetMeta::new(
+            id(HAIR),
+            ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE),
+        );
         meta.cook = false;
         let write_meta = |meta: &AssetMeta| {
             fs::write(sidecar_path(&map), sapphire_serialize::to_ron(meta).unwrap()).unwrap();

@@ -1136,6 +1136,41 @@ fn environment_emission_keeps_its_steady_share_in_the_blocks_alpha() {
     assert_eq!(from_ron::<EnvironmentMaterial>(&text).unwrap(), sign);
 }
 
+/// An environment material's porosity and puddle share (M5 L4) pack into free components under a
+/// flag each, so a document without them, as every one before them, cooks to the very bytes it
+/// did, which the shader reads as the defaults: porosity from the surface, puddles everywhere flat.
+#[test]
+fn environment_wetness_inputs_cook_nothing_new_until_authored() {
+    let swizzles = [Swizzle::IDENTITY; EnvironmentMaterial::TEXTURE_SLOTS.len()];
+    let paving = EnvironmentMaterial { roughness: 0.9, ..EnvironmentMaterial::default() };
+    let plain = paving.gpu_params(&swizzles);
+    let flags = EnvironmentParams::FLAG_POROSITY | EnvironmentParams::FLAG_PUDDLES;
+    assert_eq!(plain.modes[0] & flags, 0, "no flag: the shader's defaults");
+    assert_eq!((plain.shadow_tint[3], plain.distance[3]), (0.0, 0.0), "as blocks before them held");
+
+    let glazed = EnvironmentMaterial { porosity: Some(0.0), puddles: Some(0.25), ..paving.clone() };
+    let block = glazed.gpu_params(&swizzles);
+    assert_eq!(block.modes[0] & flags, flags, "both authored");
+    assert_eq!((block.shadow_tint[3], block.distance[3]), (0.0, 0.25));
+    assert_eq!(block.shadow_tint[..3], plain.shadow_tint[..3], "the tint unmoved");
+    assert_eq!(block.distance[..3], plain.distance[..3], "the desaturation unmoved");
+    let soaked = EnvironmentMaterial { porosity: Some(0.8), ..paving.clone() }.gpu_params(&swizzles);
+    assert_eq!((soaked.modes[0] & flags, soaked.shadow_tint[3]), (EnvironmentParams::FLAG_POROSITY, 0.8));
+
+    let written = to_ron(&paving).unwrap();
+    assert!(!written.contains("porosity") && !written.contains("puddles"), "left out: {written}");
+    let text = to_ron(&glazed).unwrap();
+    assert!(text.contains("porosity: Some(0.0)") && text.contains("puddles: Some(0.25)"), "{text}");
+    assert_eq!(from_ron::<EnvironmentMaterial>(&text).unwrap(), glazed);
+    for wrong in [-0.1, 1.5, f32::NAN] {
+        let error = |document| AnyMaterialDocument::Environment(document).validate().unwrap_err().to_string();
+        let porous = EnvironmentMaterial { porosity: Some(wrong), ..paving.clone() };
+        assert!(error(porous).starts_with("porosity"), "{wrong}");
+        let pooled = EnvironmentMaterial { puddles: Some(wrong), ..paving.clone() };
+        assert!(error(pooled).starts_with("puddles"), "{wrong}");
+    }
+}
+
 #[test]
 fn double_sided_materials_set_their_flag_unless_they_blend() {
     // Off by default, so every document from before it draws culled as it did (M1 C8).

@@ -229,9 +229,11 @@ struct EnvironmentParams {
     // x: terminator half-width up close, in N·L; y: its growth per meter; z: band strength (0
     // without a band).
     terminator: vec4<f32>,
-    // rgb: multiplies the frame's shadow tint.
+    // rgb: multiplies the frame's shadow tint. w: the authored porosity under
+    // ENVIRONMENT_FLAG_POROSITY (M5 L4), else 0 and derived from the surface.
     shadow_tint: vec4<f32>,
-    // x: start; y: end (meters); z: desaturation at the end.
+    // x: start; y: end (meters); z: desaturation at the end. w: the authored puddle share under
+    // ENVIRONMENT_FLAG_PUDDLES (M5 L4), else 0 and every flat place may hold a puddle.
     distance: vec4<f32>,
     // rgb: emission × intensity; multiplies the emission map. a: the share of it that shines the
     // same at every hour, 0 to 1; the rest follows time of day's emission scale
@@ -252,6 +254,9 @@ const ENVIRONMENT_EMISSION: u32 = 4u;
 // Flags in `modes.x` above the slot bits.
 const ENVIRONMENT_FLAG_ALPHA_TEST: u32 = 256u;
 const ENVIRONMENT_FLAG_TRANSPARENT: u32 = 512u;
+// `shadow_tint.w` holds an authored porosity, `distance.w` an authored puddle share (M5 L4).
+const ENVIRONMENT_FLAG_POROSITY: u32 = 1024u;
+const ENVIRONMENT_FLAG_PUDDLES: u32 = 2048u;
 
 // --- Foliage (`FoliageParams`): NPR leaves, canopies and grass, W6's shader (foliage.wgsl).
 

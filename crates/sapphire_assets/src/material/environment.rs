@@ -21,7 +21,8 @@ use crate::texture::Swizzle;
 /// PBR inputs bent toward a painted read: diffuse wrap, a terminator whose width grows with
 /// distance, an authored shadow tint, a clamped specular in a narrow roughness range, and
 /// distance desaturation. Time of day supplies the shadow tint and ambient these modulate, and
-/// decides how much of the emission shows.
+/// decides how much of the emission shows. The frame's weather wets it (M5 L4) by its porosity and
+/// lets puddles stand on it by its puddle share, both with defaults that need no authoring.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[reflect(Document)]
@@ -61,6 +62,20 @@ pub struct EnvironmentMaterial {
     /// so documents from before it read and write as they did.
     #[serde(skip_serializing_if = "is_zero")]
     pub emission_steady: f32,
+    /// How porous it is, 0 to 1 (M5 L4): how far the frame's wetness darkens and saturates it.
+    /// Paving, plaster, wood and cloth soak water up and go dark (1); metal, glazed tile and glass
+    /// don't (0), and only take the wet film's gloss. Left out, the default, it follows the surface:
+    /// a rough dielectric is porous, a smooth one or a metal isn't (the shader derives it from the
+    /// roughness each pixel has and the metallic, `environment.wgsl`'s "Wet surfaces"). Written only
+    /// when set, so documents from before it read, write and cook as they did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub porosity: Option<f32>,
+    /// The share of its flat, upward-facing places where puddles may stand, 0 to 1 (M5 L4): the
+    /// frame's `puddles` fills that share of them. Left out, the default, every flat place may hold
+    /// one (1); 0 keeps it free of puddles (a table, a roof's ridge, a raised walk), and a part
+    /// fills less. Written only when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub puddles: Option<f32>,
 }
 
 fn is_zero(value: &f32) -> bool {
@@ -91,6 +106,8 @@ impl Default for EnvironmentMaterial {
             emission: [0.0; 3],
             emission_map: None,
             emission_steady: 0.0,
+            porosity: None,
+            puddles: None,
         }
     }
 }
@@ -146,9 +163,13 @@ pub struct EnvironmentParams {
     pub shaping: [f32; 4],
     /// x: terminator width; y: its growth per meter; z: band strength (0 without a band); w: 0.
     pub terminator: [f32; 4],
-    /// rgb: shadow tint multiplier; a: 0.
+    /// rgb: shadow tint multiplier; a: the authored porosity ([`EnvironmentMaterial::porosity`])
+    /// under [`Self::FLAG_POROSITY`], else 0 (the shader derives it).
     pub shadow_tint: [f32; 4],
-    /// x: start; y: end (meters); z: desaturation; w: 0.
+    /// x: start; y: end (meters); z: desaturation; w: the authored puddle share
+    /// ([`EnvironmentMaterial::puddles`]) under [`Self::FLAG_PUDDLES`], else 0 (every flat place).
+    /// Blocks cooked before wet surfaces (M5 L4) hold 0 there without the flags, which reads as the
+    /// defaults, so they need no recook.
     pub distance: [f32; 4],
     /// rgb: emission × intensity; a: the share of it kept steady at every hour
     /// ([`EnvironmentMaterial::emission_steady`]), the rest following time of day's emission
@@ -165,6 +186,10 @@ gpu_block!(EnvironmentParams { base_color, surface, shaping, terminator, shadow_
 impl EnvironmentParams {
     pub const FLAG_ALPHA_TEST: u32 = 1 << 8;
     pub const FLAG_TRANSPARENT: u32 = 1 << 9;
+    /// `shadow_tint.w` holds an authored porosity (M5 L4).
+    pub const FLAG_POROSITY: u32 = 1 << 10;
+    /// `distance.w` holds an authored puddle share (M5 L4).
+    pub const FLAG_PUDDLES: u32 = 1 << 11;
 }
 
 impl EnvironmentMaterial {
@@ -192,13 +217,21 @@ impl EnvironmentMaterial {
             AlphaMode::Blend => flags |= EnvironmentParams::FLAG_TRANSPARENT,
         }
         let band = self.terminator.band.map_or(0.0, |band| band.strength);
+        if self.porosity.is_some() {
+            flags |= EnvironmentParams::FLAG_POROSITY;
+        }
+        if self.puddles.is_some() {
+            flags |= EnvironmentParams::FLAG_PUDDLES;
+        }
+        let mut distance = self.distance.gpu();
+        distance[3] = self.puddles.unwrap_or(0.0);
         EnvironmentParams {
             base_color: self.base_color,
             surface: [self.roughness, self.metallic, self.normal_strength, self.specular_clamp],
             shaping: [self.roughness_range[0], self.roughness_range[1], self.alpha.cutoff(), self.wrap],
             terminator: [self.terminator.width, self.terminator.growth, band, 0.0],
-            shadow_tint: rgb_w(self.shadow_tint, 0.0),
-            distance: self.distance.gpu(),
+            shadow_tint: rgb_w(self.shadow_tint, self.porosity.unwrap_or(0.0)),
+            distance,
             emission: rgb_w(self.emission, self.emission_steady),
             modes: [flags, 0, 0, 0],
             swizzles: pack_swizzles(swizzles),
@@ -232,7 +265,14 @@ impl MaterialDocument for EnvironmentMaterial {
         color("shadow_tint", &self.shadow_tint)?;
         self.distance.validate("distance")?;
         color("emission", &self.emission)?;
-        unit("emission_steady", self.emission_steady)
+        unit("emission_steady", self.emission_steady)?;
+        if let Some(porosity) = self.porosity {
+            unit("porosity", porosity)?;
+        }
+        if let Some(puddles) = self.puddles {
+            unit("puddles", puddles)?;
+        }
+        Ok(())
     }
 
     fn textures(&self) -> Vec<Option<AssetId>> {

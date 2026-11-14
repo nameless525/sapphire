@@ -78,8 +78,6 @@
 //!
 //! # Later milestones
 //!
-//! - A porosity input for the environment family, with the wet surface model that arrives with
-//!   weather (the renderer already carries the frame's wetness).
 //! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows
 //!   today, which the anime character shader (C1) reads by region and time of day.
 

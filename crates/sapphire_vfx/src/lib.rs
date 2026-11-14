@@ -25,10 +25,11 @@
 //!
 //! # Owns
 //!
-//! - **Effect documents** ([`EffectLibrary`], schema 3): effects of emitters, each a set of modules
+//! - **Effect documents** ([`EffectLibrary`], schema 4): effects of emitters, each a set of modules
 //!   (`spawn`, `source`, `motion`, `shape`, `facing`, `light`) and curves over a particle's life
 //!   ([`Curve`]), at most one trail, up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
-//!   shapes with scrolling, erosion and flipbooks) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
+//!   shapes with scrolling, erosion and flipbooks, any of which may bend the picture behind it instead of or as
+//!   well as drawing light, M5 L6's [`Distortion`]) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
 //!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), checked
 //!   whole so an author's mistake names its field.
 //!   [`EffectLibrary::default_effects`] compiles in a hit spark, a sword trail and a dust puff.
@@ -59,7 +60,7 @@
 //!
 //! # Later milestones
 //!
-//! GPU particles, mesh particles, distortion, projected decals, and half-resolution smoke on
+//! GPU particles, mesh particles, distortion from sprites and ribbons, projected decals, and half-resolution smoke on
 //! phones (spec §5.16); more ribbons than trails (E2's plan row cuts them first); effects in cooked
 //! packs and hot reload. [`VfxWorld::set_library`] is the hook a reload takes.
 
@@ -79,7 +80,10 @@ pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
     MAX_TRAIL_SAMPLES, Motion, Range, Shape, Source, Spawn, TrailCore, TrailDesc,
 };
-pub use mesh::{Erosion, Flipbook, FrameTiming, MAX_MESH_LAYERS, MeshLayerDesc, MeshShape, Pattern};
+pub use mesh::{
+    Bend, Distortion, Erosion, Flipbook, FrameTiming, MAX_BEND, MAX_MESH_LAYERS, MeshLayerDesc, MeshShape,
+    Pattern,
+};
 pub use world::{EffectHandle, OwnerId, OwnerSteps, Placement, VfxWorld};
 
 #[cfg(test)]

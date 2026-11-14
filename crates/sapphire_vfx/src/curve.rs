@@ -45,6 +45,14 @@ impl CurveValue for [f32; 3] {
     }
 }
 
+impl<T> Curve<T> {
+    /// No keys: what a field a document may leave out holds (an effect mesh's colour, M5 L6), which
+    /// [`Self::problem`] refuses wherever a curve is needed.
+    pub(crate) const fn empty() -> Self {
+        Self(Vec::new())
+    }
+}
+
 impl<T: CurveValue> Curve<T> {
     /// The value at `t`.
     pub fn sample(&self, t: f32) -> T {

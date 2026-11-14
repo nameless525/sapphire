@@ -24,7 +24,7 @@ use std::time::Duration;
 use glam::Vec3;
 
 pub use decal::VfxDecal;
-pub use mesh::VfxMesh;
+pub use mesh::{VfxDistortion, VfxMesh};
 
 /// What a sprite shows: a layer of the generated map (see the module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -224,6 +224,11 @@ pub struct VfxStats {
     /// Ground decals not drawn because the budget's cap was full, the lowest priority first, since the
     /// simulation began.
     pub dropped_decals: u64,
+    /// Effect meshes bending the picture (M5 L6).
+    pub distortions: u32,
+    /// Bending meshes not drawn because the budget's cap was full, the lowest priority first, since the
+    /// simulation began.
+    pub dropped_distortions: u64,
     /// The app's measure of the last simulation step and frame write, against spec §3.2's budget
     /// (0.3 ms on Desktop-Low, 0.6 on Mobile-Low). Zero until an app measures it: the simulation
     /// can't read the clock itself (rule R2).
@@ -239,6 +244,9 @@ pub struct VfxFrame {
     pub meshes: Vec<VfxMesh>,
     /// Ground decals (M5 L7), in the order their effects play.
     pub decals: Vec<VfxDecal>,
+    /// Effect meshes bending the picture behind them (M5 L6), in the order their effects play. None costs the
+    /// renderer nothing: no buffer, no pass.
+    pub distortions: Vec<VfxDistortion>,
     pub stats: VfxStats,
 }
 
@@ -249,6 +257,7 @@ impl VfxFrame {
         self.ribbon_points.clear();
         self.meshes.clear();
         self.decals.clear();
+        self.distortions.clear();
         self.stats = VfxStats::default();
     }
 
@@ -258,6 +267,7 @@ impl VfxFrame {
             && self.ribbon_points.is_empty()
             && self.meshes.is_empty()
             && self.decals.is_empty()
+            && self.distortions.is_empty()
     }
 }
 

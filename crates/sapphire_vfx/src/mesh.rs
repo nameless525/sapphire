@@ -8,7 +8,7 @@
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use glam::{Quat, Vec2, Vec3};
-use sapphire_look::{VfxErosion, VfxFlipbook, VfxMesh, VfxMeshShape, VfxPattern};
+use sapphire_look::{VfxBend, VfxDistortion, VfxErosion, VfxFlipbook, VfxMesh, VfxMeshShape, VfxPattern};
 use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
@@ -137,8 +137,42 @@ pub struct Flipbook {
 /// The most columns or rows a flipbook's sheet has.
 const MAX_GRID: u32 = 8;
 
+/// Which way a layer bends the picture behind it (`VfxBend`).
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+pub enum Bend {
+    /// Away from the layer's middle on screen, by its coverage: a shockwave.
+    #[default]
+    Outward,
+    /// Each way by its pattern, about the pattern's mean: a heat haze, which shimmers as the pattern scrolls.
+    Shimmer,
+}
+
+/// How far a layer may move the picture at full coverage: a tenth of the frame's height, past which it reads
+/// as a tear, not a bend.
+pub const MAX_BEND: f32 = 0.1;
+
+/// How a mesh layer bends the picture behind it (M5 L6): its shape, pattern, scroll, erosion, fades and `alpha`
+/// say how much at each pixel, and this how far and which way. Post's fused pass reads the frame through it, so
+/// the characters in front of it and the interface never bend.
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Distortion {
+    #[serde(default)]
+    pub bend: Bend,
+    /// How far it moves the picture at full coverage over the layer's life, as a share of the frame's height,
+    /// 0 to [`MAX_BEND`]: the same on every screen and at every render scale.
+    pub strength: Curve<f32>,
+}
+
+fn no_color(color: &Curve<[f32; 3]>) -> bool {
+    color.0.is_empty()
+}
+
 /// A mesh layer of an effect: what [`VfxMesh`] it resolves to at each moment of its life. Every field but
-/// `shape`, `lifetime` and `color` has a default, so a plain one is three lines.
+/// `shape`, `lifetime` and `color` has a default, so a plain one is three lines; a layer that only bends the
+/// picture (`distortion`) leaves out `color` too.
 #[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,7 +198,9 @@ pub struct MeshLayerDesc {
     /// Metres along the shape's axes over its life.
     #[serde(default = "unit_scale")]
     pub scale: Curve<[f32; 3]>,
-    /// Linear color over its life, relative to the display: a mesh is never lit.
+    /// Linear color over its life, relative to the display: a mesh is never lit. Left out, the layer draws no
+    /// light, which only a layer with a `distortion` may.
+    #[serde(default = "Curve::empty", skip_serializing_if = "no_color")]
     pub color: Curve<[f32; 3]>,
     /// Its opacity over its life, over the pattern's coverage and the shape's own fades.
     #[serde(default = "one")]
@@ -192,6 +228,10 @@ pub struct MeshLayerDesc {
     /// priority those of the effects spawned first.
     #[serde(default)]
     pub priority: u8,
+    /// How it bends the picture behind it (M5 L6), as well as or instead of drawing light. Left out of a
+    /// document that has none, so a library without them writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distortion: Option<Distortion>,
 }
 
 fn finite2(value: [f32; 2]) -> bool {
@@ -212,8 +252,18 @@ impl MeshLayerDesc {
         require(self.spin.is_finite(), "spin", "must be finite")?;
         curve_ok(&self.scale, "scale")?;
         require(self.scale.never_negative(), "scale", "can't be negative")?;
-        curve_ok(&self.color, "color")?;
-        require(self.color.never_negative(), "color", "can't be negative")?;
+        if self.has_color() || self.distortion.is_none() {
+            curve_ok(&self.color, "color")?;
+            require(self.color.never_negative(), "color", "can't be negative")?;
+        }
+        if let Some(distortion) = &self.distortion {
+            curve_ok(&distortion.strength, "distortion.strength")?;
+            require(
+                distortion.strength.0.iter().all(|&(_, strength)| (0.0..=MAX_BEND).contains(&strength)),
+                "distortion.strength",
+                "must be 0 to 0.1 of the frame's height",
+            )?;
+        }
         curve_ok(&self.alpha, "alpha")?;
         require(self.alpha.never_negative() && self.alpha.at_most_one(), "alpha", "must be 0 to 1")?;
         require(share_ok(self.additive), "additive", "must be 0 to 1")?;
@@ -280,8 +330,46 @@ impl MeshLayerDesc {
         Ok(())
     }
 
-    /// What it shows `age` seconds into its effect's life, placed at `placement`, if it shows then.
+    /// Whether it draws light: it has a colour.
+    pub fn has_color(&self) -> bool {
+        !no_color(&self.color)
+    }
+
+    /// Whether it only bends the picture: no light, so nothing of it takes a random number or a mesh's place.
+    pub(crate) fn bends_only(&self) -> bool {
+        !self.has_color() && self.distortion.is_some()
+    }
+
+    /// Whether it shows `age` seconds into its effect's life.
+    pub(crate) fn shows(&self, age: f32) -> bool {
+        (0.0..self.lifetime).contains(&(age - self.delay))
+    }
+
+    /// What it shows `age` seconds into its effect's life, placed at `placement`, if it shows then and draws
+    /// light.
     pub(crate) fn resolve(&self, placement: &Placement, age: f32) -> Option<VfxMesh> {
+        if !self.has_color() {
+            return None;
+        }
+        self.placed(placement, age)
+    }
+
+    /// How it bends the picture `age` seconds into its effect's life (M5 L6), if it bends it and shows then:
+    /// its mesh, every field but the colours as [`Self::resolve`]'s.
+    pub(crate) fn resolve_distortion(&self, placement: &Placement, age: f32) -> Option<VfxDistortion> {
+        let distortion = self.distortion.as_ref()?;
+        let mesh = self.placed(placement, age)?;
+        let t = (age - self.delay) / self.lifetime;
+        let bend = match distortion.bend {
+            Bend::Outward => VfxBend::Outward,
+            Bend::Shimmer => VfxBend::Shimmer,
+        };
+        Some(VfxDistortion { mesh, bend, strength: distortion.strength.sample(t).clamp(0.0, MAX_BEND) })
+    }
+
+    /// Its mesh `age` seconds into its effect's life, placed at `placement`, if it shows then: black where it
+    /// draws no light.
+    fn placed(&self, placement: &Placement, age: f32) -> Option<VfxMesh> {
         let local = age - self.delay;
         if !(0.0..self.lifetime).contains(&local) {
             return None;
@@ -300,7 +388,7 @@ impl MeshLayerDesc {
             position: placement.position + det::quat_rotate(placement.rotation, Vec3::from(self.offset)),
             rotation: if rotation.is_finite() { rotation } else { Quat::IDENTITY },
             scale: self.scale.sample_vec3(t),
-            color: self.color.sample_vec3(t),
+            color: if self.has_color() { self.color.sample_vec3(t) } else { Vec3::ZERO },
             alpha: self.alpha.sample(t),
             additive: self.additive,
             soft: self.soft,
@@ -603,5 +691,129 @@ mod tests {
         world.advance(&OwnerSteps { world: 0.1, owners: &[(fighter, 0.0)] });
         world.write_frame(&mut frame, 0.5);
         assert_eq!(frame.meshes[0], before);
+    }
+
+    /// A haze: a column that only bends the picture, its noise scrolling up (M5 L6).
+    const HAZE: &str = r#"(name: "haze", shape: Column, lifetime: 1.0, pattern: Noise, scroll: (0.0, -0.6),
+        distortion: Some((bend: Shimmer, strength: [(0.0, 0.0), (0.5, 0.004), (1.0, 0.0)])))"#;
+
+    /// A layer that only bends the picture leaves out its colour: it draws no light, so it's no mesh a frame
+    /// draws or a scene declares, and its bend follows its life as every other curve does.
+    #[test]
+    fn a_layer_that_only_bends_leaves_out_its_colour() {
+        let library = library(HAZE);
+        let haze = layer(&library);
+        assert!(haze.bends_only() && !haze.has_color());
+        assert!(library.has_distortion() && !library.has_meshes());
+        assert!(haze.resolve(&Placement::default(), 0.5).is_none(), "no light");
+        let bend = haze.resolve_distortion(&Placement::default(), 0.25).expect("bending");
+        assert_eq!(bend.bend, VfxBend::Shimmer);
+        assert!((bend.strength - 0.002).abs() < 1e-6, "{}", bend.strength);
+        assert_eq!(
+            (bend.mesh.shape, bend.mesh.pattern, bend.mesh.color),
+            (VfxMeshShape::Column, VfxPattern::Noise, Vec3::ZERO)
+        );
+        assert!((bend.mesh.scroll - Vec2::new(0.0, (-0.6_f32 * 0.25).rem_euclid(1.0))).length() < 1e-6);
+        assert!(haze.resolve_distortion(&Placement::default(), 1.0).is_none(), "not after its life");
+        // A layer with both draws its light as it did, and bends too.
+        let ring =
+            format!("(shape: Ring, lifetime: 1.0, {WHITE}, distortion: Some((strength: [(0.0, 0.02)])))");
+        let library = tests::library(&ring);
+        let ring = layer(&library);
+        let mesh = ring.resolve(&Placement::default(), 0.5).expect("drawing");
+        let bend = ring.resolve_distortion(&Placement::default(), 0.5).expect("bending");
+        assert_eq!((bend.mesh, bend.bend), (mesh, VfxBend::Outward), "outward unless it says");
+        assert!(library.has_distortion() && library.has_meshes());
+    }
+
+    /// Every mistake in a bend names the effect, the layer and the field; only a layer that bends may leave out
+    /// its colour.
+    #[test]
+    fn a_bad_bend_names_its_field() {
+        let cases = [
+            ("", "`color`"),
+            (", distortion: Some((strength: [(0.0, 0.2)]))", "`distortion.strength` must be 0 to 0.1"),
+            (", distortion: Some((strength: [(0.0, -0.01)]))", "`distortion.strength` must be 0 to 0.1"),
+            (", distortion: Some((strength: []))", "`distortion.strength`"),
+            (", distortion: Some((strength: [(0.0, 0.01)], bnd: Shimmer))", "bnd"),
+        ];
+        for (fields, reason) in cases {
+            let text = format!(r#"(name: "arc", shape: Ring, lifetime: 1.0{fields})"#);
+            let error = error(&text);
+            assert!(error.contains(reason), "{text}: {error}");
+            if reason.starts_with('`') {
+                assert!(error.contains("effect `slash`, mesh layer `arc`"), "{error}");
+            }
+        }
+    }
+
+    /// Version 1 to 3 documents load as they did and write as they did, with no `distortion`; a version 4
+    /// document's bend-only layer writes without a colour and reads back the same.
+    #[test]
+    fn older_documents_load_unchanged_and_a_bend_reads_back() {
+        let plain = format!("(shape: Ring, lifetime: 0.5, {WHITE})");
+        for version in 1..=3 {
+            let text = document(SPARKS, &plain).replace("version: 2", &format!("version: {version}"));
+            let library = EffectLibrary::from_ron(&text).expect("an older document");
+            assert!(!library.has_distortion());
+            let written = library.to_ron().expect("written");
+            assert!(!written.contains("distortion"), "{written}");
+            assert_eq!(EffectLibrary::from_ron(&written).expect("read back"), library);
+        }
+        let text = document("", HAZE).replace("version: 2", "version: 4");
+        let library = EffectLibrary::from_ron(&text).expect("a version 4 document");
+        let written = library.to_ron().expect("written");
+        assert!(written.contains("Shimmer") && !written.contains("color"), "{written}");
+        assert_eq!(EffectLibrary::from_ron(&written).expect("read back"), library);
+    }
+
+    /// An effect of layers that only bend takes no random numbers: played before a spark's effect, it moves
+    /// no spark of it.
+    #[test]
+    fn a_bend_alone_moves_no_spark_of_an_effect_after_it() {
+        let text = format!(
+            r#"(type: "sapphire::vfx::EffectLibrary", version: 4, data: (effects: [
+                (name: "haze", meshes: [{HAZE}]),
+                (name: "sparks", emitters: [{SPARKS}]),
+            ]))"#
+        );
+        let library = EffectLibrary::from_ron(&text).expect("valid");
+        let sparks = |haze_first: bool| {
+            let mut world = VfxWorld::new(library.clone(), VfxBudget::DESKTOP_LOW, 7);
+            if haze_first {
+                world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).expect("the haze");
+            }
+            world.spawn(EffectId(1), OwnerId::WORLD, Placement::default()).expect("the sparks");
+            let frame = step(&mut world, 1.0 / 60.0);
+            assert_eq!(frame.distortions.len(), usize::from(haze_first));
+            frame.sprites
+        };
+        assert_eq!(sparks(false), sparks(true));
+    }
+
+    /// Bends are capped apart from the meshes that draw light: past the tier's cap the lowest priority go, and
+    /// are counted; a tier with none (Mobile-Low) writes none and counts none.
+    #[test]
+    fn bends_are_capped_by_their_own_budget() {
+        let layers = format!(
+            "(shape: Ring, lifetime: 1.0, {WHITE}, distortion: Some((strength: [(0.0, 0.01)])), priority: 1), {HAZE}"
+        );
+        let budget = VfxBudget { max_distortions: 3, ..VfxBudget::DESKTOP_LOW };
+        let mut world = world(&layers, "", budget);
+        for x in 0..2 {
+            world.spawn(EffectId(0), OwnerId::WORLD, Placement::at(Vec3::X * x as f32));
+        }
+        let frame = step(&mut world, 0.1);
+        let bends: Vec<_> =
+            frame.distortions.iter().map(|bend| (bend.bend, bend.mesh.position.x as i32)).collect();
+        // Both rings (priority 1), then the oldest effect's haze.
+        assert_eq!(bends, [(VfxBend::Outward, 0), (VfxBend::Shimmer, 0), (VfxBend::Outward, 1)]);
+        assert_eq!((frame.stats.distortions, frame.stats.dropped_distortions), (3, 1));
+        assert_eq!((frame.meshes.len(), frame.stats.dropped_meshes), (2, 0), "the rings' light, apart");
+        let mut phone = tests::world(&layers, "", VfxBudget::MOBILE_LOW);
+        phone.spawn(EffectId(0), OwnerId::WORLD, Placement::default());
+        let frame = step(&mut phone, 0.1);
+        assert!(frame.distortions.is_empty() && frame.stats.dropped_distortions == 0);
+        assert_eq!(frame.meshes.len(), 1, "its light still draws");
     }
 }

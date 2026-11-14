@@ -22,6 +22,9 @@ pub struct VfxBudget {
     /// Ground decals a frame draws (M5 L7). Past it the lowest priority aren't drawn that frame, and are
     /// counted: a telegraph should outrank a scorch, so a crowded frame keeps its warnings.
     pub max_decals: u32,
+    /// Effect meshes bending the picture a frame draws (M5 L6). Past it the lowest priority bend nothing that
+    /// frame, and are counted. 0 writes none, so the renderer makes nothing of them: Mobile-Low's.
+    pub max_distortions: u32,
     /// Whether a decal's edge is broken by its noise: off, a scorch draws a clean edge.
     pub decal_noise: bool,
     /// What a decal's fixed life is multiplied by, 0 to 1: under 1, scorches go sooner. A telegraph's life,
@@ -40,6 +43,7 @@ impl VfxBudget {
         trail_subdivisions: 4,
         max_meshes: 32,
         max_decals: 24,
+        max_distortions: 8,
         decal_noise: true,
         decal_life: 1.0,
     };
@@ -51,6 +55,7 @@ impl VfxBudget {
         trail_subdivisions: 3,
         max_meshes: 24,
         max_decals: 16,
+        max_distortions: 8,
         decal_noise: true,
         decal_life: 1.0,
     };
@@ -62,6 +67,7 @@ impl VfxBudget {
         trail_subdivisions: 3,
         max_meshes: 16,
         max_decals: 12,
+        max_distortions: 4,
         decal_noise: true,
         decal_life: 1.0,
     };
@@ -73,6 +79,7 @@ impl VfxBudget {
         trail_subdivisions: 2,
         max_meshes: 8,
         max_decals: 8,
+        max_distortions: 0,
         decal_noise: false,
         decal_life: 0.6,
     };

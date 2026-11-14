@@ -369,6 +369,31 @@ pub struct VfxMesh {
     pub flipbook: Option<VfxFlipbook>,
 }
 
+/// Which way an effect mesh bends what's behind it (M5 L6, [`VfxDistortion`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VfxBend {
+    /// Away from the mesh's middle on screen, by its coverage: a shockwave's ring pushes the picture outward
+    /// where its band passes, and nothing inside or outside the band moves.
+    #[default]
+    Outward,
+    /// Each way by its pattern, read twice apart, about its mean: a heat haze's shimmer, which moves as the
+    /// pattern scrolls and averages to nothing.
+    Shimmer,
+}
+
+/// An effect mesh that bends the picture behind it rather than adding light (M5 L6): the renderer draws `mesh`'s
+/// shape, pattern, scroll, erosion, fades and alpha into a buffer of screen offsets that post's fused pass reads
+/// the frame through. `mesh`'s colours and blending aren't read. Characters in front of it, and the interface,
+/// never bend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VfxDistortion {
+    pub mesh: VfxMesh,
+    pub bend: VfxBend,
+    /// How far it moves the picture at full coverage, as a share of the frame's height: the same on every
+    /// screen and at every render scale. Positive moves it away from the middle for [`VfxBend::Outward`].
+    pub strength: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -75,5 +75,8 @@ pub use ui::{
     UiInsetRun, UiMask, UiPageBands, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, UiTreeStats,
 };
 pub use vfx::decal::{VfxDecal, VfxDecalBlend, VfxDecalShape};
-pub use vfx::mesh::{VfxErosion, VfxFlipbook, VfxGeometry, VfxMesh, VfxMeshShape, VfxMeshVertex, VfxPattern};
+pub use vfx::mesh::{
+    VfxBend, VfxDistortion, VfxErosion, VfxFlipbook, VfxGeometry, VfxMesh, VfxMeshShape, VfxMeshVertex,
+    VfxPattern,
+};
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

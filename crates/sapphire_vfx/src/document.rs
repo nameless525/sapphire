@@ -335,7 +335,7 @@ pub enum EffectLibraryError {
     Invalid { effect: String, part: String, field: &'static str, problem: &'static str },
 }
 
-/// Named effects (an `EffectLibrary` document, schema 3).
+/// Named effects (an `EffectLibrary` document, schema 4).
 ///
 /// A library has at least one effect, its names are distinct and not empty, and every emitter and
 /// trail is valid: it is valid however it was made, deserialization included.
@@ -348,13 +348,14 @@ pub struct EffectLibrary {
 }
 
 impl Versioned for EffectLibrary {
-    /// 1: M2 E2. 2: M5 L5's mesh layers. 3: M5 L7's ground decals. An effect without either needn't say,
-    /// so an older document decodes as it is.
-    const VERSION: u32 = 3;
+    /// 1: M2 E2. 2: M5 L5's mesh layers. 3: M5 L7's ground decals. 4: M5 L6's distortion, a mesh layer's
+    /// `distortion`, and its `color` left out where it only bends the picture. An effect without any of them
+    /// needn't say, so an older document decodes as it is.
+    const VERSION: u32 = 4;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         match version {
-            1 | 2 => data.decode().map_err(VersionError::Decode),
+            1..=3 => data.decode().map_err(VersionError::Decode),
             found => Err(VersionError::TooOld { found, oldest: 1 }),
         }
     }
@@ -486,11 +487,19 @@ impl EffectLibrary {
         self.effects.get(usize::from(id.0))
     }
 
-    /// Whether any of its effects has a mesh layer: what a scene declares so the renderer builds the mesh
-    /// family ahead (M5 L5), and builds none of it otherwise.
+    /// Whether any of its effects has a mesh layer that draws light: what a scene declares so the renderer builds
+    /// the mesh family ahead (M5 L5), and builds none of it otherwise. A layer that only bends the picture (M5
+    /// L6) isn't one.
     #[must_use]
     pub fn has_meshes(&self) -> bool {
-        self.effects.iter().any(|effect| !effect.meshes.is_empty())
+        self.effects.iter().flat_map(|effect| &effect.meshes).any(MeshLayerDesc::has_color)
+    }
+
+    /// Whether any of its effects has a mesh layer that bends the picture: what a scene declares so the renderer
+    /// builds the distortion's pipelines ahead (M5 L6), and builds none of them otherwise.
+    #[must_use]
+    pub fn has_distortion(&self) -> bool {
+        self.effects.iter().flat_map(|effect| &effect.meshes).any(|layer| layer.distortion.is_some())
     }
 
     /// Whether any of its effects has a ground decal: what a scene declares so the renderer builds the decal

@@ -181,6 +181,7 @@ pub struct VfxWorld {
     dropped_trails: u64,
     dropped_meshes: u64,
     dropped_decals: u64,
+    dropped_distortions: u64,
 }
 
 impl VfxWorld {
@@ -207,6 +208,7 @@ impl VfxWorld {
             dropped_trails: 0,
             dropped_meshes: 0,
             dropped_decals: 0,
+            dropped_distortions: 0,
         }
     }
 
@@ -268,19 +270,24 @@ impl VfxWorld {
         self.dropped_trails = 0;
         self.dropped_meshes = 0;
         self.dropped_decals = 0;
+        self.dropped_distortions = 0;
     }
 
     /// Starts `effect` at `placement` on `owner`'s clock. `None` if the library has no such effect
     /// or the budget's cap on effects is full, which is counted. An effect whose trail didn't fit
     /// spawns without it, also counted. A [mark](Effect::mark) takes its numbers from the marks'
-    /// stream, so it moves no other effect's. An effect of ground decals alone (M5 L7) takes no stream at
-    /// all, as it uses no random numbers: playing one moves no spark of any effect spawned after it.
+    /// stream, so it moves no other effect's. An effect of ground decals alone (M5 L7), or of them and mesh layers
+    /// that only bend the picture (M5 L6), takes no stream at all, as it uses no random numbers: playing one
+    /// moves no spark of any effect spawned after it.
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
         let desc = self.library.effect(effect)?;
         let mark = desc.mark;
-        if desc.emitters.is_empty() && desc.trail.is_none() && desc.meshes.is_empty() {
+        if desc.emitters.is_empty()
+            && desc.trail.is_none()
+            && desc.meshes.iter().all(MeshLayerDesc::bends_only)
+        {
             return self.start(effect, owner, placement);
         }
         let handle = self.start(effect, owner, placement)?;
@@ -577,11 +584,13 @@ impl VfxWorld {
         }
         self.write_meshes(frame, unplayed);
         self.write_decals(frame, unplayed);
+        self.write_distortions(frame, unplayed);
         frame.stats = VfxStats {
             ribbons,
             ribbon_points: frame.ribbon_points.len() as u32,
             meshes: frame.meshes.len() as u32,
             decals: frame.decals.len() as u32,
+            distortions: frame.distortions.len() as u32,
             ..self.stats()
         };
     }
@@ -597,9 +606,7 @@ impl VfxWorld {
             unplayed,
             budget.max_meshes,
             move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.meshes[..]),
-            |layer: &MeshLayerDesc, _, age| {
-                (0.0..layer.lifetime).contains(&(age - layer.delay)).then_some(layer.priority)
-            },
+            |layer: &MeshLayerDesc, _, age| (layer.has_color() && layer.shows(age)).then_some(layer.priority),
             |layer, slot, age| layer.resolve(&slot.placement, age),
             &mut frame.meshes,
         );
@@ -625,6 +632,30 @@ impl VfxWorld {
         *dropped_decals = dropped_decals.saturating_add(dropped);
     }
 
+    /// The live effects' mesh layers that bend the picture (M5 L6), by the budget, as [`Self::write_meshes`]
+    /// does the meshes that draw light, and apart from them: past [`VfxBudget::max_distortions`], counted in
+    /// `dropped_distortions`. A cap of 0 writes none.
+    fn write_distortions(&mut self, frame: &mut VfxFrame, unplayed: f32) {
+        // A tier without them (Mobile-Low) has nothing past a cap to count.
+        if self.budget.max_distortions == 0 {
+            return;
+        }
+        let Self { library, slots, budget, dropped_distortions, .. } = self;
+        let (library, slots): (&EffectLibrary, &[Slot]) = (library, slots);
+        let dropped = write_capped(
+            slots,
+            unplayed,
+            budget.max_distortions,
+            move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.meshes[..]),
+            |layer: &MeshLayerDesc, _, age| {
+                (layer.distortion.is_some() && layer.shows(age)).then_some(layer.priority)
+            },
+            |layer, slot, age| layer.resolve_distortion(&slot.placement, age),
+            &mut frame.distortions,
+        );
+        *dropped_distortions = dropped_distortions.saturating_add(dropped);
+    }
+
     /// What it holds and what it has dropped. Ribbons and their points are those of the last frame
     /// written, in [`VfxFrame::stats`].
     pub fn stats(&self) -> VfxStats {
@@ -637,6 +668,7 @@ impl VfxWorld {
             dropped_trails: self.dropped_trails,
             dropped_meshes: self.dropped_meshes,
             dropped_decals: self.dropped_decals,
+            dropped_distortions: self.dropped_distortions,
             ..VfxStats::default()
         }
     }

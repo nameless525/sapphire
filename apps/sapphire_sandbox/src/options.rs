@@ -323,6 +323,9 @@ pub(crate) struct Options {
     /// `--spring-turns <n>`: the character takes turns with `n - 1` others, as a party member off the field
     /// does, in the tier's rotation (M5 C2), to see a waiting character's chains. Needs `--clip` or `--graph`.
     pub spring_turns: Option<u32>,
+    /// `--playable <name>`: the look-dev character draws as the playable kind this build holds as
+    /// `<name>.playable.ron`, rather than the heroine (M5 C4): Aster is `hero`. Needs `--look-dev`.
+    pub playable: Option<sapphire_assets::AssetId>,
     /// `--arena`: the combat stage (M2 O5, [`game_combat::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
@@ -677,10 +680,10 @@ impl Options {
         if self.look_dev_character() { self.playable_kind() } else { sapphire_stage::content::CHARACTER }
     }
 
-    /// The playable kind the character draws as in the town or a zone: the heroine, whom a scenario's player
-    /// is when it names none ([`game_combat::playable::KIND`]).
+    /// The playable kind the character draws as in the town or a zone: `--playable`'s, or the heroine, whom a
+    /// scenario's player is when it names none ([`game_combat::playable::KIND`]).
     pub fn playable_kind(&self) -> sapphire_assets::AssetId {
-        game_combat::playable::KIND
+        self.playable.unwrap_or(game_combat::playable::KIND)
     }
 
     /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
@@ -1153,6 +1156,12 @@ impl Options {
                             format!("--spring-turns expects 2 to 32 characters, got {raw:?}")
                         })?);
                 }
+                "--playable" => {
+                    let raw = value("--playable")?;
+                    let kind = sapphire_gameplay::replay::playable_kind_named(&raw)
+                        .map_err(|error| format!("--playable {raw}: {error}"))?;
+                    options.playable = Some(kind.kind);
+                }
                 "--graph" => {
                     let raw = value("--graph")?;
                     options.graph = Some(GraphScript::from_name(&raw).ok_or_else(|| {
@@ -1538,6 +1547,9 @@ impl Options {
             && (options.look_dev.is_none() || options.clip.is_some() || options.graph.is_some())
         {
             return Err("--face and --face-mouth are the held look-dev character's: they need --look-dev, and no --clip or --graph".to_owned());
+        }
+        if options.playable.is_some() && options.look_dev.is_none() {
+            return Err("--playable stands a kind on the look-dev stage: it needs --look-dev".to_owned());
         }
         if options.graph.is_some() && options.look_dev.is_none() {
             return Err("--graph plays on the look-dev character: it needs --look-dev".to_owned());
@@ -2442,6 +2454,12 @@ mod tests {
         );
         assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--spring-turns", "1"]).is_err());
         assert!(parse(&["--look-dev", "hero", "--spring-turns", "3"]).unwrap_err().contains("--clip"));
+        let aster = parse(&["--look-dev", "hero", "--playable", "hero", "--graph", "turn"]).unwrap().0;
+        assert_ne!(aster.playable_kind(), game_combat::playable::KIND, "Aster, not the heroine");
+        assert_eq!(aster.character(), aster.playable_kind());
+        assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.playable_kind(), game_combat::playable::KIND);
+        assert!(parse(&["--look-dev", "hero", "--playable", "nobody"]).unwrap_err().contains("nobody"));
+        assert!(parse(&["--arena", "--playable", "hero"]).unwrap_err().contains("--look-dev"));
         let wrong = ["--look-dev", "hero", "--clip", "strike", "--springs", "maybe"];
         assert!(parse(&wrong).unwrap_err().contains("on or off"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());

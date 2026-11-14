@@ -137,6 +137,10 @@
 // `--emission-scale`; nothing driven, every other scene's, draws exactly as before) or place the glass
 // samples (`--glass`; no earlier material has a see-through region or glass), in the courtyard under temporal
 // AA at Desktop-High with AO and fog off, as the fade scenes stand.
+//
+// The cloth scenes (M5 C4) alone stand a playable kind other than the heroine on the look-dev stage
+// (`--playable`), Aster, whose own motion wears her skirt as cloth, and only `lookdev-cloth-turn` runs
+// `--graph turn`. No earlier scene's character wears cloth, so none sees it.
 (
     type: "sapphire::testkit::GoldenScenes",
     version: 1,
@@ -1557,6 +1561,26 @@
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 21.9, warp: 40.1),
+            ),
+            // Aster's skirt worn as cloth (M5 C4, `--playable hero`: her own motion's closed sheet of twelve
+            // panels), pinned as the graph scenes are, every frame drawn: half a second into the controller's run,
+            // the hem swung back off the stride in one surface with no gap opening between two pleats, and 16
+            // ticks after a turn of 160° to her right at tick 40 (`--graph turn`), the skirt flared out the way
+            // she came from as the body comes round. Framed from above and further back (`--view 20,30 --zoom 1.4`)
+            // on the whole skirt, its hem and the legs under it. Metal only.
+            (
+                name: "lookdev-cloth-stride",
+                ticks: 30,
+                args: ["--look-dev", "hero", "--playable", "hero", "--graph", "run", "--view", "20,30",
+                       "--zoom", "1.4", "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "30", "--capture-step", "1"],
+            ),
+            (
+                name: "lookdev-cloth-turn",
+                ticks: 56,
+                args: ["--look-dev", "hero", "--playable", "hero", "--graph", "turn", "--view", "20,30",
+                       "--zoom", "1.4", "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "30", "--capture-step", "1"],
             ),
             // The enemy (M2 O4) squaring up to the character in the square at midday, pinned as the other
             // look-dev scenes are: bone in its lavender shade, dark plate with a painted sheen, a wine

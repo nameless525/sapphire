@@ -242,6 +242,9 @@
 //!   Neither moves anything the simulation reads; the fight bench's animation rows compare them.
 //! - `--spring-turns <n>` (with `--clip` or `--graph`): the character takes its springs' turns among `n`, as a
 //!   party member off the field does (M5 C2), so a capture shows a waiting character's chains.
+//! - `--playable <name>` (with `--look-dev`): the character draws as the playable kind this build holds as
+//!   `<name>.playable.ron` rather than the heroine (M5 C4): `hero` is Aster, whose skirt the golden scenes
+//!   `lookdev-cloth-*` show. `--graph turn` runs and turns sharply round at tick 40.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
 //!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
 //!   and `--size <cell>` set the grid, `--sheet-ticks <a,b,..>` and `--sheet-views <yaw,yaw,..>` name

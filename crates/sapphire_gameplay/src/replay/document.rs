@@ -287,6 +287,20 @@ fn playable_named(name: &str) -> Option<&'static str> {
     found.map(|(path, _)| *path)
 }
 
+/// The playable kind this build holds as `{name}.playable.ron` (M5 C4): what `--playable` stands in look-dev,
+/// by its sidecar's ID and the key of its name.
+///
+/// # Errors
+///
+/// If this build holds no such kind, or it doesn't read.
+pub fn playable_kind_named(name: &str) -> Result<KindOfPlayable, ScenarioError> {
+    let path = playable_named(name)
+        .ok_or_else(|| invalid("playable", format!("this build holds no `{name}.playable.ron`")))?;
+    let document = PlayableDocument::parse(named(path)?)
+        .map_err(|error| invalid("playable", format!("{path}: {error}")))?;
+    Ok(KindOfPlayable { kind: id_of(path)?, name: document.name })
+}
+
 /// Every kind of enemy this build holds, which `build.rs` compiles in from `content/combat/`, by its
 /// document's path from the repository's root, with the path of the moves it plays: what a scenario's
 /// `moves` and `enemies` would list to stand one (M4 X2).
@@ -1167,6 +1181,17 @@ mod tests {
         let kinds = boss.kinds_of_enemy().expect("it plans");
         let set = crate::moves::MoveSetId(1);
         assert_eq!(kinds, [KindOfEnemy { set, kind: captain, name: "boss-captain".to_owned() }]);
+    }
+
+    /// A playable kind is found by its file's stem, as `--playable` names it (M5 C4), and one this build
+    /// doesn't hold is refused by name.
+    #[test]
+    fn a_playable_kind_is_found_by_its_name() {
+        let aster = playable_kind_named("hero").expect("Aster");
+        let id = id_of("content/combat/hero/hero.playable.ron").expect("a sidecar");
+        assert_eq!(aster, KindOfPlayable { kind: id, name: "character-name-aster".to_owned() });
+        let error = playable_kind_named("nobody").expect_err("not held").to_string();
+        assert!(error.contains("nobody.playable.ron"), "{error}");
     }
 
     /// Every kind of enemy under `content/combat/` is held, with the moves it plays.

@@ -3799,6 +3799,7 @@
                 args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 41.7, warp: 82.2),
             ),
             // A telegraph and a scorch on the 30° slope of `lookdev-ik-slope`, lying in its plane: the sector two
             // thirds filled up across the slope under the character, whose soles cover it, and the scorch's broken
@@ -3809,6 +3810,7 @@
                 args: ["--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
                        "--ik", "on", "--ik-ground", "slope", "--time-of-day", "13", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "16", "--capture-step", "1", "--vfx", "decal-slope"],
+                ci_seconds: (lavapipe: 22.4, warp: 39.5),
             ),
         ],
     ),

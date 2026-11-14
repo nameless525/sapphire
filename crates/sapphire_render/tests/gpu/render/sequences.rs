@@ -99,7 +99,7 @@ pub(super) fn card<D: MaterialDocument>(document: &D, swaying: bool) -> Mesh {
 const ORDER_FREE_MESHES: usize = 6;
 
 /// Every kind of mesh the sequences draw, cooked: the static and skinned ones first.
-fn sequence_meshes() -> Vec<AlignedVec> {
+pub(super) fn sequence_meshes() -> Vec<AlignedVec> {
     let two_sided = AnimeCharacterMaterial { double_sided: true, ..colored([0.7, 0.3, 0.2]) };
     [
         sphere(white(1.0)),
@@ -117,7 +117,7 @@ fn sequence_meshes() -> Vec<AlignedVec> {
     .collect()
 }
 
-fn character(id: u64, base: Vec3, opacity: f32) -> CharacterInstance {
+pub(super) fn character(id: u64, base: Vec3, opacity: f32) -> CharacterInstance {
     let key = DirectionalLight { direction: Vec3::NEG_Y, color: Vec3::ONE, intensity: 1.0 };
     CharacterInstance {
         id: InstanceId(id),

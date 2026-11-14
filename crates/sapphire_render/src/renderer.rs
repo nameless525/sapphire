@@ -53,7 +53,8 @@ use crate::pipelines::{
     SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT, frame_binding,
 };
 use crate::post::{
-    DepthOfFieldSettings, InsetResolve, PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen,
+    DepthOfFieldSettings, InsetResolve, PostEffectSettings, PostInputs, PostProcess, PostStats, PostVariants,
+    SunOnScreen,
 };
 use crate::quality::{OptionalPass, OptionalPasses};
 use crate::retire::FrameFence;
@@ -3336,12 +3337,14 @@ impl Renderer {
             _ => scene_color,
         };
         // Under temporal AA effects draw over a copy of the resolved frame, so the history never
-        // holds them (see the `vfx` module), and post reads the copy.
-        let resolved = match vfx_after.flatten() {
+        // holds them (see the `vfx` module), and post reads the copy. Post hands them its input after depth
+        // of field's passes (M5 L8), so an effect is drawn over the blurred frame and is never blurred
+        // itself: a slash across a sharp subject's edge isn't half sharp and half soft.
+        let effects = move |graph: &mut FrameGraph<'f>, input: TextureId| match vfx_after.flatten() {
             Some(after) => {
-                let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
-                let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
-                graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
+                let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(input)));
+                let pass = AfterResolveTargets { resolved: input, composed, depth: targets.depth };
+                graph.add_pass(vfx::PASS).read(input).read(targets.depth).write(composed).record(
                     move |ctx| {
                         let frame = frame_bind_groups.get(FrameGroup::World);
                         let drawn = after.record(ctx, pass, frame, view_bind_group, labels);
@@ -3350,12 +3353,13 @@ impl Renderer {
                 );
                 composed
             }
-            None => resolved,
+            None => input,
         };
         // Depth of field reads the scene prepass's depth, which temporal AA keeps (`DepthOfFieldSettings`).
         let depth = temporal_targets.map(|_| targets.depth);
+        let inputs = PostInputs { input: resolved, scene_color, depth, target };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
-        post.record(graph, resolved, scene_color, depth, target, insets, labels, counter);
+        post.record(graph, inputs, effects, insets, labels, counter);
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
             let frame = DebugFrame {

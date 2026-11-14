@@ -130,7 +130,8 @@ pub struct FrameCounts {
     pub character_maps: PassCounts,
     /// Each inset drawn this frame, its character prepass and main pass together, by its index.
     pub insets: [PassCounts; MAX_INSETS],
-    /// Temporal AA's passes and the effects drawn after its resolve (sprites and effect meshes).
+    /// Temporal AA's passes and the effects drawn after its resolve (sprites and effect meshes): those
+    /// draw after depth of field's passes where the frame has focus (M5 L8), and still count here.
     pub temporal: PassCounts,
     /// Post's passes: depth of field's three where the frame has focus (M5 L8), the bloom chain, the fused
     /// composite, the colour-vision view's pass, and insets' resolves with any soft backdrop's pass before them.

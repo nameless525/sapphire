@@ -1,15 +1,18 @@
 //! Depth of field (M5 L8), rendered and read back: what stays exact, how the blur grows, its edges, its
-//! size against the picture's, and the tiers and frames that draw none. They need a GPU:
+//! size against the picture's, the tiers and frames that draw none, and effects drawn over it unblurred. They need a GPU:
 //! `cargo test -p sapphire_render --lib -- --ignored post::gpu_tests::focus`.
 //!
 //! Every frame is temporal AA's (the main view's depth of field reads the scene prepass's depth, which only
 //! it keeps), a fresh renderer's after the same number of frames, so two frames differ only by post.
 
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 
 use super::{Harness, flat, passthrough, srgb_to_linear};
 use crate::post::PostStats;
-use crate::{DepthOfFieldSettings, Focus, Msaa, PostParams, RenderSettings};
+use crate::{
+    DepthOfFieldSettings, Focus, FramePacket, Msaa, PostParams, RenderSettings, VfxLight, VfxMesh,
+    VfxMeshShape, VfxPattern, VfxShape, VfxSprite,
+};
 
 /// Enough frames for temporal AA's history to settle on still edges.
 const FRAMES: u32 = 12;
@@ -275,4 +278,167 @@ fn a_tier_without_it_draws_and_builds_nothing_for_a_key() {
         assert_eq!(stats.pipelines, plain_stats.pipelines, "{name}: builds nothing for it");
         assert_eq!(stats.first_use_builds, plain_stats.first_use_builds, "{name}");
     }
+}
+
+/// Where `point` lands on a picture of `size` from the harness's camera (at (0, 0, 5), looking at the origin,
+/// 0.8 rad of vertical field), in pixels.
+fn on_screen(size: (u32, u32), point: Vec3) -> Vec2 {
+    let focal = size.1 as f32 * 0.5 / 0.4f32.tan();
+    let depth = 5.0 - point.z;
+    Vec2::new(size.0 as f32 * 0.5 + point.x / depth * focal, size.1 as f32 * 0.5 - point.y / depth * focal)
+}
+
+/// Effects draw after depth of field's passes: an effect in front of the sharp subject that crosses its edge
+/// onto the blurred grid behind is drawn exactly as it is without focus, sharp on both sides and never
+/// blurred; what no effect covers is the focused frame bit for bit; and a translucent effect over the blurred
+/// grid composites over the blurred frame, not the sharp one. The effects are an opaque bar (one of L5's
+/// effect meshes, a card) across the subject's right edge, an opaque chevron sprite across its left, and a
+/// half-transparent card over the grid alone. Without temporal AA, as under MSAA, effects draw in the main
+/// pass and the main view has no focus at all, so nothing here applies.
+#[test]
+#[ignore = "needs a GPU"]
+fn effects_draw_over_the_blurred_frame_and_stay_sharp_across_the_subjects_edge() {
+    let size = (320, 180);
+    let scene = |harness: &mut Harness| {
+        subject(harness);
+        for (i, x) in (-6..=6).enumerate() {
+            for (j, y) in (-3..=3).enumerate() {
+                let color = if (i + j) % 2 == 0 { [0.1, 0.8, 0.2] } else { [0.2, 0.3, 0.9] };
+                harness.sphere(Vec3::new(x as f32 * 2.4, y as f32 * 2.4, -15.0), 0.9, flat(color), false);
+            }
+        }
+    };
+    // In front of the subject, 4.45 m from the camera: inside the sharp range.
+    const Z: f32 = 0.55;
+    let card = |position: Vec3, scale: Vec3, color: Vec3, alpha: f32| VfxMesh {
+        shape: VfxMeshShape::Card,
+        position,
+        rotation: Quat::IDENTITY,
+        scale,
+        color,
+        alpha,
+        additive: 0.0,
+        soft: 1e-3,
+        pattern: VfxPattern::Solid,
+        tiling: Vec2::ONE,
+        scroll: Vec2::ZERO,
+        erosion: None,
+        flipbook: None,
+    };
+    let bar = card(Vec3::new(0.6, 0.0, Z), Vec3::new(1.0, 0.2, 1.0), Vec3::new(0.9, 0.8, 0.05), 1.0);
+    let veil = (Vec3::new(-1.7, 0.85, Z), Vec3::new(0.9, 0.5, 1.0));
+    let translucent = card(veil.0, veil.1, Vec3::new(0.6, 0.1, 0.7), 0.5);
+    let chevron = VfxSprite {
+        position: Vec3::new(-0.5, -0.05, Z),
+        axis: Vec3::ZERO,
+        rotation: 0.0,
+        half_width: 0.18,
+        half_length: 0.18,
+        color: Vec3::new(0.05, 0.9, 0.9),
+        alpha: 1.0,
+        additive: 0.0,
+        soft: 1e-3,
+        shape: VfxShape::Chevron,
+        light: VfxLight::Emissive,
+    };
+    let effects = |packet: &mut FramePacket| {
+        packet.vfx.meshes.push(bar);
+        packet.vfx.meshes.push(translucent);
+        packet.vfx.sprites.push(chevron);
+    };
+    let render = |post: PostParams, fill: &dyn Fn(&mut FramePacket)| {
+        let mut harness = Harness::new(temporal(DESKTOP), size);
+        scene(&mut harness);
+        harness.render_frames(FRAMES, post, fill)
+    };
+    let plain = render(passthrough(), &|_| {});
+    let plain_effects = render(passthrough(), &effects);
+    let focused = render(with(ON_SUBJECT), &|_| {});
+    let focused_effects = render(with(ON_SUBJECT), &effects);
+
+    let (center, radius) = subject_disc(size);
+    let (width, height) = (size.0 as i32, size.1 as i32);
+    let index = |x: i32, y: i32| (y.clamp(0, height - 1) * width + x.clamp(0, width - 1)) as usize;
+    // The half-transparent card's place on the picture: its corners, in pixels.
+    let corner =
+        |sign: f32| on_screen(size, veil.0 + Vec3::new(sign * veil.1.x, -sign * veil.1.y, 0.0) * 0.5);
+    let (top_left, bottom_right) = (corner(-1.0), corner(1.0));
+    let under_veil = |x: i32, y: i32, margin: f32| {
+        let at = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+        at.cmpge(top_left - margin).all() && at.cmple(bottom_right + margin).all()
+    };
+    // An opaque effect's own pixels: covered (the effect changed them), with all eight neighbours covered the
+    // same, so the effect's flat color fills them whatever is behind; the half-transparent card's aren't.
+    let (mut over_subject, mut over_grid, mut untouched, mut blurred) = (0, 0, 0, 0);
+    for y in 0..height {
+        for x in 0..width {
+            let at = index(x, y);
+            // No effect's: nothing within two pixels changed, so not even an antialiased edge's last trace (too
+            // faint to move a code over one backdrop, it can move one over another) reaches it.
+            let clear = (-2..=2).all(|dy| {
+                (-2..=2).all(|dx| plain_effects[index(x + dx, y + dy)] == plain[index(x + dx, y + dy)])
+            });
+            if clear {
+                assert_eq!(
+                    focused_effects[at], focused[at],
+                    "({x}, {y}), no effect's, is the focused frame's"
+                );
+                untouched += 1;
+                blurred += usize::from(focused[at] != plain[at]);
+                continue;
+            }
+            if plain_effects[at] == plain[at] {
+                continue;
+            }
+            let flat = (-1..=1).all(|dy| {
+                (-1..=1).all(|dx| {
+                    let near = index(x + dx, y + dy);
+                    plain_effects[near] != plain[near] && plain_effects[near] == plain_effects[at]
+                })
+            });
+            if !flat || under_veil(x, y, 3.0) {
+                continue;
+            }
+            assert_eq!(
+                focused_effects[at], plain_effects[at],
+                "({x}, {y}), an opaque effect's, is unblurred"
+            );
+            let from_center = Vec2::new(x as f32 + 0.5, y as f32 + 0.5).distance(center);
+            over_subject += usize::from(from_center < radius - 2.0);
+            over_grid += usize::from(from_center > radius + 2.0);
+        }
+    }
+    assert!(
+        over_subject > 40 && over_grid > 40,
+        "opaque effect pixels: {over_subject} on the subject, {over_grid} off it"
+    );
+    assert!(blurred * 3 > untouched, "the grid still blurs: {blurred} of {untouched} untouched pixels moved");
+
+    // The half-transparent card, two pixels inside its edges: half its color over what's behind. Over the
+    // focused frame, its change from the unfocused frame is half the blur's change.
+    let (low, high) = (top_left + 2.0, bottom_right - 2.0);
+    let linear = |texel: [u8; 4]| Vec3::from_array([0, 1, 2].map(|c| srgb_to_linear(texel[c])));
+    let (mut error, mut blur, mut count) = (0.0, 0.0, 0);
+    for y in low.y as i32..=high.y as i32 {
+        for x in low.x as i32..=high.x as i32 {
+            let at = index(x, y);
+            let expected = (linear(focused[at]) - linear(plain[at])) * 0.5;
+            let seen = linear(focused_effects[at]) - linear(plain_effects[at]);
+            error += (seen - expected).abs().max_element();
+            blur += expected.abs().max_element();
+            count += 1;
+        }
+    }
+    let (error, blur) = (error / count as f32, blur / count as f32);
+    assert!(count > 200, "{count} pixels under the half-transparent card");
+    assert!(blur > 0.004, "the grid under the card blurs: {blur}");
+    assert!(
+        error < blur * 0.25 && error < 0.004,
+        "it composites over the blurred frame: off by {error}, against a blur of {blur}"
+    );
+    eprintln!(
+        "opaque effect pixels unblurred: {over_subject} on the subject, {over_grid} on the grid; {blurred} of \
+         {untouched} untouched pixels blurred, each the focused frame's; under the half-transparent card \
+         ({count} px) the change is half the blur's ({blur:.4}) to within {error:.4}"
+    );
 }

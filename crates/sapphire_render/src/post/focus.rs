@@ -27,10 +27,12 @@
 //!
 //! A sharp pixel is post's input bit for bit, so a frame without focus, or the sharp range of one with it,
 //! is unchanged. Depth comes from the scene prepass, which temporal AA keeps: so without it the main view
-//! has no focus ([`DepthOfFieldSettings::with_temporal`]). What has no depth there (the effects drawn after the resolve,
-//! transparent surfaces, the sky at infinity) blurs as what is behind it does: a spark against a soft
-//! backdrop goes soft with it, which reads as part of that backdrop, and a spark in front of a sharp subject
-//! stays sharp. A focus's largest blur is a fraction of the picture's height, so a key blurs alike at any
+//! has no focus ([`DepthOfFieldSettings::with_temporal`]). What has no depth there (transparent surfaces,
+//! the sky at infinity) blurs as what is behind it does. The effects drawn after the resolve (sprites,
+//! trails and effect meshes) come after these passes ([`PostProcess::record`](super::PostProcess::record)'s
+//! `effects`): they draw over the blurred frame and are never blurred, so a slash across a sharp subject's
+//! edge is sharp on both sides, and a translucent one over a soft backdrop shows the soft backdrop through
+//! it. A focus's largest blur is a fraction of the picture's height, so a key blurs alike at any
 //! output size, and the taps are as many at any blur, so a frame costs the same whatever it asks.
 //!
 //! # An inset's soft backdrop (Desktop-High, Desktop-Low and Mobile-High)

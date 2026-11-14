@@ -603,6 +603,19 @@ pub(crate) struct InsetPost {
     backdrop: CachedBindGroup,
 }
 
+/// The frame's textures [`PostProcess::record`] reads and writes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PostInputs {
+    /// The main pass's HDR output, or temporal AA's resolve of it.
+    pub input: TextureId,
+    /// The main pass's own output, whose alpha is the character mask: `input` itself without temporal AA.
+    pub scene_color: TextureId,
+    /// The scene prepass's depth, which depth of field reads (M5 L8): only under temporal AA, which keeps it.
+    pub depth: Option<TextureId>,
+    /// Where the fused composite writes.
+    pub target: TextureId,
+}
+
 /// An inset's resolve, which [`PostProcess::record`] adds after post's own passes: its scene, exposed
 /// and graded, into its picture.
 pub(crate) struct InsetResolve<'f> {
@@ -1163,24 +1176,21 @@ impl PostProcess {
         PostStats { pipelines: self.pipelines.count(), first_use_builds: self.first_use_builds, ..self.stats }
     }
 
-    /// Adds the bloom chain and the fused composite to `graph`, reading `input` (the main
-    /// pass's HDR output, or temporal AA's resolve of it) and writing `target`. `scene_color` is
-    /// the main pass's own output, whose alpha is the character mask: `input` itself without
-    /// temporal AA. `depth` is the scene prepass's, which depth of field reads (M5 L8): before the
-    /// bloom chain, its passes take `input` and give what the rest reads in its place. Each pass's
-    /// draw counts in `counter`.
-    #[expect(clippy::too_many_arguments, reason = "the passes' inputs, targets and counts")]
+    /// Adds the bloom chain and the fused composite to `graph`, reading `inputs.input` and writing
+    /// `inputs.target` ([`PostInputs`]). Depth of field's passes (M5 L8) come first where the frame has focus,
+    /// then `effects`, which takes what post has so far and gives what the rest reads in its place: the
+    /// renderer draws the effects that come after temporal AA's resolve there, so they go over the blurred
+    /// frame and are never blurred themselves. Each of post's own passes counts its draw in `counter`.
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
-        input: TextureId,
-        scene_color: TextureId,
-        depth: Option<TextureId>,
-        target: TextureId,
+        inputs: PostInputs,
+        effects: impl FnOnce(&mut FrameGraph<'f>, TextureId) -> TextureId,
         insets: impl IntoIterator<Item = InsetResolve<'f>>,
         labels: bool,
         counter: &'f Counter,
     ) {
+        let PostInputs { input, scene_color, depth, target } = inputs;
         let Self {
             ref builder,
             ref pipelines,
@@ -1224,14 +1234,20 @@ impl PostProcess {
         let input = match depth.filter(|_| focus) {
             Some(depth) => {
                 let (width, height) = graph.size(input);
-                let full = TransientDesc {
-                    width,
-                    height,
+                let half = TransientDesc {
+                    width: width.div_ceil(2),
+                    height: height.div_ceil(2),
                     format: SCENE_COLOR_FORMAT,
                     sample_count: 1,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 };
-                let half = TransientDesc { width: width.div_ceil(2), height: height.div_ceil(2), ..full };
+                // The effects after the resolve copy what they draw over, as they copy the resolve itself.
+                let full = TransientDesc {
+                    width,
+                    height,
+                    usage: half.usage | wgpu::TextureUsages::COPY_SRC,
+                    ..half
+                };
                 let prepared = graph.create_texture(focus::PREPARE_PASS, half);
                 let gathered = graph.create_texture(focus::GATHER_PASS, half);
                 let focused = graph.create_texture(focus::COMPOSITE_PASS, full);
@@ -1270,6 +1286,8 @@ impl PostProcess {
             }
             None => input,
         };
+        // What draws over the frame after its resolve: the effects, over the blurred frame.
+        let input = effects(graph, input);
 
         let chain = bloom.then(|| {
             let (width, height) = graph.size(input);

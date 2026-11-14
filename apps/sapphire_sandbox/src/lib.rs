@@ -83,11 +83,13 @@
 //!   `tiers.ron` lists each tier's rungs): its scale, its passes shed in place and its frame-rate
 //!   cap, whatever the heat. The golden scenes `tier-*-rung-*` draw each rung.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
-//! - `--vfx arc|hit|dust|duel`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
+//! - `--vfx arc|hit|dust|duel|mesh-*`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark
 //!   and a hitstop, dust on the ground, or a duel's worst moment held still, as the bench's load.
 //!   They play around the world's origin, where every stage but `--look-dev street` stands its
-//!   character.
+//!   character. `mesh-scroll`, `mesh-erosion` and `mesh-flipbook` play an effect mesh each second (M5 L5): a
+//!   scrolling slash arc, an eroding dome and a flipbook card; `mesh-one` and `mesh-eight` keep one or eight
+//!   slash arcs playing, as the bench's load.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).

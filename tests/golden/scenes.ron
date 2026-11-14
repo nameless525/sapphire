@@ -3677,6 +3677,43 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 69.6, warp: 100.6),
             ),
+            // Effect meshes (M5 L5), at dusk over the look-dev character, each a quarter of the way or more into its
+            // life: a shockwave ring opening on the paving with a pillar of light in it, streaks scrolling round
+            // both; a dome of warm light burning away, a pale edge where it burns; and a burst's flipbook on a card
+            // on the phones' path, drawn in the main pass against its depth with no soft fade, its frames stepped.
+            (
+                name: "vfxmesh-scroll",
+                ticks: 76,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-scroll"],
+                ci_seconds: (lavapipe: 20.3, warp: 44.3),
+            ),
+            (
+                name: "vfxmesh-erosion",
+                ticks: 80,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-erosion"],
+                ci_seconds: (lavapipe: 13.8, warp: 45.5),
+            ),
+            (
+                name: "vfxmesh-flipbook",
+                ticks: 72,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-flipbook"],
+                ci_seconds: (lavapipe: 15.5, warp: 35.7),
+            ),
+            // The skill's first cut as the cue table fires it (`skill_hit`, `skill_arc` at `Facing`), from
+            // `dodge-dash`'s recording, landing on the look-dev character as the `hit-*` scenes do: six ticks in,
+            // the crescent sweeping round from behind the character's right to in front of its hips, streaks
+            // running toward its head.
+            (
+                name: "vfxmesh-skill-hit",
+                ticks: 184,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1",
+                       "--replay", "tests/replays/dodge-dash.sreplay", "--cues"],
+                ci_seconds: (lavapipe: 20.4, warp: 50.6),
+            ),
         ],
     ),
 )

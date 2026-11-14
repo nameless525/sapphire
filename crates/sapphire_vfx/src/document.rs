@@ -7,11 +7,12 @@ use std::collections::BTreeSet;
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use glam::Vec3;
 use sapphire_look::{VfxLight, VfxShape};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::curve::Curve;
+use crate::mesh::{MAX_MESH_LAYERS, MeshLayerDesc};
 
 /// The shipped effects (see [`EffectLibrary::default_effects`]).
 const DEFAULT_EFFECTS: &str = include_str!("../default_effects.ron");
@@ -158,15 +159,15 @@ impl From<Light> for VfxLight {
 /// Over how many meters a quad fades into the surface behind it, where nothing else says.
 const DEFAULT_SOFT: f32 = 0.02;
 
-fn default_soft() -> f32 {
+pub(crate) fn default_soft() -> f32 {
     DEFAULT_SOFT
 }
 
-fn one() -> Curve<f32> {
+pub(crate) fn one() -> Curve<f32> {
     Curve(vec![(0.0, 1.0)])
 }
 
-fn one_share() -> f32 {
+pub(crate) fn one_share() -> f32 {
     1.0
 }
 
@@ -280,6 +281,10 @@ pub struct Effect {
     /// effect's, so a mark added to a cue moves no spark of the effects spawned after it.
     #[serde(default)]
     pub mark: bool,
+    /// Its mesh layers (M5 L5), at most [`MAX_MESH_LAYERS`]: drawn where its sprites are, in the order
+    /// written. Left out of a document that has none, so a library without them writes as it did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meshes: Vec<MeshLayerDesc>,
 }
 
 impl Effect {
@@ -288,6 +293,7 @@ impl Effect {
     /// or it holds its place in the budget for good.
     #[must_use]
     pub fn is_endless(&self) -> bool {
+        // A mesh layer has a lifetime: it never makes an effect endless.
         self.trail.is_some()
             || self
                 .emitters
@@ -311,16 +317,18 @@ pub enum EffectLibraryError {
     DuplicateName(String),
     #[error("more effects than an effect ID can name")]
     TooMany,
-    #[error("effect `{0}`: it has neither an emitter nor a trail")]
+    #[error("effect `{0}`: it has no emitter, trail or mesh layer")]
     Nothing(String),
     #[error("effect `{0}`: it has more than {MAX_EMITTERS} emitters")]
     TooManyEmitters(String),
-    /// A field of an emitter or a trail: `part` says which.
+    #[error("effect `{0}`: it has more than {MAX_MESH_LAYERS} mesh layers")]
+    TooManyMeshLayers(String),
+    /// A field of an emitter, a trail or a mesh layer: `part` says which.
     #[error("effect `{effect}`, {part}: `{field}` {problem}")]
     Invalid { effect: String, part: String, field: &'static str, problem: &'static str },
 }
 
-/// Named effects (an `EffectLibrary` document, schema 1).
+/// Named effects (an `EffectLibrary` document, schema 2).
 ///
 /// A library has at least one effect, its names are distinct and not empty, and every emitter and
 /// trail is valid: it is valid however it was made, deserialization included.
@@ -333,7 +341,16 @@ pub struct EffectLibrary {
 }
 
 impl Versioned for EffectLibrary {
-    const VERSION: u32 = 1;
+    /// 1: M2 E2. 2: M5 L5's mesh layers, which an effect without needn't say, so a version 1 document
+    /// decodes as it is.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode().map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 /// A library as written, before [`EffectLibrary::new`] checks it.
@@ -368,11 +385,26 @@ impl EffectLibrary {
             if !names.insert(effect.name.as_str()) {
                 return Err(EffectLibraryError::DuplicateName(effect.name.clone()));
             }
-            if effect.emitters.is_empty() && effect.trail.is_none() {
+            if effect.emitters.is_empty() && effect.trail.is_none() && effect.meshes.is_empty() {
                 return Err(EffectLibraryError::Nothing(effect.name.clone()));
             }
             if effect.emitters.len() > MAX_EMITTERS {
                 return Err(EffectLibraryError::TooManyEmitters(effect.name.clone()));
+            }
+            if effect.meshes.len() > MAX_MESH_LAYERS {
+                return Err(EffectLibraryError::TooManyMeshLayers(effect.name.clone()));
+            }
+            for (layer_index, layer) in effect.meshes.iter().enumerate() {
+                layer.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
+                    effect: effect.name.clone(),
+                    part: if layer.name.is_empty() {
+                        format!("mesh layer {layer_index}")
+                    } else {
+                        format!("mesh layer `{}`", layer.name)
+                    },
+                    field,
+                    problem,
+                })?;
             }
             for (emitter_index, emitter) in effect.emitters.iter().enumerate() {
                 emitter.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
@@ -401,7 +433,8 @@ impl EffectLibrary {
     /// Sapphire's sample effects (`default_effects.ron` beside this crate's manifest), compiled in:
     /// `hit_spark`, `sword_trail` and `dust_puff`, and what a fight's cues play (M2 E3): `cut_spark`,
     /// `break_ring`, `heavy_spark` and `finish_burst`, and what a fight's blades leave: `blade_trail` and
-    /// `warrior_trail`. Their colors and curves are starting points for art direction.
+    /// `warrior_trail`; and effect meshes (M5 L5): the skill's `skill_arc`, and `shock_ring`, `ember_dome` and
+    /// `burst_card` for `--vfx`. Their colors and curves are starting points for art direction.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped effects are checked by this module's tests")
     }
@@ -426,6 +459,13 @@ impl EffectLibrary {
         self.effects.get(usize::from(id.0))
     }
 
+    /// Whether any of its effects has a mesh layer: what a scene declares so the renderer builds the mesh
+    /// family ahead (M5 L5), and builds none of it otherwise.
+    #[must_use]
+    pub fn has_meshes(&self) -> bool {
+        self.effects.iter().any(|effect| !effect.meshes.is_empty())
+    }
+
     /// Its effects' names, in order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.effects.iter().map(|effect| effect.name.as_str())
@@ -437,19 +477,22 @@ fn range_ok((low, high): Range) -> bool {
     low.is_finite() && high.is_finite() && low <= high
 }
 
-fn share_ok(value: f32) -> bool {
+pub(crate) fn share_ok(value: f32) -> bool {
     (0.0..=1.0).contains(&value)
 }
 
-type Problem = (&'static str, &'static str);
+pub(crate) type Problem = (&'static str, &'static str);
 
 /// Fails with `field`'s name when `ok` doesn't hold.
-fn require(ok: bool, field: &'static str, problem: &'static str) -> Result<(), Problem> {
+pub(crate) fn require(ok: bool, field: &'static str, problem: &'static str) -> Result<(), Problem> {
     if ok { Ok(()) } else { Err((field, problem)) }
 }
 
 /// Fails with `field`'s name if the curve isn't valid.
-fn curve_ok<T: crate::curve::CurveValue>(curve: &Curve<T>, field: &'static str) -> Result<(), Problem> {
+pub(crate) fn curve_ok<T: crate::curve::CurveValue>(
+    curve: &Curve<T>,
+    field: &'static str,
+) -> Result<(), Problem> {
     curve.problem().map_or(Ok(()), |problem| Err((field, problem)))
 }
 
@@ -594,6 +637,7 @@ mod tests {
             emitters: vec![emitter],
             trail: None,
             mark: false,
+            meshes: Vec::new(),
         }])
     }
 
@@ -614,7 +658,13 @@ mod tests {
     fn trail_error(edit: impl FnOnce(&mut TrailDesc)) -> &'static str {
         let mut bad = trail();
         edit(&mut bad);
-        let effect = Effect { name: "swing".to_owned(), emitters: Vec::new(), trail: Some(bad), mark: false };
+        let effect = Effect {
+            name: "swing".to_owned(),
+            emitters: Vec::new(),
+            trail: Some(bad),
+            mark: false,
+            meshes: Vec::new(),
+        };
         match EffectLibrary::new(vec![effect]) {
             Err(EffectLibraryError::Invalid { effect, part, field, .. }) => {
                 assert_eq!(effect, "swing");
@@ -627,7 +677,13 @@ mod tests {
 
     #[test]
     fn duplicate_names_keep_row_validation_precedence() {
-        let first = Effect { name: "same".to_owned(), emitters: vec![emitter()], trail: None, mark: false };
+        let first = Effect {
+            name: "same".to_owned(),
+            emitters: vec![emitter()],
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+        };
         let mut duplicate = first.clone();
         duplicate.emitters.clear();
         duplicate.trail = None;
@@ -658,7 +714,11 @@ mod tests {
                 "warrior_trail",
                 "telegraph_mark",
                 "dodge_glint",
-                "phase_mark"
+                "phase_mark",
+                "skill_arc",
+                "shock_ring",
+                "ember_dome",
+                "burst_card"
             ]
         );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
@@ -736,13 +796,15 @@ mod tests {
             emitters: vec![emitter()],
             trail: None,
             mark: false,
+            meshes: Vec::new(),
         };
         assert_eq!(EffectLibrary::new(vec![effect("")]), Err(EffectLibraryError::EmptyName(0)));
         assert_eq!(
             EffectLibrary::new(vec![effect("a"), effect("a")]),
             Err(EffectLibraryError::DuplicateName("a".to_owned()))
         );
-        let nothing = Effect { name: "a".to_owned(), emitters: vec![], trail: None, mark: false };
+        let nothing =
+            Effect { name: "a".to_owned(), emitters: vec![], trail: None, mark: false, meshes: Vec::new() };
         assert_eq!(EffectLibrary::new(vec![nothing]), Err(EffectLibraryError::Nothing("a".to_owned())));
         let many = Effect { emitters: vec![emitter(); MAX_EMITTERS + 1], ..effect("a") };
         assert_eq!(EffectLibrary::new(vec![many]), Err(EffectLibraryError::TooManyEmitters("a".to_owned())));

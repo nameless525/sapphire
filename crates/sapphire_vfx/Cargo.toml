@@ -15,6 +15,8 @@ profiling.workspace = true
 # What the simulation resolves into: the plain sprites and ribbon points the renderer draws, so
 # this crate has no edge to it (rule R4).
 sapphire_look.workspace = true
+# Mesh layers' turns (M5 L5), as the shapes' are: the same on every machine.
+sapphire_math.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 serde.workspace = true

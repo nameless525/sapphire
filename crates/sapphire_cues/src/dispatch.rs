@@ -396,6 +396,10 @@ impl CueDispatcher {
                     (EffectPlace::Crown, _) => {
                         stand.map(|stand| Placement::at(stand.crown + Vec3::Y * CROWN_CLEARANCE))
                     }
+                    (EffectPlace::Facing, _) => stand.map(|stand| Placement {
+                        position: stand.feet,
+                        rotation: sapphire_math::det::quat_from_rotation_y(stand.yaw),
+                    }),
                     _ => stand.map(|stand| Placement::at(stand.feet)),
                 };
                 let owner = match effect.clock {
@@ -648,8 +652,15 @@ mod tests {
         fn read(&mut self, dispatcher: &mut CueDispatcher, tick: u64, cues: &[CueEvent]) {
             // The attacker stands two metres tall, the target one.
             let stand_of = |actor: ActorId| match actor {
-                ATTACKER => Some(Stand { feet: Vec3::new(0.0, 0.0, -1.0), crown: Vec3::new(0.0, 2.0, -1.0) }),
-                TARGET => Some(Stand { feet: Vec3::new(0.0, 0.0, 1.0), crown: Vec3::new(0.0, 1.0, 1.0) }),
+                // Facing +X.
+                ATTACKER => Some(Stand {
+                    feet: Vec3::new(0.0, 0.0, -1.0),
+                    crown: Vec3::new(0.0, 2.0, -1.0),
+                    yaw: std::f32::consts::FRAC_PI_2,
+                }),
+                TARGET => {
+                    Some(Stand { feet: Vec3::new(0.0, 0.0, 1.0), crown: Vec3::new(0.0, 1.0, 1.0), yaw: 0.0 })
+                }
                 _ => None,
             };
             let mut step = CueStep {
@@ -913,13 +924,29 @@ mod tests {
         assert!(place("over", None).distance(over + Vec3::new(0.0, 1.0, -2.0)) < 0.3, "over the actor");
     }
 
+    /// `Facing` stands an effect at its subject's feet turned the way it faces: the skill's arc, whose front is
+    /// its +Z, fronts the attacker's +X (M5 L5).
+    #[test]
+    fn a_facing_effect_turns_with_its_subject() {
+        let fire =
+            EffectFire { effect: "skill_arc".to_owned(), at: EffectPlace::Facing, clock: EffectOwner::Actor };
+        let mut dispatcher = dispatcher(vec![CueRow { effects: vec![fire], ..row("cut") }]);
+        let mut sinks = Sinks::new();
+        sinks.read(&mut dispatcher, 1, &[event("cut", None)]);
+        let mut frame = VfxFrame::default();
+        sinks.vfx.write_frame(&mut frame, 1.0);
+        let arc = frame.meshes.first().expect("the arc");
+        assert!((arc.position - Vec3::new(0.0, 1.0, -1.0)).length() < 1e-4, "{}", arc.position);
+        assert!((arc.rotation * Vec3::Z - Vec3::X).length() < 1e-4, "{}", arc.rotation * Vec3::Z);
+    }
+
     /// A cue the simulation didn't publish fires on its actor as one with no hit would (M4 A5).
     #[test]
     fn a_cue_fired_on_an_actor_plays_its_row_there() {
         let mut dispatcher =
             dispatcher(vec![with_effect("dodge_window", EffectPlace::Crown, EffectOwner::World)]);
         let mut sinks = Sinks::new();
-        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y });
+        let stand_of = |_| Some(Stand { feet: Vec3::ZERO, crown: Vec3::Y, yaw: 0.0 });
         let mut step = CueStep {
             vfx: &mut sinks.vfx,
             screen: &mut sinks.screen,
@@ -1035,6 +1062,7 @@ mod tests {
             emitters: spawns.iter().map(|&spawn| EmitterDesc { spawn, ..dust.emitters[0].clone() }).collect(),
             trail: None,
             mark: false,
+            meshes: Vec::new(),
         });
         VfxLibrary::new(effects.collect()).expect("valid")
     }

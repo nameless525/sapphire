@@ -2143,6 +2143,7 @@ impl Scene {
         let mut inventory = PipelineInventory {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
+            effect_meshes: self.vfx.as_ref().is_some_and(VfxPlayer::has_meshes),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
             debug_draw: demo || debug_draw::enabled(),

@@ -393,6 +393,32 @@ Weather is data in three places and wet surfaces need no authoring to show it: n
 6. **Its pipelines** are declared for you: a wet frame draws through environment pipelines of its own, swapped in for the whole frame, and the stage declares them (`PipelineInventory::wet_surfaces`, entry `wet`) when the zone's weather, its day's keys or `--weather` can be wet, and for a trip's next zone as it comes. A game that builds its own inventory sets `wet_surfaces` the same way; one that doesn't is told by the first-use counters on its first wet frame. `--inventory-without wet` proves the miss.
 7. **A golden** of it is a row ("A golden"), as the `wet-*` scenes are. A scene from before wet surfaces that shows a wet zone keeps `--weather dry`, as `zone-trip-hub`, `zone-trip-ground` and `reflect-hub-square` do.
 
+### Ambient characters in a zone (M5 C10)
+
+People standing about a zone and walking its streets are its presentation alone: no actor, collider, nav agent or simulation random number, so no zone digest or replay checksum moves, and there's no Rust step. The worked example is the proving hub ([proving_hub.zone.ron](../content/zones/proving_hub/proving_hub.zone.ron)), which `zone-hub-people-*` show. Spec §5.21 ("As built (M5 C10)") is the reference.
+
+1. **The cast and its graph.** A cast member is any skinned model whose clips the graph plays: the shipped cast (`content/ambient/`: a lady, a dock hand and a porter, generated figures on the Lancer's skeleton) plays `ambient.animgraph.ron`, which blends `stand` with the Lancer's walk and plays `shift` and `look_around` as gestures. A new body is a figure ("A kind of enemy", step 1) on the same joints, its sidecar's `skeleton` the Lancer's model, so every clip plays on it; its sidecars, material, ramp and ILM are hand-written as `content/ambient/<name>/`'s are. A new gesture is a key-pose clip in `tools/motion/ambient.py`, starting and ending in `stand`'s first pose, and a row in the graph's `combat.moves`.
+2. **The section.** In the zone document:
+   ```ron
+   ambient: Some((
+       seed: 11,
+       graph: "<the graph's ID>",
+       cast: [(name: "porter", mesh: "<its model's ID>")],
+       posts: [
+           (name: "east_post", position: (8.0, 0.0, 7.5), yaw_degrees: 227.0, who: Some("porter"),
+            gestures: ["shift", "look_around"], every: (8.0, 16.0)),
+       ],
+       walks: [
+           (name: "lap", points: [(-10.0, 0.0, -10.0), (10.0, 0.0, -10.0), (10.0, 0.0, 10.0)], closed: true,
+            pace: 1.25, count: 3),
+       ],
+   )),
+   ```
+   A post is someone standing, facing `yaw_degrees` (from +Z, counter-clockwise seen from above), playing a gesture of the list every `every` seconds, least and most. A walk is a line walked round (`closed`) or there and back, each way on its right, by `count` people spread along it at `pace` m/s (0.2 to 3). No `who` picks from the cast by the seed. A cast member's `head` and `feet` default to `head`, `foot.l` and `foot.r`. Names are unique; a zone holds at most 16 cast members, 512 posts, 512 walks of 64 and 1,024 people. A person belongs to the cell their post stands in or their walk's middle lies in, so give a long street several walks.
+3. **Cook and look:** `cargo xtask content` writes `<zone>.sambient` beside the `.szone`, which stays the bytes it was, and packs the cast with the zone. The cook names the zone, the post or walk and the field it refuses, and holds the graph and the cast to their kinds; `tests/zone_ambient.rs` holds that a shipped zone names what content has. `--zone <stem>:<spawner> --capture people.png` shows them; `--ambient off` takes them away for the same shot. The fight bench's count rows say how many stood and how many were in view, and its "ambient activation" row what choosing them cost.
+4. **What each tier draws:** the tier's count of the people within its reach of the focus, nearest cells first, then by the seed (Desktop-High 60 within 72 m, Desktop-Low 60 within 60 m, Mobile-High 30 within 48 m, Mobile-Low 30 within 40 m). Who stands depends on the focus and nothing before, so a capture shows the same people at the same tick however it got there.
+5. **A golden** of them is a row ("A golden"). A scene from before them in a zone that now has them pins `--ambient off`, as `zone-trip-*`, `trip-wipe-*`, `reflect-hub-square` and `wet-hub-dusk` do. Then `cargo xtask replay` to show no checksum moved.
+
 ### A dialogue, with story flags
 
 The worked example is [ward_guide.dialogue.ron](../content/dialogue/ward_guide.dialogue.ron). Spec §5.23 is the reference.

@@ -442,6 +442,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         fight
             .play_cues(scene, sapphire_stage::vfx::budget(quality.active().id))
             .map_err(AppInitError::msg)?;
+        fight.set_decals(options.decals != Some(false));
     }
     // The stage after the hour, which places its pillars.
     if let Some(layout) = options.stage {

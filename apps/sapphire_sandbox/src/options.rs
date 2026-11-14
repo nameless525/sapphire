@@ -368,8 +368,7 @@ pub(crate) struct Options {
     /// `--effect-scale <flashes>:<motion>`: the player's flashes (`normal` or `reduced`) and camera motion (0 to
     /// 1) on the fight's screen effects (M4 A2, A3; `FightShow::set_effect_scale`). None draws them as authored.
     pub effect_scale: Option<EffectScale>,
-    /// `--vfx arc|hit|dust|duel|mesh-scroll|mesh-erosion|mesh-flipbook|mesh-one|mesh-eight`: plays effects at fixed
-    /// ticks (M2 E2, M5 L5).
+    /// `--vfx arc|hit|dust|duel|mesh-*|decal-*`: plays effects at fixed ticks (M2 E2, M5 L5, L7).
     pub vfx: Option<VfxShow>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
@@ -410,6 +409,9 @@ pub(crate) struct Options {
     pub combat: Option<CombatOption>,
     /// `--cues`: fire that simulation's cues, as a game does (M2 E3).
     pub cues: bool,
+    /// `--decals on|off`: whether the cues' ground decals draw (M5 L7): on unless it says off, which the
+    /// goldens from before decals pin. Needs `--cues`.
+    pub decals: Option<bool>,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
     /// `--draw-every <n>`: every frame steps, animates, prepares and records, and only every `n`th runs its
@@ -1282,6 +1284,13 @@ impl Options {
                     cue_repeat = Some(seconds);
                 }
                 "--cues" => options.cues = true,
+                "--decals" => {
+                    options.decals = Some(match value("--decals")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--decals expects on or off, got {other:?}")),
+                    });
+                }
                 "--vfx" => {
                     let raw = value("--vfx")?;
                     options.vfx = Some(VfxShow::from_name(&raw).ok_or_else(|| {
@@ -1689,6 +1698,9 @@ impl Options {
         }
         if options.cues && options.combat.is_none() {
             return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
+        }
+        if options.decals.is_some() && !options.cues {
+            return Err("--decals needs --cues: it says whether the cues' ground decals draw".to_owned());
         }
         if options.cues && options.vfx.is_some() {
             return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
@@ -2756,6 +2768,18 @@ mod tests {
             &own.offscreen,
             Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) if path.starts_with("/sdcard")
         ));
+    }
+
+    /// The cues' decals draw unless `--decals off` says not, which only means something with `--cues`.
+    #[test]
+    fn decals_draw_unless_pinned_off() {
+        let cues = ["--capture", "x.png", "--replay", "a.sreplay", "--cues"];
+        assert_eq!(parse(&cues).unwrap().0.decals, None);
+        assert_eq!(parse(&[&cues[..], &["--decals", "off"]].concat()).unwrap().0.decals, Some(false));
+        assert_eq!(parse(&[&cues[..], &["--decals", "on"]].concat()).unwrap().0.decals, Some(true));
+        assert!(parse(&[&cues[..], &["--decals", "maybe"]].concat()).unwrap_err().contains("on or off"));
+        let plain = ["--capture", "x.png", "--replay", "a.sreplay", "--decals", "off"];
+        assert!(parse(&plain).unwrap_err().contains("--decals needs --cues"));
     }
 
     /// A recording in the arena is the same fight as `--fight`, written down: a phone has no other way to

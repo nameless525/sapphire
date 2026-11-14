@@ -2242,6 +2242,7 @@ impl Scene {
             post: self.effect_variants(),
             effects: self.vfx.is_some(),
             effect_meshes: self.vfx.as_ref().is_some_and(VfxPlayer::has_meshes),
+            decals: self.vfx.as_ref().is_some_and(VfxPlayer::has_decals),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
             focus: self.focus.is_some_and(|focus| focus.drawn()),

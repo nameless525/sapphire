@@ -10,6 +10,11 @@
 //! The `mesh-*` shows play the shipped effect meshes (M5 L5): one effect each, started again each second, for
 //! their goldens; `mesh-one` and `mesh-eight` keep one or eight of the skill's arcs always playing round the
 //! character, the bench's load.
+//!
+//! The `decal-*` shows play the shipped ground decals (M5 L7): `decal-slope` a telegraph filling toward its
+//! strike every second and a scorch every three, on the slope `--ik-ground slope` builds, for its golden;
+//! `decal-one` keeps one telegraph always filling in front of the character and `decal-full` as many
+//! telegraphs and scorches as the tier's cap round it, the bench's load.
 
 use std::time::Duration;
 
@@ -18,8 +23,10 @@ use sapphire_render::VfxFrame;
 use sapphire_render::quality::TierId;
 use sapphire_time::Stopwatch;
 use sapphire_vfx::{
-    EffectHandle, EffectId, EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld,
+    EffectHandle, EffectId, EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld, on_ground,
 };
+
+use crate::ik::IkGround;
 
 /// Whose clock the attacker's effects run on, and the victim's.
 const ATTACKER: OwnerId = OwnerId(1);
@@ -51,10 +58,17 @@ pub enum VfxShow {
     MeshOne,
     /// Eight of them, always playing all round it.
     MeshEight,
+    /// A telegraph's sector filling toward its strike every second, and a scorch every three, on the slope
+    /// `--ik-ground slope` builds (M5 L7).
+    DecalSlope,
+    /// One telegraph, always filling in front of the character (the decals' bench).
+    DecalOne,
+    /// As many telegraphs and scorches as the tier's cap, always playing round it.
+    DecalFull,
 }
 
 impl VfxShow {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Arc,
         Self::Hit,
         Self::Dust,
@@ -64,6 +78,9 @@ impl VfxShow {
         Self::MeshFlipbook,
         Self::MeshOne,
         Self::MeshEight,
+        Self::DecalSlope,
+        Self::DecalOne,
+        Self::DecalFull,
     ];
 
     pub fn name(self) -> &'static str {
@@ -77,6 +94,9 @@ impl VfxShow {
             Self::MeshFlipbook => "mesh-flipbook",
             Self::MeshOne => "mesh-one",
             Self::MeshEight => "mesh-eight",
+            Self::DecalSlope => "decal-slope",
+            Self::DecalOne => "decal-one",
+            Self::DecalFull => "decal-full",
         }
     }
 
@@ -99,6 +119,11 @@ pub fn budget(tier: TierId) -> VfxBudget {
 const DUST_SPOT: Vec3 = Vec3::new(0.7, 0.02, -2.3);
 /// Where the flipbook's card stands, beside the character at the height of its blade's hits.
 const CARD_SPOT: Vec3 = Vec3::new(-0.1, 1.05, 0.4);
+
+/// How long a show's telegraph fills before its strike, seconds: the shipped one's wind-up length.
+const TELEGRAPH_STRIKE: f32 = 0.75;
+/// The most decals `decal-full` keeps playing: Desktop-High's cap.
+const MAX_SHOWN_DECALS: usize = 24;
 
 /// The ticks a swing takes: a sixth of a second, as a light attack's strike.
 const SWING_TICKS: f32 = 10.0;
@@ -172,6 +197,11 @@ pub(crate) struct VfxPlayer {
     mesh: Option<EffectId>,
     /// The arcs `mesh-one` and `mesh-eight` keep playing.
     arcs: [Option<EffectHandle>; 8],
+    /// The telegraph's and the scorch's decals, for a `decal-*` show.
+    decals: Option<(EffectId, EffectId)>,
+    /// The decals `decal-one` and `decal-full` keep playing, and how many: one, or the tier's cap.
+    shown: [Option<EffectHandle>; MAX_SHOWN_DECALS],
+    shown_count: usize,
     /// The blades' trails, while they're swinging.
     blades: [Option<EffectHandle>; 2],
     /// Ticks on the world's clock, and on the character's, which stops through a hitstop.
@@ -196,9 +226,22 @@ impl VfxPlayer {
             VfxShow::MeshErosion => Some("ember_dome"),
             VfxShow::MeshFlipbook => Some("burst_card"),
             VfxShow::MeshOne | VfxShow::MeshEight => Some("skill_arc"),
-            VfxShow::Arc | VfxShow::Hit | VfxShow::Dust | VfxShow::Duel => None,
+            VfxShow::Arc
+            | VfxShow::Hit
+            | VfxShow::Dust
+            | VfxShow::Duel
+            | VfxShow::DecalSlope
+            | VfxShow::DecalOne
+            | VfxShow::DecalFull => None,
         }
         .map(effect);
+        let decals = matches!(show, VfxShow::DecalSlope | VfxShow::DecalOne | VfxShow::DecalFull)
+            .then(|| (effect("telegraph_ground"), effect("scorch_mark")));
+        let shown_count = match show {
+            VfxShow::DecalOne => 1,
+            VfxShow::DecalFull => (budget.max_decals as usize).min(MAX_SHOWN_DECALS),
+            _ => 0,
+        };
         Self {
             show,
             world: VfxWorld::new(library, budget, SEED),
@@ -207,6 +250,9 @@ impl VfxPlayer {
             dust,
             mesh,
             arcs: [None; 8],
+            decals,
+            shown: [None; MAX_SHOWN_DECALS],
+            shown_count,
             blades: [None, None],
             world_ticks: 0,
             character_ticks: 0,
@@ -226,6 +272,11 @@ impl VfxPlayer {
         self.mesh.is_some()
     }
 
+    /// Whether its show plays ground decals: what the scene declares (M5 L7).
+    pub(crate) fn has_decals(&self) -> bool {
+        self.decals.is_some()
+    }
+
     /// One fixed step, with how long each clock moved by: the character's stops in hitstop. Returns
     /// a hitstop to start on the character's clock, if a hit landed. Allocates nothing.
     ///
@@ -239,6 +290,9 @@ impl VfxPlayer {
         // After the step, which ended what had played out: so the frame always holds them all.
         if matches!(self.show, VfxShow::MeshOne | VfxShow::MeshEight) && world_step > 0.0 {
             self.keep_arcs_playing();
+        }
+        if matches!(self.show, VfxShow::DecalOne | VfxShow::DecalFull) && world_step > 0.0 {
+            self.keep_decals_playing();
         }
         if character_step > 0.0 {
             self.sample_blades(character_step);
@@ -284,6 +338,10 @@ impl VfxPlayer {
                 }
                 None
             }
+            VfxShow::DecalSlope if world_step > 0.0 && self.world_ticks.is_multiple_of(SWING_PERIOD) => {
+                self.lay_on_the_slope();
+                None
+            }
             _ => None,
         }
     }
@@ -319,6 +377,43 @@ impl VfxPlayer {
                 let rotation =
                     sapphire_math::det::quat_from_rotation_y(index as f32 * std::f32::consts::FRAC_PI_4);
                 *slot = self.world.spawn(arc, OwnerId::WORLD, Placement { position: Vec3::ZERO, rotation });
+            }
+        }
+    }
+
+    /// A telegraph on the slope, from behind the character's feet out across it to the camera's right, the
+    /// character standing in it; and every third second a scorch inside its reach, nearer the camera.
+    fn lay_on_the_slope(&mut self) {
+        let Some((telegraph, scorch)) = self.decals else { return };
+        let (at, normal) = IkGround::slope_surface(-0.2, -0.3);
+        let placement = on_ground(at, 60_f32.to_radians(), normal);
+        if let Some(handle) = self.world.spawn(telegraph, OwnerId::WORLD, placement) {
+            self.world.set_strike(handle, TELEGRAPH_STRIKE);
+        }
+        if self.world_ticks.is_multiple_of(3 * SWING_PERIOD) {
+            // The scorch lands its own reach ahead of where it's placed, toward the camera.
+            let (at, normal) = IkGround::slope_surface(1.4, -0.45);
+            self.world.spawn(scorch, OwnerId::WORLD, on_ground(at, 0.0, normal));
+        }
+    }
+
+    /// Starts again each of the bench's decals that has ended, so one or the tier's cap always play: a
+    /// telegraph in front of the character, then telegraphs and scorches by turns on rings round it.
+    fn keep_decals_playing(&mut self) {
+        let Some((telegraph, scorch)) = self.decals else { return };
+        for (index, slot) in self.shown.iter_mut().take(self.shown_count).enumerate() {
+            if slot.is_some_and(|handle| self.world.is_playing(handle)) {
+                continue;
+            }
+            let turn = index as f32 * std::f32::consts::TAU / 8.0;
+            let reach = if index == 0 { 0.0 } else { 1.5 + (index / 8) as f32 * 2.5 };
+            let at = Vec3::new(turn.sin() * reach, 0.0, turn.cos() * reach);
+            let effect = if index.is_multiple_of(2) { telegraph } else { scorch };
+            *slot = self.world.spawn(effect, OwnerId::WORLD, on_ground(at, turn, Vec3::Y));
+            if let Some(handle) = *slot
+                && effect == telegraph
+            {
+                self.world.set_strike(handle, TELEGRAPH_STRIKE);
             }
         }
     }
@@ -360,7 +455,10 @@ impl VfxPlayer {
             | VfxShow::MeshErosion
             | VfxShow::MeshFlipbook
             | VfxShow::MeshOne
-            | VfxShow::MeshEight => {}
+            | VfxShow::MeshEight
+            | VfxShow::DecalSlope
+            | VfxShow::DecalOne
+            | VfxShow::DecalFull => {}
         }
     }
 
@@ -537,6 +635,31 @@ mod tests {
         // Mobile-Low's budget is eight: all of them still draw.
         let (_, frame) = frame_after(VfxShow::MeshEight, VfxBudget::MOBILE_LOW, 30);
         assert_eq!((frame.meshes.len(), frame.stats.dropped_meshes), (8, 0));
+    }
+
+    /// Each decal show draws its decals, and nothing else: the slope's telegraph filling and its scorch, and the
+    /// bench's one or the tier's cap always, with none dropped.
+    #[test]
+    fn the_decal_shows_draw_their_decals() {
+        let (_, frame) = frame_after(VfxShow::DecalSlope, VfxBudget::DESKTOP_HIGH, 31);
+        assert_eq!(frame.decals.len(), 2);
+        assert!(frame.sprites.is_empty() && frame.meshes.is_empty() && frame.ribbon_points.is_empty());
+        let telegraph = frame.decals.iter().find(|decal| decal.fill < 1.0).expect("the telegraph fills");
+        assert!((0.3..0.8).contains(&telegraph.fill), "{}", telegraph.fill);
+        for budget in
+            [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
+        {
+            for (show, count) in [(VfxShow::DecalOne, 1), (VfxShow::DecalFull, budget.max_decals as usize)] {
+                let mut player = VfxPlayer::new(show, budget);
+                let mut frame = VfxFrame::default();
+                for _ in 0..400 {
+                    player.tick();
+                    player.write(&mut frame, 1.0);
+                    assert_eq!(frame.decals.len(), count, "{show:?} {budget:?}");
+                }
+                assert_eq!(frame.stats.dropped_decals, 0, "{show:?} {budget:?}");
+            }
+        }
     }
 
     #[test]

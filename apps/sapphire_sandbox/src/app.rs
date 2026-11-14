@@ -400,6 +400,7 @@ impl App for SandboxApp {
                 .show
                 .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))
                 .map_err(AppInitError::msg)?;
+            show.fight.show.set_decals(options.decals != Some(false));
         }
         if let Some(combat) = combat {
             show.fight.attach_prepared_combat(combat, &mut scene, &content)?;

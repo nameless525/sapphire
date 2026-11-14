@@ -89,6 +89,13 @@ impl IkGround {
         }
     }
 
+    /// Where the slope's top is over (`x`, `z`), and its normal: what `--vfx decal-slope` lays its decals on
+    /// (M5 L7), on the bed `--ik-ground slope` builds.
+    pub(crate) fn slope_surface(x: f32, z: f32) -> (Vec3, Vec3) {
+        let (sin, cos) = SLOPE_DEGREES.to_radians().sin_cos();
+        (Vec3::new(x, SLOPE_RISE + x * sin / cos, z), Vec3::new(-sin, cos, 0.0))
+    }
+
     /// Where the stage's stone box goes, for each block: the box stands on its base's middle, a unit
     /// each way before these scales.
     pub(crate) fn blocks(self) -> Vec<Mat4> {

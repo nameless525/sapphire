@@ -364,6 +364,7 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         instances,
         lights,
         probes: None,
+        reflections: Vec::new(),
         day: Some(DAY.to_owned()),
         rigs: None,
         sky: None,

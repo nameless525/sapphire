@@ -613,6 +613,11 @@ fn what_a_zone_gets_wrong_is_named() {
         (format!(r##"instances: [(mesh: "{WOOD}")],"##), "`instances[0].mesh`"),
         (format!(r##"instances: [(mesh: "{LAMP}", scale: (99.0, 1.0, 1.0))],"##), "`instances[0]`"),
         (format!(r##"encounters: ["{WOOD}"],"##), "`encounters[0]`"),
+        (
+            r##"reflections: [(name: "a", position: (0.0, 9.0, 0.0), parallax: (min: (-1.0, 0.0, -1.0), max: (1.0, 2.0, 1.0)))],"##
+                .to_owned(),
+            "`reflections[0].parallax`",
+        ),
         (r##"day: Some("missing.ron"),"##.to_owned(), "failed to read"),
         (r##"day: Some("not_a_day.ron"),"##.to_owned(), "`day`"),
         (r##"rigs: Some("not_rigs.ron"),"##.to_owned(), "not a `sapphire::world::LightRigLibrary`"),
@@ -1501,3 +1506,76 @@ const SKY_DOCUMENT: &str = r#"(
     version: 1,
     data: (sun: (size: 2.0, softness: 0.1)),
 )"#;
+
+/// One reflection probe in the yard by the lamp, its box the yard's.
+const YARD_PROBE: &str = r#"reflections: [
+    (name: "yard", position: (2.0, 1.5, 6.0), parallax: (min: (-4.0, 0.0, 0.0), max: (8.0, 4.0, 12.0))),
+],"#;
+
+fn reflections_id() -> AssetId {
+    ZONE.sub_asset(zone::REFLECTIONS_PART)
+}
+
+/// A zone's reflection probes bake beside it (M5 L2): one asset of the zone's own, which its `.szone` names and
+/// its pack holds, of the cook's size and its day's keys, keyed by what they see and nothing else.
+#[test]
+fn a_zones_reflection_probes_bake_beside_it_and_ship_with_it() {
+    let tree = tree("zone-reflections");
+    add_lamp(&tree);
+    let lamp = |x: f32| format!(r#"instances: [(mesh: "{LAMP}", at: ({x}, 0.0, 6.0))],"#);
+    write_zone(&tree, &format!("{} {} {YARD_PROBE}", placements(), lamp(4.0)));
+    let report = tree.cook();
+    let probes = by_id(&report, reflections_id());
+    assert!(probes.output.ends_with("town.sreflect"), "{}", probes.output.display());
+    let bytes = read_aligned(&probes.output);
+    let read = ReflectionProbes::read(&bytes).unwrap();
+    assert_eq!(read.size(), 128, "the desktop cook's");
+    let default_day = probes::keys(&probes::BakeTimeline::DefaultDay, Path::new("")).unwrap();
+    assert_eq!(
+        read.key_hours().collect::<Vec<_>>(),
+        default_day.iter().map(|key| key.hours).collect::<Vec<_>>()
+    );
+    assert_eq!(read.probes.len(), 1);
+    assert_eq!(read.probes[0].name.as_str(), "yard");
+    assert_eq!(read.probes[0].parallax_max.map(|v| v.to_native()), [8.0, 4.0, 12.0]);
+    // The middle of +Y looks straight up, at the sky.
+    let up = read.cube(0, 0).skip(2 * 128 * 128 * 4 + (64 * 128 + 64) * 4).nth(3).unwrap();
+    assert_eq!(half::f16::from_bits(up).to_f32(), 1.0, "straight up is sky");
+
+    let zone = read_zone(&report);
+    assert_eq!(Zone::read(&zone).unwrap().presentation.reflections.as_ref().copied(), Some(reflections_id()));
+    assert!(AssetKind::Zone.reach(&zone).unwrap().contains(&reflections_id()));
+    let packed = pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap();
+    let holding: Vec<&str> = packed
+        .packs
+        .iter()
+        .filter(|pack| {
+            let bytes = fs::read(&pack.path).unwrap();
+            let reader = PackReader::new(&bytes).unwrap();
+            reader.toc().entries().iter().any(|entry| entry.id == reflections_id())
+        })
+        .map(|pack| pack.name.as_str())
+        .collect();
+    assert_eq!(holding, ["zone_town"]);
+
+    // A light is nothing the probes see; the lamp moved is.
+    let status = |report: &CookReport| by_id(report, reflections_id()).status;
+    let lit = r#"lights: [(position: (4.0, 3.0, 6.0), color: (1.0, 1.0, 1.0), intensity: 1.0, range: 4.0)],"#;
+    write_zone(&tree, &format!("{} {} {YARD_PROBE} {lit}", placements(), lamp(4.0)));
+    let report = tree.cook();
+    assert_eq!((status(&report), by_id(&report, ZONE).status), (CookStatus::UpToDate, CookStatus::Cooked));
+    write_zone(&tree, &format!("{} {} {YARD_PROBE} {lit}", placements(), lamp(5.0)));
+    assert_eq!(status(&tree.cook()), CookStatus::Cooked);
+
+    // The mobile cook bakes at 64, from which Mobile-Low reads the next level down.
+    let options = CookOptions { cook: Cook::Mobile, cache: None, locked: false, editor: false };
+    let mobile = cook_dir_on(&tree.content(), &tree.dir.path().join("mobile"), &options, 2).unwrap();
+    let bytes = read_aligned(&by_id(&mobile, reflections_id()).output);
+    assert_eq!(ReflectionProbes::read(&bytes).unwrap().size(), 64);
+
+    // A zone without probes has no such asset, and names none.
+    write_zone(&tree, &placements());
+    let report = tree.cook();
+    assert!(!report.assets.iter().any(|asset| asset.id == reflections_id()));
+    assert!(Zone::read(&read_zone(&report)).unwrap().presentation.reflections.is_none());
+}

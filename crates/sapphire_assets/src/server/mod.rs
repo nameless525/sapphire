@@ -56,9 +56,10 @@ impl AssetBudgets {
     /// 16 MiB, animation graphs 1 MiB, zones 16 MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB,
     /// navmeshes 16 MiB, timelines 4 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 4 MiB, dialogues 1
     /// MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures' pool with
-    /// their tails ([`Self::pool`], M5 M2). The numbers besides the texture pool's are proposals, to set by
-    /// measuring zones (M2, M3). A quality tier sets its own texture pool on top ([`Self::with_resident`];
-    /// `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2).
+    /// their tails ([`Self::pool`], M5 M2); reflection probes 384 MiB. The numbers besides the texture pool's
+    /// are proposals, to set by measuring zones (M2, M3). A quality tier sets its own texture pool on top
+    /// ([`Self::with_resident`]; `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2). Reflection probes'
+    /// is a zone's most, 42 probes of ten keys at 128 (315 MiB), with room for a second zone's few (M5 L2).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         admission: 256 * MIB,
@@ -92,6 +93,8 @@ impl AssetBudgets {
             MIB,
             // Texture levels: counted in the textures' pool.
             0,
+            // Reflection probes.
+            384 * MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
@@ -100,7 +103,7 @@ impl AssetBudgets {
     /// move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB, font chains
     /// 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 2 MiB,
     /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures'
-    /// pool.
+    /// pool; reflection probes 96 MiB (42 probes of ten keys at 64 are 79 MiB, M5 L2).
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         admission: 64 * MIB,
@@ -132,6 +135,8 @@ impl AssetBudgets {
             MIB,
             // Texture levels: counted in the textures' pool.
             0,
+            // Reflection probes.
+            96 * MIB,
         ]),
     };
 
@@ -174,7 +179,7 @@ impl AssetBudgets {
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
     /// skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string tables,
     /// fonts, font chains, navmeshes, timelines, UI documents, encounters, scripts, dialogues, enemies,
-    /// scores, voice lines, texture levels.
+    /// scores, voice lines, texture levels, reflection probes.
     const fn by_kind(budgets: [u64; AssetKind::ALL.len()]) -> [u64; AssetKind::ALL.len()] {
         budgets
     }

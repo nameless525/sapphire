@@ -138,6 +138,7 @@ impl Gpu {
                 unreachable!("music and voice never go to the uploader")
             }
             AssetKind::TextureLevel => unreachable!("these textures stay whole"),
+            AssetKind::ReflectionProbes => unreachable!("these packs hold no reflection probes"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -240,7 +241,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         admission: 8 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

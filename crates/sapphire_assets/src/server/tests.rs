@@ -215,6 +215,7 @@ fn uploads_are_plain_cooked_data() {
                     unreachable!("music and voice never go to the uploader")
                 }
                 AssetKind::TextureLevel => unreachable!("these assets include no texture level"),
+                AssetKind::ReflectionProbes => unreachable!("these assets include no reflection probes"),
             }
             Ok(())
         })

@@ -800,9 +800,7 @@
 //!
 //! # Later milestones
 //!
-//! - **M1:** mesh
-//!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
-//!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
+//! - **M1:** material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
 //!   M1 W4). The [`FramePacket`] grows with the systems that
 //!   feed it: VFX and UI, plus UI-inset views (shadow views are the renderer's own,
 //!   derived from the key light).
@@ -936,7 +934,7 @@ pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
-pub use mesh_pool::MeshHandle;
+pub use mesh_pool::{MeshHandle, MeshPoolStats};
 pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,
 };
@@ -957,8 +955,9 @@ pub use renderer::{
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
     CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, UiAtlas,
-    UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, VfxFrame,
-    VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
+    UiDrawList, UiFieldFormat, UiGlyphStats, UiPageState, UiPageUpload, UiQuad, UiRun, UiSource, VfxErosion,
+    VfxFlipbook, VfxFrame, VfxLight, VfxMesh, VfxMeshShape, VfxPattern, VfxRibbonPoint, VfxShape, VfxSprite,
+    VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};

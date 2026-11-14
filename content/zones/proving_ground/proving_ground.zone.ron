@@ -1,8 +1,12 @@
 // The proving ground (M3 W1): a small zone of kit pieces, for what reads zones to be tested on, the
 // runtime that streams them above all (M3 W2). No scene or stage draws it. Its pack is
 // `zone_proving_ground`, and it costs the other packs nothing: its materials are the town's, which stay
-// shared, and everything else here is its alone. Five cells 16 m wide hold a dozen placed pieces, the
+// shared, and everything else here is its alone. Six cells 16 m wide hold a dozen placed pieces, the
 // backdrop holds the ground, and one of each thing a zone can hold stands somewhere.
+//
+// Its reflection probes (M5 L2) are one in the open yard by the cart and one under the shelter in cell (-2, 1),
+// out of the way of the walking course and of what the `zone-trip-ground` golden sees: a covered place, which
+// sees the sky only through its open front, beside an open one. Each box is the space its probe stands in.
 (
     type: "sapphire::zone::ZoneDocument",
     version: 1,
@@ -28,6 +32,8 @@
             (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (28.0, 0.0, -8.0), scale: (-1.0, 1.0, 1.0)),
             // The ground.
             (prefab: "d1d24907-c6b9-4587-8633-50df8b55a95b", at: (8.0, 0.0, 0.0), backdrop: true),
+            // Cell (-2, 1): a shelter open toward the yard, for a probe to stand under.
+            (prefab: "49477adb-9e84-4e61-9873-6d012ffe4088", at: (-24.0, 0.0, 30.0)),
         ],
         instances: [
             (mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (4.0, 0.0, 6.0), turn: 20.0),
@@ -42,6 +48,10 @@
                 range: 8.0,
                 shape: Spot(direction: (0.0, -1.0, 0.0), inner_degrees: 20.0, outer_degrees: 35.0),
             ),
+        ],
+        reflections: [
+            (name: "yard", position: (8.0, 1.6, 6.0), parallax: (min: (-8.0, 0.0, -8.0), max: (24.0, 12.0, 24.0))),
+            (name: "shelter", position: (-24.0, 1.6, 30.0), parallax: (min: (-27.0, 0.0, 27.7), max: (-21.0, 3.5, 32.0))),
         ],
         day: Some("../../lookdev/lookdev_day.ron"),
         rigs: Some("../../lookdev/lookdev_light_rigs.ron"),

@@ -40,7 +40,7 @@ use crate::inset::{
 };
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
-use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
+use crate::mesh_pool::{MeshPool, MeshPoolStats, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::mip_streaming::{MipStreaming, MipStreamingStats};
 use crate::outlines::OutlineCull;
 use crate::pipeline_builds::{
@@ -66,7 +66,7 @@ use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::{GpuTexture, TextureError};
 use crate::ui::{Ui, UiPicture, UiStats};
-use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
+use crate::vfx::{self, AfterResolveTargets, Vfx, VfxParts, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::warm_up::{
     Done as WarmUpDone, Job as WarmUpJob, WarmUpProgress, WarmUpRequest, WarmUpStats, WarmUps,
@@ -406,8 +406,11 @@ pub struct RenderStats {
     pub draw_list_builds: u32,
     /// Mesh pool bytes in use: vertices (with skin and morph data) and indices.
     pub mesh_pool_bytes: u64,
-    /// Bytes the mesh pool's buffers hold, in use or not. They never shrink.
+    /// Bytes the mesh pool's buffers hold, in use or not. They shrink only when a compaction is asked
+    /// for ([`Renderer::compact_meshes`]).
     pub mesh_pool_capacity: u64,
+    /// The mesh pool's floor, growths and compactions (M5 D9).
+    pub mesh_pool: MeshPoolStats,
     /// Meshes uploaded and not freed.
     pub meshes: u32,
     /// Meshes given back since the renderer was created.
@@ -922,7 +925,7 @@ impl Renderer {
                 }),
             }],
         });
-        let meshes = MeshPool::new(&device);
+        let meshes = MeshPool::new(&device, gpu.lost_flag());
         ambient.set_character_buffer(characters.buffer());
         let frame_bind_groups = create_frame_bind_groups(
             &device,
@@ -1287,6 +1290,37 @@ impl Renderer {
         }
     }
 
+    /// Asks the mesh pool to give the device back what it holds past its floor (M5 D9): from the next
+    /// [`Self::prepare`], after what that frame retires, its parts move to buffers at their floor, a few a
+    /// frame, until it's there ([`Self::compacting_meshes`]). The floor is the room the meshes uploaded
+    /// and not given back need, at the pool's growth step. Nothing draws differently, and frames already
+    /// submitted keep reading the old buffers until the fence lets them go. Ask under a wipe, as a zone
+    /// trip's arrival does: a frame that compacts allocates and copies.
+    pub fn compact_meshes(&mut self) {
+        self.meshes.ask_compaction();
+        self.update_pool_stats();
+    }
+
+    /// Sends mesh uploads through the mesh pool's staging ring (`true`, the default) or by
+    /// `Queue::write_buffer` alone, which the ring was measured against (M5 D9). For measurements.
+    #[doc(hidden)]
+    pub fn stage_mesh_uploads(&mut self, ring: bool) {
+        if !self.device_lost {
+            self.meshes.stage_uploads(&self.queue, ring);
+        }
+    }
+
+    /// Whether a compaction asked for isn't over: the last frame prepared left the pool above its floor.
+    pub fn compacting_meshes(&self) -> bool {
+        self.meshes.compacting()
+    }
+
+    /// Whether the mesh pool is at its floor for the meshes it holds now, those freed and still drawn
+    /// among them.
+    pub fn meshes_at_floor(&self) -> bool {
+        self.meshes.at_floor()
+    }
+
     /// Gives material `handle` back: its slot goes to later uploads and its group 3 lets go of its
     /// textures, once no mesh draws with it and no frame can be reading it (the `retire` module). Until
     /// then it draws as it did. A handle that's already freed, or isn't this renderer's, frees nothing.
@@ -1416,15 +1450,16 @@ impl Renderer {
     }
 
     /// Moves what's been freed along, after a packet's deltas: what nothing in this frame draws is
-    /// retired, and what no unfinished frame can read goes back to the free lists. Only a frame with
-    /// something retired pays for asking the queue.
+    /// retired, and what no unfinished frame can read goes back to the free lists. Then the mesh pool
+    /// takes its part of a compaction asked for ([`Self::compact_meshes`]), before anything this frame
+    /// reads a mesh's record. Only a frame with something retired pays for asking the queue.
     fn settle_freed(&mut self) {
         let finished = self.fence.finished();
         self.mip_streaming.release_finished(finished);
         if self.mip_streaming.retiring() > 0 {
             self.fence.ask(&self.queue);
         }
-        if self.meshes.retiring() + self.materials.retiring() == 0 {
+        if self.meshes.retiring() + self.materials.retiring() == 0 && !self.meshes.compacting() {
             return;
         }
         let last_read = self.fence.last_frame();
@@ -1441,6 +1476,19 @@ impl Renderer {
         let finished = self.fence.finished();
         self.meshes.release_finished(finished);
         self.materials.release_finished(finished);
+        // On a lost device nothing draws, and a new renderer starts its pool over.
+        let compacted =
+            (!self.device_lost).then(|| self.meshes.compact(&self.device, &self.queue, last_read)).flatten();
+        if let Some(moves) = compacted {
+            // Every range a frame reads is read from the records from here on: the draw list (and so
+            // shadows, outlines, fog cards, view culling, insets and the debug views, which read it)
+            // rebuilds, skinning's jobs read their sources at record, and the draws bind the pool's
+            // buffers as they record.
+            self.scene.meshes_changed();
+            if moves.deformable {
+                self.skinning.sources_moved();
+            }
+        }
         if self.meshes.retiring() + self.materials.retiring() > 0 {
             self.fence.ask(&self.queue);
         }
@@ -1752,8 +1800,9 @@ impl Renderer {
             debug_draw: has(Program::DebugDraw)
                 .then(|| self.debug_draw.as_ref().map(|draw| draw.rebuild()))
                 .flatten(),
-            // Only those built so far: none before the first effect.
-            vfx: has(Program::Vfx).then(|| self.vfx.rebuild()).flatten(),
+            // Only those built so far: none before the first effect, and the meshes' none before the first
+            // effect mesh.
+            vfx: self.vfx.rebuild(has(Program::Vfx), has(Program::VfxMesh)),
             ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
             changed,
         }
@@ -2058,7 +2107,10 @@ impl Renderer {
             ambient: self.ambient.warm(inventory.probe_grid, reflection),
             skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
             post: self.post.warm(inventory.post, inventory.insets, &inventory.color_vision, on),
-            vfx: inventory.effects.then(|| self.vfx.warm(true, on)).flatten(),
+            vfx: self.vfx.warm(
+                VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true },
+                on,
+            ),
             ui: inventory.ui.then(|| self.ui.warm()).flatten(),
             sky: self.sky.warm(&inventory.sky, &self.materials, on),
             debug_draw,
@@ -2165,8 +2217,9 @@ impl Renderer {
             }
             let on = BuildOn::sources(renderer.edited_shaders);
             renderer.post.prewarm(inventory.post, on);
-            if inventory.effects {
-                renderer.vfx.build(&renderer.shaders, true, on);
+            let parts = VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true };
+            if parts.sprites || parts.meshes {
+                renderer.vfx.build(&renderer.shaders, parts, on);
             }
             if inventory.ui {
                 renderer.ui.build(&renderer.shaders);
@@ -2607,6 +2660,10 @@ impl Renderer {
     /// ([`PrepassTargets`]), as temporal AA does.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
+        // Meshes uploaded through the staging ring land before the frame that may draw them.
+        if !self.device_lost {
+            self.meshes.end_uploads(&self.queue);
+        }
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
         // A texture raised after `prepare` is bound already: its copies go ahead of this frame's.
         self.mip_streaming.submit(&self.queue);
@@ -3606,6 +3663,13 @@ impl Renderer {
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
         self.stats.mesh_pool_capacity = self.meshes.capacity_bytes();
+        self.stats.mesh_pool = MeshPoolStats {
+            floor: self.meshes.floor_bytes(),
+            retired: self.meshes.retired_bytes(),
+            growths: self.meshes.growths(),
+            compactions: self.meshes.compactions(),
+            compacting: self.meshes.compacting(),
+        };
         self.stats.meshes = self.meshes.live() as u32;
         self.stats.meshes_freed = self.meshes.freed();
         self.stats.retiring = (self.meshes.retiring() + self.materials.retiring()) as u32;

@@ -10,6 +10,7 @@ use crate::document::{
     Effect, EffectId, EffectLibrary, EmitterDesc, Facing, MAX_EMITTERS, MAX_TRAIL_SAMPLES, Source, Spawn,
     TrailDesc,
 };
+use crate::mesh::MeshLayerDesc;
 use crate::rng::Rng;
 use crate::trail::{Segment, TrailSample};
 
@@ -173,6 +174,7 @@ pub struct VfxWorld {
     dropped_ribbon_points: u64,
     dropped_effects: u64,
     dropped_trails: u64,
+    dropped_meshes: u64,
 }
 
 impl VfxWorld {
@@ -197,6 +199,7 @@ impl VfxWorld {
             dropped_ribbon_points: 0,
             dropped_effects: 0,
             dropped_trails: 0,
+            dropped_meshes: 0,
         }
     }
 
@@ -497,7 +500,7 @@ impl VfxWorld {
                 Some(trail) => slot.stopped && rings[usize::from(trail)].len == 0,
                 // Without one: an effect whose trail didn't fit plays out as if it had none.
                 None => slot.stopped || emitters_done(effect, slot),
-            };
+            } && meshes_done(effect, slot);
             if !done {
                 continue;
             }
@@ -548,7 +551,72 @@ impl VfxWorld {
             );
             ribbons += u32::from(drawn);
         }
-        frame.stats = VfxStats { ribbons, ribbon_points: frame.ribbon_points.len() as u32, ..self.stats() };
+        self.write_meshes(frame, unplayed);
+        frame.stats = VfxStats {
+            ribbons,
+            ribbon_points: frame.ribbon_points.len() as u32,
+            meshes: frame.meshes.len() as u32,
+            ..self.stats()
+        };
+    }
+
+    /// The live effects' mesh layers, by the budget: past [`VfxBudget::max_meshes`] the highest priority
+    /// draw, and of equal priority the effects in the oldest slots, so what's kept doesn't flicker; the
+    /// rest are counted in `dropped_meshes`, once a frame each. Two passes, no allocation.
+    fn write_meshes(&mut self, frame: &mut VfxFrame, unplayed: f32) {
+        let Self { library, slots, budget, dropped_meshes, .. } = self;
+        let mut showing = [0_u32; 256];
+        let mut total = 0_u32;
+        let each = |visit: &mut dyn FnMut(&MeshLayerDesc, &Slot, f32)| {
+            for slot in slots.iter().filter(|slot| slot.live) {
+                let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
+                let age = slot.age - unplayed * slot.step;
+                for layer in &effect.meshes {
+                    visit(layer, slot, age);
+                }
+            }
+        };
+        each(&mut |layer, _, age| {
+            let local = age - layer.delay;
+            if (0.0..layer.lifetime).contains(&local) {
+                showing[usize::from(layer.priority)] += 1;
+                total += 1;
+            }
+        });
+        if total == 0 {
+            return;
+        }
+        // The lowest priority that draws, and how many of it fit.
+        let cap = budget.max_meshes;
+        let (mut floor, mut room) = (0_usize, cap);
+        let mut above = 0_u32;
+        for priority in (0..256).rev() {
+            if above + showing[priority] >= cap {
+                floor = priority;
+                room = cap - above;
+                break;
+            }
+            above += showing[priority];
+        }
+        frame.meshes.reserve(total.min(cap) as usize);
+        each(&mut |layer, slot, age| {
+            let priority = usize::from(layer.priority);
+            if priority < floor {
+                return;
+            }
+            if priority == floor {
+                if room == 0 {
+                    return;
+                }
+                if let Some(mesh) = layer.resolve(&slot.placement, age) {
+                    room -= 1;
+                    frame.meshes.push(mesh);
+                }
+            } else if let Some(mesh) = layer.resolve(&slot.placement, age) {
+                frame.meshes.push(mesh);
+            }
+        });
+        *dropped_meshes = dropped_meshes.saturating_add(u64::from(total) - frame.meshes.len() as u64);
     }
 
     /// What it holds and what it has dropped. Ribbons and their points are those of the last frame
@@ -561,6 +629,7 @@ impl VfxWorld {
             dropped_ribbon_points: self.dropped_ribbon_points,
             dropped_effects: self.dropped_effects,
             dropped_trails: self.dropped_trails,
+            dropped_meshes: self.dropped_meshes,
             ..VfxStats::default()
         }
     }
@@ -615,6 +684,12 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
             }
         }
     }
+}
+
+/// Whether every mesh layer of `effect` has played out: a stop doesn't cut one short, as it doesn't a
+/// particle already born.
+fn meshes_done(effect: &Effect, slot: &Slot) -> bool {
+    effect.meshes.iter().all(|layer| slot.age >= layer.end())
 }
 
 /// Whether every emitter of `effect` has nothing left to emit.

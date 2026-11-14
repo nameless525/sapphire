@@ -77,7 +77,7 @@ Four quality tiers with a ladder that steps down under heat, ASTC textures, a to
 - **Content:** glTF, VRM 1.0 and FBX, cooked per platform (BC7 or ASTC) through a content-hash cache into packs, loaded asynchronously by asset ID. Signed releases patch themselves by downloading only the blocks that changed.
 - **Simulation:** a deterministic fixed 60 Hz step on `bevy_ecs`, whose replays are checked tick by tick on x86-64 and ARM. Our own animation runtime (inertialization, IK, spring bones), physics and navigation, with `kira` for audio.
 - **Iteration:** hot reload, and live link to any device: content, materials, time-of-day keys, cvars and shaders change in the running app. A debug overlay, a timeline editor, and playtest builds that bring back marked moments as replays.
-- **Proof:** 376 golden scenes compared on three GPU backends and 39 replays, on every pull request; release packages for all five platforms, built nightly.
+- **Proof:** more than 400 golden scenes compared on three GPU backends and about 40 replays, on every pull request; release packages for all five platforms, built nightly.
 
 ## Quick start
 

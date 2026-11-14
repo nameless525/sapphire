@@ -29,6 +29,7 @@ same `CARGO_TARGET_DIR`.
 - A screen: `cargo test -p sapphire_ui --test tree`; its motion and scrolling, `--test motion`; its focus and hit tests, `--test focus`, and from each device, `cargo test -p sapphire_controls --test menu`; its cook, what fonts it needs and every refusal, `cargo test -p sapphire_pipeline --test ui_cook`; a save reaching a running app, `cargo test -p sapphire_sandbox --features dev --test live_tuning -- --ignored a_screen_on_show`. Its cost: `cargo test -p sapphire_ui --release --test tree_costs -- --ignored --nocapture --test-threads=1`.
 - A string the game shows: `cargo test -p game_ui --test strings` (both languages, its key reachable, its characters in the fonts' set), then `--test menus` to walk the screens; `content/loc/en/game_ui.ftl`'s header says how one is added.
 - The game's menus: `cargo test -p game_ui --test menus` walks every one by every device; what the game does with them, `cargo test -p game_app --lib`; a document's look, `cargo xtask golden --scene game-<screen>-<tablet|wide|ultrawide>-<en|ja>`. Their cost: `cargo test -p game_ui --release --test menu_costs -- --ignored --nocapture`.
+- What the benchmark district submits at scale: `cargo xtask counts` (about a minute on an M5: eight walks), or one walk with `--walk <tier>-<dusk|night>`. See [The scale lane](#the-scale-lane).
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
 - All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world -p sapphire_debug --tests --locked -- --ignored --test-threads=1`.
@@ -189,6 +190,35 @@ Exact RGB matches skip FLIP's perceptual calculation. The result still uses the 
 and colorized error-map path, and alpha remains ignored as before. Any changed RGB channel takes
 the original FLIP path. Captures, scene isolation, thresholds, golden references and sharding are
 unchanged. This optimization helps the comparison stage; it does not accelerate scene rendering.
+
+## The scale lane
+
+CI's nightly scale lane (M5 X4) walks the benchmark district's `ci` preset, the tour at each tier's settings at
+dusk and at night, and holds what each walk counted to [`tests/counts/district-ci.txt`](../tests/counts/district-ci.txt):
+draws and instances, triangles, each pass's draws, the pipelines, materials and vertex buffers the mesh passes
+set, the ambient pass's dispatches, what animation posed, held and thinned, what was looked at and culled, the levels drawn, lights kept
+and dropped, the pools, the load's pipelines and what the zone placed. The materials and vertex buffers bound
+are in each walk's counts but not held: they follow the order cells arrive in, which is timing (the table's
+header says so). Every row held is exact, so a count that goes
+down fails as surely as one that goes up. No time is read, so any machine reproduces it:
+
+```sh
+cargo xtask counts                          # every walk against the table
+cargo xtask counts --walk desktop-high-dusk # one
+```
+
+A failure prints a line for each row that moved, with the table's reading, the walk's and which way:
+
+```text
+desktop-high-dusk | draw calls: total 720479 -> 720483 (up), worst 1758 -> 1762 (up)
+```
+
+**When a count moves on purpose** (the draw lists, culling, levels, a new pass, the district itself):
+`cargo xtask counts --update`, then read the table's diff, which shows only what moved, and say in the change
+why each row did; a row that moved and shouldn't have is the bug. The table's header names the district's
+sources by digest, so a change to the generator or to `bench/` fails `cargo xtask counts` until the table is rewritten
+with it (`bench/README.md` lists what else such a change moves). Each walk's log is `target/counts/<walk>.log`,
+and what every walk counted is `target/counts/counts.txt`, which CI uploads from each night's jobs.
 
 ## CI setup and cache identity
 

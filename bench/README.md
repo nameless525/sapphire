@@ -35,7 +35,8 @@ The presets:
 | `double` | the budget's district at 320 texture sets: twice the pool | the budget's |
 
 To open the district after a cook, a `dev` sandbox reads the shipped packs and the district's pack side by
-side (a shipping build mounts only what its release manifest names): put `target/content/desktop/*` and
+side (a shipping build mounts only what its release manifest names; `cargo xtask bench-content
+--with-content` makes the `ci` preset's folder for a shipping build, below): put `target/content/desktop/*` and
 `target/bench/<preset>/desktop/zone_district.spack` in one folder and run, for example,
 `SAPPHIRE_CONTENT_DIR=<folder>/ sapphire_sandbox --capture dusk.png --size 1280x720 --zone district
 --zone-walk tour --time-of-day 19.75 --capture-ticks 300` (`--time-of-day 23` for the night key, `--bench
@@ -47,6 +48,34 @@ tour at run speed is about 7,560 frames, half that on Mobile-Low's two steps a f
 median, p95 and worst with the metres walked at the worst frame, each counter of what the frame drew against
 spec §3.4's budgets (`count row`), and how the frames split between performance and efficiency cores (`frames
 by core`); `--bench-trace <csv>` writes every frame. Spec §3.8 is its first reading.
+
+## In CI (M5 X4)
+
+The `ci` preset is what CI holds at scale, through a shipping sandbox. `cargo xtask bench-content
+--with-content` cooks `content/` and the preset for desktop and puts them together in
+`target/bench/ci/with-content/desktop/`: the shipped cook's files, linked, with `zone_district.spack` beside
+them and a release manifest naming both (`sapphire_pipeline manifest`). The golden jobs bundle that folder, so:
+
+- **Every pull request** draws three district goldens (`zone-district-street-dusk`, `zone-district-plaza-night`,
+  `zone-district-plaza-phone` in `tests/golden/scenes.ron`), and the cooks-agree jobs hold the district's
+  pack to the same bytes on Linux, Windows and macOS as they hold the shipped packs.
+- **Every night** (and on a dispatch of CI), the scale lane walks the tour at each tier's settings, dusk and
+  night, a job each, and holds what each walk counted to `tests/counts/district-ci.txt` (`cargo xtask
+  counts`; `docs/development-iteration.md` says what to run when a count moves).
+
+The `ci` cook took 19 s on the M5 (cold cache, under a load of about 20): 158 assets into a 10.8 MB
+`zone_district.spack` and a 1.2 MB `shared.spack` of the cast, which no test mounts.
+
+**A deliberate change to the generator or to `bench/`** moves, in the same change:
+
+1. the pipeline's pinned digests (`the_ci_preset_generates_the_same_bytes_on_every_machine`), and the
+   `sources:` digest in the counts table's header, which `cargo xtask counts` checks;
+2. the counts: `cargo xtask counts --update` on any machine, since every row it holds is exact and none depends on
+   the GPU (two Metal runs agree; that lavapipe agrees is the first nightly's to show), then read the diff
+   and say why each row moved;
+3. the three district goldens on all three backends, nine images: Metal here with `cargo xtask golden --update
+   --scene <name>` once for each, then lavapipe's and WARP's from the pull request's first CI run, as a new
+   scene's are taken (`tests/golden/scenes.ron`'s header).
 
 See `docs/m5-plan.md` (B1 to B4) and the spec's §5.27 for the route, and `sapphire_pipeline::procedural` for
 the procedural texture documents.

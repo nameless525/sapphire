@@ -145,12 +145,12 @@ On a phone, use `xcrun simctl io booted screenshot <png>` on the iOS Simulator, 
 
 ## Golden images
 
-`cargo xtask golden` renders the 376 golden scenes in [`tests/golden/scenes.ron`](../tests/golden/scenes.ron) with `--capture`, and compares each with its reference `tests/golden/<scene>.<family>.png` using FLIP.
+`cargo xtask golden` renders the golden scenes in [`tests/golden/scenes.ron`](../tests/golden/scenes.ron) with `--capture`, and compares each with its reference `tests/golden/<scene>.<family>.png` using FLIP.
 
 - **Families:**
   - `metal`: any Apple GPU;
   - `vulkan-lavapipe`: Linux CI, in 5 shards;
-  - `dx12-warp`: Windows CI, in 6 shards.
+  - `dx12-warp`: Windows CI, in 8 shards.
 
   Every pull request runs all three.
 - **Gates:** the mean error, the 99th-percentile error and the worst 16×16 tile's mean error, not the maximum, because hard two-tone edges flip whole pixels between backends. Spec §9 has the numbers.

@@ -13,9 +13,13 @@
 //   scrolled toward +u (along a slash from its tail to its head, round a ring the way `spin` turns), an
 //   `erosion` eating it by a mask, and a `flipbook` turning a sheet's frames. Their curves' t is the layer's
 //   own life. The last four effects are the meshes: the skill's arc, and three `--vfx` shows.
+// - `distortion` (M5 L6, schema 4): a mesh layer that bends the picture behind it, by `strength` (a share of
+//   the frame's height, at most 0.1) over its life: `Outward` from its middle on screen by its coverage, a
+//   shockwave; `Shimmer` each way by its pattern, a haze. A layer that only bends leaves out `color`, draws no
+//   light and takes no random numbers. The scorch's are the shipped ones.
 (
     type: "sapphire::vfx::EffectLibrary",
-    version: 3,
+    version: 4,
     data: (
         effects: [
             (
@@ -496,8 +500,43 @@
             ),
             (
                 // Where a heavy's blade lands (`heavy_land`): the ground scorched in front of the fighter, its
-                // edge burnt, fading over three seconds.
+                // edge burnt, fading over three seconds. As it lands, a shockwave runs out over the ground from it,
+                // bending the paving outward as its band passes (M5 L6); then the air over the burn shimmers, the
+                // haze you'd only miss if it were gone, ending before the scorch does on every tier (Mobile-Low's
+                // shortened life is 1.8 seconds), so the effect lives no longer for it.
                 name: "scorch_mark",
+                meshes: [
+                    (
+                        name: "shockwave",
+                        shape: Ring,
+                        lifetime: 0.45,
+                        offset: (0.0, 0.05, 1.35),
+                        scale: [(0.0, (0.35, 1.0, 0.35)), (0.4, (2.2, 1.0, 2.2)), (1.0, (3.6, 1.0, 3.6))],
+                        alpha: [(0.0, 1.0), (0.5, 0.8), (1.0, 0.0)],
+                        soft: 0.03,
+                        distortion: Some((
+                            bend: Outward,
+                            strength: [(0.0, 0.0), (0.1, 0.03), (1.0, 0.006)],
+                        )),
+                    ),
+                    (
+                        name: "haze",
+                        shape: Column,
+                        delay: 0.15,
+                        lifetime: 1.6,
+                        offset: (0.0, 0.0, 1.35),
+                        scale: [(0.0, (0.6, 1.5, 0.6)), (1.0, (0.75, 1.9, 0.75))],
+                        alpha: [(0.0, 0.0), (0.15, 1.0), (0.7, 1.0), (1.0, 0.0)],
+                        soft: 0.4,
+                        pattern: Noise,
+                        tiling: (3.0, 1.5),
+                        scroll: (0.05, 0.7),
+                        distortion: Some((
+                            bend: Shimmer,
+                            strength: [(0.0, 0.0035)],
+                        )),
+                    ),
+                ],
                 decals: [
                     (
                         name: "scorch",

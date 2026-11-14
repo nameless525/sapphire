@@ -443,12 +443,14 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     options.apply_to(scene).map_err(AppInitError::msg)?;
     if let Some(show) = options.vfx {
         scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
+        scene.set_vfx_distortion(options.distortion != Some(false));
     }
     if options.cues {
         fight
             .play_cues(scene, sapphire_stage::vfx::budget(quality.active().id))
             .map_err(AppInitError::msg)?;
         fight.set_decals(options.decals != Some(false));
+        fight.set_distortion(options.distortion != Some(false));
     }
     // The stage after the hour, which places its pillars.
     if let Some(layout) = options.stage {

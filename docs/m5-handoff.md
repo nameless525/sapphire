@@ -447,6 +447,18 @@ A ground decal is a layer of an effect in [default_effects.ron](../crates/sapphi
 7. **Look at it:** `--vfx decal-slope` plays the show the `decal-slope` golden captures, `--cues` plays them in a fight, and a save under `--cues` reaches a running fight. `--decals off` keeps them from drawing. Validation names the effect, the layer and the field.
 8. **Rust steps:** a new shape, a decal on a wall or over steps (a projected decal), a lit or textured decal (see "Everything deferred").
 
+### A bend (M5 L6)
+
+A bend is an effect mesh layer that moves the picture behind it instead of adding light: a shockwave's ring pushing the paving outward, a haze shimmering over a burn. Spec §5.16's "As built (M5 L6)" is the reference, and `sapphire_vfx`'s `mesh` module docs have every field. No step edits Rust, and no replay moves: bends are presentation.
+
+1. **The version:** a library with a bend says `version: 4`. Versions 1 to 3 still load, as libraries with none, and write as they did.
+2. **The layer:** a mesh layer (see "An effect mesh") with `distortion: Some((bend: Outward, strength: [(0.0, 0.0), (0.1, 0.03), (1.0, 0.006)]))`. `strength` is a curve over the layer's life, in shares of the frame's height, at most 0.1: 0.03 moves the picture 32 pixels at 1080 rows, the same at every size, render scale and tier. `bend: Outward` (the default) pushes the picture away from the layer's middle on screen by its coverage, so a ring bends only where its band passes; `bend: Shimmer` moves it each way by the layer's `pattern`, read twice apart, which averages to nothing, so scroll a `Noise` pattern for a haze. The shape, `scale`, `alpha`, `soft`, `pattern`, `tiling`, `scroll`, `erosion` and `flipbook` shape the bend as they shape a mesh's light.
+3. **Bend only, or both:** leave out `color` and the layer bends without drawing anything; give both and it draws its light and bends too. A bend-only layer takes no random numbers and isn't counted as a mesh, so adding one to an effect moves no other effect's sparks; keep it inside its effect's life (a scorch's is 1.8 seconds on Mobile-Low) and the effect lives no longer for it. `scorch_mark`'s `shockwave` and `haze` are the worked examples.
+4. **Fire it:** a cue row names the effect as any other; `heavy_land` is the worked row. The fight declares the bends' pipelines whenever its library has one. Bends draw at the camera motion setting's share and not at all when it's off.
+5. **Where it shows:** Desktop-High and Desktop-Low into offsets at half size, Mobile-High at a quarter, up to 8, 8 and 4 at once by `priority`. Mobile-Low builds and draws none. A character, in front of the bend or behind it, and the interface never bend.
+6. **Look at it:** `--vfx distort-shockwave` and `distort-haze` play the shows the `distort-*` goldens capture, `--cues` plays them in a fight, and `--distortion off` keeps them from drawing (every older golden that could show one pins it). Validation names the effect, the layer and the field.
+7. **Rust steps:** a sprite or ribbon that bends, refraction through a surface, a colour split along the bend, and bends on Mobile-Low (see "Everything deferred").
+
 ### A focus key (M5 L8)
 
 Depth of field is a key on a timeline's camera, a cutscene's or a move's cinematic. Spec §5.12's "As built (M5 L8)" is the reference. No step edits Rust, and no replay moves: focus is presentation, and the timeline's simulation digest doesn't see it.

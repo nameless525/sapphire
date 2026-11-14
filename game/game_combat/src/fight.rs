@@ -526,6 +526,9 @@ pub struct FightShow {
     /// The cues' ground decals aren't drawn (`--decals off`, M5 L7): what keeps an older golden's frame as it
     /// was. They still play, unseen, as they take no random numbers.
     decals_off: bool,
+    /// The cues' bends aren't drawn (`--distortion off`, M5 L6): what keeps an older golden's frame as it was.
+    /// They still play, unseen, as they take no random numbers.
+    distortion_off: bool,
 }
 
 impl FightShow {
@@ -1512,6 +1515,14 @@ impl FightShow {
         self.decals_off = !on;
     }
 
+    /// Whether the cues' bends draw (M5 L6): on where it starts. Off, they play unseen and the renderer builds
+    /// nothing of them, which keeps a frame that predates them as it was. On, they bend by the camera motion
+    /// setting's share ([`EffectScale::motion`], as the zoom blur does), and none at 0: a bend is the picture
+    /// moving, which a player who turned motion off asked not to see.
+    pub fn set_distortion(&mut self, on: bool) {
+        self.distortion_off = !on;
+    }
+
     /// The screen effects' scale, as [`Self::set_effect_scale`] last said.
     #[must_use]
     pub const fn effect_scale(&self) -> EffectScale {
@@ -1984,6 +1995,8 @@ impl SceneShow for FightShow {
         inventory.effects |= self.cues.is_some();
         inventory.effect_meshes |= self.cues.as_ref().is_some_and(|cues| cues.has_meshes());
         inventory.decals |= !self.decals_off && self.cues.as_ref().is_some_and(|cues| cues.has_decals());
+        inventory.distortion |=
+            !self.distortion_off && self.cues.as_ref().is_some_and(|cues| cues.has_distortion());
         // Depth of field's passes, where a timeline it may play keys focus (M5 L8).
         inventory.focus |= self.timelines.iter().any(|timeline| timeline.has_focus());
     }
@@ -2059,6 +2072,7 @@ impl SceneShow for FightShow {
             if self.decals_off {
                 frame.decals.clear();
             }
+            shown_bends(frame, !self.distortion_off, self.effect_scale.motion);
         }
     }
 
@@ -2798,6 +2812,67 @@ impl SceneShow for Fight {
 
 pub mod trip;
 pub mod volumes;
+
+/// What of the cues' bends draw (M5 L6): none while `on` is false, else each at the camera motion setting's share
+/// of its strength, `motion` as [`EffectScale::motion`] says, and none at 0 (or a share that isn't a number).
+fn shown_bends(frame: &mut VfxFrame, on: bool, motion: f32) {
+    if !on || motion.is_nan() || motion <= 0.0 {
+        frame.distortions.clear();
+    } else if motion < 1.0 {
+        for bend in &mut frame.distortions {
+            bend.strength *= motion;
+        }
+    }
+}
+
+#[cfg(test)]
+mod bend_tests {
+    use sapphire_math::{Quat, Vec2, Vec3};
+    use sapphire_render::{VfxBend, VfxDistortion, VfxFrame, VfxMesh, VfxMeshShape, VfxPattern};
+
+    use super::shown_bends;
+
+    fn frame(strengths: &[f32]) -> VfxFrame {
+        let mesh = VfxMesh {
+            shape: VfxMeshShape::Ring,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            color: Vec3::ZERO,
+            alpha: 1.0,
+            additive: 1.0,
+            soft: 0.1,
+            pattern: VfxPattern::Solid,
+            tiling: Vec2::ONE,
+            scroll: Vec2::ZERO,
+            erosion: None,
+            flipbook: None,
+        };
+        let bend = |strength| VfxDistortion { mesh, bend: VfxBend::Outward, strength };
+        VfxFrame { distortions: strengths.iter().copied().map(bend).collect(), ..VfxFrame::default() }
+    }
+
+    fn strengths(frame: &VfxFrame) -> Vec<f32> {
+        frame.distortions.iter().map(|bend| bend.strength).collect()
+    }
+
+    /// Bends draw in full at full motion, at its share when it's reduced, and not at all when it's off, when
+    /// the share isn't a number, or when `--distortion off` says so.
+    #[test]
+    fn bends_follow_the_camera_motion_setting_and_the_switch() {
+        let mut full = frame(&[0.02, 0.004]);
+        shown_bends(&mut full, true, 1.0);
+        assert_eq!(strengths(&full), [0.02, 0.004]);
+        let mut half = frame(&[0.02, 0.004]);
+        shown_bends(&mut half, true, 0.5);
+        assert_eq!(strengths(&half), [0.01, 0.002]);
+        for (on, motion) in [(true, 0.0), (true, f32::NAN), (true, -1.0), (false, 1.0)] {
+            let mut none = frame(&[0.02]);
+            shown_bends(&mut none, on, motion);
+            assert!(none.distortions.is_empty(), "{on} at {motion}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod impact_tests {

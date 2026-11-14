@@ -85,6 +85,7 @@
 use std::ops::Range;
 
 pub(crate) mod decal;
+pub(crate) mod distortion;
 #[cfg(test)]
 mod gpu_tests;
 pub(crate) mod mesh;
@@ -104,6 +105,10 @@ use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use decal::{DecalDraw, DecalGpu, DecalPipelines, DecalUpload, VfxDecals};
+use distortion::{
+    DistortionDraw, DistortionPipeline, DistortionResolution, DistortionUpload, VfxDistortions,
+    WarmedDistortion,
+};
 use mesh::{ColorStep, MeshBind, MeshDraws, MeshPipelines, MeshUpload, VfxMeshes, WarmedMeshes};
 
 /// The frame graph's pass under temporal AA, whose time is effects' GPU cost, against spec §3.3's
@@ -141,6 +146,9 @@ pub struct VfxRenderStats {
     pub meshes: u32,
     /// Ground decals drawn in the last prepared frame (M5 L7, the `decal` module), in the main pass.
     pub decals: u32,
+    /// Bends drawn into the offsets in the last prepared frame (M5 L6, the `distortion` module), in its own pass:
+    /// 0 on a tier without them, whatever the frame asked.
+    pub distortions: u32,
     /// Bytes of instance data the last prepared frame uploads.
     pub bytes: u64,
     /// The ranges of instances the last prepared frame's color draws: one but where a ribbon must draw
@@ -500,6 +508,7 @@ pub(crate) struct VfxPipelines {
     sprites: Option<SpritePipelines>,
     meshes: Option<MeshPipelines>,
     decals: Option<DecalPipelines>,
+    distortion: Option<DistortionPipeline>,
 }
 
 impl VfxPipelines {
@@ -508,6 +517,7 @@ impl VfxPipelines {
         self.sprites.as_ref().map_or(0, SpritePipelines::count)
             + self.meshes.as_ref().map_or(0, MeshPipelines::count)
             + self.decals.as_ref().map_or(0, |_| DecalPipelines::COUNT)
+            + u32::from(self.distortion.is_some())
     }
 }
 
@@ -591,22 +601,25 @@ pub(crate) struct WarmedVfx {
     sprites: Option<WarmedSprites>,
     meshes: Option<WarmedMeshes>,
     decals: Option<Box<DecalGpu>>,
+    distortion: Option<WarmedDistortion>,
 }
 
 /// Which of the effects' parts to build: the sprites' (with ribbons), the meshes' (M5 L5), the ground decals'
-/// (M5 L7), and with sprites or meshes the mask's pipeline, where post reads scene color's alpha.
+/// (M5 L7), the bends' (M5 L6, only on a tier with them), and with sprites or meshes the mask's pipeline, where
+/// post reads scene color's alpha.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct VfxParts {
     pub sprites: bool,
     pub meshes: bool,
     pub decals: bool,
+    pub distortion: bool,
     pub mask: bool,
 }
 
 impl VfxParts {
     /// Whether it builds anything.
     pub(crate) fn any(self) -> bool {
-        self.sprites || self.meshes || self.decals
+        self.sprites || self.meshes || self.decals || self.distortion
     }
 }
 
@@ -861,6 +874,8 @@ pub(crate) struct Vfx {
     meshes: VfxMeshes,
     /// The ground decals' part (M5 L7), made only for a decal.
     decals: VfxDecals,
+    /// The bends' part (M5 L6), made only for a bend on a tier with them.
+    distortions: VfxDistortions,
     /// This frame's sprites from back to front, and the sort's keys, kept across frames so a warm
     /// frame allocates nothing.
     sprites: Vec<GpuVfxSprite>,
@@ -888,6 +903,7 @@ impl Vfx {
         view_layout: &wgpu::BindGroupLayout,
         samples: u32,
         after_resolve: bool,
+        distortion: DistortionResolution,
         builds: &PipelineBuilds,
     ) -> Self {
         Self {
@@ -901,6 +917,7 @@ impl Vfx {
             gpu: None,
             meshes: VfxMeshes::default(),
             decals: VfxDecals::default(),
+            distortions: VfxDistortions::new(distortion),
             sprites: Vec::new(),
             order: Vec::new(),
             points: Vec::new(),
@@ -934,13 +951,22 @@ impl Vfx {
         if parts.decals {
             self.decals.build(&self.maker(), sources, on);
         }
+        if parts.distortion {
+            self.distortions.build(&self.maker(), &self.queue, sources);
+        }
         self.count_pipelines();
     }
 
     fn count_pipelines(&mut self) {
         self.stats.pipelines = self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count())
             + self.meshes.pipelines()
-            + self.decals.pipelines();
+            + self.decals.pipelines()
+            + self.distortions.pipelines();
+    }
+
+    /// The tier's offsets (M5 L6): off draws no bend, whatever a frame asks.
+    pub(crate) fn distortion(&self) -> DistortionResolution {
+        self.distortions.resolution()
     }
 
     /// Which parts' pipelines are built, and whether a mask's is: what effects of another tier build before
@@ -953,10 +979,12 @@ impl Vfx {
             .map(|gpu| gpu.pipelines.mask.is_some());
         let meshes = self.meshes.held();
         let decals = self.decals.held();
-        (sprites.is_some() || meshes.is_some() || decals).then(|| VfxParts {
+        let distortion = self.distortions.held();
+        (sprites.is_some() || meshes.is_some() || decals || distortion).then(|| VfxParts {
             sprites: sprites.is_some(),
             meshes: meshes.is_some(),
             decals,
+            distortion,
             mask: sprites.unwrap_or(false) || meshes.unwrap_or(false),
         })
     }
@@ -968,13 +996,16 @@ impl Vfx {
         let meshes =
             parts.meshes.then(|| self.meshes.warm(self.maker(), &self.queue, parts.mask, on)).flatten();
         let decals = parts.decals.then(|| self.decals.warm(self.maker(), on)).flatten();
-        if sprites.is_none() && meshes.is_none() && decals.is_none() {
+        let distortion =
+            parts.distortion.then(|| self.distortions.warm(self.maker(), &self.queue, on)).flatten();
+        if sprites.is_none() && meshes.is_none() && decals.is_none() && distortion.is_none() {
             return None;
         }
         Some(Box::new(move |sources, cancel| WarmedVfx {
             sprites: sprites.map(|step| step(sources, cancel)),
             meshes: meshes.map(|step| step(sources, cancel)),
             decals: decals.map(|step| step(sources, cancel)),
+            distortion: distortion.map(|step| step(sources, cancel)),
         }))
     }
 
@@ -1016,6 +1047,9 @@ impl Vfx {
         if let Some(decals) = warmed.decals {
             self.decals.adopt(decals);
         }
+        if let Some(distortion) = warmed.distortion {
+            self.distortions.adopt(distortion);
+        }
         self.count_pipelines();
     }
 
@@ -1032,7 +1066,8 @@ impl Vfx {
 
     /// The CPU half of a frame: orders the frame's effects, back to front from `camera`, sizes their
     /// buffers and builds what they first need from `sources`: the sprites' part only for sprites or
-    /// ribbons, the meshes' only for meshes, the decals' only for decals. `exposure` is the frame's multiplier,
+    /// ribbons, the meshes' only for meshes, the decals' only for decals, the bends' only for bends on a tier with
+    /// them. `exposure` is the frame's multiplier,
     /// and `mask` whether post reads scene color's alpha. Empty, it costs this call alone.
     pub(crate) fn prepare(
         &mut self,
@@ -1052,10 +1087,12 @@ impl Vfx {
         self.plan.draws.clear();
         self.meshes.clear();
         self.decals.clear();
+        self.distortions.clear();
         self.stats.sprites = 0;
         self.stats.ribbon_points = 0;
         self.stats.meshes = 0;
         self.stats.decals = 0;
+        self.stats.distortions = 0;
         self.stats.rejected = 0;
         self.stats.bytes = 0;
         self.stats.color_draws = 0;
@@ -1065,12 +1102,14 @@ impl Vfx {
                 gpu.depth_groups = CachedBindGroup::default();
             }
             self.meshes.forget_depth();
+            self.distortions.forget_depth();
             return;
         };
         let parts = VfxParts {
             sprites: !(frame.sprites.is_empty() && frame.ribbon_points.is_empty()),
             meshes: !frame.meshes.is_empty(),
             decals: !frame.decals.is_empty(),
+            distortion: !frame.distortions.is_empty() && self.distortions.resolution().any(),
             mask,
         };
         self.build(sources, parts, on);
@@ -1094,6 +1133,14 @@ impl Vfx {
             self.stats.decals = self.decals.count();
             self.stats.rejected += self.decals.rejected;
             self.stats.bytes += self.decals.bytes();
+        }
+        if parts.distortion {
+            self.distortions.prepare(&frame.distortions, camera, &self.device, &self.queue);
+            self.stats.distortions = self.distortions.count();
+            self.stats.rejected += self.distortions.rejected;
+            self.stats.bytes += self.distortions.bytes();
+        } else {
+            self.distortions.forget_depth();
         }
         self.sprite_depths.extend(self.order.iter().take(self.sprites.len()).map(|&(depth, _)| depth));
         mesh::plan_steps(&self.plan.draws, &self.sprite_depths, self.meshes.depths(), &mut self.steps);
@@ -1146,8 +1193,13 @@ impl Vfx {
     }
 
     /// The frame's uploads and draws, for [`Renderer::record`](crate::Renderer::record): `None` when
-    /// it has no effects. `output` is the target's size.
-    pub(crate) fn split_for_record(&mut self, output: (u32, u32)) -> Option<(VfxUpload<'_>, VfxDraw<'_>)> {
+    /// it has no effects. `output` is the target's size, and `post_input` the size of what post reads, which
+    /// the bends' offsets are a share of.
+    pub(crate) fn split_for_record(
+        &mut self,
+        output: (u32, u32),
+        post_input: (u32, u32),
+    ) -> Option<(VfxUpload<'_>, VfxDraw<'_>)> {
         let instances = (self.sprites.len() + self.points.len()) as u32;
         let sprites = self.gpu.as_mut().filter(|_| instances > 0).and_then(|gpu| {
             let color = gpu.pipelines.color.as_ref()?;
@@ -1188,7 +1240,8 @@ impl Vfx {
         });
         let meshes = self.meshes.split_for_record(output, self.emissive, self.after_resolve, self.mask_read);
         let decals = self.decals.split_for_record(self.emissive);
-        if sprites.is_none() && meshes.is_none() && decals.is_none() {
+        let distortion = self.distortions.split_for_record(post_input);
+        if sprites.is_none() && meshes.is_none() && decals.is_none() && distortion.is_none() {
             return None;
         }
         let (sprite_upload, sprite_main, sprite_after) = match sprites {
@@ -1201,7 +1254,13 @@ impl Vfx {
             None => (None, None),
         };
         let (decal_upload, decals) = decals.unzip();
-        let upload = VfxUpload { sprites: sprite_upload, meshes: mesh_upload, decals: decal_upload };
+        let (distortion_upload, distortion) = distortion.unzip();
+        let upload = VfxUpload {
+            sprites: sprite_upload,
+            meshes: mesh_upload,
+            decals: decal_upload,
+            distortion: distortion_upload,
+        };
         let main = VfxMainDraw { sprites: sprite_main, meshes: mesh_main, steps: &self.steps };
         // Decals alone add no pass after the resolve: they're the main pass's.
         let after = (self.after_resolve && (sprite_after.is_some() || mesh_after.is_some())).then_some(
@@ -1212,13 +1271,19 @@ impl Vfx {
                 steps: &self.steps,
             },
         );
-        Some((upload, VfxDraw { main, after, decals }))
+        Some((upload, VfxDraw { main, after, decals, distortion }))
     }
 
     /// The pipelines built so far, to build anew from new sources (`shader_builds`): the sprites' if
-    /// `sprites` changed, the meshes' if `meshes` did, the decals' if `decals` did. `None` until the first
-    /// effect: nothing to build.
-    pub(crate) fn rebuild(&self, sprites: bool, meshes: bool, decals: bool) -> Option<Step<VfxPipelines>> {
+    /// `sprites` changed, the meshes' if `meshes` did, the decals' if `decals` did, the bends' if `distortion`
+    /// did. `None` until the first effect: nothing to build.
+    pub(crate) fn rebuild(
+        &self,
+        sprites: bool,
+        meshes: bool,
+        decals: bool,
+        distortion: bool,
+    ) -> Option<Step<VfxPipelines>> {
         let sprites = self.gpu.as_ref().filter(|_| sprites).map(|gpu| {
             let builder = gpu.builder.clone();
             let (color, mask) = (gpu.pipelines.color.is_some(), gpu.pipelines.mask.is_some());
@@ -1233,13 +1298,15 @@ impl Vfx {
         });
         let meshes = meshes.then(|| self.meshes.rebuild()).flatten();
         let decals = decals.then(|| self.decals.rebuild()).flatten();
-        if sprites.is_none() && meshes.is_none() && decals.is_none() {
+        let distortion = distortion.then(|| self.distortions.rebuild()).flatten();
+        if sprites.is_none() && meshes.is_none() && decals.is_none() && distortion.is_none() {
             return None;
         }
         Some(Box::new(move |sources, cancel| VfxPipelines {
             sprites: sprites.map(|build| build(sources)),
             meshes: meshes.map(|step| step(sources, cancel)),
             decals: decals.map(|step| step(sources, cancel)),
+            distortion: distortion.map(|step| step(sources, cancel)),
         }))
     }
 
@@ -1259,6 +1326,9 @@ impl Vfx {
         if let Some(decals) = pipelines.decals {
             self.decals.set_pipelines(decals);
         }
+        if let Some(distortion) = pipelines.distortion {
+            self.distortions.set_pipelines(distortion);
+        }
         self.count_pipelines();
     }
 
@@ -1273,6 +1343,7 @@ pub(crate) struct VfxUpload<'a> {
     sprites: Option<SpriteUpload<'a>>,
     meshes: Option<MeshUpload<'a>>,
     decals: Option<DecalUpload<'a>>,
+    distortion: Option<DistortionUpload<'a>>,
 }
 
 /// The sprites' and ribbons' uploads.
@@ -1299,6 +1370,9 @@ impl VfxUpload<'_> {
         if let Some(decals) = &self.decals {
             decals.write(belt, encoder);
         }
+        if let Some(distortion) = &self.distortion {
+            distortion.write(belt, encoder);
+        }
     }
 }
 
@@ -1312,6 +1386,9 @@ pub(crate) struct VfxDraw<'a> {
     /// The ground decals (M5 L7), which draw inside the main pass after its opaque surfaces (the `decal`
     /// module's docs).
     pub decals: Option<DecalDraw<'a>>,
+    /// The bends (M5 L6), drawn into their offsets in [`distortion::PASS`] before post's composite reads them:
+    /// `None` without a bend, or on a tier without them.
+    pub distortion: Option<DistortionDraw<'a>>,
 }
 
 /// What draws sprites and ribbons in a pass: groups 2 and 3.

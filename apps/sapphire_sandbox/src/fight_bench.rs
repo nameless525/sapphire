@@ -53,7 +53,7 @@ use sapphire_platform::{AppInitError, CoreKind};
 use sapphire_render::graph::GpuTimings;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
-    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, post, shadows, temporal, vfx,
+    CHARACTER_PREPASS, DISTORTION_PASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, post, shadows, temporal, vfx,
 };
 use sapphire_rhi::wgpu;
 use sapphire_time::{Stopwatch, TICK_HZ};
@@ -147,7 +147,10 @@ impl GpuTimes {
             taa: sum(&temporal::PASSES),
             post: post::frame_passes(bloom_levels, bloom_chain)
                 .try_fold(Duration::ZERO, |total, name| Some(total + timings.get(name)?.exclusive)),
-            vfx: sum(&[vfx::PASS]),
+            // §3.3's "Particles, distortion": the effects' pass and, in a frame with bends, their offsets (M5 L6).
+            vfx: sum(&[vfx::PASS]).map(|effects| {
+                effects + timings.get(DISTORTION_PASS).map_or(Duration::ZERO, |pass| pass.exclusive)
+            }),
             ui: sum(&[UI_PASS]),
         }
     }

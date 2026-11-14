@@ -74,6 +74,7 @@ use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::{GpuTexture, TextureError};
 use crate::ui::{Ui, UiPicture, UiStats};
+use crate::vfx::distortion::{self, DistortionResolution};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxParts, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::warm_up::{
@@ -177,6 +178,10 @@ pub struct RenderSettings {
     /// What of depth of field it has (M5 L8, `post`'s `focus` module): the main view's focus, drawn only with
     /// [`Self::temporal`] ([`DepthOfFieldSettings::with_temporal`]), and insets' soft backdrops. Off by default.
     pub depth_of_field: DepthOfFieldSettings,
+    /// How large effects' bends' offsets are (M5 L6, the `vfx` module's `distortion`): half post's input on the
+    /// desktop tiers, a quarter on Mobile-High. Off by default, and on Mobile-Low: no pipeline, target or pass,
+    /// whatever a frame's effects ask.
+    pub distortion: DistortionResolution,
     /// Main-view culling of static environment and foliage instances (review RA-O01): the main
     /// pass, the scene prepass and the debug views skip those wholly outside the main view's
     /// frustum, which changes no pixel. On by default; off draws everything, for comparisons and
@@ -222,6 +227,7 @@ impl Default for RenderSettings {
             reflections: ReflectionSettings::default(),
             inset: InsetSettings::default(),
             depth_of_field: DepthOfFieldSettings::OFF,
+            distortion: DistortionResolution::Off,
             view_culling: true,
         }
     }
@@ -837,6 +843,7 @@ impl Renderer {
                             settings.bloom_levels,
                             settings.post_effects,
                             settings.depth_of_field.with_temporal(settings.temporal),
+                            settings.distortion.any(),
                             settings.post_variants,
                             builds,
                             shaders_ref,
@@ -929,6 +936,7 @@ impl Renderer {
             &layouts.view,
             settings.msaa.sample_count(),
             settings.temporal,
+            settings.distortion,
             builds,
         );
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
@@ -1855,7 +1863,12 @@ impl Renderer {
                 .flatten(),
             // Only those built so far: none before the first effect, and the meshes' none before the first
             // effect mesh.
-            vfx: self.vfx.rebuild(has(Program::Vfx), has(Program::VfxMesh), has(Program::VfxDecal)),
+            vfx: self.vfx.rebuild(
+                has(Program::Vfx),
+                has(Program::VfxMesh),
+                has(Program::VfxDecal),
+                has(Program::VfxDistortion),
+            ),
             ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
             changed,
         }
@@ -2165,6 +2178,7 @@ impl Renderer {
                 inventory.insets,
                 &inventory.color_vision,
                 inventory.focus,
+                inventory.distortion,
                 on,
             ),
             vfx: self.vfx.warm(
@@ -2172,6 +2186,7 @@ impl Renderer {
                     sprites: inventory.effects,
                     meshes: inventory.effect_meshes,
                     decals: inventory.decals,
+                    distortion: inventory.distortion,
                     mask: true,
                 },
                 on,
@@ -2291,6 +2306,7 @@ impl Renderer {
                 sprites: inventory.effects,
                 meshes: inventory.effect_meshes,
                 decals: inventory.decals,
+                distortion: inventory.distortion,
                 mask: true,
             };
             if parts.any() {
@@ -2304,6 +2320,9 @@ impl Renderer {
             }
             if inventory.focus {
                 renderer.post.build_focus(on);
+            }
+            if inventory.distortion {
+                renderer.post.build_distortion(on);
             }
             for &dichromacy in &inventory.color_vision {
                 renderer.post.build_color_vision(dichromacy, on);
@@ -2509,7 +2528,11 @@ impl Renderer {
         // built ahead builds now, from the current shader sources.
         let camera = packet.main_view().map(|view| view.camera);
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
-        self.checked_build(|renderer| renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun));
+        // Bends (M5 L6) only where the tier has them: elsewhere the frame is drawn as if it had none.
+        let bends = !packet.vfx.distortions.is_empty() && self.vfx.distortion().any();
+        self.checked_build(|renderer| {
+            renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun, bends)
+        });
         // The insets (M3 U6), graded as post just settled: their targets, which instances stand in them,
         // and which draw. The first frame showing one builds its resolve unless an inventory declared it.
         if let Some(prepared) = self.prepared.as_ref().filter(|_| !self.device_lost) {
@@ -2986,11 +3009,14 @@ impl Renderer {
         let view = ViewUniforms::new(&camera, size, previous_clip_from_world, jitter)
             .with_fade_turn(fade_turn)
             .upscaled_to(output, samples);
-        // The frame's effects, if any: a frame with none adds nothing to the graph below.
-        let (vfx_upload, vfx_draw) = vfx.split_for_record(output).unzip();
-        let (vfx_main, vfx_after, vfx_decals) = match vfx_draw {
-            Some(draw) => (Some(draw.main), draw.after, draw.decals),
-            None => (None, None, None),
+        // The frame's effects, if any: a frame with none adds nothing to the graph below. Post reads temporal
+        // AA's resolve at the target's size, or scene color at the render scale's: the bends' offsets are a share
+        // of it (M5 L6).
+        let post_input = if temporal.is_some() { output } else { size };
+        let (vfx_upload, vfx_draw) = vfx.split_for_record(output, post_input).unzip();
+        let (vfx_main, vfx_after, vfx_decals, vfx_distortion) = match vfx_draw {
+            Some(draw) => (Some(draw.main), draw.after, draw.decals, draw.distortion),
+            None => (None, None, None, None),
         };
         // A debug view draws through the main view without temporal AA's jitter or the fade's
         // turn, so it holds still (M1 F5), into single-sampled targets. Boxed, so the uploads'
@@ -3473,7 +3499,22 @@ impl Renderer {
         };
         // Depth of field reads the scene prepass's depth, which temporal AA keeps (`DepthOfFieldSettings`).
         let depth = temporal_targets.map(|_| targets.depth);
-        let inputs = PostInputs { input: resolved, scene_color, depth, target };
+        // Effects' bends (M5 L6): their offsets, which post's fused pass reads the frame through, drawn where
+        // the frame has one; over temporal AA's frame against the scene prepass's depth.
+        let distortion = vfx_distortion.map(|draw| {
+            let offsets = graph.create_texture(distortion::PASS, draw.desc());
+            let depth = depth.filter(|_| draw.reads_depth());
+            let mut pass = graph.add_pass(distortion::PASS);
+            if let Some(depth) = depth {
+                pass = pass.read(depth);
+            }
+            pass.write(offsets).record(move |ctx| {
+                let drawn = draw.record(ctx, device, offsets, depth, labels);
+                counts.get(Counted::Post).add(&drawn);
+            });
+            offsets
+        });
+        let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
         post.record(graph, inputs, effects, insets, labels, counter);
         // The debug view over the finished frame (M1 F5).

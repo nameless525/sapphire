@@ -87,7 +87,7 @@
 //!   `tiers.ron` lists each tier's rungs): its scale, its passes shed in place and its frame-rate
 //!   cap, whatever the heat. The golden scenes `tier-*-rung-*` draw each rung.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
-//! - `--vfx arc|hit|dust|duel|mesh-*|decal-*`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
+//! - `--vfx arc|hit|dust|duel|mesh-*|decal-*|distort-*`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark
 //!   and a hitstop, dust on the ground, or a duel's worst moment held still, as the bench's load.
 //!   They play around the world's origin, where every stage but `--look-dev street` stands its
@@ -96,6 +96,9 @@
 //!   slash arcs playing, as the bench's load. `decal-slope` lays a telegraph filling toward its strike and a
 //!   scorch on the slope of `--ik-ground slope` (M5 L7); `decal-one` and `decal-full` keep one telegraph, or
 //!   as many telegraphs and scorches as the tier's cap, on the ground, as the bench's load.
+//!   `distort-shockwave` lands a heavy's scorch behind the character each second, its shockwave bending the
+//!   paving (M5 L6), and `distort-haze` one at the start, its haze shimmering over the burn; `distort-one` and
+//!   `distort-full` keep one landing, or the tier's cap of bends, playing, as the bench's load.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
@@ -417,7 +420,8 @@
 //!     scene's character, or in `--arena` where its actors are: effects, screen effects and camera
 //!     shakes, and in the windowed app its
 //!     sounds and rumble, which load `audio.spack`. A capture and a bench stay silent. `--decals off`
-//!     keeps the cues' ground decals (M5 L7) from drawing, as the goldens from before them pin.
+//!     keeps the cues' ground decals (M5 L7) from drawing, as the goldens from before them pin, and
+//!     `--distortion off` their bends (M5 L6), as a `--vfx` show's too.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.

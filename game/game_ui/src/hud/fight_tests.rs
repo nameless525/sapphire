@@ -285,6 +285,10 @@ fn a_shown_fight_declares_what_it_plays() {
     scene.set_hud(FightHud::for_fight(HudOptions::default()));
     let declared = scene.scene.declared_pipelines(&scene.show);
     assert!(declared.effects, "cues play effects");
+    // The shipped cue table's skill arc (M5 L5), telegraphs and scorches (M5 L7) and the heavy landing's
+    // bend (M5 L6), built ahead on the tiers that draw them.
+    assert!(declared.effect_meshes && declared.decals && declared.distortion, "{declared:?}");
+    assert!(!bare.effect_meshes && !bare.decals && !bare.distortion, "none of them without cues");
     assert!(declared.ui, "a HUD draws an interface");
     // The cues' screen effects go through their post variants. A `dev` build declares every preset's
     // from the start, since the overlay's effects panel fires any of them (`Scene::effect_variants`),

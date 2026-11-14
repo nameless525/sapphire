@@ -15,10 +15,9 @@
 //! - **Unlit:** a mesh's colors are relative to the display, as an emissive sprite's: × 1/exposure.
 //! - **Patterns** are `VfxPattern`'s, rasterized here into an array at first use, a mip chain each, sampled
 //!   repeating so a scroll never shows a seam. A flipbook reads one cell of its sheet, and the next to blend.
-//! - **Distortion (M5 L6) hooks in here:** bit 2 of a mesh's flags (`vfx_mesh.wgsl`'s comment) is kept for a
-//!   mesh that offsets what's behind it. L6 adds a second color target to [`MeshBuilder::pipeline`]'s
-//!   after-resolve pipelines, an offset texture the after-resolve pass writes beside the composed frame, and
-//!   post's fused pass reads it; on phones the main pass's draw writes it. Nothing builds it here.
+//! - **Distortion (M5 L6)** is the `distortion` module's: a layer that bends draws into a buffer of offsets
+//!   smaller than the frame, so it has pipelines of its own, and shares only this module's packing, shapes and
+//!   patterns. A layer that only bends is never one of these meshes.
 //! - **Ground decals (M5 L7)** can reuse the rest: a `Card` laid flat is a ground-facing quad, the shape list
 //!   ([`VfxMeshShape`]) is where an SDF shape's quad joins, and the document's layer, the order and the draw
 //!   point are the same.
@@ -46,8 +45,8 @@ use crate::shaders::{self, BuildOn, Program, ShaderSources};
 const AFTER_RESOLVE_CONSTANT: &str = "VFX_MESH_AFTER_RESOLVE";
 
 /// `GpuVfxMesh::flags`: the erosion is on, and the pattern is read as a flipbook.
-const ERODES: u32 = 1;
-const FLIPBOOK: u32 = 2;
+pub(super) const ERODES: u32 = 1;
+pub(super) const FLIPBOOK: u32 = 2;
 
 /// Meshes the buffer holds when first made: past a desktop tier's budget, so it never grows in a fight.
 const INITIAL_MESHES: u64 = 32;
@@ -56,23 +55,23 @@ const INITIAL_MESHES: u64 = 32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct GpuVfxMesh {
-    world_from_local: [[f32; 4]; 4],
+    pub(super) world_from_local: [[f32; 4]; 4],
     color: [f32; 3],
-    alpha: f32,
+    pub(super) alpha: f32,
     edge_color: [f32; 3],
-    edge: f32,
-    scroll: [f32; 2],
-    tiling: [f32; 2],
-    mask_tiling: [f32; 2],
-    threshold: f32,
+    pub(super) edge: f32,
+    pub(super) scroll: [f32; 2],
+    pub(super) tiling: [f32; 2],
+    pub(super) mask_tiling: [f32; 2],
+    pub(super) threshold: f32,
     additive: f32,
-    cells: [f32; 4],
-    cell_size: [f32; 2],
-    blend: f32,
-    soft: f32,
-    pattern: u32,
-    mask: u32,
-    flags: u32,
+    pub(super) cells: [f32; 4],
+    pub(super) cell_size: [f32; 2],
+    pub(super) blend: f32,
+    pub(super) soft: f32,
+    pub(super) pattern: u32,
+    pub(super) mask: u32,
+    pub(super) flags: u32,
     padding: u32,
 }
 
@@ -94,7 +93,7 @@ fn tiling(value: glam::Vec2) -> [f32; 2] {
 
 impl GpuVfxMesh {
     /// `mesh`, unless where it stands or how it's turned isn't finite: its colors and shares are made safe.
-    fn new(mesh: &VfxMesh) -> Option<Self> {
+    pub(super) fn new(mesh: &VfxMesh) -> Option<Self> {
         let scale = mesh.scale.max(Vec3::ZERO).min(Vec3::splat(1e4));
         if !(mesh.position.is_finite() && mesh.rotation.is_finite() && scale.is_finite()) {
             return None;
@@ -186,7 +185,7 @@ fn generate_patterns(size: u32) -> Vec<Vec<Vec<u8>>> {
 }
 
 /// The patterns on the GPU, every level uploaded.
-fn upload_patterns(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+pub(super) fn upload_patterns(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     let levels = generate_patterns(PATTERN_SIZE);
     let array = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("vfx mesh patterns"),
@@ -230,21 +229,21 @@ fn upload_patterns(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureV
 
 /// Where a shape's triangles are in the shared buffers.
 #[derive(Clone, Copy, Debug, Default)]
-struct ShapeRange {
-    indices: (u32, u32),
-    base_vertex: i32,
+pub(super) struct ShapeRange {
+    pub(super) indices: (u32, u32),
+    pub(super) base_vertex: i32,
 }
 
 /// Every shape's triangles in one vertex buffer and one index buffer.
 #[derive(Debug)]
-struct Shapes {
-    vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
-    ranges: [ShapeRange; VfxMeshShape::ALL.len()],
+pub(super) struct Shapes {
+    pub(super) vertices: wgpu::Buffer,
+    pub(super) indices: wgpu::Buffer,
+    pub(super) ranges: [ShapeRange; VfxMeshShape::ALL.len()],
 }
 
 impl Shapes {
-    fn new(device: &wgpu::Device) -> Self {
+    pub(super) fn new(device: &wgpu::Device) -> Self {
         let (mut vertices, mut indices) = (Vec::<VfxMeshVertex>::new(), Vec::<u16>::new());
         let mut ranges = [ShapeRange::default(); VfxMeshShape::ALL.len()];
         for shape in VfxMeshShape::ALL {
@@ -290,7 +289,7 @@ pub(super) struct MeshBuilder {
     builds: PipelineBuilds,
 }
 
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+pub(super) const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32];
 
 impl MeshBuilder {

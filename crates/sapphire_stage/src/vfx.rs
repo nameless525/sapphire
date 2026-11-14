@@ -15,6 +15,12 @@
 //! strike every second and a scorch every three, on the slope `--ik-ground slope` builds, for its golden;
 //! `decal-one` keeps one telegraph always filling in front of the character and `decal-full` as many
 //! telegraphs and scorches as the tier's cap round it, the bench's load.
+//!
+//! The `distort-*` shows play the shipped bends (M5 L6), the scorch's shockwave and haze: `distort-shockwave` a
+//! heavy's landing behind the character every second, its shockwave running out over the paving past the
+//! character's feet; `distort-haze` one landing at the start, the haze over its burn; `distort-one` one landing
+//! always playing and `distort-full` as many as the tier's bends' cap, the bench's load. A show's bends draw
+//! unless `--distortion off` says not (`Scene::set_vfx_distortion`); the decal shows' scorches bend too.
 
 use std::time::Duration;
 
@@ -65,10 +71,19 @@ pub enum VfxShow {
     DecalOne,
     /// As many telegraphs and scorches as the tier's cap, always playing round it.
     DecalFull,
+    /// A heavy's landing behind the character every second: the scorch, and its shockwave bending the paving as
+    /// it runs out past the character's feet (M5 L6).
+    DistortShockwave,
+    /// One landing at the start: the haze shimmering over its burn.
+    DistortHaze,
+    /// One landing, always playing in front of the character (the bends' bench).
+    DistortOne,
+    /// As many as the tier's bends' cap, always playing round it.
+    DistortFull,
 }
 
 impl VfxShow {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 16] = [
         Self::Arc,
         Self::Hit,
         Self::Dust,
@@ -81,6 +96,10 @@ impl VfxShow {
         Self::DecalSlope,
         Self::DecalOne,
         Self::DecalFull,
+        Self::DistortShockwave,
+        Self::DistortHaze,
+        Self::DistortOne,
+        Self::DistortFull,
     ];
 
     pub fn name(self) -> &'static str {
@@ -97,6 +116,10 @@ impl VfxShow {
             Self::DecalSlope => "decal-slope",
             Self::DecalOne => "decal-one",
             Self::DecalFull => "decal-full",
+            Self::DistortShockwave => "distort-shockwave",
+            Self::DistortHaze => "distort-haze",
+            Self::DistortOne => "distort-one",
+            Self::DistortFull => "distort-full",
         }
     }
 
@@ -124,6 +147,16 @@ const CARD_SPOT: Vec3 = Vec3::new(-0.1, 1.05, 0.4);
 const TELEGRAPH_STRIKE: f32 = 0.75;
 /// The most decals `decal-full` keeps playing: Desktop-High's cap.
 const MAX_SHOWN_DECALS: usize = 24;
+/// Where the `distort-*` shows' landings are placed: behind the character on the paving, so its shockwave runs
+/// out toward the camera past the character's feet and the haze rises beside it. The scorch lands its own
+/// reach ahead of this, turned by [`LANDING_TURN`] away from the camera, which stands on +Z looking along -Z:
+/// a bend round the camera would cover the whole screen.
+const LANDING_SPOT: Vec3 = Vec3::new(0.6, 0.0, -0.9);
+/// How the `distort-*` shows' landings are turned: facing -Z, away from the camera.
+const LANDING_TURN: f32 = std::f32::consts::PI;
+/// How often the bends' bench lands each landing again, in ticks: as long as the shipped scorch bends, its haze
+/// ending 1.75 s in.
+const LANDING_PERIOD: u32 = 105;
 
 /// The ticks a swing takes: a sixth of a second, as a light attack's strike.
 const SWING_TICKS: f32 = 10.0;
@@ -199,6 +232,10 @@ pub(crate) struct VfxPlayer {
     arcs: [Option<EffectHandle>; 8],
     /// The telegraph's and the scorch's decals, for a `decal-*` show.
     decals: Option<(EffectId, EffectId)>,
+    /// The scorch, whose shockwave and haze bend, for a `distort-*` show (M5 L6).
+    landing: Option<EffectId>,
+    /// Whether its bends draw (`--distortion`): when not, a frame has none.
+    distortion: bool,
     /// The decals `decal-one` and `decal-full` keep playing, and how many: one, or the tier's cap.
     shown: [Option<EffectHandle>; MAX_SHOWN_DECALS],
     shown_count: usize,
@@ -232,14 +269,25 @@ impl VfxPlayer {
             | VfxShow::Duel
             | VfxShow::DecalSlope
             | VfxShow::DecalOne
-            | VfxShow::DecalFull => None,
+            | VfxShow::DecalFull
+            | VfxShow::DistortShockwave
+            | VfxShow::DistortHaze
+            | VfxShow::DistortOne
+            | VfxShow::DistortFull => None,
         }
         .map(effect);
+        let landing = matches!(
+            show,
+            VfxShow::DistortShockwave | VfxShow::DistortHaze | VfxShow::DistortOne | VfxShow::DistortFull
+        )
+        .then(|| effect("scorch_mark"));
         let decals = matches!(show, VfxShow::DecalSlope | VfxShow::DecalOne | VfxShow::DecalFull)
             .then(|| (effect("telegraph_ground"), effect("scorch_mark")));
         let shown_count = match show {
-            VfxShow::DecalOne => 1,
+            VfxShow::DecalOne | VfxShow::DistortOne => 1,
             VfxShow::DecalFull => (budget.max_decals as usize).min(MAX_SHOWN_DECALS),
+            // Each landing bends twice at its start, its haze alone after.
+            VfxShow::DistortFull => (budget.max_distortions as usize).min(MAX_SHOWN_DECALS),
             _ => 0,
         };
         Self {
@@ -251,6 +299,8 @@ impl VfxPlayer {
             mesh,
             arcs: [None; 8],
             decals,
+            landing,
+            distortion: true,
             shown: [None; MAX_SHOWN_DECALS],
             shown_count,
             blades: [None, None],
@@ -274,7 +324,18 @@ impl VfxPlayer {
 
     /// Whether its show plays ground decals: what the scene declares (M5 L7).
     pub(crate) fn has_decals(&self) -> bool {
-        self.decals.is_some()
+        self.decals.is_some() || self.landing.is_some()
+    }
+
+    /// Whether its show's effects bend the picture and they draw: what the scene declares (M5 L6). The decal
+    /// shows' scorches bend.
+    pub(crate) fn has_distortion(&self) -> bool {
+        self.distortion && (self.landing.is_some() || self.decals.is_some())
+    }
+
+    /// Whether its bends draw: off, they play unseen (they take no random numbers) and a frame has none.
+    pub(crate) fn set_distortion(&mut self, on: bool) {
+        self.distortion = on;
     }
 
     /// One fixed step, with how long each clock moved by: the character's stops in hitstop. Returns
@@ -293,6 +354,9 @@ impl VfxPlayer {
         }
         if matches!(self.show, VfxShow::DecalOne | VfxShow::DecalFull) && world_step > 0.0 {
             self.keep_decals_playing();
+        }
+        if matches!(self.show, VfxShow::DistortOne | VfxShow::DistortFull) && world_step > 0.0 {
+            self.keep_landings_playing();
         }
         if character_step > 0.0 {
             self.sample_blades(character_step);
@@ -340,6 +404,16 @@ impl VfxPlayer {
             }
             VfxShow::DecalSlope if world_step > 0.0 && self.world_ticks.is_multiple_of(SWING_PERIOD) => {
                 self.lay_on_the_slope();
+                None
+            }
+            VfxShow::DistortShockwave
+                if world_step > 0.0 && self.world_ticks.is_multiple_of(SWING_PERIOD) =>
+            {
+                self.land(LANDING_SPOT, LANDING_TURN);
+                None
+            }
+            VfxShow::DistortHaze if world_step > 0.0 && self.world_ticks == 0 => {
+                self.land(LANDING_SPOT, LANDING_TURN);
                 None
             }
             _ => None,
@@ -418,6 +492,29 @@ impl VfxPlayer {
         }
     }
 
+    /// A heavy's landing at `at` on flat ground, turned `turn` radians: its scorch, shockwave and haze.
+    fn land(&mut self, at: Vec3, turn: f32) -> Option<EffectHandle> {
+        let landing = self.landing?;
+        self.world.spawn(landing, OwnerId::WORLD, on_ground(at, turn, Vec3::Y))
+    }
+
+    /// Lands each of the bench's landings again as its bends end, a landing every [`LANDING_PERIOD`] in turn, so
+    /// each always bends: its shockwave until its haze rises, then its haze. One in front of the character, then
+    /// on rings round it; a scorch still burning when its landing comes round again plays on beside the new one.
+    fn keep_landings_playing(&mut self) {
+        for index in 0..self.shown_count {
+            let started = self.shown[index].is_some();
+            let due = (self.world_ticks + index as u32 * 7).is_multiple_of(LANDING_PERIOD);
+            if started && !due {
+                continue;
+            }
+            let turn = index as f32 * std::f32::consts::TAU / 8.0;
+            let reach = if index == 0 { 0.0 } else { 1.5 + (index / 8) as f32 * 2.5 };
+            let at = Vec3::new(turn.sin() * reach, 0.0, turn.cos() * reach);
+            self.shown[index] = self.land(at, turn);
+        }
+    }
+
     /// This tick's samples of the blades' sockets, oldest first, at sub-tick rate.
     fn sample_blades(&mut self, step: f32) {
         match self.show {
@@ -458,7 +555,11 @@ impl VfxPlayer {
             | VfxShow::MeshEight
             | VfxShow::DecalSlope
             | VfxShow::DecalOne
-            | VfxShow::DecalFull => {}
+            | VfxShow::DecalFull
+            | VfxShow::DistortShockwave
+            | VfxShow::DistortHaze
+            | VfxShow::DistortOne
+            | VfxShow::DistortFull => {}
         }
     }
 
@@ -476,6 +577,9 @@ impl VfxPlayer {
     pub(crate) fn write(&mut self, frame: &mut VfxFrame, alpha: f32) {
         let stopwatch = Stopwatch::start();
         self.world.write_frame(frame, alpha);
+        if !self.distortion {
+            frame.distortions.clear();
+        }
         frame.stats.simulation = self.stepping + stopwatch.elapsed();
         self.stepping = Duration::ZERO;
     }
@@ -490,6 +594,8 @@ fn facing_camera(at: Vec3) -> Placement {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_render::VfxBend;
+
     use super::*;
 
     #[test]
@@ -635,6 +741,48 @@ mod tests {
         // Mobile-Low's budget is eight: all of them still draw.
         let (_, frame) = frame_after(VfxShow::MeshEight, VfxBudget::MOBILE_LOW, 30);
         assert_eq!((frame.meshes.len(), frame.stats.dropped_meshes), (8, 0));
+    }
+
+    /// Each bends' show bends: the shockwave's landing its shockwave, then its haze too; the haze's its haze
+    /// alone once the shockwave is gone; the bench's one landing one or two always, and the tier's cap always on
+    /// every tier with bends, Mobile-Low's none. `--distortion off` draws none and declares none.
+    #[test]
+    fn the_distort_shows_bend() {
+        let budget = VfxBudget::DESKTOP_HIGH;
+        let bends = |frame: &VfxFrame| frame.distortions.iter().map(|bend| bend.bend).collect::<Vec<_>>();
+        let (player, frame) = frame_after(VfxShow::DistortShockwave, budget, 4);
+        assert_eq!(bends(&frame), [VfxBend::Outward]);
+        assert!(player.has_distortion() && player.has_decals());
+        let (_, frame) = frame_after(VfxShow::DistortShockwave, budget, 16);
+        assert_eq!(bends(&frame), [VfxBend::Outward, VfxBend::Shimmer]);
+        let (_, frame) = frame_after(VfxShow::DistortHaze, budget, 60);
+        assert_eq!(bends(&frame), [VfxBend::Shimmer]);
+        assert!(frame.meshes.is_empty() && frame.sprites.is_empty(), "the scorch bends and darkens alone");
+        assert_eq!(frame.decals.len(), 1, "its scorch");
+
+        let (mut player, mut frame) = frame_after(VfxShow::DistortHaze, budget, 60);
+        player.set_distortion(false);
+        player.write(&mut frame, 1.0);
+        assert!(frame.distortions.is_empty() && !player.has_distortion());
+        assert_eq!(frame.decals.len(), 1, "its scorch still darkens");
+
+        for budget in
+            [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
+        {
+            let cap = budget.max_distortions as usize;
+            for (show, least, most) in
+                [(VfxShow::DistortOne, 1.min(cap), 2.min(cap)), (VfxShow::DistortFull, cap, cap)]
+            {
+                let mut player = VfxPlayer::new(show, budget);
+                let mut frame = VfxFrame::default();
+                for tick in 0..400 {
+                    player.tick();
+                    player.write(&mut frame, 1.0);
+                    let count = frame.distortions.len();
+                    assert!((least..=most).contains(&count), "{show:?} {budget:?} at {tick}: {count}");
+                }
+            }
+        }
     }
 
     /// Each decal show draws its decals, and nothing else: the slope's telegraph filling and its scorch, and the

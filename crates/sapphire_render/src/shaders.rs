@@ -65,6 +65,8 @@ pub enum ShaderFile {
     /// Depth of field's passes (M5 L8), after post's own in its program: the prepare, the gather, the
     /// composite and an inset's soft backdrop.
     Focus,
+    /// The fused pass's distorted composites (M5 L6), after depth of field's in post's program.
+    PostDistortion,
     /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
     Temporal,
     /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
@@ -90,6 +92,8 @@ pub enum ShaderFile {
     VfxMesh,
     /// The frame's ground decals (M5 L7).
     VfxDecal,
+    /// The frame's bends' offsets (M5 L6), which stand alone.
+    VfxDistortion,
     /// The on-screen interface's quads over the finished frame (M2 I2).
     Ui,
     /// Reflection probes' composed cubes read as a cube array, where the device has them (M5 L3).
@@ -102,7 +106,7 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 30] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -116,6 +120,7 @@ impl ShaderFile {
         Self::Skinning,
         Self::Post,
         Self::Focus,
+        Self::PostDistortion,
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
@@ -127,6 +132,7 @@ impl ShaderFile {
         Self::Vfx,
         Self::VfxMesh,
         Self::VfxDecal,
+        Self::VfxDistortion,
         Self::Ui,
         Self::ProbeCubes,
         Self::ProbeFaces,
@@ -149,6 +155,7 @@ impl ShaderFile {
             Self::Skinning => "skinning.wgsl",
             Self::Post => "post.wgsl",
             Self::Focus => "focus.wgsl",
+            Self::PostDistortion => "post_distortion.wgsl",
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
             Self::Foliage => "foliage.wgsl",
@@ -160,6 +167,7 @@ impl ShaderFile {
             Self::Vfx => "vfx.wgsl",
             Self::VfxMesh => "vfx_mesh.wgsl",
             Self::VfxDecal => "vfx_decal.wgsl",
+            Self::VfxDistortion => "vfx_distortion.wgsl",
             Self::Ui => "ui.wgsl",
             Self::ProbeCubes => "probe_cubes.wgsl",
             Self::ProbeFaces => "probe_faces.wgsl",
@@ -188,6 +196,7 @@ impl ShaderFile {
             Self::Skinning => include_str!("../shaders/skinning.wgsl"),
             Self::Post => include_str!("../shaders/post.wgsl"),
             Self::Focus => include_str!("../shaders/focus.wgsl"),
+            Self::PostDistortion => include_str!("../shaders/post_distortion.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
             Self::Foliage => include_str!("../shaders/foliage.wgsl"),
@@ -199,6 +208,7 @@ impl ShaderFile {
             Self::Vfx => include_str!("../shaders/vfx.wgsl"),
             Self::VfxMesh => include_str!("../shaders/vfx_mesh.wgsl"),
             Self::VfxDecal => include_str!("../shaders/vfx_decal.wgsl"),
+            Self::VfxDistortion => include_str!("../shaders/vfx_distortion.wgsl"),
             Self::Ui => include_str!("../shaders/ui.wgsl"),
             Self::ProbeCubes => include_str!("../shaders/probe_cubes.wgsl"),
             Self::ProbeFaces => include_str!("../shaders/probe_faces.wgsl"),
@@ -245,12 +255,14 @@ pub(crate) enum Program {
     VfxMesh,
     /// The frame's ground decals (M5 L7).
     VfxDecal,
+    /// The frame's bends' offsets (M5 L6), which stand alone.
+    VfxDistortion,
     /// The on-screen interface (M2 I2).
     Ui,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -269,6 +281,7 @@ impl Program {
         Self::Vfx,
         Self::VfxMesh,
         Self::VfxDecal,
+        Self::VfxDistortion,
         Self::Ui,
     ];
 
@@ -309,7 +322,7 @@ impl Program {
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
-            Self::Post => &[F::Post, F::Focus],
+            Self::Post => &[F::Post, F::Focus, F::PostDistortion],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
@@ -319,6 +332,7 @@ impl Program {
             Self::Vfx => &[F::Frame, F::Materials, F::Vfx],
             Self::VfxMesh => &[F::Frame, F::Materials, F::VfxMesh],
             Self::VfxDecal => &[F::Frame, F::Materials, F::VfxDecal],
+            Self::VfxDistortion => &[F::VfxDistortion],
             Self::Ui => &[F::Ui],
         }
     }
@@ -381,6 +395,7 @@ impl Program {
             Self::Vfx => "vfx",
             Self::VfxMesh => "vfx mesh",
             Self::VfxDecal => "vfx decal",
+            Self::VfxDistortion => "vfx distortion",
             Self::Ui => "ui",
         }
     }
@@ -802,7 +817,7 @@ mod tests {
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
-    const PASSES: [(Program, &[&str]); 19] = [
+    const PASSES: [(Program, &[&str]); 20] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -857,6 +872,8 @@ mod tests {
                 "vs_composite",
                 "fs_composite",
                 "fs_color_vision",
+                "fs_post_distorted",
+                "fs_composite_distorted",
             ],
         ),
         (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),
@@ -903,6 +920,7 @@ mod tests {
         (Program::Vfx, &["vs_vfx", "fs_vfx", "fs_vfx_mask"]),
         (Program::VfxMesh, &["vs_vfx_mesh", "fs_vfx_mesh", "fs_vfx_mesh_mask"]),
         (Program::VfxDecal, &["vs_vfx_decal", "fs_vfx_decal"]),
+        (Program::VfxDistortion, &["vs_vfx_distortion", "fs_vfx_distortion"]),
         (Program::Ui, &["vs_ui", "fs_ui"]),
     ];
 
@@ -975,7 +993,13 @@ mod tests {
                 include_str!("../shaders/probe_cubes.wgsl")
             )
         );
-        let post = concat!(include_str!("../shaders/post.wgsl"), "\n", include_str!("../shaders/focus.wgsl"));
+        let post = concat!(
+            include_str!("../shaders/post.wgsl"),
+            "\n",
+            include_str!("../shaders/focus.wgsl"),
+            "\n",
+            include_str!("../shaders/post_distortion.wgsl")
+        );
         assert_eq!(sources.program(Program::Post), post);
         // Every file is in a program, and found by its name.
         for file in ShaderFile::ALL {
@@ -1315,6 +1339,12 @@ mod tests {
             (Program::VfxDecal, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::VfxDecal, "VfxDecal", size_of::<crate::vfx::decal::GpuVfxDecal>()),
             (Program::VfxDecal, "VfxDecalUniforms", size_of::<crate::vfx::decal::GpuVfxDecalUniforms>()),
+            (Program::VfxDistortion, "VfxDistortion", size_of::<crate::vfx::distortion::GpuVfxDistortion>()),
+            (
+                Program::VfxDistortion,
+                "VfxDistortionUniforms",
+                size_of::<crate::vfx::distortion::GpuVfxDistortionUniforms>(),
+            ),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
             (Program::Ui, "UiQuad", size_of::<crate::ui::GpuUiQuad>()),
         ];

@@ -142,7 +142,8 @@
             ),
             (
                 cue: "heavy_land",
-                // The dust, then the scorch where the blade lands (M5 L7), which takes no random numbers.
+                // The dust, then the scorch where the blade lands (M5 L7), which takes no random numbers: its
+                // shockwave and haze bend the frame round it (M5 L6) where the tier has bends.
                 effects: [(effect: "dust_puff", at: Feet), (effect: "scorch_mark", at: Ground)],
                 sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
                 shake: Some((preset: "hit_light")),

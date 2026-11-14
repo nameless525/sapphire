@@ -2024,6 +2024,7 @@ impl MeshModules {
             | Program::Vfx
             | Program::VfxMesh
             | Program::VfxDecal
+            | Program::VfxDistortion
             | Program::Ui => unreachable!("not a mesh program"),
         }
     }

@@ -25,6 +25,7 @@ use sapphire_render::{
     VfxShape, VfxSprite, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+use std::sync::Arc;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub(super) const SIDE: u32 = 128;
@@ -34,7 +35,7 @@ pub(super) const GREY: f32 = 0.25;
 pub(super) const TOLERANCE: f32 = 0.02;
 
 /// Post that shows linear values below about 0.98 as they are.
-fn passthrough() -> PostParams {
+pub(super) fn passthrough() -> PostParams {
     PostParams {
         exposure: 0.0,
         bloom: BloomParams { intensity: 0.0, ..BloomParams::default() },
@@ -108,7 +109,7 @@ pub(super) fn paths() -> [(&'static str, RenderSettings); 2] {
 }
 
 /// A black environment material, glowing with `emission`.
-fn glowing(emission: Vec3) -> EnvironmentMaterial {
+pub(super) fn glowing(emission: Vec3) -> EnvironmentMaterial {
     EnvironmentMaterial {
         base_color: [0.0, 0.0, 0.0, 1.0],
         roughness: 0.5,
@@ -121,7 +122,7 @@ fn glowing(emission: Vec3) -> EnvironmentMaterial {
 }
 
 /// A rectangle across the view at depth `z`, wide enough to fill it at this camera's 90°.
-fn wall(z: f32, half: f32) -> Mesh {
+pub(super) fn wall(z: f32, half: f32) -> Mesh {
     let corner = |x: f32, y: f32| Vertex {
         position: [x, y, z],
         normal: [0.0, 0.0, 1.0],
@@ -143,23 +144,30 @@ fn wall(z: f32, half: f32) -> Mesh {
 }
 
 pub(super) struct Harness {
-    gpu: GpuContext,
+    gpu: Arc<GpuContext>,
     pub(super) renderer: Renderer,
     pub(super) graph: GraphExecutor,
     packets: FramePacketRing,
     target: wgpu::Texture,
     added: Vec<MeshInstance>,
     next_id: u64,
+    /// The target's width and height.
+    size: (u32, u32),
 }
 
 impl Harness {
     pub(super) fn new(settings: RenderSettings) -> Self {
+        Self::sized(settings, (SIDE, SIDE))
+    }
+
+    /// One drawing to a target `size` wide and high, the camera's 90° its height (M5 L6).
+    pub(super) fn sized(settings: RenderSettings, size: (u32, u32)) -> Self {
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
-        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let gpu = Arc::new(GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device"));
         let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
-            size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -175,25 +183,39 @@ impl Harness {
             target,
             added: Vec::new(),
             next_id: 0,
+            size,
         }
     }
 
-    fn material<D: MaterialDocument>(&mut self, document: &D) -> MaterialHandle {
+    pub(super) fn material<D: MaterialDocument>(&mut self, document: &D) -> MaterialHandle {
         let swizzles = vec![Swizzle::IDENTITY; document.textures().len()];
         let bytes = Material::from_document(document, &swizzles).expect("valid").to_cooked().expect("cook");
         self.renderer.upload_material(Material::read(&bytes).expect("read"), |_| None).expect("upload")
     }
 
-    fn mesh(&mut self, mesh: &Mesh, material: MaterialHandle) -> MeshHandle {
+    pub(super) fn mesh(&mut self, mesh: &Mesh, material: MaterialHandle) -> MeshHandle {
         let bytes = mesh.to_cooked().expect("cook");
         self.renderer.upload_mesh(Mesh::read(&bytes).expect("a valid mesh"), &[material]).expect("upload")
     }
 
-    fn add(&mut self, mesh: MeshHandle) -> InstanceId {
+    pub(super) fn add(&mut self, mesh: MeshHandle) -> InstanceId {
         let id = InstanceId(self.next_id);
         self.next_id += 1;
         self.added.push(MeshInstance { id, mesh, transform: Mat4::IDENTITY });
         id
+    }
+
+    /// Changes to a tier of `settings` as the stage does at a pause (M4 T3): built off the frame with what this
+    /// one built, and taken.
+    pub(super) fn change_tier(&mut self, settings: RenderSettings) {
+        let mut build = self.renderer.build_tier(&self.gpu, settings).expect("builds");
+        for _ in 0..600 {
+            if build.is_ready() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.renderer.take_tier(build, None).expect("taken");
     }
 
     /// A wall at depth `z` glowing `emission`.
@@ -224,7 +246,7 @@ impl Harness {
     /// linear colors. `fill` adds the frame's effects, or changes its look.
     pub(super) fn render(&mut self, fill: impl FnOnce(&mut FramePacket)) -> Frame {
         let packet = self.packets.begin();
-        packet.views.push(ViewData::new(camera()));
+        packet.views.push(ViewData::new(camera_for(self.size)));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.0 };
         packet.sky =
             SkyGradient { zenith: Vec3::splat(GREY), horizon: Vec3::splat(GREY), ground: Vec3::splat(GREY) };
@@ -240,14 +262,15 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back() }
+        Frame { pixels: self.read_back(), width: self.size.0 }
     }
 
     fn read_back(&self) -> Vec<[u8; 4]> {
-        let padded = (SIDE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let (width, height) = self.size;
+        let padded = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = self.gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: u64::from(padded * SIDE),
+            size: u64::from(padded * height),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -259,7 +282,7 @@ impl Harness {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
-                    rows_per_image: Some(SIDE),
+                    rows_per_image: Some(height),
                 },
             },
             self.target.size(),
@@ -271,7 +294,7 @@ impl Harness {
             let mapped = buffer.get_mapped_range(..).expect("mapped");
             mapped
                 .chunks_exact(padded as usize)
-                .flat_map(|row| row[..(SIDE * 4) as usize].as_chunks::<4>().0.iter().copied())
+                .flat_map(|row| row[..(width * 4) as usize].as_chunks::<4>().0.iter().copied())
                 .collect()
         };
         buffer.unmap();
@@ -293,7 +316,13 @@ impl Harness {
 
 /// The camera at the origin, looking down -Z over 90°.
 fn camera() -> CameraData {
-    CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, std::f32::consts::FRAC_PI_2, 1.0, 0.05)
+    camera_for((SIDE, SIDE))
+}
+
+/// The camera at the origin, looking down -Z over 90° of a target `size` wide and high.
+pub(super) fn camera_for((width, height): (u32, u32)) -> CameraData {
+    let aspect = width as f32 / height as f32;
+    CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, std::f32::consts::FRAC_PI_2, aspect, 0.05)
 }
 
 /// The pixel `point` projects into.
@@ -305,11 +334,12 @@ fn pixel_of(point: Vec3) -> (u32, u32) {
 
 pub(super) struct Frame {
     pub(super) pixels: Vec<[u8; 4]>,
+    pub(super) width: u32,
 }
 
 impl Frame {
     pub(super) fn linear(&self, (x, y): (u32, u32)) -> Vec3 {
-        let pixel = self.pixels[(y * SIDE + x) as usize];
+        let pixel = self.pixels[(y * self.width + x) as usize];
         Vec3::new(srgb_to_linear(pixel[0]), srgb_to_linear(pixel[1]), srgb_to_linear(pixel[2]))
     }
 
@@ -980,7 +1010,7 @@ fn bad_values_draw_nothing_and_count() {
 
 /// A character with an anime character material, flat, in front of the sky: post's character mask
 /// (alpha 0) covers it, so its bloom takes `character_bloom`.
-fn character_wall(harness: &mut Harness, z: f32) -> InstanceId {
+pub(super) fn character_wall(harness: &mut Harness, z: f32) -> InstanceId {
     let material = harness.material(&AnimeCharacterMaterial {
         base_color: [0.1, 0.1, 0.1, 1.0],
         light_split: LightSplit { threshold: -1.0, softness: 0.02 },

@@ -28,7 +28,8 @@
 //! clusters, the ambient pass (the probe grid's sky, prefilter, relight and characters, and GTAO;
 //! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low), a debug
 //! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1), the effects'
-//! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low), a 3D inset's
+//! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low), the effects' bends' offsets
+//! (`--vfx distort-*`, M5 L6, with the effects' pass §3.3's "Particles, distortion"), a 3D inset's
 //! passes (`--ui-game character`, M3 U6: with `--ui-spin` it turns, and so draws, every frame) and the whole
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
@@ -47,8 +48,8 @@ use std::time::Duration;
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view, inset, post, shadows,
-    temporal, vfx,
+    CHARACTER_PREPASS, DISTORTION_PASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view,
+    inset, post, shadows, temporal, vfx,
 };
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
@@ -181,6 +182,7 @@ pub(crate) fn run(
     // The effects' simulation and frame write per measured frame (`--vfx`), and what they held.
     let (mut vfx_total, mut vfx_max) = (Duration::ZERO, Duration::ZERO);
     let (mut vfx_particles, mut vfx_points, mut vfx_meshes, mut vfx_decals) = (0_u64, 0_u64, 0_u64, 0_u64);
+    let mut vfx_distortions = 0_u64;
     // The HUD's update and draw, with `--hud`: its total and its slowest.
     let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
@@ -225,6 +227,7 @@ pub(crate) fn run(
             vfx_points += u64::from(effects.ribbon_points);
             vfx_meshes += u64::from(effects.meshes);
             vfx_decals += u64::from(effects.decals);
+            vfx_distortions += u64::from(effects.distortions);
             if let Some(hud) = &stage.show.hud {
                 let (_, cost) = hud.last_frame();
                 hud_total += cost;
@@ -343,6 +346,7 @@ pub(crate) fn run(
         vfx_ribbon_points_mean = vfx_points / u64::from(frames),
         vfx_meshes_mean = vfx_meshes / u64::from(frames),
         vfx_decals_mean = vfx_decals / u64::from(frames),
+        vfx_distortions_mean = vfx_distortions / u64::from(frames),
         hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
         ui_quads = stage.renderer.stats().ui.quads,
@@ -457,6 +461,7 @@ fn gpu_times(
     let (mut character_prepass, mut clusters, mut ambient_pass, mut views) = (zero, zero, zero, zero);
     let mut debug_draws = zero;
     let mut effects = zero;
+    let mut distortion = zero;
     let mut ui = zero;
     let mut insets = zero;
     // Depth of field's three passes on the main view, and an inset's soft backdrop (M5 L8).
@@ -487,7 +492,7 @@ fn gpu_times(
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 16] = [
+        let groups: [(&[&str], &mut Sums); 17] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -500,6 +505,7 @@ fn gpu_times(
             (&debug_view::PASSES, &mut views),
             (&[debug_draw::PASS], &mut debug_draws),
             (&[vfx::PASS], &mut effects),
+            (&[DISTORTION_PASS], &mut distortion),
             (&[UI_PASS], &mut ui),
             (&inset::PASSES, &mut insets),
             (&post::FOCUS_PASSES, &mut focus),
@@ -583,6 +589,9 @@ fn gpu_times(
         gpu_vfx_us = format_args!("{:.1}", micros(effects.0, effects.2)),
         gpu_vfx_duration_us = format_args!("{:.1}", micros(effects.1, effects.2)),
         vfx_frames = effects.2,
+        gpu_distortion_us = format_args!("{:.1}", micros(distortion.0, distortion.2)),
+        gpu_distortion_duration_us = format_args!("{:.1}", micros(distortion.1, distortion.2)),
+        distortion_frames = distortion.2,
         gpu_ui_us = format_args!("{:.1}", micros(ui.0, ui.2)),
         gpu_ui_duration_us = format_args!("{:.1}", micros(ui.1, ui.2)),
         gpu_ui_us_p50 = format_args!("{:.1}", micros(ui_p50, 1)),

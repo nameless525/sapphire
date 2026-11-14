@@ -121,6 +121,8 @@
 //
 // Every scene that fires a fight's cues pins `--decals off` (M5 L7), so the telegraphs and scorches the cue table
 // lays on the ground draw only in `decal-telegraph`; `decal-slope` plays its own through `--vfx decal-slope`.
+// Every one of them, `decal-*` too, pins `--distortion off` (M5 L6), so the heavy landing's shockwave and haze bend
+// the frame only in the `distort-*` scenes.
 //
 // The tier scenes (M4 T0) draw three shots as each tier ships, AO and all, at the tier's own scale and at its
 // dynamic floor: the face's close-up on every tier, and the ward's street and a hit's post on the low tiers.
@@ -670,7 +672,7 @@
             (
                 name: "fight-ward-market",
                 ticks: 228,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--replay", "tests/replays/ward-market.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32",
                        "--character-shadows", "own", "--anim-levels", "off"],
@@ -682,7 +684,7 @@
             (
                 name: "fight-ward-terrace",
                 ticks: 1799,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--replay", "tests/replays/ward-terrace.sreplay",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--replay", "tests/replays/ward-terrace.sreplay",
                        "--time-of-day", "17.5", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 40.9, warp: 62.4),
@@ -1132,7 +1134,7 @@
             (
                 name: "arena-fight-telegraph",
                 ticks: 112,
-                args: ["--cues", "--decals", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 39.1, warp: 80.6),
@@ -1143,7 +1145,7 @@
             (
                 name: "color-vision-telegraph",
                 ticks: 84,
-                args: ["--cues", "--decals", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
                        "--color-vision", "deuteranopia"],
@@ -1154,7 +1156,7 @@
             (
                 name: "arena-fight-hit",
                 ticks: 128,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 39.8, warp: 85.6),
@@ -1164,7 +1166,7 @@
             (
                 name: "arena-fight-slash",
                 ticks: 12,
-                args: ["--cues", "--decals", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-won.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 53.1, warp: 71.6),
@@ -1175,7 +1177,7 @@
             (
                 name: "arena-fight-cut",
                 ticks: 104,
-                args: ["--cues", "--decals", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-won.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 53.4, warp: 84.3),
@@ -1254,7 +1256,7 @@
             (
                 name: "arena-skirmish",
                 ticks: 240,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-skirmish.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
                        "--character-shadows", "own"],
@@ -1266,7 +1268,7 @@
             (
                 name: "arena-boss",
                 ticks: 670,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--replay", "tests/replays/arena-boss.sreplay",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--replay", "tests/replays/arena-boss.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32",
                        "--character-shadows", "own"],
@@ -1277,7 +1279,7 @@
             (
                 name: "arena-captain",
                 ticks: 90,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena",
                        "--replay", "tests/replays/arena-captain.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
                        "--character-shadows", "own"],
@@ -1816,7 +1818,8 @@
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
-                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off"],
+                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off",
+                       "--distortion", "off"],
                 ci_seconds: (lavapipe: 22.9, warp: 39.9),
             ),
             (
@@ -1824,7 +1827,8 @@
                 ticks: 132,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
-                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off"],
+                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off",
+                       "--distortion", "off"],
                 ci_seconds: (lavapipe: 22.9, warp: 39.7),
             ),
             (
@@ -1832,7 +1836,8 @@
                 ticks: 1156,
                 args: ["--look-dev", "hero", "--time-of-day", "19", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
-                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off"],
+                       "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off",
+                       "--distortion", "off"],
                 ci_seconds: (lavapipe: 28.4, warp: 52.0),
             ),
             // The game's screens (M3 U7) at the aspect ratios spec §5.17 names, in both languages, on their
@@ -3128,7 +3133,7 @@
                 name: "tier-hit-desktop-low",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-low", "--capture-frames", "12", "--capture-step", "1"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--capture-frames", "12", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 13.2, warp: 31.6),
             ),
             (
@@ -3136,7 +3141,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-low", "--render-scale", "0.504274"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-low", "--render-scale", "0.504274"],
                 ci_seconds: (lavapipe: 4.4, warp: 13.2),
             ),
             // The thermal ladder's rungs (M4 T2), held with `--rung`: the face on each tier at its first
@@ -3252,7 +3257,7 @@
                 name: "tier-hit-desktop-low-rung-three",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-low", "--rung", "3", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "3", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.3, warp: 27.7),
             ),
@@ -3261,7 +3266,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "3"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "3"],
                 ci_seconds: (lavapipe: 5.5, warp: 20.8),
             ),
             // Every tier, floor and rung (M4 T5, exit test 4): the ward and the hit at rest, at the tier's
@@ -3395,14 +3400,14 @@
                 name: "tier-hit-desktop-high",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-high", "--capture-frames", "12", "--capture-step", "1"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--capture-frames", "12", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.5, warp: 39.8),
             ),
             (
                 name: "tier-hit-desktop-high-floor",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-high", "--render-scale", "0.7", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.8, warp: 23.3),
             ),
@@ -3410,7 +3415,7 @@
                 name: "tier-hit-desktop-high-rung-one",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-high", "--rung", "1", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.7, warp: 26.0),
             ),
@@ -3418,7 +3423,7 @@
                 name: "tier-hit-desktop-high-rung-two",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-high", "--rung", "2", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.8, warp: 36.3),
             ),
@@ -3426,7 +3431,7 @@
                 name: "tier-hit-desktop-high-rung-three",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-high", "--rung", "3", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "3", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.1, warp: 34.3),
             ),
@@ -3434,7 +3439,7 @@
                 name: "tier-hit-desktop-low-floor",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-low", "--render-scale", "0.7", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 5.9, warp: 27.6),
             ),
@@ -3442,7 +3447,7 @@
                 name: "tier-hit-desktop-low-rung-one",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-low", "--rung", "1", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 6.2, warp: 32.7),
             ),
@@ -3450,7 +3455,7 @@
                 name: "tier-hit-desktop-low-rung-two",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "desktop-low", "--rung", "2", "--capture-frames", "12",
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 6.6, warp: 21.9),
             ),
@@ -3459,7 +3464,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-high", "--render-scale", "0.632479"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-high", "--render-scale", "0.632479"],
                 ci_seconds: (lavapipe: 2.9, warp: 13.0),
             ),
             (
@@ -3467,7 +3472,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-high", "--render-scale", "0.474359"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-high", "--render-scale", "0.474359"],
                 ci_seconds: (lavapipe: 2.5, warp: 17.3),
             ),
             (
@@ -3475,7 +3480,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "1"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "1"],
                 ci_seconds: (lavapipe: 2.6, warp: 17.5),
             ),
             (
@@ -3483,7 +3488,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "2"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "2"],
                 ci_seconds: (lavapipe: 2.4, warp: 17.2),
             ),
             (
@@ -3491,7 +3496,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "3"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-high", "--render-scale", "0.632479", "--rung", "3"],
                 ci_seconds: (lavapipe: 2.3, warp: 17.3),
             ),
             (
@@ -3499,7 +3504,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-low", "--render-scale", "0.428632"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-low", "--render-scale", "0.428632"],
                 ci_seconds: (lavapipe: 2.3, warp: 11.7),
             ),
             (
@@ -3507,7 +3512,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "1"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "1"],
                 ci_seconds: (lavapipe: 2.1, warp: 12.2),
             ),
             (
@@ -3515,7 +3520,7 @@
                 size: "1280x592",
                 ticks: 71,
                 args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
-                       "--cues", "--decals", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "2"],
+                       "--cues", "--decals", "off", "--distortion", "off", "--tier", "mobile-low", "--render-scale", "0.504274", "--rung", "2"],
                 ci_seconds: (lavapipe: 2.1, warp: 16.7),
             ),
             // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera
@@ -3690,7 +3695,7 @@
                 name: "game-hud-party-ready-en",
                 size: "1280x720",
                 ticks: 60,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
                        "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "en",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
@@ -3700,7 +3705,7 @@
                 name: "game-hud-party-ready-ja",
                 size: "1280x720",
                 ticks: 60,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
                        "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "ja",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
@@ -3710,7 +3715,7 @@
                 name: "game-hud-party-cooling-en",
                 size: "1280x720",
                 ticks: 110,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
                        "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "en",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
@@ -3720,7 +3725,7 @@
                 name: "game-hud-party-cooling-ja",
                 size: "1280x720",
                 ticks: 110,
-                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                args: ["--cues", "--decals", "off", "--distortion", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
                        "--replay", "tests/replays/party-swap.sreplay", "--ui-game", "hud", "--ui-locale", "ja",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32"],
@@ -3760,7 +3765,8 @@
                 ticks: 184,
                 args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
-                       "--replay", "tests/replays/dodge-dash.sreplay", "--cues", "--decals", "off"],
+                       "--replay", "tests/replays/dodge-dash.sreplay", "--cues", "--decals", "off",
+                       "--distortion", "off"],
                 ci_seconds: (lavapipe: 20.4, warp: 50.6),
             ),
             // Characters shadowing each other (M5 L12): three of the character in a row toward a low
@@ -3825,7 +3831,7 @@
             (
                 name: "decal-telegraph",
                 ticks: 112,
-                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                args: ["--cues", "--distortion", "off", "--arena", "--arena-shot", "follow", "--view", "75,8",
                        "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 41.7, warp: 82.2),
@@ -3838,7 +3844,8 @@
                 ticks: 40,
                 args: ["--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
                        "--ik", "on", "--ik-ground", "slope", "--time-of-day", "13", "--tier", "desktop-high",
-                       "--ao", "off", "--capture-frames", "16", "--capture-step", "1", "--vfx", "decal-slope"],
+                       "--ao", "off", "--capture-frames", "16", "--capture-step", "1", "--vfx", "decal-slope",
+                       "--distortion", "off"],
                 ci_seconds: (lavapipe: 22.4, warp: 39.5),
             ),
             // Zones' reflection probes (M5 L3). The proving hub's square, at its one key: its paving reflects
@@ -3895,7 +3902,8 @@
             // A party of two kinds (M5 C8), over the recorded `party-kinds`: Aster on the field, mid-punch,
             // drawn as herself with her own mesh, graph and bare hands, and the HUD naming each slot's member,
             // the heroine resting in the first and Aster in the second, and the player's name hers. It pins
-            // `--decals off`: the scorch the warrior's overhead left on the paving isn't its subject. Metal only.
+            // `--decals off` and `--distortion off` (M5 L6): the scorch the warrior's overhead left on the paving,
+            // and its bends, aren't its subject. Metal only.
             (
                 name: "game-hud-party-kinds-en",
                 size: "1280x720",
@@ -3903,8 +3911,38 @@
                 args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
                        "--replay", "tests/replays/party-kinds.sreplay", "--ui-game", "hud", "--ui-locale", "en",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32", "--distortion", "off"],
                 ci_seconds: (lavapipe: 68.8, warp: 167.8),
+            ),
+            // Bends (M5 L6), at dusk round the look-dev character: a heavy's landing behind it, its shockwave's
+            // band a third of the way out, bending the paving and the buildings past it outward while the
+            // character in front stands unbent; the haze a second after a landing, shimmering over the burn; the
+            // same shockwave on Mobile-High's quarter-size offsets; and the warrior's overhead landing in a fight
+            // as the cue table plays it, its scorch, shockwave and dust together.
+            (
+                name: "distort-shockwave",
+                ticks: 69,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-shockwave"],
+            ),
+            (
+                name: "distort-haze",
+                ticks: 60,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-haze"],
+            ),
+            (
+                name: "distort-shockwave-mobile-high",
+                ticks: 69,
+                args: ["--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-shockwave"],
+            ),
+            (
+                name: "distort-fight-heavy",
+                ticks: 145,
+                args: ["--cues", "--arena", "--arena-shot", "follow", "--view", "75,8",
+                       "--replay", "tests/replays/arena-fight-still.sreplay", "--time-of-day", "10",
+                       "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32"],
             ),
         ],
     ),

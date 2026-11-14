@@ -2295,6 +2295,14 @@ impl Scene {
         self.vfx = Some(VfxPlayer::new(show, budget));
     }
 
+    /// Whether the show's bends draw (`--distortion`, M5 L6): on where it starts. Off, they play unseen and
+    /// nothing of them is declared, which keeps a frame that predates them as it was.
+    pub fn set_vfx_distortion(&mut self, on: bool) {
+        if let Some(player) = &mut self.vfx {
+            player.set_distortion(on);
+        }
+    }
+
     /// One step of the effects, by the clocks' last steps: the world's, and the character's for the
     /// attacker's and the victim's, which stops through its hitstop. A hit starts one on it.
     fn step_vfx(&mut self) {
@@ -2325,6 +2333,7 @@ impl Scene {
             effects: self.vfx.is_some(),
             effect_meshes: self.vfx.as_ref().is_some_and(VfxPlayer::has_meshes),
             decals: self.vfx.as_ref().is_some_and(VfxPlayer::has_decals),
+            distortion: self.vfx.as_ref().is_some_and(VfxPlayer::has_distortion),
             sky: self.sky_material.into_iter().chain(self.zone_air.sky).collect(),
             fades: self.fade != Fade::Off || self.drive.dissolved() > 0.0,
             focus: self.focus.is_some_and(|focus| focus.drawn()),

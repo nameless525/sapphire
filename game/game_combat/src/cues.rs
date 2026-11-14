@@ -304,6 +304,11 @@ impl CueShow {
         self.world.library().has_decals()
     }
 
+    /// Whether its effects bend the picture behind them (M5 L6): what the fight declares, as it does decals.
+    pub(crate) fn has_distortion(&self) -> bool {
+        self.world.library().has_distortion()
+    }
+
     /// Plays effects within `budget` from now on: a quality tier's change, at a pause or a wipe (M4 T3). Effects
     /// playing end.
     pub(crate) fn set_budget(&mut self, budget: VfxBudget) {

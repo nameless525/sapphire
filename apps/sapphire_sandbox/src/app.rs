@@ -402,6 +402,7 @@ impl App for SandboxApp {
         }
         if let Some(show) = options.vfx {
             scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
+            scene.set_vfx_distortion(options.distortion != Some(false));
         }
         if options.cues {
             show.fight
@@ -409,6 +410,7 @@ impl App for SandboxApp {
                 .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))
                 .map_err(AppInitError::msg)?;
             show.fight.show.set_decals(options.decals != Some(false));
+            show.fight.show.set_distortion(options.distortion != Some(false));
         }
         if let Some(combat) = combat {
             show.fight.attach_prepared_combat(combat, &mut scene, &content)?;

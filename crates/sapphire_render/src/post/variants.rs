@@ -128,13 +128,18 @@ pub(super) enum Slot {
     /// Depth of field's passes (M5 L8, `focus`): outside [`Self::all`], built where a tier has them and an
     /// inventory declares focus, or a frame first draws it.
     Focus(FocusPass),
+    /// The fused pass by [`Variant::composite_index`], reading the frame through effects' bends (M5 L6,
+    /// `post_distortion.wgsl`): outside [`Self::all`], built where a tier has bends and an inventory declares
+    /// them, or a frame first draws one.
+    Distorted(usize),
 }
 
 impl Slot {
     /// How many the frame's variants have.
     const COUNT: usize = 4 + Variant::COMPOSITES;
-    /// How many there are, the inset's resolve, the colour-vision views and depth of field's with them.
-    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len();
+    /// How many there are, the inset's resolve, the colour-vision views, depth of field's and the distorted
+    /// composites with them.
+    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len() + Variant::COMPOSITES;
 
     /// The pipelines outside the frame's variants, which something else asks for.
     pub(super) fn others() -> impl Iterator<Item = Self> {
@@ -142,14 +147,24 @@ impl Slot {
             .into_iter()
             .chain(Dichromacy::ALL.map(Self::ColorVision))
             .chain(FocusPass::ALL.map(Self::Focus))
+            .chain((0..Variant::COMPOSITES).map(Self::Distorted))
     }
 
-    /// Whether a post pass with depth of field's `settings` can draw with it: not depth of field's passes
-    /// a tier lacks.
-    pub(super) fn drawable_with(self, settings: DepthOfFieldSettings) -> bool {
+    /// Whether a post pass with depth of field's `settings`, and bends or not (`distortion`), can draw with it:
+    /// not depth of field's passes a tier lacks, nor a distorted composite on a tier without bends.
+    pub(super) fn drawable_with(self, settings: DepthOfFieldSettings, distortion: bool) -> bool {
         match self {
             Self::Focus(pass) => settings.has(pass),
+            Self::Distorted(_) => distortion,
             _ => true,
+        }
+    }
+
+    /// A fused pass's distorted form (M5 L6): `None` for any other pipeline.
+    pub(super) fn distorted(self) -> Option<Self> {
+        match self {
+            Self::Composite(index) => Some(Self::Distorted(index)),
+            _ => None,
         }
     }
 
@@ -169,6 +184,7 @@ impl Slot {
             Self::Inset => Self::COUNT,
             Self::ColorVision(dichromacy) => Self::COUNT + 1 + dichromacy as usize,
             Self::Focus(pass) => Self::COUNT + 1 + Dichromacy::ALL.len() + pass as usize,
+            Self::Distorted(index) => Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len() + index,
         }
     }
 
@@ -180,7 +196,7 @@ impl Slot {
                 (PostVariants { character_bloom: characters, ..PostVariants::NONE }, 1)
             }
             Self::Down | Self::Up => (PostVariants::NONE, 2),
-            Self::Composite(index) => {
+            Self::Composite(index) | Self::Distorted(index) => {
                 let (layers, sharpening, lens_effects, color_effects) = Variant::composite(index);
                 let switches =
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
@@ -206,7 +222,7 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
-            Self::Inset | Self::ColorVision(_) | Self::Focus(_) => false,
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Distorted(_) => false,
         })
     }
 }
@@ -248,7 +264,8 @@ impl Builder {
             }
             // The plain variant is R3's fused pass; the others composite (and measure the flare's
             // visibility once a frame, in their vertex shader).
-            Slot::Composite(index) => {
+            Slot::Composite(index) | Slot::Distorted(index) => {
+                let distorted = matches!(slot, Slot::Distorted(_));
                 let (layers, sharpen, lens, color) = Variant::composite(index);
                 let constants = [
                     (LAYERS_CONSTANT, switch(layers)),
@@ -257,13 +274,20 @@ impl Builder {
                     (COLOR_EFFECTS_CONSTANT, switch(color)),
                     (RADIAL_TAPS_CONSTANT, f64::from(self.effects.radial_blur_taps)),
                 ];
-                let (vertex, fragment, constants) = match index {
-                    0 => (fullscreen, "fs_post", &[][..]),
-                    _ => ("vs_composite", "fs_composite", &constants[..]),
+                let (vertex, fragment, constants) = match (index, distorted) {
+                    (0, false) => (fullscreen, "fs_post", &[][..]),
+                    (_, false) => ("vs_composite", "fs_composite", &constants[..]),
+                    // Bends (M5 L6): each variant's own form, its layout reading the offsets too.
+                    (0, true) => (fullscreen, "fs_post_distorted", &[][..]),
+                    (_, true) => ("vs_composite", "fs_composite_distorted", &constants[..]),
                 };
-                let (layout, format) = (&self.layouts.composite, self.output_format);
+                let (layout, family) = if distorted {
+                    (&self.layouts.distorted, PipelineFamily::Distortion)
+                } else {
+                    (&self.layouts.composite, PipelineFamily::Post)
+                };
                 let names = (COMPOSITE_PASS, vertex, fragment);
-                self.pipeline(module, PipelineFamily::Post, names, layout, format, constants)
+                self.pipeline(module, family, names, layout, self.output_format, constants)
             }
             // The composite's layout, as an inset's group binds the frame's grading LUTs.
             Slot::Inset => {
@@ -349,9 +373,16 @@ impl Builder {
 }
 
 /// Post's pipelines built so far, by [`Slot`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct Pipelines {
     slots: [Option<wgpu::RenderPipeline>; Slot::SLOTS],
+}
+
+// By hand: an array past 32 has no derived `Default`.
+impl Default for Pipelines {
+    fn default() -> Self {
+        Self { slots: std::array::from_fn(|_| None) }
+    }
 }
 
 impl Pipelines {

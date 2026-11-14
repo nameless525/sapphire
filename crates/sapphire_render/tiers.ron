@@ -41,6 +41,11 @@
 //   only TAA keeps; and the soft backdrop an inset may ask for behind its characters, on the desktop tiers
 //   and Mobile-High, which blurs by the character mask and needs no depth. Mobile-Low has neither, and
 //   ignores a focus. Each builds its pipelines only once an inventory declares it or a frame draws it.
+// - `distortion` (M5 L6, `sapphire_render::vfx`'s `distortion` module): the buffer of screen offsets effects
+//   that bend the picture draw into, which post's fused pass reads the frame through: half post's input's
+//   width and height on the desktop tiers, a quarter on Mobile-High, none on Mobile-Low, which ignores a
+//   bend and builds nothing for it. Its pipelines build only once an inventory declares bends or a frame
+//   draws one.
 // - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
 //   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
 //   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
@@ -130,6 +135,7 @@
                 reflections: (cube_size: 128),
                 inset: (max_side: 960, supersample: 2),
                 depth_of_field: (view: true, insets: true),
+                distortion: Half,
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -173,6 +179,7 @@
                 reflections: (cube_size: 128),
                 inset: (max_side: 720, supersample: 2),
                 depth_of_field: (view: true, insets: true),
+                distortion: Half,
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -216,6 +223,7 @@
                 reflections: (cube_size: 64),
                 inset: (max_side: 720, supersample: 1),
                 depth_of_field: (insets: true),
+                distortion: Quarter,
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel, Gtao]),
                     Scale(0.85),

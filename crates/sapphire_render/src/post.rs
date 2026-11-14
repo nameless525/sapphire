@@ -189,6 +189,26 @@
 //! [`PostStats::effects`] ([`DrawnEffects`], rule R9) says which effects drew and whether they
 //! read the character mask; the stack's own depth is the world's to report.
 //!
+//! # Bends (M5 L6)
+//!
+//! A frame whose effects bend the picture (the `vfx` module's `distortion`) has an offsets texture, and its
+//! composite is the variant's distorted form (`post_distortion.wgsl`, appended to post.wgsl, whose own code is
+//! unchanged): a pipeline of its own beside each variant's, built only on a tier with bends, for a frame with
+//! one or a load that declares them, so a frame without a bend draws exactly what it drew before. Once a load
+//! has declared them, every variant a later load prewarms (a screen effect's) is built with its distorted form.
+//!
+//! - **Where it reads:** the offsets at the screen's pixel, faded to nothing over the frame's edge's last
+//!   twentieth of its height, the moved place held half a pixel inside the frame. A pixel that moves reads the
+//!   frame filtered there, unsharpened, and its bloom and diffusion glow from there too, so a bright edge bends
+//!   with its glow; the vignette, the lens flare, gradient layers, the colour effects and the CRT stay on the
+//!   screen, so a flat frame bends to itself and no bend can brighten it.
+//! - **Characters:** a pixel whose own place, or whose moved place, isn't wholly world over two pixels
+//!   round it (the character mask) reads as it would unbent: no character pixel moves and nothing of one is
+//!   smeared over the world. The world beside a character stays unbent within the bend's reach of it.
+//! - **Order:** depth of field before (its result is the frame read), then the glitch's whole-pixel shift, then
+//!   the bend from there, then the composite, the colour effects at the glitched place and the CRT. The held
+//!   swing compares with the bent frame without the effects.
+//!
 //! # Building the variants
 //!
 //! Every golden scene is a process of its own, and WARP and lavapipe compile each pipeline on
@@ -474,8 +494,10 @@ pub struct PostStats {
     pub effects: DrawnEffects,
     /// Depth of field drew on the main view (M5 L8): its three passes ran.
     pub focus: bool,
-    /// Post's pipelines built so far, of 16 variants and the inset's, color vision's and depth of
-    /// field's (M5 L8) beside them: the variants built ahead of the frames
+    /// The fused pass read the frame through effects' bends (M5 L6): its distorted composite drew.
+    pub distortion: bool,
+    /// Post's pipelines built so far, of 16 variants and the inset's, color vision's, depth of
+    /// field's (M5 L8) and the distorted composites (M5 L6) beside them: the variants built ahead of the frames
     /// ([`RenderSettings::post_variants`](crate::RenderSettings::post_variants),
     /// [`Renderer::prewarm_post`](crate::Renderer::prewarm_post)) and those frames built.
     pub pipelines: u32,
@@ -490,6 +512,7 @@ pub struct PostStats {
 pub(crate) struct PostShape {
     ready: PostVariants,
     slots: Vec<Slot>,
+    bends: bool,
 }
 
 /// Post's pipelines, layouts and persistent resources, and the per-pass bind group caches.
@@ -524,6 +547,16 @@ pub(crate) struct PostProcess {
     depth_of_field: DepthOfFieldSettings,
     /// The last prepared frame draws depth of field on the main view.
     focus: bool,
+    /// The tier has bends (M5 L6, [`RenderSettings::distortion`](crate::RenderSettings::distortion)): without,
+    /// no distorted composite is ever built.
+    distortion: bool,
+    /// An inventory declared bends ([`Self::build_distortion`]), or the post pass of a tier this one replaced
+    /// held them: on a tier with bends every variant built ahead from then on is built with its distorted form
+    /// too, so a variant a later inventory adds (a screen effect's) draws a bend without building it on the
+    /// frame. A tier without bends keeps the declaration for the tier it changes to (M4 T3), building nothing.
+    bends: bool,
+    /// The last prepared frame reads the frame through bends: its fused pass draws a distorted composite.
+    distorting: bool,
     /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
     shed_levels: u32,
     bind_groups: Box<BindGroups>,
@@ -572,6 +605,9 @@ struct Layouts {
     focus_depth: wgpu::BindGroupLayout,
     /// Depth of field's composite: `texture0`, `texture1` and the depth at binding 6.
     focus_composite: wgpu::BindGroupLayout,
+    /// The distorted composites (M5 L6): the composite's six, the bends' offsets at binding 6 and the character
+    /// mask the bends keep characters out of at binding 7.
+    distorted: wgpu::BindGroupLayout,
 }
 
 /// Where depth of field's passes bind their textures: `focus.wgsl` puts the depth at binding 6, past the
@@ -579,13 +615,14 @@ struct Layouts {
 const FOCUS_DEPTH_BINDINGS: [u32; 2] = [0, 6];
 const FOCUS_COMPOSITE_BINDINGS: [u32; 3] = [0, 1, 6];
 
-/// A group 1 bind group, for the most textures a post pass reads.
-type CachedBindGroup = bind_cache::CachedBindGroup<6>;
+/// A group 1 bind group, for the most textures a post pass reads: a distorted composite's eight.
+type CachedBindGroup = bind_cache::CachedBindGroup<8>;
 
 /// One cache per pass position, so each always sees the same layout.
 #[derive(Debug, Default)]
 struct BindGroups {
     composite: CachedBindGroup,
+    distorted: CachedBindGroup,
     prefilter: CachedBindGroup,
     focus_prepare: CachedBindGroup,
     focus_gather: CachedBindGroup,
@@ -614,6 +651,9 @@ pub(crate) struct PostInputs {
     pub depth: Option<TextureId>,
     /// Where the fused composite writes.
     pub target: TextureId,
+    /// Effects' bends' offsets (M5 L6, the `vfx` module's `distortion`), which a frame with bends reads the frame
+    /// through: `None` without any.
+    pub distortion: Option<TextureId>,
 }
 
 /// An inset's resolve, which [`PostProcess::record`] adds after post's own passes: its scene, exposed
@@ -650,8 +690,9 @@ struct Fullscreen<'f> {
 impl PostProcess {
     /// Creates post-processing, writing `output_format` (the target's), with `bloom_levels` and
     /// the tier's `effects`, and builds the pipelines of `variants` (the module docs' "Building
-    /// the variants"). Fails if the device can't filter the grading LUTs' format. The
-    /// scene-color format is the renderer's to check: it is the main pass's attachment.
+    /// the variants"). `distortion` says the tier has bends (M5 L6). Fails if the device can't filter the
+    /// grading LUTs' format. The scene-color format is the renderer's to check: it is the main pass's
+    /// attachment.
     #[expect(clippy::too_many_arguments, reason = "a tier's post settings, each its own")]
     pub(crate) fn new(
         gpu: &GpuContext,
@@ -659,6 +700,7 @@ impl PostProcess {
         bloom_levels: u32,
         effects: PostEffectSettings,
         depth_of_field: DepthOfFieldSettings,
+        distortion: bool,
         variants: PostVariants,
         builds: &PipelineBuilds,
         sources: &ShaderSources,
@@ -743,6 +785,19 @@ impl PostProcess {
             focus_composite: layout(
                 "focus composite",
                 &[texture(0, fragment, flat), texture(1, fragment, flat), depth],
+            ),
+            distorted: layout(
+                "post distorted",
+                &[
+                    texture(0, both, flat),
+                    texture(1, fragment, flat),
+                    texture(2, fragment, volume),
+                    texture(3, fragment, volume),
+                    texture(4, fragment, flat),
+                    texture(5, fragment, flat),
+                    texture(6, fragment, flat),
+                    texture(7, fragment, flat),
+                ],
             ),
         };
 
@@ -832,6 +887,9 @@ impl PostProcess {
             bloom_levels,
             depth_of_field,
             focus: false,
+            distortion,
+            bends: false,
+            distorting: false,
             shed_levels: 0,
             bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
@@ -848,7 +906,7 @@ impl PostProcess {
     /// whatever a frame draws within them is ready. Says how many pipelines it built.
     pub(crate) fn prewarm(&mut self, variants: PostVariants, on: BuildOn) -> u32 {
         self.ready |= variants;
-        let slots = Slot::within(self.ready, self.bloom_levels);
+        let slots = self.ready_slots(self.ready, self.bends);
         let built = self.pipelines.build_all(&self.builder, &self.module, slots, on);
         if built > 0 {
             tracing::debug!(target: crate::LOG_TARGET, built, ready = ?self.ready, "post variants prewarmed");
@@ -888,6 +946,23 @@ impl PostProcess {
         view.into_iter().filter(|&pass| self.depth_of_field.has(pass)).map(Slot::Focus).collect()
     }
 
+    /// The pipelines of `ready`'s variants, with their distorted composites if `bends` and the tier has bends
+    /// (M5 L6).
+    fn ready_slots(&self, ready: PostVariants, bends: bool) -> Vec<Slot> {
+        let slots = Slot::within(ready, self.bloom_levels);
+        let distorted = Slot::within(ready, self.bloom_levels).filter_map(Slot::distorted);
+        slots.chain(distorted.filter(|_| bends && self.distortion)).collect()
+    }
+
+    /// Builds the distorted composites of the variants built ahead unless they are built (M5 L6): an inventory's
+    /// that declares bends, while nothing draws; and from then on every variant built ahead has its distorted
+    /// form too. Says how many it built; none on a tier without bends.
+    pub(crate) fn build_distortion(&mut self, on: BuildOn) -> u32 {
+        self.bends = true;
+        let slots = self.ready_slots(self.ready, self.bends);
+        self.pipelines.build_all(&self.builder, &self.module, slots, on)
+    }
+
     /// Builds the main view's depth of field pipelines the tier has unless they are built (M5 L8): an
     /// inventory's, while nothing draws, or a first use, in the frame that first draws focus. Says how many it
     /// built; none on a tier without it.
@@ -900,35 +975,40 @@ impl PostProcess {
     /// one's place (M4 T3, [`Self::build_held`]).
     pub(crate) fn held(&self) -> PostShape {
         let built = Slot::all().chain(Slot::others()).filter(|&slot| self.pipelines.get(slot).is_some());
-        PostShape { ready: self.ready, slots: built.collect() }
+        PostShape { ready: self.ready, slots: built.collect(), bends: self.bends }
     }
 
     /// Builds what another post pass's [`Self::held`] says it has, where `on` says.
     pub(crate) fn build_held(&mut self, held: &PostShape, on: BuildOn) {
         self.ready |= held.ready;
+        self.bends |= held.bends;
         // Of the other's first uses, those this pass can draw: a shorter bloom chain draws fewer levels.
         let drawable: Vec<Slot> = Slot::within(PostVariants::ALL, self.bloom_levels)
-            .chain(Slot::others().filter(|slot| slot.drawable_with(self.depth_of_field)))
+            .chain(Slot::others().filter(|slot| slot.drawable_with(self.depth_of_field, self.distortion)))
             .collect();
         let carried = held.slots.iter().copied().filter(|slot| drawable.contains(slot));
-        let slots: Vec<Slot> = Slot::within(self.ready, self.bloom_levels).chain(carried).collect();
+        let slots: Vec<Slot> = self.ready_slots(self.ready, self.bends).into_iter().chain(carried).collect();
         self.pipelines.build_all(&self.builder, &self.module, slots, on);
     }
 
     /// A warm-up's step (`warm_up`): what [`Self::prewarm`] of `variants`, with `inset` [`Self::build_inset`],
-    /// [`Self::build_color_vision`] of each of `color_vision` and with `focus` [`Self::build_focus`] would build,
-    /// on a clone of these, where `on` says, for [`Self::adopt`]. `None` when it's built.
+    /// [`Self::build_color_vision`] of each of `color_vision`, with `focus` [`Self::build_focus`] and with
+    /// `distortion` [`Self::build_distortion`] would build, on a clone of these, where `on` says, for
+    /// [`Self::adopt`]. `None` when it's built.
     pub(crate) fn warm(
         &self,
         variants: PostVariants,
         inset: bool,
         color_vision: &[Dichromacy],
         focus: bool,
+        distortion: bool,
         on: BuildOn,
     ) -> Option<Step<WarmedPost>> {
         let inset = if inset { self.inset_slots() } else { Vec::new() };
         let focus = if focus { self.focus_slots() } else { Vec::new() };
-        let slots: Vec<Slot> = Slot::within(self.ready | variants, self.bloom_levels)
+        let slots: Vec<Slot> = self
+            .ready_slots(self.ready | variants, distortion || self.bends)
+            .into_iter()
             .chain(inset)
             .chain(focus)
             .chain(color_vision.iter().map(|&dichromacy| Slot::ColorVision(dichromacy)))
@@ -1048,13 +1128,15 @@ impl PostProcess {
     /// the constants `record` uploads and builds the pipelines the frame draws with that aren't
     /// built yet (a variant nothing built ahead: the frame stalls to compile it, counted and
     /// logged). `camera` is the main view's (the frame's aspect, which round gradients and flare
-    /// elements need), and `sun` where it sees the sun's disc, for the lens flare.
+    /// elements need), `sun` where it sees the sun's disc, for the lens flare, and `bends` whether the frame's
+    /// effects bend the picture (M5 L6): on a tier with bends, its fused pass reads the frame through them.
     pub(crate) fn prepare(
         &mut self,
         queue: &wgpu::Queue,
         params: &PostParams,
         camera: Option<&CameraData>,
         sun: Option<SunOnScreen>,
+        bends: bool,
     ) {
         profiling::scope!("PostProcess::prepare");
         let aspect = camera.map_or(1.0, |camera| layers::aspect(&camera.proj));
@@ -1123,9 +1205,18 @@ impl PostProcess {
             focus: self.focus,
             ..PostStats::default()
         };
+        // Bends (M5 L6): the fused pass of the frame's variant draws its distorted form instead.
+        self.distorting = bends && self.distortion && camera.is_some();
+        self.stats.distortion = self.distorting;
+        if !self.distorting {
+            self.bind_groups.distorted = CachedBindGroup::default();
+        }
         self.uniforms = uniforms;
         let focus = if self.focus { self.focus_slots() } else { Vec::new() };
-        let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels()).chain(focus);
+        let distorting = self.distorting;
+        let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels())
+            .map(move |slot| if distorting { slot.distorted().unwrap_or(slot) } else { slot })
+            .chain(focus);
         let built = self.pipelines.build(&self.builder, &self.module, drawn);
         if built > 0 {
             self.first_use_builds += built;
@@ -1160,8 +1251,10 @@ impl PostProcess {
         self.uniforms.composite[0]
     }
 
-    /// Whether the frame just prepared reads scene color's alpha, the character mask: its bloom's
-    /// prefilter, or a screen effect that covers characters and the world differently.
+    /// Whether the frame just prepared reads scene color's alpha, the character mask, as effects raise it where
+    /// they cover a character: its bloom's prefilter, or a screen effect that covers characters and the world
+    /// differently. Bends (M5 L6) read the mask as the characters left it, so an effect over a character never
+    /// lets it bend, and they draw nothing more into it.
     pub(crate) fn reads_character_mask(&self) -> bool {
         self.variant.characters || self.stats.effects.character_mask
     }
@@ -1190,7 +1283,7 @@ impl PostProcess {
         labels: bool,
         counter: &'f Counter,
     ) {
-        let PostInputs { input, scene_color, depth, target } = inputs;
+        let PostInputs { input, scene_color, depth, target, distortion } = inputs;
         let Self {
             ref builder,
             ref pipelines,
@@ -1205,11 +1298,13 @@ impl PostProcess {
             variant,
             stats,
             focus,
+            distorting,
             ..
         } = *self;
         let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
         let BindGroups {
             ref mut composite,
+            ref mut distorted,
             ref mut prefilter,
             ref mut down,
             ref mut up,
@@ -1354,13 +1449,37 @@ impl PostProcess {
         // temporal AA, the frame before its resolve): otherwise the input stands in, so the
         // frame's graph is what it was without them.
         let mask = if stats.effects.character_mask { scene_color } else { input };
-        add_fullscreen(
-            graph,
-            COMPOSITE_PASS,
-            [Input::Graph(input), bloom_input, lut_a, lut_b, diffusion_input, Input::Graph(mask)],
-            target,
-            pass(pipeline(Slot::Composite(variant.composite_index())), &layouts.composite, composite),
-        );
+        let composite_slot = Slot::Composite(variant.composite_index());
+        match distortion.filter(|_| distorting) {
+            // Bends (M5 L6): the variant's distorted form, which reads the offsets, and the character mask apart
+            // from what its composite reads as the plain one does, so it composites exactly as that.
+            Some(offsets) => {
+                let slot = composite_slot.distorted().expect("a composite has a distorted form");
+                add_fullscreen(
+                    graph,
+                    COMPOSITE_PASS,
+                    [
+                        Input::Graph(input),
+                        bloom_input,
+                        lut_a,
+                        lut_b,
+                        diffusion_input,
+                        Input::Graph(mask),
+                        Input::Graph(offsets),
+                        Input::Graph(scene_color),
+                    ],
+                    target,
+                    pass(pipeline(slot), &layouts.distorted, distorted),
+                );
+            }
+            None => add_fullscreen(
+                graph,
+                COMPOSITE_PASS,
+                [Input::Graph(input), bloom_input, lut_a, lut_b, diffusion_input, Input::Graph(mask)],
+                target,
+                pass(pipeline(composite_slot), &layouts.composite, composite),
+            ),
+        }
         // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs; first
         // its soft backdrop, where it asks for one (M5 L8).
         for InsetResolve { post: inset, scene, picture, soft_backdrop } in insets {

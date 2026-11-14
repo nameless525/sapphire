@@ -53,6 +53,9 @@ pub enum PipelineFamily {
     EffectMeshes,
     /// Ground decals (M5 L7): a family of their own, built only for a load whose effects have decals.
     Decals,
+    /// Bends (M5 L6): the offsets' pipeline and post's distorted composites, built only on a tier with them for a
+    /// load whose effects bend.
+    Distortion,
     Sky,
     Ui,
     /// An inset's resolve (M3 U6): its meshes draw through [`Self::Mesh`].
@@ -76,6 +79,7 @@ impl PipelineFamily {
             Self::Effects => "effects",
             Self::EffectMeshes => "effect-meshes",
             Self::Decals => "decals",
+            Self::Distortion => "distortion",
             Self::Sky => "sky",
             Self::Ui => "ui",
             Self::Inset => "inset",
@@ -188,6 +192,10 @@ pub struct PipelineInventory {
     /// Its effects have ground decals (M5 L7, `EffectLibrary::has_decals`): their own two pipelines, so a load
     /// whose effects have none builds none of them.
     pub decals: bool,
+    /// Its effects bend the picture behind them (M5 L6, `EffectLibrary::has_distortion`): the offsets' pipeline
+    /// and post's distorted composites of the variants it's ready for, on a tier with bends; nothing on a tier
+    /// without.
+    pub distortion: bool,
     /// It deforms meshes, with skinning or morphs.
     pub skinning: bool,
     /// It draws an interface: atlas quads and glyph pages go through the one pipeline this builds.
@@ -220,7 +228,8 @@ pub struct PipelineInventory {
 }
 
 impl PipelineInventory {
-    /// The name of each entry: `mesh` and a key, `post`, `effects`, `effect-meshes`, `decals`, `skinning`, `ui`,
+    /// The name of each entry: `mesh` and a key, `post`, `effects`, `effect-meshes`, `decals`, `distortion`,
+    /// `skinning`, `ui`,
     /// `inset`, `focus`, `sky` and `ambient` as a miss names them, and `fades` and `debug`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
@@ -229,6 +238,7 @@ impl PipelineInventory {
             (PipelineFamily::Effects.name(), self.effects),
             (PipelineFamily::EffectMeshes.name(), self.effect_meshes),
             (PipelineFamily::Decals.name(), self.decals),
+            (PipelineFamily::Distortion.name(), self.distortion),
             (PipelineFamily::Skinning.name(), self.skinning),
             (PipelineFamily::Ui.name(), self.ui),
             (PipelineFamily::Inset.name(), self.insets),
@@ -251,6 +261,7 @@ impl PipelineInventory {
             "effects" => self.effects = false,
             "effect-meshes" => self.effect_meshes = false,
             "decals" => self.decals = false,
+            "distortion" => self.distortion = false,
             "skinning" => self.skinning = false,
             "ui" => self.ui = false,
             "inset" => self.insets = false,
@@ -279,6 +290,7 @@ impl PipelineInventory {
             effects,
             effect_meshes,
             decals,
+            distortion,
             skinning,
             ui,
             insets,
@@ -295,6 +307,7 @@ impl PipelineInventory {
         self.effects |= effects;
         self.effect_meshes |= effect_meshes;
         self.decals |= decals;
+        self.distortion |= distortion;
         self.skinning |= skinning;
         self.ui |= ui;
         self.insets |= insets;

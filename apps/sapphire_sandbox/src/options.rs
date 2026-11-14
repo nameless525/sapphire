@@ -424,6 +424,10 @@ pub(crate) struct Options {
     /// `--decals on|off`: whether the cues' ground decals draw (M5 L7): on unless it says off, which the
     /// goldens from before decals pin. Needs `--cues`.
     pub decals: Option<bool>,
+    /// `--distortion on|off`: whether effects' bends draw (M5 L6), the cues' or a `--vfx` show's: on unless it
+    /// says off, which the goldens from before bends pin. Needs `--cues` or `--vfx`. A tier without bends draws
+    /// none either way.
+    pub distortion: Option<bool>,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
     /// `--draw-every <n>`: every frame steps, animates, prepares and records, and only every `n`th runs its
@@ -1337,6 +1341,13 @@ impl Options {
                         other => return Err(format!("--decals expects on or off, got {other:?}")),
                     });
                 }
+                "--distortion" => {
+                    options.distortion = Some(match value("--distortion")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--distortion expects on or off, got {other:?}")),
+                    });
+                }
                 "--vfx" => {
                     let raw = value("--vfx")?;
                     options.vfx = Some(VfxShow::from_name(&raw).ok_or_else(|| {
@@ -1753,6 +1764,11 @@ impl Options {
         }
         if options.decals.is_some() && !options.cues {
             return Err("--decals needs --cues: it says whether the cues' ground decals draw".to_owned());
+        }
+        if options.distortion.is_some() && !options.cues && options.vfx.is_none() {
+            return Err(
+                "--distortion needs --cues or --vfx: it says whether their effects' bends draw".to_owned()
+            );
         }
         if options.cues && options.vfx.is_some() {
             return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
@@ -2845,6 +2861,20 @@ mod tests {
         assert!(parse(&[&cues[..], &["--decals", "maybe"]].concat()).unwrap_err().contains("on or off"));
         let plain = ["--capture", "x.png", "--replay", "a.sreplay", "--decals", "off"];
         assert!(parse(&plain).unwrap_err().contains("--decals needs --cues"));
+    }
+
+    /// Effects' bends draw unless `--distortion off` says not, which means something with `--cues` or `--vfx`.
+    #[test]
+    fn bends_draw_unless_pinned_off() {
+        let cues = ["--capture", "x.png", "--replay", "a.sreplay", "--cues"];
+        assert_eq!(parse(&cues).unwrap().0.distortion, None);
+        assert_eq!(parse(&[&cues[..], &["--distortion", "off"]].concat()).unwrap().0.distortion, Some(false));
+        assert_eq!(parse(&[&cues[..], &["--distortion", "on"]].concat()).unwrap().0.distortion, Some(true));
+        assert!(parse(&[&cues[..], &["--distortion", "maybe"]].concat()).unwrap_err().contains("on or off"));
+        let show = ["--capture", "x.png", "--vfx", "distort-haze", "--distortion", "off"];
+        assert_eq!(parse(&show).unwrap().0.distortion, Some(false));
+        let plain = ["--capture", "x.png", "--replay", "a.sreplay", "--distortion", "off"];
+        assert!(parse(&plain).unwrap_err().contains("--distortion needs --cues or --vfx"));
     }
 
     /// A recording in the arena is the same fight as `--fight`, written down: a phone has no other way to

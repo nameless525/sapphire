@@ -1310,6 +1310,7 @@
                 ticks: 90,
                 args: ["--dissolve", "0.45", "--environment", "--fog", "off",
                        "--tier", "desktop-high", "--aa", "taa", "--ao", "off", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 4.3, warp: 18.5),
             ),
             // The glass samples beside a flashing character (M5 L11): the lens's band draws about a
             // third of its pixels, reflecting the sky by Fresnel over them, and the veil's half,
@@ -1321,6 +1322,7 @@
                 args: ["--glass", "--flash", "0.3,0.25,0.2", "--emission-scale", "2", "--environment",
                        "--fog", "off", "--tier", "desktop-high", "--aa", "taa", "--ao", "off",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 9.7, warp: 22.9),
             ),
             // The look-dev character's face close-up (X1 part 2c) at midday, pinned as the other
             // look-dev scenes are: the face's SDF shadow in its peach ramp with a light blush, the

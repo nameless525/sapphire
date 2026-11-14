@@ -8,8 +8,8 @@ use std::alloc::System;
 use sapphire_anim::{
     CharacterPose, Clip, ClothSheet, FeetInput, FootGround, Grip, GroundHit, Hand, HeldWeapon, IkInput,
     Joint, JointMask, JointTransform, LookInput, PackedRotation, RotationTrack, Skeleton, SpringBones,
-    SpringFrame, Substeps, Transform, VectorRange, VectorTrack, WeaponPlace, add, blend, local_to_model,
-    make_delta, root_motion, sample,
+    SpringFloor, SpringFrame, SpringPace, Substeps, Transform, VectorRange, VectorTrack, WeaponPlace, add,
+    blend, local_to_model, make_delta, root_motion, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, RootMotion};
@@ -303,6 +303,99 @@ fn updating_cloth_allocates_nothing_once_it_is_made() {
     });
     assert!(sum.is_finite());
     assert_eq!(springs.cloth_iterations(), Some(0));
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+}
+
+/// Three characters sharing a frame allocate nothing (M5 C2): one in the lead, two taking turns in a
+/// rotation, one wearing cloth, a swap of who leads, a floor that comes and goes, a reset, sleeping and
+/// waking.
+#[test]
+fn three_characters_taking_turns_allocate_nothing() {
+    let skeleton_bytes = skeleton().to_cooked().expect("cooked");
+    let cooked = Skeleton::read(&skeleton_bytes).expect("a valid skeleton");
+    let clip_bytes = clip().to_cooked().expect("cooked");
+    let clip = Clip::read(&clip_bytes).expect("a valid clip");
+    let joint = |joint: u16| SpringJoint {
+        joint,
+        hit_radius: 0.02,
+        stiffness: 0.3,
+        gravity_power: 0.5,
+        gravity_dir: [0.0, -1.0, 0.0],
+        drag_force: 0.2,
+    };
+    let chain = |name: &str, first: u16| Spring {
+        name: name.into(),
+        joints: (first..first + 6).map(joint).collect(),
+        tip: SpringTip::Extended { length: 0.05 },
+        collider_groups: vec![0],
+        center: None,
+    };
+    let rig = CharacterRig {
+        joint_count: JOINTS as u32,
+        springs: vec![chain("a", 10), chain("b", 20), chain("c", 30)],
+        colliders: vec![RigCollider {
+            joint: 4,
+            shape: ColliderShape::Capsule { offset: [0.0; 3], radius: 0.05, tail: [0.1, 0.0, 0.0] },
+        }],
+        collider_groups: vec![ColliderGroup { name: "body".into(), colliders: vec![0] }],
+        ..CharacterRig::default()
+    };
+    let rig_bytes = rig.to_cooked().expect("cooked");
+    let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
+    let sheet = ClothSheet {
+        chains: ["a", "b", "c"].map(String::from).to_vec(),
+        closed: true,
+        lateral_compliance: 1e-6,
+        bend_compliance: 1e-4,
+    };
+    let mut cast: Vec<(CharacterPose, SpringBones)> = (0..3)
+        .map(|place| {
+            let pose = CharacterPose::new(cooked, &[], &[], Vec::new());
+            let mut springs = SpringBones::new(rig, &pose).expect("it has springs");
+            if place == 2 {
+                springs.set_cloth(rig, std::slice::from_ref(&sheet)).expect("its chains");
+            }
+            (pose, springs)
+        })
+        .collect();
+    let floor = SpringFloor { point: Vec3::new(0.0, -0.3, 0.0), normal: Vec3::Y };
+
+    let (sum, counts) = alloc::count_in_scope(|| {
+        let mut sum = 0.0;
+        for frame in 0..1_200_u32 {
+            // Who leads swaps half way; the other two take turns, one a frame.
+            let lead = usize::from(frame >= 600);
+            let mut other = 0;
+            for (place, (pose, springs)) in cast.iter_mut().enumerate() {
+                if frame % 300 == 100 {
+                    springs.reset();
+                }
+                springs.set_pace(if place == lead {
+                    SpringPace::Lead
+                } else {
+                    other += 1;
+                    if (frame + other).is_multiple_of(2) { SpringPace::Step } else { SpringPace::Wait }
+                });
+                springs.set_floor((frame % 250 < 200).then_some(floor));
+                pose.sample(clip, (frame % 60) as f32);
+                pose.finish();
+                let world = Affine3A::from_translation(Vec3::new(place as f32, 0.0, frame as f32 * 0.03));
+                let active = frame % 200 < 150;
+                let frame = SpringFrame {
+                    world_from_model: world,
+                    ticks: f64::from(frame),
+                    pose_moved: true,
+                    active,
+                };
+                let work = springs.update(pose, &frame);
+                sum += work.substeps as f32 + pose.model()[15].translation.y;
+            }
+        }
+        sum
+    });
+    assert!(sum.is_finite());
     if PER_THREAD_COUNTS {
         assert_eq!(counts.allocations, 0, "{counts:?}");
     }

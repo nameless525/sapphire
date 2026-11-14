@@ -20,7 +20,9 @@
 //!
 //! So the cloth shares everything with the springs: the frame, the owner's clock and its sub-steps,
 //! reset, `continue_from`, sleep, the tier's distance and the off-screen test. A frozen clock runs
-//! nothing, to the bit. Nothing of it reaches the simulation.
+//! nothing, to the bit. Nothing of it reaches the simulation. A character taking turns (M5 C2) solves its
+//! links once over the stride, with the compliance over the stride's length, and the walk keeps its tails
+//! above the springs' floor too.
 //!
 //! A link's rest length is its two tails' distance in the animated pose, read with the pose and
 //! interpolated between frames as the anchors are, so a clip that spreads a skirt keeps it spread.
@@ -336,8 +338,9 @@ impl SpringBones {
             *rest = (was + (now - was) * between) * cloth.scale;
         }
         cloth.lambda.fill(0.0);
-        // Compliance over the square of the sub-step's length, in the owner clock's seconds.
-        let rate = (SPRING_TICK_HZ * self.substeps.count()) as f32;
+        // Compliance over the square of the step's length, in the owner clock's seconds: a sub-step's,
+        // or a stride's for a character taking turns.
+        let rate = (SPRING_TICK_HZ * self.substeps.count()) as f32 / self.stride as f32;
         let per_square = rate * rate;
         for iteration in 0..cloth.iterations {
             for ((link, rest), lambda) in cloth.links.iter().zip(&cloth.rest).zip(&mut cloth.lambda) {
@@ -398,9 +401,15 @@ impl SpringBones {
                 let next =
                     self.collide(swing.colliders, &self.colliders_now, &bone, cloth.sprung[point], wanted);
                 let aim = (next - position).try_normalize().unwrap_or(toward_pose);
-                let aim = self
+                let mut aim = self
                     .bend_cone
                     .hold(self.swing_cone.hold(aim, self.posed[index] * swing.tail), toward_pose);
+                // The floor has the last word here too.
+                if let Some((up, level)) = self.plane {
+                    let held =
+                        super::on_floor(up, level, &bone, cloth.sprung[point], position + aim * length);
+                    aim = (held - position).try_normalize().unwrap_or(aim);
+                }
                 let next = position + aim * length;
                 cloth.points[point] = next;
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
@@ -408,7 +417,7 @@ impl SpringBones {
                     // What the cloth moved it counts toward its motion by the sub-step's share.
                     let moved = next - cloth.sprung[point];
                     let tail = self.tails[at];
-                    let carry = self.rates[at].carry;
+                    let carry = self.rate(at).carry;
                     self.tails[at] = Tail { now: next, before: tail.before + moved * (1.0 - carry) };
                     self.solved[at][1] = (parent.rotation.inverse() * rotation).normalize();
                 }

@@ -119,6 +119,7 @@ impl TextureKind {
             | ImportSettings::Encounter(_)
             | ImportSettings::Enemy(_)
             | ImportSettings::Playable(_)
+            | ImportSettings::Motion(_)
             | ImportSettings::Sound(_)
             | ImportSettings::Cue(_)
             | ImportSettings::Score(_)

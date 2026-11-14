@@ -73,6 +73,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::tod::TodTimeline;
 
+use crate::LOG_TARGET;
 use crate::anim_graph::GraphDriver;
 use crate::animate::ClipPlayer;
 use crate::content::{Content, GraphKey};
@@ -726,8 +727,8 @@ pub fn player(content: &Content, kind: AssetId) -> Result<ClipPlayer, String> {
     let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
     let (pose, joints) = character_pose(look, mesh, rig, skeleton)?;
-    let springs =
-        springs_of(content, rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
+    let springs = springs_of(content, kind, rig, &pose)
+        .map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
@@ -765,7 +766,7 @@ pub fn graph_driver_fitted(
     let binding = graph_binding(content, kind)?;
     let Parts { look, mesh, rig, skeleton } = Parts::of(content, kind)?;
     let (pose, joints) = character_pose(look, mesh, rig, skeleton)?;
-    let springs = springs_of(content, rig, &pose).map(|springs| match fit {
+    let springs = springs_of(content, kind, rig, &pose).map(|springs| match fit {
         Some(fit) => springs.with_clearance(fit.take()),
         None => springs.with_heroine_clearance(mesh, skeleton, rig),
     });
@@ -833,11 +834,34 @@ impl ClearanceFit {
     }
 }
 
-/// The character's hair and cloth, if it has any, by what `content` says a character's motion is.
-fn springs_of(content: &Content, rig: &ArchivedCharacterRig, pose: &CharacterPose) -> Option<SpringBones> {
+/// The playable kind `kind`'s hair and cloth, if it has any, by what `content` says its motion is: its
+/// springs' tuning, and the sheets of its chains it wears as cloth (M5 C4), which the stage's
+/// [`crate::animate::SpringView`] gives their tier's iterations each frame.
+fn springs_of(
+    content: &Content,
+    kind: AssetId,
+    rig: &ArchivedCharacterRig,
+    pose: &CharacterPose,
+) -> Option<SpringBones> {
     let mut springs = SpringBones::new(rig, pose)?;
-    springs.set_tuning(content.character_motion().springs);
+    wear_motion(&mut springs, content.character_motion_of(kind), rig);
     Some(springs)
+}
+
+/// Makes `springs`, made from `rig`, move by `motion`: its tuning and its cloth, in place, so tails stay where
+/// they are (a hot reload of the motion, M5 C4). A sheet the rig can't wear, which loading the motion checked
+/// already, is warned of and left off.
+pub(crate) fn wear_motion(
+    springs: &mut SpringBones,
+    motion: &sapphire_anim::CharacterMotion,
+    rig: &ArchivedCharacterRig,
+) {
+    springs.set_tuning(motion.springs);
+    if let Err(error) = springs.set_cloth(rig, &motion.cloth) {
+        tracing::warn!(target: LOG_TARGET, %error, "the character wears its chains as springs alone");
+        // An error leaves what it had: off, rather than a sheet of another motion.
+        let _ = springs.set_cloth(rig, &[]);
+    }
 }
 
 /// What IK reads of the playable kind `kind` as `content` has it now, for `pose`, a pose of it.

@@ -23,6 +23,7 @@ use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontE
 use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
 use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
 use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use crate::motion::{MOTION_EXTENSION, Motion, MotionError};
 use crate::probes::{PROBE_GRID_EXTENSION, ProbeGrid, ProbeGridError};
 use crate::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes, ReflectionProbesError};
 use crate::rig::{CharacterRig, RIG_EXTENSION, RigError};
@@ -110,11 +111,15 @@ pub enum AssetKind {
     /// One playable kind (`.splayable`, M5 C8): [`Playable`], what the stage draws it by. Its set of moves
     /// is compiled into the simulation, so it depends on nothing. CPU data, never uploaded.
     Playable = 28,
+    /// A character's motion (`.smotion`, M5 C4): [`Motion`], the springs' tuning, the IK's weights and the
+    /// cloth a playable kind names when it moves by numbers of its own. It depends on nothing. CPU data, never
+    /// uploaded.
+    Motion = 29,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -143,6 +148,7 @@ impl AssetKind {
         Self::TextureLevel,
         Self::ReflectionProbes,
         Self::Playable,
+        Self::Motion,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -182,6 +188,7 @@ impl AssetKind {
             Self::TextureLevel => TEXTURE_LEVEL_EXTENSION,
             Self::ReflectionProbes => REFLECTIONS_EXTENSION,
             Self::Playable => PLAYABLE_EXTENSION,
+            Self::Motion => MOTION_EXTENSION,
         }
     }
 
@@ -216,14 +223,15 @@ impl AssetKind {
             Self::TextureLevel => "texture level",
             Self::ReflectionProbes => "reflection probes",
             Self::Playable => "playable kind",
+            Self::Motion => "character motion",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
-    /// dialogue, an enemy, a score, voice lines or a playable kind is ready once it and its dependencies are
-    /// decoded.
+    /// dialogue, an enemy, a score, voice lines, a playable kind or a character motion is ready once it and its
+    /// dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -249,6 +257,7 @@ impl AssetKind {
                 | Self::Score
                 | Self::VoiceLines
                 | Self::Playable
+                | Self::Motion
         )
     }
 
@@ -260,8 +269,8 @@ impl AssetKind {
     /// arrives in it, and a tier's new renderer takes the grid on stage from its bytes (M5 M6). Rigs,
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
-    /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines and playable
-    /// kinds are read on the CPU only, so they stay.
+    /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
+    /// kinds and character motions are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -289,6 +298,7 @@ impl AssetKind {
                 | Self::Score
                 | Self::VoiceLines
                 | Self::Playable
+                | Self::Motion
         )
     }
 
@@ -305,7 +315,7 @@ impl AssetKind {
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues, reflection
-    /// probes and playable kinds on nothing. A zone's meshes and probes and an enemy's or a playable kind's
+    /// probes, playable kinds and character motions on nothing. A zone's meshes and probes and an enemy's or a playable kind's
     /// look aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -355,6 +365,7 @@ impl AssetKind {
             26 => Some(Self::TextureLevel),
             27 => Some(Self::ReflectionProbes),
             28 => Some(Self::Playable),
+            29 => Some(Self::Motion),
             _ => None,
         }
     }
@@ -365,7 +376,7 @@ impl AssetKind {
     /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
-    /// `ReflectionProbes::read`, `Playable::from_cooked`), and
+    /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -479,6 +490,11 @@ impl AssetKind {
                 Playable::from_cooked(bytes)?;
                 Vec::new()
             }
+            // Its cloth names a rig's chains by name, and the kind naming it says which rig.
+            Self::Motion => {
+                Motion::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -486,7 +502,7 @@ impl AssetKind {
     }
 
     /// [`Self::references`], and what an asset names without holding: a zone's cell and instance meshes
-    /// and its probe grid, an enemy's meshes and graph, and a playable kind's meshes, rig and graph, which
+    /// and its probe grid, an enemy's meshes and graph, and a playable kind's meshes, rig, graph and motion, which
     /// loading it doesn't load, so they aren't
     /// dependencies, but which must ship with it. This is what decides which pack an asset goes in.
     pub fn reach(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -592,4 +608,6 @@ pub enum AssetError {
     ReflectionProbes(#[from] ReflectionProbesError),
     #[error("invalid playable kind")]
     Playable(#[from] PlayableError),
+    #[error("invalid character motion")]
+    Motion(#[from] MotionError),
 }

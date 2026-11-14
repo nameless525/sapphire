@@ -214,8 +214,8 @@ fn updating_springs_allocates_nothing_once_they_are_made() {
 }
 
 /// Cloth allocates nothing once its sheets are set, through everything a frame and a tier can ask of it:
-/// its iterations changing, off and on again, sub-step counts, colliders, a reset, sleeping and waking,
-/// and a new version of the character taking its motion over.
+/// its iterations changing, off and on again, at once and eased, sub-step counts, colliders, a reset,
+/// sleeping and waking, and a new version of the character taking its motion over.
 #[test]
 fn updating_cloth_allocates_nothing_once_it_is_made() {
     let skeleton_bytes = skeleton().to_cooked().expect("cooked");
@@ -281,7 +281,14 @@ fn updating_cloth_allocates_nothing_once_it_is_made() {
                 next.continue_from(&springs);
                 std::mem::swap(&mut springs, &mut next);
             }
-            springs.set_cloth_iterations([4, 2, 1, 0][(frame / 50 % 4) as usize]);
+            if frame < 900 {
+                springs.set_cloth_iterations([4, 2, 1, 0][(frame / 50 % 4) as usize]);
+            } else {
+                // Eased on and off, as a tier's distance switches it (M5 C4), sometimes before it's done.
+                springs.ease_cloth_iterations(
+                    [3, 0][(frame / [40, 25][(frame / 160 % 2) as usize] % 2) as usize],
+                );
+            }
             let moved = frame % 400 < 300;
             if moved {
                 pose.sample(clip, (frame % 60) as f32);

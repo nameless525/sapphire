@@ -155,6 +155,7 @@ use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
 use crate::material::{self, MaterialSettings};
+use crate::motion::{self, MotionSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::playable::{self, PlayableSettings};
@@ -238,6 +239,8 @@ pub enum ImportSettings {
     Enemy(EnemySettings),
     /// A playable kind's document (`.playable.ron`), cooked to `.splayable` (M5 C8).
     Playable(PlayableSettings),
+    /// A character motion document (`.motion.ron`), cooked to `.smotion` (M5 C4).
+    Motion(MotionSettings),
     /// An Ogg Vorbis file (`.ogg`), copied as the target format once it decodes (M2 E1).
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
@@ -316,6 +319,9 @@ impl ImportSettings {
         }
         if playable::is_source(source) {
             return Some(Self::Playable(PlayableSettings::default()));
+        }
+        if motion::is_source(source) {
+            return Some(Self::Motion(MotionSettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -399,6 +405,7 @@ impl ImportSettings {
             | Self::Encounter(_)
             | Self::Enemy(_)
             | Self::Playable(_)
+            | Self::Motion(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Score(_)
@@ -435,6 +442,7 @@ impl ImportSettings {
             | Self::Encounter(_)
             | Self::Enemy(_)
             | Self::Playable(_)
+            | Self::Motion(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Score(_)

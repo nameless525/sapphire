@@ -106,10 +106,16 @@ pub enum GraphScript {
     /// Felled at tick 20: `defeat` forced as a defeat's reaction is, lasting 120 ticks, and the
     /// character still down when it's over.
     Defeat,
+    /// Its run straight ahead, then from tick [`TURN_TICK`] a run back the way it came and a little to its
+    /// right, which the controller turns the body round to: a sharp turn, for a skirt's swing (M5 C4).
+    Turn,
 }
 
+/// When [`GraphScript::Turn`] turns, in ticks.
+pub const TURN_TICK: u32 = 40;
+
 impl GraphScript {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Stand,
         Self::Walk,
         Self::Run,
@@ -121,6 +127,7 @@ impl GraphScript {
         Self::Flinch,
         Self::Cut,
         Self::Defeat,
+        Self::Turn,
     ];
 
     pub fn name(self) -> &'static str {
@@ -136,6 +143,7 @@ impl GraphScript {
             Self::Flinch => "flinch",
             Self::Cut => "cut",
             Self::Defeat => "defeat",
+            Self::Turn => "turn",
         }
     }
 
@@ -143,12 +151,15 @@ impl GraphScript {
         Self::ALL.into_iter().find(|script| script.name() == name)
     }
 
-    /// The stick it holds: +x along world +X, +y along world +Z, which the character faces. Half a tilt
-    /// is the controller's walk, a full tilt its run, and less than half a slower walk.
-    fn stick(self) -> Stick {
+    /// The stick it holds at `tick`: +x along world +X, +y along world +Z, which the character faces. Half
+    /// a tilt is the controller's walk, a full tilt its run, and less than half a slower walk.
+    fn stick(self, tick: u32) -> Stick {
         match self {
             Self::Walk => Stick::from_axes(0.0, 0.5),
             Self::Run => Stick::from_axes(0.0, 1.0),
+            // 160° round to its right.
+            Self::Turn if tick < TURN_TICK => Stick::from_axes(0.0, 1.0),
+            Self::Turn => Stick::from_axes(-0.342, -0.94),
             Self::Strafe => Stick::from_axes(0.866, 0.5),
             Self::Back => Stick::from_axes(0.0, -0.25),
             _ => Stick::CENTER,
@@ -162,7 +173,7 @@ impl GraphScript {
 
     /// Whether its stick takes the character anywhere.
     fn travels(self) -> bool {
-        self.stick() != Stick::CENTER
+        matches!(self, Self::Walk | Self::Run | Self::Strafe | Self::Back | Self::Turn)
     }
 
     /// Whether it faces where it started however it moves, as a lock-on does. The controller turns a body
@@ -437,10 +448,18 @@ impl GraphDriver {
         Some(Mat4::from(self.player.pose().model()[joint]))
     }
 
-    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to.
-    pub(crate) fn set_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to: its sheets of
+    /// cloth too, given `rig`, the rig its springs were made from (M5 C4).
+    pub(crate) fn set_motion(
+        &mut self,
+        motion: &sapphire_anim::CharacterMotion,
+        rig: Option<&sapphire_assets::rig::ArchivedCharacterRig>,
+    ) {
         if let Some(springs) = &mut self.springs {
-            springs.set_tuning(motion.springs);
+            match rig {
+                Some(rig) => crate::lookdev::wear_motion(springs, motion, rig),
+                None => springs.set_tuning(motion.springs),
+            }
         }
         if let Some(ik) = &mut self.ik {
             ik.set_motion(motion);
@@ -600,6 +619,12 @@ impl GraphDriver {
     /// Whether it has springs, which a frame enters in its rotation ([`SpringView::enter`]).
     pub fn has_springs(&self) -> bool {
         self.springs.is_some()
+    }
+
+    /// Its springs, for the stage's tests.
+    #[cfg(all(test, feature = "dev"))]
+    pub(crate) fn springs(&self) -> Option<&SpringBones> {
+        self.springs.as_ref()
     }
 
     /// Runs its springs for `frame`, on the floor under its feet at `floor` (where the ground sees it)
@@ -860,7 +885,8 @@ impl GraphShow {
     /// One fixed step. Allocates nothing, as a game's wouldn't.
     pub(crate) fn step(&mut self) {
         let mut actions = TickActions::NEUTRAL;
-        let held = ActorActions { buttons: self.script.buttons(self.tick), stick: self.script.stick() };
+        let held =
+            ActorActions { buttons: self.script.buttons(self.tick), stick: self.script.stick(self.tick) };
         actions.set(self.actor, held).expect("room for one actor");
         self.simulation.step(&actions);
         let Some(view) = self.simulation.actor(self.actor) else { return };

@@ -187,6 +187,7 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Dialogue
         | AssetKind::Enemy
         | AssetKind::Playable
+        | AssetKind::Motion
         | AssetKind::Score
         | AssetKind::VoiceLines => Codec::Lz4,
         AssetKind::Sound => Codec::None,

@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "a3a84339-9e09-49e7-ac55-e97fdb7788ed",
+        importer: Motion(()),
+    ),
+)

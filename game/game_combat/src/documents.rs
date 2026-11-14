@@ -46,7 +46,7 @@ impl FightDocuments {
         Self {
             targeting: TargetingTuning::shipped(),
             body: *BodyTuning::shipped(),
-            motion: *CharacterMotion::shipped(),
+            motion: CharacterMotion::shipped().clone(),
             hud: *HudDesign::shipped(),
             bindings: None,
             effects: None,
@@ -195,7 +195,7 @@ mod tests {
         let documents = read(&content("", &[])).expect("reads");
         assert_eq!(documents.targeting, TargetingTuning::shipped());
         assert_eq!(documents.body, *BodyTuning::shipped());
-        assert_eq!(documents.motion, *CharacterMotion::shipped());
+        assert_eq!(&documents.motion, CharacterMotion::shipped());
         assert_eq!(documents.hud, *HudDesign::shipped());
         assert!(documents.bindings.is_none() && documents.effects.is_none());
         let refused = read(&HashMap::new()).expect_err("no manifest");

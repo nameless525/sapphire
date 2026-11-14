@@ -95,6 +95,7 @@ use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
+use sapphire_assets::motion::Motion;
 use sapphire_assets::pack;
 use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
 use sapphire_assets::reflections::ReflectionProbes;
@@ -1128,6 +1129,16 @@ struct HeldPlayable {
     versions: (u32, u32, u32),
     /// Its springs' clearance fit, kept while the character draws as another kind ([`Content::keep_fit`]).
     fit: Option<KeptFit>,
+    /// Its own character motion, if its document names one (M5 C4).
+    motion: Option<HeldMotion>,
+}
+
+/// A playable kind's own character motion (M5 C4): the cooked document, what it last read as, and the version
+/// that was ([`Content::take_motions_changed`]).
+struct HeldMotion {
+    handle: Handle<Motion>,
+    motion: sapphire_anim::CharacterMotion,
+    version: u32,
 }
 
 /// A playable kind's hair and shirt clearance fit (M4 H4), kept while another kind draws (M5 C8): the fit, or
@@ -1186,9 +1197,66 @@ impl Content {
         self.reflection_probes
     }
 
-    /// What a character built from here moves by: the shipped document, unless a game said otherwise.
+    /// What a character built from here moves by: the shipped document, unless a game said otherwise. A
+    /// playable kind whose document names a motion of its own moves by that instead
+    /// ([`Self::character_motion_of`]).
     pub fn character_motion(&self) -> &sapphire_anim::CharacterMotion {
         &self.character_motion
+    }
+
+    /// What the playable kind `kind` moves by (M5 C4): its own character motion, once [`Self::load_playable`]
+    /// has loaded it, or [`Self::character_motion`] for a kind that names none. Its cloth's chains are its
+    /// rig's: loading it checked them.
+    pub fn character_motion_of(&self, kind: AssetId) -> &sapphire_anim::CharacterMotion {
+        self.held_playable(kind)
+            .and_then(|held| held.motion.as_ref())
+            .map_or(&self.character_motion, |held| &held.motion)
+    }
+
+    /// Whether any loaded playable kind's own character motion has a new version since the last call, read
+    /// again: hot reload of a `.motion.ron` (M5 C4), which what stands takes up in place
+    /// (`Scene::follow_content`). A new version that doesn't read, or names a chain the kind's rig lacks, is
+    /// refused with a warning and the kind keeps what it had. Allocates nothing while nothing changed.
+    pub(crate) fn take_motions_changed(&mut self) -> bool {
+        let mut changed = false;
+        for index in 0..self.playables.len() {
+            let held = &self.playables[index];
+            let Some(motion) = &held.motion else { continue };
+            let version = self.server.generation(&motion.handle);
+            if version == motion.version {
+                continue;
+            }
+            let read = self.read_motion(held.look.kind, &motion.handle, &held.rig);
+            let Some(motion) = self.playables[index].motion.as_mut() else { continue };
+            motion.version = version;
+            match read {
+                Ok(read) => {
+                    motion.motion = read;
+                    changed = true;
+                }
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, error, "a playable kind keeps the motion it had");
+                }
+            }
+        }
+        changed
+    }
+
+    /// The character motion `handle` holds, for the playable kind `kind`, whose rig is `rig`: refused if it
+    /// doesn't read or its cloth names a chain the rig lacks.
+    fn read_motion(
+        &self,
+        kind: AssetId,
+        handle: &Handle<Motion>,
+        rig: &Handle<CharacterRig>,
+    ) -> Result<sapphire_anim::CharacterMotion, String> {
+        let failed = |error: &dyn std::fmt::Display| format!("playable kind {kind}'s motion: {error}");
+        let cooked = self.server.get(handle).ok_or_else(|| failed(&"it isn't loaded"))?;
+        let motion = sapphire_anim::CharacterMotion::from_cooked(cooked).map_err(|error| failed(&error))?;
+        if let Some(rig) = self.server.get(rig) {
+            motion.check_rig(rig).map_err(|error| failed(&error))?;
+        }
+        Ok(motion)
     }
 
     /// Makes `motion` what a character built from here moves by. What stands already takes it from
@@ -1286,7 +1354,7 @@ impl Content {
     ) -> Self {
         Self {
             gpu: GpuAssets::new(character_id, false),
-            character_motion: *sapphire_anim::CharacterMotion::shipped(),
+            character_motion: sapphire_anim::CharacterMotion::shipped().clone(),
             body_tuning: *sapphire_anim::BodyTuning::shipped(),
             character_id,
             character_asked: character_id,
@@ -2327,7 +2395,26 @@ impl Content {
             .as_ref()
             .map_or_else(|| self.server.generation(&self.character), |mesh| self.server.generation(mesh));
         let versions = (mesh_version, self.server.generation(&rig), skeleton_version);
-        let held = HeldPlayable { look: look.clone(), mesh, rig, skeleton, versions, fit: None };
+        // Its own motion, CPU data, checked against its rig (M5 C4).
+        let motion = match look.motion {
+            Some(id) => {
+                let handle =
+                    self.server.load_with::<Motion>(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+                let assets = &mut self.gpu;
+                self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu)).map_err(
+                    |error| {
+                        AppInitError::msg(format!(
+                            "the playable kind {}'s motion didn't load: {error}",
+                            look.kind
+                        ))
+                    },
+                )?;
+                let read = self.read_motion(look.kind, &handle, &rig).map_err(AppInitError::msg)?;
+                Some(HeldMotion { version: self.server.generation(&handle), handle, motion: read })
+            }
+            None => None,
+        };
+        let held = HeldPlayable { look: look.clone(), mesh, rig, skeleton, versions, fit: None, motion };
         match self.playables.iter_mut().find(|held| held.look.kind == look.kind) {
             Some(loaded) => *loaded = held,
             None => self.playables.push(held),
@@ -3398,6 +3485,7 @@ mod tests {
             held: None,
             body_contacts: Vec::new(),
             expression: Some((sapphire_assets::rig::ExpressionPreset::Relaxed, 0.35)),
+            motion: None,
         }
     }
 
@@ -3902,6 +3990,8 @@ mod tests {
     /// Where each kind's chain hangs from, in its root's space, and how far apart its joints hang below that.
     const CHAIN_ANCHOR: Vec3 = Vec3::new(0.0, 0.5, 0.0);
     const CHAIN_LINK: f32 = 0.1;
+    /// How far round [`CHAIN_ANCHOR`] a kind's chains hang when it has several ([`sprung_kind`]).
+    const SHEET_RADIUS: f32 = 0.15;
 
     /// What draws [`SPRUNG_KIND`].
     fn sprung_look() -> PlayableLook {
@@ -3918,24 +4008,32 @@ mod tests {
     /// Aster are: [`KIND`] on the test character's IDs, its chain [`CHAINS`]`[0]` joints long, and
     /// [`SPRUNG_KIND`] on its own, its chain [`CHAINS`]`[1]` long; and the graph show's moves.
     fn sprung_pack() -> Vec<u8> {
-        let mut assets = sprung_kind([MESH, RIG, SKELETON, SWING, GRAPH], CHAINS[0]);
+        write_pack(sprung_assets()).expect("a pack")
+    }
+
+    /// What [`sprung_pack`] packs.
+    fn sprung_assets() -> Vec<PackAsset> {
+        let mut assets = sprung_kind([MESH, RIG, SKELETON, SWING, GRAPH], CHAINS[0], 1);
         assets.extend(sprung_kind(
             [SPRUNG_MESH, SPRUNG_RIG, SPRUNG_SKELETON, SPRUNG_SWING, SPRUNG_GRAPH],
             CHAINS[1],
+            1,
         ));
         assets.push(packed(MOVES, AssetKind::MoveSet, &show_moves(0).to_cooked().expect("cooked")));
-        write_pack(assets).expect("a pack")
+        assets
     }
 
     /// A kind's mesh, rig, skeleton, swing and graph playing it, by `ids` in that order: every required
-    /// humanoid bone a joint of its own under the root, as [`pack`]'s, then a chain of `chain` joints hanging
-    /// from the root, one spring.
+    /// humanoid bone a joint of its own under the root, as [`pack`]'s, then `chains` chains of `chain` joints
+    /// each hanging from the root, a spring each: one hangs at [`CHAIN_ANCHOR`], named `chain`, and more hang
+    /// round it on a ring of [`SHEET_RADIUS`], named `chain 0` onward, as a skirt's do.
     fn sprung_kind(
         [mesh_id, rig_id, skeleton_id, clip_id, graph_id]: [AssetId; 5],
         chain: usize,
+        chains: usize,
     ) -> Vec<PackAsset> {
         let bones = HumanBone::REQUIRED.len();
-        let count = bones + chain;
+        let count = bones + chain * chains;
         let root = Vec3::new(0.0, 1.0, 0.0);
         let mut joints: Vec<Joint> = (0..bones)
             .map(|joint| Joint {
@@ -3948,15 +4046,29 @@ mod tests {
             })
             .collect();
         let mut model: Vec<Vec3> = (0..bones).map(|joint| root + Vec3::X * (joint as f32 * 0.1)).collect();
-        for link in 0..chain {
-            let (parent, translation) =
-                if link == 0 { (0, CHAIN_ANCHOR) } else { (bones + link - 1, -Vec3::Y * CHAIN_LINK) };
-            joints.push(Joint {
-                name: format!("chain {link}"),
-                parent: Some(parent as u16),
-                rest: JointTransform { translation: translation.to_array(), ..JointTransform::IDENTITY },
-            });
-            model.push(model[parent] + translation);
+        for strand in 0..chains {
+            let turn = std::f32::consts::TAU * strand as f32 / chains as f32;
+            let ring =
+                if chains == 1 { Vec3::ZERO } else { Vec3::new(turn.sin(), 0.0, turn.cos()) * SHEET_RADIUS };
+            for link in 0..chain {
+                let first = bones + strand * chain;
+                let (parent, translation) = if link == 0 {
+                    (0, CHAIN_ANCHOR + ring)
+                } else {
+                    (first + link - 1, -Vec3::Y * CHAIN_LINK)
+                };
+                let name = if chains == 1 {
+                    format!("chain {link}")
+                } else {
+                    format!("chain {strand} joint {link}")
+                };
+                joints.push(Joint {
+                    name,
+                    parent: Some(parent as u16),
+                    rest: JointTransform { translation: translation.to_array(), ..JointTransform::IDENTITY },
+                });
+                model.push(model[parent] + translation);
+            }
         }
         let binds = model
             .iter()
@@ -3980,27 +4092,32 @@ mod tests {
             .map(|(joint, &bone)| HumanoidJoint { bone, joint: joint as u16 })
             .collect();
         humanoid.sort_by_key(|entry| entry.bone);
-        let spring = sapphire_assets::rig::Spring {
-            name: "chain".to_owned(),
-            joints: (bones..count)
-                .map(|joint| sapphire_assets::rig::SpringJoint {
-                    joint: joint as u16,
-                    hit_radius: 0.02,
-                    stiffness: 1.0,
-                    gravity_power: 1.0,
-                    gravity_dir: [0.0, -1.0, 0.0],
-                    drag_force: 0.4,
-                })
-                .collect(),
-            tip: sapphire_assets::rig::SpringTip::Joint,
-            collider_groups: Vec::new(),
-            center: None,
-        };
+        let springs = (0..chains)
+            .map(|strand| {
+                let first = bones + strand * chain;
+                sapphire_assets::rig::Spring {
+                    name: if chains == 1 { "chain".to_owned() } else { format!("chain {strand}") },
+                    joints: (first..first + chain)
+                        .map(|joint| sapphire_assets::rig::SpringJoint {
+                            joint: joint as u16,
+                            hit_radius: 0.02,
+                            stiffness: 1.0,
+                            gravity_power: 1.0,
+                            gravity_dir: [0.0, -1.0, 0.0],
+                            drag_force: 0.4,
+                        })
+                        .collect(),
+                    tip: sapphire_assets::rig::SpringTip::Joint,
+                    collider_groups: Vec::new(),
+                    center: None,
+                }
+            })
+            .collect();
         let rig = CharacterRig {
             joint_count: count as u32,
             material_slot_count: 1,
             humanoid,
-            springs: vec![spring],
+            springs,
             ..CharacterRig::default()
         };
         let clip = Clip { skeleton: Some(skeleton_id), ..swing(count) };
@@ -4094,6 +4211,214 @@ mod tests {
             let chain_now = chain_from_root(&stage, chain);
             assert!(chain_now.iter().all(|at| at.is_finite() && at.length() < 1.5), "{chain_now:?}");
         }
+    }
+
+    /// A third kind for [`cloth_pack`]: [`CLOTH_CHAINS`] chains round its hips, which its own motion
+    /// [`CLOTH_MOTION`] wears as one closed sheet (M5 C4).
+    const CLOTH_KIND: AssetId = AssetId::from_bytes([0x70; 16]);
+    const CLOTH_MESH: AssetId = AssetId::from_bytes([0x71; 16]);
+    const CLOTH_RIG: AssetId = AssetId::from_bytes([0x72; 16]);
+    const CLOTH_SKELETON: AssetId = AssetId::from_bytes([0x73; 16]);
+    const CLOTH_SWING: AssetId = AssetId::from_bytes([0x74; 16]);
+    const CLOTH_GRAPH: AssetId = AssetId::from_bytes([0x75; 16]);
+    const CLOTH_MOTION: AssetId = AssetId::from_bytes([0x76; 16]);
+    /// How many chains [`CLOTH_KIND`] has, and how many joints each.
+    const CLOTH_CHAINS: (usize, usize) = (6, 3);
+
+    /// What draws [`CLOTH_KIND`], with its own motion.
+    fn cloth_look() -> PlayableLook {
+        PlayableLook {
+            mesh: CLOTH_MESH,
+            rig: CLOTH_RIG,
+            graph: CLOTH_GRAPH,
+            seed: 3,
+            motion: Some(CLOTH_MOTION),
+            ..look_of(CLOTH_KIND)
+        }
+    }
+
+    /// [`CLOTH_KIND`]'s motion: the shipped springs and IK, and its chains as one closed sheet if `sheet`.
+    fn cloth_motion(sheet: bool) -> sapphire_anim::CharacterMotion {
+        let chains = (0..CLOTH_CHAINS.0).map(|strand| format!("chain {strand}")).collect();
+        let cloth = sheet.then_some(sapphire_anim::ClothSheet {
+            chains,
+            closed: true,
+            lateral_compliance: 1e-6,
+            bend_compliance: 1e-4,
+        });
+        sapphire_anim::CharacterMotion {
+            cloth: cloth.into_iter().collect(),
+            ..sapphire_anim::CharacterMotion::shipped().clone()
+        }
+    }
+
+    /// [`sprung_pack`]'s kinds and [`CLOTH_KIND`], its motion wearing a sheet if `sheet`.
+    fn cloth_pack(sheet: bool) -> Vec<u8> {
+        let mut assets = sprung_assets();
+        assets.extend(sprung_kind(
+            [CLOTH_MESH, CLOTH_RIG, CLOTH_SKELETON, CLOTH_SWING, CLOTH_GRAPH],
+            CLOTH_CHAINS.1,
+            CLOTH_CHAINS.0,
+        ));
+        let motion = cloth_motion(sheet).to_cooked().expect("cooked");
+        assets.push(packed(CLOTH_MOTION, AssetKind::Motion, &motion));
+        write_pack(assets).expect("a pack")
+    }
+
+    impl Stage {
+        /// The character's springs, under the graph it plays.
+        fn springs(&self) -> &sapphire_anim::SpringBones {
+            let driver =
+                self.scene.world().get::<GraphDriver>(self.scene.character()).expect("a graph plays");
+            driver.springs().expect("springs")
+        }
+
+        /// Puts the eye `distance` meters from the middle of the character's body, which is what a tier's
+        /// distances measure.
+        fn eye_at(&mut self, distance: f32) {
+            let world = self.scene.world();
+            let character = self.scene.character();
+            let figure = world.get::<scene::Figure>(character).expect("a figure");
+            let transform = world.get::<crate::extract::RenderTransform>(character).expect("placed");
+            let middle = transform.0.transform_point3((figure.head + figure.feet) * 0.5);
+            // `OrbitCamera::framing` stands 2.6 bounding radii from the bounds' middle.
+            let half = distance / 2.6 / 3.0_f32.sqrt();
+            let bounds = [(middle - Vec3::splat(half)).to_array(), (middle + Vec3::splat(half)).to_array()];
+            *self.scene.camera_mut() = crate::orbit::OrbitCamera::framing(bounds);
+        }
+
+        /// Where the character's joints are after a frame, in its root's space, and the farthest any moved
+        /// from `before`.
+        fn moved(&mut self, before: &[Vec3]) -> (Vec<Vec3>, f32) {
+            self.frame();
+            let model = self.scene.graph_player().expect("playing").pose().model();
+            let root = model[0].inverse();
+            let now: Vec<Vec3> =
+                model.iter().map(|joint| root.transform_point3(joint.translation.into())).collect();
+            let most = now.iter().zip(before).map(|(now, was)| now.distance(*was)).fold(0.0, f32::max);
+            (now, most)
+        }
+    }
+
+    /// A kind whose document names a motion of its own wears that motion's cloth through the stage (M5 C4):
+    /// a swap to it makes its springs with the sheet, settled; each tier gives the sheet its iterations, and
+    /// none past the tier's distance for cloth, coming back a tenth nearer; the switch either way moves no
+    /// joint further than twice what a frame's swing does; a new version of the motion is taken up in place,
+    /// by the same springs; and a swap to a kind with none leaves its springs without.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_kind_wears_its_own_motions_cloth_by_the_tier_and_the_distance() {
+        use sapphire_render::quality::TierId;
+
+        let mut stage = Stage::over_pack(cloth_pack(true));
+        stage.content.load_playable(&cloth_look(), &mut stage.renderer, &stage.gpu).expect("the cloth kind");
+        assert_eq!(stage.content.character_motion_of(CLOTH_KIND), &cloth_motion(true));
+        assert_eq!(
+            stage.content.character_motion_of(KIND),
+            stage.content.character_motion(),
+            "none of its own"
+        );
+        for kind in [KIND, CLOTH_KIND] {
+            stage.content.load_graph(kind, &mut stage.renderer, &stage.gpu).expect("its graph");
+        }
+        let driver = lookdev::graph_driver(&stage.content, KIND).expect("a driver");
+        stage.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
+        stage.frame_on_character();
+        stage.frame();
+        assert_eq!(stage.springs().cloth_iterations(), None, "the first kind wears no cloth");
+
+        stage.content.draw_character_as(CLOTH_KIND).expect("held");
+        let mesh = stage.content.playable_mesh_on_renderer(CLOTH_KIND).expect("its mesh");
+        stage.scene.set_character_mesh(mesh);
+        stage.frame();
+        let stats = stage.scene.anim_stats();
+        assert_eq!((stats.springs, stats.spring_substeps), (1, 0), "settled on the swap's frame: {stats:?}");
+        assert_eq!(stage.springs().cloth_iterations(), Some(4), "Desktop-High's");
+        let mut substeps = 0;
+        for _ in 0..30 {
+            stage.frame();
+            substeps += stage.scene.anim_stats().spring_substeps;
+        }
+        assert!(substeps > 0, "its springs run");
+        let strain = stage.springs().cloth_strain();
+        assert!(strain < 0.01, "the sheet holds its pose's widths: {strain}");
+
+        // Each tier's iterations, near the camera.
+        for (tier, iterations) in [
+            (TierId::DesktopLow, 2),
+            (TierId::MobileHigh, 2),
+            (TierId::MobileLow, 1),
+            (TierId::DesktopHigh, 4),
+        ] {
+            stage.scene.set_motion_tier(tier);
+            stage.frame();
+            assert_eq!(stage.springs().cloth_iterations(), Some(iterations), "{tier:?}");
+        }
+
+        // A frame with no fixed step, as on a frozen clock, moves nothing of the sheet, to the bit; and a
+        // steady frame of it allocates nothing.
+        let animate = |stage: &mut Stage, step: bool| {
+            if step {
+                stage.scene.step();
+            }
+            stage.scene.animate(&stage.content, 1.0, &mut ());
+            stage.scene.end_frame();
+        };
+        animate(&mut stage, true);
+        let model = |stage: &Stage| stage.scene.graph_player().expect("playing").pose().model().to_vec();
+        let before = model(&stage);
+        animate(&mut stage, false);
+        assert_eq!(model(&stage), before, "a frozen clock holds every bit");
+        let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+            for _ in 0..30 {
+                animate(&mut stage, true);
+            }
+        });
+        if sapphire_core::alloc::PER_THREAD_COUNTS {
+            assert_eq!(counts.allocations, 0, "{counts:?}");
+        }
+
+        // Desktop-High's cloth solves to 20 m and its springs to 40: past 20 the links drop and the sheet's
+        // chains swing on as springs; they come back inside 18 m, not between.
+        let (mut joints, _) = stage.moved(&[]);
+        let mut swing = 0.0_f32;
+        for _ in 0..10 {
+            let (now, most) = stage.moved(&joints);
+            (joints, swing) = (now, swing.max(most));
+        }
+        let bound = swing.max(1e-3) * 2.0;
+        for (distance, iterations) in [(5.0, 4), (19.0, 4), (25.0, 0), (19.0, 0), (17.0, 4), (5.0, 4)] {
+            stage.eye_at(distance);
+            let (now, most) = stage.moved(&joints);
+            joints = now;
+            assert_eq!(stage.springs().cloth_iterations(), Some(iterations), "at {distance} m");
+            assert!(stage.scene.anim_stats().spring_substeps > 0, "its springs run at {distance} m");
+            assert!(most <= bound, "no joint jumps at {distance} m: {most} m, a frame's swing {swing} m");
+        }
+
+        // A new version of its motion, with no sheet, is taken up by the same springs, in place.
+        let before: *const sapphire_anim::SpringBones = stage.springs();
+        stage.source.insert(PACK, cloth_pack(false));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.content.character_motion_of(CLOTH_KIND).cloth.is_empty());
+        assert_eq!(stage.springs().cloth_iterations(), None, "its sheet is off");
+        assert!(std::ptr::eq(before, stage.springs()), "the same springs");
+        let (now, most) = stage.moved(&joints);
+        joints = now;
+        assert!(most <= bound, "no joint jumps as the sheet goes: {most} m");
+        // And back, as an author saving the section again would.
+        stage.source.insert(PACK, cloth_pack(true));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| !stage.content.character_motion_of(CLOTH_KIND).cloth.is_empty());
+        assert_eq!(stage.springs().cloth_iterations(), Some(4), "its sheet is on again");
+        let (_, most) = stage.moved(&joints);
+        assert!(most <= bound, "no joint jumps as the sheet comes back: {most} m");
+
+        stage.content.draw_character_as(KIND).expect("held");
+        let mesh = stage.content.playable_mesh_on_renderer(KIND).expect("its mesh");
+        stage.scene.set_character_mesh(mesh);
+        stage.frame();
+        assert_eq!(stage.springs().cloth_iterations(), None, "the first kind wears none");
     }
 
     /// What a load leaves for after its screen (M4 C7, a fighter's fade) warms off the frame while frames go on,
@@ -5286,6 +5611,7 @@ mod tests {
                     skeleton: Some(skeleton),
                     versions: (0, 0, 0),
                     fit: None,
+                    motion: None,
                 };
                 content.playables.push(held);
                 content.character_kind = Some(KIND);

@@ -3,7 +3,7 @@
 // scenario lists is; this is what draws her.
 (
     type: "sapphire::moves::PlayableDocument",
-    version: 1,
+    version: 2,
     data: (
         // Her name's key in the game's words, which the HUD names her by: Aster.
         name: "character-name-aster",
@@ -44,6 +44,8 @@
             ],
             // A little softer than at rest.
             expression: Some((preset: "relaxed", weight: 0.25)),
+            // `hero.motion.ron`: the shared springs' numbers, with her skirt worn as cloth.
+            motion: Some("a3a84339-9e09-49e7-ac55-e97fdb7788ed"),
         ),
     ),
 )

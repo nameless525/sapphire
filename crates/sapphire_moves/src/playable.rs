@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::moves::PlayableDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         // The key of its name in the game's words: what the party's slots on the HUD call it.
 //!         name: "character-name-wanderer",
@@ -15,6 +15,8 @@
 //!             held: Some((mesh: "...", joint: "J_Bip_R_Hand", offset: (0.0, 0.0, 0.4), rotation: (0.0, 0.0, 0.0, 1.0))),
 //!             body_contacts: ["J_Bip_C_Hips", "J_Bip_L_Foot", "J_Bip_R_Foot"],
 //!             expression: Some((preset: "relaxed", weight: 0.35)),
+//!             // Its own `.motion.ron`, if it has one (M5 C4): the shared motion document otherwise.
+//!             motion: Some("..."),
 //!         ),
 //!     ),
 //! )
@@ -28,12 +30,11 @@
 //! **What it points at rather than copies:**
 //!
 //! - its **springs** are its rig's: the model's own spring chains and colliders (a VRM's
-//!   `VRMC_springBone`), cooked into the rig sub-asset [`PlayableLookDocument::rig`] names. How stiff
-//!   every character's springs are, and how much of its IK shows, is the game's one motion document
-//!   (`CharacterMotion`), which every kind shares.
-//! - **cloth** (M5 C4) is chains of those springs worn as a sheet, named by the kind's own joints, so it is
-//!   the kind's: its `cloth:` section goes in [`PlayableLookDocument`], beside `rig`, naming the rig's
-//!   chains, and nothing else here changes.
+//!   `VRMC_springBone`), cooked into the rig sub-asset [`PlayableLookDocument::rig`] names.
+//! - its **motion** (M5 C4): how stiff its springs are, how much of its IK shows, and which of its spring
+//!   chains it wears as cloth, a motion document (`sapphire_anim`'s `CharacterMotion`) of its own that
+//!   [`PlayableLookDocument::motion`] names. A kind that names none moves by the game's shared one, as every
+//!   kind did before. Cloth names the rig's chains, which is why it's the kind's to name.
 //!
 //! **What's checked where.** [`PlayableDocument::check`] holds what the document says by itself: a name, a
 //! rig that is its mesh's own sub-asset (a VRM's rig is derived from the model's ID), a weapon's joint and
@@ -42,7 +43,7 @@
 //! kind, since only the cooked skeleton says.
 
 use bevy_reflect::{Reflect, TypePath};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
 use sapphire_serialize::cooked::{self, AlignedVec};
 use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
@@ -74,8 +75,68 @@ pub struct PlayableDocument {
 }
 
 impl Versioned for PlayableDocument {
-    /// 1: M5 C8.
-    const VERSION: u32 = 1;
+    /// 1: M5 C8. 2: M5 C4, `look.motion`; a version 1 document reads as it is, with none.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        decode_versioned::<v1::PlayableDocument, D>(version, data).map(Into::into)
+    }
+}
+
+/// The document as M5 C8 wrote it, before a kind could name a motion document.
+mod v1 {
+    use sapphire_reflect::Versioned;
+    use sapphire_serialize::AssetId;
+    use serde::Deserialize;
+
+    use super::{HeldWeaponDocument, RestExpression};
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct PlayableDocument {
+        name: String,
+        moves: AssetId,
+        look: PlayableLookDocument,
+    }
+
+    impl Versioned for PlayableDocument {
+        const VERSION: u32 = 1;
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct PlayableLookDocument {
+        mesh: AssetId,
+        rig: AssetId,
+        graph: AssetId,
+        seed: u32,
+        #[serde(default)]
+        held: Option<HeldWeaponDocument>,
+        #[serde(default)]
+        body_contacts: Vec<String>,
+        #[serde(default)]
+        expression: Option<RestExpression>,
+    }
+
+    impl From<PlayableDocument> for super::PlayableDocument {
+        fn from(old: PlayableDocument) -> Self {
+            let PlayableLookDocument { mesh, rig, graph, seed, held, body_contacts, expression } = old.look;
+            Self {
+                name: old.name,
+                moves: old.moves,
+                look: super::PlayableLookDocument {
+                    mesh,
+                    rig,
+                    graph,
+                    seed,
+                    held,
+                    body_contacts,
+                    expression,
+                    motion: None,
+                },
+            }
+        }
+    }
 }
 
 /// What draws one.
@@ -101,6 +162,10 @@ pub struct PlayableLookDocument {
     /// The expression its face rests on, if any: a preset its rig knows, by name, and how much of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<RestExpression>,
+    /// Its own motion document (`<name>.motion.ron`, M5 C4), if it has one: its springs' tuning, its IK's
+    /// weights and the chains it wears as cloth. None moves it by the game's shared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<AssetId>,
 }
 
 /// A weapon a kind holds, drawn on its own and placed at a joint by a socket.
@@ -184,6 +249,7 @@ impl PlayableDocument {
                 .expression
                 .as_ref()
                 .map(|rest| RestPose { preset: rest.preset.clone(), weight: rest.weight }),
+            motion: look.motion,
         }
     }
 }
@@ -218,11 +284,12 @@ pub struct Playable {
     pub held: Option<HeldWeapon>,
     pub body_contacts: Vec<String>,
     pub expression: Option<RestPose>,
+    pub motion: Option<AssetId>,
 }
 
 impl Versioned for Playable {
-    /// 1: M5 C8.
-    const VERSION: u32 = 1;
+    /// 1: M5 C8. 2: M5 C4, `motion`.
+    const VERSION: u32 = 2;
 }
 
 impl Playable {
@@ -241,9 +308,12 @@ impl Playable {
     }
 
     /// The assets it names, which loading it doesn't load but which must ship with it: its mesh, rig and
-    /// graph, and its weapon's mesh.
+    /// graph, its weapon's mesh and its motion.
     pub fn named(&self) -> impl Iterator<Item = AssetId> + '_ {
-        [self.mesh, self.rig, self.graph].into_iter().chain(self.held.as_ref().map(|held| held.mesh))
+        [self.mesh, self.rig, self.graph]
+            .into_iter()
+            .chain(self.held.as_ref().map(|held| held.mesh))
+            .chain(self.motion)
     }
 
     /// What it says by itself, naming the document's field.
@@ -313,6 +383,31 @@ mod tests {
         let again: PlayableDocument = sapphire_serialize::from_ron(&text).expect("reads what it wrote");
         assert_eq!(again, document());
         assert_eq!(kind.named().count(), 4, "mesh, rig, graph and the weapon's mesh");
+    }
+
+    /// A version 1 document, from before a kind could name a motion document, reads as it was, naming none;
+    /// one of version 2 names its motion, through a write and a cook, and the asset ships with the kind.
+    /// Version 1 can't name one.
+    #[test]
+    fn a_kind_names_its_own_motion_from_version_two() {
+        assert!(KIND.contains("version: 1"), "the test kind is of version 1");
+        assert_eq!(document().look.motion, None);
+        let motion = "0f1e2d3c-4b5a-4968-8776-655443322110";
+        let named = KIND.replacen("version: 1", "version: 2", 1).replacen(
+            "seed: 3,",
+            &format!("seed: 3, motion: Some(\"{motion}\"),"),
+            1,
+        );
+        let document = PlayableDocument::parse(&named).expect("reads");
+        assert_eq!(document.look.motion, Some(AssetId::from_text(motion)));
+        let text = sapphire_serialize::to_ron(&document).expect("writes");
+        assert_eq!(PlayableDocument::parse(&text).expect("reads what it wrote"), document);
+        let kind = Playable::from_cooked(&document.compile().to_cooked().unwrap()).expect("cooks");
+        assert_eq!(kind.motion, Some(AssetId::from_text(motion)));
+        assert!(kind.named().any(|id| id == AssetId::from_text(motion)), "its motion ships with it");
+        let old = named.replacen("version: 2", "version: 1", 1);
+        let error = PlayableDocument::parse(&old).expect_err("version 1 has no motion").to_string();
+        assert!(error.contains("motion"), "{error}");
     }
 
     #[test]

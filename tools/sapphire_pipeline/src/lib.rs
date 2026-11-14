@@ -49,6 +49,8 @@
 //! - [`encounter`]: encounter documents (`.encounter.ron`) cooked to `.sencounter`, a zone's fights (M3 B2).
 //! - [`enemy`]: enemy documents (`.enemy.ron`) cooked to `.senemy`, one kind of enemy (M3 B3).
 //! - [`playable`]: playable kinds (`.playable.ron`) cooked to `.splayable`, what draws one (M5 C8).
+//! - [`motion`]: character motions (`.motion.ron`) cooked to `.smotion`, a kind's own springs' tuning, IK
+//!   weights and cloth (M5 C4).
 //! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
 //!   [`ColliderSet`](sapphire_colliders::ColliderSet)s (M2 D3): a zone's static collision.
 //! - [`timeline`]: timeline documents (`.timeline.ron`) cooked to
@@ -153,6 +155,7 @@ pub mod lookdev;
 pub mod material;
 pub mod mesh;
 pub mod meta;
+pub mod motion;
 pub mod moves;
 pub mod nav;
 pub mod optimize;

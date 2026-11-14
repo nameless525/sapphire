@@ -62,7 +62,8 @@ pub fn spring_quality(tier: TierId) -> SpringQuality {
     match tier {
         TierId::DesktopHigh => SpringQuality::DESKTOP_HIGH,
         TierId::DesktopLow => SpringQuality::DESKTOP_LOW,
-        TierId::MobileHigh | TierId::MobileLow => SpringQuality::MOBILE,
+        TierId::MobileHigh => SpringQuality::MOBILE,
+        TierId::MobileLow => SpringQuality::MOBILE_LOW,
     }
 }
 
@@ -202,7 +203,12 @@ impl SpringView {
     /// its pace in the frame's rotation: the on-field character leads, stepping every frame; the others
     /// step or wait their turn. Those that don't run go to sleep at once, at no further cost. After the
     /// pace comes the character's animation level ([`crate::anim_levels`], M5 C1): a band past the tier's
-    /// distance for springs says `level` is false, and they sleep as off screen, waking from the pose.
+    /// distance for springs says `level` is false, and they sleep as off screen, waking from the pose. Last,
+    /// the character's cloth, if it wears any, takes the tier's iterations out to the tier's distance for
+    /// cloth and none past it, easing in and out over a second so a running skirt never pops (M5 C4,
+    /// [`sapphire_anim::ClothQuality`], [`SpringBones::ease_cloth_iterations`]): that distance is nearer than the
+    /// band where springs rest, so a sheet never solves on a character whose springs don't, and a character
+    /// waiting its turn solves its cloth on the frames it steps, as its springs do.
     ///
     /// Everything that decides a character's springs by its role or distance belongs here, beside these:
     /// cloth's iterations, a crowd's cut-off, characters sharing a graph.
@@ -223,6 +229,8 @@ impl SpringView {
         if let Some(pace) = pace {
             springs.set_pace(pace);
         }
+        let solving = springs.cloth_iterations().is_some_and(|iterations| iterations > 0);
+        springs.ease_cloth_iterations(self.quality.cloth.iterations_at(distance, solving));
         if !runs {
             springs.sleep();
         }
@@ -284,10 +292,18 @@ impl ClipPlayer {
         }
     }
 
-    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to.
-    pub(crate) fn set_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to: its sheets of
+    /// cloth too, given `rig`, the rig its springs were made from (M5 C4).
+    pub(crate) fn set_motion(
+        &mut self,
+        motion: &sapphire_anim::CharacterMotion,
+        rig: Option<&sapphire_assets::rig::ArchivedCharacterRig>,
+    ) {
         if let Some(springs) = &mut self.springs {
-            springs.set_tuning(motion.springs);
+            match rig {
+                Some(rig) => crate::lookdev::wear_motion(springs, motion, rig),
+                None => springs.set_tuning(motion.springs),
+            }
         }
         if let Some(ik) = &mut self.ik {
             ik.set_motion(motion);

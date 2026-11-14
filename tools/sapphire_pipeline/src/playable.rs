@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::cache::Stage;
 
 /// Reads and checks the document. Bump the version whenever that changes output for the same document.
-pub const IMPORTER: Stage = Stage { name: "playable document", version: 1 };
+pub const IMPORTER: Stage = Stage { name: "playable document", version: 2 };
 
 /// The `.splayable` writer. Bump the version whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "splayable", version: 1 };
+pub const COOKER: Stage = Stage { name: "splayable", version: 2 };
 
 /// What a playable kind's source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".playable.ron";

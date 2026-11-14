@@ -2469,7 +2469,7 @@ impl Fight {
         let tier = stand.tier;
         match std::mem::replace(&mut stand.part, StandPart::Taken) {
             StandPart::Place => {
-                content.set_character_motion(self.documents.motion);
+                content.set_character_motion(self.documents.motion.clone());
                 content.set_body_tuning(self.documents.body);
                 let show = &mut self.show;
                 let place = &stand.plan.place;

@@ -302,7 +302,7 @@ impl Document {
             Self::CharacterMotion => {
                 let motion = CharacterMotion::from_ron(text).map_err(|error| error_chain(&error))?;
                 content.set_character_motion(motion);
-                scene.set_character_motion(&motion);
+                scene.set_character_motion(content);
                 tuning.count_edit(document_file_name(MOTION_PATH));
                 Ok(self.name().to_owned())
             }

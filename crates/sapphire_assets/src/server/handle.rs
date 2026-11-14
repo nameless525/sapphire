@@ -20,6 +20,7 @@ use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
+use crate::motion::{ArchivedMotion, Motion};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::reflections::{ArchivedReflectionProbes, ReflectionProbes};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
@@ -74,6 +75,7 @@ mod sealed {
     impl Sealed for sapphire_dialogue::Dialogue {}
     impl Sealed for sapphire_moves::Enemy {}
     impl Sealed for sapphire_moves::Playable {}
+    impl Sealed for crate::motion::Motion {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
@@ -273,6 +275,17 @@ impl Asset for ReflectionProbes {
         // SAFETY: as for meshes: `ReflectionProbes::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<ReflectionProbes>(bytes) }
             .expect("the envelope was checked when the reflection probes were decoded")
+    }
+}
+
+impl Asset for Motion {
+    const KIND: AssetKind = AssetKind::Motion;
+    type View<'a> = &'a ArchivedMotion;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedMotion {
+        // SAFETY: as for meshes: `Motion::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Motion>(bytes) }
+            .expect("the envelope was checked when the character motion was decoded")
     }
 }
 

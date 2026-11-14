@@ -23,6 +23,8 @@
 //! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
 //!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
 //!   for animation (M2) to read.
+//! - Character motions ([`motion`], `.smotion`, M5 C4): a playable kind's own spring tuning, IK weights and
+//!   which of its spring chains it wears as cloth, cooked from `sapphire_anim`'s motion document.
 //! - Skeletons and animation clips ([`skeleton`], `.sskel`, and [`clip`], `.sclip`, M2 N1): a
 //!   character's joints as an asset that meshes and clips name, and motion as sparse tracks of
 //!   quantized keys, read in place. Their formats sit here with every other cooked format's,
@@ -127,6 +129,7 @@ mod kind;
 pub mod manifest;
 pub mod material;
 pub mod mesh;
+pub mod motion;
 pub mod mouth;
 pub mod pack;
 mod pipeline_key;

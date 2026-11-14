@@ -310,6 +310,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Encounter(_)
         | ImportSettings::Enemy(_)
         | ImportSettings::Playable(_)
+        | ImportSettings::Motion(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)

@@ -42,6 +42,11 @@ pub struct PlayableLook {
     pub body_contacts: Vec<String>,
     /// The expression its face rests on, and how much of it, if any.
     pub expression: Option<(ExpressionPreset, f32)>,
+    /// Its own character motion (M5 C4): its springs' tuning, IK weights and cloth. None moves by the
+    /// content's ([`Content::character_motion`]).
+    ///
+    /// [`Content::character_motion`]: crate::content::Content::character_motion
+    pub motion: Option<AssetId>,
 }
 
 impl PlayableLook {
@@ -76,6 +81,7 @@ impl PlayableLook {
             }),
             body_contacts: playable.body_contacts.clone(),
             expression,
+            motion: playable.motion,
         })
     }
 
@@ -136,6 +142,7 @@ mod tests {
             }),
             body_contacts: vec!["hips".to_owned()],
             expression: Some(RestPose { preset: "relaxed".to_owned(), weight: 0.35 }),
+            motion: Some(AssetId::from_bytes([6; 16])),
         }
     }
 
@@ -158,6 +165,7 @@ mod tests {
         let look = PlayableLook::of(id, &kind()).expect("a look");
         assert_eq!((look.kind, look.seed, look.body_contacts.len()), (id, 4, 1));
         assert_eq!(look.expression, Some((ExpressionPreset::Relaxed, 0.35)));
+        assert_eq!(look.motion, Some(AssetId::from_bytes([6; 16])));
         let held = look.held.expect("a weapon");
         let at = held.socket.transform_point3(Vec3::ZERO);
         assert!(at.abs_diff_eq(Vec3::new(0.0, 0.1, 0.0), 1e-6), "{at}");

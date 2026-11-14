@@ -937,6 +937,23 @@ fn a_character_past_the_limit_sleeps_and_wakes_nearer() {
     const { assert!(SpringQuality::MOBILE.distance < SpringQuality::DESKTOP_HIGH.distance) };
 }
 
+/// Cloth solves 4, 2, 2 and 1 iterations from Desktop-High down to Mobile-Low (M5 C4), out to its own
+/// distance, which is nearer than the springs' own, and comes back on a little nearer than it went off.
+#[test]
+fn cloth_solves_fewer_iterations_on_lighter_tiers_and_none_past_its_distance() {
+    let iterations = SpringQuality::SHIPPED.map(|quality| quality.cloth.iterations_at(1.0, true));
+    assert_eq!(iterations, [4, 2, 2, 1]);
+    for quality in SpringQuality::SHIPPED {
+        let cloth = quality.cloth;
+        assert!(cloth.distance < quality.distance * 0.9, "{quality:?}: cloth stops before the springs do");
+        assert_eq!(cloth.iterations_at(cloth.distance - 0.1, true), cloth.iterations);
+        assert_eq!(cloth.iterations_at(cloth.distance + 0.1, true), 0, "past it, plain springs");
+        assert_eq!(cloth.iterations_at(cloth.distance - 0.1, false), 0, "it comes back on a little nearer");
+        assert_eq!(cloth.iterations_at(cloth.distance * 0.85, false), cloth.iterations);
+        assert!(cloth.iterations <= MAX_CLOTH_ITERATIONS);
+    }
+}
+
 /// A strand clears a grounded torso to the side its joint is on, and keeps that side while the joint
 /// wanders about the middle, where the sign of a dot product near zero would flip it frame to frame.
 #[test]
@@ -958,10 +975,11 @@ fn a_strand_by_a_grounded_torsos_middle_keeps_its_side() {
 /// past `far`.
 #[test]
 fn clearance_solves_less_often_on_lighter_tiers_and_further_away() {
-    let [high, low, mobile] = SpringQuality::SHIPPED.map(|quality| quality.clearance);
+    let [high, low, mobile, mobile_low] = SpringQuality::SHIPPED.map(|quality| quality.clearance);
     assert_eq!(high.interval_at(2.0), Some(1));
     assert_eq!(low.interval_at(2.0), Some(4));
     assert_eq!(mobile.interval_at(2.0), Some(4));
+    assert_eq!(mobile_low, mobile);
     for clearance in [high, low, mobile] {
         assert_eq!(clearance.interval_at(clearance.near), Some(clearance.interval));
         assert_eq!(clearance.interval_at(clearance.near + 0.1), Some(clearance.interval * 2));

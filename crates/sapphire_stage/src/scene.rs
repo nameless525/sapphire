@@ -1316,6 +1316,10 @@ impl Scene {
             self.set_studio_meshes(meshes);
         }
         let clip_changed = content.take_clip_changed();
+        // A kind's own motion saved again is taken up in place: its tails stay where they are (M5 C4).
+        if content.take_motions_changed() {
+            self.set_character_motion(content);
+        }
         let character_changed = content.take_character_changed();
         if character_changed
             && self.ecs.world().get::<ClipPlayer>(self.character).is_none()
@@ -1411,8 +1415,9 @@ impl Scene {
         content: &Content,
         pose: &sapphire_anim::CharacterPose,
     ) -> Result<IkDriver, String> {
-        let (motion, body) = (content.character_motion(), content.body_tuning());
-        let rig = lookdev::ik_rig(content, lookdev::character_kind(content)?, pose)?;
+        let kind = lookdev::character_kind(content)?;
+        let (motion, body) = (content.character_motion_of(kind), content.body_tuning());
+        let rig = lookdev::ik_rig(content, kind, pose)?;
         let driver = IkDriver::new(rig, ground.clone(), IkControls::of(motion), motion, body);
         self.ik_ground = Some(ground);
         self.ik_look = look;
@@ -1442,7 +1447,7 @@ impl Scene {
                 {
                     match lookdev::ik_rig(content, kind, player.pose()) {
                         Ok(rig) => {
-                            let (motion, body) = (content.character_motion(), content.body_tuning());
+                            let (motion, body) = (content.character_motion_of(kind), content.body_tuning());
                             player = player.with_ik(IkDriver::new(rig, ground, controls, motion, body));
                         }
                         Err(error) => {
@@ -1584,7 +1589,8 @@ impl Scene {
                     {
                         match lookdev::ik_rig(content, kind, driver.player.pose()) {
                             Ok(rig) => {
-                                let (motion, body) = (content.character_motion(), content.body_tuning());
+                                let (motion, body) =
+                                    (content.character_motion_of(kind), content.body_tuning());
                                 driver = driver.with_ik(IkDriver::new(rig, ground, controls, motion, body));
                             }
                             Err(error) => {
@@ -1812,15 +1818,25 @@ impl Scene {
         self.spring_turns = characters;
     }
 
-    /// Runs everything standing here by `motion` from now on: its hair and cloth and how much of its IK
-    /// shows, wherever they've got to. What's built later takes it from `Content::character_motion`.
-    pub fn set_character_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+    /// Runs everything standing here by what `content` says it moves by from now on: its hair and cloth and
+    /// how much of its IK shows, wherever they've got to. A playable kind moves by its own motion where its
+    /// document names one and by `Content::character_motion` where it doesn't (M5 C4,
+    /// `Content::character_motion_of`); a character of no playable kind, an enemy, by the latter. What's built
+    /// later takes it from the same place. Call it after `Content::set_character_motion`.
+    pub fn set_character_motion(&mut self, content: &Content) {
+        let character_kind = lookdev::character_kind(content).ok();
+        let motion_of = |kind: Option<sapphire_assets::AssetId>| match kind {
+            Some(kind) => (content.character_motion_of(kind), content.rig_of(kind)),
+            None => (content.character_motion(), None),
+        };
         let world = self.ecs.world_mut();
         for mut player in world.query::<&mut ClipPlayer>().iter_mut(world) {
-            player.set_motion(motion);
+            let (motion, rig) = motion_of(character_kind);
+            player.set_motion(motion, rig);
         }
         for mut driver in world.query::<&mut GraphDriver>().iter_mut(world) {
-            driver.set_motion(motion);
+            let (motion, rig) = motion_of(driver.kind());
+            driver.set_motion(motion, rig);
         }
     }
 

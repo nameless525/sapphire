@@ -72,6 +72,8 @@
 //!   compiled against the `.moves.ron` it names, which is its one input besides itself.
 //! - **Playable kinds** cook `.playable.ron` → `.splayable` (M5 C8, [`playable`]): one playable kind's
 //!   look, reading nothing besides itself, but what it names must be of the right kinds.
+//! - **Character motions** cook `.motion.ron` → `.smotion` (M5 C4, [`motion`]): a kind's own springs'
+//!   tuning, IK weights and cloth, reading nothing besides itself.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Timelines** cook `.timeline.ron` → `.stimeline` (M3 Q1, [`timeline`]), reading nothing besides
@@ -157,6 +159,7 @@ use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontCha
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use sapphire_assets::motion::{MOTION_EXTENSION, Motion};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes};
 use sapphire_assets::rig::{CharacterRig, HumanBone, RigError};
@@ -206,6 +209,7 @@ use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
+use crate::motion::{self, MotionCookError};
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::playable::{self, PlayableCookError};
@@ -401,6 +405,12 @@ impl Recipe {
                 format: Playable::VERSION,
                 extension: PLAYABLE_EXTENSION,
             },
+            ImportSettings::Motion(_) => Self {
+                importer: motion::IMPORTER,
+                cooker: motion::COOKER,
+                format: Motion::VERSION,
+                extension: MOTION_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -567,6 +577,8 @@ impl Recipe {
             enemy::output_path(relative, self.extension)
         } else if playable::is_source(relative) {
             playable::output_path(relative, self.extension)
+        } else if motion::is_source(relative) {
+            motion::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if audio::is_score_source(relative) {
@@ -733,6 +745,13 @@ pub enum CookError {
     },
     #[error("playable kind {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
     PlayableReference { path: PathBuf, field: &'static str, what: &'static str, id: AssetId },
+    #[error("failed to cook character motion {}", path.display())]
+    Motion {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<MotionCookError>,
+    },
     #[error("failed to cook locale {}", path.display())]
     Locale {
         path: PathBuf,
@@ -1676,6 +1695,7 @@ fn sub_assets(
         | ImportSettings::Encounter(_)
         | ImportSettings::Enemy(_)
         | ImportSettings::Playable(_)
+        | ImportSettings::Motion(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)
@@ -1886,6 +1906,10 @@ impl Planned {
 
     fn is_anim_graph(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::AnimGraph(_))
+    }
+
+    fn is_motion(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::Motion(_))
     }
 
     /// Whether it's a zone's `.szone`, which reads its meshes.
@@ -2659,6 +2683,8 @@ fn cook_source(
             playable::cook(bytes)
                 .map_err(|source| CookError::Playable { path: path.to_owned(), source: Box::new(source) })
         }
+        ImportSettings::Motion(_) => motion::cook(bytes)
+            .map_err(|source| CookError::Motion { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -3251,6 +3277,8 @@ fn source_dependencies(
         }
         // It reads nothing else, but what it names is held to its kinds on every cook.
         ImportSettings::Playable(_) => playable_references(path, bytes, assets).map(|()| Vec::new()),
+        // It reads nothing besides itself.
+        ImportSettings::Motion(_) => Ok(Vec::new()),
         ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -3446,6 +3474,9 @@ fn playable_references(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result
     reference("look.graph", "an animation graph", look.graph, Planned::is_anim_graph)?;
     if let Some(held) = &look.held {
         reference("look.held.mesh", "a mesh", held.mesh, Planned::is_mesh)?;
+    }
+    if let Some(motion) = look.motion {
+        reference("look.motion", "a character motion document", motion, Planned::is_motion)?;
     }
     Ok(())
 }
@@ -3750,6 +3781,7 @@ fn imported_mesh(
         | ImportSettings::Encounter(_)
         | ImportSettings::Enemy(_)
         | ImportSettings::Playable(_)
+        | ImportSettings::Motion(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)

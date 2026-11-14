@@ -1,0 +1,33 @@
+// How Aster's hair and skirt take a fight (M5 C4): `sapphire_anim`'s `CharacterMotion`, which her kind's
+// document names. Her springs and the IK's weights are the shipped document's numbers; what she has of her own
+// is her skirt, worn as cloth so its pleats hold a surface through a stride, a turn and a fall.
+(
+    type: "sapphire::anim::CharacterMotion",
+    version: 2,
+    data: (
+        springs: (
+            root_inertia: 0.25,
+            anchor_inertia: 0.4,
+            swing_limit: 0.87266463, // 50°
+            bend_limit: 0.34906587, // 20°
+        ),
+        feet_weight: 1.0,
+        look_weight: 1.0,
+        cloth: [
+            // The skirt's twelve pleated panels, each turned 30° about her up from the last, from the front
+            // round toward her left (`tools/figures/hero.figure.ron`), closed round her hips. Lateral links
+            // hold neighbouring panels about as far apart as the clip has them, so no gap opens between
+            // two pleats; bend links two panels along are softer, so the skirt can fold and flare without
+            // creasing flat.
+            (
+                chains: [
+                    "skirt_00", "skirt_01", "skirt_02", "skirt_03", "skirt_04", "skirt_05",
+                    "skirt_06", "skirt_07", "skirt_08", "skirt_09", "skirt_10", "skirt_11",
+                ],
+                closed: true,
+                lateral_compliance: 0.000001,
+                bend_compliance: 0.0001,
+            ),
+        ],
+    ),
+)

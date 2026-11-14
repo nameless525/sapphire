@@ -12,6 +12,10 @@ name = "sapphire_pipeline"
 path = "src/main.rs"
 
 [dependencies]
+# Character motion documents (M5 C4): their checks are `CharacterMotion`'s, and the cook writes what it
+# reads as `sapphire_assets`' plain data. Spring bones run on the character itself in tests, with no GPU and
+# no cook (`tests/character_springs.rs`), and a move's tables against the pose on screen, use it too.
+sapphire_anim.workspace = true
 sapphire_assets.workspace = true
 # Collider documents' checks and cooked format. Plain data: the tool links no collision library.
 sapphire_colliders.workspace = true
@@ -84,11 +88,8 @@ ufbx.workspace = true
 vrm-spec.workspace = true
 
 [dev-dependencies]
-# Spring bones on the character itself, with no GPU and no cook (`tests/character_springs.rs`), and a
-# move's tables against the pose on screen. Tests only, like the next: the cooker itself links neither
-# (`[cooker]` in xtask/layers.toml looks at normal dependencies).
-sapphire_anim.workspace = true
-# A move's tables played in the simulation, and a cooked zone stood up in one.
+# A move's tables played in the simulation, and a cooked zone stood up in one. Tests only: the cooker
+# itself doesn't link it (`[cooker]` in xtask/layers.toml looks at normal dependencies).
 sapphire_gameplay.workspace = true
 # The same, on a zone's own colliders (`tests/zone_ward.rs`), and a walker on a zone's cooked navmesh
 # and colliders (`tests/nav_patrols.rs`).

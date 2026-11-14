@@ -165,7 +165,7 @@ use sapphire_body_pose::{CharacterPose, JointLayout, model_of};
 mod clearance;
 mod cloth;
 
-pub use cloth::{ClothError, ClothSheet, MAX_CLOTH_ITERATIONS};
+pub use cloth::{CLOTH_EASE_SECONDS, ClothError, ClothSheet, MAX_CLOTH_ITERATIONS};
 
 /// Ticks a second on the clocks springs run on (`sapphire_time::TICK_HZ`), and the rate VRM's
 /// parameters are read at.
@@ -244,38 +244,81 @@ pub struct SpringQuality {
     pub clearance: ClearanceQuality,
     /// How the characters other than the one on the field share the frame (M5 C2).
     pub stagger: StaggerQuality,
+    /// How a character's cloth solves, and out to how far (M5 C4).
+    pub cloth: ClothQuality,
 }
 
 impl SpringQuality {
-    /// Desktop-High's: 120 Hz out to 40 m, and clearance solved on every frame near the camera.
+    /// Desktop-High's: 120 Hz out to 40 m, clearance solved on every frame near the camera, and cloth at
+    /// 4 iterations out to 20 m.
     pub const DESKTOP_HIGH: Self = Self {
         substeps: Substeps::Two,
         distance: 40.0,
         clearance: ClearanceQuality::FULL,
         stagger: StaggerQuality::DESKTOP_HIGH,
+        cloth: ClothQuality::DESKTOP_HIGH,
     };
-    /// Desktop-Low's: Desktop-High's springs, with clearance solved every fourth tick.
+    /// Desktop-Low's: Desktop-High's springs, with clearance solved every fourth tick and cloth at 2
+    /// iterations out to 12 m.
     pub const DESKTOP_LOW: Self = Self {
         substeps: Substeps::Two,
         distance: 40.0,
         clearance: ClearanceQuality::DESKTOP_LOW,
         stagger: StaggerQuality::LIGHT,
+        cloth: ClothQuality::DESKTOP_LOW,
     };
-    /// The phones': one sub-step a tick, the 60 Hz VRM's parameters are tuned at, out to 25 m, with
-    /// clearance solved every fourth tick.
+    /// Mobile-High's, and the phones' springs: one sub-step a tick, the 60 Hz VRM's parameters are tuned
+    /// at, out to 25 m, with clearance solved every fourth tick, and cloth at 2 iterations out to 10 m.
     pub const MOBILE: Self = Self {
         substeps: Substeps::One,
         distance: 25.0,
         clearance: ClearanceQuality::MOBILE,
         stagger: StaggerQuality::LIGHT,
+        cloth: ClothQuality::MOBILE_HIGH,
     };
-    /// Every setting that ships, for tests that must hold on each.
-    pub const SHIPPED: [Self; 3] = [Self::DESKTOP_HIGH, Self::DESKTOP_LOW, Self::MOBILE];
+    /// Mobile-Low's: the phones' springs, with cloth at 1 iteration.
+    pub const MOBILE_LOW: Self = Self { cloth: ClothQuality::MOBILE_LOW, ..Self::MOBILE };
+    /// Every setting that ships, for tests that must hold on each: Desktop-High, Desktop-Low, Mobile-High
+    /// and Mobile-Low.
+    pub const SHIPPED: [Self; 4] = [Self::DESKTOP_HIGH, Self::DESKTOP_LOW, Self::MOBILE, Self::MOBILE_LOW];
 
     /// Whether springs at `distance` meters from the camera run, given whether they ran last frame.
     #[must_use]
     pub fn in_range(&self, distance: f32, running: bool) -> bool {
         distance <= if running { self.distance } else { self.distance * WAKE_MARGIN }
+    }
+}
+
+/// How a tier solves a character's cloth (M5 C4): its sheets' iterations a sub-step, and how far from the
+/// camera they solve at all. Past [`Self::distance`] a sheet's links drop and its chains run as plain springs,
+/// swinging on from where the cloth left them; coming back inside a tenth nearer, the links take them up
+/// again, so a character standing at the line doesn't flip between the two. The distance is always nearer
+/// than where a tier's springs rest, so a sheet never solves on a character whose springs don't.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClothQuality {
+    /// Iterations of a sheet's links a sub-step ([`SpringBones::set_cloth_iterations`]): more holds the
+    /// links nearer their length.
+    pub iterations: u32,
+    /// Out to here, in meters from the camera to the middle of the character's body, its cloth solves.
+    pub distance: f32,
+}
+
+impl ClothQuality {
+    /// Desktop-High's: 4 iterations out to 20 m, the nearest of its animation bands.
+    pub const DESKTOP_HIGH: Self = Self { iterations: 4, distance: 20.0 };
+    /// Desktop-Low's: 2 out to 12 m.
+    pub const DESKTOP_LOW: Self = Self { iterations: 2, distance: 12.0 };
+    /// Mobile-High's: 2 out to 10 m.
+    pub const MOBILE_HIGH: Self = Self { iterations: 2, distance: 10.0 };
+    /// Mobile-Low's: 1 out to 10 m.
+    pub const MOBILE_LOW: Self = Self { iterations: 1, distance: 10.0 };
+
+    /// The iterations a sheet solves on a character `distance` meters from the camera, given whether it
+    /// solved last frame: 0 past the distance.
+    #[must_use]
+    pub fn iterations_at(&self, distance: f32, solving: bool) -> u32 {
+        let reach = if solving { self.distance } else { self.distance * WAKE_MARGIN };
+        if distance <= reach { self.iterations } else { 0 }
     }
 }
 
@@ -1317,6 +1360,9 @@ impl SpringBones {
         self.still_for = 0;
         if let Some(clearance) = &mut self.clearance {
             clearance.reset();
+        }
+        if let Some(cloth) = &mut self.cloth {
+            cloth.settle();
         }
     }
 

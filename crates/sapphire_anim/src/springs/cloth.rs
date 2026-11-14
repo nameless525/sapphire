@@ -32,6 +32,13 @@
 //! [`SpringBones::set_cloth_iterations`]: more holds a sheet's links nearer their length. 0 turns the
 //! cloth off, and the chains are springs again, to the bit.
 //!
+//! [`SpringBones::ease_cloth_iterations`] does the same over [`CLOTH_EASE_SECONDS`] of the owner's clock
+//! (M5 C4): each sub-step's tails go a share of the way from where the springs left them to where the
+//! links and the walk would put them, a share that rises smoothly from none to all as a sheet comes on
+//! and falls back as it goes off, after which the chains are springs to the bit. A tier's
+//! distance switches a sheet so, since links dropping or coming back in one sub-step move a running
+//! skirt's hem tens of pixels in a frame.
+//!
 //! # Limits
 //!
 //! - A tail has a mass of one: a sheet's links pull both ends alike, and the walk from the root holds
@@ -50,6 +57,9 @@ use super::{Bone, Frame, NONE, SPRING_TICK_HZ, SpringBones, Tail};
 const DEFAULT_ITERATIONS: u32 = 4;
 /// The most iterations a sub-step runs, whatever is asked.
 pub const MAX_CLOTH_ITERATIONS: u32 = 16;
+/// How long a sheet eased on or off takes, in the owner clock's seconds
+/// ([`SpringBones::ease_cloth_iterations`]).
+pub const CLOTH_EASE_SECONDS: f32 = 1.0;
 
 /// Neighbouring spring chains a character wears as one sheet: a skirt, a coat's tails, a fall of hair.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -118,6 +128,10 @@ pub(super) struct Cloth {
     sprung: Vec<Vec3>,
     points: Vec<Vec3>,
     pub(super) iterations: u32,
+    /// Whether its links are wanted: on, or coming on; otherwise off, or going off.
+    on: bool,
+    /// How far it has come on, 0 to 1: 1 when on and not easing, 0 when off.
+    weight: f32,
     /// The world's scale, which turns the model's units into the simulation's.
     pub(super) scale: f32,
     /// The next pose read starts its links' rest lengths over, with no previous frame to come from.
@@ -127,7 +141,12 @@ pub(super) struct Cloth {
 impl Cloth {
     /// Whether it runs at all.
     pub(super) fn is_solving(&self) -> bool {
-        self.iterations > 0
+        self.iterations > 0 && (self.on || self.weight > 0.0)
+    }
+
+    /// Done easing, wherever it was going: for a reset, which settles everything from the pose.
+    pub(super) fn settle(&mut self) {
+        self.weight = if self.on { 1.0 } else { 0.0 };
     }
 
     /// Whether swing `at` is one the cloth moves.
@@ -153,7 +172,7 @@ impl Cloth {
     /// Takes over `old`'s iterations for a new version of the character, and its rest lengths if it
     /// links the same tails; otherwise they start over at the next pose read.
     pub(super) fn continue_from(&mut self, old: &Self) {
-        self.iterations = old.iterations;
+        (self.iterations, self.on, self.weight) = (old.iterations, old.on, old.weight);
         if self.links == old.links {
             self.rest_was.clone_from(&old.rest_was);
             self.rest_now.clone_from(&old.rest_now);
@@ -273,7 +292,10 @@ impl SpringBones {
         }
 
         let (points, count) = (swings.len(), links.len());
-        let iterations = self.cloth.as_ref().map_or(DEFAULT_ITERATIONS, |cloth| cloth.iterations);
+        let (iterations, on, weight) = self
+            .cloth
+            .as_ref()
+            .map_or((DEFAULT_ITERATIONS, true, 1.0), |cloth| (cloth.iterations, cloth.on, cloth.weight));
         self.cloth = Some(Box::new(Cloth {
             links,
             rest_was: vec![0.0; count],
@@ -287,6 +309,8 @@ impl SpringBones {
             sprung: vec![Vec3::ZERO; points],
             points: vec![Vec3::ZERO; points],
             iterations,
+            on,
+            weight,
             scale: self.world.matrix3.x_axis.length(),
             fresh: true,
         }));
@@ -296,18 +320,45 @@ impl SpringBones {
     }
 
     /// Runs `iterations` of the cloth's links a sub-step from now on, at most
-    /// [`MAX_CLOTH_ITERATIONS`]; 0 leaves its chains to the springs alone. A character with no cloth
-    /// ignores it.
+    /// [`MAX_CLOTH_ITERATIONS`]; 0 leaves its chains to the springs alone. At once, with no easing. A
+    /// character with no cloth ignores it.
     pub fn set_cloth_iterations(&mut self, iterations: u32) {
         if let Some(cloth) = &mut self.cloth {
             cloth.iterations = iterations.min(MAX_CLOTH_ITERATIONS);
+            cloth.on = iterations > 0;
+            cloth.settle();
         }
     }
 
-    /// The cloth's iterations a sub-step, or `None` for a character with no cloth.
+    /// As [`Self::set_cloth_iterations`], but a sheet coming on or going off eases in or out over
+    /// [`CLOTH_EASE_SECONDS`] of the sub-steps it runs, from wherever it was, so its links take its
+    /// chains up, or let them go, without a pop. Going off, it solves at the iterations it had until it
+    /// is out, then not at all; a change of iterations while on is at once. A frozen clock eases nothing.
+    pub fn ease_cloth_iterations(&mut self, iterations: u32) {
+        let Some(cloth) = &mut self.cloth else { return };
+        if iterations == 0 {
+            cloth.on = false;
+        } else {
+            if !cloth.is_solving() {
+                cloth.weight = 0.0;
+            }
+            cloth.iterations = iterations.min(MAX_CLOTH_ITERATIONS);
+            cloth.on = true;
+        }
+    }
+
+    /// The cloth's iterations a sub-step as last asked, 0 once asked to go off (though it may still be
+    /// easing out), or `None` for a character with no cloth.
     #[must_use]
     pub fn cloth_iterations(&self) -> Option<u32> {
-        self.cloth.as_ref().map(|cloth| cloth.iterations)
+        self.cloth.as_ref().map(|cloth| if cloth.on { cloth.iterations } else { 0 })
+    }
+
+    /// How far the cloth has come on, 0 to 1 ([`Self::ease_cloth_iterations`]), or `None` for a character
+    /// with no cloth.
+    #[must_use]
+    pub fn cloth_weight(&self) -> Option<f32> {
+        self.cloth.as_ref().map(|cloth| cloth.weight)
     }
 
     /// How far the cloth's links are from their rest lengths as of the last sub-step: the largest
@@ -342,6 +393,13 @@ impl SpringBones {
         // or a stride's for a character taking turns.
         let rate = (SPRING_TICK_HZ * self.substeps.count()) as f32 / self.stride as f32;
         let per_square = rate * rate;
+        // Easing on or off by the step's share of the ease; the share of the cloth's turn the tails take
+        // rises and falls along a smoothstep of it, so it starts and lands gently. On and not easing is 1.
+        let goal = if cloth.on { 1.0 } else { 0.0 };
+        let reach = 1.0 / (rate * CLOTH_EASE_SECONDS);
+        let gap = goal - cloth.weight;
+        cloth.weight = if gap.abs() <= reach { goal } else { cloth.weight + reach.copysign(gap) };
+        let share = cloth.weight * cloth.weight * (3.0 - 2.0 * cloth.weight);
         for iteration in 0..cloth.iterations {
             for ((link, rest), lambda) in cloth.links.iter().zip(&cloth.rest).zip(&mut cloth.lambda) {
                 let (a, b) = (usize::from(link.a), usize::from(link.b));
@@ -359,7 +417,7 @@ impl SpringBones {
                 cloth.points[a] -= push;
                 cloth.points[b] += push;
             }
-            self.walk_cloth(cloth, locals, iteration + 1 == cloth.iterations);
+            self.walk_cloth(cloth, locals, (iteration + 1 == cloth.iterations).then_some(share));
         }
         cloth
             .points
@@ -369,9 +427,10 @@ impl SpringBones {
     }
 
     /// Walks the cloth's steps from their roots, turning each swing toward its point: out of its
-    /// colliders, inside its limits, at its bone's length. The `last` walk of a sub-step also writes
-    /// the tails and their turns.
-    fn walk_cloth(&mut self, cloth: &mut Cloth, locals: &[Transform], last: bool) {
+    /// colliders, inside its limits, at its bone's length. The last walk of a sub-step, given the
+    /// `share` of the cloth's turn that it takes (1 unless easing), also writes the tails and their turns:
+    /// part of the way from where the springs left each to where the cloth would have it.
+    fn walk_cloth(&mut self, cloth: &mut Cloth, locals: &[Transform], last: Option<f32>) {
         let anchors = self.anchors.len();
         for &index in &cloth.steps {
             let index = usize::from(index);
@@ -410,10 +469,18 @@ impl SpringBones {
                         super::on_floor(up, level, &bone, cloth.sprung[point], position + aim * length);
                     aim = (held - position).try_normalize().unwrap_or(aim);
                 }
+                // Easing, the turn goes part of the way from the springs' own, which their limits and
+                // colliders already passed, so a sheet coming on or going off takes its chains up gently.
+                if let Some(share) = last
+                    && share < 1.0
+                {
+                    let sprung = (cloth.sprung[point] - position).try_normalize().unwrap_or(aim);
+                    aim = sprung.lerp(aim, share).try_normalize().unwrap_or(aim);
+                }
                 let next = position + aim * length;
                 cloth.points[point] = next;
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
-                if last {
+                if last.is_some() {
                     // What the cloth moved it counts toward its motion by the sub-step's share.
                     let moved = next - cloth.sprung[point];
                     let tail = self.tails[at];

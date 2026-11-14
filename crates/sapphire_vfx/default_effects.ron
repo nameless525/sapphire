@@ -9,9 +9,13 @@
 // - Colors are linear. An emissive color is relative to the display, whatever the hour's exposure:
 //   1.0 is about display white before the tone curve, and past it blooms.
 // - `additive`: 1 is pure light added over what's behind, 0 a surface that covers it.
+// - `meshes` (M5 L5, schema 2): generated shapes the effect shows over their own lives, unlit, a pattern
+//   scrolled toward +u (along a slash from its tail to its head, round a ring the way `spin` turns), an
+//   `erosion` eating it by a mask, and a `flipbook` turning a sheet's frames. Their curves' t is the layer's
+//   own life. The last four effects are the meshes: the skill's arc, and three `--vfx` shows.
 (
     type: "sapphire::vfx::EffectLibrary",
-    version: 1,
+    version: 2,
     data: (
         effects: [
             (
@@ -367,6 +371,104 @@
                         size: [(0.0, 0.12), (0.2, 0.3), (1.0, 0.38)],
                         color: [(0.0, (1.5, 1.2, 2.2)), (1.0, (0.9, 0.7, 1.6))],
                         alpha: [(0.0, 1.0), (0.6, 0.9), (1.0, 0.0)],
+                    ),
+                ],
+            ),
+            (
+                // The skill's blade coming round (`skill_hit`, M5 L5): a crescent of light round the body at
+                // the blade's height, tilted with the rising cut, turning on with the blade, streaks running
+                // along it toward its head, then eaten away from a ragged edge that burns pale as it goes.
+                // `at: Facing`, so its front is the fighter's.
+                name: "skill_arc",
+                meshes: [
+                    (
+                        name: "arc",
+                        shape: SlashArc,
+                        lifetime: 0.3,
+                        offset: (0.0, 1.0, 0.0),
+                        rotation: (0.0, 0.0, -14.0),
+                        spin: 240.0,
+                        scale: [(0.0, (1.1, 1.0, 1.1)), (1.0, (1.4, 1.0, 1.4))],
+                        color: [(0.0, (1.7, 2.3, 3.4)), (1.0, (0.5, 0.9, 2.2))],
+                        alpha: [(0.0, 1.0), (0.7, 0.9), (1.0, 0.0)],
+                        additive: 0.9,
+                        soft: 0.15,
+                        pattern: Streaks,
+                        tiling: (2.0, 1.0),
+                        scroll: (3.0, 0.0),
+                        erosion: Some((
+                            mask: Noise,
+                            tiling: (3.0, 1.0),
+                            threshold: [(0.0, 0.0), (0.35, 0.0), (1.0, 1.0)],
+                            edge: 0.12,
+                            edge_color: (3.2, 2.8, 2.2),
+                        )),
+                    ),
+                ],
+            ),
+            (
+                // `--vfx mesh-scroll`: a shockwave opening on the ground and a pillar of light rising in it,
+                // streaks running round both.
+                name: "shock_ring",
+                meshes: [
+                    (
+                        name: "ring",
+                        shape: Ring,
+                        lifetime: 0.7,
+                        offset: (0.0, 0.03, 0.0),
+                        scale: [(0.0, (0.4, 1.0, 0.4)), (1.0, (1.6, 1.0, 1.6))],
+                        color: [(0.0, (2.2, 1.7, 1.0)), (1.0, (1.1, 0.5, 0.2))],
+                        alpha: [(0.0, 1.0), (1.0, 0.0)],
+                        pattern: Streaks,
+                        tiling: (3.0, 1.0),
+                        scroll: (0.8, 0.0),
+                    ),
+                    (
+                        name: "pillar",
+                        shape: Column,
+                        lifetime: 0.7,
+                        scale: [(0.0, (0.3, 0.8, 0.3)), (1.0, (0.45, 2.0, 0.45))],
+                        color: [(0.0, (1.6, 1.4, 1.0)), (1.0, (0.9, 0.5, 0.3))],
+                        alpha: [(0.0, 0.9), (1.0, 0.0)],
+                        pattern: Streaks,
+                        tiling: (2.0, 1.0),
+                        scroll: (1.2, 0.0),
+                    ),
+                ],
+            ),
+            (
+                // `--vfx mesh-erosion`: a shell of warm light swelling and burning away, a bright edge
+                // where it burns.
+                name: "ember_dome",
+                meshes: [
+                    (
+                        name: "shell",
+                        shape: Dome,
+                        lifetime: 0.6,
+                        scale: [(0.0, (0.5, 0.5, 0.5)), (1.0, (0.9, 0.9, 0.9))],
+                        color: [(0.0, (1.8, 0.9, 0.4))],
+                        additive: 0.85,
+                        erosion: Some((
+                            tiling: (2.0, 1.0),
+                            threshold: [(0.0, 0.0), (1.0, 1.0)],
+                            edge: 0.15,
+                            edge_color: (3.0, 2.2, 1.2),
+                        )),
+                    ),
+                ],
+            ),
+            (
+                // `--vfx mesh-flipbook`: a burst's sixteen frames on a card, once over its life, stepped.
+                name: "burst_card",
+                meshes: [
+                    (
+                        name: "burst",
+                        shape: Card,
+                        lifetime: 0.5,
+                        scale: [(0.0, (1.2, 1.2, 1.0))],
+                        color: [(0.0, (2.6, 2.0, 1.2)), (1.0, (1.6, 0.8, 0.4))],
+                        pattern: Burst,
+                        flipbook: Some((columns: 4, rows: 4, frames: 16)),
                     ),
                 ],
             ),

@@ -895,6 +895,7 @@ fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
             instances: Vec::new(),
             lights: Vec::new(),
             probes: None,
+            reflections: None,
             day: None,
             rigs: None,
             splines: Vec::new(),

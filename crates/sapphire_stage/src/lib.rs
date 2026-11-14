@@ -102,6 +102,8 @@ pub mod pose;
 mod readback;
 pub mod rims;
 pub mod scene;
+#[cfg(feature = "samples")]
+mod shadow_party;
 mod show;
 pub mod showcase;
 pub mod skinned;

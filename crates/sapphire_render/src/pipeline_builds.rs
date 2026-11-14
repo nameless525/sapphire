@@ -49,6 +49,8 @@ pub enum PipelineFamily {
     Skinning,
     Post,
     Effects,
+    /// Effect meshes (M5 L5): a family of their own, built only for a load whose effects have mesh layers.
+    EffectMeshes,
     Sky,
     Ui,
     /// An inset's resolve (M3 U6): its meshes draw through [`Self::Mesh`].
@@ -68,6 +70,7 @@ impl PipelineFamily {
             Self::Skinning => "skinning",
             Self::Post => "post",
             Self::Effects => "effects",
+            Self::EffectMeshes => "effect-meshes",
             Self::Sky => "sky",
             Self::Ui => "ui",
             Self::Inset => "inset",
@@ -173,6 +176,9 @@ pub struct PipelineInventory {
     pub post: PostVariants,
     /// It plays particle effects.
     pub effects: bool,
+    /// Its effects have mesh layers (M5 L5, `EffectLibrary::has_meshes`): their own pipelines, apart from the
+    /// sprites', so a load whose effects have none builds none of them.
+    pub effect_meshes: bool,
     /// It deforms meshes, with skinning or morphs.
     pub skinning: bool,
     /// It draws an interface: atlas quads and glyph pages go through the one pipeline this builds.
@@ -197,13 +203,14 @@ pub struct PipelineInventory {
 }
 
 impl PipelineInventory {
-    /// The name of each entry: `mesh` and a key, `post`, `effects`, `skinning`, `ui`, `inset`, `sky` and `ambient`
-    /// as a miss names them, and `fades` and `debug`.
+    /// The name of each entry: `mesh` and a key, `post`, `effects`, `effect-meshes`, `skinning`, `ui`, `inset`,
+    /// `sky` and `ambient` as a miss names them, and `fades` and `debug`.
     pub fn entries(&self) -> Vec<String> {
         let mut entries: Vec<String> = self.meshes.iter().map(|key| format!("mesh {key}")).collect();
         let others = [
             (PipelineFamily::Post.name(), self.post != PostVariants::NONE),
             (PipelineFamily::Effects.name(), self.effects),
+            (PipelineFamily::EffectMeshes.name(), self.effect_meshes),
             (PipelineFamily::Skinning.name(), self.skinning),
             (PipelineFamily::Ui.name(), self.ui),
             (PipelineFamily::Inset.name(), self.insets),
@@ -223,6 +230,7 @@ impl PipelineInventory {
         match name {
             "post" => self.post = PostVariants::NONE,
             "effects" => self.effects = false,
+            "effect-meshes" => self.effect_meshes = false,
             "skinning" => self.skinning = false,
             "ui" => self.ui = false,
             "inset" => self.insets = false,
@@ -245,6 +253,7 @@ impl PipelineInventory {
             meshes,
             post,
             effects,
+            effect_meshes,
             skinning,
             ui,
             insets,
@@ -257,6 +266,7 @@ impl PipelineInventory {
         self.meshes.extend(meshes.iter().copied());
         self.post |= *post;
         self.effects |= effects;
+        self.effect_meshes |= effect_meshes;
         self.skinning |= skinning;
         self.ui |= ui;
         self.insets |= insets;

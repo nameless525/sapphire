@@ -463,12 +463,13 @@ fn bias_locks(lit: f32, bias: f32) -> f32 {
 // The world key light (the sun or the moon) reaching the point past cast shadows: 1 lit, 0
 // shadowed. It scales the light split's input as vertex occlusion does, so a cast shadow pushes
 // the point into the authored shadow tones instead of darkening them. Characters (an entry of
-// their own) take the cascades alone, which hold environment casters only (M1 R4): a character
-// never self-shadows, and the rig's key direction, which may differ from the sun's, shades but
-// never casts. Every other instance drawn with this shader is environment, and takes the
-// characters' own shadows too (`shadow_visibility` in frame.wgsl). The face and eye permutations
-// never call it: a face's shadow is its SDF map's alone, and an environment shadow reaches a face
-// and its eyes whole, per character (`face_shadow`).
+// their own) take the cascades, which hold environment casters only (M1 R4), and the other
+// characters' shadows they receive (M5 L12, `received_visibility`): a character never
+// self-shadows, and the rig's key direction, which may differ from the sun's, shades but never
+// casts. Every other instance drawn with this shader is environment, and takes the characters'
+// own shadows too (`shadow_visibility` in frame.wgsl). The face and eye permutations never call
+// it: a face's shadow is its SDF map's, an environment shadow reaching a face and its eyes whole,
+// per character (`face_shadow`), and another character's shadow per pixel.
 fn cast_shadow(in: CharacterVaryings) -> f32 {
     return cast_shadow_at(in.world_position, in.world_normal, in.character);
 }
@@ -482,9 +483,43 @@ fn cast_shadow_at(position: vec3<f32>, normal: vec3<f32>, character: u32) -> f32
     }
     let n = safe_normalize(normal);
     if character != 0u {
-        return cascade_visibility(position, n);
+        return cascade_visibility(position, n) * received_visibility(position, n, character);
     }
     return shadow_visibility(position, n);
+}
+
+// The key light reaching `position` on character `character` past the other characters' shadows
+// it receives (M5 L12, the `shadows` module docs, "Characters shadowing each other"), on a surface
+// whose geometric normal is `normal` (unit): each slot's caster's map (desktop) or capsule, taken
+// by its weight, which the shadow planner fades in and out so no caster pops; exactly 1 with no
+// slot taken, so a character alone draws as before. It goes into the light split as occlusion,
+// with the cascades', so another character's shadow lands in the receiver's authored shadow tones.
+fn received_visibility(position: vec3<f32>, normal: vec3<f32>, character: u32) -> f32 {
+    if !SHADOWS {
+        return 1.0;
+    }
+    let received = characters[character].shadow.received;
+    var visibility = 1.0;
+    if any(received.weights > vec4<f32>(0.0)) {
+        let n_dot_l = dot(normal, shadows.light_z.xyz);
+        let slope = sqrt(saturate(1.0 - n_dot_l * n_dot_l));
+        let p = light_space(position);
+        let n = light_space(normal);
+        for (var slot = 0u; slot < 4u; slot++) {
+            let weight = received.weights[slot];
+            let caster = received.casters[slot];
+            if weight > 0.0 {
+                var lit = 1.0;
+                if (caster & RECEIVED_CAPSULE) != 0u {
+                    lit = capsule_lookup(caster & ~RECEIVED_CAPSULE, position);
+                } else {
+                    lit = character_map_lookup(caster, p, n, slope);
+                }
+                visibility *= mix(1.0, lit, weight);
+            }
+        }
+    }
+    return visibility;
 }
 
 // The world key light reaching character `character`'s face past environment casters, sampled
@@ -1246,7 +1281,10 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         // The face map shadows a face; an environment shadow reaches it whole, and the bangs'
         // from the character prepass, as occlusion of the split, never shadow-map texels on it.
         face_lit_margin = face_margin(face, key_direction, swizzles, uv);
-        head_visibility = face_shadow(in.character);
+        // Another character's shadow per pixel (M5 L12): the darker of it and the face map's,
+        // as the environment's whole shadow is.
+        let received = received_visibility(in.world_position, safe_normalize(in.world_normal), in.character);
+        head_visibility = face_shadow(in.character) * received;
         var hair = 1.0;
         let hair_shadow = materials[material].hair_shadow;
         if in.character != 0u && hair_shadow.x > 0.0 && hair_shadow.y > 0.0 {
@@ -1263,8 +1301,10 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         x = split_input(face_n_dot_l(face_lit_margin, surface.split.x), face_occlusion, surface.shadow_bias);
         softness = face_softness(materials[material].surface.x, surface.split.x);
     } else if PERMUTATION_EYE {
-        // Eyes are always lit, but go into an environment shadow with the head.
-        head_visibility = face_shadow(in.character);
+        // Eyes are always lit, but go into an environment shadow with the head, and another
+        // character's with the face around them (M5 L12).
+        let received = received_visibility(in.world_position, safe_normalize(in.world_normal), in.character);
+        head_visibility = face_shadow(in.character) * received;
         x = split_input(1.0, surface.occlusion * head_visibility, surface.shadow_bias);
     } else {
         let n_dot_l = dot(surface.normal, key_direction);

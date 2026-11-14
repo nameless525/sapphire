@@ -1985,6 +1985,7 @@ fn draw(world: &mut World, warrior: Warrior, meshes: EnemyMeshes) {
 impl SceneShow for FightShow {
     fn declare_pipelines(&self, inventory: &mut PipelineInventory) {
         inventory.effects |= self.cues.is_some();
+        inventory.effect_meshes |= self.cues.as_ref().is_some_and(|cues| cues.has_meshes());
     }
 
     fn tier_changed(&mut self, _scene: &mut Scene, tier: TierId) {

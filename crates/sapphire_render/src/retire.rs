@@ -1,5 +1,6 @@
 //! Giving back what the GPU may still be reading (M3 W3): when a freed mesh's ranges and a freed
-//! material's slot go back to their free lists.
+//! material's slot go back to their free lists, and when the buffers a mesh pool's compaction replaced
+//! go back to the device (M5 D9).
 //!
 //! A free goes through three stages, and only the last of them changes what a new upload can get:
 //!
@@ -139,6 +140,11 @@ impl<T> Retiring<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// What's retired, oldest first.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter().map(|(_, item)| item)
     }
 }
 

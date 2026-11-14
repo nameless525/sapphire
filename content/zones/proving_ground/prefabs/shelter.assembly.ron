@@ -1,0 +1,21 @@
+// A prefab: a stone shelter under a timber roof, open at the front (−Z), 6 m wide, 4.3 m deep and 3.5 m high
+// inside (M5 L2), so a reflection probe has a covered place to stand in. Its walls end inside each other and
+// inside the roof, so no two faces share a plane.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "stone", tile: (1.0, 1.0)), (name: "wood", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [
+            // The back wall, between the side walls' ends.
+            (piece: "#box", at: (0.0, 1.775, 2.15), scale: (6.5, 3.65, 0.3), slot: Some("stone")),
+            // The side walls, from the open front into the back wall.
+            (piece: "#box", at: (-3.15, 1.775, -0.075), scale: (0.3, 3.65, 4.45), slot: Some("stone")),
+            (piece: "#box", at: (3.15, 1.775, -0.075), scale: (0.3, 3.65, 4.45), slot: Some("stone")),
+            // The roof, over the walls' tops and a little past them.
+            (piece: "#box", at: (0.0, 3.65, -0.05), scale: (7.0, 0.3, 5.1), slot: Some("wood")),
+        ],
+    ),
+)

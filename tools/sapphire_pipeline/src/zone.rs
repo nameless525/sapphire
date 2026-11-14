@@ -61,6 +61,14 @@
 //! A bake holds each patrol to what it made: every point is on the mesh, with a way to it from the one
 //! before, or the cook fails by that point's field. They aren't seeds, so a patrol can't make a roof real.
 //!
+//! # Reflection probes
+//!
+//! A document with `reflections` makes a `.sreflect` of its own, a sub-asset (`town.sreflect`), baked on the
+//! probe grid's tracer from the zone's cooked cells, backdrop and instances under its day
+//! ([`crate::reflections`]). Its key holds the probes, where the instances stand, those meshes' and their
+//! materials' keys and the day's keys, so a save to a light or a spawner leaves it alone. The zone's `.szone`
+//! names its ID, which its pack then holds.
+//!
 //! # Exits
 //!
 //! An exit names another zone and a spawner in it, and a cook holds the two together from the other's
@@ -248,6 +256,18 @@ struct NavigationRecipe<'a> {
     /// What's held to the mesh, and whether its last point goes on to its first.
     patrols: Vec<(&'a [[f32; 3]], bool)>,
     settings: BakeSettings,
+}
+
+/// What a zone's reflection probes' sub-asset is called among a zone's. Never changed: its ID is derived
+/// from it.
+pub const REFLECTIONS_PART: &str = "reflections";
+
+/// What keys a zone's reflection probes in place of the document (see [`ZonePlan::reflections_recipe`]).
+#[derive(Serialize)]
+struct ReflectionsRecipe<'a> {
+    probes: &'a [sapphire_zone::ReflectionProbe],
+    /// Each instance's mesh, place, turn and scale.
+    instances: Vec<(AssetId, [f32; 3], f32, [f32; 3])>,
 }
 
 /// A prefab a zone places.
@@ -519,6 +539,24 @@ impl ZonePlan {
             settings: BakeSettings::CHARACTER,
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
+    }
+
+    /// The ID of the zone's reflection probes, which it has if its document places any (M5 L2).
+    pub fn reflections_id(&self) -> Option<AssetId> {
+        (!self.document.reflections.is_empty()).then(|| self.id.sub_asset(REFLECTIONS_PART))
+    }
+
+    /// What the key of the zone's reflection probes holds in place of the document's hash: the probes and
+    /// where the instances stand, the rest of what they see being their meshes' keys and the day's keys
+    /// ([`crate::reflections`]).
+    pub fn reflections_recipe(&self) -> blake3::Hash {
+        let recipe = ReflectionsRecipe {
+            probes: &self.document.reflections,
+            instances: (self.document.instances.iter())
+                .map(|instance| (instance.mesh, instance.at, instance.turn, instance.scale))
+                .collect(),
+        };
+        blake3::hash(&postcard::to_allocvec(&recipe).expect("a reflections recipe always encodes"))
     }
 
     /// Whether a placement or an instance names colliders that stand for it, which the `.szone`'s cook then
@@ -1029,7 +1067,8 @@ pub fn cook(
         .transpose()?;
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
     let navigation = plan.navigation_id();
-    let geometry = ZoneGeometry { meshes, instances, day, rigs, navigation, exit_packs };
+    let reflections = plan.reflections_id();
+    let geometry = ZoneGeometry { meshes, instances, day, rigs, navigation, exit_packs, reflections };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())

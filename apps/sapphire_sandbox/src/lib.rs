@@ -72,6 +72,10 @@
 //! - `--shadows on|off`: the player's shadow setting (M1 R4); the tier's shadows without it. Off
 //!   draws no shadow maps and compiles the shaders as they were before shadows, which the golden
 //!   scenes from before them pin.
+//! - `--character-shadows own|others`: whether characters receive the other characters' shadows
+//!   (M5 L12, `ShadowSettings::others`), as the tier says by default (`others`). `own` keeps each
+//!   character's shadow on the world alone, as before, for comparisons and the golden scenes from
+//!   before it.
 //! - `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's without
 //!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before
@@ -83,11 +87,13 @@
 //!   `tiers.ron` lists each tier's rungs): its scale, its passes shed in place and its frame-rate
 //!   cap, whatever the heat. The golden scenes `tier-*-rung-*` draw each rung.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
-//! - `--vfx arc|hit|dust|duel`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
+//! - `--vfx arc|hit|dust|duel|mesh-*`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark
 //!   and a hitstop, dust on the ground, or a duel's worst moment held still, as the bench's load.
 //!   They play around the world's origin, where every stage but `--look-dev street` stands its
-//!   character.
+//!   character. `mesh-scroll`, `mesh-erosion` and `mesh-flipbook` play an effect mesh each second (M5 L5): a
+//!   scrolling slash arc, an eroding dome and a flipbook card; `mesh-one` and `mesh-eight` keep one or eight
+//!   slash arcs playing, as the bench's load.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
@@ -261,6 +267,10 @@
 //!   stands, or something circling it, crossing behind. The golden scenes `lookdev-ik-*` show them.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
+//! - `--shadow-party <1..3>`: make the character one of a party of that many, the others toward
+//!   the sun from it, one behind the other, seen from the sun's side, so each shadows the next
+//!   (M5 L12, with the tier's `--character-shadows`; 1 frames the character alone the same way,
+//!   for timings). They stand where the sun is at `--time-of-day`'s hour.
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
 //!   shapes whose cooked outline normals keep every corner's hull closed (M1 C4).
 //! - `--outline-distance <0..4>`: the scale on every material's outline LOD cutoff

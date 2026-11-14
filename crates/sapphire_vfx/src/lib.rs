@@ -25,9 +25,10 @@
 //!
 //! # Owns
 //!
-//! - **Effect documents** ([`EffectLibrary`], schema 1): effects of emitters, each a set of modules
+//! - **Effect documents** ([`EffectLibrary`], schema 2): effects of emitters, each a set of modules
 //!   (`spawn`, `source`, `motion`, `shape`, `facing`, `light`) and curves over a particle's life
-//!   ([`Curve`]), and at most one trail, checked whole so an author's mistake names its field.
+//!   ([`Curve`]), at most one trail, and up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
+//!   shapes with scrolling, erosion and flipbooks), checked whole so an author's mistake names its field.
 //!   [`EffectLibrary::default_effects`] compiles in a hit spark, a sword trail and a dust puff.
 //! - **The simulation** ([`VfxWorld`]): CPU particles and trail samples, in pools sized from a
 //!   [`VfxBudget`] when it starts. Past a cap it counts what it dropped and keeps drawing, and it
@@ -63,6 +64,7 @@
 mod budget;
 mod curve;
 mod document;
+mod mesh;
 mod rng;
 mod trail;
 mod world;
@@ -73,6 +75,7 @@ pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
     MAX_TRAIL_SAMPLES, Motion, Range, Shape, Source, Spawn, TrailCore, TrailDesc,
 };
+pub use mesh::{Erosion, Flipbook, FrameTiming, MAX_MESH_LAYERS, MeshLayerDesc, MeshShape, Pattern};
 pub use world::{EffectHandle, OwnerId, OwnerSteps, Placement, VfxWorld};
 
 #[cfg(test)]

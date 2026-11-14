@@ -33,4 +33,5 @@ mod temporal;
 mod texture;
 mod ui;
 mod vfx;
+mod vfx_mesh;
 mod view_culling;

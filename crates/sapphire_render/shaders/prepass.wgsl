@@ -48,6 +48,11 @@
 // of the plain or masked pipelines that cull nothing, built with the first such variant. The
 // scene prepass's write a back face's normal flipped (`PERMUTATION_TWO_SIDED`), the side the
 // main pass shades. Their outline hulls are every variant's.
+//
+// Masked casters (`*_shadow_caster_masked`, M5 L12): the alpha-tested anime character variants
+// cast into the shadow maps through a pipeline of their own, which cuts as the masked prepasses do
+// but for the proximity fade. Its layout is the masked character prepass's, with the shared
+// casters' raster bias.
 
 // `ScenePrepassVaryings` and `ScenePrepassTargets` are frame.wgsl's: the outline hull's prepass
 // (outline.wgsl, M1 C4) writes the same targets.
@@ -306,4 +311,49 @@ fn fs_scene_prepass_masked(
         discard;
     }
     return MaskedScenePrepassTargets(targets.normal, targets.velocity, outline);
+}
+
+// An alpha-tested anime character surface as a shadow caster (M5 L12; `shadows::draw_casters`):
+// its position as `vs_shadow_caster` (shadows.wgsl) gives it, and what the cut needs.
+struct MaskedCasterVaryings {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) material: u32,
+    @location(2) @interpolate(flat) character: u32,
+    @location(3) @interpolate(flat) dissolve: f32,
+    @location(4) @interpolate(flat) vertex_region: u32,
+}
+
+@vertex
+fn vs_shadow_caster_masked(
+    @location(0) position: vec4<f32>,
+    @location(3) uv: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    draw: DrawRecord,
+) -> MaskedCasterVaryings {
+    let instance = instances[draw.instance];
+    let world_position = instance.world_from_object * vec4<f32>(object_position(position, draw), 1.0);
+    var out: MaskedCasterVaryings;
+    out.clip_position = view.clip_from_world * world_position;
+    out.uv = draw.uv_transform.xy + draw.uv_transform.zw * uv;
+    out.material = draw.material;
+    out.character = instance.character;
+    out.dissolve = instance.dissolve;
+    out.vertex_region = vertex_material_id(color);
+    return out;
+}
+
+// Masked casters (M5 L12): the depth where the main pass keeps the pixel, so a hair card casts its
+// cutout rather than its quad, a dissolved part casts nothing and a see-through region casts its
+// share. The same cut as the masked prepasses' (`masked_keeps`), but for the proximity fade, which
+// leaves a character's shadow whole: a see-through region's dither alone, which holds still in a
+// shadow view (its `dither` never turns) and which the receivers' tent filters into a lighter
+// shadow.
+@fragment
+fn fs_shadow_caster_masked(in: MaskedCasterVaryings) {
+    let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let cut = MaskedCut(in.material, uv, in.character, 0.0, in.dissolve, in.vertex_region);
+    if !masked_keeps(cut, in.clip_position.xy, masked_fade(cut)) {
+        discard;
+    }
 }

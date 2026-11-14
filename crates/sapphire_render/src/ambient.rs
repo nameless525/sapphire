@@ -2861,18 +2861,15 @@ mod tests {
                         } else {
                             Vec3::new((random >> 32) as u32 as f32 * 0.0001, i as f32, 2.0)
                         };
-                        let body = CharacterBody {
-                            base: center - Vec3::Y,
-                            top: center + Vec3::Y,
-                            radius: if kind == 3 && i % 7 == 0 { 0.0 } else { 0.1 + i as f32 * 0.001 },
-                        };
+                        let radius = if kind == 3 && i % 7 == 0 { 0.0 } else { 0.1 + i as f32 * 0.001 };
+                        let body = CharacterBody::capsule(center - Vec3::Y, center + Vec3::Y, radius);
                         bodies.push(body);
                         if i % 4 == 0 {
                             bodies.push(body);
                         }
                     }
                     if bodies.len() >= 2 {
-                        bodies[0] = CharacterBody { base: Vec3::ZERO, top: Vec3::Y, radius: 0.5 };
+                        bodies[0] = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.5);
                         bodies[1] = bodies[0];
                         bodies[1].base.x = -0.0;
                     }
@@ -2905,10 +2902,8 @@ mod tests {
     #[test]
     fn bounded_capsules_keep_seventeen_unless_ties_require_the_full_sort() {
         let mut bodies: Vec<_> = (0..100)
-            .map(|i| CharacterBody {
-                base: Vec3::new(i as f32, -1.0, 0.0),
-                top: Vec3::new(i as f32, 1.0, 0.0),
-                radius: 0.5,
+            .map(|i| {
+                CharacterBody::capsule(Vec3::new(i as f32, -1.0, 0.0), Vec3::new(i as f32, 1.0, 0.0), 0.5)
             })
             .collect();
         let mut candidates = Vec::new();

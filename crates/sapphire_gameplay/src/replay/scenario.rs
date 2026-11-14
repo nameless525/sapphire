@@ -390,6 +390,32 @@ const CODE_SCENARIOS: &[Scenario] = &[
         setup: ScenarioSetup::Code(super::chase::nav_chase),
     },
     Scenario {
+        name: "crowd-15",
+        about: "`nav-chase` with 14 chasers: 15 characters on the arena's square, for the animation bench's row \
+                at 15 (M5 C1)",
+        config: SimConfig {
+            seed: 11,
+            max_actors: super::chase::CROWDS[0] as u32,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
+        setup: ScenarioSetup::Code(super::chase::crowd_15),
+    },
+    Scenario {
+        name: "crowd-60",
+        about: "`nav-chase` with 59 chasers: 60 characters on the arena's square, for the animation bench's row \
+                at 60 (M5 C1)",
+        config: SimConfig {
+            seed: 11,
+            max_actors: super::chase::CROWDS[1] as u32,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
+        setup: ScenarioSetup::Code(super::chase::crowd_60),
+    },
+    Scenario {
         name: "nav-patrol",
         about: "the arena's square on its real navmesh: input drives the player, and four real warriors walk \
                 the document's patrols until they notice them, fight, and go back when they've lost them",

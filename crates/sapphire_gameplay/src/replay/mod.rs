@@ -43,7 +43,7 @@ mod script;
 mod tuning;
 mod zone_fight;
 
-pub use chase::{CHASERS, chase_world};
+pub use chase::{CHASERS, CROWD_SCENARIOS, chase_world, chase_world_of};
 pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
     checksums_file_name,

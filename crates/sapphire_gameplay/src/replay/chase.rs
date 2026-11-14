@@ -4,6 +4,8 @@
 //! - **`nav-chase`:** a player and 64 brains after them. A replay of it checks a real bake, the search,
 //!   the corridor, the funnel, the budget and who waits for it, a straight line and a crowd, on every
 //!   architecture, at no allocation in any step.
+//! - **`crowd-15`, `crowd-60`:** `nav-chase` with fewer chasers, 15 and 60 characters in all, for the
+//!   animation bench's rows (M5 C1). No replay of them is committed: the bench records its own.
 //! - **`nav-patrol`:** a player and two real warriors, who walk the document's patrols, notice them, chase,
 //!   and go back once they've lost them. Which adds who notices whom, walking a patrol and giving up.
 
@@ -55,8 +57,18 @@ fn chaser() -> Result<(MoveSet, EnemyMind), ScenarioError> {
 /// what depends on who's first.
 pub fn chase_world(
     sim: &mut Simulation,
+    moves_and_mind: (MoveSet, EnemyMind),
+    in_reverse: bool,
+) -> Result<(ActorId, Vec<ActorId>), ScenarioError> {
+    chase_world_of(sim, moves_and_mind, in_reverse, CHASERS)
+}
+
+/// [`chase_world`] with `count` chasers, spread through the mesh as its 64 are.
+pub fn chase_world_of(
+    sim: &mut Simulation,
     (moves, mind): (MoveSet, EnemyMind),
     in_reverse: bool,
+    count: usize,
 ) -> Result<(ActorId, Vec<ActorId>), ScenarioError> {
     let colliders = crate::arena::cooked_colliders()?;
     let set = ColliderSet::read(&colliders)?;
@@ -76,11 +88,11 @@ pub fn chase_world(
         controller,
         faction: PLAYERS,
     })?;
-    let mut spots = spots(sim.navigation().expect("just given").navigation().graph(), CHASERS);
+    let mut spots = spots(sim.navigation().expect("just given").navigation().graph(), count);
     if in_reverse {
         spots.reverse();
     }
-    let mut chasers = Vec::with_capacity(CHASERS);
+    let mut chasers = Vec::with_capacity(count);
     for position in spots {
         let chaser =
             sim.spawn(ActorSpawn { position, yaw: 0.0, moves: chaser_set, controller, faction: WARRIORS })?;
@@ -93,6 +105,24 @@ pub fn chase_world(
 /// The `nav-chase` scenario's setup: the cast is the player alone, since the chasers think for themselves.
 pub(super) fn nav_chase(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(vec![chase_world(sim, chaser()?, false)?.0])
+}
+
+/// How many stand in the crowd scenarios, the player among them (M5 C1): what the animation bench's rows are
+/// taken at.
+pub(crate) const CROWDS: [usize; 2] = [15, 60];
+
+/// The crowd scenarios' names, which stand on the arena's colliders as the square's fights do, so `--arena`
+/// draws them.
+pub const CROWD_SCENARIOS: [&str; 2] = ["crowd-15", "crowd-60"];
+
+/// The `crowd-15` scenario's setup: `nav-chase` with 14 chasers, so 15 characters stand on the arena.
+pub(super) fn crowd_15(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    Ok(vec![chase_world_of(sim, chaser()?, false, CROWDS[0] - 1)?.0])
+}
+
+/// The `crowd-60` scenario's setup: `nav-chase` with 59 chasers, so 60 characters stand on the arena.
+pub(super) fn crowd_60(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    Ok(vec![chase_world_of(sim, chaser()?, false, CROWDS[1] - 1)?.0])
 }
 
 /// The `nav-patrol` scenario's setup: the cast is the player, then the guards, each on the first point of

@@ -146,6 +146,33 @@ Each figure is wall time on the critical path.
 | UI | 0.3 | 1.0 |
 | **Total** | **~13.5** | **~23.5** |
 
+**Proposed columns and rows (M5 B4), not yet adopted.** The two columns above leave Desktop-High and Mobile-High without a per-pass budget, and four kinds of work have no row. Each figure below is a **proposal** sized from the two columns above and §3.8's walk (Desktop-High's GPU frame reads ×1.36 Desktop-Low's at p50 on the district, Mobile-High's ×1.63 Mobile-Low's), not a measurement on either tier's reference hardware, and this M5's GPU sits below Desktop-High's reference class. They are for the maintainer to adopt or change, and for the overlay to show once they are adopted (X1).
+
+| Pass | Desktop-High, 1440p @ 60 fps (ms) | Mobile-High, ~1600×740 @ 60 fps (ms) |
+|---|---|---|
+| Culling + prepass | 1.2 | 1.0 (depth only) |
+| Shadows | 2.0 (4 cascades) | 1.6 (2 cascades) |
+| Light clustering, AO | 1.2 | 0.8 |
+| Forward opaque (decals within it) | 2.8 | 3.4 |
+| Outlines | 0.5 | 1.0 |
+| Hair, eyes, transparents | 0.7 | 0.9 |
+| Volumetric fog | 0.5 | 0.4 |
+| Particles, distortion | 0.8 | 1.0 |
+| TAA / upscaling | 0.9 | 0.6 (spatial) |
+| Bloom + tonemap + LUT, screen effects | 0.8 | 1.2 |
+| UI | 0.2 | 0.5 |
+| Skinning (new row) | 0.4 | 0.6 |
+| **Total** | **~12.0** (§3.1's upper end) | **~13.0** |
+
+| New row (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Skinning and morphs, compute, the whole cast | 0.4 | 0.5 | 0.6 | 1.0 |
+| Reflections | in forward opaque (probes); a screen-space pass, if one is added, 0.6 of forward's share | in forward opaque (probes) | in forward opaque (probes) | in forward opaque (probes) |
+| Depth of field (cutscenes and photo mode only, paid from particles' and UI's shares there) | 0.6 | 0.7 | 0.8 | 1.2 |
+| Ground decals (inside forward opaque) | 0.3 | 0.3 | 0.4 | 0.6 |
+
+- **Why these sizes:** skinning fills Desktop-Low's last 0.5 ms under its 14 (a total of 14.0) and Mobile-Low's 1.0 under its 26; nothing measured skinning on the district yet (§3.8: the walk poses nothing), so C1 reads it against these. Depth of field runs only where gameplay's particles and HUD are light, so it adds no frame total. Decals and probe reflections are shading work in the forward pass and get a share there, not a pass. §3.8's draws, not any pass's milliseconds, are what break first on the district.
+
 ### 3.4 Content budgets
 
 | Item | Desktop | Mobile |
@@ -460,6 +487,147 @@ Memory is `process_memory()`'s physical footprint in MiB (2²⁰ bytes). On this
 - **The stores' own sizes.** The App Store's thinned download and the Play Store's install size for each device come only from App Store Connect and the Play Console, and both need accounts. The 36.6 MB here is bundletool's estimate for this emulator's device.
 - **A Steam Deck:** Desktop-Low at 800p on its GPU and its SD card, with its start, memory and heat.
 - **A Windows or Linux PC:** CI gives the packages' sizes, but no start, memory or warm-up reading. D3D12's and Vulkan's pipeline caches each have their own cold start.
+
+### 3.8 Measured at scale (M5 B4)
+
+**0.1.0's renderer on the benchmark district, before any scale package.** §3.5 to §3.7 measured a fight, the ward and what ships, all of them small. This is the generated `budget` district (§5.27, M5 B2): 64 cells, 469 buildings, 6,943 props, 518 lights and 2.5 GiB of textures, walked at run speed, on every tier at both keys. It is the line every M5 package is measured against. **It was measured at ecff83f2,** before M4 (texture levels raised and lowered), L5 (effect meshes), L2 (the probe bake), D9 (the mesh pool gives back) and L12 (characters shadow each other) landed; nothing here was timed again after them, and "On the line" below says what the counts read with them. It is a Mac: the phone columns are this M5 at a phone's size and cook, and each phone figure is still owed to a device.
+
+- **Hardware and code:** Apple M5 (4 performance and 6 efficiency cores, 10-core GPU, 24 GB), macOS 27.0.1, on AC power, Metal. `main` at ecff83f2 with B4's counters (the branch's five commits; none changes what a frame draws), taken on 2026-11-14. The district needs a `dev` build (a shipping build mounts only the packs its release manifest names), so it was measured with `--release --features dev`, after the control below found the two builds equal within their spread. A tier at its own size and cook: 2560×1440 and 1920×1080 with the desktop cook, 1600×740 and 1280×590 with the mobile cook.
+- **The load:** `cargo xtask bench-content --preset budget --cook desktop|mobile`, its packs beside the shipped ones, then `--bench 7600 --tier <tier> --size <size> --zone district --zone-walk tour --time-of-day 19.75` (dusk) or `23` (night). The tour is 756 m, at the player's run speed (6 m/s, 0.1 m a step): 7,560 frames a lap, so each phase walks the tour once, twice on Mobile-Low's two steps a frame. The bench's phases are a cold walk from the tour's start (memory and first uses), then the walk again for the CPU rows and again for the GPU rows (§5.27, M5 B4). There is no simulation on a walk: no fight, no script, and the walker's figure is drawn unposed.
+- **How it was read:** two rounds of each tier at each key, the rounds alternating tiers, in sittings alone on the machine (`slot --all --load 8`, ten minutes at most, the load 2.7 to 7.6 at each run's start). Each timed figure is the lesser of the two rounds'. A **worst** is the lesser of the rounds' worst frames, with the metres walked where it fell, so a point on the tour that is the worst in both rounds keeps a name. **Counts** (draws, triangles, culled draws, levels, lights, bytes) are exact: load doesn't move them, and both rounds read the same. On Metal only the GPU frame is exact, since passes overlap.
+
+**The control: shipping against `dev` release.** The ward's walk (`--zone lantern_ward`, its 397.7 m tour), Desktop-Low at 1920×1080, dusk, `--bench 4000`, three rounds of each build alternating (load 2.7–4.4). µs, each round's p50 / p95:
+
+| | Shipping | `--release --features dev` |
+|---|---|---|
+| CPU frame | 550 / 1,036, 457 / 774, 422 / 757 | 535 / 889, 470 / 806, 459 / 808 |
+| GPU frame | 5,242 / 6,606, 4,986 / 6,169, 4,996 / 6,153 | 5,157 / 6,413, 4,876 / 5,887, 5,102 / 6,433 |
+| Main pass | 2,310 / 3,387, 2,279 / 3,030, 2,279 / 2,998 | 2,291 / 3,224, 2,271 / 2,843, 2,285 / 3,268 |
+| Shadows | 464 / 734, 475 / 701, 447 / 706 | 445 / 722, 464 / 705, 455 / 709 |
+
+- **Within the spread.** The least CPU p50 is 422 µs shipping and 459 `dev` (9%) where shipping's own rounds span 422–550 (30%); the least GPU p50 is 4,986 and 4,876, `dev` the lower. Every count is the same in both, frame for frame (1,786 / 3,072 / 3,980 draw calls), and so are the allocations (705 a frame) and the footprint (628–641 MiB at its most). So the district's figures are `dev` release's, and a shipping build's would read the same within noise.
+- **The shipped ward is already over §3.4's draws:** 1,786 calls at the median, 3,072 at p95 and 3,980 at its worst (237 m), against 2,500. §3.5 to §3.7 counted surface draws, not calls (§3.5's note); this is the first count of calls.
+
+**Dusk (19:45).** ms, p50 / p95 / worst @ metres, the budget in brackets (§3.1 to §3.3; §3.2 and §3.3 have budgets on Desktop-Low and Mobile-Low only). **Bold is over.**
+
+| Row | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| CPU frame | 1.118 / 2.278 / 67.71 @ 752.7 [8] | 1.182 / 2.264 / 20.33 @ 30.1 [12] | 1.028 / 1.855 / 15.15 @ 269.3 [12] | 0.879 / 1.540 / 42.66 @ 682.4 [22] |
+| Game side | 0.034 / 0.068 / 1.188 @ 50.5 | 0.042 / 0.081 / 4.291 @ 680.1 [6] | 0.166 / 0.193 / 4.399 @ 16.6 | 0.163 / 0.197 / 5.375 @ 743.6 [13.6] |
+| Streaming activation | 0.001 / 0.001 / 0.167 @ 2.6 | 0.001 / 0.001 / 0.190 @ 357.1 [0.5] | 0.000 / 0.001 / 0.035 @ 106.1 | 0.000 / 0.001 / 0.028 @ 104.2 [1] |
+| Audio update | 0.000 / 0.000 / 0.001 | 0.000 / 0.000 / 0.001 [0.2] | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 [0.3] |
+| Extract | 0.008 / 0.017 / 0.295 @ 2.6 | 0.011 / 0.019 / 0.339 @ 656.0 [0.7] | 0.006 / 0.012 / 0.783 @ 210.7 | 0.005 / 0.012 / 0.095 @ 738.6 [1.2] |
+| Render prepare + record | 1.080 / 2.214 / 67.20 @ 752.7 | 1.137 / 2.192 / 20.00 @ 30.1 [4] | 0.937 / 1.672 / 7.688 @ 370.5 | 0.780 / 1.358 / 42.17 @ 682.4 [8] |
+| GPU frame | 10.90 / **14.89** / **86.28** @ 312.0 [12] | 8.021 / 11.67 / **79.97** @ 312.0 [14] | 3.974 / 5.812 / **22.22** @ 312.0 [13] | 2.432 / 4.019 / 10.36 @ 344.2 [26] |
+| Prepasses | 0.229 / 2.522 / 4.734 @ 728.7 | 0.244 / **2.579** / 4.648 @ 35.2 [1.5] | 0.257 / 0.887 / 2.788 @ 711.0 | 0.000 / 0.000 / 1.009 @ 337.6 [1.5] |
+| Shadows | 2.708 / 4.613 / 7.724 @ 7.6 | 1.706 / **3.168** / 5.968 @ 6.8 [2] | 0.369 / 1.680 / 3.241 @ 322.3 | 0.232 / 1.426 / 3.458 @ 537.8 [3] |
+| Clustering, AO | 0.951 / 1.782 / 2.885 @ 173.6 | 0.556 / 1.077 / 2.389 @ 474.4 [1.5] | 0.228 / 0.413 / 2.282 @ 728.7 | none |
+| Main pass | 3.841 / 5.893 / 8.159 @ 329.3 | 2.786 / **4.905** / 7.213 @ 320.7 [4.9] | 1.889 / 3.251 / 10.89 @ 322.2 | 1.516 / 2.736 / 6.442 @ 372.0 [11.5] |
+| TAA | 1.033 / 1.858 / 3.190 @ 553.4 | 0.585 / **1.109** / 3.005 @ 483.6 [0.8] | none | none [1] |
+| Bloom, tonemap, LUT | 0.873 / 1.036 / 2.418 @ 609.4 | 0.499 / 0.528 / 1.980 @ 524.8 [0.7] | 0.294 / 0.577 / 2.692 @ 699.6 | 0.192 / 0.621 / 4.648 @ 110.2 [2.5] |
+
+**Night (23:00),** every lantern lit:
+
+| Row | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| CPU frame | 1.114 / 2.079 / 47.47 @ 5.9 [8] | 1.049 / 1.981 / 33.44 @ 210.9 [12] | 1.161 / 2.167 / 46.89 @ 347.4 [12] | 0.867 / 1.693 / 11.13 @ 379.0 [22] |
+| Game side | 0.035 / 0.066 / 5.688 @ 372.3 | 0.034 / 0.057 / 6.083 @ 289.1 [6] | 0.168 / 0.247 / 6.886 @ 346.0 | 0.165 / 0.206 / 1.730 @ 618.8 [13.6] |
+| Streaming activation | 0.001 / 0.001 / 0.044 @ 216.2 | 0.000 / 0.001 / 0.012 @ 333.6 [0.5] | 0.001 / 0.001 / 0.038 @ 106.1 | 0.000 / 0.001 / 0.013 @ 420.2 [1] |
+| Audio update | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.001 [0.2] | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 [0.3] |
+| Extract | 0.009 / 0.017 / 1.087 @ 488.4 | 0.009 / 0.015 / 5.848 @ 289.1 [0.7] | 0.009 / 0.019 / 0.790 @ 444.2 | 0.005 / 0.013 / 0.041 @ 202.4 [1.2] |
+| Render prepare + record | 1.074 / 2.023 / 47.10 @ 5.9 | 1.014 / 1.935 / 33.38 @ 210.9 [4] | 1.050 / 1.939 / 46.62 @ 347.4 | 0.776 / 1.491 / 9.383 @ 503.0 [8] |
+| GPU frame | 9.968 / **13.84** / **97.68** @ 312.0 [12] | 7.135 / 10.54 / **55.73** @ 312.0 [14] | 3.771 / 5.635 / **23.61** @ 665.4 [13] | 2.257 / 3.489 / 5.730 @ 324.8 [26] |
+| Prepasses | 0.329 / 2.462 / 3.521 @ 0.3 | 0.464 / **2.361** / 3.120 @ 313.5 [1.5] | 0.291 / 1.163 / 2.306 @ 36.4 | 0.000 / 0.000 / 0.907 @ 523.2 [1.5] |
+| Shadows | 1.669 / 4.180 / 5.870 @ 3.2 | 1.160 / **2.791** / 3.711 @ 462.8 [2] | 0.417 / 1.353 / 3.048 @ 425.7 | 0.123 / 1.000 / 2.352 @ 211.0 [3] |
+| Clustering, AO | 0.945 / 1.137 / 1.909 @ 453.5 | 0.621 / 0.656 / 0.731 @ 587.8 [1.5] | 0.237 / 0.284 / 1.603 @ 692.5 | none |
+| Main pass | 3.453 / 5.490 / 6.684 @ 312.0 | 2.574 / 4.336 / 5.316 @ 312.0 [4.9] | 1.868 / 3.122 / 5.477 @ 558.3 | 1.541 / 2.579 / 4.184 @ 346.0 [11.5] |
+| TAA | 1.035 / 1.085 / 1.637 @ 459.5 | 0.586 / 0.608 / 0.686 @ 568.6 [0.8] | none | none [1] |
+| Bloom, tonemap, LUT | 0.876 / 0.925 / 1.504 @ 591.2 | 0.501 / 0.518 / 0.569 @ 586.1 [0.7] | 0.295 / 0.575 / 1.994 @ 379.6 | 0.192 / 0.485 / 1.924 @ 458.4 [2.5] |
+
+- **Not exercised, and why:** the platform row (no window in a bench, as in §3.5); the fixed-step simulation, physics, animation and IK, secondary motion, VFX simulation and the script row, which a walk doesn't run (all read 0, every frame); particles, outlines' own share and UI on the GPU (no effects, the walker's hull is in the main pass's figure, and a walk draws no HUD); volumetric fog has no timer of its own and is in the main pass. Skinning reads 0 instances: the walker stands unposed. The cast's figures are measured below, on their own.
+- **The ground's seams** at every cell's edge (§5.27, M5 B2) are a material change in a cell's merged mesh, not a draw: they move no count and no timed figure here.
+
+**What a view submits, against §3.4.** Counts at dusk, p50 / p95 / worst @ metres; night where it differs. Exact, the same in every round.
+
+| Count | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Draw calls [2,500; 700] | **4,439 / 7,618 / 9,070** @ 628.0 | **4,244 / 7,135 / 8,506** @ 628.0 | **3,293 / 5,424 / 6,418** @ 0.1 | **2,050 / 3,207 / 3,756** @ 628.0 |
+| … at night | **4,017 / 7,656 / 8,571** @ 0.6 | **3,777 / 7,283 / 8,086** @ 5.0 | **3,084 / 5,540 / 6,381** @ 2.5 | **1,846 / 3,166 / 3,527** @ 628.6 |
+| Triangles (millions) | 7.28 / 12.64 / 14.92 | 6.92 / 11.84 / 13.88 | 2.96 / 4.78 / 5.73 | 1.84 / 2.79 / 3.30 |
+| Main pass draws | 1,110 / 2,253 / 2,576 @ 0.7 | the same | 1,146 / 2,179 / 2,642 @ 0.1 | 1,151 / 2,179 / 2,542 @ 0.4 |
+| … its triangles (millions) | 1.85 / 3.74 / 4.28 | the same | 1.04 / 1.93 / 2.36 | 1.04 / 1.93 / 2.26 |
+| Scene prepass draws | 1,103 / 2,246 / 2,569 | the same | 1,139 / 2,172 / 2,635 | not run (no prepass) |
+| Cascade draws, p95 (0, 1, 2, 3) | 296, 550, 1,211, 3,103 (worst 3,144 @ 428.4) | 275, 469, 1,050, 2,853 | 331, 1,995 (two cascades) | 289, 1,625 |
+| Shadow triangles (millions) | 3.00 / 6.27 / 7.69 | 2.61 / 5.70 / 6.65 | 0.31 / 1.98 / 2.07 | 0.27 / 1.63 / 1.74 |
+| The walker: character prepass, maps, hulls | 11, 11, 14 | 11, 11, 14 | 11, none, 14 | 11, none, 7 |
+| Mesh draws looked at | 19,987 / 19,987 / 23,313 | the same | 12,183 / 13,335 / 13,335 | 9,138 / 10,002 / 10,002 |
+| … left out by the view's frustum | 4,460 / 6,254 / 6,546 | the same | 4,124 / 6,060 / 6,344 | 2,062 / 3,030 / 3,172 |
+| … left out by a pass's own test | 11,328 / 12,521 / 13,218 | 11,602 / 12,647 / 13,885 | 3,906 / 5,535 / 6,027 | 4,257 / 5,680 / 6,123 |
+| Levels drawn | every draw level 0 | | | |
+| Lights [64; 8] | 64, every frame; 96 / 271 / 320 more dropped | the same | 8, every frame; 161 / 318 / 377 dropped | 8; 161 / 318 / 369 dropped |
+| Texture pool [2.5 GiB; 600, 400 MiB] | **2,721,054,824 bytes, 36.7 MB over** | the same | **2,719,656,724 bytes, 2.09 GB over** | **the same, 2.30 GB over** |
+
+- **Draws are the worst break on every tier,** and they are what a scene-graph renderer without lists, instancing or distance culling submits: one call per mesh draw (instances 1 per call, as the counts say), every draw at level 0, and only static environment and foliage culled by the view, in the main view, the prepass and the debug views. The cascades cull by their caster bits and nothing else, so cascade 3 alone submits up to 3,144 calls on Desktop-High. The peak at 628 m is a long street seen end to end (the captures below).
+- **Lights are at their cap in every frame on every tier,** at both keys (the dusk key has its lanterns too): up to 384 lights reach the view, so the cluster keeps 64 and a phone 8, the rest dropped by distance. §3.4's row holds by construction and says nothing about whether the look holds: which lanterns are dropped as the walker passes is a visible question for the look tracks.
+- **The texture pool is over on every tier,** by design on desktop (B2's 160 sets fill 2.5 GiB with full mips) and by ×4.3 and ×6.5 on the phones, whose cook keeps the 2K maps until M1 caps them. The pool is a cache limit and never refuses a load (§5.10), so nothing here is a failure yet; it is what M5's streamer must hold. No bytes were admitted or waiting during any walk: on each tier's radius the whole district is placed at its load.
+
+**On the line.** One counts-only walk with the five packages in (B4 rebased onto L12's head), Desktop-High and Mobile-Low at dusk, one lap each, timed nothing: **no count row above moved.** Desktop-High's rows read as they do here, and Mobile-Low's lap is the same frame for frame in every count the bench logs, so nothing the line added draws on this tour or changes what it leaves out. The line's new rows read constant: the mesh pool's capacity sits at its floor the whole lap (127,926,288 bytes on Desktop-High, 81,788,944 on Mobile-Low), and no texture bytes were raised or given back. Night and the other two tiers weren't walked again.
+
+**The worst moments.**
+
+- **The tour's first corner, at 312 m, stalls the GPU on every tier but Mobile-Low, in every phase and round:** one frame of 56–98 ms on the desktop tiers and 22–57 ms on Mobile-High, against a frame's 16.7. For the 54 m before it (258.5 to 312 m) the main pass draws under 300, about 70 at the end, as the view faces a near surface; as the walker turns, it jumps to 2,338 and the lights from 5 to 64. The passes' own timers add up to about 12 ms of the frame, so most of it is outside every timed pass. The leg from 506 to 532 m does the same, and its turn shows a smaller stall; together the two legs are 10% of a lap's frames. It repeats each lap. The cause isn't isolated: the likeliest is Metal making textures resident again that no frame drew for nine seconds, all at once, which a streamer with a hard pool and a wanted level would bound. It is the one repeatable hitch on the walk.
+- **CPU one-offs of 11–68 ms** at no repeatable point, almost all in `record`, as §3.5 found in the fight. Mobile-High's and Mobile-Low's content step also reads 0.15 ms every frame against the desktop's 0.01, which is most of their game side: likely the asset server trimming a pool that stays over its budget, though nothing here isolates it.
+
+**Memory and the start.** `process_memory()`'s physical footprint in MiB (2²⁰ bytes), which on this unified memory includes Metal's resources: at the cold walk's first frame / the most during it / at its end, and the OS's peak for the process; each a range over the four runs of a tier.
+
+| MiB | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Footprint: start / most / end | 3,619–3,844 / 3,807–3,865 / 3,760–3,818 | 3,426–3,486 / 3,584–3,633 / 3,516–3,579 | 3,096–3,131 / 3,272–3,336 / 3,272–3,335 | 3,028–3,070 / 3,243–3,287 / 3,240–3,281 |
+| The OS's peak | 3,820–4,003 | 3,585–3,961 | 3,369–3,466 | 3,292–3,346 |
+| The asset server's pools: textures, meshes | 2,594.7, 91.9 | the same | 2,593.3, 37.6 to 58.9 | the same |
+| The heap | 98 | 98 | 102 | 64 |
+| The tier's budget (§3.1) | 10 GB RAM, 6 GB VRAM | 6 GB RAM, 3 GB VRAM | **2.8 GB in all: ×1.30** | **1.6 GB in all: ×2.19** |
+| The start: the stage stood, warm | 5.4–10.3 s | 3.2–7.1 s | 4.6–5.1 s | 4.0–4.4 s |
+
+- **The phones are over memory because their textures are:** 2.6 GB of 2K maps, against a budget that has to hold everything. Desktop-Low's GPU resources (2.69 GiB of pools, 2.82 GB) sit under its 3 GB VRAM with 6% to spare. Nothing grows over a walk: the end reads within 60 MiB of the most on every tier.
+- **The start** is from the process's first line to the stage stood: the renderer made, the packs mounted (a 1.12 GB `zone_district.spack` and an 88–108 MB `shared.spack` on desktop, 1.15 GB and 93–109 MB on mobile) and the whole district placed and uploaded, with Metal's cache and the OS's file cache warm. Desktop-High's spread (5.4–10.3 s) follows the load at each run's start. **A cold start wasn't measured:** emptying the file cache needs root, and §3.7's cold start (a fresh bundle ID for Metal) doesn't apply to a bare sandbox binary. A phone's storage is the figure that matters, and it is owed.
+- **Allocations a frame,** counted: 626–630 on the desktop tiers in the CPU phase (767–772 with timestamp queries), 534–536 on Mobile-High and 420–422 on Mobile-Low, against §3.5's 746, 746, 607 and 481 in a fight; none in a step, since a walk takes none.
+
+**Which kind of core.** Every frame of every phase logged the kind of core its thread was on at its end (§5.1, M5 B4). Over all 130,400 frames of the CPU phases here: 98.3% on performance cores, at a median of 974 µs, and 1.7% on efficiency cores, at 2,230 µs, ×2.29; by run the ratio is ×1.55 to ×3.91, and the share on efficiency cores 0.2% to 6.1%. The bench's main thread already ran at the user-interactive class when launched (asking again changed nothing), and at the moment of asking it and all nine compute workers sat on efficiency cores, the machine idle between runs.
+
+- **At these loads the core kind doesn't explain the ×2.6–3 spread.** With 94–99.8% of frames on performance cores the median is a performance-core figure, yet the ward's rounds still read p50s of 422 to 546 µs on performance cores alone (×1.29) at load 2.7–4.4. Under load it does change: the same ward walk taken in an ordinary gate slot, one round of each build at load 12.8–15.6, put 69–75% of frames on efficiency cores, and its CPU p50 read 1,545 and 1,813 µs, ×3.7–3.9 the quiet rounds'. But there the frames on performance cores were no faster (p50 1,560 and 1,834 µs against 1,538 and 1,804 on efficiency cores, ×0.98–0.99). So **the spread follows the machine's load, and the core kind is a symptom of it, not the cause:** a busy machine time-slices the frame thread and moves it between cores within a frame, so the kind sampled at a frame's end describes less of it, and both kinds read alike. The least across rounds, alone on the machine, stays the figure.
+- **A finding, not changed here:** a frame that lands on an efficiency core costs about twice as much; a shipped game's frame thread asks for nothing today. Whether its frame and render threads should ask for the user-interactive class (and whether that keeps them off efficiency cores under load) is a question for the platform track, with a phone's own core mix to judge it.
+
+**The cast,** measured where the district can't stand it: `--look-dev enemy`, one figure at a time at the look-dev shot, `--bench 1200`, two rounds each, at every tier's size and cook with B3's `budget` figures mounted (load 2.9–4.7). The shot stands the warrior beside the figure (`--model <mesh>`, or the shot's own enemy without one) and holds a settled pose, so **skinning, animation and springs read 0 here** (no per-frame pose): what it measures is drawing a figure. GPU frame ms at p50, and the shot's character draws and triangles in one pass (the character maps'; the main pass draws each twice, with its hull):
+
+| Beside the warrior | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low | Character draws, triangles (desktop) |
+|---|---|---|---|---|---|
+| The shot's own enemy | 7.18 | 4.26 | 2.11 | 1.16 | 14, 41,972 |
+| A `budget` hero (80,000; 30,000 on mobile) | 7.43 | 4.54 | 2.20 | 1.26 | 17, 116,038 |
+| A `budget` enemy (8,000; 6,610 on mobile) | 7.05 | 4.31 | 2.11 | 1.22 | 12, 44,038 |
+
+- **A hero costs 0.04–0.38 ms more than an enemy** at this framing (Desktop-High 0.38, Desktop-Low 0.23: main +0.07, shadows +0.05, prepasses +0.04; Mobile-High 0.09, Mobile-Low 0.04), for 72,000 more triangles and five more draws a pass on desktop. The CPU frame stays at 0.21–0.34 ms with any figure.
+- **Three heroes and twelve enemies,** estimated, since the shot stands one figure and the district's fight isn't on a bench yet: 3 × 6 + 12 × 1 = 30 calls in each pass that draws characters (the character prepass, the character maps, each cascade that sees them, and twice in the main pass with hulls), so about 150–200 calls a frame, a small share beside the district's; 336,000 triangles a pass on desktop and 169,320 on mobile (twice that in the main pass). By the hero's difference above, three heroes add about 0.7 ms over three enemies on Desktop-Low at close range; an enemy's own cost isn't separable here (no shot stands without a figure). Skinning 3 × 80,000 and 12 × 8,000 vertices a frame, animation and springs are **unmeasured** here; C1 and C2 measure them.
+
+**What this baseline says about M5's order.** Ranked by how far each tier is over, worst first (×: p95 against the row; dusk and night alike unless named):
+
+- **Desktop-High:** draw calls ×3.1 (×1.8 at p50, ×3.6 at worst); the GPU frame's p95 14.9 ms against 12 (×1.24), so not 60 fps through the district at 1440p on this M5, and the corner's 86–98 ms stall; shadows at 4.6 ms p95; the texture pool ×1.01. No per-pass column (proposed below).
+- **Desktop-Low:** draw calls ×2.9 (×1.7, ×3.4); prepasses ×1.72 and shadows ×1.58 at p95 (dusk; ×1.57 and ×1.40 at night); TAA ×1.39 at dusk's p95; the main pass at its row (4.905 against 4.9); the corner stall 56–80 ms; the pool ×1.01, and its GPU resources within 6% of the 3 GB VRAM. The GPU frame itself holds (p95 11.7 against 14).
+- **Mobile-High:** draw calls ×7.7–7.9 (×4.7, ×9.2); the texture pool ×4.3; memory ×1.30; the corner stall 22–24 ms. Its GPU frame holds with room on this Mac (5.8 against 13).
+- **Mobile-Low:** the texture pool ×6.5; draw calls ×4.6 (×2.9, ×5.4); memory ×2.19. Every timed row holds on this Mac with room (GPU p95 4.0 against 26, CPU 1.5 against 22), and only a throttled phone can say how much of that room is real.
+
+Read against the plan's order:
+
+- **D1 and D2 first, as planned.** Calls are the one break on every tier, by ×2.9 to ×7.7 at p95, and the counts show why: one call a draw, no runs. A list per view and instanced runs are where the largest multiple goes.
+- **D3 next, raised for the cascades:** with no distance culling, cascade 3 draws the whole district (2,853–3,194 calls at p95 on desktop) and the phones' second cascade 1,625–1,995. Culling every view is the shadows row's first fix, before D8's caster levels.
+- **D8 stays,** for Desktop-Low's shadows (p95 ×1.58) and Desktop-High's 4.6 ms, and **D10 is earned** on desktop: the prepasses' p95 is ×1.7 its row while the main pass sits at its own, which a depth-equal main pass trades.
+- **D4 and D6** (static and cell levels) follow D3: 7–15 M triangles a desktop frame and 3–6 M a phone's, every one at level 0. **D5** waits for a fight on the district, since the walk draws one figure. **D7** stays as D0 decides. **D11** is unchanged: nothing here is on Vulkan or DX12.
+- **M5's streamer is the phones' first break after draws,** and comes higher than its place: the pool is ×4.3 and ×6.5 over and memory ×1.30 and ×2.19, which M1's 1K cap alone will about halve; the corner stall is likely the same work unbounded on desktop.
+- **C1, C2, C11 and L15 aren't readable on the walk,** which poses nothing: the cast's rows above are drawing alone. Their benches (C1's at 15 and 60 characters, C2's three heroes) are their own readings, and L15's merge is measured by its draw-count test.
+
+**Captures.** `--capture` at ticks 10, 3120 and 6280 (1, 312 and 628 m) on every tier at both keys, kept outside the tree (the benchmark is never committed cooked, nor its images). At 628 m, where the draws peak, the walker stands at the edge of a plank floor looking down a long street end to end: two rows of two-storey buildings with tiled eaves, lanterns on posts down both sides, crates at the doors, fog closing the far end; at night the sky is dark with stars and the lanterns lit. The street's ground changes material down its middle, cobbles on one side and pale paving on the other: B2's seam at a cell's edge, which moves no count. Mobile-High and Mobile-Low frame the same view tighter at their aspect, and at night Mobile-Low's eight lights leave the near street no darker to the eye than the desktop's 64; what the dropped lanterns cost further down the street is the look tracks' to judge. At 1 m and 312 m the capture shows no street: two surfaces, blue paving and brick, fill the frame edge to edge, split down the middle, on every tier. At 312 m that fits the bench, whose main pass draws about 70 on the leg before the turn; but at 0.1–1 m the bench's main pass draws 2,576, so a capture's camera at its first ticks isn't the bench's view. Neither was chased (the walk's camera isn't B4's), and no figure above comes from a capture. A walk whose camera faces a surface for a tenth of the lap understates every median here a little; M5's later readings walk the same tour, so they compare.
+
+**What a phone must still answer:** every row above at its throttled clocks, on Mobile-High's and Mobile-Low's devices; whether the corner's stall is Metal's on a phone's tile GPU too; the start from a phone's storage, cold; memory against iOS's and Android's limits once M1 and M5 hold the pool; and the frame thread's core on a phone's own mix of cores.
 
 ---
 
@@ -785,6 +953,7 @@ Each module below follows the same template:
   - **`LowMemory` is pressure on iOS only** (`Os::memory_warnings_are_pressure`): there it is the system's memory warning, while Android's SDL sends it on every trip to the background and desktops never do. The sandbox's answer is in §5.10.
   - **Android's exit status:** as the app's main function returns, `android_main` writes exactly `main returned status=<n>` to logcat (tag `sapphire`, info) through `sdl_log`, so no app's log filter drops it. `cargo xtask run --platform android` reads it to fail a run whose main function failed, which SDL's own "Finished main function" can't say. A panic still aborts first.
 - **As built (M3 Z1 and Z5b, process memory):** `process_memory()` reads what the OS counts the process as holding, now and at its most, on every platform: on macOS and iOS `task_info(TASK_VM_INFO)`'s physical footprint and `ledger_phys_footprint_peak` (through `mach2`; what Activity Monitor and Xcode's gauge show and what iOS's memory limit judges), on Linux and Android `/proc/self/status`' `VmRSS` and `VmHWM`, on Windows `GetProcessMemoryInfo`'s working set and peak working set. Each pair comes from one call, and `most` is held to at least `now`: Apple's kernel moves the lifetime most behind the footprint, and one macOS read found the footprint 16 KiB, a page, over it, which failed the unit test once. Apple's and Windows' reads allocate nothing; Linux's reads a file. A footprint and a resident set don't compare. Proved on macOS and in the iOS 26.3 Simulator (the lib's test binary under `simctl spawn`); Windows' read has only compiled here (clippy for `x86_64-pc-windows-msvc`), so CI's Windows lane is its first run.
+- **As built (M5 B4, which kind of core, `sapphire_platform::cores`):** `current_core()` says whether the calling thread is on a performance or an efficiency core (`CoreKind`) at the moment of the call, `core_layout()` how many of each the machine has, `thread_class()` the class its OS schedules the thread in (`ThreadClass`: user-interactive, default, background, or inherited) and `set_thread_class` asks for one. On macOS and iOS the core is `pthread_cpu_number_np` against `hw.perflevel1.logicalcpu` (Apple numbers its efficiency cores first) and the class is the thread's quality of service; everywhere else each says `None`, which a log writes as "unknown", so no caller needs a `cfg`. A core is a sample (the scheduler can move a thread at any time), read once a frame; each call allocates nothing, and the first reads the layout once by `sysctl`. The walk's bench logs each frame's core and splits its frames by kind (§3.8, §5.27). Proved on the M5 (`a_thread_knows_its_core_and_class_where_the_os_says`: 4 performance and 6 efficiency cores, and a class asked for is the class the thread then has).
 
 **Platforms**
 
@@ -1128,6 +1297,8 @@ Each module below follows the same template:
   - **Counters (R9):** `AssetStats` gains `admitted` against `budgets.admission`, `admitted_peak`, `held_back`, and `resident_peak`, each pool's most at an update (the texture pool's high-water mark, tails and levels together, against its budget); the overlay's assets panel shows them, and `Content::stats` is where a bench reads them.
   - **Tests** (`server/tests/admission.rs`): a gibibyte of textures (256 of 4 MiB) asked for at once never holds more than the desktop cap, counted by the source and the uploader as well as by the server, and finishes at the upload budget's pace; a one-byte cap finishes three meshes sharing textures, a reupload and a load screen's `finish` with nothing let over the cap; an urgent load behind fifty speculative ones is ready in three frames; raising a queued mesh brings its material and texture with it; an admitted material read again with a texture held back for another load takes the texture in; a split texture under a one-byte cap loads tail, level, material, one read at a time, and loads whole again after a remount and a reupload; CPU kinds are never held; an unmount gives everything back. Both soak tests run under a cap of a few kilobytes and end with nothing admitted or held. `server/tests.rs`: a pool that holds a split texture's tail and level together keeps them cached, and one a byte short lets both go though the tail alone would fit.
   - **Can't do:** reorder the upload queue by priority, or raise a read the IO thread has already queued. The caps are proposals, unmeasured on any device. What today's content peaks at against them is unmeasured: the bench logs it ("asset budgets"), for B4 and the generated benchmark to read.
+- **As built (M5 B4, what the server holds against its budgets):** `AssetStats` gains `decoded_waiting` (decoded bytes waiting for the uploader, or for a dependency, that no upload has taken: a slot waiting or queued, and a texture level decoded and not yet uploaded), `admitted_total` (every byte ever admitted, so a frame's admitted bytes are the difference against the last frame's), `reads_held` (reads ever held back at the cap: the admission's refusals), `over_budget` per kind (bytes still over a pool's budget after `collect` trimmed what nothing uses: the texture pool is a cache limit and never refuses a load, so this is how a pool over its budget shows) and `evicted_bytes` (what trimming gave back since the start). The overlay's assets panel shows them; a walk's bench logs a frame's admitted bytes against the cap, decoded bytes waiting, reads held and each pool against its budget (§5.27, M5 B4). Tests: `server/tests/admission.rs`'s gibibyte holds `reads_held` to the reads held back, `admitted_total` to every byte and `decoded_waiting` to the decoded reads not yet uploaded; `a_cached_mesh_doesnt_keep_a_kind_over_budget` holds the trim's bytes.
+  - **On the line:** `given_back` counts the bytes an app hands back through `unload` (M4's lowered levels), apart from `evicted_bytes`, residency's trims (`a_split_textures_levels_load_only_when_asked` holds it). A level read and decoded and not yet uploaded is in `decoded_waiting` like any load; once uploaded, its kept bytes are in the texture pool until the renderer raises the texture, whose bytes written are `RenderStats::mip_streaming`'s. L2's reflection probes (kind 27) are a pool of their own, so `resident` and `over_budget` carry them by their own index. D9's mesh pool is the renderer's GPU buffers, not the server's: its give-back shows as `RenderStats::mesh_pool_capacity` falling to `mesh_pool.floor`, and `evicted_bytes` stays the server's.
 
 **Tests**
 
@@ -1232,6 +1403,13 @@ The big one. It owns everything from `FramePacket` to pixels.
   - **Proved:** `a_compacted_pool_draws_every_mesh_left_as_it_did_from_smaller_buffers` (36 meshes in every part, half freed in a checkerboard: the rest draw the same pixels from buffers at the floor) and `a_frame_in_flight_when_the_pool_compacts_still_draws_from_the_old_buffers` (the fence held at a frame recorded before the compaction) in `mesh_pool/gpu_tests.rs`; the stage's `a_trip_leaves_the_mesh_pool_at_its_floor` (a real renderer, around three rooms that each lead only to the next, so the room left isn't kept coming as a hub's way back is: the pool at its floor after each arrival, the same floor on each visit, its peak at most what it held before and its floor after) and `a_repeated_trip_does_not_grow` with the pool's capacity among what each visit holds; `zone_trip` in `game_app`, each trip ending at the floor. Every golden byte-identical and no replay's checksum moved.
   - **Measured** (Metal, Apple M5, release, alone under `slot --all --load 8` at load averages of 5.4 to 7.5). The pool: in `zone_trip` the trip from the town to the proving hub takes it from 26.8 MiB to its floor of 8.8 MiB, four buffers compacted in one frame (6 MiB of new buffers), at most 32.8 MiB held while the old buffers wait for the fence; the trip on to the proving ground finds it at its floor, 8.8 MiB, and moves nothing. Each trip holds 37 frames and covers 4, one more of each than M4 recorded (36 and 3): the arrival waits an update for the pool's answer. The stage's three rooms go from 3.25 MiB to 2.00 MiB on each arrival, two parts compacted, at most 4.25 MiB. Uploads, by the ring against `write_buffer`, ten rounds each with the GPU caught up between frames as a presented game's is: the proving ground's 7 meshes (0.26 MiB) p50 2.5 µs against 17.8 and p99 23.5 against 49.6; the proving hub's 5 (0.06 MiB) 1.5 against 13.4 and 4.9 against 46.1; a burst of 192 small and 4 large meshes (8.12 MiB) 1.0 against 6.5 and 149 against 301. The frame carrying 8 uploads costs one more submit, p50 71–91 µs against 58–65, and a round's uploads and frames together 0.13 against 0.22 ms, 0.09 against 0.14 and 2.65 against 4.28 ms.
   - **What it can't do:** the pool compacts only when asked, so a walk across one zone still keeps its high-water mark. A part moves whole, so a part past 64 MiB takes a frame of its own however large. The ring's buffers stay at their peak, at most the budget over the frames in flight.
+- **As built (M5 B4, what a frame submits, pass by pass: `sapphire_render::counts`, `RenderStats::passes`):** the draw-call row of §3.4 counts calls, and until now nothing did (§3.5's note).
+  - **Per pass** (`FrameCounts`): the character prepass, the scene prepass, the main pass, each shadow cascade, the character maps, each inset, temporal AA's mask, post (bloom, the composite, colour vision), the interface and the debug views and lines, each a `PassCounts`: calls submitted, instances, triangles, outline hulls drawn, the mesh draws looked at, and those left out by the view's frustum, by the pass's own test (a character prepass's listed characters, a cascade's caster bits) and by a hull's distance cutoff, with a histogram of the level each mesh draw drew. Every mesh draw is level 0 until D4 selects levels (`MESH_LEVELS`, 4 buckets, a coarser level in the last). A fullscreen pass is a call of one triangle; a quad batch (sprites, glyphs, lines) two triangles an instance.
+  - **Free and always on,** in shipping builds too: a group of draws counts on its stack and adds to its pass's relaxed atomics once (`Counter`), inside the recording closures, which only run when the graph executes them. `record` starts the counts over, so a pass the graph culls, or a frame recorded and never run, reads zero, and `stats()` reads the last executed frame. No allocation, no clock, no string (`counting_allocates_nothing`).
+  - **Skinning** counts the joints its poses move (`SkinningStats::joints`, the palettes' matrices) beside its instances and vertices.
+  - **Tests** (`tests/gpu/render/counts.rs`, Metal): a scene of five environment squares, two behind the camera, and a posed skinned sphere reads exactly per pass, zero in every pass that didn't run; the scene prepass, when read, matches the main pass but for the sky; each cascade drawn looks at every caster and agrees with `ShadowStats`'s caster and culled draws; every pass's levels sum to its mesh draws, and the frame's to theirs.
+  - **On the line:** L5's effect meshes count as calls of one instance and their shape's triangles, with the sprites, in the main pass where no temporal AA follows (the phone tiers) and in temporal AA's counts where they draw after its resolve (desktop); they have no level. L12's masked casters (the alpha-tested character variants) are mesh draws of the cascades and the character maps like any caster, and its per-receiver choice of casters happens in shading, so it leaves nothing out and `culled_by_pass` still means a pass's own pick.
+  - The overlay's stats panel shows them ("Submitted", "Culled", "Levels drawn"), and a walk's bench logs each against §3.4 (§5.27, M5 B4).
 
 **Skinning and morph targets**
 
@@ -3866,6 +4044,12 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
   - **Encoding, measured** on the proving zones: RGB9E5 with an 8-bit share is 0.6 of half floats' bytes raw and about 0.6 packed, and up to 2.9% off in a channel (desktop ground; 1.8% on mobile, 0.6% in the hub). Half floats are exact, need no conversion into L0's layers, and pack small because the bake's albedo is a material's mean, so faces are smooth.
   - **Numbers** (the yard and shelter under the ground's ten keys, the hub's square under its one): a probe of ten keys is 7,680 KiB raw on desktop and 1,920 KiB on mobile, and one of one key 768 and 192 KiB. Cold, the packs grew: desktop `zone_proving_ground.spack` 80,384 to 548,992 bytes (about 229 KiB a probe with the shelter's mesh) and `zone_proving_hub.spack` 80,536 to 104,654; mobile 80,384 to 305,200 (about 110 KiB a probe) and 34,632 to 45,150. A cold desktop cook took 18.9 s before and 23.1 s after, a mobile one 19.3 s and 19.0 s (an M5 under `slot --all --load 8`, load 6.7 rising to 9.9 from other work).
   - **Tests:** `probes::bake::cubes::tests` on small scenes (a red room's probe is red and sees no sky, an open courtyard sees the sky up and not down, a roof with one open side lets it in only there, each key its own cube and the sun gone darker, the threads); `zone_tests::a_zones_reflection_probes_bake_beside_it_and_ship_with_it` (the asset, its reach and pack, a light saved leaving it alone, a lamp moved recooking it, mobile's 64).
+- **As built (M5 B4, the walk's bench, `apps/sapphire_sandbox/src/fight_bench.rs` and `fight_bench/counts.rs`):**
+  - **A walk times as a fight does.** `--bench <frames> --zone <zone> --zone-walk tour` runs the fight bench's phases on the walk: a cold walk from the tour's start, then the walk restarted for the CPU rows (no timestamp queries) and again for the GPU rows (`Stage::restart_zone_walk`, which puts the walker back at the spline's start; `zone_walked` says how far it has gone). Every row is logged with its median, p95 and worst and, for the worst, the metres walked, which names a point on the tour (the walk has no combat tick: its `worst_tick` reads 0). `--bench-trace <csv>` writes each frame with its metres, its core and every counter. `--draw-every` still takes the old walk's path.
+  - **Counts.** Each frame's `FrameCounts`, skinning's instances, joints and vertices, the lights kept and dropped, and the asset server's pool bytes, bytes over budget, admitted bytes and decoded bytes waiting are copied into the frame's record (no allocation) and logged as `count row`s: p50, p95 and worst, against §3.4's draw calls (2,500 and 700) and lights (64 and 8) where §3.4 has a row, and `count row not exercised` for a row that read zero all walk. Counts are exact, so load doesn't move them.
+  - **Cores.** Each frame records the core its thread was on at its end (`sapphire_platform::current_core`), and `frames by core` splits a phase's frames by kind with their own median, p95 and worst. Before timing, the bench asks for the user-interactive class on its frame thread and logs what the main thread and each compute worker had and where each was (`bench scheduling`). Where the OS doesn't say, the kind is "unknown".
+  - **The line's pools** are rows too: the mesh pool's capacity on the GPU and its floor (D9), the texture bytes the renderer raised in the frame and the bytes the app gave back (M4).
+  - §3.8 is the first reading, on the `budget` district.
 
 ### 5.28 `sapphire_editor` (Tools, desktop only)
 

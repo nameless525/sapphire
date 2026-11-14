@@ -8,8 +8,10 @@
 //! scenario on it needn't, with the moves each names by ID and the `.luau` it names as its `script`, each
 //! found by its sidecar, so a kind and its script reach a fight from documents alone. Every `.timeline.ron`
 //! beside a set of moves' document goes in too (M3 Z5a), since a move names its cinematic by that file's
-//! name. `replay::document` and `replay::cinematics` read them. Every `content/inputs/*.inputs.ron` goes in too
-//! (M4 R2), the scripted input a recording plays, which `replay::inputs` reads.
+//! name. So does every `.playable.ron` under `content/combat/` (M5 C8), since a cast member names its playable
+//! kind by its file's name. `replay::document` and `replay::cinematics` read them. Every
+//! `content/inputs/*.inputs.ron` goes in too (M4 R2), the scripted input a recording plays, which
+//! `replay::inputs` reads.
 //!
 //! The zones scenarios name in `shelf` go in as `BAKED_ZONES` (M4 R3), each with the copies of its cook in
 //! `baked/zones/` (its `.szone`, `.scol` and `.snav`), since its navmesh takes a bake, which takes the
@@ -141,7 +143,18 @@ fn main() {
     let content = root.join("content/combat");
     println!("cargo:rerun-if-changed={}", content.display());
     let mut found = Vec::new();
-    sidecars_by_id(&root, &content, &[".luau", ".moves.ron", ".enemy.ron"], &mut found);
+    sidecars_by_id(&root, &content, &[".luau", ".moves.ron", ".enemy.ron", ".playable.ron"], &mut found);
+    // Every playable kind (M5 C8), which a cast member names by its file's name: only the document, since the
+    // moves it plays are the scenario's to list.
+    let mut playables = BTreeSet::new();
+    for (_, kind) in found.iter().filter(|(_, relative)| relative.ends_with(".playable.ron")) {
+        let file = kind.rsplit('/').next().expect("a file");
+        assert!(
+            playables.insert(file.to_owned()),
+            "two playable kinds are {file}: a kind's name is its file's"
+        );
+        named.insert(kind.clone());
+    }
     let mut kinds = BTreeSet::new();
     for (_, kind) in found.iter().filter(|(_, relative)| relative.ends_with(".enemy.ron")) {
         let file = kind.rsplit('/').next().expect("a file");

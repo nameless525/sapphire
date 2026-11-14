@@ -1,6 +1,7 @@
 // What the HUD says in words (M3 U7): names, the objective, a pause for what has no key to press, a
-// cutscene's subtitles (M3 Q4), and what a party's slots say of their members (M5 C9). Its bars, buttons and
-// numbers animate every frame, and `sapphire_ui::CombatHud` draws those.
+// cutscene's subtitles (M3 Q4), and what a party's slots say of their members (M5 C9) and, when they're kinds
+// of their own, who each is (M5 C8). Its bars, buttons and numbers animate every frame, and
+// `sapphire_ui::CombatHud` draws those.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -61,6 +62,21 @@
                 parent: "party",
                 layout: (direction: Row, align: Center, min_height: Points(24)),
             ),
+            // Who the slot holds, by her kind's name, when the party's members are kinds of their own (M5 C8): clear
+            // of where the slot's seconds are drawn, before what the slot says.
+            (
+                name: "party-first-name",
+                parent: "party-first",
+                layout: (padding: (left: 26, right: 6)),
+                binds: [(to: Shown, path: "has_party_first_name")],
+                text: (
+                    key: "character-name-wanderer",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_first_name", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
             (
                 name: "party-first-tag",
                 parent: "party-first",
@@ -83,6 +99,21 @@
                 parent: "party",
                 layout: (direction: Row, align: Center, min_height: Points(24)),
             ),
+            // Who the slot holds, by her kind's name, when the party's members are kinds of their own (M5 C8): clear
+            // of where the slot's seconds are drawn, before what the slot says.
+            (
+                name: "party-second-name",
+                parent: "party-second",
+                layout: (padding: (left: 26, right: 6)),
+                binds: [(to: Shown, path: "has_party_second_name")],
+                text: (
+                    key: "character-name-wanderer",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_second_name", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
+            ),
             (
                 name: "party-second-tag",
                 parent: "party-second",
@@ -104,6 +135,21 @@
                 name: "party-third",
                 parent: "party",
                 layout: (direction: Row, align: Center, min_height: Points(24)),
+            ),
+            // Who the slot holds, by her kind's name, when the party's members are kinds of their own (M5 C8): clear
+            // of where the slot's seconds are drawn, before what the slot says.
+            (
+                name: "party-third-name",
+                parent: "party-third",
+                layout: (padding: (left: 26, right: 6)),
+                binds: [(to: Shown, path: "has_party_third_name")],
+                text: (
+                    key: "character-name-wanderer",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "party_third_name", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
+                ),
             ),
             (
                 name: "party-third-tag",

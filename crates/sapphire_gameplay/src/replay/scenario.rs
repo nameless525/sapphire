@@ -30,7 +30,7 @@ use sapphire_timeline::{TimelineDocument, TimelineError};
 use sapphire_zone::{Zone, ZoneError};
 
 use super::cinematics::{Cinematic, cinematics_of};
-use super::document::{KindOfEnemy, ScenarioDocument};
+use super::document::{KindOfEnemy, KindOfPlayable, ScenarioDocument};
 use super::play::RunStart;
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
@@ -267,6 +267,12 @@ impl Scenario {
     /// each as (M3 B3b). A scenario of code has none, and its fighters draw as the warrior.
     pub fn kinds_of_enemy(&self) -> Result<Vec<KindOfEnemy>, ScenarioError> {
         self.document().map_or(Ok(Vec::new()), ScenarioDocument::kinds_of_enemy)
+    }
+
+    /// The playable kind each of its cast draws as, in cast order (M5 C8): `None` for one that names none. A
+    /// scenario of code names none.
+    pub fn playable_kinds(&self) -> Result<Vec<Option<KindOfPlayable>>, ScenarioError> {
+        self.document().map_or(Ok(Vec::new()), ScenarioDocument::playable_kinds)
     }
 
     /// [`Self::set_up`], from `start` (M3 G1): a document's first cast member stands at the save's checkpoint,

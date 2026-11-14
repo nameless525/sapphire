@@ -1,0 +1,22 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "`party` with two kinds (M5 C8): the heroine on the player's moves and Aster on her own, one on the field, against the warrior's brain",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/hero/hero.moves.ron",
+            "content/combat/enemy/warrior.moves.ron",
+        ],
+        enemies: ["content/combat/enemy/warrior.enemy.ron"],
+        // Each member names the playable kind she draws as, which plays her set.
+        cast: [
+            (moves: "player", at: "player", faction: 1, soft_lock: true, playable: "heroine"),
+            (moves: "warrior", at: "enemy", faction: 2, brain: true),
+            (moves: "hero", at: "player", faction: 1, soft_lock: true, playable: "hero"),
+        ],
+        party: Some((members: [0, 2], swap_cooldown: 60, rest: 150)),
+    ),
+)

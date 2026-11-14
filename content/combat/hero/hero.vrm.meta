@@ -1,0 +1,41 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "2533d8d7-9400-4972-88f3-f99ff9473913",
+        importer: Vrm((
+            mesh: (
+                outline: (
+                    weld_tolerance: 0.0001,
+                ),
+                lods: (
+                    levels: [
+                        (
+                            triangle_ratio: 0.375,
+                            max_error: 0.02,
+                        ),
+                        (
+                            triangle_ratio: 0.15,
+                            max_error: 0.03,
+                        ),
+                        (
+                            triangle_ratio: 0.06,
+                            max_error: 0.05,
+                        ),
+                    ],
+                    mobile_skip: 1,
+                ),
+                position_format: Unorm16,
+                materials: {
+                    "face": "14f6a1c6-bc1b-4db9-ab48-973edea200d6",
+                    "gear": "54e473c1-769c-4e58-9eb7-dc0613c1046f",
+                    "hair": "d774b5e7-25bb-461b-accb-074cac7b0eff",
+                    "skin": "b7435788-1219-44e0-aac9-863c41a09e76",
+                    "skirt": "0e0f0a66-bb45-4cb1-8f6d-1655bd22f8b5",
+                    "top": "db59f6f9-c422-4ba2-a798-385b2d5af87b",
+                },
+            ),
+            version: Some(V1),
+        )),
+    ),
+)

@@ -354,6 +354,8 @@ pub struct GraphDriver {
     face: Option<FaceLayer>,
     /// Whether its graph has made a pose yet.
     posed: bool,
+    /// The playable kind it poses, when it was made for one ([`Self::for_kind`]).
+    kind: Option<AssetId>,
 }
 
 impl GraphDriver {
@@ -381,7 +383,25 @@ impl GraphDriver {
             authored_head_look: None,
             face: None,
             posed: false,
+            kind: None,
         }
+    }
+
+    /// This driver, posing the playable kind `kind` (M5 C8).
+    #[must_use]
+    pub(crate) fn for_kind(self, kind: AssetId) -> Self {
+        Self { kind: Some(kind), ..self }
+    }
+
+    /// The playable kind it poses, if it was made for one.
+    pub(crate) fn kind(&self) -> Option<AssetId> {
+        self.kind
+    }
+
+    /// Its springs' clearance fit, given up for springs of its kind made again later (M5 C8): `None` with no
+    /// springs, `Some(None)` for springs it doesn't fit.
+    pub(crate) fn take_clearance(&mut self) -> Option<Option<sapphire_anim::HeroineClearance>> {
+        self.springs.as_mut().map(SpringBones::take_clearance)
     }
 
     /// This driver, finding the right hand at `joint`.

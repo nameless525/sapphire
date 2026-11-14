@@ -1189,6 +1189,15 @@ impl SpringBones {
         self
     }
 
+    /// Gives up its fit, reset as a cut resets it, for springs of the same character made again later
+    /// ([`Self::with_clearance`]): a kind a party draws again after another (M5 C8), which then needn't fit
+    /// it again on the frame. It runs without from here.
+    pub fn take_clearance(&mut self) -> Option<HeroineClearance> {
+        let mut clearance = self.clearance.take()?;
+        clearance.reset();
+        Some(HeroineClearance(clearance))
+    }
+
     /// How many joints swing.
     #[must_use]
     pub fn swing_count(&self) -> usize {

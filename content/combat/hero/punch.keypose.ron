@@ -1,0 +1,142 @@
+// Aster's punch (M5 C8): a straight right from the guard the heroine's combat idle holds, the fist drawn
+// to the ribs, a step in on the left foot, and the arm out at shoulder height with the shoulders turned into
+// it. Hit on ticks 7 to 10, as `hero.moves.ron` frames it; back in her guard by tick 30.
+//
+// Turns are degrees in the model's rest space, about each bone's own joint, X then Y then Z. She faces +Z,
+// with her left arm along +X at rest. Ticks are 60 a second. `root` is where the move has carried her,
+// `hips` moves the hips from rest. Both hands are fists throughout.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 30,
+        keys: [
+            // Her guard: the heroine's combat stance, the left fist up before the chin.
+            (tick: 0, hips: (0.015, -0.041, -0.036), pose: {
+                Hips: (x: 3, y: -15),
+                Spine: (x: 2, y: 5),
+                Chest: (y: 5, z: -1),
+                UpperChest: (x: -1, y: 3),
+                Neck: (x: -2.1, y: 0.8),
+                Head: (x: -2.9, y: 1.1),
+
+                LeftUpperLeg: (x: -27.9, y: 21.2, z: 3.8),
+                LeftLowerLeg: (x: 32.2),
+                LeftFoot: (x: -5.7, y: -0.5, z: -4.6),
+                RightUpperLeg: (x: -7.8, y: 1.9, z: -2.7),
+                RightLowerLeg: (x: 26.7),
+                RightFoot: (x: -21.9, y: 1, z: 2.4),
+
+                LeftUpperArm: (x: 20, y: -35, z: -62),
+                LeftLowerArm: (y: -115),
+                LeftHand: (x: -10),
+                RightUpperArm: (x: 20, y: 25, z: 66),
+                RightLowerArm: (y: 105),
+                RightHand: (x: -10),
+
+                RightThumbProximal: (y: 26, z: 14),
+                RightThumbDistal: (y: 30),
+                RightIndexProximal: (z: 70),
+                RightIndexIntermediate: (z: 80),
+                RightIndexDistal: (z: 50),
+                RightMiddleProximal: (z: 72),
+                RightMiddleIntermediate: (z: 82),
+                RightMiddleDistal: (z: 50),
+                RightRingProximal: (z: 74),
+                RightRingIntermediate: (z: 82),
+                RightRingDistal: (z: 50),
+                RightLittleProximal: (z: 76),
+                RightLittleIntermediate: (z: 82),
+                RightLittleDistal: (z: 50),
+                LeftThumbProximal: (y: -26, z: -14),
+                LeftThumbDistal: (y: -30),
+                LeftIndexProximal: (z: -70),
+                LeftIndexIntermediate: (z: -80),
+                LeftIndexDistal: (z: -50),
+                LeftMiddleProximal: (z: -72),
+                LeftMiddleIntermediate: (z: -82),
+                LeftMiddleDistal: (z: -50),
+                LeftRingProximal: (z: -74),
+                LeftRingIntermediate: (z: -82),
+                LeftRingDistal: (z: -50),
+                LeftLittleProximal: (z: -76),
+                LeftLittleIntermediate: (z: -82),
+                LeftLittleDistal: (z: -50),
+            }),
+
+            // The draw: the right fist back to the ribs, the shoulders turned away, the weight settling.
+            (tick: 5, ease: Out, hips: (0.02, -0.06, -0.05), pose: {
+                Hips: (x: 4, y: -22),
+                Spine: (x: 3, y: -4),
+                Chest: (y: -4, z: -1),
+                RightUpperArm: (x: 10, y: -25, z: 72),
+                RightLowerArm: (y: 125),
+                LeftUpperLeg: (x: -32, y: 21.2, z: 3.8),
+                LeftLowerLeg: (x: 38),
+            }),
+
+            // The strike: the hips and shoulders turned through, the arm straight out from the shoulder, the
+            // step landed on the left foot.
+            (tick: 9, ease: Overshoot(0.1), root: (0, 0, 0.22), hips: (0.01, -0.05, 0.02), pose: {
+                Hips: (x: 4, y: 10),
+                Spine: (x: 3, y: 8),
+                Chest: (y: 8, z: -1),
+                UpperChest: (x: -1, y: 6),
+                Neck: (x: -2, y: -12),
+                Head: (x: -3, y: -12),
+                RightUpperArm: (x: 2, y: 62, z: 6),
+                RightLowerArm: (y: 6),
+                RightHand: (x: 0),
+                LeftUpperArm: (x: 20, y: -45, z: -64),
+                LeftLowerArm: (y: -125),
+                LeftUpperLeg: (x: -36, y: 18, z: 3),
+                LeftLowerLeg: (x: 34),
+                RightUpperLeg: (x: 6, y: 1.9, z: -2.7),
+                RightLowerLeg: (x: 18),
+                RightFoot: (x: -26, y: 1, z: 2.4),
+            }),
+
+            // Held out a moment.
+            (tick: 12, root: (0, 0, 0.26), pose: {
+                RightUpperArm: (x: 2, y: 60, z: 8),
+                RightLowerArm: (y: 10),
+            }),
+
+            // Drawn back in, the shoulders squaring up again.
+            (tick: 20, ease: Smooth, root: (0, 0, 0.28), pose: {
+                Hips: (x: 3, y: -8),
+                Spine: (x: 2, y: 2),
+                Chest: (y: 2, z: -1),
+                UpperChest: (x: -1, y: 3),
+                Neck: (x: -2.1, y: -4),
+                Head: (x: -2.9, y: -4),
+                RightUpperArm: (x: 16, y: 20, z: 62),
+                RightLowerArm: (y: 95),
+                RightHand: (x: -10),
+                LeftUpperArm: (x: 20, y: -35, z: -62),
+                LeftLowerArm: (y: -115),
+                LeftUpperLeg: (x: -30, y: 21, z: 3.8),
+                LeftLowerLeg: (x: 33),
+                RightUpperLeg: (x: -5, y: 1.9, z: -2.7),
+                RightLowerLeg: (x: 25),
+                RightFoot: (x: -22, y: 1, z: 2.4),
+            }),
+
+            // Back in her guard.
+            (tick: 30, root: (0, 0, 0.28), hips: (0.015, -0.041, -0.036), pose: {
+                Hips: (x: 3, y: -15),
+                Spine: (x: 2, y: 5),
+                Chest: (y: 5, z: -1),
+                Neck: (x: -2.1, y: 0.8),
+                Head: (x: -2.9, y: 1.1),
+                RightUpperArm: (x: 20, y: 25, z: 66),
+                RightLowerArm: (y: 105),
+                LeftUpperLeg: (x: -27.9, y: 21.2, z: 3.8),
+                LeftLowerLeg: (x: 32.2),
+                RightUpperLeg: (x: -7.8, y: 1.9, z: -2.7),
+                RightLowerLeg: (x: 26.7),
+                RightFoot: (x: -21.9, y: 1, z: 2.4),
+            }),
+        ],
+    ),
+)

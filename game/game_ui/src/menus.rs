@@ -440,6 +440,16 @@ pub struct HudModel {
     /// The same for the third slot.
     pub party_third: String,
     pub has_party_third: bool,
+    /// The key of the name of who the party's first slot holds, under `character-name-`, when the party's
+    /// members are kinds of their own (M5 C8, [`Self::follow_names`]). Empty reads the document's own.
+    pub party_first_name: String,
+    pub has_party_first_name: bool,
+    /// The same for the second slot.
+    pub party_second_name: String,
+    pub has_party_second_name: bool,
+    /// The same for the third slot.
+    pub party_third_name: String,
+    pub has_party_third_name: bool,
     /// The objective's key, under `hud-objective-`. Empty reads the document's own.
     pub objective: String,
     /// Whether the run gives an objective: none unless whoever stands the run says so.
@@ -474,10 +484,16 @@ pub struct HudModel {
     pub subtitle_solid: bool,
 }
 
+/// The key of the player's name a fight with no party of kinds shows: the heroine's.
+const DEFAULT_PLAYER: &str = "character-name-wanderer";
+
+/// The HUD's slots: as many as a party has.
+const PARTY_SLOTS: usize = 3;
+
 impl Default for HudModel {
     fn default() -> Self {
         Self {
-            player: "character-name-wanderer".to_owned(),
+            player: DEFAULT_PLAYER.to_owned(),
             level: 12,
             enemy: String::new(),
             has_enemy: false,
@@ -491,6 +507,12 @@ impl Default for HudModel {
             has_party_second: false,
             party_third: String::new(),
             has_party_third: false,
+            party_first_name: String::new(),
+            has_party_first_name: false,
+            party_second_name: String::new(),
+            has_party_second_name: false,
+            party_third_name: String::new(),
+            has_party_third_name: false,
             objective: String::new(),
             has_objective: false,
             touch: false,
@@ -560,6 +582,32 @@ impl HudModel {
             && held != name
         {
             name.clone_into(held);
+        }
+    }
+
+    /// Follows who the fight's party is (M5 C8), as `game_combat`'s `FightShow::party_names` says: the key of
+    /// the name of the member on the field, which the player's name is, and of each slot's, all under
+    /// `character-name-`. With none, a party of one kind or none, the player's name is the document's own and
+    /// the slots name nobody. Allocates only for a name longer than any before.
+    pub fn follow_names(&mut self, names: Option<(&str, [Option<&str>; PARTY_SLOTS])>) {
+        let (player, slots) =
+            names.map_or((None, [None; PARTY_SLOTS]), |(player, slots)| (Some(player), slots));
+        let player = player.unwrap_or(DEFAULT_PLAYER);
+        if self.player != player {
+            player.clone_into(&mut self.player);
+        }
+        let held = [
+            (&mut self.party_first_name, &mut self.has_party_first_name),
+            (&mut self.party_second_name, &mut self.has_party_second_name),
+            (&mut self.party_third_name, &mut self.has_party_third_name),
+        ];
+        for ((held, shown), name) in held.into_iter().zip(slots) {
+            *shown = name.is_some();
+            if let Some(name) = name
+                && held != name
+            {
+                name.clone_into(held);
+            }
         }
     }
 

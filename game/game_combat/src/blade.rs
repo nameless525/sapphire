@@ -16,4 +16,6 @@ pub(crate) struct HeldBlade {
     pub(crate) held_hand: Mat4,
     /// Its mesh in the right hand's space.
     pub(crate) socket: Mat4,
+    /// Whether it's drawn: not while the character draws as a kind that holds no weapon (M5 C8).
+    pub(crate) shown: bool,
 }

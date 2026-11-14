@@ -195,8 +195,9 @@ fn the_control_map_holds_each_region_s_id_and_the_mask_its_glow() {
     assert_eq!(layers.get_pixel(width / 4, height - 1).0[2], 0);
 }
 
-/// Every figure has KayKit's 23 joints by their names and parents, so the pack's clips retarget onto
-/// it by sidecar and what finds the warrior's joints by name finds its.
+/// Every enemy's figure has KayKit's 23 joints by their names and parents, so the pack's clips retarget
+/// onto it by sidecar and what finds the warrior's joints by name finds its. A character's has a humanoid
+/// of its own instead.
 #[test]
 fn every_figure_has_kaykit_s_joints() {
     const KAYKIT: [(&str, Option<&str>); 23] = [
@@ -228,6 +229,10 @@ fn every_figure_has_kaykit_s_joints() {
     assert!(!paths.is_empty(), "no specs in tools/figures");
     for path in paths {
         let figure = read(&path).unwrap();
+        // A character's figure (M5 C8's hero) is a humanoid VRM, whose joints its humanoid map names.
+        if figure.character.is_some() {
+            continue;
+        }
         for (name, parent) in KAYKIT {
             let joint = figure.joints.iter().find(|joint| joint.name == name);
             let joint = joint.unwrap_or_else(|| panic!("{}: no joint {name:?}", path.display()));
@@ -280,7 +285,8 @@ fn every_figure_cooks_under_its_budget() {
     let content = repo().join("content");
     for path in specs(&specs_dir()).unwrap() {
         let figure = read(&path).unwrap();
-        let model = content.join(&figure.dir).join(format!("{}.glb", figure.name));
+        let extension = if figure.character.is_some() { "vrm" } else { "glb" };
+        let model = content.join(&figure.dir).join(format!("{}.{extension}", figure.name));
         let meta = crate::meta::read(&crate::meta::sidecar_path(&model)).unwrap();
         let settings = meta.importer.mesh().expect("a mesh's sidecar").clone();
         for cook in Cook::ALL {

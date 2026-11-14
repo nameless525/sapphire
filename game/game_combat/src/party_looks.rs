@@ -13,14 +13,20 @@
 //! One entity draws whoever's on the field: [`Drawn`] gives it that member's mesh when a swap changes
 //! it, which sends its pose again (`sapphire_stage`). `crate::arena`'s player reads the same member, for
 //! its place and for what its graph plays, and cuts that graph at a swap, so no pose blends from one
-//! member into another. All three share a skeleton, a graph and the character's blade, so nothing else knows
-//! there's a party.
+//! member into another. Members of one kind share a skeleton, a graph and the character's blade, so
+//! nothing else knows there's a party.
+//!
+//! A party's members may be kinds of their own (M5 C8, `crate::playable::PartyKinds`). A member of another
+//! kind draws with that kind's own mesh, which no tint copies: the recolors are for members of the
+//! character's kind, each its slot's. A swap to one waits for the content to draw the character as its
+//! kind (`FightShow`'s `follow_content`), which changes the mesh, the pose and the blade together.
 
 use std::collections::HashMap;
 
 use sapphire_assets::material::{ArchivedMaterial, Material};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_assets::{AssetId, UploadError};
+use sapphire_gameplay::PARTY_SLOTS as SLOTS;
 use sapphire_gameplay::{PARTY_SLOTS, Party};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
@@ -225,17 +231,23 @@ fn recolor(material: &mut Material, tint: [f32; 3]) {
     });
 }
 
-/// Which of the members' meshes the character's entity draws.
+/// Which of the members' meshes the character's entity draws, and the playable kind each member is.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Drawn {
     meshes: [MeshHandle; PARTY_SLOTS],
+    kinds: [AssetId; SLOTS],
     slot: usize,
 }
 
 impl Drawn {
-    /// Starts on the first member.
-    pub(crate) fn new(meshes: [MeshHandle; PARTY_SLOTS]) -> Self {
-        Self { meshes, slot: 0 }
+    /// Starts on the first member, each member being the kind `kinds` says.
+    pub(crate) fn new(meshes: [MeshHandle; PARTY_SLOTS], kinds: [AssetId; SLOTS]) -> Self {
+        Self { meshes, kinds, slot: 0 }
+    }
+
+    /// The playable kind of the member drawing now.
+    pub(crate) fn kind(self) -> AssetId {
+        self.kinds[self.slot]
     }
 
     /// The same member's mesh on a new renderer's `meshes`, for after device loss or a tier change.
@@ -248,11 +260,14 @@ impl Drawn {
         self.meshes[self.slot]
     }
 
-    /// The mesh to change to, if `party`'s member on the field has changed since last asked.
+    /// The mesh to change to, if `party`'s member on the field has changed since last asked and is of the
+    /// kind the last one was. One of another kind is followed all the same, and its mesh waits for the content
+    /// to draw the character as its kind ([`Self::kind`]).
     pub(crate) fn follow(&mut self, party: &Party) -> Option<MeshHandle> {
         let slot = party.active_slot().filter(|&slot| slot != self.slot)?;
+        let same = self.kinds[slot] == self.kinds[self.slot];
         self.slot = slot;
-        Some(self.mesh())
+        same.then(|| self.mesh())
     }
 }
 
@@ -450,7 +465,7 @@ mod tests {
         let scenario = find_scenario(&SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
         let meshes = [0, 1, 2].map(MeshHandle::from_raw);
-        let mut drawn = Drawn::new(meshes);
+        let mut drawn = Drawn::new(meshes, [crate::playable::KIND; SLOTS]);
 
         assert_eq!(drawn.follow(sim.party()), None, "the first is on the field to start with");
         assert_eq!(drawn.mesh(), meshes[0]);
@@ -462,5 +477,27 @@ mod tests {
 
         let drawn = drawn.on_new_renderer([3, 4, 5].map(MeshHandle::from_raw));
         assert_eq!(drawn.mesh(), MeshHandle::from_raw(4), "a new renderer draws the same member");
+    }
+
+    /// The two kinds' recording: a swap to the member of another kind follows her, and leaves her mesh to the
+    /// kind's change, which the content makes.
+    #[test]
+    fn a_swap_to_another_kind_waits_for_the_kind() {
+        let scenario = find_scenario(&SCENARIOS, crate::arena::KINDS_SCENARIO).expect("listed");
+        let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+        let kinds = crate::playable::party_of_scenario(crate::arena::KINDS_SCENARIO)
+            .expect("reads")
+            .expect("a party")
+            .kinds();
+        assert_ne!(kinds[0], kinds[1]);
+        let meshes = [0, 1, 2].map(MeshHandle::from_raw);
+        let mut drawn = Drawn::new(meshes, kinds);
+        assert_eq!(drawn.kind(), kinds[0]);
+        let mut swap = TickActions::NEUTRAL;
+        swap.set(cast[0], ActorActions { buttons: Buttons::SWAP, stick: Stick::CENTER }).expect("room");
+        sim.step(&swap);
+        assert_eq!(drawn.follow(sim.party()), None, "another kind's mesh comes with her kind");
+        assert_eq!((drawn.kind(), drawn.mesh()), (kinds[1], meshes[1]));
+        assert_eq!(drawn.follow(sim.party()), None, "once");
     }
 }

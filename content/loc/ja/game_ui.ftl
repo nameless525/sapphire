@@ -155,6 +155,7 @@ remap-swap = 入れ換える
 remap-keep = 元のままにする
 
 character-title = キャラクター
+character-name-aster = アスター
 character-name-wanderer = 旅人
 character-level = Lv. { $level }
 character-hp = HP

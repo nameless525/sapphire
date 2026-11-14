@@ -6,9 +6,12 @@ import unittest
 
 import figure_pose as fp
 
-# Every figure `tools/figures/` specifies, by its posing module here, which shares its name.
-FIGURES = [(importlib.import_module(spec.name.removesuffix('.figure.ron')), spec.name.removesuffix('.figure.ron'))
-           for spec in sorted((fp.REPO / 'tools/figures').glob('*.figure.ron'))]
+# Every figure `tools/figures/` specifies that is posed here, by its posing module, which shares its
+# name. A figure with no module has no clips made here: the hero rides the heroine's, and its own two
+# key poses are written by hand.
+POSED = sorted(spec.name.removesuffix('.figure.ron') for spec in (fp.REPO / 'tools/figures').glob('*.figure.ron')
+               if (fp.REPO / 'tools/motion' / spec.name.replace('.figure.ron', '.py')).exists())
+FIGURES = [(importlib.import_module(name), name) for name in POSED]
 NUMBER = re.compile(r'-?\d+(?:\.\d+)?')
 # Each number is written to 4 decimals, so another machine's libm can round one the other way.
 TOLERANCE = 2e-4

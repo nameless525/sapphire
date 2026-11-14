@@ -1,0 +1,10 @@
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Image(path: "hero_top_control.png", channel: R),
+        shadow_bias: Image(path: "hero_top_control.png", channel: G),
+        specular_threshold: Image(path: "hero_top_control.png", channel: B),
+        material_id: Image(path: "hero_top_control.png", channel: A),
+    ),
+)

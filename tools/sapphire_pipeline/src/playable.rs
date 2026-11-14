@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn the_shipped_kinds_cook() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat");
-        for kind in ["player/heroine.playable.ron"] {
+        for kind in ["player/heroine.playable.ron", "hero/hero.playable.ron"] {
             let bytes = std::fs::read(root.join(kind)).expect("shipped");
             let cooked = cook(&bytes).unwrap_or_else(|error| panic!("{kind}: {error}"));
             let mut aligned = sapphire_serialize::cooked::AlignedVec::<16>::new();

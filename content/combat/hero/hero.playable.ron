@@ -1,0 +1,49 @@
+// Aster as a playable kind (M5 C8): the second one, the benchmark's hero at its `ci` scale
+// (`tools/figures/hero.figure.ron`), unarmed. Her moves are compiled into the simulation as every set a
+// scenario lists is; this is what draws her.
+(
+    type: "sapphire::moves::PlayableDocument",
+    version: 1,
+    data: (
+        // Her name's key in the game's words, which the HUD names her by: Aster.
+        name: "character-name-aster",
+        // `hero.moves.ron`.
+        moves: "0c8fea29-e02b-46fa-8451-441828090ad9",
+        look: (
+            // `hero.vrm`, and its rig, which the cook derives from it. Her springs (skirt, hair, locks and
+            // ribbons) are the VRM's own, cooked into that rig.
+            mesh: "2533d8d7-9400-4972-88f3-f99ff9473913",
+            rig: "18f8a8b6-d386-8e7a-be5f-08594c164be3",
+            // `hero.animgraph.ron`.
+            graph: "ad2efc39-437c-4731-8c45-dca428fcd4b2",
+            // What sets her blinks apart from the heroine's.
+            seed: 2,
+            // She fights with her fists and feet: nothing in her hands.
+            held: None,
+            // Where her body meets what it touches, by the figure's joints.
+            body_contacts: [
+                "hips",
+                "spine",
+                "upper_chest",
+                "neck",
+                "head",
+                "upperleg.l",
+                "lowerleg.l",
+                "foot.l",
+                "toes.l",
+                "upperleg.r",
+                "lowerleg.r",
+                "foot.r",
+                "toes.r",
+                "upperarm.l",
+                "lowerarm.l",
+                "hand.l",
+                "upperarm.r",
+                "lowerarm.r",
+                "hand.r",
+            ],
+            // A little softer than at rest.
+            expression: Some((preset: "relaxed", weight: 0.25)),
+        ),
+    ),
+)

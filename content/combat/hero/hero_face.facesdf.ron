@@ -1,0 +1,21 @@
+(
+    type: "sapphire::pipeline::FaceSdfMap",
+    version: 1,
+    data: (
+        horizontal: [
+            (angle: 0.0, path: "hero_face_threshold_000.png"),
+            (angle: 15.0, path: "hero_face_threshold_015.png"),
+            (angle: 30.0, path: "hero_face_threshold_030.png"),
+            (angle: 45.0, path: "hero_face_threshold_045.png"),
+            (angle: 60.0, path: "hero_face_threshold_060.png"),
+            (angle: 75.0, path: "hero_face_threshold_075.png"),
+            (angle: 90.0, path: "hero_face_threshold_090.png"),
+            (angle: 105.0, path: "hero_face_threshold_105.png"),
+            (angle: 120.0, path: "hero_face_threshold_120.png"),
+            (angle: 135.0, path: "hero_face_threshold_135.png"),
+            (angle: 150.0, path: "hero_face_threshold_150.png"),
+            (angle: 165.0, path: "hero_face_threshold_165.png"),
+            (angle: 180.0, path: "hero_face_threshold_180.png"),
+        ],
+    ),
+)

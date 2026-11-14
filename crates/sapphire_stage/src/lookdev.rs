@@ -629,6 +629,18 @@ const BODY_RADIUS: f32 = 0.16;
 /// From the head joint (the top of the neck) to the middle of the head, in meters.
 const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.09, 0.01);
 
+/// Loads the playable kind `look` beside any loaded before it ([`Content::load_playable`]), without making
+/// the character draw as it: a party's other kinds (M5 C8), which a swap makes it draw as
+/// ([`Content::draw_character_as`]).
+pub fn load(
+    content: &mut Content,
+    look: &PlayableLook,
+    renderer: &mut Renderer,
+    gpu: &GpuContext,
+) -> Result<(), AppInitError> {
+    content.load_playable(look, renderer, gpu)
+}
+
 /// Loads the playable kind `look` and makes the character draw as it ([`crate::playable`]): its rig and
 /// skeleton, and the character held in its pose ([`held_pose`]), from the copy of its mesh `content` kept
 /// ([`Content::keep_character_mesh`]).
@@ -759,7 +771,8 @@ pub fn graph_driver_fitted(
     });
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, look.seed), joints)
         .with_springs(springs)
-        .with_face(face_layer_of(look, mesh, rig)))
+        .with_face(face_layer_of(look, mesh, rig))
+        .for_kind(kind))
 }
 
 /// The character's hair and shirt clearance ([`HeroineClearance`]), fitting on the warm-up pool, for
@@ -792,6 +805,13 @@ impl ClearanceFit {
             let _ = sender.send(HeroineClearance::new(&mesh, skeleton.view(), rig.view()));
         });
         Ok(Self { fitted, taken: None })
+    }
+
+    /// A fit made already: one a kind's springs gave up while another kind drew (M5 C8), `None` for a kind
+    /// it doesn't fit.
+    pub(crate) fn fitted(fit: Option<HeroineClearance>) -> Self {
+        let (_, fitted) = mpsc::channel();
+        Self { fitted, taken: Some(fit) }
     }
 
     /// Whether it's fitted, so taking it waits for nothing. Never waits.

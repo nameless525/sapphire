@@ -5,6 +5,7 @@
         id: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3",
         importer: KeyPose((
             rig: "6f8a81b6-29c4-485f-b161-847b001d561f",
+            also: ["2533d8d7-9400-4972-88f3-f99ff9473913"],
         )),
     ),
 )

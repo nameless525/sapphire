@@ -3866,6 +3866,19 @@
                        "--ao", "off", "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 6.4, warp: 23.8),
             ),
+            // A party of two kinds (M5 C8), over the recorded `party-kinds`: Aster on the field, mid-punch,
+            // drawn as herself with her own mesh, graph and bare hands, and the HUD naming each slot's member,
+            // the heroine resting in the first and Aster in the second, and the player's name hers. It pins
+            // `--decals off`: the scorch the warrior's overhead left on the paving isn't its subject. Metal only.
+            (
+                name: "game-hud-party-kinds-en",
+                size: "1280x720",
+                ticks: 219,
+                args: ["--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-kinds.sreplay", "--ui-game", "hud", "--ui-locale", "en",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32"],
+            ),
         ],
     ),
 )

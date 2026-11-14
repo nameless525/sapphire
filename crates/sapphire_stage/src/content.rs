@@ -86,7 +86,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
+use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, HeroineClearance, Skeleton};
 #[cfg(feature = "dev")]
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
 use sapphire_assets::cue::Cue;
@@ -1008,6 +1008,8 @@ pub struct Content {
     playables: Vec<HeldPlayable>,
     /// The kind the character draws as, once one is ([`Self::draw_character_as`]).
     character_kind: Option<AssetId>,
+    /// The character has come to draw as another kind since [`Self::take_character_changed`] last said.
+    character_switched: bool,
     /// The clip the character plays, once asked for (`--clip`), and the version the scene last
     /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
@@ -1112,13 +1114,26 @@ fn character_mesh(server: &mut AssetServer, character: AssetId) -> Result<AssetI
     }
 }
 
-/// A playable kind [`Content::load_playable`] loaded: its look, its rig and skeleton, and the versions of its
-/// mesh, rig and skeleton the scene last knew of ([`Content::take_character_changed`]).
+/// A playable kind [`Content::load_playable`] loaded: its look, its own mesh if it isn't the character's, its
+/// rig and skeleton, and the versions of its mesh, rig and skeleton the scene last knew of
+/// ([`Content::take_character_changed`]).
 struct HeldPlayable {
     look: PlayableLook,
+    /// Its mesh, when it draws with one of its own (M5 C8): the content keeps a copy, as it does a kind of
+    /// enemy's ([`Content::keep_mesh_copy`]). None when it draws with the character's.
+    mesh: Option<Handle<Mesh>>,
     rig: Handle<CharacterRig>,
     /// The skeleton its kept mesh's skin names, if it has one.
     skeleton: Option<Handle<Skeleton>>,
+    versions: (u32, u32, u32),
+    /// Its springs' clearance fit, kept while the character draws as another kind ([`Content::keep_fit`]).
+    fit: Option<KeptFit>,
+}
+
+/// A playable kind's hair and shirt clearance fit (M4 H4), kept while another kind draws (M5 C8): the fit, or
+/// `None` for a kind it doesn't fit, and the versions of the mesh, rig and skeleton it was fitted to.
+struct KeptFit {
+    fit: Option<HeroineClearance>,
     versions: (u32, u32, u32),
 }
 
@@ -1302,6 +1317,7 @@ impl Content {
             warm_up: WarmUpProgress::default(),
             playables: Vec::new(),
             character_kind: None,
+            character_switched: false,
             clip: None,
             clip_version: 0,
             graphs: Vec::new(),
@@ -1499,26 +1515,59 @@ impl Content {
         std::mem::take(&mut self.gpu.meshes_replaced)
     }
 
-    /// Whether the mesh, rig or skeleton of the kind the character draws as has a new version since the last
-    /// call or since [`Self::load_playable`], whichever way it came; they may land frames apart. Always false
-    /// while it draws as no kind.
+    /// Whether the character has come to draw as another kind ([`Self::draw_character_as`]), or the mesh, rig
+    /// or skeleton of the kind it draws as has a new version, since the last call or since
+    /// [`Self::load_playable`], whichever way it came; they may land frames apart. Always false while it draws
+    /// as no kind. Allocates nothing.
     pub(crate) fn take_character_changed(&mut self) -> bool {
-        let Some(kind) = self.character_kind else { return false };
-        let Some(versions) = self.playable_versions(kind) else { return false };
-        let Some(held) = self.playables.iter_mut().find(|held| held.look.kind == kind) else { return false };
-        std::mem::replace(&mut held.versions, versions) != versions
+        let switched = std::mem::take(&mut self.character_switched);
+        let Some(kind) = self.character_kind else { return switched };
+        let Some(versions) = self.playable_versions(kind) else { return switched };
+        let Some(held) = self.playables.iter_mut().find(|held| held.look.kind == kind) else {
+            return switched;
+        };
+        std::mem::replace(&mut held.versions, versions) != versions || switched
     }
 
     /// The versions the playable kind `kind`'s mesh, rig and skeleton are at, once it's loaded.
     pub fn playable_versions(&self, kind: AssetId) -> Option<(u32, u32, u32)> {
         let held = self.held_playable(kind)?;
         let skeleton = held.skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
-        Some((self.server.generation(&self.character), self.server.generation(&held.rig), skeleton))
+        let mesh = held
+            .mesh
+            .as_ref()
+            .map_or_else(|| self.server.generation(&self.character), |mesh| self.server.generation(mesh));
+        Some((mesh, self.server.generation(&held.rig), skeleton))
+    }
+
+    /// The mesh the playable kind `kind` draws with on the renderer, once it's loaded and there: its own, or
+    /// the character's.
+    #[must_use]
+    pub fn playable_mesh_on_renderer(&self, kind: AssetId) -> Option<MeshHandle> {
+        self.mesh_on_renderer(self.held_playable(kind)?.look.mesh)
     }
 
     /// The playable kind `kind`, once [`Self::load_playable`] has loaded it.
     fn held_playable(&self, kind: AssetId) -> Option<&HeldPlayable> {
         self.playables.iter().find(|held| held.look.kind == kind)
+    }
+
+    /// Keeps the playable kind `kind`'s springs' clearance `fit` (`None`: it doesn't fit one) while the
+    /// character draws as another kind (M5 C8), so that drawing as `kind` again doesn't fit it again on that
+    /// frame, which is tens of milliseconds for the heroine (M4 H4).
+    pub(crate) fn keep_fit(&mut self, kind: AssetId, fit: Option<HeroineClearance>) {
+        let Some(versions) = self.playable_versions(kind) else { return };
+        if let Some(held) = self.playables.iter_mut().find(|held| held.look.kind == kind) {
+            held.fit = Some(KeptFit { fit, versions });
+        }
+    }
+
+    /// The clearance fit kept for the playable kind `kind` ([`Self::keep_fit`]), once: `Some(None)` for a kind
+    /// it doesn't fit, and `None` when there's none kept or its mesh, rig or skeleton has a new version since.
+    pub(crate) fn take_fit(&mut self, kind: AssetId) -> Option<Option<HeroineClearance>> {
+        let versions = self.playable_versions(kind)?;
+        let kept = self.playables.iter_mut().find(|held| held.look.kind == kind)?.fit.take()?;
+        (kept.versions == versions).then_some(kept.fit)
     }
 
     /// What draws the playable kind `kind`, from its cooked document (M5 C8), as `enemy::Look::of` reads a
@@ -1554,10 +1603,18 @@ impl Content {
     }
 
     /// Makes the character draw as the playable kind `kind` from now on, which [`Self::load_playable`] has
-    /// loaded: what everything that poses it looks it up by.
-    pub(crate) fn draw_character_as(&mut self, kind: AssetId) -> Result<(), String> {
+    /// loaded: what everything that poses it looks it up by. From another kind, such as a party's swap to a
+    /// member of another kind (M5 C8), that's a new character: [`Self::take_character_changed`] says so, and
+    /// the scene poses it anew. Its mesh is the show's to give the scene ([`Self::playable_mesh_on_renderer`]).
+    ///
+    /// # Errors
+    ///
+    /// If no playable kind `kind` is loaded.
+    pub fn draw_character_as(&mut self, kind: AssetId) -> Result<(), String> {
         let held = self.held_playable(kind).ok_or_else(|| format!("no playable kind {kind} is loaded"))?;
-        self.character_kind = Some(held.look.kind);
+        let kind = held.look.kind;
+        self.character_switched |= self.character_kind.is_some_and(|was| was != kind);
+        self.character_kind = Some(kind);
         Ok(())
     }
 
@@ -2224,28 +2281,34 @@ impl Content {
         self.gpu.kept_meshes.iter().find(|(kept, _)| *kept == id)?.1.as_ref()
     }
 
-    /// Loads the playable kind `look` (M5 C7): its rig until it is resident, and the skeleton the character's
-    /// kept mesh names ([`Self::keep_character_mesh`]), CPU data, which nothing uploads ([`Self::rig_of`] and
-    /// [`Self::skeleton_of`] read them). They stay loaded from then on, kept by the kind; loading it again
-    /// replaces them. Its mesh is the character's ([`Self::new`]): the content holds one character's mesh,
-    /// which any kind loaded here draws with.
+    /// Loads the playable kind `look` (M5 C7, C8): its mesh, if it isn't the character's, until it's on
+    /// `renderer`, with a copy kept ([`Self::keep_mesh_copy`]); its rig until it is resident; and the skeleton
+    /// its kept mesh names, CPU data, which nothing uploads ([`Self::rig_of`], [`Self::skeleton_of`] and
+    /// [`Self::mesh_of`] read them). They stay loaded from then on, kept by the kind; loading it again replaces
+    /// them. Kinds load side by side, each answering only to its own ID, so a party of several kinds draws
+    /// each of its members as itself.
     pub(crate) fn load_playable(
         &mut self,
         look: &PlayableLook,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        if look.mesh != self.character_id {
-            return Err(AppInitError::msg(format!(
-                "the playable kind {} draws with the mesh {}, and the character is {}",
-                look.kind, look.mesh, self.character_id
-            )));
-        }
+        // A kind on a mesh of its own holds it, as a kind of enemy does; one on the character's shares it.
+        let mesh = if look.mesh == self.character_id {
+            None
+        } else {
+            self.keep_mesh_copy(look.mesh);
+            let mesh = self.hold::<Mesh>(look.mesh, renderer, gpu).map_err(|error| {
+                AppInitError::msg(format!("the playable kind {}'s mesh didn't load: {error}", look.kind))
+            })?;
+            Some(mesh)
+        };
         // Asking again tries a rig that failed before, as the character does.
         let rig = self.server.load_with(look.rig, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&rig, |upload| assets.upload(upload, renderer, gpu));
-        let skeleton = self.character_mesh().and_then(|mesh| mesh.skin.as_ref()?.skeleton);
+        let kept = if mesh.is_some() { self.mesh_copy(look.mesh) } else { self.character_mesh() };
+        let skeleton = kept.and_then(|mesh| mesh.skin.as_ref()?.skeleton);
         let (skeleton, skeleton_loaded) = match skeleton {
             Some(id) => {
                 let skeleton =
@@ -2260,9 +2323,11 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         let skeleton_version = skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
-        let versions =
-            (self.server.generation(&self.character), self.server.generation(&rig), skeleton_version);
-        let held = HeldPlayable { look: look.clone(), rig, skeleton, versions };
+        let mesh_version = mesh
+            .as_ref()
+            .map_or_else(|| self.server.generation(&self.character), |mesh| self.server.generation(mesh));
+        let versions = (mesh_version, self.server.generation(&rig), skeleton_version);
+        let held = HeldPlayable { look: look.clone(), mesh, rig, skeleton, versions, fit: None };
         match self.playables.iter_mut().find(|held| held.look.kind == look.kind) {
             Some(loaded) => *loaded = held,
             None => self.playables.push(held),
@@ -2931,10 +2996,11 @@ impl Content {
         self.server.get(self.held_playable(kind)?.skeleton.as_ref()?)
     }
 
-    /// The mesh of the playable kind `kind` as last uploaded: the character's ([`Self::load_playable`]).
+    /// The mesh of the playable kind `kind` as last uploaded: its own, or the character's
+    /// ([`Self::load_playable`]).
     pub(crate) fn mesh_of(&self, kind: AssetId) -> Option<&Mesh> {
-        self.held_playable(kind)?;
-        self.character_mesh()
+        let held = self.held_playable(kind)?;
+        if held.mesh.is_some() { self.mesh_copy(held.look.mesh) } else { self.character_mesh() }
     }
 
     /// [`Self::rig_of`], shared, for a worker to read.
@@ -3253,7 +3319,7 @@ mod tests {
     use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
     use super::*;
-    use crate::anim_graph::{GraphScript, GraphShow};
+    use crate::anim_graph::{GraphDriver, GraphScript, GraphShow};
     use crate::lookdev::Shot;
     use crate::scene::{LookDev, Scene};
     use crate::studio::StudioLayout;
@@ -3781,6 +3847,253 @@ mod tests {
         assert_eq!(stage.joints(), HumanBone::REQUIRED.len());
         assert!(stage.content.playable_versions(KIND).is_none());
         assert!(stage.content.playable_versions(OTHER_KIND).is_some());
+    }
+
+    /// Two kinds held at once, as a party of two kinds holds them (M5 C8), each answer only to their own kind:
+    /// each its look, graph and versions, and the character draws as one until it's told the other, which is
+    /// a new character for the scene once, and plays by the other's graph from then on.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn two_kinds_held_at_once_each_answer_to_their_own() {
+        let mut stage = Stage::held_as(KIND);
+        stage
+            .content
+            .load_playable(&look_of(OTHER_KIND), &mut stage.renderer, &stage.gpu)
+            .expect("the second");
+        for kind in [KIND, OTHER_KIND] {
+            assert_eq!(stage.content.playable(kind).map(|look| look.kind), Some(kind));
+            assert!(stage.content.playable_versions(kind).is_some(), "{kind}");
+            assert!(stage.content.playable_mesh_on_renderer(kind).is_some(), "{kind}");
+            stage.content.load_graph(kind, &mut stage.renderer, &stage.gpu).expect("its graph");
+            assert!(stage.content.graph_document_of(GraphKey::playable(kind)).is_ok(), "{kind}");
+            assert!(lookdev::graph_driver(&stage.content, kind).is_ok(), "{kind}");
+        }
+        assert_eq!(stage.content.character_kind(), Some(KIND), "holding another doesn't draw as it");
+        let driver = lookdev::graph_driver(&stage.content, KIND).expect("a driver");
+        stage.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
+        stage.frame_on_character();
+        stage.frame();
+        assert!(!stage.content.take_character_changed(), "settled");
+
+        assert!(stage.content.draw_character_as(AssetId::from_bytes([0x59; 16])).is_err(), "never held");
+        stage.content.draw_character_as(KIND).expect("the same");
+        assert!(!stage.content.take_character_changed(), "the same kind is the same character");
+        stage.content.draw_character_as(OTHER_KIND).expect("the other");
+        assert_eq!(stage.content.character_kind(), Some(OTHER_KIND));
+        assert_eq!(stage.content.character_look(), Some(&look_of(OTHER_KIND)));
+        let graph = stage.content.graph_document_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
+        assert_eq!(stage.content.character_graph().expect("the character's"), graph);
+        // The scene takes the change on its next frame, and poses the character anew by the other's graph.
+        let frame = stage.frame();
+        assert!(!stage.content.take_character_changed(), "taken once");
+        assert!(stage.scene.anim_stats().evaluated > 0 && frame.palette_bytes > 0, "it plays: {frame:?}");
+        assert_eq!(stage.joints(), HumanBone::REQUIRED.len());
+    }
+
+    /// The second kind of [`sprung_pack`]: its own mesh, rig, skeleton, clip and graph.
+    const SPRUNG_KIND: AssetId = AssetId::from_bytes([0x67; 16]);
+    const SPRUNG_MESH: AssetId = AssetId::from_bytes([0x68; 16]);
+    const SPRUNG_RIG: AssetId = AssetId::from_bytes([0x69; 16]);
+    const SPRUNG_SKELETON: AssetId = AssetId::from_bytes([0x6a; 16]);
+    const SPRUNG_SWING: AssetId = AssetId::from_bytes([0x6b; 16]);
+    const SPRUNG_GRAPH: AssetId = AssetId::from_bytes([0x6c; 16]);
+    /// The joints in the chain hanging from [`KIND`]'s root, and from [`SPRUNG_KIND`]'s.
+    const CHAINS: [usize; 2] = [3, 6];
+    /// Where each kind's chain hangs from, in its root's space, and how far apart its joints hang below that.
+    const CHAIN_ANCHOR: Vec3 = Vec3::new(0.0, 0.5, 0.0);
+    const CHAIN_LINK: f32 = 0.1;
+
+    /// What draws [`SPRUNG_KIND`].
+    fn sprung_look() -> PlayableLook {
+        PlayableLook {
+            mesh: SPRUNG_MESH,
+            rig: SPRUNG_RIG,
+            graph: SPRUNG_GRAPH,
+            seed: 2,
+            ..look_of(SPRUNG_KIND)
+        }
+    }
+
+    /// A pack of two playable kinds on skeletons of their own, each with springs (M5 C8), as the heroine and
+    /// Aster are: [`KIND`] on the test character's IDs, its chain [`CHAINS`]`[0]` joints long, and
+    /// [`SPRUNG_KIND`] on its own, its chain [`CHAINS`]`[1]` long; and the graph show's moves.
+    fn sprung_pack() -> Vec<u8> {
+        let mut assets = sprung_kind([MESH, RIG, SKELETON, SWING, GRAPH], CHAINS[0]);
+        assets.extend(sprung_kind(
+            [SPRUNG_MESH, SPRUNG_RIG, SPRUNG_SKELETON, SPRUNG_SWING, SPRUNG_GRAPH],
+            CHAINS[1],
+        ));
+        assets.push(packed(MOVES, AssetKind::MoveSet, &show_moves(0).to_cooked().expect("cooked")));
+        write_pack(assets).expect("a pack")
+    }
+
+    /// A kind's mesh, rig, skeleton, swing and graph playing it, by `ids` in that order: every required
+    /// humanoid bone a joint of its own under the root, as [`pack`]'s, then a chain of `chain` joints hanging
+    /// from the root, one spring.
+    fn sprung_kind(
+        [mesh_id, rig_id, skeleton_id, clip_id, graph_id]: [AssetId; 5],
+        chain: usize,
+    ) -> Vec<PackAsset> {
+        let bones = HumanBone::REQUIRED.len();
+        let count = bones + chain;
+        let root = Vec3::new(0.0, 1.0, 0.0);
+        let mut joints: Vec<Joint> = (0..bones)
+            .map(|joint| Joint {
+                name: format!("joint {joint}"),
+                parent: (joint > 0).then_some(0),
+                rest: JointTransform {
+                    translation: if joint > 0 { [joint as f32 * 0.1, 0.0, 0.0] } else { root.to_array() },
+                    ..JointTransform::IDENTITY
+                },
+            })
+            .collect();
+        let mut model: Vec<Vec3> = (0..bones).map(|joint| root + Vec3::X * (joint as f32 * 0.1)).collect();
+        for link in 0..chain {
+            let (parent, translation) =
+                if link == 0 { (0, CHAIN_ANCHOR) } else { (bones + link - 1, -Vec3::Y * CHAIN_LINK) };
+            joints.push(Joint {
+                name: format!("chain {link}"),
+                parent: Some(parent as u16),
+                rest: JointTransform { translation: translation.to_array(), ..JointTransform::IDENTITY },
+            });
+            model.push(model[parent] + translation);
+        }
+        let binds = model
+            .iter()
+            .enumerate()
+            .map(|(joint, at)| SkinBind {
+                joint: joint as u16,
+                inverse_bind_matrix: Mat4::from_translation(-*at).to_cols_array_2d(),
+            })
+            .collect();
+        let held = VertexInfluence { binds: [0; 4], weights: quantize_weights([1.0, 0.0, 0.0, 0.0]) };
+        let mut mesh = triangle(0.0);
+        mesh.skin = Some(Skin {
+            skeleton: Some(skeleton_id),
+            joint_count: count as u32,
+            binds,
+            influences: Influences::pack(&[held; 3], count),
+        });
+        let mut humanoid: Vec<_> = HumanBone::REQUIRED
+            .iter()
+            .enumerate()
+            .map(|(joint, &bone)| HumanoidJoint { bone, joint: joint as u16 })
+            .collect();
+        humanoid.sort_by_key(|entry| entry.bone);
+        let spring = sapphire_assets::rig::Spring {
+            name: "chain".to_owned(),
+            joints: (bones..count)
+                .map(|joint| sapphire_assets::rig::SpringJoint {
+                    joint: joint as u16,
+                    hit_radius: 0.02,
+                    stiffness: 1.0,
+                    gravity_power: 1.0,
+                    gravity_dir: [0.0, -1.0, 0.0],
+                    drag_force: 0.4,
+                })
+                .collect(),
+            tip: sapphire_assets::rig::SpringTip::Joint,
+            collider_groups: Vec::new(),
+            center: None,
+        };
+        let rig = CharacterRig {
+            joint_count: count as u32,
+            material_slot_count: 1,
+            humanoid,
+            springs: vec![spring],
+            ..CharacterRig::default()
+        };
+        let clip = Clip { skeleton: Some(skeleton_id), ..swing(count) };
+        let document = swing_document(5).replace(&SWING.to_string(), &clip_id.to_string());
+        let mut graph = AnimGraph::from_document(&document).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
+        vec![
+            packed_with(mesh_id, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![skeleton_id]),
+            packed(rig_id, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
+            packed(skeleton_id, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
+            packed_with(clip_id, AssetKind::Clip, &clip.to_cooked().expect("cooked"), vec![skeleton_id]),
+            packed_with(graph_id, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip_id]),
+        ]
+    }
+
+    /// Where the character's chain hangs in its root's space, joint by joint, as its pose last had it: the
+    /// chain's joints are the last `chain` of the pose's.
+    fn chain_from_root(stage: &Stage, chain: usize) -> Vec<Vec3> {
+        let model = stage.scene.graph_player().expect("playing").pose().model();
+        let root = model[0].inverse();
+        model[model.len() - chain..]
+            .iter()
+            .map(|joint| root.transform_point3(joint.translation.into()))
+            .collect()
+    }
+
+    /// A party's swap between two kinds on skeletons of their own, both with springs, back and forth (M5 C8),
+    /// as between the heroine and Aster: each swap makes the character's springs and IK again for the new
+    /// skeleton, with nothing of the old one's joints, and they come up settled on the pose, with no motion
+    /// carried over, so the chain hangs as the pose has it on the swap's frame, then swings from there. What
+    /// the kind it left fitted for its springs is kept for its return, rather than fitted again on that frame.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_swap_between_two_kinds_with_springs_makes_them_again_settled() {
+        let mut stage = Stage::over_pack(sprung_pack());
+        stage
+            .content
+            .load_playable(&sprung_look(), &mut stage.renderer, &stage.gpu)
+            .expect("the second kind");
+        for kind in [KIND, SPRUNG_KIND] {
+            stage.content.load_graph(kind, &mut stage.renderer, &stage.gpu).expect("its graph");
+        }
+        let driver = lookdev::graph_driver(&stage.content, KIND).expect("a driver");
+        assert!(driver.has_springs(), "the first kind has springs");
+        let ground = Arc::new(crate::ik::IkGround::Flat.world());
+        let ik = stage.scene.ik_on(ground, None, &stage.content, driver.player.pose()).expect("IK");
+        stage.scene.play_graph(driver.with_ik(ik), GraphShow::new(GraphScript::Stand));
+        stage.frame_on_character();
+        let swung = |stage: &mut Stage, frames: usize| {
+            let mut substeps = 0;
+            for _ in 0..frames {
+                stage.frame();
+                substeps += stage.scene.anim_stats().spring_substeps;
+            }
+            substeps
+        };
+        assert!(swung(&mut stage, 30) > 0, "the first kind's springs run");
+
+        let bones = HumanBone::REQUIRED.len();
+        for (kind, chain, left) in
+            [(SPRUNG_KIND, CHAINS[1], KIND), (KIND, CHAINS[0], SPRUNG_KIND), (SPRUNG_KIND, CHAINS[1], KIND)]
+        {
+            stage.content.draw_character_as(kind).expect("held");
+            let mesh = stage.content.playable_mesh_on_renderer(kind).expect("its mesh");
+            stage.scene.set_character_mesh(mesh);
+            stage.frame();
+
+            let world = stage.scene.world();
+            let driver = world.get::<GraphDriver>(stage.scene.character()).expect("a graph plays");
+            assert_eq!(driver.kind(), Some(kind), "made for the kind drawn");
+            assert!(driver.has_springs() && driver.has_ik(), "springs and IK made again for {kind}");
+            assert_eq!(stage.joints(), bones + chain, "its own skeleton's joints");
+            let stats = stage.scene.anim_stats();
+            assert_eq!(
+                (stats.springs, stats.spring_substeps),
+                (1, 0),
+                "they settle on the swap's frame: {stats:?}"
+            );
+            for (link, at) in chain_from_root(&stage, chain).into_iter().enumerate() {
+                let rest = CHAIN_ANCHOR - Vec3::Y * (CHAIN_LINK * link as f32);
+                assert!(
+                    at.is_finite() && at.distance(rest) < 1e-3,
+                    "link {link} of {kind} hangs at {at}, not {rest}"
+                );
+            }
+            let held = stage.content.held_playable(left).expect("held");
+            assert!(held.fit.as_ref().is_some_and(|kept| kept.fit.is_none()), "{left}'s fit (none) is kept");
+            assert!(stage.content.held_playable(kind).expect("held").fit.is_none(), "{kind}'s was taken");
+
+            assert!(swung(&mut stage, 30) > 0, "{kind}'s springs run on");
+            let chain_now = chain_from_root(&stage, chain);
+            assert!(chain_now.iter().all(|at| at.is_finite() && at.length() < 1.5), "{chain_now:?}");
+        }
     }
 
     /// What a load leaves for after its screen (M4 C7, a fighter's fade) warms off the frame while frames go on,
@@ -4966,7 +5279,14 @@ mod tests {
                 content.server.finish(&rig, |_| Ok(())).expect("rig ready");
                 let skeleton = content.server.load_with(SKELETON, LoadPriority::Critical).expect("skeleton");
                 content.server.finish(&skeleton, |_| Ok(())).expect("skeleton ready");
-                let held = HeldPlayable { look: look(), rig, skeleton: Some(skeleton), versions: (0, 0, 0) };
+                let held = HeldPlayable {
+                    look: look(),
+                    mesh: None,
+                    rig,
+                    skeleton: Some(skeleton),
+                    versions: (0, 0, 0),
+                    fit: None,
+                };
                 content.playables.push(held);
                 content.character_kind = Some(KIND);
                 let graph = content.server.load_with(GRAPH, LoadPriority::Critical).expect("graph");

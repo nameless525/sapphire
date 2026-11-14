@@ -174,6 +174,7 @@ remap-swap = Swap the two
 remap-keep = Keep both as they were
 
 character-title = Character
+character-name-aster = Aster
 character-name-wanderer = Wanderer
 character-level = Lv. { $level }
 character-hp = HP

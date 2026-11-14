@@ -57,7 +57,7 @@ use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes, Look};
-use crate::playable;
+use crate::playable::{self, PartyKinds};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
@@ -118,6 +118,8 @@ const CUT_LOOKAHEAD: f32 = 1.5;
 pub struct StandPlan {
     place: FightPlace,
     playable: AssetId,
+    /// The kind each of its party's members draws as, if it has a party (M5 C8).
+    party: Option<PartyKinds>,
     kinds: Vec<KindOfEnemy>,
 }
 
@@ -131,8 +133,9 @@ impl StandPlan {
         crate::arena::check_scenario_named(scenario, party)?;
         let place = FightPlace::of(scenario).map_err(|error| error.to_string())?;
         let playable = playable::of_scenario(scenario)?;
+        let party = playable::party_of_scenario(scenario)?;
         let kinds = crate::combat::kinds_of_enemy_in(scenario)?;
-        Ok(Self { place, playable, kinds })
+        Ok(Self { place, playable, party, kinds })
     }
 
     /// The plan for `combat`'s scenario.
@@ -285,6 +288,8 @@ struct FightAssets {
     kinds: Vec<KindAssets>,
     /// The weapon the character's playable kind holds (`--blade on`).
     blade: Option<Handle<Mesh>>,
+    /// The weapons a party's other kinds hold (M5 C8), which a swap to one of them draws.
+    party_weapons: Vec<Handle<Mesh>>,
     /// The arena's colliders (`--arena`'s).
     colliders: Option<Handle<ColliderSet>>,
 }
@@ -466,6 +471,8 @@ pub struct FightShow {
     impact: Option<ImpactPair>,
     /// Which party member the character draws as, with `--party`.
     party_looks: Option<Drawn>,
+    /// The kind each of the party's members draws as, once [`Self::load_party`] has loaded them (M5 C8).
+    party_kinds: Option<PartyKinds>,
     /// A fight's cues, fired (`--cues`, M2 E3).
     cues: Option<CueShow>,
     /// The timeline playing (M3 Q1), in place rather than boxed: a run the simulation starts starts this in a
@@ -969,18 +976,134 @@ impl FightShow {
         scene: &mut Scene,
         meshes: [MeshHandle; sapphire_gameplay::PARTY_SLOTS],
     ) {
+        let kinds = self
+            .party_kinds
+            .as_ref()
+            .map_or([playable::KIND; sapphire_gameplay::PARTY_SLOTS], PartyKinds::kinds);
         let drawn =
-            self.party_looks.map_or_else(|| Drawn::new(meshes), |drawn| drawn.on_new_renderer(meshes));
+            self.party_looks.map_or_else(|| Drawn::new(meshes, kinds), |drawn| drawn.on_new_renderer(meshes));
         self.party_looks = Some(drawn);
         scene.set_character_mesh(drawn.mesh());
     }
 
-    /// Each party member's mesh, given the character's, with `--party` and once the character has loaded.
+    /// Each party member's mesh, given the character's, with `--party` and once the character has loaded:
+    /// the recolor of its slot for a member of the character's kind, and its kind's own for one of another
+    /// ([`Self::load_party`], M5 C8).
     pub fn party_meshes(
+        &self,
         content: &Content,
         character: MeshHandle,
     ) -> Option<[MeshHandle; sapphire_gameplay::PARTY_SLOTS]> {
-        content.upload_watcher::<PartyLooks>()?.meshes(character)
+        Self::party_meshes_of(self.party_kinds.as_ref(), content, character)
+    }
+
+    /// [`Self::party_meshes`] for a party whose members are `party`'s kinds, or the character's kind three
+    /// times: for a caller whose show hasn't loaded them yet. With no recolors watching the uploads, every
+    /// member of the character's kind draws as the character.
+    pub fn party_meshes_of(
+        party: Option<&PartyKinds>,
+        content: &Content,
+        character: MeshHandle,
+    ) -> Option<[MeshHandle; sapphire_gameplay::PARTY_SLOTS]> {
+        let looks = match content.upload_watcher::<PartyLooks>() {
+            Some(looks) => looks.meshes(character)?,
+            None => {
+                party?;
+                [character; sapphire_gameplay::PARTY_SLOTS]
+            }
+        };
+        let Some(party) = party.filter(|party| party.is_mixed()) else { return Some(looks) };
+        let mut meshes = looks;
+        for (mesh, kind) in meshes.iter_mut().zip(party.kinds()) {
+            let own = content.playable_mesh_on_renderer(kind)?;
+            if own != character {
+                *mesh = own;
+            }
+        }
+        Some(meshes)
+    }
+
+    /// Loads each playable kind `party`'s members draw as beside the character's (M5 C8): its document, its
+    /// mesh, rig and skeleton, its graph and the weapon it holds, until they're on `renderer`, so a swap draws
+    /// each member as itself. They stay loaded from then on. Nothing more for a party of the character's kind
+    /// alone, nor without one.
+    pub fn load_party(
+        &mut self,
+        party: Option<&PartyKinds>,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        self.party_kinds = party.cloned();
+        let Some(party) = party else { return Ok(()) };
+        for kind in party.kinds() {
+            if content.playable(kind).is_some() {
+                continue;
+            }
+            let look = playable::look(content, kind).map_err(AppInitError::msg)?;
+            lookdev::load(content, &look, renderer, gpu)?;
+            content.load_graph(kind, renderer, gpu)?;
+            if let Some(held) = &look.held {
+                let weapon = content.hold(held.mesh, renderer, gpu).map_err(|error| {
+                    AppInitError::msg(format!("the playable kind {kind}'s weapon didn't load: {error}"))
+                })?;
+                self.assets.party_weapons.push(weapon);
+            }
+        }
+        Ok(())
+    }
+
+    /// The keys of the names of the character and of each of its party's members, in the game's words, as
+    /// their kinds name them (M5 C8): the member on the field's, and each slot's. None for a fight whose
+    /// scenario names no kinds, whose HUD says what it always has.
+    #[must_use]
+    pub fn party_names(&self) -> Option<(&str, [Option<&str>; sapphire_gameplay::PARTY_SLOTS])> {
+        let party = self.party_kinds.as_ref().filter(|party| party.is_mixed())?;
+        let slots =
+            party.slots().each_ref().map(|member| member.as_ref().and_then(|member| member.name.as_deref()));
+        let drawn = self.party_looks?.kind();
+        let on_field = party.slots().iter().flatten().find(|member| member.kind == drawn)?.name.as_deref()?;
+        Some((on_field, slots))
+    }
+
+    /// A party's swap to a member of another kind (M5 C8): the character draws as that kind from here, with
+    /// its mesh and the weapon it holds, and the scene poses it anew from where the last one stood
+    /// (`Scene::follow_content`). Nothing while the member on the field is the kind it draws as.
+    fn follow_party_kind(&mut self, scene: &mut Scene, content: &mut Content) {
+        let mixed = self.party_kinds.as_ref().is_some_and(PartyKinds::is_mixed);
+        let Some(drawn) = self.party_looks.filter(|_| mixed) else { return };
+        let kind = drawn.kind();
+        if content.character_kind() == Some(kind) {
+            return;
+        }
+        if let Err(error) = content.draw_character_as(kind) {
+            tracing::warn!(target: LOG_TARGET, error, "the character keeps the kind it draws as");
+            return;
+        }
+        scene.set_character_mesh(drawn.mesh());
+        self.hold_blade_of(scene, content, kind);
+    }
+
+    /// Puts the weapon the playable kind `kind` holds in the character's hand, where its socket has it, or
+    /// takes the blade out of what's drawn while it holds none (M5 C8).
+    fn hold_blade_of(&mut self, scene: &mut Scene, content: &Content, kind: AssetId) {
+        let Some(held) = &mut self.blade else { return };
+        let weapon = content.playable(kind).and_then(|look| look.held.clone());
+        let mesh = weapon.as_ref().and_then(|weapon| content.mesh_on_renderer(weapon.mesh));
+        let hand = lookdev::held_hand(content, kind);
+        let mut blade = scene.world_mut().entity_mut(held.entity);
+        match (weapon, mesh, hand) {
+            (Some(weapon), Some(mesh), Ok(hand)) => {
+                held.socket = weapon.socket;
+                held.held_hand = hand;
+                held.shown = true;
+                blade.insert(RenderMesh(mesh));
+            }
+            _ => {
+                held.shown = false;
+                blade.remove::<RenderMesh>();
+            }
+        }
     }
 
     /// Gives the arena's camera director this much real time and input for its next frame, if one's
@@ -1219,12 +1342,12 @@ impl FightShow {
                 NearFade::With(holder),
             ))
             .id();
-        self.blade = Some(HeldBlade { entity, held_hand, socket });
+        self.blade = Some(HeldBlade { entity, held_hand, socket, shown: true });
     }
 
-    /// Sets the mesh the blade draws again: after GPU device loss.
+    /// Sets the mesh the blade draws again: after GPU device loss. Not while it's hidden.
     pub fn set_blade_mesh(&mut self, scene: &mut Scene, mesh: MeshHandle) {
-        if let Some(held) = self.blade {
+        if let Some(held) = self.blade.filter(|held| held.shown) {
             scene.world_mut().entity_mut(held.entity).insert(RenderMesh(mesh));
         }
     }
@@ -1232,7 +1355,7 @@ impl FightShow {
     /// Moves the blade to where the character's hand is this frame: after whatever poses and places
     /// the character, and before extraction.
     fn follow_hand(&mut self, scene: &mut Scene) {
-        let Some(held) = self.blade else { return };
+        let Some(held) = self.blade.filter(|held| held.shown) else { return };
         let (character, scene_figure) = (scene.character(), scene.figure());
         let world = scene.world_mut();
         let character = world.entity(character);
@@ -1263,7 +1386,7 @@ impl FightShow {
         let Some(cues) = self.cues.as_mut().filter(|cues| cues.trails_are_running()) else { return };
         let world = scene.world();
         let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
-        let player = self.blade.and_then(|held| drawn(held.entity));
+        let player = self.blade.filter(|held| held.shown).and_then(|held| drawn(held.entity));
         let warriors = self.arena.iter().flat_map(|arena| arena.blades().skip(1));
         let blades = std::iter::once(player).chain(warriors.map(|blade| blade.and_then(drawn)));
         cues.follow_blades(blades, alpha);
@@ -2049,6 +2172,7 @@ impl SceneShow for FightShow {
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
+        self.follow_party_kind(scene, content);
         for kind in 0..self.assets.kinds.len() {
             let waits = self.assets.kinds[kind].waits;
             if self.take_kind_changed(kind, content) || (waits && changes.graphs) {
@@ -2607,6 +2731,7 @@ impl Fight {
                 let show = &mut self.show;
                 show.set_zone_streaming(stream_settings(tier));
                 content.load_graph(stand.plan.playable, renderer, gpu)?;
+                show.load_party(stand.plan.party.as_ref(), content, renderer, gpu)?;
                 show.load_enemy_graph(content, renderer, gpu)?;
                 stand.part = StandPart::Fighters;
                 Ok(None)
@@ -2632,8 +2757,15 @@ impl Fight {
                 scene.set_spring_quality(animate::spring_quality(tier));
 
                 let look = content.playable(kind).cloned().ok_or_else(|| AppInitError::msg(NO_KIND))?;
-                let blade = show.load_sword(&look, content, renderer, gpu)?;
-                show.spawn_blade(scene, blade, content).map_err(AppInitError::msg)?;
+                if look.held.is_some() {
+                    let blade = show.load_sword(&look, content, renderer, gpu)?;
+                    show.spawn_blade(scene, blade, content).map_err(AppInitError::msg)?;
+                }
+                // A party of several kinds draws each member with its own mesh (M5 C8).
+                let character = scene.world().get::<RenderMesh>(scene.character()).map(|mesh| mesh.0);
+                if let Some(meshes) = character.and_then(|character| show.party_meshes(content, character)) {
+                    show.set_party_meshes(scene, meshes);
+                }
                 scene.set_day(DEFAULT_TIME_OF_DAY, None);
                 show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
                     .map_err(AppInitError::msg)?;

@@ -1328,6 +1328,9 @@ impl Scene {
         let graph_changed = content.take_graph_changed();
         let changes = ContentChanges { character: character_changed, graphs: graph_changed };
         show.follow_content(self, content, changes);
+        // The show may have made the character draw as another kind: a party's swap to a member of another
+        // kind (M5 C8), whose pose it starts from where the last one was.
+        let character_changed = content.take_character_changed() || character_changed;
         if (self.graph_show.is_some() || self.character_plays_graph) && (character_changed || graph_changed) {
             self.replace_graph(content, character_changed);
         }
@@ -1554,9 +1557,17 @@ impl Scene {
         let start_over = character_changed || self.character_waits;
         let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) else { return };
         if start_over {
-            match lookdev::graph_driver(content, kind) {
+            // A kind drawn before (a party's swap back, M5 C8) has its clearance fit kept, rather than fitted
+            // again on this frame.
+            let fit = content.take_fit(kind).map(lookdev::ClearanceFit::fitted);
+            match lookdev::graph_driver_fitted(content, kind, fit) {
                 Ok(mut driver) => {
                     self.character_waits = false;
+                    if let Some(drawn) = playing.kind().filter(|&drawn| drawn != kind)
+                        && let Some(fit) = playing.take_clearance()
+                    {
+                        content.keep_fit(drawn, fit);
+                    }
                     driver.continue_from(&playing);
                     if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls()))
                     {

@@ -345,6 +345,11 @@ impl App for SandboxApp {
                 let timeline = content.load_timeline(timeline, &mut renderer.renderer, &device.gpu)?;
                 show.fight.show.play_timeline(timeline, sapphire_sequencer::Origin::default());
             }
+            // A party's members of other kinds, each drawn as itself (M5 C8).
+            let scenario = combat.as_ref().map_or(game_combat::arena::FIGHT_SCENARIO, Combat::scenario);
+            let party = game_combat::playable::party_of_scenario(scenario).map_err(AppInitError::msg)?;
+            show.fight.show.load_party(party.as_ref(), &mut content, &mut renderer.renderer, &device.gpu)?;
+            renderer.party = show.fight.show.party_meshes(&content, renderer.character);
             if let Some(meshes) = renderer.party {
                 show.fight.show.set_party_meshes(&mut scene, meshes);
             }
@@ -1483,6 +1488,8 @@ pub(crate) fn set_meshes(
 ) {
     scene.set_zone_meshes(content, &mut renderer.renderer, gpu);
     scene.set_character_mesh(renderer.character);
+    // Each member's kind's own mesh on the new renderer, as the show has loaded them (M5 C8).
+    renderer.party = show.fight.show.party_meshes(content, renderer.character);
     if let Some(meshes) = renderer.party {
         show.fight.show.set_party_meshes(scene, meshes);
     }
@@ -1696,7 +1703,7 @@ pub(crate) fn create_renderer(
                 renderer,
                 character,
                 character_bounds,
-                party: FightShow::party_meshes(content, character),
+                party: FightShow::party_meshes_of(None, content, character),
                 stalk,
                 swatches,
                 layer_samples,

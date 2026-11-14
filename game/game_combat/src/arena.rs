@@ -129,6 +129,10 @@ pub const FIGHT_SCENARIO: &str = "arena-fight";
 /// The scenario of a party's fight with the enemy (M2 G7): `--fight --party`, and the replays made from it.
 pub const PARTY_SCENARIO: &str = "party";
 
+/// The scenario of a party of two playable kinds' fight with the enemy (M5 C8): the heroine and Aster, and
+/// the replay made from it.
+pub const KINDS_SCENARIO: &str = "party-kinds";
+
 /// The scenario of a fight with two sides of warriors (M3 B1): the replays made from it.
 pub const SKIRMISH_SCENARIO: &str = "arena-skirmish";
 
@@ -613,7 +617,9 @@ impl ArenaCamera {
 /// What draws a fighter on the stage, which what poses it finds its clips and its versions by (M5 C7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FighterKind {
-    /// The scene's character, as whichever playable kind it draws as (`Content::character_kind`).
+    /// The scene's character, as whichever playable kind it draws as (`Content::character_kind`): one entity
+    /// draws a party's member on the field, as the kind that member is, so the kind is the content's to say
+    /// and changes at a swap (M5 C8), with no copy here to fall behind it.
     Playable,
     /// A warrior, as the kind of enemy at this place among the stage's.
     Enemy(usize),

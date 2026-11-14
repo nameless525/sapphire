@@ -1,0 +1,26 @@
+// The `party-kinds` scenario's fight (M5 C8), whose input names the party's first member throughout: the
+// heroine cuts, Aster comes in on a swap, lands her assist and is knocked down by the warrior's overhead, gets
+// up and lands her punch and kick, and the heroine comes back on another swap and cuts. After the presses they
+// stand there, and the warrior fells whoever's on the field.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "two kinds in one party against the warrior: the heroine's cut, a swap to Aster whose assist lands, her punch and kick once she's up, a swap back to the heroine and her cut, then nothing while the warrior fells each in turn",
+        ticks: 2400,
+        tracks: [
+            (
+                presses: [
+                    (at: [
+                        (72, [Light]), // The heroine's `light_1`, which reaches the warrior.
+                        (110, [Swap]), // Aster comes in on her `swap_in`, and the warrior's overhead floors her.
+                        (210, [Light]), // Up again at 202: her punch.
+                        (224, [Light]), // Out of it, her kick.
+                        (300, [Swap]), // Aster has stayed long enough, and the heroine has rested: back to her.
+                        (340, [Light]),
+                    ]),
+                ],
+            ),
+        ],
+    ),
+)

@@ -1287,3 +1287,46 @@ fn the_party_document_is_the_slice_with_a_swap_and_an_assist() {
     let set = member.compile().expect("compiles");
     assert!(set.intent(SWAP_INTENT).is_some() && set.find(SWAP_IN_MOVE).is_some());
 }
+
+/// The suite's `party-kinds` (M5 C8): a party of two kinds, the heroine on the player's moves and Aster on her
+/// own, against the warrior. Each takes the field, each strikes and is struck, and the swaps go each way.
+#[test]
+fn the_two_kinds_fight_does_what_its_script_says() {
+    let bytes =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/replays/party-kinds.sreplay"))
+            .expect("in the suite");
+    let mut player = Player::new(Replay::decode(&bytes).expect("decodes"), &SCENARIOS).expect("starts");
+    let members: Vec<ActorId> = player.simulation().party().slots().map(|slot| slot.actor).collect();
+    let [heroine, aster] = members[..] else { panic!("{members:?}") };
+    let sets = [heroine, aster].map(|member| player.simulation().actor(member).expect("standing").moves.set);
+    assert_ne!(sets[0], sets[1], "each plays a set of her own");
+    let mut swaps = Vec::new();
+    let mut struck_by = [false; 2];
+    let mut struck = [false; 2];
+    let mut asters = Vec::new();
+    while player.step() {
+        let sim = player.simulation();
+        for cue in sim.cues() {
+            if cue.cue == PARTY_SWAP {
+                swaps.push((sim.tick(), cue.actor));
+            }
+            if let Some(hit) = cue.hit {
+                for (index, member) in [heroine, aster].into_iter().enumerate() {
+                    struck_by[index] |= cue.actor == member;
+                    struck[index] |= hit.target == member;
+                }
+                if cue.actor == aster {
+                    asters.extend(sim.actor(aster).and_then(|view| view.moves.current).map(|mv| mv.name));
+                }
+            }
+        }
+    }
+    // Two pressed, a tick after the script's: Aster comes in, then the heroine.
+    assert_eq!(&swaps[..2], &[(111, aster), (301, heroine)][..], "{swaps:?}");
+    assert_eq!(struck_by, [true; 2], "each lands a hit");
+    assert_eq!(struck, [true; 2], "each is hit");
+    // Aster's own moves land: her assist, her punch and, out of it, her kick (and her assist again when the
+    // heroine's fall forces her in).
+    let [punch, kick] = [Name::new("punch"), Name::new("kick")];
+    assert_eq!(asters[..3], [SWAP_IN_MOVE, punch, kick], "{asters:?}");
+}

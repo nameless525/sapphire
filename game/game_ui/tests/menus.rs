@@ -463,6 +463,61 @@ fn a_partys_slots_say_who_comes_next_and_who_has_fallen() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// A party of kinds of their own names each slot's member, and the player by the one on the field (M5 C8), in
+/// both languages and at every aspect; a party of one kind names nobody, and the player is the heroine.
+#[test]
+fn a_party_of_kinds_names_each_member() {
+    use sapphire_ui::{PartyMember, PartyValues};
+
+    let mut party = PartyValues::default();
+    party.push(PartyMember { hp: 0.9, rest: 0.5, seconds: Some(2), ..PartyMember::default() });
+    party.push(PartyMember { hp: 1.0, on_field: true, ..PartyMember::default() });
+    let values = HudValues { party: Some(party), ..HudValues::default() };
+    let (heroine, aster) = ("character-name-wanderer", "character-name-aster");
+    let mut wrong = Vec::new();
+    for locale in ["en", "ja"] {
+        let table = table(locale);
+        let said_by = |key: &str| {
+            let Pattern::Plain(span) = table.entry(key).expect("in the table").pattern else {
+                panic!("{key} is plain text")
+            };
+            table.str(span).to_owned()
+        };
+        for size in SIZES {
+            let at = format!("{locale}, {size:?}");
+            let mut walk = Walk::new(assets(), locale, false, size, Device::Keyboard);
+            walk.menus.open(MenuScreen::HUD);
+            let model = walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap();
+            model.follow_fight(Some(&values), None);
+            model.follow_names(Some((aster, [Some(heroine), Some(aster), None])));
+            walk.settle();
+            walk.check(MenuScreen::HUD, false);
+            let tree = walk.tree(MenuScreen::HUD);
+            let shown =
+                |name: &str| tree.is_visible(tree.find(name).unwrap_or_else(|| panic!("a node {name}")));
+            let said =
+                |name: &str| tree.strings().find(|(node, _)| *node == name).expect("text").1.to_owned();
+            assert!(shown("party-first-name") && shown("party-second-name"), "{at}");
+            assert!(!shown("party-third-name"), "{at}: nobody in the third");
+            assert_eq!(said("party-first-name"), said_by(heroine), "{at}");
+            assert_eq!(said("party-second-name"), said_by(aster), "{at}");
+            assert_eq!(said("player-name"), said_by(aster), "{at}: the one on the field");
+
+            // A party of one kind: the slots name nobody, and the player is the heroine again.
+            walk.menus.model_mut::<HudModel>(MenuScreen::HUD).unwrap().follow_names(None);
+            walk.settle();
+            let tree = walk.tree(MenuScreen::HUD);
+            for row in ["party-first", "party-second", "party-third"] {
+                assert!(!tree.is_visible(tree.find(&format!("{row}-name")).unwrap()), "{at}: {row}");
+            }
+            let player = tree.strings().find(|(node, _)| *node == "player-name").expect("text").1.to_owned();
+            assert_eq!(player, said_by(heroine), "{at}");
+            wrong.extend(walk.wrong);
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// A cutscene's every line shows on the HUD with its speaker, as the table says it, in both languages and under
 /// pseudo-localization, at every aspect (M3 Q4): low on the screen, clear of its edges, in at most two lines,
 /// and gone when nothing's said.

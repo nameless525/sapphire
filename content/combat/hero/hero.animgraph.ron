@@ -1,0 +1,74 @@
+// How Aster's clips play (M5 C8). Her punch and kick are her own key-pose documents, beside this file. The
+// rest are the heroine's, which their sidecars cook for Aster's model too (`also`), so each names her model
+// as its `target`: a key-pose document turns bones in rest space, and fits any humanoid rig in a T-pose.
+// The heroine's run, jog and knockdown move morph targets only the heroine's model has, so Aster strides at
+// a walk and falls as she's defeated for a knockdown, getting up as the move ends.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            // Her own.
+            (name: "punch", source: "c738af69-445b-4d18-a050-152e5ef27d10"),
+            (name: "kick", source: "aba41859-ba99-40d3-9d66-b3282d8ad21a"),
+            // The heroine's (`content/lookdev/character/`, `content/combat/player/`).
+            (name: "idle_combat", source: "5fa1f634-6e77-4485-9f50-577be76b7323", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "walk", source: "fbec3961-0e19-4289-9f89-6bba045a6f33", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "walk_back", source: "8de71a71-5b97-536a-9aae-3d5a6fcc4450", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "strafe_left", source: "2690ea79-80aa-5daf-9ac5-c04f22cbe329", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "strafe_right", source: "7b639f71-2c36-51ae-9b4d-5bfd4a34f2ea", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "breathing", source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "flinch", source: "902e79bb-d646-52f3-9baa-4ed7b1e72869", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "stagger", source: "02ecbb4a-cb11-54ce-843e-2da99ff6f38c", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "dazed", source: "2ec5f601-115a-5655-a2e2-85293ecf2b8e", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "defeat", source: "a4baad9b-81c5-54e1-9a11-c9a594146361", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "dodge", source: "9b5f353a-2c97-45c7-a70f-bcab216de811", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+            (name: "dash_attack", source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958", target: "2533d8d7-9400-4972-88f3-f99ff9473913"),
+        ],
+        masks: [
+            // From the spine up: what a flinch moves, with the legs left to what they're doing.
+            (name: "upper", bones: [(bone: Spine, weight: 1.0)]),
+        ],
+        locomotion: (
+            start: "ground",
+            smoothing: 3.0,
+            states: [
+                (name: "ground", plays: Blend((
+                    // The heroine's samples at her speeds; above a walk the walk plays quicker.
+                    samples: [
+                        (clip: "idle_combat", at: (0.0, 0.0), sync: false),
+                        (clip: "walk", at: (0.0, 2.0), phase: 0.0),
+                        (clip: "walk_back", at: (0.0, -0.95), phase: 0.0),
+                        (clip: "strafe_left", at: (4.780, 2.76), phase: 0.0),
+                        (clip: "strafe_right", at: (-4.780, 2.76), phase: 0.0),
+                    ],
+                    rate: (0.5, 1.6),
+                ))),
+            ],
+        ),
+        combat: (
+            decay: 5,
+            exit: 12,
+            moves: [
+                (move: "punch", clip: "punch"),
+                (move: "kick", clip: "kick"),
+                (move: "dodge", clip: "dodge", decay: 3),
+                // A swap cuts to it, so there's nothing to blend from.
+                (move: "swap_in", clip: "dash_attack", decay: 3),
+                (move: "flinch", clip: "flinch", decay: 3),
+                (move: "stagger", clip: "stagger", decay: 3),
+                (move: "dazed", clip: "dazed", decay: 3),
+                (move: "knockdown", clip: "defeat", decay: 3),
+                (move: "defeat", clip: "defeat", decay: 3),
+            ],
+        ),
+        additive: [
+            (name: "breathing", clip: "breathing", weight: 0.35),
+        ],
+        reactions: [
+            (name: "flinch", clip: "flinch", mask: "upper", weight: 0.7, fade_out: 12),
+        ],
+        // Every 2.5 to 6 seconds, on her own clock: her face has VRM's `blink`.
+        blink: Some((expression: "blink", every: (150, 360), close: 3, hold: 1, open: 7)),
+    ),
+)

@@ -36,6 +36,11 @@
 //! so a save's start loads what it would have loaded fresh. A kind listed anyway keeps its place, and so its
 //! set's number.
 //!
+//! **Who a player draws as** (M5 C8): a cast member's `playable` names a playable kind by its file's name,
+//! before `.playable.ron`, as `moves` names a kind; `build.rs` compiles in every one under `content/`. The kind
+//! has to play the member's set, and a kind of enemy draws as itself, so it names none. The simulation never
+//! reads it ([`ScenarioDocument::playable_kinds`]); a game draws a member that names none as its default kind.
+//!
 //! **Where someone stands:** `at` is one of the zone's spawners or checkpoints, in a scenario that has a
 //! zone, and otherwise one of the arena's spawn points (`player`, `enemy`, `crowd_0`...).
 //!
@@ -69,7 +74,7 @@ use bevy_reflect::Reflect;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_dialogue::{DialogueDocument, FlagRegistry};
 use sapphire_math::Vec3;
-use sapphire_moves::{EnemyDocument, MoveSet, MoveSetDocument, MoveSetError};
+use sapphire_moves::{EnemyDocument, MoveSet, MoveSetDocument, MoveSetError, PlayableDocument};
 use sapphire_physics::PhysicsWorld;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
@@ -180,6 +185,11 @@ pub struct CastMember {
     /// player's does.
     #[serde(default)]
     pub standing_jump: bool,
+    /// The playable kind they draw as (M5 C8): its `.playable.ron`'s name, before that suffix, which has to
+    /// play `moves`. Left out, a game draws them as its own default kind. Presentation: no step reads it, and
+    /// no checksum holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playable: Option<String>,
 }
 
 /// The cast's party, by places in the cast, the first on the field.
@@ -259,6 +269,22 @@ pub struct KindOfEnemy {
     /// The key of its name in the game's words, as its document names it (M4 X2): presentation, which no
     /// step reads.
     pub name: String,
+}
+
+/// A playable kind one of a scenario's cast draws as (M5 C8): presentation, which no step reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KindOfPlayable {
+    /// Its `.playable.ron`'s ID, which its cook has.
+    pub kind: AssetId,
+    /// The key of its name in the game's words, as its document names it: what a party's slot calls it.
+    pub name: String,
+}
+
+/// The playable kind named `name` that this build holds: the `.playable.ron` of that file name.
+fn playable_named(name: &str) -> Option<&'static str> {
+    let file = format!("{name}.playable.ron");
+    let found = NAMED_DOCUMENTS.iter().find(|(path, _)| super::scenario::document_file_name(path) == file);
+    found.map(|(path, _)| *path)
 }
 
 /// Every kind of enemy this build holds, which `build.rs` compiles in from `content/combat/`, by its
@@ -388,6 +414,9 @@ pub(super) fn read_all() -> Vec<(&'static str, ScenarioDocument)> {
             let document: ScenarioDocument = sapphire_serialize::from_ron(text)
                 .unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
             document.check().unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
+            document
+                .playable_kinds()
+                .unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
             (*name, document)
         })
         .collect()
@@ -458,6 +487,31 @@ impl ScenarioDocument {
         let kinds = roster.enemies.iter().zip(planned).map(|(path, plan)| {
             let set = crate::moves::MoveSetId(plan.set);
             Ok(KindOfEnemy { set, kind: id_of(path)?, name: plan.document.name })
+        });
+        kinds.collect()
+    }
+
+    /// The playable kind each of its cast draws as, in cast order (M5 C8): `None` for one that names none,
+    /// whom a game draws as its default kind. Each named kind is one this build holds, playing the set its member
+    /// does. Presentation, as [`Self::kinds_of_enemy`] is: the simulation never reads it.
+    pub fn playable_kinds(&self) -> Result<Vec<Option<KindOfPlayable>>, ScenarioError> {
+        let kinds = self.cast.iter().enumerate().map(|(index, member)| {
+            let Some(name) = &member.playable else { return Ok(None) };
+            let field = format!("cast[{index}].playable");
+            let path = playable_named(name)
+                .ok_or_else(|| invalid(&field, format!("this build holds no `{name}.playable.ron`")))?;
+            let document = PlayableDocument::parse(named(path)?)
+                .map_err(|error| invalid(&field, format!("{path}: {error}")))?;
+            let set = self.moves.iter().find(|path| kind_of(path) == member.moves).ok_or_else(|| {
+                invalid(
+                    &field,
+                    format!("`{}` isn't one of `moves`, and a kind of enemy draws as itself", member.moves),
+                )
+            })?;
+            if id_of(set)? != document.moves {
+                return Err(invalid(&field, format!("`{name}` plays other moves than `{}`", member.moves)));
+            }
+            Ok(Some(KindOfPlayable { kind: id_of(path)?, name: document.name }))
         });
         kinds.collect()
     }

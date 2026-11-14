@@ -724,9 +724,11 @@ impl SceneShow for ShownFight {
             // a game's show has it say them.
             if let Some((values, _)) = self.fight.show.hud_values() {
                 let foe_name = self.fight.show.foe_name();
+                let names = self.fight.show.party_names();
                 for index in 0..screen.len() {
                     if let Some(model) = screen.model_mut::<HudModel>(index) {
                         model.follow_fight(Some(&values), foe_name);
+                        model.follow_names(names);
                     }
                 }
             }

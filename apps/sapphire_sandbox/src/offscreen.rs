@@ -24,7 +24,7 @@ use crate::options::{OffscreenMode, Options};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 use game_combat::combat::{Combat, CombatOption};
-use game_combat::fight::{Arena, Fight, FightShow};
+use game_combat::fight::{Arena, Fight};
 use game_combat::party_looks::PartyLooks;
 use game_ui::hud::ShownFight;
 use game_ui::menus::MenuDocument;
@@ -373,11 +373,14 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             let zone = place.zone.map(|(stem, _)| stem);
             fight.hold_timelines(combat.simulation(), zone, content, renderer, gpu)?;
         }
+        // A party's members of other kinds, each drawn as itself (M5 C8).
+        let party = game_combat::playable::party_of_scenario(scenario).map_err(AppInitError::msg)?;
+        fight.load_party(party.as_ref(), content, renderer, gpu)?;
         if let Some(timeline) = options.timeline {
             let timeline = content.load_timeline(timeline, renderer, gpu)?;
             fight.play_timeline(timeline, sapphire_sequencer::Origin::default());
         }
-        if let Some(meshes) = FightShow::party_meshes(content, character) {
+        if let Some(meshes) = fight.party_meshes(content, character) {
             fight.set_party_meshes(scene, meshes);
         }
         if let Some(clip) = &options.clip {

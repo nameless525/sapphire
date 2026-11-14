@@ -339,7 +339,15 @@ A zone's look is its own since M5 M6, as it opens and when a trip arrives in it:
    fog: Some((density: 1.5, height_base: Some(0.0))),
    ```
    Wind is the way it blows, which must have a horizontal part, and a strength up to 8. `gustiness` is a share and defaults to 0. Weather is two shares, `puddles` defaulting to 0, and holds all day. No shader draws it until wet surfaces (M5 L4). Fog's `density` scales the day's near, far and height layers (0 to 16, 1 by default). `height_base` puts the height layer's floor at that height in the zone's space. Leave it out to keep the day's.
-5. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
+5. **Its reflection probes** (M5 L2): a few, by hand, where a reflection would read wrong under the open sky alone: one in each interior or covered street, and one in each open place.
+   ```ron
+   reflections: [
+       (name: "yard", position: (8.0, 1.6, 6.0), parallax: (min: (-8.0, 0.0, -8.0), max: (24.0, 12.0, 24.0))),
+       (name: "shelter", position: (-24.0, 1.6, 30.0), parallax: (min: (-27.0, 0.0, 27.7), max: (-21.0, 3.5, 32.0))),
+   ],
+   ```
+   A probe stands about eye height, and its box is the space it stands in: a room's walls, floor and ceiling, a street's two fronts, an open place's edges and a height over its roofs. The box must hold the probe, at least 0.1 m a side. Names are unique, and a zone holds at most 42. The cook bakes them under the zone's day (`day`, or the default day) from its cells, backdrop and instances, into `<zone>.sreflect` beside the `.szone`, and only the probes, the instances' places and what they see key it ([proving_ground.zone.ron](../content/zones/proving_ground/proving_ground.zone.ron)). Nothing draws them until M5 L3.
+6. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
 
 ### A dialogue, with story flags
 
@@ -380,6 +388,19 @@ A conversation's line is voiced by a key of the voice lines' documents, and the 
 2. **The cue and the key:** a `<key>.cue.ron` on the `Voice` bus beside it, and a row `(key: "<key>", cue: "<the cue's id>")` in each language's `.voice.ron`. A language with no row for the key plays nothing, counted.
 3. **The line:** `say: (speaker: …, line: …, vo: "<key>", mouth: "<role>")`. `mouth` names whose mouth moves as a face track's role does (`hero`, `foe`, a kind's name) and needs a `vo`; leave it out for a speaker who isn't drawn, as the ward's guide is. The voice plays in the player's voice language from the frame the line shows, a pause holds it, and the next line or the conversation's end cuts it.
 4. **Know its limits:** the curve's envelope is what a mouth moves by; its five visemes are a coarse spectral guess with no phonemes behind it (spec §5.15). A mouth needs an audio device: with none, or a run with no sound, it stays shut.
+
+### An effect mesh (M5 L5)
+
+An effect mesh is a layer of an effect in [default_effects.ron](../crates/sapphire_vfx/default_effects.ron), beside its emitters and trail. Spec §5.16's "As built (M5 L5)" is the reference, and `sapphire_vfx`'s `mesh` module docs have every field. No step edits Rust, and no replay moves: effects are presentation.
+
+1. **The version:** a library with mesh layers says `version: 2`. A version 1 library still loads, as one with none, and writes as it did.
+2. **The layer:** `meshes: [(name: "arc", shape: SlashArc, lifetime: 0.3, …)]`, up to four an effect. `shape` is one of the generated shapes, `SlashArc`, `Ring`, `Column`, `Dome` or `Card`, and there's no default. `delay` and `lifetime` are seconds on the effect's clock; `offset`, `rotation` (degrees, about Y, then X, then Z), `spin` (degrees a second about the layer's own Y) and `scale` place it in the effect's space. `color`, `alpha` and `scale` are curves over the layer's own life. `additive` and `soft` mean what they do for a sprite. `priority` decides who goes first past a tier's cap.
+3. **The surface:** `pattern` is `Solid`, `Streaks` or `Noise`, repeated `tiling` times and scrolled by `scroll` (repeats a second, toward +u: along a slash from its tail to its head, round a ring the way a positive `spin` turns it). `skill_arc` is the worked example.
+4. **An erosion:** `erosion: Some((mask: Noise, tiling: (3.0, 1.0), threshold: [(0.0, 0.0), (1.0, 1.0)], edge: 0.12, edge_color: (3.0, 2.0, 1.0)))` eats the layer where its mask is under the threshold, with a band of `edge_color` `edge` wide where it's eating. At 0 nothing is gone, at 1 everything is. `ember_dome` is the worked example.
+5. **A flipbook:** `pattern: Burst` is a sheet of 4 by 4 frames, and needs `flipbook: Some((columns: 4, rows: 4, frames: 16))`, played once over the layer's life, or `timing: PerSecond(rate: 24.0, looped: true)`. Frames step, as drawn effects do; `blend: true` crossfades between them. A frame fills the shape, so it takes no `tiling` or `scroll`. `burst_card` is the worked example.
+6. **Fire it:** a cue row names the effect as any other. `at: Facing` stands it at the subject's feet, turned to face where it faces, which a slash round a fighter wants: `skill_hit`'s row is the worked example. The fight declares the meshes' pipelines whenever its library has a layer, so nothing builds on first use; a library without one builds none of them.
+7. **Look at it:** `--vfx mesh-scroll`, `mesh-erosion` and `mesh-flipbook` play the three shows the `vfxmesh-*` goldens capture, and a save under `--cues` reaches a running fight. Validation names the effect, the layer and the field, as an emitter's does.
+8. **Rust steps:** a new shape, a new pattern or a cooked mesh by id (see "Everything deferred").
 
 ### A game screen
 
@@ -515,6 +536,7 @@ M3's first pillar counts each of these as a bug.
 - **A new screen** is documents (M3 U9). Only one that shows a value no model holds, or has a row do something no `RowAction` does, is Rust, which is code by design.
 - **Driving a character's materials** (M5 L11): `CharacterInstance::drive` takes a dissolve, an emission scale and a flash, and only the stage's sandbox flags fill it. A document saying when a fighter dissolves or flashes (on defeat, on a hit) is owed to a later package.
 - **A remappable binding's glyph** (A4) was a field of a Rust struct. **Fixed in M4 X4:** the menus fill a glyph for every binding the document lets a player remap.
+- **An effect mesh's shape, pattern or flipbook sheet** (M5 L5) is one of the generated ones in `sapphire_look::vfx::mesh`. A new one is Rust, and an authored mesh by id or a painted sheet would need the asset pool's mesh handles and residency in the effects' draw.
 
 ### By area
 

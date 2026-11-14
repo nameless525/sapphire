@@ -158,7 +158,7 @@ struct CharacterFace {
 }
 
 // A character's shadow (M1 R4): where the environment's shadow over its face is sampled, and
-// what was found there.
+// what was found there; and the other characters' shadows it receives (M5 L12).
 struct CharacterShadow {
     // xyz: the head's center, world space; w: the radius of the sphere around it the face pass
     // samples (0: none, so the face is lit).
@@ -167,7 +167,21 @@ struct CharacterShadow {
     // face pass (shadows.wgsl) writes every frame shadows are on and the face permutation takes
     // as occlusion; 1 otherwise. yzw: 0.
     visibility: vec4<f32>,
+    received: CharacterReceived,
 }
+
+// The other characters' shadows a character receives (M5 L12, `characters::GpuReceived`), which
+// the shadow planner chooses: `received_visibility` in anime_character.wgsl reads them.
+struct CharacterReceived {
+    // Per slot: the caster's map, its index in `shadows.characters`, or its capsule, its index in
+    // `shadows.capsules` with RECEIVED_CAPSULE set.
+    casters: vec4<u32>,
+    // Per slot: how much of that shadow the character takes, 0 (an empty slot) to 1.
+    weights: vec4<f32>,
+}
+
+// The bit of a `CharacterReceived` slot that says it names a capsule.
+const RECEIVED_CAPSULE: u32 = 0x80000000u;
 
 // A character's ambient light (M1 W5): the hemisphere its stylized GI reads
 // (`character_ambient_light`). Without a probe grid it is the frame's own (`ambient_light`):
@@ -750,8 +764,10 @@ fn quad_any(passes: bool) -> bool {
 // (desktop) or its capsule. Receivers call one of two functions:
 // - `shadow_visibility()`: environment surfaces, which take the cascades and every character's
 //   own shadow;
-// - `cascade_visibility()`: character surfaces, which take the cascades alone, so a character
-//   never shadows itself.
+// - `cascade_visibility()`: character surfaces, which take the cascades, and the few other
+//   characters' shadows the shadow planner chose for them (M5 L12, `received_visibility` in
+//   anime_character.wgsl, through `character_map_lookup` and `capsule_lookup`), never their own,
+//   so a character never shadows itself.
 // Both return the key light's visibility, 1 lit and 0 shadowed, a smooth field (a tent filter)
 // for the receiver's light split or terminator to threshold into a clean edge. Shadows are
 // colored, never black: the receivers tint them (environment.wgsl keeps `frame.shadow_tint`
@@ -948,21 +964,18 @@ fn cascade_visibility(position: vec3<f32>, normal: vec3<f32>) -> f32 {
     return 1.0;
 }
 
-// The key light's visibility at light-space `p` past the characters' own maps (desktop).
-fn character_map_visibility(p: vec3<f32>, n: vec3<f32>, slope: f32) -> f32 {
-    var visibility = 1.0;
-    let count = min(shadows.counts.y, MAX_CHARACTER_SHADOW_MAPS);
+// Character map `index`'s filtered visibility at light-space `p` on a surface with light-space
+// normal `n` (`slope`: sin θ to the light): 1 outside its tile and past its reach.
+fn character_map_lookup(index: u32, p: vec3<f32>, n: vec3<f32>, slope: f32) -> f32 {
+    let map = shadows.characters[index];
     let size = shadows.atlas.z;
-    for (var index = 0u; index < count; index++) {
-        let map = shadows.characters[index];
-        let texel = map.area.w;
-        let at = p + n * (texel * shadow_offset_texels(slope));
-        let uv = vec2<f32>(0.5, 0.5) + (at.xy - map.area.xy) * map.area.z * vec2<f32>(1.0, -1.0);
-        // Its reach ends `depth.z` away from the light, fading out before.
-        let fade = saturate((at.z - map.depth.z) * map.depth.w);
-        if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || fade <= 0.0 {
-            continue;
-        }
+    let texel = map.area.w;
+    let at = p + n * (texel * shadow_offset_texels(slope));
+    let uv = vec2<f32>(0.5, 0.5) + (at.xy - map.area.xy) * map.area.z * vec2<f32>(1.0, -1.0);
+    // Its reach ends `depth.z` away from the light, fading out before.
+    let fade = saturate((at.z - map.depth.z) * map.depth.w);
+    var visibility = 1.0;
+    if all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)) && fade > 0.0 {
         // Kept inside the tile, whose padding the character never reaches: the filter never reads
         // another character's tile.
         let inside = clamp(uv, vec2<f32>(SHADOW_EDGE_TEXELS / size), vec2<f32>(1.0 - SHADOW_EDGE_TEXELS / size));
@@ -980,42 +993,54 @@ fn character_map_visibility(p: vec3<f32>, n: vec3<f32>, slope: f32) -> f32 {
                 weights += weight;
             }
         }
-        visibility *= mix(1.0, sum / weights, fade);
+        visibility = mix(1.0, sum / weights, fade);
     }
     return visibility;
 }
 
-// The key light's visibility at `position` past the characters' capsules: where the light's ray
-// from the point passes closest to a capsule's axis, its shadow, soft by the radius and the
-// distance.
+// The key light's visibility at light-space `p` past the characters' own maps (desktop).
+fn character_map_visibility(p: vec3<f32>, n: vec3<f32>, slope: f32) -> f32 {
+    var visibility = 1.0;
+    let count = min(shadows.counts.y, MAX_CHARACTER_SHADOW_MAPS);
+    for (var index = 0u; index < count; index++) {
+        visibility *= character_map_lookup(index, p, n, slope);
+    }
+    return visibility;
+}
+
+// Capsule `index`'s visibility at `position`: where the light's ray from the point passes closest
+// to the capsule's axis, its shadow, soft by the radius and the distance (the light's angle), and
+// gone past its reach.
+fn capsule_lookup(index: u32, position: vec3<f32>) -> f32 {
+    let l = shadows.light_z.xyz;
+    let capsule = shadows.capsules[index];
+    let a = capsule.base.xyz;
+    let radius = capsule.base.w;
+    let axis = capsule.top.xyz - a;
+    let w = position - a;
+    // The closest approach of the ray position + t·l (t ≥ 0) and the segment a + u·axis.
+    let e = dot(axis, axis);
+    let along = dot(l, axis);
+    let c = dot(l, w);
+    let f = dot(axis, w);
+    let denominator = e - along * along;
+    var u = select(0.0, (f - c * along) / denominator, denominator > 1e-8);
+    u = saturate(u);
+    let t = max(u * along - c, 0.0);
+    u = select(0.0, saturate((f + t * along) / e), e > 1e-8);
+    let d = length(w + t * l - u * axis);
+    let soft = radius * CAPSULE_SOFTNESS + t * CAPSULE_SPREAD;
+    let occlusion = 1.0 - smoothstep(radius - soft, radius + soft, d);
+    let fade = 1.0 - smoothstep(0.75 * CAPSULE_REACH, CAPSULE_REACH, t);
+    return select(1.0 - occlusion * fade, 1.0, t <= 0.0);
+}
+
+// The key light's visibility at `position` past the characters' capsules.
 fn capsule_visibility(position: vec3<f32>) -> f32 {
     var visibility = 1.0;
-    let l = shadows.light_z.xyz;
     let count = min(shadows.counts.z, MAX_SHADOW_CAPSULES);
     for (var index = 0u; index < count; index++) {
-        let capsule = shadows.capsules[index];
-        let a = capsule.base.xyz;
-        let radius = capsule.base.w;
-        let axis = capsule.top.xyz - a;
-        let w = position - a;
-        // The closest approach of the ray position + t·l (t ≥ 0) and the segment a + u·axis.
-        let e = dot(axis, axis);
-        let along = dot(l, axis);
-        let c = dot(l, w);
-        let f = dot(axis, w);
-        let denominator = e - along * along;
-        var u = select(0.0, (f - c * along) / denominator, denominator > 1e-8);
-        u = saturate(u);
-        let t = max(u * along - c, 0.0);
-        u = select(0.0, saturate((f + t * along) / e), e > 1e-8);
-        let d = length(w + t * l - u * axis);
-        if t <= 0.0 {
-            continue;
-        }
-        let soft = radius * CAPSULE_SOFTNESS + t * CAPSULE_SPREAD;
-        let occlusion = 1.0 - smoothstep(radius - soft, radius + soft, d);
-        let fade = 1.0 - smoothstep(0.75 * CAPSULE_REACH, CAPSULE_REACH, t);
-        visibility *= 1.0 - occlusion * fade;
+        visibility *= capsule_lookup(index, position);
     }
     return visibility;
 }

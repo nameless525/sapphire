@@ -11,8 +11,9 @@
 //!    where the traveller arrives on the renderer (`Scene::zone_load`), the simulation enters it
 //!    ([`Combat::enter_zone`]), the stage arrives in it (`Scene::arrive_in_zone`), which gives back what the
 //!    last zone held, and the fighters stand where the simulation put them, the camera cut there.
-//! 3. **Arriving.** Until the new zone's first cells are placed. Then the zone's own `prefetch` exits come
-//!    in behind it, which is what makes it a hub.
+//! 3. **Arriving.** Until the new zone's first cells are placed and the renderer's mesh pool has given back
+//!    the room the last zone held, down to its floor (M5 D9: `Scene::zone_arrived`). Then the zone's own
+//!    `prefetch` exits come in behind it, which is what makes it a hub.
 //! 4. **Uncovering.** Steps run again, and the trip's over when the wipe says the screen's clear.
 //!
 //! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The zone arrived in brings its look
@@ -338,8 +339,8 @@ impl Fight {
                 }
             },
             TripPhase::Arriving => {
-                if scene.zone_settled() || trip.error.is_some() {
-                    scene.release_zone_focus();
+                if scene.zone_arrived(content) || trip.error.is_some() {
+                    scene.end_arrival(content);
                     scene.prefetch_exits(content, settings);
                     trip.phase = TripPhase::Uncovering;
                     let report = TripReport {

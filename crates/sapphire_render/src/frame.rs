@@ -658,9 +658,9 @@ impl Default for Wind {
 /// far as those effects go.
 ///
 /// Being listed is what makes an instance a character for shadows too: it never casts into the
-/// world's shadow cascades and receives only them (environment casters), so a character never
-/// shadows itself; its own shadow on the ground and the environment comes from its body (see
-/// [`CharacterBody`]).
+/// world's shadow cascades and receives them (environment casters) and the other characters'
+/// shadows (M5 L12), never its own, so a character never shadows itself; its own shadow on the
+/// ground, the environment and the other characters comes from its body (see [`CharacterBody`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterInstance {
     pub id: InstanceId,
@@ -673,7 +673,7 @@ pub struct CharacterInstance {
     /// temporal AA resolves into a blend and MSAA into a share of each pixel's samples, and the
     /// character takes no rim. The world resolves it from the camera's distance to the body
     /// (`sapphire_world::ProximityFade`), so the camera never clips into a character. Its shadow
-    /// stays whole.
+    /// stays whole while any of it draws; at 0 it casts nothing, nor capsule AO.
     pub opacity: f32,
     /// What the game drives on its anime character materials this frame (M5 L11): how far it has
     /// dissolved, its emission's scale and a flash. [`MaterialDrive::NONE`] draws it as authored.
@@ -706,7 +706,7 @@ impl CharacterInstance {
 ///   `dissolve`, in every pass that draws the character, as its proximity fade does: its opaque
 ///   draws move to the alpha-tested variants while it dissolves. The points just above the cut
 ///   glow in the material's edge color, blooming as the world's light; it takes no rim. Its
-///   shadow stays whole until it is gone: at 1 it casts nothing, nor capsule AO.
+///   shadow is cut as its surfaces are, and at 1 it casts nothing, nor capsule AO.
 /// - **Emission:** scales every region's authored glow (a charge, a power-up), breathing as
 ///   authored.
 /// - **Flash:** a color added over its surfaces, unlit (a hit, a parry); its outlines keep their
@@ -754,15 +754,16 @@ impl Default for MaterialDrive {
 }
 
 /// A character's body this frame, as a capsule in world space: every point within `radius` of
-/// the segment from `base` (its feet) to `top` (its head). Its shadow on the ground and the
-/// environment is cast from it (M1 R4, spec §5.12 "Lighting"):
+/// the segment from `base` (its feet) to `top` (its head), and its part in the characters'
+/// shadows of each other (`role`). Its shadow on the ground, the environment and the other
+/// characters is cast from it (M1 R4, M5 L12, spec §5.12 "Lighting"):
 ///
 /// - **On desktop** each character near the camera draws a shadow map of its own, a
 ///   high-resolution frustum from the key light around its body and its instances' bounds, which
-///   environment surfaces receive: crisp contact shadows under its feet. Its own instances never
-///   receive it.
-/// - **On phones,** and for characters past the desktop's maps, the capsule itself casts a soft
-///   shadow onto environment surfaces.
+///   environment surfaces receive: crisp contact shadows under its feet. The other characters
+///   receive it too, up to the tier's few nearest along the light; its own instances never do.
+/// - **On phones,** and for characters past the desktop's maps or [`ShadowRole::Ambient`], the
+///   capsule itself casts a soft shadow onto environment surfaces and the other characters.
 ///
 /// The instances listed with equal bodies are one character, which casts one shadow; a character
 /// drawn as several instances lists the same body with each (and the same state, so its parts
@@ -775,12 +776,35 @@ pub struct CharacterBody {
     pub base: Vec3,
     pub top: Vec3,
     pub radius: f32,
+    pub role: ShadowRole,
+}
+
+/// A character's part in the characters' shadows of each other (M5 L12, spec §5.12 "Lighting"):
+/// whether it takes the other characters' shadows and draws a map of its own on desktop. The hook
+/// a crowd's ambient characters (C10, C11) take, so that dozens of them never sample each other's
+/// shadows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ShadowRole {
+    /// The party and named characters (enemies, bosses, whoever a scene is about): it draws a map
+    /// of its own on desktop while it is among the nearest the camera, and it receives the other
+    /// characters' shadows, their maps or their capsules, up to the tier's
+    /// [`ShadowSettings::others`](crate::ShadowSettings::others).
+    #[default]
+    Named,
+    /// A crowd's ambient character: it casts only its capsule, on every tier, onto the world and
+    /// the named characters, and it receives no other character's shadow, only the world's.
+    Ambient,
 }
 
 impl CharacterBody {
-    /// A capsule from `base` to `top`, `radius` thick.
+    /// A named character's capsule from `base` to `top`, `radius` thick.
     pub fn capsule(base: Vec3, top: Vec3, radius: f32) -> Self {
-        Self { base, top, radius }
+        Self { base, top, radius, role: ShadowRole::Named }
+    }
+
+    /// The same body with `role`.
+    pub fn with_role(self, role: ShadowRole) -> Self {
+        Self { role, ..self }
     }
 
     /// Whether the renderer can draw by it: finite, with a radius of 0 or more.
@@ -801,6 +825,7 @@ impl CharacterBody {
             base: transform.transform_point3(self.base),
             top: transform.transform_point3(self.top),
             radius: self.radius * crate::bounds::max_stretch(transform),
+            role: self.role,
         }
     }
 }

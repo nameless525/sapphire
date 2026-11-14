@@ -171,7 +171,7 @@ pub(crate) fn run(
     let (mut tod_total, mut tod_max) = (Duration::ZERO, Duration::ZERO);
     // The effects' simulation and frame write per measured frame (`--vfx`), and what they held.
     let (mut vfx_total, mut vfx_max) = (Duration::ZERO, Duration::ZERO);
-    let (mut vfx_particles, mut vfx_points) = (0_u64, 0_u64);
+    let (mut vfx_particles, mut vfx_points, mut vfx_meshes) = (0_u64, 0_u64, 0_u64);
     // The HUD's update and draw, with `--hud`: its total and its slowest.
     let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
@@ -214,6 +214,7 @@ pub(crate) fn run(
             vfx_max = vfx_max.max(effects.simulation.simulation);
             vfx_particles += u64::from(effects.sprites);
             vfx_points += u64::from(effects.ribbon_points);
+            vfx_meshes += u64::from(effects.meshes);
             if let Some(hud) = &stage.show.hud {
                 let (_, cost) = hud.last_frame();
                 hud_total += cost;
@@ -330,6 +331,7 @@ pub(crate) fn run(
         vfx_sim_us_max = format_args!("{:.2}", micros(vfx_max)),
         vfx_sprites_mean = vfx_particles / u64::from(frames),
         vfx_ribbon_points_mean = vfx_points / u64::from(frames),
+        vfx_meshes_mean = vfx_meshes / u64::from(frames),
         hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
         ui_quads = stage.renderer.stats().ui.quads,

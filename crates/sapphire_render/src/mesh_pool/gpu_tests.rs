@@ -24,7 +24,7 @@ use crate::{
 use sapphire_assets::mesh::quantize_weights;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const SIDE: u32 = 16;
+const SIDE: u32 = 64;
 const RED: Vec3 = Vec3::new(1.0, 0.0, 0.0);
 const GREEN: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 const BLUE: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -51,6 +51,11 @@ fn flat(color: Vec3) -> Material {
 
 /// A square facing the camera, filling the frame, in `quads * quads` pieces, with a material of its own.
 fn square(color: Vec3, quads: u32) -> Mesh {
+    square_in(color, quads, PositionFormat::Unorm16)
+}
+
+/// [`square`], with positions stored as `format`.
+fn square_in(color: Vec3, quads: u32, format: PositionFormat) -> Mesh {
     let row = quads + 1;
     let vertices: Vec<Vertex> = (0..row * row)
         .map(|n| {
@@ -74,7 +79,45 @@ fn square(color: Vec3, quads: u32) -> Mesh {
     }
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
     let slots = vec![MaterialSlot::embedded("flat", flat(color))];
-    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, format)
+}
+
+/// [`square`] skinned to one joint and morphed by one target, which moves nothing: it lives in the
+/// deformable buffer and draws from its skinning outputs.
+fn skinned(color: Vec3) -> Mesh {
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let character = AnimeCharacterMaterial {
+        base_color: color.extend(1.0).to_array(),
+        ..AnimeCharacterMaterial::default()
+    };
+    let character = Material::from_document(&character, &swizzles).expect("valid");
+    let mut mesh = square(color, 2);
+    mesh.materials = vec![MaterialSlot::embedded("skin", character)];
+    let count = mesh.streams.len() as u32;
+    let influence = VertexInfluence { binds: [0, 0, 0, 0], weights: quantize_weights([1.0, 0.0, 0.0, 0.0]) };
+    mesh.skin = Some(Skin {
+        skeleton: None,
+        joint_count: 1,
+        binds: vec![SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() }],
+        influences: Influences::pack(&vec![influence; count as usize], 1),
+    });
+    mesh.morph_targets =
+        vec![MorphTarget { name: "shift".into(), default_weight: 0.0, first_delta: 0, delta_count: count }];
+    mesh.morph_deltas = (0..count).map(|v| MorphDelta::new(v, [0.0; 3], [0.0; 3])).collect();
+    mesh
+}
+
+/// [`square`] as a plant, with a foliage stream that holds it still.
+fn plant(color: Vec3) -> Mesh {
+    let leaves = FoliageMaterial { base_color: color.extend(1.0).to_array(), ..FoliageMaterial::default() };
+    let leaves = Material::from_document(&leaves, &[Swizzle::IDENTITY; FoliageMaterial::TEXTURE_SLOTS.len()])
+        .expect("valid");
+    let mut mesh = square(color, 2);
+    mesh.materials = vec![MaterialSlot::embedded("leaves", leaves)];
+    let still = FoliageVertex { sway: 0.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 };
+    let count = mesh.streams.len();
+    mesh.streams = mesh.streams.clone().with_foliage(&vec![FoliageVertex::decode(still.encode()); count]);
+    mesh
 }
 
 fn upload(renderer: &mut Renderer, color: Vec3, quads: u32) -> MeshHandle {
@@ -98,6 +141,8 @@ struct Bench {
     renderer: Renderer,
     target: wgpu::Texture,
     gpu: GpuContext,
+    /// The sun's and the ambient light's intensity: 0, unless a test lights what doesn't glow.
+    light: f32,
 }
 
 impl Bench {
@@ -114,7 +159,8 @@ impl Bench {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        Self { packets: FramePacketRing::new(), executor: GraphExecutor::new(), renderer, target, gpu }
+        let (packets, executor) = (FramePacketRing::new(), GraphExecutor::new());
+        Self { packets, executor, renderer, target, gpu, light: 0.0 }
     }
 
     fn upload(&mut self, color: Vec3, quads: u32) -> MeshHandle {
@@ -127,6 +173,12 @@ impl Bench {
 
     /// Prepares a frame that adds or moves `changed` and removes `removed`, by instance number.
     fn prepare(&mut self, changed: &[(u64, MeshHandle)], removed: &[u64]) {
+        let changed: Vec<_> = changed.iter().map(|&(id, mesh)| (id, mesh, Mat4::IDENTITY)).collect();
+        self.prepare_placed(&changed, removed);
+    }
+
+    /// [`Self::prepare`], each instance changed placed by its transform.
+    fn prepare_placed(&mut self, changed: &[(u64, MeshHandle, Mat4)], removed: &[u64]) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(CameraData::look_at(
             Vec3::new(0.0, 0.0, 1.5),
@@ -136,15 +188,15 @@ impl Bench {
             1.0,
             0.05,
         )));
-        packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.0 };
+        packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: self.light };
         let sky = Vec3::new(0.0, 0.0, 0.0);
         packet.sky = SkyGradient { zenith: sky, horizon: sky, ground: sky };
-        packet.ambient = AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 };
+        packet.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: self.light };
         packet.shadow_tint = Vec3::ONE;
-        packet.instances.changed.extend(changed.iter().map(|&(id, mesh)| MeshInstance {
+        packet.instances.changed.extend(changed.iter().map(|&(id, mesh, transform)| MeshInstance {
             id: InstanceId(id),
             mesh,
-            transform: Mat4::IDENTITY,
+            transform,
         }));
         packet.instances.removed.extend(removed.iter().map(|&id| InstanceId(id)));
         self.renderer.prepare(&self.gpu, self.packets.current());
@@ -190,6 +242,13 @@ impl Bench {
 
     /// The middle pixel of what was last submitted.
     fn pixel(&self) -> [u8; 4] {
+        let image = self.image();
+        let at = ((SIDE * (SIDE / 2) + SIDE / 2) * 4) as usize;
+        [image[at], image[at + 1], image[at + 2], image[at + 3]]
+    }
+
+    /// What was last submitted, row by row.
+    fn image(&self) -> Vec<u8> {
         let padded = (SIDE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = self.gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -214,8 +273,7 @@ impl Bench {
         buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let mapped = buffer.get_mapped_range(..).expect("mapped");
-        let at = (padded * (SIDE / 2) + SIDE / 2 * 4) as usize;
-        [mapped[at], mapped[at + 1], mapped[at + 2], mapped[at + 3]]
+        mapped.chunks(padded as usize).flat_map(|row| &row[..(SIDE * 4) as usize]).copied().collect()
     }
 }
 
@@ -502,44 +560,8 @@ fn a_failed_upload_takes_back_a_slot_it_reused_as_well_as_one_it_grew() {
 #[test]
 #[ignore = "needs a GPU"]
 fn a_deformed_mesh_and_a_plant_come_back_like_any_other() {
-    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
-    let skin = || {
-        let character =
-            Material::from_document(&AnimeCharacterMaterial::default(), &swizzles).expect("valid");
-        let mut mesh = square(RED, 2);
-        mesh.materials = vec![MaterialSlot::embedded("skin", character)];
-        let count = mesh.streams.len() as u32;
-        let influence =
-            VertexInfluence { binds: [0, 0, 0, 0], weights: quantize_weights([1.0, 0.0, 0.0, 0.0]) };
-        mesh.skin = Some(Skin {
-            skeleton: None,
-            joint_count: 1,
-            binds: vec![SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() }],
-            influences: Influences::pack(&vec![influence; count as usize], 1),
-        });
-        mesh.morph_targets = vec![MorphTarget {
-            name: "shift".into(),
-            default_weight: 0.0,
-            first_delta: 0,
-            delta_count: count,
-        }];
-        mesh.morph_deltas = (0..count).map(|v| MorphDelta::new(v, [0.0; 3], [0.0; 3])).collect();
-        mesh.to_cooked().expect("it cooks")
-    };
-    let plant = || {
-        let leaves = Material::from_document(
-            &FoliageMaterial::default(),
-            &[Swizzle::IDENTITY; FoliageMaterial::TEXTURE_SLOTS.len()],
-        )
-        .expect("valid");
-        let mut mesh = square(GREEN, 2);
-        mesh.materials = vec![MaterialSlot::embedded("leaves", leaves)];
-        let still = FoliageVertex { sway: 0.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 };
-        let count = mesh.streams.len();
-        mesh.streams = mesh.streams.clone().with_foliage(&vec![FoliageVertex::decode(still.encode()); count]);
-        mesh.to_cooked().expect("it cooks")
-    };
-    let (skin, plant) = (skin(), plant());
+    let skin = skinned(RED).to_cooked().expect("it cooks");
+    let plant = plant(GREEN).to_cooked().expect("it cooks");
     let mut bench = Bench::new();
     let both = |bench: &mut Bench| {
         let skinned = bench.renderer.upload_mesh_with_slots(Mesh::read(&skin).unwrap(), |_| None).unwrap();
@@ -650,4 +672,161 @@ fn any_order_of_uploads_frees_and_frames_gives_no_upload_what_an_unfinished_fram
     bench.frame(&[], &live);
     bench.settle();
     assert_eq!(bench.stats().mesh_pool_bytes, 0, "everything came back");
+}
+
+/// Cells a side of [`grid`].
+const CELLS: u32 = 6;
+/// A cell's side, in the plane the camera looks at: the grid fills the middle of the frame.
+const CELL: f32 = 0.18;
+
+/// A mesh of [`grid`]'s: its handle, its instance's number, its cell's row and column, and where it stands.
+type Placed = (MeshHandle, u64, (u32, u32), Mat4);
+
+/// A grid of meshes, one a cell, each of a color of its own, in every part of the pool: unorm16 squares big
+/// enough to grow the slab and the indices past what they start with, then f32 squares, skinned ones and
+/// plants.
+fn grid(bench: &mut Bench) -> Vec<Placed> {
+    let count = CELLS * CELLS;
+    (0..count)
+        .map(|n| {
+            let hue = n as f32 / count as f32;
+            let color = Vec3::new(0.5 + 0.5 * (hue * 6.3).cos(), 0.5 + 0.5 * (hue * 6.3 + 2.1).cos(), hue);
+            let mesh = match n {
+                _ if n < count - 12 => square(color, 40 + (n % 5) * 6),
+                _ if n < count - 8 => square_in(color, 8, PositionFormat::Float32),
+                _ if n < count - 4 => skinned(color),
+                _ => plant(color),
+            };
+            let bytes = mesh.to_cooked().expect("it cooks");
+            let mesh = Mesh::read(&bytes).expect("a valid mesh");
+            let handle = bench.renderer.upload_mesh_with_slots(mesh, |_| None).expect("it uploads");
+            let (row, column) = (n / CELLS, n % CELLS);
+            // The square, 4 m a side, shrunk into its cell.
+            let at =
+                Mat4::from_translation(cell_middle(row, column)) * Mat4::from_scale(Vec3::splat(CELL * 0.2));
+            (handle, u64::from(n) + 1, (row, column), at)
+        })
+        .collect()
+}
+
+fn cell_middle(row: u32, column: u32) -> Vec3 {
+    let at = |n: u32| (n as f32 + 0.5 - CELLS as f32 / 2.0) * CELL;
+    Vec3::new(at(column), at(row), 0.0)
+}
+
+/// Where in [`Bench::image`] the pixel the middle of a cell lands on is, by the bench's camera (1.5 m out,
+/// 0.8 rad high).
+fn cell_pixel(row: u32, column: u32) -> usize {
+    let reach = 1.5 * 0.4f32.tan();
+    let middle = cell_middle(row, column);
+    let x = ((middle.x / reach + 1.0) * 0.5 * SIDE as f32) as u32;
+    let y = ((1.0 - middle.y / reach) * 0.5 * SIDE as f32) as u32;
+    ((y * SIDE + x) * 4) as usize
+}
+
+/// Whether two pictures of one frame's draws are the same: within 2 code values a channel, since Metal's main
+/// pass varies by itself on identical inputs (`goldens.md`), where a range read from the wrong place draws
+/// another mesh, or nothing.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 2)
+}
+
+/// Fill the pool, free half in a checkerboard, compact: every mesh left draws the same pixels from buffers at
+/// the pool's floor, smaller than they were, and the ranges freed in the old layout go nowhere when the fence
+/// lets them go.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_compacted_pool_draws_every_mesh_left_as_it_did_from_smaller_buffers() {
+    let mut bench = Bench::new();
+    bench.light = 1.0;
+    let meshes = grid(&mut bench);
+    let placed: Vec<_> = meshes.iter().map(|&(mesh, number, _, at)| (number, mesh, at)).collect();
+    bench.prepare_placed(&placed, &[]);
+    bench.submit();
+    let (gone, kept): (Vec<Placed>, Vec<Placed>) =
+        meshes.iter().copied().partition(|(_, _, (row, column), _)| (row + column).is_multiple_of(2));
+    // What's freed stays retired, in the layout it was freed from, through the compaction.
+    bench.renderer.hold_frames_at(Some(0));
+    for (mesh, ..) in &gone {
+        bench.renderer.free_mesh(*mesh);
+    }
+    let removed: Vec<u64> = gone.iter().map(|(_, number, ..)| *number).collect();
+    bench.frame(&[], &removed);
+    bench.frame(&[], &[]);
+    let before = bench.image();
+    for (_, _, (row, column), _) in &kept {
+        let at = cell_pixel(*row, *column);
+        assert!(before[at..at + 3].iter().any(|&c| c > 8), "the mesh in cell {row}, {column} draws");
+    }
+    let held = bench.stats();
+    assert!(held.mesh_pool_capacity > held.mesh_pool.floor, "{held:?}");
+
+    bench.renderer.compact_meshes();
+    bench.frame(&[], &[]);
+    let compacted = bench.stats();
+    assert!(!compacted.mesh_pool.compacting);
+    assert_eq!(compacted.mesh_pool.compactions, 5, "every part had room to give back");
+    assert_eq!(compacted.mesh_pool_capacity, compacted.mesh_pool.floor);
+    assert!(compacted.mesh_pool_capacity < held.mesh_pool_capacity);
+    assert_eq!(compacted.mesh_pool.retired, held.mesh_pool_capacity, "the old buffers wait for the fence");
+    assert!(same(&bench.image(), &before), "every mesh left draws as it did");
+    let placements: Vec<Placement> = kept.iter().map(|(mesh, ..)| bench.placement(*mesh)).collect();
+    let in_use = compacted.mesh_pool_bytes;
+
+    // The fence lets go: the old buffers go back to the device, the ranges freed in the old layout to nothing.
+    bench.renderer.hold_frames_at(None);
+    bench.settle();
+    let settled = bench.stats();
+    assert_eq!((settled.mesh_pool.retired, settled.mesh_pool_bytes), (0, in_use));
+    let next = bench.upload(BLUE, 4);
+    for placement in &placements {
+        assert!(disjoint(bench.placement(next), *placement), "{placement:?}");
+    }
+    bench.frame(&[], &[]);
+    assert!(same(&bench.image(), &before), "and still does");
+}
+
+/// A frame submitted before a compaction, and not yet finished, draws from the buffers it was recorded with,
+/// which the pool holds until the fence says that frame is done.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frame_in_flight_when_the_pool_compacts_still_draws_from_the_old_buffers() {
+    let mut bench = Bench::new();
+    bench.light = 1.0;
+    let meshes = grid(&mut bench);
+    let placed: Vec<_> = meshes.iter().map(|&(mesh, number, _, at)| (number, mesh, at)).collect();
+    bench.prepare_placed(&placed, &[]);
+    bench.submit();
+    let gone: Vec<&Placed> = meshes.iter().filter(|(_, number, ..)| number % 3 == 0).collect();
+    for (mesh, ..) in &gone {
+        bench.renderer.free_mesh(*mesh);
+    }
+    let removed: Vec<u64> = gone.iter().map(|(_, number, ..)| *number).collect();
+    bench.frame(&[], &removed);
+    bench.settle();
+    bench.frame(&[], &[]);
+    let expected = bench.image();
+
+    // A GPU that hasn't finished the frame recorded just before the compaction.
+    bench.renderer.hold_frames_at(Some(0));
+    bench.frame(&[], &[]);
+    bench.renderer.compact_meshes();
+    bench.prepare(&[], &[]);
+    let stats = bench.stats();
+    assert!(
+        stats.mesh_pool.compactions > 0 && stats.mesh_pool.retired > 0,
+        "the old buffers are held: {stats:?}"
+    );
+    assert!(same(&bench.image(), &expected), "the frame in flight drew from them");
+    bench.submit();
+    for _ in 0..4 {
+        bench.wait();
+        assert!(bench.stats().mesh_pool.retired > 0, "held while the fence is");
+        bench.frame(&[], &[]);
+        assert!(same(&bench.image(), &expected), "the frames after draw from the new ones");
+    }
+    bench.renderer.hold_frames_at(None);
+    bench.settle();
+    assert_eq!(bench.stats().mesh_pool.retired, 0);
+    assert!(same(&bench.image(), &expected));
 }

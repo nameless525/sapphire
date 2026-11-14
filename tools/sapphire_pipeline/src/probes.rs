@@ -81,7 +81,7 @@ mod tests;
 use std::path::{Path, PathBuf};
 
 use bevy_reflect::TypePath;
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnyMaterialDocument, FoliageMaterial, MaterialFamily};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
@@ -230,11 +230,34 @@ pub struct BakeMesh {
     pub yaw: f32,
 }
 
+/// A mesh a bake sees, where it stands: `rotation · (scale × p) + translation`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedMesh {
+    pub mesh: AssetId,
+    pub rotation: Quat,
+    pub translation: Vec3,
+    /// A negative axis mirrors.
+    pub scale: Vec3,
+}
+
+impl From<&BakeMesh> for PlacedMesh {
+    fn from(placed: &BakeMesh) -> Self {
+        Self {
+            mesh: placed.mesh,
+            rotation: det::quat_from_rotation_y(placed.yaw.to_radians()),
+            translation: Vec3::from(placed.translation),
+            scale: Vec3::ONE,
+        }
+    }
+}
+
 /// What the probe cook needs of another asset of the content tree.
 #[derive(Clone, Copy, Debug)]
 pub struct ProbeInput<'a> {
     pub source: &'a Path,
     pub settings: &'a ImportSettings,
+    /// Whether it cooks to a mesh: a mesh source's own asset, or a zone's merged mesh of a place.
+    pub mesh: bool,
     /// Its cooked file and key, once cooked.
     pub cooked: Option<(&'a Path, CacheKey)>,
 }
@@ -313,10 +336,22 @@ pub fn dependencies<'a>(
     source: &Path,
     input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<Vec<Dependency>, ProbeCookError> {
+    scene_dependencies(document.meshes.iter().map(|placed| placed.mesh), &document.timeline, source, input)
+}
+
+/// What a bake of `meshes` under `timeline` reads, for a source at `source`: each mesh and every material
+/// its slots name, by their keys, and the keys as they resolve. Checks that each mesh is one of the
+/// tree's, cooked.
+pub fn scene_dependencies<'a>(
+    meshes: impl Iterator<Item = AssetId>,
+    timeline: &BakeTimeline,
+    source: &Path,
+    input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
+) -> Result<Vec<Dependency>, ProbeCookError> {
     let mut dependencies = Vec::new();
-    for placed in &document.meshes {
-        let (path, key) = cooked_mesh(placed.mesh, &input)?;
-        dependencies.push(Dependency::Asset { id: placed.mesh, key });
+    for mesh in meshes {
+        let (path, key) = cooked_mesh(mesh, &input)?;
+        dependencies.push(Dependency::Asset { id: mesh, key });
         for id in material_ids(&read_mesh(path)?) {
             if let Some((_, key)) = input(id).and_then(|material| material.cooked) {
                 dependencies.push(Dependency::Asset { id, key });
@@ -325,7 +360,7 @@ pub fn dependencies<'a>(
     }
     dependencies.push(Dependency::File {
         path: KEYS_DEPENDENCY.to_owned(),
-        hash: keys_hash(&keys(&document.timeline, source)?),
+        hash: keys_hash(&keys(timeline, source)?),
     });
     dependencies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
     dependencies.dedup();
@@ -339,7 +374,8 @@ pub fn cook<'a>(
     cook: Cook,
     input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<Vec<u8>, ProbeCookError> {
-    let scene = scene(document, &input)?;
+    let placed: Vec<PlacedMesh> = document.meshes.iter().map(PlacedMesh::from).collect();
+    let scene = scene(&placed, &input)?;
     let keys = keys(&document.timeline, source)?;
     let grid = bake::bake(&scene, &keys, &settings(document, cook))?;
     let bytes = grid.to_cooked().map_err(ProbeGridError::Cooked)?;
@@ -416,10 +452,7 @@ fn cooked_mesh<'a>(
     id: AssetId,
     input: &impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<(&'a Path, CacheKey), ProbeCookError> {
-    input(id)
-        .filter(|input| input.settings.mesh().is_some())
-        .and_then(|input| input.cooked)
-        .ok_or(ProbeCookError::NotAMesh { id })
+    input(id).filter(|input| input.mesh).and_then(|input| input.cooked).ok_or(ProbeCookError::NotAMesh { id })
 }
 
 fn read_mesh(path: &Path) -> Result<Mesh, ProbeCookError> {
@@ -442,27 +475,34 @@ fn material_ids(mesh: &Mesh) -> Vec<AssetId> {
 }
 
 /// The world-space triangles of every mesh, LOD0, with their slots' materials and their
-/// cutouts, but those of slots the bake leaves out ([`bake_material`]: fog cards, and foliage
-/// nothing of which is drawn).
-fn scene<'a>(
-    document: &ProbeGridDocument,
+/// cutouts, but those of slots the bake leaves out (`bake_material`: fog cards, and foliage
+/// nothing of which is drawn). A mirrored mesh's triangles keep facing out.
+pub fn scene<'a>(
+    placed: &[PlacedMesh],
     input: &impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<BakeScene, ProbeCookError> {
     let mut scene = BakeScene::default();
     // Material assets met so far, each with its index in the scene's materials (none: left out).
     let mut known: Vec<(AssetId, Option<u32>)> = Vec::new();
-    for placed in &document.meshes {
-        let (path, _) = cooked_mesh(placed.mesh, input)?;
+    for &PlacedMesh { mesh, rotation, translation, scale } in placed {
+        let (path, _) = cooked_mesh(mesh, input)?;
         let mesh = read_mesh(path)?;
-        let rotation = det::quat_from_rotation_y(placed.yaw.to_radians());
-        let translation = Vec3::from(placed.translation);
+        let unscaled = scale == Vec3::ONE;
         let vertices: Vec<(Vec3, Vec3, Vec2)> = (0..mesh.streams.len())
             .filter_map(|index| mesh.streams.vertex(index))
             .map(|vertex| {
-                let position = rotation * Vec3::from(vertex.position) + translation;
-                (position, rotation * Vec3::from(vertex.normal), Vec2::from(vertex.uv))
+                // Turned through `det`, as glam's `Quat * Vec3` may take a SIMD path of its own.
+                let position = det::quat_rotate(rotation, Vec3::from(vertex.position) * scale) + translation;
+                // A normal goes through the inverse transpose: the inverse scale, then the turn.
+                let normal = if unscaled {
+                    det::quat_rotate(rotation, Vec3::from(vertex.normal))
+                } else {
+                    det::quat_rotate(rotation, Vec3::from(vertex.normal) / scale).normalize_or_zero()
+                };
+                (position, normal, Vec2::from(vertex.uv))
             })
             .collect();
+        let mirrored = scale.x * scale.y * scale.z < 0.0;
         let mut slots = Vec::with_capacity(mesh.materials.len());
         for slot in &mesh.materials {
             let material = match &slot.material {
@@ -501,7 +541,8 @@ fn scene<'a>(
             };
             let range = submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;
             for triangle in mesh.indices[range].as_chunks::<3>().0 {
-                let corners = [0, 1, 2].map(|corner| vertices[triangle[corner] as usize]);
+                let order = if mirrored { [0, 2, 1] } else { [0, 1, 2] };
+                let corners = order.map(|corner| vertices[triangle[corner] as usize]);
                 scene.triangles.push(BakeTriangle {
                     positions: corners.map(|(position, ..)| position),
                     normals: corners.map(|(_, normal, _)| normal),

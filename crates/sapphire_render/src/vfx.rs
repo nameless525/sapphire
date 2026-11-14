@@ -82,6 +82,7 @@ use std::ops::Range;
 
 #[cfg(test)]
 mod gpu_tests;
+pub(crate) mod mesh;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -96,6 +97,7 @@ use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
+use mesh::{ColorStep, MeshBind, MeshDraws, MeshPipelines, MeshUpload, VfxMeshes, WarmedMeshes};
 
 /// The frame graph's pass under temporal AA, whose time is effects' GPU cost, against spec §3.3's
 /// "Particles, distortion" (1.2 ms on Desktop-Low). Elsewhere they draw inside the main pass, and
@@ -123,14 +125,17 @@ pub struct VfxRenderStats {
     pub sprites: u32,
     /// Ribbon points drawn in the last prepared frame.
     pub ribbon_points: u32,
-    /// Sprites and points left out because they weren't finite or didn't fit their buffer's limit.
+    /// Sprites, points and meshes left out because they weren't finite or didn't fit their buffer's limit.
     pub rejected: u32,
-    /// Pipelines built: 0 until a frame has effects, or [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx).
+    /// Pipelines built, the sprites' and the meshes': 0 until a frame has effects, or
+    /// [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx).
     pub pipelines: u32,
+    /// Effect meshes drawn in the last prepared frame (M5 L5, the `mesh` module).
+    pub meshes: u32,
     /// Bytes of instance data the last prepared frame uploads.
     pub bytes: u64,
     /// The ranges of instances the last prepared frame's color draws: one but where a ribbon must draw
-    /// behind a sprite that covers (see the module docs).
+    /// behind a sprite that covers, or a mesh between sprites (see the module docs).
     pub color_draws: u32,
     /// Whether they draw after temporal AA's resolve, in [`PASS`], rather than in the main pass.
     pub after_resolve: bool,
@@ -479,15 +484,31 @@ impl Builder {
     }
 }
 
-/// The pipelines built so far, and the module later ones come from: what [`Vfx::rebuild`] builds.
-#[derive(Clone, Debug)]
+/// The pipelines built so far, the sprites' and the meshes': what [`Vfx::rebuild`] builds. `None` is what
+/// wasn't rebuilt, which [`Vfx::set_pipelines`] keeps.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct VfxPipelines {
+    sprites: Option<SpritePipelines>,
+    meshes: Option<MeshPipelines>,
+}
+
+impl VfxPipelines {
+    /// How many are built, for the shader builds' count.
+    pub(crate) fn count(&self) -> u32 {
+        self.sprites.as_ref().map_or(0, SpritePipelines::count)
+            + self.meshes.as_ref().map_or(0, MeshPipelines::count)
+    }
+}
+
+/// The sprites' pipelines built so far, and the module later ones come from.
+#[derive(Clone, Debug)]
+pub(crate) struct SpritePipelines {
     module: wgpu::ShaderModule,
     color: Option<wgpu::RenderPipeline>,
     mask: Option<wgpu::RenderPipeline>,
 }
 
-impl VfxPipelines {
+impl SpritePipelines {
     /// How many are built, for the shader builds' count.
     pub(crate) fn count(&self) -> u32 {
         u32::from(self.color.is_some()) + u32::from(self.mask.is_some())
@@ -553,18 +574,34 @@ impl VfxMaker {
     }
 }
 
-/// What a warm-up made of effects' first frame ([`Vfx::warm`]): all of it, or the pipelines missing.
+/// What a warm-up made of effects' first frame ([`Vfx::warm`]): the sprites' part and the meshes'.
 #[derive(Debug)]
-pub(crate) enum WarmedVfx {
+pub(crate) struct WarmedVfx {
+    sprites: Option<WarmedSprites>,
+    meshes: Option<WarmedMeshes>,
+}
+
+/// Which of the effects' parts to build: the sprites' (with ribbons), the meshes' (M5 L5), and with either
+/// the mask's pipeline, where post reads scene color's alpha.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct VfxParts {
+    pub sprites: bool,
+    pub meshes: bool,
+    pub mask: bool,
+}
+
+/// What a warm-up made of the sprites' first frame: all of it, or the pipelines missing.
+#[derive(Debug)]
+pub(crate) enum WarmedSprites {
     Made(Box<VfxGpu>),
-    Pipelines(VfxPipelines),
+    Pipelines(SpritePipelines),
 }
 
 /// Everything effects make when they're first drawn.
 #[derive(Debug)]
 pub(crate) struct VfxGpu {
     builder: Builder,
-    pipelines: VfxPipelines,
+    pipelines: SpritePipelines,
     sprites: GrowableBuffer,
     ribbon: GrowableBuffer,
     uniforms: wgpu::Buffer,
@@ -704,7 +741,7 @@ impl VfxGpu {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         builder: Builder,
-        pipelines: VfxPipelines,
+        pipelines: SpritePipelines,
         layouts: Layouts,
     ) -> Self {
         let limit = device.limits().max_storage_buffer_binding_size;
@@ -800,13 +837,18 @@ pub(crate) struct Vfx {
     after_resolve: bool,
     builds: PipelineBuilds,
     gpu: Option<Box<VfxGpu>>,
+    /// The meshes' part (M5 L5), with its own resources, made only for a mesh.
+    meshes: VfxMeshes,
     /// This frame's sprites from back to front, and the sort's keys, kept across frames so a warm
     /// frame allocates nothing.
     sprites: Vec<GpuVfxSprite>,
     order: Vec<(f32, u32)>,
     points: Vec<GpuVfxRibbonPoint>,
-    /// The color draw's ranges of instances.
+    /// The sprites' and ribbons' ranges of instances.
     plan: DrawPlan,
+    /// The drawn sprites' view depths, back to front, and the color draw's steps with the meshes among them.
+    sprite_depths: Vec<f32>,
+    steps: Vec<ColorStep>,
     /// The reciprocal of the frame's exposure.
     emissive: f32,
     /// The frame's post reads scene color's alpha.
@@ -835,40 +877,77 @@ impl Vfx {
             after_resolve,
             builds: builds.clone(),
             gpu: None,
+            meshes: VfxMeshes::default(),
             sprites: Vec::new(),
             order: Vec::new(),
             points: Vec::new(),
             plan: DrawPlan::default(),
+            sprite_depths: Vec::new(),
+            steps: Vec::new(),
             emissive: 1.0,
             mask_read: false,
             stats: VfxRenderStats { after_resolve, ..VfxRenderStats::default() },
         }
     }
 
-    /// Makes what the first effect needs, and the pipelines it draws through (`mask` too, if post
-    /// reads scene color's alpha), that aren't built yet. Off the frame where it can be ([`Self::warm`],
-    /// [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx)): on the frame thread otherwise.
-    pub(crate) fn build(&mut self, sources: &ShaderSources, mask: bool, on: BuildOn) {
-        if self.gpu.is_none() {
-            let (builder, layouts) = self.maker().builder();
-            let module = shaders::module(&self.device, Program::Vfx, sources);
-            let pipelines = VfxPipelines { module, color: None, mask: None };
-            self.gpu = Some(Box::new(VfxGpu::new(&self.device, &self.queue, builder, pipelines, layouts)));
+    /// Makes what the first effect of each part in `parts` needs, and the pipelines it draws through (`mask`
+    /// too, if post reads scene color's alpha), that aren't built yet. Off the frame where it can be
+    /// ([`Self::warm`], [`Renderer::prewarm_vfx`](crate::Renderer::prewarm_vfx)): on the frame thread otherwise.
+    pub(crate) fn build(&mut self, sources: &ShaderSources, parts: VfxParts, on: BuildOn) {
+        if parts.sprites {
+            if self.gpu.is_none() {
+                let (builder, layouts) = self.maker().builder();
+                let module = shaders::module(&self.device, Program::Vfx, sources);
+                let pipelines = SpritePipelines { module, color: None, mask: None };
+                self.gpu =
+                    Some(Box::new(VfxGpu::new(&self.device, &self.queue, builder, pipelines, layouts)));
+            }
+            let gpu = self.gpu.as_mut().expect("made above");
+            gpu.pipelines.build_missing(&gpu.builder, parts.mask, on);
         }
-        let gpu = self.gpu.as_mut().expect("made above");
-        gpu.pipelines.build_missing(&gpu.builder, mask, on);
-        self.stats.pipelines = gpu.pipelines.count();
+        if parts.meshes {
+            self.meshes.build(&self.maker(), &self.queue, sources, parts.mask, on);
+        }
+        self.count_pipelines();
     }
 
-    /// Whether the effects' pipelines are built, and their mask's: what effects of another tier build before
+    fn count_pipelines(&mut self) {
+        self.stats.pipelines =
+            self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count()) + self.meshes.pipelines();
+    }
+
+    /// Which parts' pipelines are built, and whether a mask's is: what effects of another tier build before
     /// they take these ones' place (M4 T3). `None` while nothing is.
-    pub(crate) fn held(&self) -> Option<bool> {
-        self.gpu.as_ref().filter(|gpu| gpu.pipelines.color.is_some()).map(|gpu| gpu.pipelines.mask.is_some())
+    pub(crate) fn held(&self) -> Option<VfxParts> {
+        let sprites = self
+            .gpu
+            .as_ref()
+            .filter(|gpu| gpu.pipelines.color.is_some())
+            .map(|gpu| gpu.pipelines.mask.is_some());
+        let meshes = self.meshes.held();
+        (sprites.is_some() || meshes.is_some()).then(|| VfxParts {
+            sprites: sprites.is_some(),
+            meshes: meshes.is_some(),
+            mask: sprites.unwrap_or(false) || meshes.unwrap_or(false),
+        })
     }
 
-    /// A warm-up's step (`warm_up`): what [`Self::build`] would make and build, where `on` says, for
-    /// [`Self::adopt`]. `None` when it's built.
-    pub(crate) fn warm(&self, mask: bool, on: BuildOn) -> Option<Step<WarmedVfx>> {
+    /// A warm-up's step (`warm_up`): what [`Self::build`] would make and build of `parts`, where `on` says,
+    /// for [`Self::adopt`]. `None` when it's built.
+    pub(crate) fn warm(&self, parts: VfxParts, on: BuildOn) -> Option<Step<WarmedVfx>> {
+        let sprites = parts.sprites.then(|| self.warm_sprites(parts.mask, on)).flatten();
+        let meshes =
+            parts.meshes.then(|| self.meshes.warm(self.maker(), &self.queue, parts.mask, on)).flatten();
+        if sprites.is_none() && meshes.is_none() {
+            return None;
+        }
+        Some(Box::new(move |sources, cancel| WarmedVfx {
+            sprites: sprites.map(|step| step(sources, cancel)),
+            meshes: meshes.map(|step| step(sources, cancel)),
+        }))
+    }
+
+    fn warm_sprites(&self, mask: bool, on: BuildOn) -> Option<Step<WarmedSprites>> {
         if let Some(gpu) = &self.gpu {
             if gpu.pipelines.color.is_some() && (!mask || gpu.pipelines.mask.is_some()) {
                 return None;
@@ -876,31 +955,34 @@ impl Vfx {
             let (builder, mut pipelines) = (gpu.builder.clone(), gpu.pipelines.clone());
             return Some(Box::new(move |_, _| {
                 pipelines.build_missing(&builder, mask, on);
-                WarmedVfx::Pipelines(pipelines)
+                WarmedSprites::Pipelines(pipelines)
             }));
         }
         let (maker, queue) = (self.maker(), self.queue.clone());
         Some(Box::new(move |sources, _| {
             let (builder, layouts) = maker.builder();
             let module = shaders::module(&maker.device, Program::Vfx, sources);
-            let mut pipelines = VfxPipelines { module, color: None, mask: None };
+            let mut pipelines = SpritePipelines { module, color: None, mask: None };
             pipelines.build_missing(&builder, mask, on);
-            WarmedVfx::Made(Box::new(VfxGpu::new(&maker.device, &queue, builder, pipelines, layouts)))
+            WarmedSprites::Made(Box::new(VfxGpu::new(&maker.device, &queue, builder, pipelines, layouts)))
         }))
     }
 
     /// Takes in what a warm-up made or built, where it's still missing. What it made is dropped if the first
     /// effect made its own meanwhile: what that lacks, the prewarm that follows builds.
     pub(crate) fn adopt(&mut self, warmed: WarmedVfx) {
-        match (warmed, &mut self.gpu) {
-            (WarmedVfx::Made(made), None) => self.gpu = Some(made),
-            (WarmedVfx::Pipelines(warmed), Some(gpu)) => {
+        match (warmed.sprites, &mut self.gpu) {
+            (Some(WarmedSprites::Made(made)), None) => self.gpu = Some(made),
+            (Some(WarmedSprites::Pipelines(warmed)), Some(gpu)) => {
                 gpu.pipelines.color = gpu.pipelines.color.take().or(warmed.color);
                 gpu.pipelines.mask = gpu.pipelines.mask.take().or(warmed.mask);
             }
             _ => {}
         }
-        self.stats.pipelines = self.gpu.as_ref().map_or(0, |gpu| gpu.pipelines.count());
+        if let Some(meshes) = warmed.meshes {
+            self.meshes.adopt(meshes);
+        }
+        self.count_pipelines();
     }
 
     fn maker(&self) -> VfxMaker {
@@ -915,8 +997,9 @@ impl Vfx {
     }
 
     /// The CPU half of a frame: orders the frame's effects, back to front from `camera`, sizes their
-    /// buffers and builds what they first need from `sources`. `exposure` is the frame's multiplier,
-    /// and `mask` whether post reads scene color's alpha. Empty, it costs this call alone.
+    /// buffers and builds what they first need from `sources`: the sprites' part only for sprites or
+    /// ribbons, the meshes' only for meshes. `exposure` is the frame's multiplier, and `mask` whether post
+    /// reads scene color's alpha. Empty, it costs this call alone.
     pub(crate) fn prepare(
         &mut self,
         frame: &VfxFrame,
@@ -930,8 +1013,13 @@ impl Vfx {
         self.sprites.clear();
         self.points.clear();
         self.order.clear();
+        self.sprite_depths.clear();
+        self.steps.clear();
+        self.plan.draws.clear();
+        self.meshes.clear();
         self.stats.sprites = 0;
         self.stats.ribbon_points = 0;
+        self.stats.meshes = 0;
         self.stats.rejected = 0;
         self.stats.bytes = 0;
         self.stats.color_draws = 0;
@@ -940,13 +1028,38 @@ impl Vfx {
             if let Some(gpu) = &mut self.gpu {
                 gpu.depth_groups = CachedBindGroup::default();
             }
+            self.meshes.forget_depth();
             return;
         };
-        self.build(sources, mask, on);
-        let gpu = self.gpu.as_mut().expect("just built");
+        let parts = VfxParts {
+            sprites: !(frame.sprites.is_empty() && frame.ribbon_points.is_empty()),
+            meshes: !frame.meshes.is_empty(),
+            mask,
+        };
+        self.build(sources, parts, on);
         self.emissive = 1.0 / exposure.max(1e-6);
         self.mask_read = mask;
+        if parts.sprites {
+            self.prepare_sprites(frame, camera);
+        } else if let Some(gpu) = &mut self.gpu {
+            gpu.depth_groups = CachedBindGroup::default();
+        }
+        if parts.meshes {
+            self.meshes.prepare(&frame.meshes, camera, &self.device, &self.queue);
+            self.stats.meshes = self.meshes.count();
+            self.stats.rejected += self.meshes.rejected;
+            self.stats.bytes += self.meshes.bytes();
+        } else {
+            self.meshes.forget_depth();
+        }
+        self.sprite_depths.extend(self.order.iter().take(self.sprites.len()).map(|&(depth, _)| depth));
+        mesh::plan_steps(&self.plan.draws, &self.sprite_depths, self.meshes.depths(), &mut self.steps);
+        self.stats.color_draws = self.steps.len() as u32;
+    }
 
+    /// The sprites' and ribbons' share of [`Self::prepare`], once their part is built.
+    fn prepare_sprites(&mut self, frame: &VfxFrame, camera: &CameraData) {
+        let gpu = self.gpu.as_mut().expect("built for sprites");
         // Whatever would pass a buffer's limit doesn't draw (review RA-004): the simulation's caps
         // are far below it.
         let sprite_size = size_of::<GpuVfxSprite>() as u64;
@@ -968,7 +1081,6 @@ impl Vfx {
         let points = &frame.ribbon_points[..frame.ribbon_points.len().min(max_points)];
         pack_ribbon_points(points, &mut self.points);
         plan_color_draws(&self.sprites, &self.order, &self.points, camera, &mut self.plan);
-        self.stats.color_draws = self.plan.draws.len() as u32;
         self.stats.sprites = self.sprites.len() as u32;
         self.stats.ribbon_points = self.points.len() as u32;
         let total = frame.sprites.len() + frame.ribbon_points.len();
@@ -990,72 +1102,93 @@ impl Vfx {
         }
     }
 
-    /// Whether this frame draws effects.
-    fn drawn(&self) -> bool {
-        self.gpu.is_some() && !(self.sprites.is_empty() && self.points.is_empty())
-    }
-
     /// The frame's uploads and draws, for [`Renderer::record`](crate::Renderer::record): `None` when
     /// it has no effects. `output` is the target's size.
     pub(crate) fn split_for_record(&mut self, output: (u32, u32)) -> Option<(VfxUpload<'_>, VfxDraw<'_>)> {
-        if !self.drawn() {
+        let instances = (self.sprites.len() + self.points.len()) as u32;
+        let sprites = self.gpu.as_mut().filter(|_| instances > 0).and_then(|gpu| {
+            let color = gpu.pipelines.color.as_ref()?;
+            let uniforms = GpuVfxUniforms {
+                target_size: [
+                    output.0 as f32,
+                    output.1 as f32,
+                    1.0 / output.0.max(1) as f32,
+                    1.0 / output.1.max(1) as f32,
+                ],
+                sprite_count: self.sprites.len() as u32,
+                emissive: self.emissive,
+                padding: [0.0; 2],
+            };
+            let upload = SpriteUpload {
+                uniforms,
+                uniforms_buffer: &gpu.uniforms,
+                sprites: &self.sprites,
+                sprites_buffer: gpu.sprites.buffer(),
+                points: &self.points,
+                points_buffer: gpu.ribbon.buffer(),
+            };
+            let main = SpriteMain {
+                color: (!self.after_resolve).then_some(color),
+                mask: gpu.pipelines.mask.as_ref().filter(|_| self.mask_read),
+                buffers: &gpu.buffers_group,
+                textures: &gpu.main_group,
+                instances,
+            };
+            let after = self.after_resolve.then_some(SpriteAfter {
+                color,
+                buffers: &gpu.buffers_group,
+                textures_layout: &gpu.textures_layout,
+                map: &gpu.map,
+                depth_groups: &mut gpu.depth_groups,
+            });
+            Some((upload, main, after))
+        });
+        let meshes = self.meshes.split_for_record(output, self.emissive, self.after_resolve, self.mask_read);
+        if sprites.is_none() && meshes.is_none() {
             return None;
         }
-        let gpu = self.gpu.as_mut()?;
-        let uniforms = GpuVfxUniforms {
-            target_size: [
-                output.0 as f32,
-                output.1 as f32,
-                1.0 / output.0.max(1) as f32,
-                1.0 / output.1.max(1) as f32,
-            ],
-            sprite_count: self.sprites.len() as u32,
-            emissive: self.emissive,
-            padding: [0.0; 2],
+        let (sprite_upload, sprite_main, sprite_after) = match sprites {
+            Some((upload, main, after)) => (Some(upload), Some(main), after),
+            None => (None, None, None),
         };
-        let upload = VfxUpload {
-            uniforms,
-            uniforms_buffer: &gpu.uniforms,
-            sprites: &self.sprites,
-            sprites_buffer: gpu.sprites.buffer(),
-            points: &self.points,
-            points_buffer: gpu.ribbon.buffer(),
+        let (mesh_upload, mesh_draws) = meshes.unzip();
+        let (mesh_main, mesh_after) = match mesh_draws {
+            Some(MeshDraws { main, after }) => (Some(main), after),
+            None => (None, None),
         };
-        let instances = (self.sprites.len() + self.points.len()) as u32;
-        let color = gpu.pipelines.color.as_ref()?;
-        let main = VfxMainDraw {
-            color: (!self.after_resolve).then_some(color),
-            mask: gpu.pipelines.mask.as_ref().filter(|_| self.mask_read),
-            buffers: &gpu.buffers_group,
-            textures: &gpu.main_group,
-            instances,
-            draws: &self.plan.draws,
-        };
+        let upload = VfxUpload { sprites: sprite_upload, meshes: mesh_upload };
+        let main = VfxMainDraw { sprites: sprite_main, meshes: mesh_main, steps: &self.steps };
         let after = self.after_resolve.then_some(VfxAfterResolve {
             device: &self.device,
-            color,
-            buffers: &gpu.buffers_group,
-            textures_layout: &gpu.textures_layout,
-            map: &gpu.map,
-            depth_groups: &mut gpu.depth_groups,
-            draws: &self.plan.draws,
+            sprites: sprite_after,
+            meshes: mesh_after,
+            steps: &self.steps,
         });
         Some((upload, VfxDraw { main, after }))
     }
 
-    /// The pipelines built so far, to build anew from new sources (`shader_builds`). `None` until
-    /// the first effect: nothing to build.
-    pub(crate) fn rebuild(&self) -> Option<Step<VfxPipelines>> {
-        let gpu = self.gpu.as_ref()?;
-        let builder = gpu.builder.clone();
-        let (color, mask) = (gpu.pipelines.color.is_some(), gpu.pipelines.mask.is_some());
-        Some(Box::new(move |sources, _cancel| {
-            let module = shaders::module(&builder.device, Program::Vfx, sources);
-            VfxPipelines {
-                color: color.then(|| builder.color(&module)),
-                mask: mask.then(|| builder.mask(&module)),
-                module,
+    /// The pipelines built so far, to build anew from new sources (`shader_builds`): the sprites' if
+    /// `sprites` changed, the meshes' if `meshes` did. `None` until the first effect: nothing to build.
+    pub(crate) fn rebuild(&self, sprites: bool, meshes: bool) -> Option<Step<VfxPipelines>> {
+        let sprites = self.gpu.as_ref().filter(|_| sprites).map(|gpu| {
+            let builder = gpu.builder.clone();
+            let (color, mask) = (gpu.pipelines.color.is_some(), gpu.pipelines.mask.is_some());
+            move |sources: &ShaderSources| {
+                let module = shaders::module(&builder.device, Program::Vfx, sources);
+                SpritePipelines {
+                    color: color.then(|| builder.color(&module)),
+                    mask: mask.then(|| builder.mask(&module)),
+                    module,
+                }
             }
+        });
+        let meshes = meshes.then(|| self.meshes.rebuild()).flatten();
+        if sprites.is_none() && meshes.is_none() {
+            return None;
+        }
+        Some(Box::new(move |sources, cancel| VfxPipelines {
+            sprites: sprites.map(|build| build(sources)),
+            meshes: meshes.map(|step| step(sources, cancel)),
         }))
     }
 
@@ -1064,11 +1197,15 @@ impl Vfx {
         self.stats.pipelines
     }
 
+    /// Swaps in what [`Self::rebuild`] built, keeping what it didn't.
     pub(crate) fn set_pipelines(&mut self, pipelines: VfxPipelines) {
-        if let Some(gpu) = self.gpu.as_mut() {
-            gpu.pipelines = pipelines;
-            self.stats.pipelines = gpu.pipelines.count();
+        if let (Some(gpu), Some(sprites)) = (self.gpu.as_mut(), pipelines.sprites) {
+            gpu.pipelines = sprites;
         }
+        if let Some(meshes) = pipelines.meshes {
+            self.meshes.set_pipelines(meshes);
+        }
+        self.count_pipelines();
     }
 
     pub(crate) fn stats(&self) -> VfxRenderStats {
@@ -1079,6 +1216,13 @@ impl Vfx {
 /// The frame's effects' uploads.
 #[derive(Debug)]
 pub(crate) struct VfxUpload<'a> {
+    sprites: Option<SpriteUpload<'a>>,
+    meshes: Option<MeshUpload<'a>>,
+}
+
+/// The sprites' and ribbons' uploads.
+#[derive(Debug)]
+struct SpriteUpload<'a> {
     uniforms: GpuVfxUniforms,
     uniforms_buffer: &'a wgpu::Buffer,
     sprites: &'a [GpuVfxSprite],
@@ -1089,9 +1233,14 @@ pub(crate) struct VfxUpload<'a> {
 
 impl VfxUpload<'_> {
     pub(crate) fn write(&self, belt: &mut wgpu::util::StagingBelt, encoder: &mut wgpu::CommandEncoder) {
-        buffer::stage(belt, encoder, self.uniforms_buffer, 0, bytemuck::bytes_of(&self.uniforms));
-        buffer::stage(belt, encoder, self.sprites_buffer, 0, bytemuck::cast_slice(self.sprites));
-        buffer::stage(belt, encoder, self.points_buffer, 0, bytemuck::cast_slice(self.points));
+        if let Some(sprites) = &self.sprites {
+            buffer::stage(belt, encoder, sprites.uniforms_buffer, 0, bytemuck::bytes_of(&sprites.uniforms));
+            buffer::stage(belt, encoder, sprites.sprites_buffer, 0, bytemuck::cast_slice(sprites.sprites));
+            buffer::stage(belt, encoder, sprites.points_buffer, 0, bytemuck::cast_slice(sprites.points));
+        }
+        if let Some(meshes) = &self.meshes {
+            meshes.write(belt, encoder);
+        }
     }
 }
 
@@ -1104,48 +1253,115 @@ pub(crate) struct VfxDraw<'a> {
     pub after: Option<VfxAfterResolve<'a>>,
 }
 
-/// What ends the main pass: the mask, where post reads it, and the color without temporal AA.
+/// What draws sprites and ribbons in a pass: groups 2 and 3.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct VfxMainDraw<'a> {
+struct SpriteBind<'a> {
+    buffers: &'a wgpu::BindGroup,
+    textures: &'a wgpu::BindGroup,
+}
+
+impl SpriteBind<'_> {
+    fn bind(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) {
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(2, self.buffers, &[]);
+        pass.set_bind_group(3, self.textures, &[]);
+    }
+}
+
+/// Draws the color `steps` in order, binding sprites' or meshes' pipeline and groups only when the kind of
+/// step changes, so a frame of sprites alone draws as it always has.
+fn draw_steps(
+    pass: &mut wgpu::RenderPass<'_>,
+    steps: &[ColorStep],
+    sprites: Option<(&wgpu::RenderPipeline, SpriteBind<'_>)>,
+    meshes: Option<(&wgpu::RenderPipeline, MeshBind<'_>)>,
+) {
+    // Which kind is bound: none, sprites' or meshes'.
+    let mut bound = None;
+    for step in steps {
+        match step {
+            ColorStep::Instances(range) => {
+                let Some((pipeline, bind)) = sprites else { continue };
+                if bound != Some(false) {
+                    bind.bind(pass, pipeline);
+                    bound = Some(false);
+                }
+                pass.draw(0..4, range.clone());
+            }
+            ColorStep::Mesh(index) => {
+                let Some((pipeline, bind)) = &meshes else { continue };
+                if bound != Some(true) {
+                    bind.bind(pass, pipeline);
+                    bound = Some(true);
+                }
+                bind.draw(pass, *index);
+            }
+        }
+    }
+}
+
+/// What ends the main pass of the sprites.
+#[derive(Clone, Copy, Debug)]
+struct SpriteMain<'a> {
     color: Option<&'a wgpu::RenderPipeline>,
     mask: Option<&'a wgpu::RenderPipeline>,
     buffers: &'a wgpu::BindGroup,
     textures: &'a wgpu::BindGroup,
     instances: u32,
-    /// The color draw's ranges of instances.
-    draws: &'a [Range<u32>],
+}
+
+/// What ends the main pass: the masks, where post reads them, and the color without temporal AA.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VfxMainDraw<'a> {
+    sprites: Option<SpriteMain<'a>>,
+    meshes: Option<mesh::MeshMain<'a>>,
+    /// The color draw's steps.
+    steps: &'a [ColorStep],
 }
 
 impl VfxMainDraw<'_> {
     /// Binds `frame`, the world's frame group, as group 0; group 1 stays as the main pass bound it.
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
         pass.set_bind_group(0, frame, &[]);
-        pass.set_bind_group(2, self.buffers, &[]);
-        pass.set_bind_group(3, self.textures, &[]);
-        if let Some(mask) = self.mask {
-            pass.set_pipeline(mask);
-            pass.draw(0..4, 0..self.instances);
+        let sprite_bind =
+            self.sprites.map(|sprites| SpriteBind { buffers: sprites.buffers, textures: sprites.textures });
+        if let (Some(sprites), Some(bind)) = (self.sprites, sprite_bind)
+            && let Some(mask) = sprites.mask
+        {
+            bind.bind(pass, mask);
+            pass.draw(0..4, 0..sprites.instances);
         }
-        if let Some(color) = self.color {
-            pass.set_pipeline(color);
-            for instances in self.draws {
-                pass.draw(0..4, instances.clone());
-            }
+        if let Some(meshes) = self.meshes
+            && let Some(mask) = meshes.mask
+        {
+            meshes.bind.draw_all(pass, mask);
+        }
+        let sprites = self.sprites.and_then(|sprites| sprites.color).zip(sprite_bind);
+        let meshes = self.meshes.and_then(|meshes| meshes.color.map(|color| (color, meshes.bind)));
+        if sprites.is_some() || meshes.is_some() {
+            draw_steps(pass, self.steps, sprites, meshes);
         }
     }
+}
+
+/// What draws the sprites over temporal AA's resolve.
+#[derive(Debug)]
+struct SpriteAfter<'a> {
+    color: &'a wgpu::RenderPipeline,
+    buffers: &'a wgpu::BindGroup,
+    textures_layout: &'a wgpu::BindGroupLayout,
+    map: &'a wgpu::TextureView,
+    depth_groups: &'a mut CachedBindGroup<2>,
 }
 
 /// What draws over temporal AA's resolve.
 #[derive(Debug)]
 pub(crate) struct VfxAfterResolve<'a> {
     device: &'a wgpu::Device,
-    color: &'a wgpu::RenderPipeline,
-    buffers: &'a wgpu::BindGroup,
-    textures_layout: &'a wgpu::BindGroupLayout,
-    map: &'a wgpu::TextureView,
-    depth_groups: &'a mut CachedBindGroup<2>,
-    /// The color draw's ranges of instances.
-    draws: &'a [Range<u32>],
+    sprites: Option<SpriteAfter<'a>>,
+    meshes: Option<mesh::MeshAfter<'a>>,
+    /// The color draw's steps.
+    steps: &'a [ColorStep],
 }
 
 /// The pass's textures.
@@ -1162,7 +1378,7 @@ pub(crate) struct AfterResolveTargets {
 impl VfxAfterResolve<'_> {
     /// Copies the resolved frame and draws over it. `frame` and `view` are groups 0 and 1.
     pub(crate) fn record(
-        self,
+        mut self,
         ctx: &mut PassContext<'_>,
         targets: AfterResolveTargets,
         frame: &wgpu::BindGroup,
@@ -1177,7 +1393,13 @@ impl VfxAfterResolve<'_> {
         );
         let label = labels.then_some("vfx");
         let depth = ctx.view(targets.depth);
-        let textures = self.depth_groups.get(self.device, label, self.textures_layout, &[self.map, depth]);
+        let sprites = self.sprites.as_mut().map(|sprites| {
+            let textures =
+                sprites.depth_groups.get(self.device, label, sprites.textures_layout, &[sprites.map, depth]);
+            (sprites.color, SpriteBind { buffers: sprites.buffers, textures })
+        });
+        let meshes =
+            self.meshes.as_mut().map(|meshes| (meshes.color, meshes.bind(self.device, label, depth)));
         let timestamp_writes = ctx.timestamp_writes();
         let attachment = ctx.view(targets.composed);
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1191,14 +1413,9 @@ impl VfxAfterResolve<'_> {
             timestamp_writes,
             ..Default::default()
         });
-        pass.set_pipeline(self.color);
         pass.set_bind_group(0, frame, &[]);
         pass.set_bind_group(1, view, &[0]);
-        pass.set_bind_group(2, self.buffers, &[]);
-        pass.set_bind_group(3, textures, &[]);
-        for instances in self.draws {
-            pass.draw(0..4, instances.clone());
-        }
+        draw_steps(&mut pass, self.steps, sprites, meshes);
     }
 }
 

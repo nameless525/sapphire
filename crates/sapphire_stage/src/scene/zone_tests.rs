@@ -353,6 +353,18 @@ struct Trip {
     frames: u32,
     /// The longest frame's content update, while it loaded.
     worst_upload: Duration,
+    pool: PoolTrip,
+}
+
+/// What the mesh pool did over a trip's arrival (M5 D9).
+#[derive(Clone, Copy, Debug)]
+struct PoolTrip {
+    /// Its capacity as the zone was ready to arrive in: the last zone's and what's come of the new one.
+    before: u64,
+    /// The most its buffers held from there to the arrival's end, those replaced and still read among them.
+    peak: u64,
+    /// Frames from arriving until [`Scene::zone_arrived`].
+    frames: u32,
 }
 
 impl Walk {
@@ -375,20 +387,30 @@ impl Walk {
             assert!(frames < 100_000, "it never came");
             std::thread::sleep(Duration::from_micros(100));
         }
-        let trip = Trip { load: stopwatch.elapsed(), frames, worst_upload };
+        let before = self.renderer.stats().mesh_pool_capacity;
+        let mut trip = Trip {
+            load: stopwatch.elapsed(),
+            frames,
+            worst_upload,
+            pool: PoolTrip { before, peak: before, frames: 0 },
+        };
         let arrived = self.scene.arrive_in_zone(room(to).zone, &mut self.content).expect("it's ready");
         if let Some(left) = arrived.left {
             let report = left.expect("the last zone's pack unmounts");
             assert_eq!(report.cancelled, 0, "{report:?}");
         }
         for _ in 0..1_000 {
-            if self.scene.zone_settled() {
+            if self.scene.zone_arrived(&self.content) {
                 break;
             }
             self.frame();
+            let stats = self.renderer.stats();
+            trip.pool.peak = trip.pool.peak.max(stats.mesh_pool_capacity + stats.mesh_pool.retired);
+            trip.pool.frames += 1;
         }
-        assert!(self.scene.zone_settled(), "{:?}", self.scene.stream_stats());
-        self.scene.release_zone_focus();
+        let pool = self.renderer.stats().mesh_pool;
+        assert!(self.scene.zone_arrived(&self.content), "{:?}, {pool:?}", self.scene.stream_stats());
+        self.scene.end_arrival(&mut self.content);
         trip
     }
 
@@ -403,6 +425,7 @@ impl Walk {
             resident,
             meshes: stats.meshes,
             mesh_pool_bytes: stats.mesh_pool_bytes,
+            mesh_pool_capacity: stats.mesh_pool_capacity,
             materials: stats.materials,
             material_bytes: stats.material_bytes,
             texture_bytes: self.content.texture_bytes(),
@@ -418,6 +441,8 @@ struct TripHolds {
     resident: u64,
     meshes: u32,
     mesh_pool_bytes: u64,
+    /// What the pool's buffers hold (M5 D9): a trip gives the last place's room back.
+    mesh_pool_capacity: u64,
     materials: u32,
     material_bytes: u64,
     texture_bytes: u64,
@@ -1242,9 +1267,9 @@ fn a_zone_coming_next_warms_up_off_the_frame() {
 
 /// Trip after trip between two zones, a hub and a room, each with a probe grid it brings (M5 M6), on each class
 /// of device's settings and budgets: after the first round, each visit to a room holds the same as the visit
-/// before it, on the server and the renderer, the other's pack kept mounted as the room leads back to it, and
-/// no buffer grows. `--nocapture` in release reports it at a size worth reporting; a debug build, as CI's,
-/// goes between small ones and holds the same.
+/// before it, on the server and the renderer, its mesh pool's capacity among it (M5 D9), the other's pack kept
+/// mounted as the room leads back to it, and no buffer but the mesh pool's grows. `--nocapture` in release
+/// reports it at a size worth reporting; a debug build, as CI's, goes between small ones and holds the same.
 #[test]
 #[ignore = "needs a GPU"]
 fn a_repeated_trip_does_not_grow() {
@@ -1280,8 +1305,8 @@ fn a_repeated_trip_does_not_grow() {
             2 * zone.quads * zone.quads,
             zone.texture,
         );
-        // A hub holds where it is and where it leads at once, so the first round may grow the pool to two
-        // rooms' worth; no round after it grows anything.
+        // A hub holds where it is and where it leads at once, so the first round may grow buffers to two rooms'
+        // worth; no round after it grows anything but the mesh pool, which gave the last room back.
         let mut after_first: Option<(u64, u32)> = None;
         // What each room held on the round before, from the second on.
         let mut visits: [Option<TripHolds>; 2] = [None, None];
@@ -1314,8 +1339,10 @@ fn a_repeated_trip_does_not_grow() {
             );
             walk.trip(lap % 2, settings);
             holds_as_before(&mut walk, lap % 2, lap, "back");
+            // The pool gives each room's room back as it's left (M5 D9), so it grows again on each arrival, to
+            // what that room held the time before: `holds_as_before` counts its capacity. Nothing else grows.
             let stats = walk.renderer.stats();
-            let now = (stats.mesh_pool_capacity, stats.buffer_growths);
+            let now = (stats.mesh_pool_capacity, stats.buffer_growths - stats.mesh_pool.growths);
             match after_first {
                 None => {
                     println!("{name}: {} B of mesh pool after the first round", now.0);
@@ -1327,5 +1354,48 @@ fn a_repeated_trip_does_not_grow() {
                 }
             }
         }
+    }
+}
+
+/// A trip gives the mesh pool's room back under its wipe (M5 D9): around three rooms, each leading only to the
+/// next, so a room left isn't kept coming (as the town isn't, and unlike a hub's way back, M5 M6), and on each
+/// arrival the pool comes down to its floor for the room arrived in and the character, the same on each visit to
+/// a room, below what it held with the room left in it. Its old buffers and its new are both alive until the fence
+/// lets the old go, and never more: the peak is what it held before and its floor after.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_trip_leaves_the_mesh_pool_at_its_floor() {
+    let zone = SyntheticZone { side: 4, cell_size: 32.0, instances: 2, lights: 1, quads: 64, texture: 0 };
+    let settings = small_settings();
+    let mut walk = Walk::rooms(zone, 3, no_limits(), Vec::new());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    let mib = |bytes: u64| bytes as f64 / 1_048_576.0;
+    let mut floors: [Option<u64>; 3] = [None; 3];
+    for (visit, to) in [0, 1, 2, 0, 1].into_iter().enumerate() {
+        let compactions = walk.renderer.stats().mesh_pool.compactions;
+        let trip = walk.trip(to, settings);
+        let stats = walk.renderer.stats();
+        let pool = stats.mesh_pool;
+        println!(
+            "trip {visit} to room {to}: {:.2} MiB of mesh pool before arriving, {:.2} after over {} frames, {} parts \
+             compacted, a peak of {:.2}",
+            mib(trip.pool.before),
+            mib(stats.mesh_pool_capacity),
+            trip.pool.frames,
+            pool.compactions - compactions,
+            mib(trip.pool.peak),
+        );
+        assert!(!pool.compacting, "trip {visit}: {pool:?}");
+        assert_eq!(stats.mesh_pool_capacity, pool.floor, "trip {visit}: at the floor for what it holds");
+        let floor = *floors[to as usize].get_or_insert(pool.floor);
+        assert_eq!(pool.floor, floor, "trip {visit}: room {to}'s floor, as on its first visit");
+        assert!(trip.pool.peak <= trip.pool.before + pool.floor, "trip {visit}: {trip:?}");
+        if visit > 0 {
+            assert!(stats.mesh_pool_capacity < trip.pool.before, "trip {visit}: the last room's given back");
+            assert!(pool.compactions > compactions, "trip {visit}: it compacted");
+        }
+        // What the arrival let go of goes back to the device once the fence lets it.
+        walk.drain();
+        assert_eq!(walk.renderer.stats().mesh_pool.retired, 0);
     }
 }

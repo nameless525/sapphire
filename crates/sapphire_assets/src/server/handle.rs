@@ -21,6 +21,7 @@ use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
+use crate::reflections::{ArchivedReflectionProbes, ReflectionProbes};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
 use crate::score::{ArchivedScore, Score};
 use crate::skeleton::{ArchivedSkeleton, Skeleton};
@@ -84,6 +85,7 @@ mod sealed {
     impl Sealed for crate::ui::UiDocument {}
     impl Sealed for super::TextureAsset {}
     impl Sealed for crate::texture_level::TextureLevel {}
+    impl Sealed for crate::reflections::ReflectionProbes {}
 }
 
 impl Asset for CharacterRig {
@@ -248,6 +250,17 @@ impl Asset for TextureLevel {
         // SAFETY: as for meshes: `TextureLevel::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<TextureLevel>(bytes) }
             .expect("the envelope was checked when the texture level was decoded")
+    }
+}
+
+impl Asset for ReflectionProbes {
+    const KIND: AssetKind = AssetKind::ReflectionProbes;
+    type View<'a> = &'a ArchivedReflectionProbes;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedReflectionProbes {
+        // SAFETY: as for meshes: `ReflectionProbes::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<ReflectionProbes>(bytes) }
+            .expect("the envelope was checked when the reflection probes were decoded")
     }
 }
 

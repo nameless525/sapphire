@@ -3730,6 +3730,7 @@
                 args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
                        "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
                        "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 2.3, warp: 17.3),
             ),
             // The same on Mobile-Low: each takes the others' capsules instead of their tiles, soft
             // shadows sized by the light's angle, on the middle and farthest figures and the middle
@@ -3739,6 +3740,7 @@
                 ticks: 90,
                 args: ["--plain-post", "--shadow-party", "3", "--stage", "floor", "--time-of-day", "17.5",
                        "--tier", "mobile-low", "--plain-sky", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 0.5, warp: 3.6),
             ),
             // The face rig under a low morning sun along its rows: each head's neighbor toward the sun
             // shades it, per pixel on the face. The second head's face map keeps its left half in
@@ -3750,6 +3752,7 @@
                 args: ["--plain-post", "--faces", "--stage", "floor", "--time-of-day", "7",
                        "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
                        "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 11.0, warp: 40.6),
             ),
         ],
     ),

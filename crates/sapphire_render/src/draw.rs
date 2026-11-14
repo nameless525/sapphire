@@ -23,6 +23,11 @@
 //! same calls: the overdraw view's draw each alpha-tested draw twice, through two pipelines in
 //! turn (`*_through_where`), and the wireframe's draw its edges, with each draw's index range doubled
 //! into the line indices it binds as the index buffer ([`MeshDraws::lines`]).
+//!
+//! Each group of draws counts what it submitted and what it left out, by which test, on its stack,
+//! and adds that to its pass's counter once ([`MeshDraws::counter`], the `counts` module). A draw
+//! of another view, or outside the group's set (a surface without a hull in an outline group, one
+//! not drawn through hair in that group), isn't counted as looked at.
 
 use std::ops::Range;
 
@@ -31,6 +36,7 @@ use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, Vertex
 use sapphire_rhi::wgpu;
 
 use crate::buffer::GrowableBuffer;
+use crate::counts::{Counter, PassCounts};
 use crate::gpu_types::DrawData;
 use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
@@ -42,6 +48,9 @@ const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
 const FOLIAGE_STRIDE: u64 = size_of::<VertexFoliage>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
+
+/// The level of detail every mesh draw draws, until levels are selected (m5-plan D4).
+const DRAWN_LEVEL: u8 = 0;
 
 /// What a frame's mesh draws read, shared by every pass that draws meshes.
 #[derive(Clone, Copy)]
@@ -69,6 +78,8 @@ pub(crate) struct MeshDraws<'a> {
     pub stands: &'a [u16],
     /// The view this pass draws: only the instances that stand in it draw.
     pub stand: u16,
+    /// The pass's counts, which its draws add to.
+    pub counter: &'a Counter,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -98,18 +109,65 @@ impl MeshDraws<'_> {
         self.stands.get(slot as usize).copied().unwrap_or(0) == self.stand
     }
 
-    /// Whether `set` includes draw record `draw_id` of `material`, which has an outline hull or
-    /// not.
-    fn includes(&self, set: DrawSet, draw_id: u32, material: MaterialHandle, outline: bool) -> bool {
-        match set {
+    /// Whether `set` holds draw record `draw_id` of `material`, which has an outline hull or not:
+    /// [`Pick::Out`] if not, and [`Pick::Cutoff`] for a hull past its material's cutoff.
+    fn includes(&self, set: DrawSet, draw_id: u32, material: MaterialHandle, outline: bool) -> Pick {
+        let held = match set {
             DrawSet::Surfaces => true,
-            DrawSet::Outlines => outline && self.hulls.get(draw_id as usize).copied().unwrap_or(false),
+            DrawSet::Outlines if !outline => false,
+            DrawSet::Outlines => {
+                return if self.hulls.get(draw_id as usize).copied().unwrap_or(false) {
+                    Pick::In
+                } else {
+                    Pick::Cutoff
+                };
+            }
             DrawSet::ThroughHair => self
                 .materials
                 .get(material.index())
                 .is_some_and(|record| record.flags.contains(MaterialFlags::THROUGH_HAIR)),
+        };
+        if held { Pick::In } else { Pick::Out }
+    }
+
+    /// Whether a draw of the instance in `slot`, standing here, that its set holds as `pick`
+    /// draws, counting it in `counts` as looked at and, if not drawn, by the test that left it out.
+    fn passes(
+        counts: &mut PassCounts,
+        pick: Pick,
+        slot: u32,
+        instance: impl Fn(u32) -> bool,
+        in_view: impl Fn(u32) -> bool,
+    ) -> bool {
+        match pick {
+            Pick::Out => return false,
+            Pick::Cutoff => {
+                counts.considered += 1;
+                counts.culled_by_cutoff += 1;
+                return false;
+            }
+            Pick::In => counts.considered += 1,
+        }
+        if !instance(slot) {
+            counts.culled_by_pass += 1;
+            false
+        } else if !in_view(slot) {
+            counts.culled_by_frustum += 1;
+            false
+        } else {
+            true
         }
     }
+}
+
+/// Whether a draw set holds a draw ([`MeshDraws::includes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pick {
+    In,
+    /// Not of the set: not looked at.
+    Out,
+    /// An outline hull past its material's distance cutoff.
+    Cutoff,
 }
 
 impl MeshDraws<'_> {
@@ -172,26 +230,32 @@ impl MeshDraws<'_> {
         pipelines: &[&wgpu::RenderPipeline],
     ) {
         let mut bound = Bound::default();
+        let mut counts = PassCounts::default();
+        let hull = set == DrawSet::Outlines;
         // Only static draws are culled: the view's culling doesn't read skinned and morphed
         // instances' posed bounds yet.
         let in_view =
             |slot: u32| self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn));
         for command in &self.list.commands[format_index(format)][variant.index()] {
-            if !self.includes(set, command.draw_id, command.material, command.outline)
-                || !instance(command.slot)
-                || !in_view(command.slot)
-                || !self.stands_here(command.slot)
-            {
+            if !self.stands_here(command.slot) {
                 continue;
             }
+            let pick = self.includes(set, command.draw_id, command.material, command.outline);
+            if !Self::passes(&mut counts, pick, command.slot, &instance, in_view) {
+                continue;
+            }
+            let indices = command.indices.len() as u32;
             if pipelines.is_empty() {
                 self.draw_command(pass, kind, format, command, &mut bound);
+                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 self.draw_command(pass, kind, format, command, &mut bound);
+                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
             }
         }
+        self.counter.add(&counts);
     }
 
     /// Draws `command`, a static mesh's in `format`, binding its streams and material unless
@@ -270,36 +334,43 @@ impl MeshDraws<'_> {
     ) {
         debug_assert!(!kind.reads_foliage(), "foliage draws on static meshes alone");
         let mut bound = Bound::default();
+        let mut counts = PassCounts::default();
+        let hull = set == DrawSet::Outlines;
         for command in &self.list.deformed[variant.index()] {
-            if !self.includes(set, command.draw_id, command.material, command.outline)
-                || !instance(command.slot)
-                || !self.stands_here(command.slot)
-            {
+            if !self.stands_here(command.slot) {
                 continue;
             }
-            if pipelines.is_empty() {
-                self.draw_deformed_command(pass, kind, command, &mut bound);
+            let pick = self.includes(set, command.draw_id, command.material, command.outline);
+            if !Self::passes(&mut counts, pick, command.slot, &instance, |_| true) {
+                continue;
+            }
+            let indices = command.indices.len() as u32;
+            if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, &mut bound) {
+                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
-                self.draw_deformed_command(pass, kind, command, &mut bound);
+                if self.draw_deformed_command(pass, kind, command, &mut bound) {
+                    counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                }
             }
         }
+        self.counter.add(&counts);
     }
 
     /// Draws `command`, a skinned or morphed instance's, binding its streams and material unless
-    /// `bound` says they are bound already.
+    /// `bound` says they are bound already. Whether it drew: an instance whose outputs didn't fit
+    /// (`SkinningStats::unplaced`) doesn't.
     fn draw_deformed_command(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         command: &DeformedDraw,
         bound: &mut Bound,
-    ) {
+    ) -> bool {
         let streams = Streams::Deformed { slot: command.slot };
         if bound.streams != Some(streams) {
-            // An instance whose outputs didn't fit (`SkinningStats::unplaced`) doesn't draw.
-            let Some(outputs) = self.skinned.get(command.slot) else { return };
+            let Some(outputs) = self.skinned.get(command.slot) else { return false };
             let outputs_buffer = self.skinned.buffer();
             pass.set_vertex_buffer(slot::POSITIONS, outputs_buffer.slice(outputs.positions..));
             if kind.reads_previous() {
@@ -316,6 +387,7 @@ impl MeshDraws<'_> {
         }
         self.bind_material(pass, kind, command.material, &mut bound.material);
         self.draw(pass, command.draw_id, command.indices.clone());
+        true
     }
 
     /// Draws `draws` of `variant`'s surfaces in their order, with the streams `kind` reads, each
@@ -330,6 +402,7 @@ impl MeshDraws<'_> {
         pipeline: impl Fn(PositionFormat) -> &'p wgpu::RenderPipeline,
     ) {
         let mut bound = Bound::default();
+        let mut counts = PassCounts::default();
         let mut bound_format = None;
         for &draw in draws {
             let format = match draw {
@@ -345,16 +418,22 @@ impl MeshDraws<'_> {
                     let commands = &self.list.commands[format_index(format)][variant.index()];
                     if let Some(command) = commands.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         self.draw_command(pass, kind, format, command, &mut bound);
+                        counts.considered += 1;
+                        counts.mesh_draw(command.indices.len() as u32, DRAWN_LEVEL, false);
                     }
                 }
                 DrawRef::Deformed { index } => {
                     let deformed = &self.list.deformed[variant.index()];
                     if let Some(command) = deformed.get(index as usize).filter(|c| self.stands_here(c.slot)) {
-                        self.draw_deformed_command(pass, kind, command, &mut bound);
+                        counts.considered += 1;
+                        if self.draw_deformed_command(pass, kind, command, &mut bound) {
+                            counts.mesh_draw(command.indices.len() as u32, DRAWN_LEVEL, false);
+                        }
                     }
                 }
             }
         }
+        self.counter.add(&counts);
     }
 
     /// Binds `material`'s group 3 if `kind` shades with materials and it isn't bound already.

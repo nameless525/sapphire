@@ -882,6 +882,7 @@ mod buffer;
 mod character_prepass;
 mod characters;
 pub mod color_vision;
+pub mod counts;
 pub mod debug_draw;
 pub mod debug_view;
 mod draw;
@@ -922,6 +923,7 @@ pub use ambient::{
 };
 pub use character_prepass::CharacterPrepassStats;
 pub use color_vision::ColorVision;
+pub use counts::{FrameCounts, MESH_LEVELS, PassCounts};
 pub use debug_draw::DebugDrawPassStats;
 pub use debug_view::{DebugView, DebugViewStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
@@ -974,3 +976,9 @@ pub use warm_up::{WarmUpProgress, WarmUpRequest, WarmUpStats};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";
+
+/// The system's allocator, counted: unit tests hold a frame's counting to no allocation (M5 B4).
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: sapphire_core::alloc::CountingAllocator<std::alloc::System> =
+    sapphire_core::alloc::CountingAllocator::new(std::alloc::System);

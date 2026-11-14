@@ -92,6 +92,7 @@ use sapphire_rhi::{TransientDesc, wgpu};
 use crate::CameraData;
 use crate::bind_cache::CachedBindGroup;
 use crate::buffer::{self, GrowableBuffer};
+use crate::counts::PassCounts;
 use crate::graph::{PassContext, TextureId};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
@@ -1275,7 +1276,8 @@ fn draw_steps(
     steps: &[ColorStep],
     sprites: Option<(&wgpu::RenderPipeline, SpriteBind<'_>)>,
     meshes: Option<(&wgpu::RenderPipeline, MeshBind<'_>)>,
-) {
+) -> PassCounts {
+    let mut counts = PassCounts::default();
     // Which kind is bound: none, sprites' or meshes'.
     let mut bound = None;
     for step in steps {
@@ -1287,6 +1289,7 @@ fn draw_steps(
                     bound = Some(false);
                 }
                 pass.draw(0..4, range.clone());
+                counts = counts.plus(&PassCounts::call(range.len() as u32, 2));
             }
             ColorStep::Mesh(index) => {
                 let Some((pipeline, bind)) = &meshes else { continue };
@@ -1294,10 +1297,11 @@ fn draw_steps(
                     bind.bind(pass, pipeline);
                     bound = Some(true);
                 }
-                bind.draw(pass, *index);
+                counts = counts.plus(&bind.draw(pass, *index));
             }
         }
     }
+    counts
 }
 
 /// What ends the main pass of the sprites.
@@ -1321,7 +1325,9 @@ pub(crate) struct VfxMainDraw<'a> {
 
 impl VfxMainDraw<'_> {
     /// Binds `frame`, the world's frame group, as group 0; group 1 stays as the main pass bound it.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
+    /// What it drew, a quad of two triangles an instance.
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) -> PassCounts {
+        let mut counts = PassCounts::default();
         pass.set_bind_group(0, frame, &[]);
         let sprite_bind =
             self.sprites.map(|sprites| SpriteBind { buffers: sprites.buffers, textures: sprites.textures });
@@ -1330,17 +1336,19 @@ impl VfxMainDraw<'_> {
         {
             bind.bind(pass, mask);
             pass.draw(0..4, 0..sprites.instances);
+            counts = counts.plus(&PassCounts::call(sprites.instances, 2));
         }
         if let Some(meshes) = self.meshes
             && let Some(mask) = meshes.mask
         {
-            meshes.bind.draw_all(pass, mask);
+            counts = counts.plus(&meshes.bind.draw_all(pass, mask));
         }
         let sprites = self.sprites.and_then(|sprites| sprites.color).zip(sprite_bind);
         let meshes = self.meshes.and_then(|meshes| meshes.color.map(|color| (color, meshes.bind)));
         if sprites.is_some() || meshes.is_some() {
-            draw_steps(pass, self.steps, sprites, meshes);
+            counts = counts.plus(&draw_steps(pass, self.steps, sprites, meshes));
         }
+        counts
     }
 }
 
@@ -1376,7 +1384,8 @@ pub(crate) struct AfterResolveTargets {
 }
 
 impl VfxAfterResolve<'_> {
-    /// Copies the resolved frame and draws over it. `frame` and `view` are groups 0 and 1.
+    /// Copies the resolved frame and draws over it. `frame` and `view` are groups 0 and 1. What it
+    /// drew, a quad of two triangles an instance.
     pub(crate) fn record(
         mut self,
         ctx: &mut PassContext<'_>,
@@ -1384,7 +1393,7 @@ impl VfxAfterResolve<'_> {
         frame: &wgpu::BindGroup,
         view: &wgpu::BindGroup,
         labels: bool,
-    ) {
+    ) -> PassCounts {
         let (resolved, composed) = (ctx.texture(targets.resolved), ctx.texture(targets.composed));
         ctx.encoder.copy_texture_to_texture(
             resolved.as_image_copy(),
@@ -1415,7 +1424,7 @@ impl VfxAfterResolve<'_> {
         });
         pass.set_bind_group(0, frame, &[]);
         pass.set_bind_group(1, view, &[0]);
-        draw_steps(&mut pass, self.steps, sprites, meshes);
+        draw_steps(&mut pass, self.steps, sprites, meshes)
     }
 }
 

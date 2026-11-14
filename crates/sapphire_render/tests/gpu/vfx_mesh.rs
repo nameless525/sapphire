@@ -1,13 +1,16 @@
 //! Effect meshes (M5 L5): a scrolled pattern lands where its offset says, an erosion at 0, part way and 1 with
 //! its edge's color only in its band, each flipbook frame, the soft fade over temporal AA and none in the main
-//! pass, and that nothing of the family is built until a mesh draws or a load declares one. Run with
+//! pass, that nothing of the family is built until a mesh draws or a load declares one, and that a mesh counts
+//! in the pass that draws it (M5 B4). Run with
 //! `cargo test -p sapphire_render --test gpu vfx_mesh:: -- --ignored --test-threads=1`.
 //!
 //! The scenes are `vfx`'s: linear values as they are, over a flat grey sky. Most draw a card that fills the
 //! view exactly, so a pixel's place is its UV.
 
 use glam::{Quat, Vec2, Vec3};
-use sapphire_render::{PipelineInventory, VfxErosion, VfxFlipbook, VfxMesh, VfxMeshShape, VfxPattern};
+use sapphire_render::{
+    FrameCounts, PassCounts, PipelineInventory, VfxErosion, VfxFlipbook, VfxMesh, VfxMeshShape, VfxPattern,
+};
 
 use super::vfx::{GREY, Harness, SIDE, assert_near, flat_settings, paths, temporal_settings};
 
@@ -322,4 +325,45 @@ fn a_ring_from_above_shows_its_band_and_not_its_middle() {
     // At radius 0.9 (two metres away, 90°: a pixel is 1/32 m), its band at full.
     let band = (SIDE / 2 + (0.9 * 32.0) as u32, SIDE / 2);
     assert!((frame.linear(band) - Vec3::splat(GREY)).max_element() > COLOR.x * 0.6, "{}", frame.linear(band));
+}
+
+/// An effect mesh counts where it draws (M5 B4): in the main pass where no temporal AA follows, as on phones,
+/// and in temporal AA's counts where it draws after the resolve; each draw a call of one instance and the
+/// card's triangles, with no level (it isn't a scene mesh). No other pass moves.
+#[test]
+#[ignore = "needs a GPU"]
+fn an_effect_mesh_counts_in_the_pass_that_draws_it() {
+    let mesh = card(COLOR, VfxPattern::Solid);
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        for _ in 0..2 {
+            harness.render(|_| {});
+        }
+        let without = harness.renderer.stats().passes;
+        harness.render(|packet| packet.vfx.meshes.push(mesh));
+        let with = harness.renderer.stats().passes;
+        let (pass, drew): (&dyn Fn(&FrameCounts) -> PassCounts, _) = if path == "the main pass" {
+            (&|counts| counts.main, "main")
+        } else {
+            (&|counts| counts.temporal, "temporal")
+        };
+        let (before, after) = (pass(&without), pass(&with));
+        let calls = after.draws - before.draws;
+        assert!(calls >= 1, "{path}: the mesh's draws count in {drew}");
+        assert_eq!(after.instances - before.instances, calls, "{path}: one instance a call");
+        let triangles = after.triangles - before.triangles;
+        assert!(triangles >= 2 * u64::from(calls), "{path}: at least the card's two triangles a call");
+        assert_eq!(triangles % u64::from(calls), 0, "{path}: the same card each call");
+        assert_eq!(
+            (after.considered, after.levels),
+            (before.considered, before.levels),
+            "{path}: no mesh draw"
+        );
+        let others = |counts: &FrameCounts| FrameCounts {
+            main: PassCounts::default(),
+            temporal: PassCounts::default(),
+            ..*counts
+        };
+        assert_eq!(others(&with), others(&without), "{path}: no other pass moves");
+    }
 }

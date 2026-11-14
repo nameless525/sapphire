@@ -19,6 +19,7 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
+mod counts;
 mod insets;
 mod lost_frames;
 mod sequences;

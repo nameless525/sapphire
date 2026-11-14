@@ -288,6 +288,7 @@ use sapphire_look::Dichromacy;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::color_vision::ColorVisionDraw;
+use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, TextureId};
 use crate::inset::INSET_RESOLVE_PASS;
 use crate::pipeline_builds::PipelineBuilds;
@@ -593,6 +594,8 @@ struct Fullscreen<'f> {
     shared: &'f wgpu::BindGroup,
     layout: &'f wgpu::BindGroupLayout,
     cache: &'f mut CachedBindGroup,
+    /// Post's counts, which its draw adds to.
+    counter: &'f Counter,
 }
 
 impl PostProcess {
@@ -1052,7 +1055,8 @@ impl PostProcess {
     /// Adds the bloom chain and the fused composite to `graph`, reading `input` (the main
     /// pass's HDR output, or temporal AA's resolve of it) and writing `target`. `scene_color` is
     /// the main pass's own output, whose alpha is the character mask: `input` itself without
-    /// temporal AA.
+    /// temporal AA. Each pass's draw counts in `counter`.
+    #[expect(clippy::too_many_arguments, reason = "the passes' inputs, targets and counts")]
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
@@ -1061,6 +1065,7 @@ impl PostProcess {
         target: TextureId,
         insets: impl IntoIterator<Item = InsetResolve<'f>>,
         labels: bool,
+        counter: &'f Counter,
     ) {
         let Self {
             ref builder,
@@ -1080,7 +1085,8 @@ impl PostProcess {
         let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
         let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = **bind_groups;
         let bloom_levels = bloom_levels - shed_levels;
-        let pass = |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache };
+        let pass =
+            |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache, counter };
         let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
 
         let chain = bloom.then(|| {
@@ -1171,6 +1177,7 @@ impl PostProcess {
                     shared,
                     layout: &layouts.composite,
                     cache,
+                    counter,
                 },
             );
         }
@@ -1205,7 +1212,7 @@ fn add_fullscreen<'f, const N: usize>(
         }
     }
     builder.write(output).record(move |ctx| {
-        let Fullscreen { device, labels, pipeline, shared, layout, cache } = draw;
+        let Fullscreen { device, labels, pipeline, shared, layout, cache, counter } = draw;
         let views = inputs.map(|input| match input {
             Input::Graph(texture) => ctx.view(texture),
             Input::View(view) => view,
@@ -1231,6 +1238,7 @@ fn add_fullscreen<'f, const N: usize>(
         pass.set_bind_group(0, shared, &[]);
         pass.set_bind_group(1, group, &[]);
         pass.draw(0..3, 0..1);
+        counter.add(&PassCounts::fullscreen());
     });
 }
 

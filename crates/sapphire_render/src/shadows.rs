@@ -226,6 +226,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buffer;
 use crate::characters::{CharacterTable, GpuCharacter, GpuReceived};
+use crate::counts::{Counted, PassCounters};
 use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
@@ -919,12 +920,14 @@ impl Shadows {
     /// cascade drawn, the character maps and the face pass. `draws` are the frame's mesh draws;
     /// the shadows' views are `first` views into the view buffer (`stride` bytes apart), bound
     /// through `view_group`; `casters` holds the scene groups that bind the instances and
-    /// foliage's casters.
+    /// foliage's casters. Each cascade's draws count in its own of `counts`, and every character
+    /// map's together.
     #[expect(clippy::too_many_arguments, reason = "the frame's shared bindings, all borrowed for the graph")]
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         draws: MeshDraws<'f>,
+        counts: &'f PassCounters,
         view_group: &'f wgpu::BindGroup,
         casters: CasterBindings<'f>,
         first: u32,
@@ -943,6 +946,7 @@ impl Shadows {
             }
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
+            let draws = MeshDraws { counter: counts.get(Counted::Cascade(index)), ..draws };
             graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
@@ -956,6 +960,7 @@ impl Shadows {
         }
         if let Some(settings) = self.settings.filter(|_| !self.plan.maps.is_empty()) {
             let (tile, maps) = (settings.character_resolution, self.plan.maps.len());
+            let draws = MeshDraws { counter: counts.get(Counted::CharacterMaps), ..draws };
             graph.add_pass(CHARACTER_PASS).side_effect().weight(pass_weight::CHARACTERS).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let atlas = &self.textures.atlas;

@@ -110,6 +110,7 @@ use sapphire_look::{
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
+use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, TextureId};
 use crate::inset::MAX_INSETS;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
@@ -747,12 +748,14 @@ impl Ui {
 
     /// Adds the pass over `target`, if this frame draws. It keeps what's there and blends over it. Inset
     /// runs read `pictures`: by inset, its group ([`Self::picture_group`]) and its picture in the graph.
+    /// Its draws count in `counter`, if there is one, a quad of two triangles each.
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         target: TextureId,
         size: (u32, u32),
         pictures: [Option<UiPicture<'f>>; MAX_INSETS],
+        counter: Option<&'f Counter>,
     ) {
         let Some(built) = self.built.as_deref().filter(|_| !self.quads.is_empty()) else { return };
         let labels = self.labels;
@@ -778,6 +781,7 @@ impl Ui {
             pass.set_pipeline(&built.pipeline);
             pass.set_bind_group(1, &built.quads_group, &[]);
             let mut scissor = None;
+            let mut counts = PassCounts::default();
             for draw in draws {
                 let wanted = draw.mask.map(|mask| scissor_of(mask, viewport, size));
                 if wanted != scissor {
@@ -804,6 +808,10 @@ impl Ui {
                 pass.set_bind_group(0, group, &[]);
                 pass.set_vertex_buffer(0, built.indices.slice(start..end));
                 pass.draw(0..4, 0..draw.count);
+                counts = counts.plus(&PassCounts::call(draw.count, 2));
+            }
+            if let Some(counter) = counter {
+                counter.add(&counts);
             }
         });
     }

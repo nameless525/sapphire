@@ -36,6 +36,7 @@ use super::{COLOR_BLEND, COLOR_MAX, MASK_BLEND, VfxMaker, sane, sane_color};
 use crate::CameraData;
 use crate::bind_cache::CachedBindGroup;
 use crate::buffer::{self, GrowableBuffer};
+use crate::counts::PassCounts;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
@@ -855,17 +856,25 @@ impl MeshBind<'_> {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
     }
 
-    /// Draws mesh `index`, bound.
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: u32) {
+    /// Draws mesh `index`, bound: one call of one instance, and what it drew.
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: u32) -> PassCounts {
         let range = self.ranges[self.shapes[index as usize].index()];
         pass.draw_indexed(range.indices.0..range.indices.1, range.base_vertex, index..index + 1);
+        PassCounts::call(1, u64::from(range.indices.1 - range.indices.0) / 3)
     }
 
-    pub(super) fn draw_all(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) {
+    /// Binds `pipeline` and draws every mesh: what they drew.
+    pub(super) fn draw_all(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+    ) -> PassCounts {
         self.bind(pass, pipeline);
+        let mut counts = PassCounts::default();
         for index in 0..self.shapes.len() as u32 {
-            self.draw(pass, index);
+            counts = counts.plus(&self.draw(pass, index));
         }
+        counts
     }
 }
 

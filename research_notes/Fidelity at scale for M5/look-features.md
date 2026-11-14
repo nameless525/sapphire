@@ -23,7 +23,7 @@ Sizes: S 1-2, M 3-5, L 6-10 agent-days. Tiers: DH (Desktop-High), DL (Desktop-Lo
 - **VFX:** spec 2322-2332 (compute spawn/update/compaction with indirect draws, flipbooks, mesh particles, a half-resolution distortion buffer, decals, half-resolution smoke).
 - **Screen effects:** `post.rs:212-219`. Cut-ins are "views, not post" (`screen_effects.rs:95-98`).
 - **Shadows:** `shadows.rs:142-163`; `lights.rs:41-56` ("a few hero lights").
-- **Depth of field:** spec 1702 says desktop only, in cutscenes.
+- **Depth of field:** spec §5.12 (line 1728 when M5 began) says desktop only, in cutscenes. M5 L8 built it on both desktop tiers, with a soft inset backdrop on Mobile-High.
 
 ## 3. Ranking by the look
 

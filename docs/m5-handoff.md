@@ -402,6 +402,16 @@ An effect mesh is a layer of an effect in [default_effects.ron](../crates/sapphi
 7. **Look at it:** `--vfx mesh-scroll`, `mesh-erosion` and `mesh-flipbook` play the three shows the `vfxmesh-*` goldens capture, and a save under `--cues` reaches a running fight. Validation names the effect, the layer and the field, as an emitter's does.
 8. **Rust steps:** a new shape, a new pattern or a cooked mesh by id (see "Everything deferred").
 
+### A focus key (M5 L8)
+
+Depth of field is a key on a timeline's camera, a cutscene's or a move's cinematic. Spec §5.12's "As built (M5 L8)" is the reference. No step edits Rust, and no replay moves: focus is presentation, and the timeline's simulation digest doesn't see it.
+
+1. **The version:** a timeline document with focus says `version: 3`. Versions 1 and 2 still load, as ones with none.
+2. **The key:** a camera key takes `focus: Some((on: Role("hero"), sharp: 0.3, near: 0.8, far: 4.0, blur: 0.012))`. `on` is `Distance(<metres>)`, `Point((x, y, z))` in the timeline's own space, or `Role("<role>")`, a fighter's head, named as a face track's role is. `sharp` is how far either side of it stays sharp, `near` and `far` the metres over which blur grows to its largest in front and behind, and `blur` that largest radius as a fraction of the picture's height, above 0 and at most 0.02. The cook refuses anything else, naming the field.
+3. **Between keys:** focus eases with the camera's key (a `Cut` jumps), a key without focus blends from or to none, and when the timeline ends it fades with the camera's blend back. A role it can't find holds the last distance.
+4. **Where it shows:** the desktop tiers. Mobile-High and Mobile-Low ignore it, at no cost. A move's effects (sprites, trails, effect meshes) draw over the blur and stay sharp wherever they are.
+5. **Look at it:** `--look-dev hero --tier desktop-high --focus <distance>,<sharp>,<near>,<far>,<blur>` holds a focus on the look-dev close-up, as `dof-closeup` shows it, and `--arena --timeline <id>` plays a timeline's keys.
+
 ### A game screen
 
 The worked examples are the six documents in [content/ui/](../content/ui/). Spec §5.17 is the reference.
